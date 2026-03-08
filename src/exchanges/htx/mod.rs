@@ -1,0 +1,49 @@
+//! # HTX (Huobi) V5 Connector
+//!
+//! Exchange connector for HTX (formerly Huobi) API.
+//!
+//! ## Architecture
+//!
+//! - `endpoints` - URL structures and endpoint definitions
+//! - `auth` - HMAC-SHA256 signature implementation (URL params based)
+//! - `parser` - Response parsing to internal types
+//! - `connector` - Trait implementations (MarketData, Trading, Account)
+//! - `websocket` - WebSocket connector implementation with GZIP decompression
+//!
+//! ## Key Differences from Other Exchanges
+//!
+//! - Symbol format: lowercase without separator (`btcusdt`)
+//! - Auth signature in URL params (not headers like Bybit)
+//! - WebSocket messages are GZIP compressed (required decompression)
+//! - Two response formats: V1 (status/data) and V2 (code/data)
+//! - Timestamp format: `YYYY-MM-DDThh:mm:ss` (UTC, valid window ±5 minutes)
+//! - Requires account-id for most trading operations
+//!
+//! ## Usage
+//!
+//! ```ignore
+//! use connectors_v5::exchanges::htx::HtxConnector;
+//! use connectors_v5::core::types::{Symbol, AccountType};
+//! use connectors_v5::core::traits::MarketData;
+//!
+//! // Public API
+//! let connector = HtxConnector::public(false).await?;
+//! let ticker = connector.get_ticker(&Symbol::new("BTC", "USDT"), AccountType::Spot).await?;
+//!
+//! // Private API
+//! let credentials = Credentials::new("api_key", "api_secret");
+//! let connector = HtxConnector::new(Some(credentials), false).await?;
+//! let balance = connector.get_balance(AccountType::Spot).await?;
+//! ```
+
+mod endpoints;
+mod auth;
+mod parser;
+mod connector;
+mod websocket;
+
+pub use endpoints::*;
+pub use auth::*;
+pub use parser::*;
+pub use connector::*;
+pub use websocket::*;

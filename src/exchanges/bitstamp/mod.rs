@@ -1,0 +1,40 @@
+//! # Bitstamp V2 Connector
+//!
+//! Exchange connector for Bitstamp V2 API.
+//!
+//! ## Architecture
+//!
+//! - `endpoints` - URL structures and endpoint definitions
+//! - `auth` - HMAC-SHA256 V2 signature implementation
+//! - `parser` - Response parsing to internal types
+//! - `connector` - Trait implementations (MarketData, Trading, Account)
+//! - `websocket` - WebSocket connector implementation
+//!
+//! ## Usage
+//!
+//! ```ignore
+//! use connectors_v5::exchanges::bitstamp::BitstampConnector;
+//! use connectors_v5::core::types::{Symbol, AccountType};
+//! use connectors_v5::core::traits::MarketData;
+//!
+//! // Public API
+//! let connector = BitstampConnector::public().await?;
+//! let ticker = connector.get_ticker(&Symbol::new("BTC", "USD"), AccountType::Spot).await?;
+//!
+//! // Private API
+//! let credentials = Credentials::new("api_key", "api_secret");
+//! let connector = BitstampConnector::new(Some(credentials)).await?;
+//! let balance = connector.get_balance(AccountType::Spot).await?;
+//! ```
+
+mod endpoints;
+mod auth;
+mod parser;
+mod connector;
+mod websocket;
+
+pub use endpoints::*;
+pub use auth::*;
+pub use parser::*;
+pub use connector::*;
+pub use websocket::*;

@@ -1,0 +1,12 @@
+# Environment variables (API keys)
+.env
+.env.local
+.env.*
+
+# Build artifacts
+target/
+Cargo.lock
+*.rlib
+
+# Ralph test artifacts
+ralph-test/

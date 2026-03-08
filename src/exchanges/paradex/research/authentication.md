@@ -1,0 +1,382 @@
+# Paradex API Authentication
+
+## Overview
+
+Paradex uses **JWT (JSON Web Token)** authentication combined with **StarkNet cryptographic signatures** for API access. The authentication system is built on an off-chain message encoding inspired by EIP-712.
+
+---
+
+## Authentication Types
+
+### 1. JWT Tokens
+- **Purpose**: Grant access to most API endpoints that are non-public
+- **Expiration**: 5 minutes (no extension capability)
+- **Recommendation**: Refresh tokens after 3 minutes to allow retry attempts
+- **Exception**: WebSocket connections don't require re-authentication after initial auth
+
+### 2. Private Keys
+- **Purpose**: Full trading access, used for creating JWT tokens and signing orders
+- **Types**:
+  - **Readonly Tokens**: Read-only access to account data
+  - **Subkeys**: Trading permissions without withdrawal/transfer capabilities
+  - **Main Private Key**: Full account access
+
+---
+
+## Authentication Flow
+
+### Step 1: Onboarding
+1. Use Ethereum (L1) private key to sign a message
+2. This signature generates a deterministic StarkNet (L2) private key
+3. The L2 private key produces the StarkNet public key
+4. StarkNet keypair is used for all subsequent authentication
+
+**Alternative**: Use `ParadexSubkey` for L2-only authentication without L1 onboarding (subkey-based access)
+
+### Step 2: Generate JWT Token
+
+**Endpoint**: `POST /v1/auth`
+
+**Required Headers**:
+```json
+{
+  "PARADEX-STARKNET-ACCOUNT": "0x129f3dc1b8962d8a87abc692424c78fda963ade0e1cd17bf3d1c26f8d41ee7a",
+  "PARADEX-STARKNET-SIGNATURE": [
+    "1381323390094460587764867648394252677239485992175346764030313478865763678671",
+    "396490140510115262427678549757564216013606350105112805717359873954984880589"
+  ],
+  "PARADEX-TIMESTAMP": 1681759756
+}
+```
+
+**Optional Headers**:
+- `PARADEX-SIGNATURE-EXPIRATION`: Unix timestamp for token expiry (default 30 min, max 1 week)
+- `PARADEX-AUTHORIZE-ISOLATED-MARKETS`: Boolean for isolated trading accounts access
+
+**Response**:
+```json
+{
+  "jwt_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+```
+
+### Step 3: Use JWT for API Requests
+
+Include JWT in Authorization header for all private endpoints:
+
+```
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+```
+
+---
+
+## Signature Generation
+
+### Message Structure
+
+Paradex uses an **off-chain message encoding inspired by EIP-712** with StarkNet-specific modifications:
+
+**Components**:
+1. **Prefix**: Message identifier
+2. **Domain Separator**: Chain-specific separator
+3. **Account Address**: StarkNet account address
+4. **Hashed Message**: Structured hash of the message content
+
+**Key Difference from EIP-712**: Uses StarkNet's hash functions with `selector` instead of `keccak` hashing.
+
+### Signature Format
+
+StarkNet signatures are represented as **two values [r, s]**:
+
+```json
+"PARADEX-STARKNET-SIGNATURE": [
+  "r_value",
+  "s_value"
+]
+```
+
+Where both values are large integers (typically 77 digits).
+
+### Headers Required for Signing
+
+| Header | Type | Description |
+|--------|------|-------------|
+| `PARADEX-STARKNET-ACCOUNT` | string | StarkNet wallet address (0x-prefixed hex) |
+| `PARADEX-STARKNET-SIGNATURE` | array | Two-element array [r, s] of signature values |
+| `PARADEX-TIMESTAMP` | integer | Unix timestamp when signature was created |
+| `PARADEX-SIGNATURE-EXPIRATION` | integer | Optional: Unix timestamp when signature expires |
+
+---
+
+## Order Signing
+
+### Requirements
+
+Orders must be signed with the **account's private key** before submission:
+
+**Order Signature Fields**:
+- `signature`: Cryptographic signature from private key
+- `signature_timestamp`: Unix timestamp in milliseconds
+
+### Signing Process
+
+1. Construct the order message (price, size, market, side, etc.)
+2. Hash the message using StarkNet pedersen hash
+3. Sign the hash with StarkNet private key
+4. Include signature and timestamp in order request
+
+### Performance Optimization
+
+**Pre-signing Strategy**:
+- Sign static order components ahead of time
+- Only process variable parts (price, size, timestamp) for each new order
+- Reduces latency in high-frequency scenarios
+
+**Performance by Language**:
+- **Rust**: ~0.2ms average latency
+- **C++**: ~0.4ms average latency
+- **Go**: ~0.7ms average (1430 signatures/second using gnark-crypto)
+- **Python**: ~5.5ms average (182 signatures/second via Rust bindings)
+- **Java**: ~5.5ms average (182 signatures/second with StarknetCurve)
+- **TypeScript**: ~20ms average (50 signatures/second)
+
+---
+
+## Subkeys
+
+### What are Subkeys?
+
+**Subkeys** are randomly generated keypairs registered to your main account with trading permissions but restricted from withdrawals and transfers.
+
+### Subkey Requirements
+
+When using subkeys, requests must include:
+
+1. **Main Account Address**: Since account address cannot be derived from subkey's private key
+2. **Subkey Public Key**: For signature verification
+3. **Signature**: Generated by signing with the subkey private key
+
+### Subkey Headers
+
+Additional header when using subkeys:
+
+```
+PARADEX-STARKNET-SIGNATURE: <signature_generated_by_subkey>
+```
+
+The system verifies:
+- Signature is valid for the provided subkey public key
+- Subkey is registered to the specified main account
+- Subkey has appropriate permissions for the operation
+
+---
+
+## WebSocket Authentication
+
+### Authentication Flow
+
+1. Connect to WebSocket endpoint
+2. Send authentication message (similar to REST)
+3. Subscribe to private channels
+
+### Subscription to Private Channels
+
+**Authentication Message**:
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "authenticate",
+  "params": {
+    "jwt_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+  },
+  "id": 1
+}
+```
+
+**After Authentication**: No re-authentication required for the connection's duration (even though JWT expires every 5 minutes).
+
+**Private Channels**:
+- `account` - Account summary updates
+- `balance_events` - Balance changes
+- `fills` - Fill notifications
+- `orders` - Order updates
+- `positions` - Position changes
+- `funding_payments` - Funding payment events
+- `transactions` - Transaction updates
+- `transfers` - Transfer notifications
+- `tradebusts` - Tradebust notifications
+
+---
+
+## Security Best Practices
+
+### 1. Token Refresh Strategy
+```
+JWT_LIFETIME = 5 minutes
+REFRESH_INTERVAL = 3 minutes
+
+while trading:
+    if time_since_last_refresh >= REFRESH_INTERVAL:
+        new_jwt = get_jwt_token()
+        update_client_auth(new_jwt)
+```
+
+### 2. Subkey Usage
+- Use subkeys for trading bots (prevents withdrawal risk)
+- Rotate subkeys periodically
+- Revoke compromised subkeys immediately
+
+### 3. Signature Generation
+- Keep private keys in secure storage (hardware wallet, HSM)
+- Never log private keys or signatures
+- Use constant-time comparison for signature verification
+
+### 4. Rate Limit Compliance
+- JWT endpoint: 600 req/min per IP
+- Avoid unnecessary re-authentication
+- Cache valid tokens until near expiration
+
+---
+
+## Error Handling
+
+### Common Authentication Errors
+
+| Status Code | Error | Cause | Solution |
+|-------------|-------|-------|----------|
+| 401 | Unauthorized | Invalid JWT | Refresh JWT token |
+| 401 | Unauthorized | Expired JWT | Get new JWT (token expires every 5 min) |
+| 401 | Unauthorized | Invalid signature | Check signature generation |
+| 400 | Bad Request | Missing headers | Include all required headers |
+| 400 | Bad Request | Invalid timestamp | Use current Unix timestamp |
+
+### JWT Expiration Handling
+
+```rust
+// Pseudocode
+fn ensure_valid_jwt() -> Result<String> {
+    if jwt_expires_soon() || jwt_expired() {
+        // Re-generate JWT
+        let signature = sign_auth_message(private_key, timestamp);
+        let jwt = request_jwt(account, signature, timestamp)?;
+        cache_jwt(jwt, expiration);
+        Ok(jwt)
+    } else {
+        Ok(cached_jwt())
+    }
+}
+```
+
+---
+
+## Implementation References
+
+### Official Code Samples
+
+Paradex provides authentication examples in multiple languages:
+
+**Repository**: https://github.com/tradeparadex/code-samples
+
+**Languages**:
+- Go (onboarding + authentication)
+- Java (onboarding + authentication)
+- Python (onboarding + authentication)
+- TypeScript (onboarding + authentication)
+- Rust (order signing examples)
+
+### Signing Libraries
+
+**C++ Signing Library**: https://github.com/tradeparadex/starknet-signing-cpp
+- Purpose: Sign Paradex/StarkNet orders and authentication requests
+- Use case: Low-latency trading systems
+
+**Python SDK**: https://github.com/tradeparadex/paradex-py
+- Includes ParadexAccount (L1+L2) and ParadexSubkey (L2-only) classes
+- Built-in authentication handling
+
+---
+
+## Authentication Trigger Points
+
+Your software must authenticate when:
+
+1. **Onboarding**: First-time wallet registration
+2. **JWT Generation**: For private REST API calls or WebSocket subscriptions
+3. **Order Submission**: Each order requires signature with private key
+
+---
+
+## Example: Complete Authentication Flow
+
+```rust
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+
+// Step 1: Generate StarkNet signature
+fn generate_starknet_signature(
+    private_key: &str,
+    message: &str,
+    timestamp: u64,
+) -> [String; 2] {
+    // Use StarkNet signing library (e.g., starknet-rs)
+    // Sign message with private key
+    // Return [r, s] signature values
+    todo!("Implement StarkNet signing")
+}
+
+// Step 2: Request JWT
+async fn get_jwt_token(
+    account: &str,
+    signature: [String; 2],
+    timestamp: u64,
+) -> Result<String, Error> {
+    let client = reqwest::Client::new();
+
+    let response = client
+        .post("https://api.prod.paradex.trade/v1/auth")
+        .header("PARADEX-STARKNET-ACCOUNT", account)
+        .header("PARADEX-STARKNET-SIGNATURE", serde_json::to_string(&signature)?)
+        .header("PARADEX-TIMESTAMP", timestamp.to_string())
+        .send()
+        .await?;
+
+    let jwt_response: JwtResponse = response.json().await?;
+    Ok(jwt_response.jwt_token)
+}
+
+// Step 3: Make authenticated request
+async fn get_account_info(jwt: &str) -> Result<AccountInfo, Error> {
+    let client = reqwest::Client::new();
+
+    let response = client
+        .get("https://api.prod.paradex.trade/v1/account")
+        .header("Authorization", format!("Bearer {}", jwt))
+        .send()
+        .await?;
+
+    Ok(response.json().await?)
+}
+```
+
+---
+
+## Summary
+
+1. **Authentication Method**: JWT tokens obtained via StarkNet signature
+2. **Token Lifetime**: 5 minutes (refresh every 3 minutes recommended)
+3. **Signature Format**: StarkNet [r, s] signature array
+4. **Order Signing**: Required for all order submissions
+5. **Performance**: Rust offers lowest latency (~0.2ms for signing)
+6. **WebSocket**: Single authentication per connection (no re-auth needed)
+7. **Subkeys**: Recommended for trading bots (restricted permissions)
+8. **Rate Limits**: 600 req/min for auth endpoints
+
+---
+
+## Additional Resources
+
+- **Official Documentation**: https://docs.paradex.trade/trading/api-authentication
+- **Code Samples**: https://github.com/tradeparadex/code-samples
+- **Python SDK**: https://github.com/tradeparadex/paradex-py
+- **C++ Signing**: https://github.com/tradeparadex/starknet-signing-cpp
+- **API Quick Start**: https://docs.paradex.trade/api/general-information/api-quick-start

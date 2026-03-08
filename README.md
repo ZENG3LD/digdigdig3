@@ -1,6 +1,10 @@
 # digdigdig3
 
-Multi-exchange connector library for Rust — unified async trait API covering crypto exchanges, stock brokers, forex providers, aggregators, and 88 intelligence feeds.
+> **Multi-exchange connector library for Rust** — unified async trait API covering crypto exchanges, stock brokers, forex providers, aggregators, and 88 intelligence feeds.
+
+[![Crates.io](https://img.shields.io/crates/v/digdigdig3.svg)](https://crates.io/crates/digdigdig3)
+[![docs.rs](https://docs.rs/digdigdig3/badge.svg)](https://docs.rs/digdigdig3)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](https://github.com/ZENG3LD/digdigdig3#license)
 
 ## Features
 
@@ -368,6 +372,18 @@ src/exchanges/<name>/
 
 Reference implementation: `src/exchanges/kucoin/`
 
+## Support the Project
+
+If you find this library useful, consider supporting development:
+
+| Currency | Network | Address |
+|----------|---------|---------|
+| USDT | TRC20 | `TNxMKsvVLYViQ5X5sgCYmkzH4qjhhh5U7X` |
+| USDC | Arbitrum | `0xEF3B94Fe845E21371b4C4C5F2032E1f23A13Aa6e` |
+| ETH | Ethereum | `0xEF3B94Fe845E21371b4C4C5F2032E1f23A13Aa6e` |
+| BTC | Bitcoin | `bc1qjgzthxja8umt5tvrp5tfcf9zeepmhn0f6mnt40` |
+| SOL | Solana | `DZJjmH8Cs5wEafz5Ua86wBBkurSA4xdWXa3LWnBUR94c` |
+
 ## License
 
 Licensed under either of:
@@ -376,3 +392,9 @@ Licensed under either of:
 - MIT license ([LICENSE-MIT](LICENSE-MIT))
 
 at your option.
+
+---
+
+<p align="center">
+  <img src="assets/author.svg" alt="zengeld" />
+</p>

@@ -1,6 +1,6 @@
 [package]
 name = "digdigdig3"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Multi-exchange connector library — unified async Rust API for 40+ crypto exchanges, stock brokers, forex providers, and 88 intelligence feeds"
 license = "MIT OR Apache-2.0"

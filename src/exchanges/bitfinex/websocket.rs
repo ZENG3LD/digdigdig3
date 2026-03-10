@@ -193,8 +193,8 @@ pub struct BitfinexWebSocket {
     pending_subs: Arc<Mutex<PendingSubscriptions>>,
     /// Event sender (internal - for message handler)
     event_tx: Arc<Mutex<Option<mpsc::UnboundedSender<WebSocketResult<StreamEvent>>>>>,
-    /// Broadcast sender (for multiple consumers)
-    broadcast_tx: Arc<broadcast::Sender<WebSocketResult<StreamEvent>>>,
+    /// Broadcast sender (for multiple consumers, dropped on disconnect)
+    broadcast_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
     /// WebSocket stream (used only during connect, before message handler takes it)
     ws_stream: Arc<Mutex<Option<WsStream>>>,
     /// Write command channel — used by subscribe/unsubscribe to send messages
@@ -222,9 +222,6 @@ impl BitfinexWebSocket {
             .map(BitfinexAuth::new)
             .transpose()?;
 
-        // Create broadcast channel (capacity of 1000 events)
-        let (broadcast_tx, _) = broadcast::channel(1000);
-
         Ok(Self {
             auth,
             _urls: urls,
@@ -234,7 +231,7 @@ impl BitfinexWebSocket {
             channels: Arc::new(Mutex::new(HashMap::new())),
             pending_subs: Arc::new(Mutex::new(HashMap::new())),
             event_tx: Arc::new(Mutex::new(None)),
-            broadcast_tx: Arc::new(broadcast_tx),
+            broadcast_tx: Arc::new(StdMutex::new(None)),
             ws_stream: Arc::new(Mutex::new(None)),
             write_tx: Arc::new(Mutex::new(None)),
             is_authenticated: Arc::new(Mutex::new(false)),
@@ -721,13 +718,21 @@ impl WebSocketConnector for BitfinexWebSocket {
             self.ws_ping_rtt_ms.clone(),
         );
 
+        // Create broadcast channel and store
+        let (broadcast_sender, _) = broadcast::channel(1000);
+        *self.broadcast_tx.lock().unwrap() = Some(broadcast_sender);
+
         // Start forwarder task (mpsc -> broadcast)
         let broadcast_tx = self.broadcast_tx.clone();
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
                 // Forward to broadcast channel (ignore if no receivers)
-                let _ = broadcast_tx.send(event);
+                if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                    let _ = tx.send(event);
+                }
             }
+            // mpsc channel closed — drop broadcast sender
+            let _ = broadcast_tx.lock().unwrap().take();
         });
 
         Ok(())
@@ -738,6 +743,7 @@ impl WebSocketConnector for BitfinexWebSocket {
         *self.ws_stream.lock().await = None;
         *self.event_tx.lock().await = None;
         *self.write_tx.lock().await = None; // Drop write channel, stopping the message handler
+        let _ = self.broadcast_tx.lock().unwrap().take();
         self.subscriptions.lock().await.clear();
         self.channels.lock().await.clear();
         Ok(())
@@ -835,16 +841,14 @@ impl WebSocketConnector for BitfinexWebSocket {
     }
 
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        // Subscribe to broadcast channel
-        let rx = self.broadcast_tx.subscribe();
+        let rx = self.broadcast_tx.lock().unwrap().as_ref()
+            .map(|tx| tx.subscribe())
+            .unwrap_or_else(|| broadcast::channel(1).1);
 
-        // Convert broadcast receiver to stream
         Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| async move {
             match result {
                 Ok(event) => Some(event),
                 Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(_)) => {
-                    // Consumer was too slow, some events were dropped
-                    // Return an error event
                     Some(Err(WebSocketError::ConnectionError("Event stream lagged behind".to_string())))
                 }
             }

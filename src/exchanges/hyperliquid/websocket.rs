@@ -12,7 +12,7 @@
 
 use std::collections::HashSet;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -66,8 +66,8 @@ pub struct HyperliquidWebSocket {
     subscriptions: Arc<Mutex<HashSet<SubscriptionRequest>>>,
     /// Event sender (internal - for message handler)
     event_tx: Arc<Mutex<Option<mpsc::UnboundedSender<WebSocketResult<StreamEvent>>>>>,
-    /// Broadcast sender (for multiple consumers)
-    broadcast_tx: Arc<broadcast::Sender<WebSocketResult<StreamEvent>>>,
+    /// Broadcast sender (for multiple consumers, dropped on disconnect)
+    broadcast_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
     /// WebSocket stream
     ws_stream: Arc<Mutex<Option<WsStream>>>,
     /// Last ping time
@@ -85,15 +85,12 @@ impl HyperliquidWebSocket {
             HyperliquidUrls::MAINNET
         };
 
-        // Create broadcast channel (capacity of 1000 events)
-        let (broadcast_tx, _) = broadcast::channel(1000);
-
         Self {
             urls,
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
             event_tx: Arc::new(Mutex::new(None)),
-            broadcast_tx: Arc::new(broadcast_tx),
+            broadcast_tx: Arc::new(StdMutex::new(None)),
             ws_stream: Arc::new(Mutex::new(None)),
             last_ping: Arc::new(Mutex::new(Instant::now())),
             ws_ping_rtt_ms: Arc::new(Mutex::new(0)),
@@ -488,6 +485,10 @@ impl WebSocketConnector for HyperliquidWebSocket {
         let (tx, mut rx) = mpsc::unbounded_channel();
         *self.event_tx.lock().await = Some(tx.clone());
 
+        // Create broadcast channel and store
+        let (broadcast_sender, _) = broadcast::channel(1000);
+        *self.broadcast_tx.lock().unwrap() = Some(broadcast_sender);
+
         // Start message handler
         Self::start_message_handler(
             self.ws_stream.clone(),
@@ -506,8 +507,12 @@ impl WebSocketConnector for HyperliquidWebSocket {
                 *last_ping.lock().await = Instant::now();
 
                 // Forward to broadcast channel (ignore if no receivers)
-                let _ = broadcast_tx.send(event);
+                if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                    let _ = tx.send(event);
+                }
             }
+            // mpsc channel closed — drop broadcast sender
+            let _ = broadcast_tx.lock().unwrap().take();
         });
 
         // Start heartbeat task
@@ -529,6 +534,7 @@ impl WebSocketConnector for HyperliquidWebSocket {
         }
 
         *self.event_tx.lock().await = None;
+        let _ = self.broadcast_tx.lock().unwrap().take();
         self.subscriptions.lock().await.clear();
         Ok(())
     }
@@ -592,15 +598,14 @@ impl WebSocketConnector for HyperliquidWebSocket {
     }
 
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        // Subscribe to broadcast channel
-        let rx = self.broadcast_tx.subscribe();
+        let rx = self.broadcast_tx.lock().unwrap().as_ref()
+            .map(|tx| tx.subscribe())
+            .unwrap_or_else(|| broadcast::channel(1).1);
 
-        // Convert broadcast receiver to stream
         Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| async move {
             match result {
                 Ok(event) => Some(event),
                 Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(_)) => {
-                    // Consumer was too slow, some events were dropped
                     Some(Err(WebSocketError::ConnectionError("Event stream lagged behind".to_string())))
                 }
             }

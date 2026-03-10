@@ -37,7 +37,7 @@ use async_trait::async_trait;
 use futures_util::{Stream, StreamExt, SinkExt, stream::{SplitSink, SplitStream}};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::{mpsc, broadcast, Mutex};
+use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream, MaybeTlsStream};
 
@@ -136,10 +136,9 @@ pub struct KrakenWebSocket {
     status: Arc<Mutex<ConnectionStatus>>,
     /// Active subscriptions
     subscriptions: Arc<Mutex<HashSet<SubscriptionRequest>>>,
-    /// Event sender (internal - for message handler)
-    event_tx: Arc<Mutex<Option<mpsc::UnboundedSender<WebSocketResult<StreamEvent>>>>>,
-    /// Broadcast sender (for multiple consumers)
-    broadcast_tx: Arc<broadcast::Sender<WebSocketResult<StreamEvent>>>,
+    /// Broadcast sender — behind StdMutex so event_stream() can subscribe
+    /// without contending with the async message loop.
+    event_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
     /// WebSocket writer (separate from reader to avoid lock contention)
     ws_writer: Arc<Mutex<Option<WsWriter>>>,
     /// Write command channel (to send messages without blocking reads)
@@ -160,16 +159,12 @@ impl KrakenWebSocket {
         token: Option<String>,
         account_type: AccountType,
     ) -> ExchangeResult<Self> {
-        // Create broadcast channel (capacity of 1000 events)
-        let (broadcast_tx, _) = broadcast::channel(1000);
-
         Ok(Self {
             token,
             account_type,
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
-            event_tx: Arc::new(Mutex::new(None)),
-            broadcast_tx: Arc::new(broadcast_tx),
+            event_tx: Arc::new(StdMutex::new(None)),
             ws_writer: Arc::new(Mutex::new(None)),
             write_tx: Arc::new(Mutex::new(None)),
             ping_interval: Duration::from_secs(30), // Kraken recommends ping every 30 seconds
@@ -212,14 +207,14 @@ impl KrakenWebSocket {
     fn start_message_handler(
         ws_writer: Arc<Mutex<Option<WsWriter>>>,
         mut ws_reader: WsReader,
-        event_tx: mpsc::UnboundedSender<WebSocketResult<StreamEvent>>,
+        event_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
         status: Arc<Mutex<ConnectionStatus>>,
         _account_type: AccountType,
         last_ping: Arc<Mutex<Instant>>,
         ws_ping_rtt_ms: Arc<Mutex<u64>>,
-    ) -> mpsc::UnboundedSender<Message> {
+    ) -> tokio::sync::mpsc::UnboundedSender<Message> {
         // Create channel for write commands
-        let (write_tx, mut write_rx) = mpsc::unbounded_channel::<Message>();
+        let (write_tx, mut write_rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
 
         // Spawn write task
         let status_write = status.clone();
@@ -247,8 +242,14 @@ impl KrakenWebSocket {
             while let Some(msg_result) = ws_reader.next().await {
                 match msg_result {
                     Ok(Message::Text(text)) => {
-                        if let Err(e) = Self::handle_message(&text, &event_tx).await {
-                            let _ = event_tx.send(Err(e));
+                        match Self::handle_message_broadcast(&text, &event_tx) {
+                            Ok(()) => {}
+                            Err(e) => {
+                                let tx_guard = event_tx.lock().unwrap();
+                                if let Some(ref tx) = *tx_guard {
+                                    let _ = tx.send(Err(e));
+                                }
+                            }
                         }
                     }
                     Ok(Message::Ping(payload)) => {
@@ -265,50 +266,44 @@ impl KrakenWebSocket {
                     }
                     Err(e) => {
                         eprintln!("[KRAKEN WS] WebSocket error: {}", e);
-                        let _ = event_tx.send(Err(WebSocketError::ConnectionError(e.to_string())));
+                        let tx_guard = event_tx.lock().unwrap();
+                        if let Some(ref tx) = *tx_guard {
+                            let _ = tx.send(Err(WebSocketError::ConnectionError(e.to_string())));
+                        }
                         break;
                     }
                     _ => {}
                 }
             }
+            // Drop the broadcast sender so all BroadcastStream receivers get None
+            let _ = event_tx.lock().unwrap().take();
+            *status.lock().await = ConnectionStatus::Disconnected;
         });
 
         write_tx
     }
 
-    /// Handle incoming WebSocket message
-    async fn handle_message(
+    /// Handle incoming WebSocket message (broadcast sender variant)
+    fn handle_message_broadcast(
         text: &str,
-        event_tx: &mpsc::UnboundedSender<WebSocketResult<StreamEvent>>,
+        event_tx: &Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
     ) -> WebSocketResult<()> {
-        // Try to parse as IncomingMessage
+        // Parse and dispatch synchronously using the broadcast sender
         let msg: IncomingMessage = match serde_json::from_str(text) {
             Ok(msg) => msg,
-            Err(_e) => {
-                // Don't break on parse errors - Kraken sends various system messages
-                return Ok(());
-            }
+            Err(_e) => return Ok(()),
         };
 
-        // Handle different message types
         match msg.method.as_deref() {
-            Some("pong") => {
-                return Ok(());
-            }
+            Some("pong") => return Ok(()),
             Some("subscribe") | Some("unsubscribe") => {
-                // Check for explicit failure
                 if msg.success == Some(false) {
                     let error_msg = msg.error.unwrap_or_else(|| "Subscription failed (no error message)".to_string());
-                    eprintln!("[KRAKEN WS] Subscription REJECTED: {}", error_msg);
                     return Err(WebSocketError::ProtocolError(error_msg));
                 }
-
-                // Check for explicit success
                 if msg.success == Some(true) {
                     return Ok(());
                 }
-
-                // Ambiguous response (success field missing or null) - treat as error
                 return Err(WebSocketError::ProtocolError(
                     format!("Ambiguous subscription response (missing success field): {:?}", msg)
                 ));
@@ -316,14 +311,13 @@ impl KrakenWebSocket {
             _ => {}
         }
 
-        // Data message
         if let Some(channel) = msg.channel {
             if let Some(data) = msg.data {
                 match Self::parse_data_message(&channel, &msg.msg_type, &data) {
                     Ok(Some(event)) => {
-                        if event_tx.send(Ok(event)).is_err() {
-                            // Receiver dropped (chart switched away) — exit
-                            return Err(WebSocketError::ConnectionError("receiver dropped".into()));
+                        let tx_guard = event_tx.lock().unwrap();
+                        if let Some(ref tx) = *tx_guard {
+                            let _ = tx.send(Ok(event));
                         }
                     }
                     Ok(None) => {}
@@ -336,6 +330,7 @@ impl KrakenWebSocket {
 
         Ok(())
     }
+
 
     /// Parse data message to StreamEvent
     fn parse_data_message(
@@ -937,15 +932,15 @@ impl WebSocketConnector for KrakenWebSocket {
         // Reset ping timer to ensure first ping happens within ping_interval from now
         *self.last_ping.lock().await = Instant::now();
 
-        // Create event channel
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        *self.event_tx.lock().await = Some(tx.clone());
+        // Create broadcast channel and store sender
+        let (tx, _) = broadcast::channel(1000);
+        *self.event_tx.lock().unwrap() = Some(tx);
 
         // Start message handler (returns write channel)
         let write_tx = Self::start_message_handler(
             self.ws_writer.clone(),
             ws_reader,
-            tx,
+            self.event_tx.clone(),
             self.status.clone(),
             account_type,
             self.last_ping.clone(),
@@ -954,17 +949,6 @@ impl WebSocketConnector for KrakenWebSocket {
 
         // Store write channel
         *self.write_tx.lock().await = Some(write_tx.clone());
-
-        // Start forwarder task (mpsc -> broadcast)
-        let broadcast_tx = self.broadcast_tx.clone();
-        tokio::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                // If all receivers are dropped, no one is listening — exit cleanly.
-                if broadcast_tx.send(event).is_err() {
-                    break;
-                }
-            }
-        });
 
         // Start ping task
         Self::start_ping_task(
@@ -993,7 +977,7 @@ impl WebSocketConnector for KrakenWebSocket {
     async fn disconnect(&mut self) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Disconnected;
         *self.ws_writer.lock().await = None;
-        *self.event_tx.lock().await = None;
+        let _ = self.event_tx.lock().unwrap().take();
         *self.write_tx.lock().await = None;
         self.subscriptions.lock().await.clear();
         Ok(())
@@ -1091,20 +1075,16 @@ impl WebSocketConnector for KrakenWebSocket {
     }
 
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        // Subscribe to broadcast channel
-        let rx = self.broadcast_tx.subscribe();
-
-        // Convert broadcast receiver to stream
-        Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| async move {
-            match result {
-                Ok(event) => Some(event),
-                Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(_)) => {
-                    // Consumer was too slow, some events were dropped
-                    // Return an error event
-                    Some(Err(WebSocketError::ConnectionError("Event stream lagged behind".to_string())))
-                }
-            }
-        }))
+        let tx_guard = self.event_tx.lock().unwrap();
+        if let Some(ref tx) = *tx_guard {
+            let rx = tx.subscribe();
+            Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).map(|r| {
+                r.map_err(|e| WebSocketError::ConnectionError(format!("Broadcast error: {}", e)))
+                    .and_then(|x| x)
+            }))
+        } else {
+            Box::pin(futures_util::stream::empty())
+        }
     }
 
     fn active_subscriptions(&self) -> Vec<SubscriptionRequest> {

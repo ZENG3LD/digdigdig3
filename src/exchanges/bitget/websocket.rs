@@ -143,8 +143,9 @@ pub struct BitgetWebSocket {
     status: Arc<Mutex<ConnectionStatus>>,
     /// Active subscriptions
     subscriptions: Arc<Mutex<HashSet<SubscriptionRequest>>>,
-    /// Event sender (broadcast channel)
-    event_tx: Arc<Mutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
+    /// Event broadcast sender — uses std::sync::Mutex so event_stream() can subscribe
+    /// without contending with the async message loop.
+    event_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
     /// WebSocket stream
     ws_stream: Arc<Mutex<Option<WsStream>>>,
     /// Last ping time
@@ -179,7 +180,7 @@ impl BitgetWebSocket {
             account_type,
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
-            event_tx: Arc::new(Mutex::new(None)),
+            event_tx: Arc::new(StdMutex::new(None)),
             ws_stream: Arc::new(Mutex::new(None)),
             last_ping: Arc::new(Mutex::new(Instant::now())),
             is_authenticated: Arc::new(Mutex::new(false)),
@@ -249,7 +250,7 @@ impl BitgetWebSocket {
     /// Start message handling task
     fn start_message_handler(
         ws_stream: Arc<Mutex<Option<WsStream>>>,
-        event_tx: broadcast::Sender<WebSocketResult<StreamEvent>>,
+        event_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
         status: Arc<Mutex<ConnectionStatus>>,
         is_authenticated: Arc<Mutex<bool>>,
         account_type: AccountType,
@@ -279,8 +280,13 @@ impl BitgetWebSocket {
                             continue;
                         }
 
-                        if let Err(e) = Self::handle_message(&text, &event_tx, &is_authenticated, account_type).await {
-                            let _ = event_tx.send(Err(e));
+                        // Clone the sender before .await to avoid holding the StdMutex guard
+                        // across an await point.
+                        let tx_clone = event_tx.lock().unwrap().clone();
+                        if let Some(tx) = tx_clone {
+                            if let Err(e) = Self::handle_message(&text, &tx, &is_authenticated, account_type).await {
+                                let _ = tx.send(Err(e));
+                            }
                         }
                     }
                     Some(Ok(Message::Close(_))) => {
@@ -290,7 +296,9 @@ impl BitgetWebSocket {
                     }
                     Some(Err(e)) => {
                         drop(stream_guard);
-                        let _ = event_tx.send(Err(WebSocketError::ConnectionError(e.to_string())));
+                        if let Some(tx) = event_tx.lock().unwrap().as_ref() {
+                            let _ = tx.send(Err(WebSocketError::ConnectionError(e.to_string())));
+                        }
                         break;
                     }
                     None => {
@@ -303,6 +311,12 @@ impl BitgetWebSocket {
                     }
                 }
             }
+            // Drop the broadcast sender so all BroadcastStream receivers get None
+            // from .next(). Without this, a clean close leaves the sender alive
+            // and the bridge hangs forever instead of reconnecting.
+            let _ = event_tx.lock().unwrap().take();
+            // Stream exhausted — connection closed
+            *status.lock().await = ConnectionStatus::Disconnected;
         });
     }
 
@@ -563,12 +577,12 @@ impl WebSocketConnector for BitgetWebSocket {
 
         // Create event channel (broadcast supports multiple receivers)
         let (tx, _rx) = broadcast::channel(1000);
-        *self.event_tx.lock().await = Some(tx.clone());
+        *self.event_tx.lock().unwrap() = Some(tx);
 
         // Start message handler
         Self::start_message_handler(
             self.ws_stream.clone(),
-            tx,
+            self.event_tx.clone(),
             self.status.clone(),
             self.is_authenticated.clone(),
             account_type,
@@ -588,7 +602,7 @@ impl WebSocketConnector for BitgetWebSocket {
     async fn disconnect(&mut self) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Disconnected;
         *self.ws_stream.lock().await = None;
-        *self.event_tx.lock().await = None;
+        let _ = self.event_tx.lock().unwrap().take();
         *self.is_authenticated.lock().await = false;
         self.subscriptions.lock().await.clear();
         Ok(())
@@ -691,35 +705,18 @@ impl WebSocketConnector for BitgetWebSocket {
     }
 
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        // Get receiver from broadcast channel
-        let rx = match self.event_tx.try_lock() {
-            Ok(guard) => {
-                match guard.as_ref() {
-                    Some(tx) => tx.subscribe(),
-                    None => {
-                        // No sender yet - return empty stream
-                        let (_tx, rx) = broadcast::channel(1);
-                        rx
-                    }
-                }
-            }
-            Err(_) => {
-                // Lock failed - return empty stream
-                let (_tx, rx) = broadcast::channel(1);
-                rx
-            }
-        };
+        // std::sync::Mutex::lock() is instant here — no async contention.
+        let tx_guard = self.event_tx.lock().unwrap();
 
-        Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| async move {
-            match result {
-                Ok(event) => Some(event),
-                Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
-                    // Consumer is lagging, skip lagged messages
-                    eprintln!("Warning: WebSocket consumer lagged by {} messages", n);
-                    None
-                }
-            }
-        }))
+        if let Some(ref tx) = *tx_guard {
+            let rx = tx.subscribe();
+            Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).map(|r| {
+                r.map_err(|e| WebSocketError::ConnectionError(format!("Broadcast error: {}", e)))
+                    .and_then(|x| x)
+            }))
+        } else {
+            Box::pin(futures_util::stream::empty())
+        }
     }
 
     fn active_subscriptions(&self) -> Vec<SubscriptionRequest> {

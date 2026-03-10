@@ -20,7 +20,7 @@
 
 use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -68,8 +68,8 @@ pub struct JupiterWebSocket {
     status: Arc<Mutex<ConnectionStatus>>,
     /// Active subscriptions (symbol -> mint address mapping)
     subscriptions: Arc<Mutex<HashMap<Symbol, String>>>,
-    /// Broadcast channel for events
-    broadcast_tx: Arc<broadcast::Sender<WebSocketResult<StreamEvent>>>,
+    /// Broadcast channel for events (dropped on disconnect)
+    broadcast_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
     /// Polling interval in milliseconds
     poll_interval_ms: u64,
     /// Polling task handle
@@ -87,16 +87,13 @@ impl JupiterWebSocket {
         let auth = api_key.map(JupiterAuth::new);
         let urls = JupiterUrls::MAINNET;
 
-        // Create broadcast channel (capacity of 1000 events)
-        let (broadcast_tx, _) = broadcast::channel(1000);
-
         Self {
             http,
             auth,
             urls,
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashMap::new())),
-            broadcast_tx: Arc::new(broadcast_tx),
+            broadcast_tx: Arc::new(StdMutex::new(None)),
             poll_interval_ms: poll_interval_ms.unwrap_or(DEFAULT_POLL_INTERVAL_MS),
             polling_task: Arc::new(Mutex::new(None)),
         }
@@ -147,13 +144,17 @@ impl JupiterWebSocket {
                 match Self::poll_prices(&http, &auth, &urls, &mint_addresses).await {
                     Ok(tickers) => {
                         // Emit ticker events
-                        for ticker in tickers {
-                            let _ = broadcast_tx.send(Ok(StreamEvent::Ticker(ticker)));
+                        if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                            for ticker in tickers {
+                                let _ = tx.send(Ok(StreamEvent::Ticker(ticker)));
+                            }
                         }
                     }
                     Err(e) => {
                         // Emit error event
-                        let _ = broadcast_tx.send(Err(e));
+                        if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                            let _ = tx.send(Err(e));
+                        }
                     }
                 }
             }
@@ -269,6 +270,10 @@ impl WebSocketConnector for JupiterWebSocket {
 
         *self.status.lock().await = ConnectionStatus::Connecting;
 
+        // Create broadcast channel and store
+        let (broadcast_sender, _) = broadcast::channel(1000);
+        *self.broadcast_tx.lock().unwrap() = Some(broadcast_sender);
+
         // Start polling task
         self.start_polling().await;
 
@@ -282,6 +287,8 @@ impl WebSocketConnector for JupiterWebSocket {
 
         // Stop polling
         self.stop_polling().await;
+
+        let _ = self.broadcast_tx.lock().unwrap().take();
 
         // Clear subscriptions
         self.subscriptions.lock().await.clear();
@@ -322,15 +329,14 @@ impl WebSocketConnector for JupiterWebSocket {
     }
 
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        // Subscribe to broadcast channel
-        let rx = self.broadcast_tx.subscribe();
+        let rx = self.broadcast_tx.lock().unwrap().as_ref()
+            .map(|tx| tx.subscribe())
+            .unwrap_or_else(|| broadcast::channel(1).1);
 
-        // Convert broadcast receiver to stream
         Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| async move {
             match result {
                 Ok(event) => Some(event),
                 Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(_)) => {
-                    // Consumer was too slow, some events were dropped
                     Some(Err(WebSocketError::ConnectionError("Event stream lagged behind".to_string())))
                 }
             }

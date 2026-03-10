@@ -34,7 +34,7 @@ use async_trait::async_trait;
 use futures_util::{Stream, StreamExt, SinkExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::sync::{mpsc, broadcast, Mutex};
+use tokio::sync::{broadcast, Mutex};
 use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream, MaybeTlsStream};
 
@@ -160,10 +160,9 @@ pub struct KuCoinWebSocket {
     status: Arc<Mutex<ConnectionStatus>>,
     /// Active subscriptions
     subscriptions: Arc<Mutex<HashSet<SubscriptionRequest>>>,
-    /// Event sender (internal - for message handler)
-    event_tx: Arc<Mutex<Option<mpsc::UnboundedSender<WebSocketResult<StreamEvent>>>>>,
-    /// Broadcast sender (for multiple consumers)
-    broadcast_tx: Arc<broadcast::Sender<WebSocketResult<StreamEvent>>>,
+    /// Broadcast sender — behind StdMutex so event_stream() can subscribe
+    /// without contending with the async message loop.
+    event_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
     /// WebSocket stream
     ws_stream: Arc<Mutex<Option<WsStream>>>,
     /// Ping interval (milliseconds)
@@ -209,9 +208,6 @@ impl KuCoinWebSocket {
             }
         }
 
-        // Create broadcast channel (capacity of 1000 events)
-        let (broadcast_tx, _) = broadcast::channel(1000);
-
         Ok(Self {
             http,
             auth,
@@ -219,8 +215,7 @@ impl KuCoinWebSocket {
             account_type,
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
-            event_tx: Arc::new(Mutex::new(None)),
-            broadcast_tx: Arc::new(broadcast_tx),
+            event_tx: Arc::new(StdMutex::new(None)),
             ws_stream: Arc::new(Mutex::new(None)),
             ping_interval: Arc::new(Mutex::new(Duration::from_millis(18000))),
             last_ping: Arc::new(Mutex::new(Instant::now())),
@@ -310,7 +305,7 @@ impl KuCoinWebSocket {
     /// Start message handling task
     fn start_message_handler(
         ws_stream: Arc<Mutex<Option<WsStream>>>,
-        event_tx: mpsc::UnboundedSender<WebSocketResult<StreamEvent>>,
+        event_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
         status: Arc<Mutex<ConnectionStatus>>,
         account_type: AccountType,
         last_ping: Arc<Mutex<Instant>>,
@@ -331,8 +326,20 @@ impl KuCoinWebSocket {
                 match stream.next().await {
                     Some(Ok(Message::Text(text))) => {
                         drop(stream_guard);
-                        if let Err(e) = Self::handle_message(&text, &event_tx, account_type, &last_ping, &ws_ping_rtt_ms).await {
-                            let _ = event_tx.send(Err(e));
+                        match Self::handle_message_broadcast(&text, account_type, &last_ping, &ws_ping_rtt_ms).await {
+                            Ok(Some(event)) => {
+                                let tx_guard = event_tx.lock().unwrap();
+                                if let Some(ref tx) = *tx_guard {
+                                    let _ = tx.send(Ok(event));
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                let tx_guard = event_tx.lock().unwrap();
+                                if let Some(ref tx) = *tx_guard {
+                                    let _ = tx.send(Err(e));
+                                }
+                            }
                         }
                     }
                     Some(Ok(Message::Close(_))) => {
@@ -342,7 +349,10 @@ impl KuCoinWebSocket {
                     }
                     Some(Err(e)) => {
                         drop(stream_guard);
-                        let _ = event_tx.send(Err(WebSocketError::ConnectionError(e.to_string())));
+                        let tx_guard = event_tx.lock().unwrap();
+                        if let Some(ref tx) = *tx_guard {
+                            let _ = tx.send(Err(WebSocketError::ConnectionError(e.to_string())));
+                        }
                         break;
                     }
                     None => {
@@ -355,53 +365,42 @@ impl KuCoinWebSocket {
                     }
                 }
             }
+            // Drop the broadcast sender so all BroadcastStream receivers get None
+            let _ = event_tx.lock().unwrap().take();
+            *status.lock().await = ConnectionStatus::Disconnected;
         });
     }
 
-    /// Handle incoming WebSocket message
-    async fn handle_message(
+    /// Handle incoming WebSocket message (returns event for broadcast dispatch)
+    async fn handle_message_broadcast(
         text: &str,
-        event_tx: &mpsc::UnboundedSender<WebSocketResult<StreamEvent>>,
         account_type: AccountType,
         last_ping: &Arc<Mutex<Instant>>,
         ws_ping_rtt_ms: &Arc<Mutex<u64>>,
-    ) -> WebSocketResult<()> {
+    ) -> WebSocketResult<Option<StreamEvent>> {
         let msg: IncomingMessage = serde_json::from_str(text)
             .map_err(|e| WebSocketError::Parse(format!("Failed to parse message: {}", e)))?;
 
         // Handle different message types
         match msg.msg_type.as_deref() {
-            Some("welcome") => {
-                // Welcome message - connection established
-                return Ok(());
-            }
+            Some("welcome") => return Ok(None),
             Some("pong") => {
-                // Pong response — measure RTT
                 let rtt = last_ping.lock().await.elapsed().as_millis() as u64;
                 *ws_ping_rtt_ms.lock().await = rtt;
-                return Ok(());
+                return Ok(None);
             }
-            Some("ack") => {
-                // Subscription ack - ignore for now
-                return Ok(());
-            }
+            Some("ack") => return Ok(None),
             Some("error") => {
-                // Error message
                 let error_msg = msg.message.unwrap_or_else(|| "Unknown error".to_string());
                 return Err(WebSocketError::ProtocolError(error_msg));
             }
             Some("message") => {
-                // Data message - parse and emit event
-                if let Some(event) = Self::parse_data_message(&msg, account_type)? {
-                    let _ = event_tx.send(Ok(event));
-                }
+                return Self::parse_data_message(&msg, account_type);
             }
-            _ => {
-                // Unknown message type - ignore
-            }
+            _ => {}
         }
 
-        Ok(())
+        Ok(None)
     }
 
     /// Parse data message to StreamEvent
@@ -693,28 +692,19 @@ impl WebSocketConnector for KuCoinWebSocket {
         *self.ws_stream.lock().await = Some(ws_stream);
         *self.status.lock().await = ConnectionStatus::Connected;
 
-        // Create event channel
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        *self.event_tx.lock().await = Some(tx.clone());
+        // Create broadcast channel and store sender
+        let (tx, _) = broadcast::channel(1000);
+        *self.event_tx.lock().unwrap() = Some(tx);
 
         // Start message handler
         Self::start_message_handler(
             self.ws_stream.clone(),
-            tx,
+            self.event_tx.clone(),
             self.status.clone(),
             account_type,
             self.last_ping.clone(),
             self.ws_ping_rtt_ms.clone(),
         );
-
-        // Start forwarder task (mpsc -> broadcast)
-        let broadcast_tx = self.broadcast_tx.clone();
-        tokio::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                // Forward to broadcast channel (ignore if no receivers)
-                let _ = broadcast_tx.send(event);
-            }
-        });
 
         // Start ping task
         Self::start_ping_task(
@@ -729,7 +719,7 @@ impl WebSocketConnector for KuCoinWebSocket {
     async fn disconnect(&mut self) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Disconnected;
         *self.ws_stream.lock().await = None;
-        *self.event_tx.lock().await = None;
+        let _ = self.event_tx.lock().unwrap().take();
         self.subscriptions.lock().await.clear();
         Ok(())
     }
@@ -830,20 +820,16 @@ impl WebSocketConnector for KuCoinWebSocket {
     }
 
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        // Subscribe to broadcast channel
-        let rx = self.broadcast_tx.subscribe();
-
-        // Convert broadcast receiver to stream
-        Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| async move {
-            match result {
-                Ok(event) => Some(event),
-                Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(_)) => {
-                    // Consumer was too slow, some events were dropped
-                    // Return an error event
-                    Some(Err(WebSocketError::ConnectionError("Event stream lagged behind".to_string())))
-                }
-            }
-        }))
+        let tx_guard = self.event_tx.lock().unwrap();
+        if let Some(ref tx) = *tx_guard {
+            let rx = tx.subscribe();
+            Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).map(|r| {
+                r.map_err(|e| WebSocketError::ConnectionError(format!("Broadcast error: {}", e)))
+                    .and_then(|x| x)
+            }))
+        } else {
+            Box::pin(futures_util::stream::empty())
+        }
     }
 
     fn active_subscriptions(&self) -> Vec<SubscriptionRequest> {

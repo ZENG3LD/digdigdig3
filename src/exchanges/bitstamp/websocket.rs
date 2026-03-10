@@ -29,7 +29,7 @@
 
 use std::collections::HashSet;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -93,8 +93,8 @@ pub struct BitstampWebSocket {
     ticker_channels: Arc<Mutex<HashSet<String>>>,
     /// Event sender (internal - for message handler)
     event_tx: Arc<Mutex<Option<mpsc::UnboundedSender<WebSocketResult<StreamEvent>>>>>,
-    /// Broadcast sender (for multiple consumers)
-    broadcast_tx: Arc<broadcast::Sender<WebSocketResult<StreamEvent>>>,
+    /// Broadcast sender (for multiple consumers, dropped on disconnect)
+    broadcast_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
     /// WebSocket write half (for sending subscriptions and pongs)
     ws_writer: Arc<Mutex<Option<WsWriter>>>,
     /// Timestamp of the most recently sent WS-frame ping.
@@ -106,15 +106,12 @@ pub struct BitstampWebSocket {
 impl BitstampWebSocket {
     /// Create new Bitstamp WebSocket connector
     pub async fn new() -> ExchangeResult<Self> {
-        // Create broadcast channel (capacity of 1000 events)
-        let (broadcast_tx, _) = broadcast::channel(1000);
-
         Ok(Self {
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
             ticker_channels: Arc::new(Mutex::new(HashSet::new())),
             event_tx: Arc::new(Mutex::new(None)),
-            broadcast_tx: Arc::new(broadcast_tx),
+            broadcast_tx: Arc::new(StdMutex::new(None)),
             ws_writer: Arc::new(Mutex::new(None)),
             last_ping: Arc::new(Mutex::new(Instant::now())),
             ws_ping_rtt_ms: Arc::new(Mutex::new(0)),
@@ -433,13 +430,20 @@ impl WebSocketConnector for BitstampWebSocket {
             self.last_ping.clone(),
         );
 
+        // Create broadcast channel and store
+        let (broadcast_sender, _) = broadcast::channel(1000);
+        *self.broadcast_tx.lock().unwrap() = Some(broadcast_sender);
+
         // Start forwarder task (mpsc -> broadcast)
         let broadcast_tx = self.broadcast_tx.clone();
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
-                // Forward to broadcast channel (ignore if no receivers)
-                let _ = broadcast_tx.send(event);
+                if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                    let _ = tx.send(event);
+                }
             }
+            // mpsc channel closed — drop broadcast sender
+            let _ = broadcast_tx.lock().unwrap().take();
         });
 
         Ok(())
@@ -449,6 +453,7 @@ impl WebSocketConnector for BitstampWebSocket {
         *self.status.lock().await = ConnectionStatus::Disconnected;
         *self.ws_writer.lock().await = None;
         *self.event_tx.lock().await = None;
+        let _ = self.broadcast_tx.lock().unwrap().take();
         Ok(())
     }
 
@@ -500,7 +505,9 @@ impl WebSocketConnector for BitstampWebSocket {
     }
 
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        let rx = self.broadcast_tx.subscribe();
+        let rx = self.broadcast_tx.lock().unwrap().as_ref()
+            .map(|tx| tx.subscribe())
+            .unwrap_or_else(|| broadcast::channel(1).1);
         Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|res| async move {
             res.ok()
         }))

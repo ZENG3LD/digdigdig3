@@ -29,7 +29,7 @@
 
 use std::collections::HashSet;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use async_trait::async_trait;
 use base64::Engine;
@@ -289,8 +289,9 @@ pub struct YahooFinanceWebSocket {
     subscriptions: Arc<Mutex<HashSet<SubscriptionRequest>>>,
     /// Subscribed Yahoo symbols (raw format like "AAPL", "BTC-USD")
     yahoo_symbols: Arc<Mutex<HashSet<String>>>,
-    /// Event broadcast sender
-    event_tx: Arc<Mutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
+    /// Event broadcast sender — uses std::sync::Mutex so event_stream() can subscribe
+    /// without contending with the async message loop.
+    event_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
     /// Channel for sending outbound WS messages (subscribe/unsubscribe JSON)
     /// from the caller to the handler task that owns the stream.
     cmd_tx: Arc<Mutex<Option<mpsc::UnboundedSender<String>>>>,
@@ -303,7 +304,7 @@ impl YahooFinanceWebSocket {
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
             yahoo_symbols: Arc::new(Mutex::new(HashSet::new())),
-            event_tx: Arc::new(Mutex::new(None)),
+            event_tx: Arc::new(StdMutex::new(None)),
             cmd_tx: Arc::new(Mutex::new(None)),
         }
     }
@@ -345,7 +346,7 @@ impl YahooFinanceWebSocket {
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
         >,
         mut cmd_rx: mpsc::UnboundedReceiver<String>,
-        event_tx: broadcast::Sender<WebSocketResult<StreamEvent>>,
+        event_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
         status: Arc<Mutex<ConnectionStatus>>,
     ) {
         tokio::spawn(async move {
@@ -359,7 +360,9 @@ impl YahooFinanceWebSocket {
                                     "Yahoo WS binary message: {} bytes",
                                     data.len()
                                 );
-                                Self::try_decode_and_emit(&data, &event_tx);
+                                if let Some(tx) = event_tx.lock().unwrap().as_ref() {
+                                    Self::try_decode_and_emit(&data, tx);
+                                }
                             }
                             Some(Ok(Message::Text(text))) => {
                                 tracing::debug!(
@@ -379,7 +382,12 @@ impl YahooFinanceWebSocket {
                                 let b64_str = b64_payload.as_deref().unwrap_or(&text);
 
                                 if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(b64_str.as_bytes()) {
-                                    if !Self::try_decode_and_emit(&decoded, &event_tx) {
+                                    let decoded_ok = if let Some(tx) = event_tx.lock().unwrap().as_ref() {
+                                        Self::try_decode_and_emit(&decoded, tx)
+                                    } else {
+                                        false
+                                    };
+                                    if !decoded_ok {
                                         tracing::debug!(
                                             "Yahoo WS: base64 decoded {} bytes but protobuf parse failed",
                                             decoded.len()
@@ -397,9 +405,11 @@ impl YahooFinanceWebSocket {
                                 tracing::trace!("Yahoo WS: received ping");
                                 if let Err(e) = ws_stream.send(Message::Pong(ping)).await {
                                     tracing::warn!("Yahoo WS: failed to send pong: {}", e);
-                                    let _ = event_tx.send(Err(
-                                        WebSocketError::ConnectionError(e.to_string()),
-                                    ));
+                                    if let Some(tx) = event_tx.lock().unwrap().as_ref() {
+                                        let _ = tx.send(Err(
+                                            WebSocketError::ConnectionError(e.to_string()),
+                                        ));
+                                    }
                                     break;
                                 }
                             }
@@ -416,9 +426,11 @@ impl YahooFinanceWebSocket {
                             }
                             Some(Err(e)) => {
                                 tracing::warn!("Yahoo WS: read error: {}", e);
-                                let _ = event_tx.send(Err(
-                                    WebSocketError::ConnectionError(e.to_string()),
-                                ));
+                                if let Some(tx) = event_tx.lock().unwrap().as_ref() {
+                                    let _ = tx.send(Err(
+                                        WebSocketError::ConnectionError(e.to_string()),
+                                    ));
+                                }
                                 *status.lock().await = ConnectionStatus::Disconnected;
                                 break;
                             }
@@ -436,9 +448,11 @@ impl YahooFinanceWebSocket {
                                 tracing::debug!("Yahoo WS: sending command: {}", text);
                                 if let Err(e) = ws_stream.send(Message::Text(text)).await {
                                     tracing::warn!("Yahoo WS: failed to send command: {}", e);
-                                    let _ = event_tx.send(Err(
-                                        WebSocketError::SendError(e.to_string()),
-                                    ));
+                                    if let Some(tx) = event_tx.lock().unwrap().as_ref() {
+                                        let _ = tx.send(Err(
+                                            WebSocketError::SendError(e.to_string()),
+                                        ));
+                                    }
                                 }
                             }
                             None => {
@@ -452,6 +466,10 @@ impl YahooFinanceWebSocket {
                     }
                 }
             }
+            // Drop the broadcast sender so all BroadcastStream receivers get None
+            // from .next(). Without this, a clean close leaves the sender alive
+            // and the bridge hangs forever instead of reconnecting.
+            let _ = event_tx.lock().unwrap().take();
         });
     }
 }
@@ -487,7 +505,7 @@ impl WebSocketConnector for YahooFinanceWebSocket {
 
         // Create event broadcast channel
         let (tx, _rx) = broadcast::channel(1024);
-        *self.event_tx.lock().await = Some(tx.clone());
+        *self.event_tx.lock().unwrap() = Some(tx);
 
         // Create command channel for outbound messages
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -497,7 +515,7 @@ impl WebSocketConnector for YahooFinanceWebSocket {
         Self::start_message_handler(
             ws_stream,
             cmd_rx,
-            tx,
+            self.event_tx.clone(),
             self.status.clone(),
         );
 
@@ -514,7 +532,7 @@ impl WebSocketConnector for YahooFinanceWebSocket {
         sleep(Duration::from_millis(100)).await;
 
         *self.status.lock().await = ConnectionStatus::Disconnected;
-        *self.event_tx.lock().await = None;
+        let _ = self.event_tx.lock().unwrap().take();
         self.subscriptions.lock().await.clear();
         self.yahoo_symbols.lock().await.clear();
 
@@ -598,29 +616,18 @@ impl WebSocketConnector for YahooFinanceWebSocket {
     }
 
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        let event_tx_guard = match self.event_tx.try_lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                let (_, rx) = mpsc::unbounded_channel::<WebSocketResult<StreamEvent>>();
-                return Box::pin(tokio_stream::wrappers::UnboundedReceiverStream::new(rx));
-            }
-        };
+        // std::sync::Mutex::lock() is instant here — no async contention.
+        let tx_guard = self.event_tx.lock().unwrap();
 
-        let rx = match event_tx_guard.as_ref() {
-            Some(tx) => tx.subscribe(),
-            None => {
-                drop(event_tx_guard);
-                let (_, rx) = mpsc::unbounded_channel::<WebSocketResult<StreamEvent>>();
-                return Box::pin(tokio_stream::wrappers::UnboundedReceiverStream::new(rx));
-            }
-        };
-
-        drop(event_tx_guard);
-
-        Box::pin(
-            tokio_stream::wrappers::BroadcastStream::new(rx)
-                .filter_map(|result| async move { result.ok() }),
-        )
+        if let Some(ref tx) = *tx_guard {
+            let rx = tx.subscribe();
+            Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).map(|r| {
+                r.map_err(|e| WebSocketError::ConnectionError(format!("Broadcast error: {}", e)))
+                    .and_then(|x| x)
+            }))
+        } else {
+            Box::pin(futures_util::stream::empty())
+        }
     }
 
     fn active_subscriptions(&self) -> Vec<SubscriptionRequest> {

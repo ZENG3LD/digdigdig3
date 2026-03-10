@@ -34,7 +34,7 @@ use async_trait::async_trait;
 use futures_util::{Stream, StreamExt, SinkExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{broadcast, Mutex};
 use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream, MaybeTlsStream};
 
@@ -121,10 +121,8 @@ pub struct UpbitWebSocket {
     status: Arc<Mutex<ConnectionStatus>>,
     /// Active subscriptions
     subscriptions: Arc<Mutex<HashSet<SubscriptionRequest>>>,
-    /// Event sender (internal - for message handler)
-    event_tx: Arc<Mutex<Option<mpsc::UnboundedSender<WebSocketResult<StreamEvent>>>>>,
     /// Broadcast sender (for multiple consumers)
-    broadcast_tx: Arc<broadcast::Sender<WebSocketResult<StreamEvent>>>,
+    broadcast_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
     /// WebSocket stream
     ws_stream: Arc<Mutex<Option<WsStream>>>,
     /// Last ping time (updated when WS-frame ping is sent)
@@ -151,16 +149,12 @@ impl UpbitWebSocket {
             .map(UpbitAuth::new)
             .transpose()?;
 
-        // Create broadcast channel (capacity of 1000 events)
-        let (broadcast_tx, _) = broadcast::channel(1000);
-
         Ok(Self {
             auth,
             urls,
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
-            event_tx: Arc::new(Mutex::new(None)),
-            broadcast_tx: Arc::new(broadcast_tx),
+            broadcast_tx: Arc::new(StdMutex::new(None)),
             ws_stream: Arc::new(Mutex::new(None)),
             last_ping: Arc::new(Mutex::new(Instant::now())),
             ws_ping_rtt_ms: Arc::new(Mutex::new(0)),
@@ -303,7 +297,9 @@ impl UpbitWebSocket {
                     if last.elapsed() > Duration::from_secs(30) {
                         drop(last);
                         if let Err(e) = ws_clone.send_ping().await {
-                            let _ = broadcast_tx.send(Err(e));
+                            if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                                let _ = tx.send(Err(e));
+                            }
                             break;
                         }
                     }
@@ -328,7 +324,9 @@ impl UpbitWebSocket {
                 match msg {
                     Ok(Message::Text(text)) => {
                         if let Some(event) = ws_clone.handle_message(&text).await {
-                            let _ = broadcast_tx.send(Ok(event));
+                            if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                                let _ = tx.send(Ok(event));
+                            }
                         }
                     },
                     Ok(Message::Binary(data)) => {
@@ -336,7 +334,9 @@ impl UpbitWebSocket {
                         // Try to decompress and parse
                         if let Ok(text) = String::from_utf8(data) {
                             if let Some(event) = ws_clone.handle_message(&text).await {
-                                let _ = broadcast_tx.send(Ok(event));
+                                if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                                    let _ = tx.send(Ok(event));
+                                }
                             }
                         }
                     },
@@ -350,12 +350,15 @@ impl UpbitWebSocket {
                         break;
                     },
                     Err(e) => {
-                        let _ = broadcast_tx.send(Err(WebSocketError::ReceiveError(e.to_string())));
+                        if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                            let _ = tx.send(Err(WebSocketError::ReceiveError(e.to_string())));
+                        }
                         break;
                     },
                     _ => {},
                 }
             }
+            let _ = broadcast_tx.lock().unwrap().take();
         });
 
         Ok(())
@@ -368,7 +371,6 @@ impl UpbitWebSocket {
             urls: self.urls.clone(),
             status: self.status.clone(),
             subscriptions: self.subscriptions.clone(),
-            event_tx: self.event_tx.clone(),
             broadcast_tx: self.broadcast_tx.clone(),
             ws_stream: self.ws_stream.clone(),
             last_ping: self.last_ping.clone(),
@@ -421,6 +423,10 @@ impl WebSocketConnector for UpbitWebSocket {
         *self.status.lock().await = ConnectionStatus::Connected;
         *self.last_ping.lock().await = Instant::now();
 
+        // Create broadcast channel and store sender
+        let (tx, _) = broadcast::channel(1000);
+        *self.broadcast_tx.lock().unwrap() = Some(tx);
+
         // Start message receiving loop
         self.start_message_loop().await?;
 
@@ -435,6 +441,7 @@ impl WebSocketConnector for UpbitWebSocket {
         }
         *ws_lock = None;
         *self.status.lock().await = ConnectionStatus::Disconnected;
+        let _ = self.broadcast_tx.lock().unwrap().take();
         Ok(())
     }
 
@@ -481,10 +488,15 @@ impl WebSocketConnector for UpbitWebSocket {
     }
 
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        let rx = self.broadcast_tx.subscribe();
-        Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|r| async move {
-            r.ok()
-        }))
+        let tx_guard = self.broadcast_tx.lock().unwrap();
+        if let Some(ref tx) = *tx_guard {
+            let rx = tx.subscribe();
+            Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|r| async move {
+                r.ok()
+            }))
+        } else {
+            Box::pin(futures_util::stream::empty())
+        }
     }
 
     fn active_subscriptions(&self) -> Vec<SubscriptionRequest> {

@@ -42,14 +42,14 @@
 
 use std::collections::HashSet;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, Stream, StreamExt};
 use serde_json::{json, Value};
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{broadcast, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 
 use crate::core::types::{
@@ -95,10 +95,9 @@ pub struct CryptoCompareWebSocket {
     status: Arc<Mutex<ConnectionStatus>>,
     /// Active subscriptions
     subscriptions: Arc<Mutex<HashSet<SubscriptionRequest>>>,
-    /// Internal event sender (message handler -> forwarder)
-    event_tx: Arc<Mutex<Option<mpsc::UnboundedSender<WebSocketResult<StreamEvent>>>>>,
-    /// Broadcast sender (for multiple consumers)
-    broadcast_tx: Arc<broadcast::Sender<WebSocketResult<StreamEvent>>>,
+    /// Event broadcast sender — uses std::sync::Mutex so event_stream() can subscribe
+    /// without contending with the async message loop.
+    event_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
     /// WebSocket write half
     ws_writer: Arc<Mutex<Option<WsWriter>>>,
     /// Whether to use streamer format (tilde-delimited) vs JSON format
@@ -119,15 +118,13 @@ impl CryptoCompareWebSocket {
 
     /// Create new CryptoCompare WebSocket connector with authentication
     pub fn with_auth(auth: CryptoCompareAuth) -> Self {
-        let (broadcast_tx, _) = broadcast::channel(1000);
         let use_streamer_format = auth.api_key.is_none();
 
         Self {
             auth,
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
-            event_tx: Arc::new(Mutex::new(None)),
-            broadcast_tx: Arc::new(broadcast_tx),
+            event_tx: Arc::new(StdMutex::new(None)),
             ws_writer: Arc::new(Mutex::new(None)),
             use_streamer_format,
         }
@@ -209,7 +206,7 @@ impl CryptoCompareWebSocket {
     fn start_message_handler(
         mut reader: futures_util::stream::SplitStream<WsStream>,
         ws_writer: Arc<Mutex<Option<WsWriter>>>,
-        event_tx: mpsc::UnboundedSender<WebSocketResult<StreamEvent>>,
+        event_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
         status: Arc<Mutex<ConnectionStatus>>,
         use_streamer_format: bool,
     ) {
@@ -239,9 +236,11 @@ impl CryptoCompareWebSocket {
                         // Raw frame, ignore
                     }
                     Some(Err(_e)) => {
-                        let _ = event_tx.send(Err(WebSocketError::ConnectionError(
-                            "WebSocket read error".to_string(),
-                        )));
+                        if let Some(tx) = event_tx.lock().unwrap().as_ref() {
+                            let _ = tx.send(Err(WebSocketError::ConnectionError(
+                                "WebSocket read error".to_string(),
+                            )));
+                        }
                         *status.lock().await = ConnectionStatus::Disconnected;
                         break;
                     }
@@ -251,6 +250,10 @@ impl CryptoCompareWebSocket {
                     }
                 }
             }
+            // Drop the broadcast sender so all BroadcastStream receivers get None
+            // from .next(). Without this, a clean close leaves the sender alive
+            // and the bridge hangs forever instead of reconnecting.
+            let _ = event_tx.lock().unwrap().take();
         });
     }
 
@@ -292,7 +295,7 @@ impl CryptoCompareWebSocket {
     /// Messages may be batched with `|` delimiter in streamer format.
     fn handle_message(
         text: &str,
-        event_tx: &mpsc::UnboundedSender<WebSocketResult<StreamEvent>>,
+        event_tx: &Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
         use_streamer_format: bool,
     ) {
         if use_streamer_format {
@@ -308,7 +311,7 @@ impl CryptoCompareWebSocket {
     /// Each message is tilde-delimited: `TYPE~FIELD1~FIELD2~...`
     fn handle_streamer_message(
         text: &str,
-        event_tx: &mpsc::UnboundedSender<WebSocketResult<StreamEvent>>,
+        event_tx: &Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
     ) {
         // Split on pipe for batched messages
         for msg in text.split('|') {
@@ -318,21 +321,27 @@ impl CryptoCompareWebSocket {
                 Some("0") => {
                     // Trade
                     if let Some(event) = Self::parse_trade_streamer(&parts) {
-                        let _ = event_tx.send(Ok(event));
+                        if let Some(tx) = event_tx.lock().unwrap().as_ref() {
+                            let _ = tx.send(Ok(event));
+                        }
                     }
                 }
                 Some("5") => {
                     // Aggregate ticker
                     if let Some(event) = Self::parse_ticker_streamer(&parts) {
-                        let _ = event_tx.send(Ok(event));
+                        if let Some(tx) = event_tx.lock().unwrap().as_ref() {
+                            let _ = tx.send(Ok(event));
+                        }
                     }
                 }
                 Some("500") => {
                     // Error
                     let message = parts.get(1).unwrap_or(&"Unknown error");
-                    let _ = event_tx.send(Err(WebSocketError::ProtocolError(
-                        format!("CryptoCompare error: {}", message),
-                    )));
+                    if let Some(tx) = event_tx.lock().unwrap().as_ref() {
+                        let _ = tx.send(Err(WebSocketError::ProtocolError(
+                            format!("CryptoCompare error: {}", message),
+                        )));
+                    }
                 }
                 Some("999") => {
                     // Heartbeat - ignore
@@ -359,7 +368,7 @@ impl CryptoCompareWebSocket {
     /// the channel type (0=Trade, 2=Current, 5=AggTicker, 17=OHLC, etc.)
     fn handle_json_message(
         text: &str,
-        event_tx: &mpsc::UnboundedSender<WebSocketResult<StreamEvent>>,
+        event_tx: &Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
     ) {
         let json: Value = match serde_json::from_str(text) {
             Ok(v) => v,
@@ -377,17 +386,23 @@ impl CryptoCompareWebSocket {
                         match n {
                             0 => {
                                 if let Some(event) = Self::parse_trade(&json) {
-                                    let _ = event_tx.send(Ok(event));
+                                    if let Some(tx) = event_tx.lock().unwrap().as_ref() {
+                                        let _ = tx.send(Ok(event));
+                                    }
                                 }
                             }
                             2 | 5 => {
                                 if let Some(event) = Self::parse_ticker(&json) {
-                                    let _ = event_tx.send(Ok(event));
+                                    if let Some(tx) = event_tx.lock().unwrap().as_ref() {
+                                        let _ = tx.send(Ok(event));
+                                    }
                                 }
                             }
                             17 => {
                                 if let Some(event) = Self::parse_ohlc(&json) {
-                                    let _ = event_tx.send(Ok(event));
+                                    if let Some(tx) = event_tx.lock().unwrap().as_ref() {
+                                        let _ = tx.send(Ok(event));
+                                    }
                                 }
                             }
                             500 => {
@@ -396,9 +411,11 @@ impl CryptoCompareWebSocket {
                                     .get("MESSAGE")
                                     .and_then(|m| m.as_str())
                                     .unwrap_or("Unknown error");
-                                let _ = event_tx.send(Err(WebSocketError::ProtocolError(
-                                    format!("CryptoCompare error: {}", message),
-                                )));
+                                if let Some(tx) = event_tx.lock().unwrap().as_ref() {
+                                    let _ = tx.send(Err(WebSocketError::ProtocolError(
+                                        format!("CryptoCompare error: {}", message),
+                                    )));
+                                }
                             }
                             _ => {
                                 // System or unknown channel, ignore
@@ -415,17 +432,23 @@ impl CryptoCompareWebSocket {
         match msg_type {
             "0" => {
                 if let Some(event) = Self::parse_trade(&json) {
-                    let _ = event_tx.send(Ok(event));
+                    if let Some(tx) = event_tx.lock().unwrap().as_ref() {
+                        let _ = tx.send(Ok(event));
+                    }
                 }
             }
             "2" | "5" => {
                 if let Some(event) = Self::parse_ticker(&json) {
-                    let _ = event_tx.send(Ok(event));
+                    if let Some(tx) = event_tx.lock().unwrap().as_ref() {
+                        let _ = tx.send(Ok(event));
+                    }
                 }
             }
             "17" => {
                 if let Some(event) = Self::parse_ohlc(&json) {
-                    let _ = event_tx.send(Ok(event));
+                    if let Some(tx) = event_tx.lock().unwrap().as_ref() {
+                        let _ = tx.send(Ok(event));
+                    }
                 }
             }
             "500" => {
@@ -433,10 +456,12 @@ impl CryptoCompareWebSocket {
                     .get("MESSAGE")
                     .and_then(|m| m.as_str())
                     .unwrap_or("Unknown error");
-                let _ = event_tx.send(Err(WebSocketError::ProtocolError(format!(
-                    "CryptoCompare error: {}",
-                    message
-                ))));
+                if let Some(tx) = event_tx.lock().unwrap().as_ref() {
+                    let _ = tx.send(Err(WebSocketError::ProtocolError(format!(
+                        "CryptoCompare error: {}",
+                        message
+                    ))));
+                }
             }
             _ => {
                 // System messages (8, 11, 20, 999, etc.) -- ignore
@@ -672,29 +697,21 @@ impl WebSocketConnector for CryptoCompareWebSocket {
         *self.ws_writer.lock().await = Some(writer);
         *self.status.lock().await = ConnectionStatus::Connected;
 
-        // Create event channel
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        *self.event_tx.lock().await = Some(tx.clone());
+        // Create event broadcast channel
+        let (tx, _) = broadcast::channel(1000);
+        *self.event_tx.lock().unwrap() = Some(tx);
 
         // Start message handler
         Self::start_message_handler(
             reader,
             self.ws_writer.clone(),
-            tx,
+            self.event_tx.clone(),
             self.status.clone(),
             self.use_streamer_format,
         );
 
         // Start ping task (30s interval)
         Self::start_ping_task(self.ws_writer.clone(), self.status.clone());
-
-        // Forward mpsc -> broadcast
-        let broadcast_tx = self.broadcast_tx.clone();
-        tokio::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                let _ = broadcast_tx.send(event);
-            }
-        });
 
         Ok(())
     }
@@ -708,7 +725,7 @@ impl WebSocketConnector for CryptoCompareWebSocket {
             let _ = writer.close().await;
         }
 
-        *self.event_tx.lock().await = None;
+        let _ = self.event_tx.lock().unwrap().take();
         self.subscriptions.lock().await.clear();
 
         Ok(())
@@ -740,11 +757,18 @@ impl WebSocketConnector for CryptoCompareWebSocket {
     }
 
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        let rx = self.broadcast_tx.subscribe();
-        Box::pin(
-            tokio_stream::wrappers::BroadcastStream::new(rx)
-                .filter_map(|res| async move { res.ok() }),
-        )
+        // std::sync::Mutex::lock() is instant here — no async contention.
+        let tx_guard = self.event_tx.lock().unwrap();
+
+        if let Some(ref tx) = *tx_guard {
+            let rx = tx.subscribe();
+            Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).map(|r| {
+                r.map_err(|e| WebSocketError::ConnectionError(format!("Broadcast error: {}", e)))
+                    .and_then(|x| x)
+            }))
+        } else {
+            Box::pin(futures_util::stream::empty())
+        }
     }
 
     fn active_subscriptions(&self) -> Vec<SubscriptionRequest> {

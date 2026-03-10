@@ -28,7 +28,7 @@
 
 use std::collections::HashSet;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -111,8 +111,9 @@ pub struct ParadexWebSocket {
     status: Arc<Mutex<ConnectionStatus>>,
     /// Active subscriptions
     subscriptions: Arc<Mutex<HashSet<SubscriptionRequest>>>,
-    /// Broadcast sender (for multiple consumers)
-    broadcast_tx: Arc<broadcast::Sender<WebSocketResult<StreamEvent>>>,
+    /// Broadcast sender — behind StdMutex so event_stream() can subscribe
+    /// without contending with the async message loop.
+    broadcast_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
     /// WebSocket stream
     ws_stream: Arc<Mutex<Option<WsStream>>>,
     /// Ping interval (55 seconds per Paradex docs)
@@ -144,15 +145,12 @@ impl ParadexWebSocket {
             .transpose()?
             .map(Arc::new);
 
-        // Create broadcast channel (capacity of 1000 events)
-        let (broadcast_tx, _) = broadcast::channel(1000);
-
         Ok(Self {
             auth,
             urls,
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
-            broadcast_tx: Arc::new(broadcast_tx),
+            broadcast_tx: Arc::new(StdMutex::new(None)),
             ws_stream: Arc::new(Mutex::new(None)),
             ping_interval: Duration::from_secs(55),
             last_ping: Arc::new(Mutex::new(Instant::now())),
@@ -248,7 +246,10 @@ impl ParadexWebSocket {
         match ParadexParser::parse_ws_message(text, target_symbol.as_deref()) {
             Ok(event) => {
                 // Broadcast to all consumers
-                let _ = self.broadcast_tx.send(Ok(event));
+                let tx_guard = self.broadcast_tx.lock().unwrap();
+                if let Some(ref tx) = *tx_guard {
+                    let _ = tx.send(Ok(event));
+                }
                 Ok(())
             }
             Err(_) => {
@@ -391,6 +392,10 @@ impl WebSocketConnector for ParadexWebSocket {
             self.authenticate().await?;
         }
 
+        // Create broadcast channel and store sender
+        let (tx, _) = broadcast::channel(1000);
+        *self.broadcast_tx.lock().unwrap() = Some(tx);
+
         // Start message loop
         let self_clone = Self {
             auth: self.auth.clone(),
@@ -407,6 +412,8 @@ impl WebSocketConnector for ParadexWebSocket {
         };
         tokio::spawn(async move {
             self_clone.message_loop().await;
+            // Drop the broadcast sender so all BroadcastStream receivers get None
+            let _ = self_clone.broadcast_tx.lock().unwrap().take();
         });
 
         // Start ping loop
@@ -446,6 +453,7 @@ impl WebSocketConnector for ParadexWebSocket {
             *stream_lock = None;
         }
 
+        let _ = self.broadcast_tx.lock().unwrap().take();
         Ok(())
     }
 
@@ -512,21 +520,16 @@ impl WebSocketConnector for ParadexWebSocket {
     }
 
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        use futures_util::stream::StreamExt as _;
-
-        // Create a new receiver from broadcast channel
-        let rx = self.broadcast_tx.subscribe();
-
-        // Convert BroadcastStream to our stream type
-        Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| async move {
-            match result {
-                Ok(event) => Some(event),
-                Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
-                    eprintln!("WebSocket stream lagged by {} messages", n);
-                    None
-                }
-            }
-        }))
+        let tx_guard = self.broadcast_tx.lock().unwrap();
+        if let Some(ref tx) = *tx_guard {
+            let rx = tx.subscribe();
+            Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).map(|r| {
+                r.map_err(|e| WebSocketError::ConnectionError(format!("Broadcast error: {}", e)))
+                    .and_then(|x| x)
+            }))
+        } else {
+            Box::pin(futures_util::stream::empty())
+        }
     }
 
     fn connection_status(&self) -> ConnectionStatus {

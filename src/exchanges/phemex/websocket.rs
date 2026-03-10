@@ -22,13 +22,13 @@
 use std::collections::HashSet;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use futures_util::{SinkExt, Stream, StreamExt};
 use serde_json::{json, Value};
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{broadcast, Mutex};
 use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::{client::IntoClientRequest, Message}, MaybeTlsStream, WebSocketStream};
 
@@ -87,10 +87,9 @@ pub struct PhemexWebSocket {
     status: Arc<Mutex<ConnectionStatus>>,
     /// Active subscriptions
     subscriptions: Arc<Mutex<HashSet<SubscriptionRequest>>>,
-    /// Event sender (internal - for message handler)
-    event_tx: Arc<Mutex<Option<mpsc::UnboundedSender<WebSocketResult<StreamEvent>>>>>,
-    /// Broadcast sender (for multiple consumers)
-    broadcast_tx: Arc<broadcast::Sender<WebSocketResult<StreamEvent>>>,
+    /// Broadcast sender — behind StdMutex so event_stream() can subscribe
+    /// without contending with the async message loop.
+    event_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
     /// WebSocket stream
     ws_stream: Arc<Mutex<Option<WsStream>>>,
     /// Last ping time
@@ -115,17 +114,13 @@ impl PhemexWebSocket {
             .map(PhemexAuth::new)
             .transpose()?;
 
-        // Create broadcast channel for events
-        let (broadcast_tx, _) = broadcast::channel(1000);
-
         Ok(Self {
             auth,
             urls,
             account_type: AccountType::FuturesCross,
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
-            event_tx: Arc::new(Mutex::new(None)),
-            broadcast_tx: Arc::new(broadcast_tx),
+            event_tx: Arc::new(StdMutex::new(None)),
             ws_stream: Arc::new(Mutex::new(None)),
             last_ping: Arc::new(Mutex::new(Instant::now())),
             ws_ping_rtt_ms: Arc::new(Mutex::new(0)),
@@ -208,7 +203,7 @@ impl PhemexWebSocket {
     /// Start message handling task
     fn start_message_handler(
         ws_stream: Arc<Mutex<Option<WsStream>>>,
-        event_tx: mpsc::UnboundedSender<WebSocketResult<StreamEvent>>,
+        event_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
         status: Arc<Mutex<ConnectionStatus>>,
         price_scale: u8,
         last_ping: Arc<Mutex<Instant>>,
@@ -230,7 +225,9 @@ impl PhemexWebSocket {
                     Some(Ok(Message::Text(text))) => {
                         drop(stream_guard);
                         if let Err(e) = Self::handle_message(&text, &event_tx, price_scale).await {
-                            let _ = event_tx.send(Err(e));
+                            if let Some(tx) = event_tx.lock().unwrap().as_ref() {
+                                let _ = tx.send(Err(e));
+                            }
                         }
                     }
                     Some(Ok(Message::Pong(_))) => {
@@ -246,9 +243,9 @@ impl PhemexWebSocket {
                     }
                     Some(Err(e)) => {
                         drop(stream_guard);
-                        let _ = event_tx.send(Err(
-                            WebSocketError::ConnectionError(e.to_string())
-                        ));
+                        if let Some(tx) = event_tx.lock().unwrap().as_ref() {
+                            let _ = tx.send(Err(WebSocketError::ConnectionError(e.to_string())));
+                        }
                         break;
                     }
                     None => {
@@ -261,13 +258,14 @@ impl PhemexWebSocket {
                     }
                 }
             }
+            let _ = event_tx.lock().unwrap().take();
         });
     }
 
     /// Handle incoming WebSocket message
     async fn handle_message(
         text: &str,
-        event_tx: &mpsc::UnboundedSender<WebSocketResult<StreamEvent>>,
+        event_tx: &Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
         price_scale: u8,
     ) -> WebSocketResult<()> {
         let msg: Value = serde_json::from_str(text)
@@ -306,7 +304,9 @@ impl PhemexWebSocket {
         // Case 2: Server push message (has data fields like "book", "trades", "kline", "market24h", "tick")
         // These messages have "symbol" and "type" fields
         if let Some(event) = Self::parse_push_message(&msg, price_scale)? {
-            let _ = event_tx.send(Ok(event));
+            if let Some(tx) = event_tx.lock().unwrap().as_ref() {
+                let _ = tx.send(Ok(event));
+            }
         }
 
         Ok(())
@@ -927,27 +927,19 @@ impl WebSocketConnector for PhemexWebSocket {
         *self.ws_stream.lock().await = Some(ws_stream);
         *self.status.lock().await = ConnectionStatus::Connected;
 
-        // Create event channel
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        *self.event_tx.lock().await = Some(tx.clone());
+        // Create broadcast channel and store sender
+        let (tx, _) = broadcast::channel(1000);
+        *self.event_tx.lock().unwrap() = Some(tx);
 
         // Start message handler
         Self::start_message_handler(
             self.ws_stream.clone(),
-            tx,
+            self.event_tx.clone(),
             self.status.clone(),
             self.price_scale,
             self.last_ping.clone(),
             self.ws_ping_rtt_ms.clone(),
         );
-
-        // Start forwarder task (mpsc -> broadcast)
-        let broadcast_tx = self.broadcast_tx.clone();
-        tokio::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                let _ = broadcast_tx.send(event);
-            }
-        });
 
         // Start ping task (every 5 seconds)
         Self::start_ping_task(self.ws_stream.clone(), self.last_ping.clone(), self.ws_ping_rtt_ms.clone());
@@ -958,7 +950,7 @@ impl WebSocketConnector for PhemexWebSocket {
     async fn disconnect(&mut self) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Disconnected;
         *self.ws_stream.lock().await = None;
-        *self.event_tx.lock().await = None;
+        let _ = self.event_tx.lock().unwrap().take();
         self.subscriptions.lock().await.clear();
         Ok(())
     }
@@ -1027,20 +1019,24 @@ impl WebSocketConnector for PhemexWebSocket {
     }
 
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        let rx = self.broadcast_tx.subscribe();
-
-        Box::pin(
-            tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| async move {
-                match result {
-                    Ok(event) => Some(event),
-                    Err(
-                        tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(_),
-                    ) => Some(Err(
-                        WebSocketError::ConnectionError("Event stream lagged behind".to_string()),
-                    )),
-                }
-            }),
-        )
+        let tx_guard = self.event_tx.lock().unwrap();
+        if let Some(ref tx) = *tx_guard {
+            let rx = tx.subscribe();
+            Box::pin(
+                tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| async move {
+                    match result {
+                        Ok(event) => Some(event),
+                        Err(
+                            tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(_),
+                        ) => Some(Err(
+                            WebSocketError::ConnectionError("Event stream lagged behind".to_string()),
+                        )),
+                    }
+                }),
+            )
+        } else {
+            Box::pin(futures_util::stream::empty())
+        }
     }
 
     fn active_subscriptions(&self) -> Vec<SubscriptionRequest> {

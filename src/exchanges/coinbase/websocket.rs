@@ -13,7 +13,7 @@
 //! message handler (reading) and subscribe (writing) operations.
 
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -64,8 +64,8 @@ pub struct CoinbaseWebSocket {
     status: Arc<Mutex<ConnectionStatus>>,
     /// Active subscriptions
     subscriptions: Arc<Mutex<HashSet<SubscriptionRequest>>>,
-    /// Broadcast sender (for multiple consumers)
-    broadcast_tx: Arc<broadcast::Sender<WebSocketResult<StreamEvent>>>,
+    /// Broadcast sender (for multiple consumers, dropped on disconnect)
+    broadcast_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
     /// WebSocket write half (for sending subscriptions)
     ws_writer: Arc<Mutex<Option<WsWriter>>>,
     /// Whether to use private endpoint
@@ -90,14 +90,11 @@ impl CoinbaseWebSocket {
 
         let use_private = auth.is_some();
 
-        // Create broadcast channel (capacity of 1000 events)
-        let (broadcast_tx, _) = broadcast::channel(1000);
-
         Ok(Self {
             auth,
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
-            broadcast_tx: Arc::new(broadcast_tx),
+            broadcast_tx: Arc::new(StdMutex::new(None)),
             ws_writer: Arc::new(Mutex::new(None)),
             use_private,
             last_ping: Arc::new(Mutex::new(Instant::now())),
@@ -158,7 +155,7 @@ impl CoinbaseWebSocket {
     /// Spawn message handler for the read half (runs in background)
     fn start_message_handler(
         mut ws_read: WsReader,
-        broadcast_tx: Arc<broadcast::Sender<WebSocketResult<StreamEvent>>>,
+        broadcast_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
         status: Arc<Mutex<ConnectionStatus>>,
         last_ping: Arc<Mutex<Instant>>,
         ws_ping_rtt_ms: Arc<Mutex<u64>>,
@@ -193,7 +190,9 @@ impl CoinbaseWebSocket {
                                     _ => None,
                                 };
                                 if let Some(event) = event {
-                                    let _ = broadcast_tx.send(Ok(event));
+                                    if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                                        let _ = tx.send(Ok(event));
+                                    }
                                 }
                             }
                         }
@@ -208,7 +207,9 @@ impl CoinbaseWebSocket {
                         break;
                     },
                     Err(e) => {
-                        let _ = broadcast_tx.send(Err(WebSocketError::ConnectionError(e.to_string())));
+                        if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                            let _ = tx.send(Err(WebSocketError::ConnectionError(e.to_string())));
+                        }
                         *status.lock().await = ConnectionStatus::Disconnected;
                         break;
                     },
@@ -216,6 +217,8 @@ impl CoinbaseWebSocket {
                 }
             }
 
+            // Stream ended — drop sender so receivers know the stream is done
+            let _ = broadcast_tx.lock().unwrap().take();
             *status.lock().await = ConnectionStatus::Disconnected;
         });
     }
@@ -260,6 +263,10 @@ impl WebSocketConnector for CoinbaseWebSocket {
         *self.ws_writer.lock().await = Some(ws_write);
         *self.status.lock().await = ConnectionStatus::Connected;
 
+        // Create broadcast channel and store
+        let (broadcast_sender, _) = broadcast::channel(1000);
+        *self.broadcast_tx.lock().unwrap() = Some(broadcast_sender);
+
         // Spawn message handler with the read half (no mutex contention)
         Self::start_message_handler(
             ws_read,
@@ -282,6 +289,7 @@ impl WebSocketConnector for CoinbaseWebSocket {
         if let Some(mut writer) = self.ws_writer.lock().await.take() {
             let _ = writer.close().await;
         }
+        let _ = self.broadcast_tx.lock().unwrap().take();
         *self.status.lock().await = ConnectionStatus::Disconnected;
         Ok(())
     }
@@ -345,7 +353,9 @@ impl WebSocketConnector for CoinbaseWebSocket {
     }
 
     fn event_stream(&self) -> std::pin::Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        let rx = self.broadcast_tx.subscribe();
+        let rx = self.broadcast_tx.lock().unwrap().as_ref()
+            .map(|tx| tx.subscribe())
+            .unwrap_or_else(|| broadcast::channel(1).1);
         Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|r| async move {
             r.ok()
         }))

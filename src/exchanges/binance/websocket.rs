@@ -34,7 +34,7 @@ use async_trait::async_trait;
 use futures_util::{Stream, StreamExt, SinkExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::sync::{mpsc, broadcast, Mutex};
+use tokio::sync::{broadcast, Mutex};
 use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream, MaybeTlsStream};
 
@@ -120,7 +120,7 @@ pub struct BinanceWebSocket {
     /// Active subscriptions
     subscriptions: Arc<Mutex<HashSet<SubscriptionRequest>>>,
     /// Event broadcast sender
-    event_tx: Arc<Mutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
+    event_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
     /// WebSocket write half — used by subscribe/unsubscribe to send messages.
     ws_sink: Arc<Mutex<Option<WsSink>>>,
     /// Listen key for user data stream (private channels)
@@ -162,7 +162,7 @@ impl BinanceWebSocket {
             account_type,
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
-            event_tx: Arc::new(Mutex::new(None)),
+            event_tx: Arc::new(StdMutex::new(None)),
             ws_sink: Arc::new(Mutex::new(None)),
             listen_key: Arc::new(Mutex::new(None)),
             last_refresh: Arc::new(Mutex::new(Instant::now())),
@@ -336,7 +336,7 @@ impl BinanceWebSocket {
     /// Start message handling task
     fn start_message_handler(
         mut reader: WsReader,
-        event_tx: broadcast::Sender<WebSocketResult<StreamEvent>>,
+        event_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
         status: Arc<Mutex<ConnectionStatus>>,
         account_type: AccountType,
         last_ping: Arc<Mutex<Instant>>,
@@ -346,8 +346,11 @@ impl BinanceWebSocket {
             while let Some(msg) = reader.next().await {
                 match msg {
                     Ok(Message::Text(text)) => {
-                        if let Err(e) = Self::handle_message(&text, &event_tx, account_type).await {
-                            let _ = event_tx.send(Err(e));
+                        let tx_clone = event_tx.lock().unwrap().as_ref().cloned();
+                        if let Some(tx) = tx_clone {
+                            if let Err(e) = Self::handle_message(&text, &tx, account_type).await {
+                                let _ = tx.send(Err(e));
+                            }
                         }
                     }
                     Ok(Message::Ping(_ping)) => {
@@ -364,13 +367,17 @@ impl BinanceWebSocket {
                         break;
                     }
                     Err(e) => {
-                        let _ = event_tx.send(Err(WebSocketError::ConnectionError(e.to_string())));
+                        if let Some(tx) = event_tx.lock().unwrap().as_ref() {
+                            let _ = tx.send(Err(WebSocketError::ConnectionError(e.to_string())));
+                        }
                         break;
                     }
                     _ => {}
                 }
             }
-            // Stream ended — mark disconnected
+            // Stream ended — drop sender so receivers know the stream is done
+            let _ = event_tx.lock().unwrap().take();
+            // Mark disconnected
             *status.lock().await = ConnectionStatus::Disconnected;
         });
     }
@@ -897,12 +904,12 @@ impl WebSocketConnector for BinanceWebSocket {
 
         // Create event broadcast channel (capacity of 1024 messages)
         let (tx, _rx) = broadcast::channel(1024);
-        *self.event_tx.lock().await = Some(tx.clone());
+        *self.event_tx.lock().unwrap() = Some(tx);
 
         // Start message handler with the read half — no shared mutex needed.
         Self::start_message_handler(
             reader,
-            tx,
+            self.event_tx.clone(),
             self.status.clone(),
             account_type,
             self.last_ping.clone(),
@@ -922,7 +929,7 @@ impl WebSocketConnector for BinanceWebSocket {
     async fn disconnect(&mut self) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Disconnected;
         *self.ws_sink.lock().await = None;
-        *self.event_tx.lock().await = None;
+        let _ = self.event_tx.lock().unwrap().take();
         *self.listen_key.lock().await = None;
         self.subscriptions.lock().await.clear();
         Ok(())
@@ -1002,29 +1009,10 @@ impl WebSocketConnector for BinanceWebSocket {
     }
 
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        // Get receiver from the actual broadcast channel
-        let event_tx_guard = match self.event_tx.try_lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                // If we can't lock, return an empty stream
-                let (_, rx) = mpsc::unbounded_channel::<WebSocketResult<StreamEvent>>();
-                return Box::pin(tokio_stream::wrappers::UnboundedReceiverStream::new(rx));
-            }
-        };
+        let rx = self.event_tx.lock().unwrap().as_ref()
+            .map(|tx| tx.subscribe())
+            .unwrap_or_else(|| broadcast::channel(1).1);
 
-        let rx = match event_tx_guard.as_ref() {
-            Some(tx) => tx.subscribe(),
-            None => {
-                // Not connected yet - return empty stream
-                drop(event_tx_guard);
-                let (_, rx) = mpsc::unbounded_channel::<WebSocketResult<StreamEvent>>();
-                return Box::pin(tokio_stream::wrappers::UnboundedReceiverStream::new(rx));
-            }
-        };
-
-        drop(event_tx_guard);
-
-        // Convert broadcast receiver to stream
         Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| async move {
             result.ok()
         }))

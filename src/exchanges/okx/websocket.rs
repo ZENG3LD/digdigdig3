@@ -26,7 +26,7 @@
 
 use std::collections::HashSet;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -80,8 +80,9 @@ pub struct OkxWebSocket {
     status: Arc<Mutex<ConnectionStatus>>,
     /// Active subscriptions
     subscriptions: Arc<Mutex<HashSet<SubscriptionRequest>>>,
-    /// Broadcast sender (for multiple consumers)
-    broadcast_tx: Arc<broadcast::Sender<WebSocketResult<StreamEvent>>>,
+    /// Broadcast sender — behind StdMutex so event_stream() can subscribe
+    /// without contending with the async message loop.
+    broadcast_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
     /// Write half – used by `subscribe`, `unsubscribe`, `disconnect`, and the
     /// ping background task.
     ws_sink: Arc<Mutex<Option<WsSink>>>,
@@ -112,15 +113,12 @@ impl OkxWebSocket {
             .map(OkxAuth::new)
             .transpose()?;
 
-        // Create broadcast channel (capacity of 1000 events)
-        let (broadcast_tx, _) = broadcast::channel(1000);
-
         Ok(Self {
             auth,
             urls,
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
-            broadcast_tx: Arc::new(broadcast_tx),
+            broadcast_tx: Arc::new(StdMutex::new(None)),
             ws_sink: Arc::new(Mutex::new(None)),
             ws_reader: Arc::new(Mutex::new(None)),
             last_ping: Arc::new(Mutex::new(Instant::now())),
@@ -194,7 +192,7 @@ impl OkxWebSocket {
     /// task competes for that lock — and the sink lock is never touched here.
     fn start_message_handler(
         ws_reader: Arc<Mutex<Option<WsReader>>>,
-        broadcast_tx: Arc<broadcast::Sender<WebSocketResult<StreamEvent>>>,
+        broadcast_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
         status: Arc<Mutex<ConnectionStatus>>,
         last_ping: Arc<Mutex<Instant>>,
         ws_ping_rtt_ms: Arc<Mutex<u64>>,
@@ -238,12 +236,15 @@ impl OkxWebSocket {
                                             .get("msg")
                                             .and_then(|m| m.as_str())
                                             .unwrap_or("Unknown error");
-                                        let _ = broadcast_tx.send(Err(
-                                            WebSocketError::ProtocolError(format!(
-                                                "{}: {}",
-                                                code, msg_text
-                                            )),
-                                        ));
+                                        let tx_guard = broadcast_tx.lock().unwrap();
+                                        if let Some(ref tx) = *tx_guard {
+                                            let _ = tx.send(Err(
+                                                WebSocketError::ProtocolError(format!(
+                                                    "{}: {}",
+                                                    code, msg_text
+                                                )),
+                                            ));
+                                        }
                                         continue;
                                     }
                                     _ => {}
@@ -262,7 +263,10 @@ impl OkxWebSocket {
                                             let event =
                                                 Self::parse_channel_data(channel, data);
                                             if let Some(ev) = event {
-                                                let _ = broadcast_tx.send(Ok(ev));
+                                                let tx_guard = broadcast_tx.lock().unwrap();
+                                                if let Some(ref tx) = *tx_guard {
+                                                    let _ = tx.send(Ok(ev));
+                                                }
                                             }
                                         }
                                     }
@@ -281,6 +285,9 @@ impl OkxWebSocket {
                     _ => {}
                 }
             }
+            // Drop the broadcast sender so all BroadcastStream receivers get None
+            let _ = broadcast_tx.lock().unwrap().take();
+            *status.lock().await = ConnectionStatus::Disconnected;
         });
     }
 
@@ -387,6 +394,10 @@ impl WebSocketConnector for OkxWebSocket {
 
         *self.status.lock().await = ConnectionStatus::Connected;
 
+        // Create broadcast channel and store sender
+        let (tx, _) = broadcast::channel(1000);
+        *self.broadcast_tx.lock().unwrap() = Some(tx);
+
         // Start background tasks — each holds only its own half.
         Self::start_ping_task(self.ws_sink.clone(), self.last_ping.clone());
         Self::start_message_handler(
@@ -411,6 +422,7 @@ impl WebSocketConnector for OkxWebSocket {
         }
         *self.ws_reader.lock().await = None;
         *self.status.lock().await = ConnectionStatus::Disconnected;
+        let _ = self.broadcast_tx.lock().unwrap().take();
         Ok(())
     }
 
@@ -501,11 +513,16 @@ impl WebSocketConnector for OkxWebSocket {
     fn event_stream(
         &self,
     ) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send + 'static>> {
-        let rx = self.broadcast_tx.subscribe();
-        Box::pin(
-            tokio_stream::wrappers::BroadcastStream::new(rx)
-                .filter_map(|msg| async move { msg.ok() }),
-        )
+        let tx_guard = self.broadcast_tx.lock().unwrap();
+        if let Some(ref tx) = *tx_guard {
+            let rx = tx.subscribe();
+            Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).map(|r| {
+                r.map_err(|e| WebSocketError::ConnectionError(format!("Broadcast error: {}", e)))
+                    .and_then(|x| x)
+            }))
+        } else {
+            Box::pin(futures_util::stream::empty())
+        }
     }
 
     fn connection_status(&self) -> ConnectionStatus {

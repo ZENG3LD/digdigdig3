@@ -17,7 +17,7 @@
 
 use std::collections::HashSet;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -110,8 +110,8 @@ pub struct DydxWebSocket {
     status: Arc<Mutex<ConnectionStatus>>,
     /// Active subscriptions
     subscriptions: Arc<Mutex<HashSet<SubscriptionRequest>>>,
-    /// Broadcast sender (for multiple consumers)
-    broadcast_tx: Arc<broadcast::Sender<WebSocketResult<StreamEvent>>>,
+    /// Broadcast sender (for multiple consumers, dropped on disconnect)
+    broadcast_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
     /// Write half of WebSocket (for sending subscribe/unsubscribe messages)
     ws_sink: Arc<Mutex<Option<WsSink>>>,
     /// Last message time
@@ -136,15 +136,12 @@ impl DydxWebSocket {
 
         let url = urls.indexer_ws.to_string();
 
-        // Create broadcast channel (capacity of 1000 events)
-        let (broadcast_tx, _) = broadcast::channel(1000);
-
         Ok(Self {
             url,
             account_type,
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
-            broadcast_tx: Arc::new(broadcast_tx),
+            broadcast_tx: Arc::new(StdMutex::new(None)),
             ws_sink: Arc::new(Mutex::new(None)),
             last_message: Arc::new(Mutex::new(Instant::now())),
             last_ping: Arc::new(Mutex::new(Instant::now())),
@@ -350,7 +347,7 @@ impl DydxWebSocket {
 
     fn start_message_loop(
         mut ws_read: futures_util::stream::SplitStream<WsStream>,
-        broadcast_tx: Arc<broadcast::Sender<WebSocketResult<StreamEvent>>>,
+        broadcast_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
         status: Arc<Mutex<ConnectionStatus>>,
         last_message: Arc<Mutex<Instant>>,
         subscriptions: Arc<Mutex<HashSet<SubscriptionRequest>>>,
@@ -382,7 +379,9 @@ impl DydxWebSocket {
                         };
 
                         if let Some(event) = Self::handle_message(&text, &ticker_sym) {
-                            let _ = broadcast_tx.send(event);
+                            if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                                let _ = tx.send(event);
+                            }
                         }
                     }
                     Some(Ok(Message::Ping(_))) => {
@@ -396,11 +395,15 @@ impl DydxWebSocket {
                     }
                     Some(Ok(Message::Close(_))) => {
                         *status.lock().await = ConnectionStatus::Disconnected;
-                        let _ = broadcast_tx.send(Err(WebSocketError::NotConnected));
+                        if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                            let _ = tx.send(Err(WebSocketError::NotConnected));
+                        }
                         break;
                     }
                     Some(Err(e)) => {
-                        let _ = broadcast_tx.send(Err(WebSocketError::ProtocolError(e.to_string())));
+                        if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                            let _ = tx.send(Err(WebSocketError::ProtocolError(e.to_string())));
+                        }
                     }
                     None => {
                         // Stream ended
@@ -410,6 +413,8 @@ impl DydxWebSocket {
                     _ => {}
                 }
             }
+            // Stream ended — drop sender so receivers know the stream is done
+            let _ = broadcast_tx.lock().unwrap().take();
         });
     }
 
@@ -440,6 +445,10 @@ impl WebSocketConnector for DydxWebSocket {
         *self.status.lock().await = ConnectionStatus::Connected;
         *self.last_message.lock().await = Instant::now();
 
+        // Create broadcast channel and store
+        let (broadcast_sender, _) = broadcast::channel(1000);
+        *self.broadcast_tx.lock().unwrap() = Some(broadcast_sender);
+
         // Start message receiving loop with the read half
         Self::start_message_loop(
             ws_read,
@@ -469,6 +478,9 @@ impl WebSocketConnector for DydxWebSocket {
             let _ = sink.close().await;
         }
         *sink_guard = None;
+        drop(sink_guard);
+
+        let _ = self.broadcast_tx.lock().unwrap().take();
 
         Ok(())
     }
@@ -527,7 +539,9 @@ impl WebSocketConnector for DydxWebSocket {
     }
 
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        let rx = self.broadcast_tx.subscribe();
+        let rx = self.broadcast_tx.lock().unwrap().as_ref()
+            .map(|tx| tx.subscribe())
+            .unwrap_or_else(|| broadcast::channel(1).1);
         Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| async move {
             result.ok()
         }))

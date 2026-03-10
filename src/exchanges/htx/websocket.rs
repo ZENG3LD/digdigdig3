@@ -173,8 +173,8 @@ pub struct HtxWebSocket {
     status: Arc<Mutex<ConnectionStatus>>,
     /// Active subscriptions
     subscriptions: Arc<Mutex<HashSet<SubscriptionRequest>>>,
-    /// Broadcast sender (for multiple consumers)
-    broadcast_tx: Arc<broadcast::Sender<WebSocketResult<StreamEvent>>>,
+    /// Broadcast sender (for multiple consumers, dropped on disconnect)
+    broadcast_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
     /// WebSocket write half — shared by pong replies, subscribe, and unsubscribe.
     /// The read half is owned exclusively by the message loop task (no mutex needed).
     ws_writer: Arc<Mutex<Option<WsSink>>>,
@@ -195,16 +195,13 @@ impl HtxWebSocket {
     ) -> ExchangeResult<Self> {
         let auth = credentials.map(|c| HtxAuth::new(&c));
 
-        // Create broadcast channel (capacity of 1000 events)
-        let (broadcast_tx, _) = broadcast::channel(1000);
-
         Ok(Self {
             auth,
             testnet,
             account_type,
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
-            broadcast_tx: Arc::new(broadcast_tx),
+            broadcast_tx: Arc::new(StdMutex::new(None)),
             ws_writer: Arc::new(Mutex::new(None)),
             msg_id_counter: Arc::new(StdMutex::new(0)),
             last_ping: Arc::new(Mutex::new(Instant::now())),
@@ -497,7 +494,7 @@ impl HtxWebSocket {
     fn start_message_loop(
         mut reader: WsReader,
         ws_writer: Arc<Mutex<Option<WsSink>>>,
-        broadcast_tx: Arc<broadcast::Sender<WebSocketResult<StreamEvent>>>,
+        broadcast_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
         status: Arc<Mutex<ConnectionStatus>>,
         last_ping: Arc<Mutex<Instant>>,
         ws_ping_rtt_ms: Arc<Mutex<u64>>,
@@ -559,11 +556,15 @@ impl HtxWebSocket {
                         if let Ok((channel, data)) = HtxParser::parse_ws_message(&json) {
                             if channel.contains(".ticker") || channel.contains(".detail") {
                                 if let Ok(ticker) = Self::parse_ticker_from_ws_data(data, &channel) {
-                                    let _ = broadcast_tx.send(Ok(StreamEvent::Ticker(ticker)));
+                                    if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                                        let _ = tx.send(Ok(StreamEvent::Ticker(ticker)));
+                                    }
                                 }
                             } else if channel.contains(".depth.") {
                                 if let Ok(orderbook) = Self::parse_orderbook_from_ws_data(data) {
-                                    let _ = broadcast_tx.send(Ok(StreamEvent::OrderbookSnapshot(orderbook)));
+                                    if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                                        let _ = tx.send(Ok(StreamEvent::OrderbookSnapshot(orderbook)));
+                                    }
                                 }
                             }
                         }
@@ -588,7 +589,9 @@ impl HtxWebSocket {
                     }
                 }
             }
-            // Stream exhausted (None) — connection closed
+            // Stream exhausted — drop sender so receivers know the stream is done
+            let _ = broadcast_tx.lock().unwrap().take();
+            // Connection closed
             *status.lock().await = ConnectionStatus::Disconnected;
         });
     }
@@ -622,6 +625,10 @@ impl WebSocketConnector for HtxWebSocket {
         // Update status
         *self.status.lock().await = ConnectionStatus::Connected;
 
+        // Create broadcast channel and store
+        let (broadcast_sender, _) = broadcast::channel(1000);
+        *self.broadcast_tx.lock().unwrap() = Some(broadcast_sender);
+
         // Start message loop — reader is moved in, never shared via mutex.
         // The loop exits naturally when the stream yields None (connection closed),
         // a Close frame arrives, or a network error occurs.
@@ -651,6 +658,7 @@ impl WebSocketConnector for HtxWebSocket {
             let _ = writer.close().await;
         }
 
+        let _ = self.broadcast_tx.lock().unwrap().take();
         *self.status.lock().await = ConnectionStatus::Disconnected;
 
         Ok(())
@@ -704,7 +712,9 @@ impl WebSocketConnector for HtxWebSocket {
     }
 
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        let rx = self.broadcast_tx.subscribe();
+        let rx = self.broadcast_tx.lock().unwrap().as_ref()
+            .map(|tx| tx.subscribe())
+            .unwrap_or_else(|| broadcast::channel(1).1);
         Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|r| async move {
             r.ok()
         }))

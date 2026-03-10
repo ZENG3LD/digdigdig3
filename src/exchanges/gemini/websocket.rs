@@ -35,7 +35,7 @@
 //! ```
 
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
 
 use async_trait::async_trait;
@@ -120,8 +120,8 @@ pub struct GeminiWebSocket {
     status: Arc<Mutex<ConnectionStatus>>,
     /// Active subscriptions
     subscriptions: Arc<Mutex<HashSet<String>>>,
-    /// Broadcast sender (for multiple consumers)
-    broadcast_tx: Arc<broadcast::Sender<WebSocketResult<StreamEvent>>>,
+    /// Broadcast sender (for multiple consumers, dropped on disconnect)
+    broadcast_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
     /// WebSocket write half — shared by subscribe and ping replies.
     /// The read half is owned exclusively by the message loop task (no mutex needed).
     ws_writer: Arc<Mutex<Option<WsSink>>>,
@@ -150,15 +150,13 @@ impl GeminiWebSocket {
             GeminiUrls::MAINNET
         };
 
-        let (broadcast_tx, _) = broadcast::channel(1000);
-
         Ok(Self {
             ws_type: WebSocketType::MarketData,
             auth: None,
             urls,
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
-            broadcast_tx: Arc::new(broadcast_tx),
+            broadcast_tx: Arc::new(StdMutex::new(None)),
             ws_writer: Arc::new(Mutex::new(None)),
             last_heartbeat: Arc::new(Mutex::new(Instant::now())),
             ws_ping_rtt_ms: Arc::new(Mutex::new(0)),
@@ -177,7 +175,6 @@ impl GeminiWebSocket {
         };
 
         let auth = Some(GeminiAuth::new(&credentials)?);
-        let (broadcast_tx, _) = broadcast::channel(1000);
 
         Ok(Self {
             ws_type: WebSocketType::OrderEvents,
@@ -185,7 +182,7 @@ impl GeminiWebSocket {
             urls,
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
-            broadcast_tx: Arc::new(broadcast_tx),
+            broadcast_tx: Arc::new(StdMutex::new(None)),
             ws_writer: Arc::new(Mutex::new(None)),
             last_heartbeat: Arc::new(Mutex::new(Instant::now())),
             ws_ping_rtt_ms: Arc::new(Mutex::new(0)),
@@ -238,6 +235,10 @@ impl GeminiWebSocket {
         *self.ws_writer.lock().await = Some(write);
         *self.status.lock().await = ConnectionStatus::Connected;
 
+        // Create broadcast channel and store
+        let (broadcast_sender, _) = broadcast::channel(1000);
+        *self.broadcast_tx.lock().unwrap() = Some(broadcast_sender);
+
         // Start message handler — reader is moved in, never shared via mutex.
         self.start_message_handler(read);
 
@@ -251,6 +252,7 @@ impl GeminiWebSocket {
         if let Some(mut writer) = self.ws_writer.lock().await.take() {
             writer.close().await.ok();
         }
+        let _ = self.broadcast_tx.lock().unwrap().take();
         *self.status.lock().await = ConnectionStatus::Disconnected;
         Ok(())
     }
@@ -323,7 +325,9 @@ impl GeminiWebSocket {
 
     /// Get event stream (multiple consumers can call this)
     pub fn event_stream(&self) -> broadcast::Receiver<WebSocketResult<StreamEvent>> {
-        self.broadcast_tx.subscribe()
+        self.broadcast_tx.lock().unwrap().as_ref()
+            .map(|tx| tx.subscribe())
+            .unwrap_or_else(|| broadcast::channel(1).1)
     }
 
     /// Start message handler task.
@@ -344,7 +348,9 @@ impl GeminiWebSocket {
                     Ok(Message::Text(text)) => {
                         // Parse and broadcast event
                         if let Ok(Some(evt)) = Self::parse_message(&text, ws_type) {
-                            broadcast_tx.send(Ok(evt)).ok();
+                            if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                                tx.send(Ok(evt)).ok();
+                            }
                         }
 
                         // Update heartbeat for order events
@@ -364,13 +370,17 @@ impl GeminiWebSocket {
                         break;
                     }
                     Err(e) => {
-                        broadcast_tx.send(Err(WebSocketError::ConnectionError(e.to_string()))).ok();
+                        if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                            tx.send(Err(WebSocketError::ConnectionError(e.to_string()))).ok();
+                        }
                         break;
                     }
                     _ => {}
                 }
             }
-            // Stream exhausted — connection closed.
+            // Stream exhausted — drop sender so receivers know the stream is done
+            let _ = broadcast_tx.lock().unwrap().take();
+            // Connection closed.
             *status.lock().await = ConnectionStatus::Disconnected;
         });
         // Note: Gemini market data WebSocket does not expect client-initiated
@@ -488,7 +498,9 @@ impl WebSocketConnector for GeminiWebSocket {
     }
 
     fn event_stream(&self) -> std::pin::Pin<Box<dyn futures_util::Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        let rx = self.broadcast_tx.subscribe();
+        let rx = self.broadcast_tx.lock().unwrap().as_ref()
+            .map(|tx| tx.subscribe())
+            .unwrap_or_else(|| broadcast::channel(1).1);
 
         Box::pin(futures_util::stream::unfold(rx, |mut rx| async move {
             match rx.recv().await {

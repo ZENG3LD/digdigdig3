@@ -18,7 +18,7 @@
 
 use std::collections::HashSet;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -176,8 +176,9 @@ pub struct LighterWebSocket {
     event_tx: mpsc::UnboundedSender<WebSocketResult<StreamEvent>>,
     /// Internal event receiver (forwarder reads from this)
     event_rx: Arc<Mutex<Option<mpsc::UnboundedReceiver<WebSocketResult<StreamEvent>>>>>,
-    /// Broadcast sender (for multiple consumers via event_stream())
-    broadcast_tx: Arc<broadcast::Sender<WebSocketResult<StreamEvent>>>,
+    /// Broadcast sender — behind StdMutex so event_stream() can subscribe
+    /// without contending with the async message loop.
+    broadcast_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
     /// Last ping time
     last_ping: Arc<Mutex<Instant>>,
     /// Ping interval (30 seconds recommended)
@@ -204,7 +205,6 @@ impl LighterWebSocket {
             .transpose()?;
 
         let (event_tx, event_rx) = mpsc::unbounded_channel();
-        let (broadcast_tx, _) = broadcast::channel(1000);
 
         Ok(Self {
             auth,
@@ -216,7 +216,7 @@ impl LighterWebSocket {
             subscription_requests: Arc::new(Mutex::new(Vec::new())),
             event_tx,
             event_rx: Arc::new(Mutex::new(Some(event_rx))),
-            broadcast_tx: Arc::new(broadcast_tx),
+            broadcast_tx: Arc::new(StdMutex::new(None)),
             last_ping: Arc::new(Mutex::new(Instant::now())),
             ping_interval: Duration::from_secs(30),
             ws_ping_rtt_ms: Arc::new(Mutex::new(0)),
@@ -254,6 +254,7 @@ impl LighterWebSocket {
             let _ = ws.close(None).await;
         }
         *self.status.lock().await = ConnectionStatus::Disconnected;
+        let _ = self.broadcast_tx.lock().unwrap().take();
         Ok(())
     }
 
@@ -431,15 +432,24 @@ impl LighterWebSocket {
         let broadcast_tx = self.broadcast_tx.clone();
         let event_rx = self.event_rx.clone();
 
+        // Create broadcast channel and store sender
+        let (tx, _) = broadcast::channel(1000);
+        *broadcast_tx.lock().unwrap() = Some(tx);
+
+        let broadcast_tx_inner = self.broadcast_tx.clone();
         tokio::spawn(async move {
             let mut rx = match event_rx.lock().await.take() {
                 Some(rx) => rx,
                 None => return,
             };
             while let Some(event) = rx.recv().await {
-                // Forward to broadcast channel (ignore if no receivers yet)
-                let _ = broadcast_tx.send(event);
+                let tx_guard = broadcast_tx_inner.lock().unwrap();
+                if let Some(ref tx) = *tx_guard {
+                    let _ = tx.send(event);
+                }
             }
+            // Drop the broadcast sender so consumers get None
+            let _ = broadcast_tx_inner.lock().unwrap().take();
         });
     }
 
@@ -792,20 +802,16 @@ impl WebSocketConnector for LighterWebSocket {
     }
 
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        // Subscribe to broadcast channel for this consumer
-        let rx = self.broadcast_tx.subscribe();
-
-        // Convert broadcast receiver to stream, handling lagged errors
-        Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| async move {
-            match result {
-                Ok(event) => Some(event),
-                Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(_)) => {
-                    Some(Err(WebSocketError::ConnectionError(
-                        "Event stream lagged behind".to_string(),
-                    )))
-                }
-            }
-        }))
+        let tx_guard = self.broadcast_tx.lock().unwrap();
+        if let Some(ref tx) = *tx_guard {
+            let rx = tx.subscribe();
+            Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).map(|r| {
+                r.map_err(|e| WebSocketError::ConnectionError(format!("Broadcast error: {}", e)))
+                    .and_then(|x| x)
+            }))
+        } else {
+            Box::pin(futures_util::stream::empty())
+        }
     }
 
     fn active_subscriptions(&self) -> Vec<SubscriptionRequest> {

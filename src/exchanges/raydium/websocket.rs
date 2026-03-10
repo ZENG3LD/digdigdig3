@@ -63,7 +63,7 @@
 
 use std::pin::Pin;
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -265,7 +265,7 @@ pub struct RaydiumWebSocket {
     rpc_url: String,
     status: Arc<Mutex<ConnectionStatus>>,
     subscriptions: Arc<Mutex<HashSet<SubscriptionRequest>>>,
-    broadcast_tx: Arc<broadcast::Sender<WebSocketResult<StreamEvent>>>,
+    broadcast_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
     sub_handles: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
     last_ping: Arc<Mutex<Instant>>,
 }
@@ -285,14 +285,12 @@ impl RaydiumWebSocket {
             )
         };
 
-        let (broadcast_tx, _) = broadcast::channel(1000);
-
         Ok(Self {
             ws_url,
             rpc_url,
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
-            broadcast_tx: Arc::new(broadcast_tx),
+            broadcast_tx: Arc::new(StdMutex::new(None)),
             sub_handles: Arc::new(Mutex::new(Vec::new())),
             last_ping: Arc::new(Mutex::new(Instant::now())),
         })
@@ -373,6 +371,10 @@ impl RaydiumWebSocket {
         let symbol = request.symbol.clone();
 
         let handle = tokio::spawn(async move {
+            // Create broadcast channel and store sender for the lifetime of this task
+            let (tx, _) = broadcast::channel(1000);
+            *broadcast_tx.lock().unwrap() = Some(tx);
+
             let mut reconnect_delay = Duration::from_secs(1);
             let max_delay = Duration::from_secs(60);
 
@@ -397,9 +399,11 @@ impl RaydiumWebSocket {
                             e,
                             reconnect_delay
                         );
-                        let _ = broadcast_tx.send(Err(WebSocketError::ConnectionError(
-                            format!("Subscription error: {}", e),
-                        )));
+                        if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                            let _ = tx.send(Err(WebSocketError::ConnectionError(
+                                format!("Subscription error: {}", e),
+                            )));
+                        }
                     }
                 }
 
@@ -420,7 +424,7 @@ impl RaydiumWebSocket {
         ws_url: &str,
         vault_info: &PoolVaultInfo,
         symbol: &Symbol,
-        broadcast_tx: &broadcast::Sender<WebSocketResult<StreamEvent>>,
+        broadcast_tx: &Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
         last_ping: &Arc<Mutex<Instant>>,
         status: &Arc<Mutex<ConnectionStatus>>,
     ) -> WebSocketResult<()> {
@@ -603,8 +607,9 @@ impl RaydiumWebSocket {
                                             timestamp: utils::timestamp_millis() as i64,
                                         };
 
-                                        let _ = broadcast_tx
-                                            .send(Ok(StreamEvent::Ticker(ticker)));
+                                        if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                                            let _ = tx.send(Ok(StreamEvent::Ticker(ticker)));
+                                        }
                                     }
                                 }
                             }
@@ -701,19 +706,24 @@ impl WebSocketConnector for RaydiumWebSocket {
     }
 
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        let rx = self.broadcast_tx.subscribe();
-        Box::pin(
-            tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| async move {
-                match result {
-                    Ok(event) => Some(event),
-                    Err(
-                        tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(_),
-                    ) => Some(Err(WebSocketError::ConnectionError(
-                        "Event stream lagged behind".to_string(),
-                    ))),
-                }
-            }),
-        )
+        let tx_guard = self.broadcast_tx.lock().unwrap();
+        if let Some(ref tx) = *tx_guard {
+            let rx = tx.subscribe();
+            Box::pin(
+                tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| async move {
+                    match result {
+                        Ok(event) => Some(event),
+                        Err(
+                            tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(_),
+                        ) => Some(Err(WebSocketError::ConnectionError(
+                            "Event stream lagged behind".to_string(),
+                        ))),
+                    }
+                }),
+            )
+        } else {
+            Box::pin(futures_util::stream::empty())
+        }
     }
 
     fn active_subscriptions(&self) -> Vec<SubscriptionRequest> {

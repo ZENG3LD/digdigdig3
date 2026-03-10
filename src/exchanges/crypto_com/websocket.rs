@@ -29,7 +29,7 @@
 
 use std::collections::HashSet;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -122,8 +122,8 @@ pub struct CryptoComWebSocket {
     ws_stream: Arc<Mutex<Option<WsStream>>>,
     /// Broadcast sender for custom WsEvent (legacy interface)
     broadcast_tx: broadcast::Sender<WsEvent>,
-    /// Broadcast sender for standard StreamEvent (trait interface)
-    stream_broadcast_tx: Arc<broadcast::Sender<WebSocketResult<StreamEvent>>>,
+    /// Broadcast sender for standard StreamEvent (trait interface, dropped on disconnect)
+    stream_broadcast_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
     /// Active subscriptions (channel strings, legacy)
     subscriptions: Arc<Mutex<HashSet<String>>>,
     /// Active subscriptions (standard SubscriptionRequest, for trait)
@@ -144,14 +144,13 @@ impl CryptoComWebSocket {
     /// Create new WebSocket client
     pub fn new(auth: Option<CryptoComAuth>, is_user_stream: bool) -> Self {
         let (tx, _) = broadcast::channel(1000);
-        let (stream_tx, _) = broadcast::channel(1000);
 
         Self {
             auth,
             is_user_stream,
             ws_stream: Arc::new(Mutex::new(None)),
             broadcast_tx: tx,
-            stream_broadcast_tx: Arc::new(stream_tx),
+            stream_broadcast_tx: Arc::new(StdMutex::new(None)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
             trait_subscriptions: Arc::new(Mutex::new(HashSet::new())),
             message_id: Arc::new(Mutex::new(1)),
@@ -192,6 +191,10 @@ impl CryptoComWebSocket {
 
         *self.ws_stream.lock().await = Some(ws_stream);
         *self.is_connected.lock().await = true;
+
+        // Create broadcast channel and store
+        let (stream_sender, _) = broadcast::channel(1000);
+        *self.stream_broadcast_tx.lock().unwrap() = Some(stream_sender);
 
         // Authenticate if user stream
         if self.is_user_stream {
@@ -279,7 +282,9 @@ impl CryptoComWebSocket {
                         if let Some(event) = Self::parse_message(&text) {
                             // Forward to standard StreamEvent broadcast
                             if let Some(stream_event) = Self::ws_event_to_stream_event(&event) {
-                                let _ = stream_broadcast_tx.send(Ok(stream_event));
+                                if let Some(tx) = stream_broadcast_tx.lock().unwrap().as_ref() {
+                                    let _ = tx.send(Ok(stream_event));
+                                }
                             }
                             // Forward to legacy WsEvent broadcast
                             let _ = broadcast_tx.send(event);
@@ -298,9 +303,9 @@ impl CryptoComWebSocket {
                     }
                     Some(Err(e)) => {
                         drop(stream_guard);
-                        let _ = stream_broadcast_tx.send(Err(
-                            WebSocketError::ConnectionError(e.to_string())
-                        ));
+                        if let Some(tx) = stream_broadcast_tx.lock().unwrap().as_ref() {
+                            let _ = tx.send(Err(WebSocketError::ConnectionError(e.to_string())));
+                        }
                         let _ = broadcast_tx.send(WsEvent::Error(e.to_string()));
                         break;
                     }
@@ -314,6 +319,8 @@ impl CryptoComWebSocket {
                     }
                 }
             }
+            // Stream ended — drop broadcast sender
+            let _ = stream_broadcast_tx.lock().unwrap().take();
         });
     }
 
@@ -662,6 +669,7 @@ impl CryptoComWebSocket {
     pub async fn disconnect(&mut self) -> ExchangeResult<()> {
         *self.is_connected.lock().await = false;
         *self.ws_stream.lock().await = None;
+        let _ = self.stream_broadcast_tx.lock().unwrap().take();
         self.subscriptions.lock().await.clear();
         Ok(())
     }
@@ -690,6 +698,10 @@ impl WebSocketConnector for CryptoComWebSocket {
         *self.ws_stream.lock().await = Some(ws_stream);
         *self.is_connected.lock().await = true;
 
+        // Create broadcast channel and store
+        let (stream_sender, _) = broadcast::channel(1000);
+        *self.stream_broadcast_tx.lock().unwrap() = Some(stream_sender);
+
         // Authenticate if user stream
         if self.is_user_stream {
             self.authenticate().await
@@ -711,6 +723,7 @@ impl WebSocketConnector for CryptoComWebSocket {
     async fn disconnect(&mut self) -> WebSocketResult<()> {
         *self.is_connected.lock().await = false;
         *self.ws_stream.lock().await = None;
+        let _ = self.stream_broadcast_tx.lock().unwrap().take();
         self.subscriptions.lock().await.clear();
         self.trait_subscriptions.lock().await.clear();
         Ok(())
@@ -761,7 +774,9 @@ impl WebSocketConnector for CryptoComWebSocket {
     }
 
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        let rx = self.stream_broadcast_tx.subscribe();
+        let rx = self.stream_broadcast_tx.lock().unwrap().as_ref()
+            .map(|tx| tx.subscribe())
+            .unwrap_or_else(|| broadcast::channel(1).1);
 
         Box::pin(
             tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| async move {

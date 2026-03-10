@@ -349,6 +349,10 @@ impl DeribitWebSocket {
                     _ => {}
                 }
             }
+            // Drop the broadcast sender so all BroadcastStream receivers get None
+            // from .next(). Without this, a clean close leaves the sender alive
+            // and the bridge hangs forever instead of reconnecting.
+            let _ = event_tx.lock().unwrap().take();
             // Stream exhausted — connection closed
             *status.lock().await = ConnectionStatus::Disconnected;
         });

@@ -32,7 +32,7 @@
 
 use std::collections::HashSet;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -93,7 +93,7 @@ pub struct UniswapWebSocket {
     /// Pool addresses we're monitoring
     pool_addresses: Arc<Mutex<HashSet<String>>>,
     /// Broadcast sender (for multiple consumers)
-    broadcast_tx: Arc<broadcast::Sender<WebSocketResult<StreamEvent>>>,
+    broadcast_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
     /// Ethereum provider
     provider: Arc<Mutex<Option<Provider<Ws>>>>,
     /// Last message time
@@ -103,16 +103,13 @@ pub struct UniswapWebSocket {
 impl UniswapWebSocket {
     /// Create new WebSocket client
     pub async fn new(ws_url: String, chain_id: u64) -> WebSocketResult<Self> {
-        // Create broadcast channel (capacity of 1000 events)
-        let (broadcast_tx, _) = broadcast::channel(1000);
-
         Ok(Self {
             ws_url,
             _chain_id: chain_id,
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
             pool_addresses: Arc::new(Mutex::new(HashSet::new())),
-            broadcast_tx: Arc::new(broadcast_tx),
+            broadcast_tx: Arc::new(StdMutex::new(None)),
             provider: Arc::new(Mutex::new(None)),
             last_message: Arc::new(Mutex::new(Instant::now())),
         })
@@ -210,12 +207,16 @@ impl UniswapWebSocket {
 
                         // Parse and emit event
                         if let Some(event) = Self::parse_swap_log(&pool_address_clone, &log) {
-                            let _ = broadcast_tx.send(Ok(event));
+                            if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                                let _ = tx.send(Ok(event));
+                            }
                         }
                     }
                 }
                 Err(e) => {
-                    let _ = broadcast_tx.send(Err(WebSocketError::ConnectionError(format!("Failed to subscribe to logs: {}", e))));
+                    if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                        let _ = tx.send(Err(WebSocketError::ConnectionError(format!("Failed to subscribe to logs: {}", e))));
+                    }
                 }
             }
         });
@@ -380,6 +381,10 @@ impl WebSocketConnector for UniswapWebSocket {
         *self.status.lock().await = ConnectionStatus::Connected;
         *self.last_message.lock().await = Instant::now();
 
+        // Create broadcast channel and store sender
+        let (tx, _) = broadcast::channel(1000);
+        *self.broadcast_tx.lock().unwrap() = Some(tx);
+
         // Start heartbeat monitoring
         Self::start_heartbeat_task(
             self.last_message.clone(),
@@ -394,6 +399,9 @@ impl WebSocketConnector for UniswapWebSocket {
 
         // Clear provider
         *self.provider.lock().await = None;
+
+        // Drop the broadcast sender so consumers see stream end
+        let _ = self.broadcast_tx.lock().unwrap().take();
 
         // Clear subscriptions
         self.subscriptions.lock().await.clear();
@@ -436,19 +444,21 @@ impl WebSocketConnector for UniswapWebSocket {
     }
 
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        // Subscribe to broadcast channel
-        let rx = self.broadcast_tx.subscribe();
-
-        // Convert broadcast receiver to stream
-        Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| {
-            match result {
-                Ok(event) => Some(event),
-                Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(_)) => {
-                    // Consumer was too slow, some events were dropped
-                    Some(Err(WebSocketError::ConnectionError("Event stream lagged behind".to_string())))
+        let tx_guard = self.broadcast_tx.lock().unwrap();
+        if let Some(ref tx) = *tx_guard {
+            let rx = tx.subscribe();
+            // Convert broadcast receiver to stream
+            Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| {
+                match result {
+                    Ok(event) => Some(event),
+                    Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(_)) => {
+                        Some(Err(WebSocketError::ConnectionError("Event stream lagged behind".to_string())))
+                    }
                 }
-            }
-        }))
+            }))
+        } else {
+            Box::pin(futures_util::stream::empty())
+        }
     }
 
     fn active_subscriptions(&self) -> Vec<SubscriptionRequest> {

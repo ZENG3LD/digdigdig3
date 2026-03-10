@@ -26,14 +26,14 @@
 
 use std::collections::HashSet;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use futures_util::{Stream, StreamExt, SinkExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::sync::{mpsc, broadcast, Mutex};
+use tokio::sync::{broadcast, Mutex};
 use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream, MaybeTlsStream};
 
@@ -101,10 +101,9 @@ pub struct VertexWebSocket {
     status: Arc<Mutex<ConnectionStatus>>,
     /// Active subscriptions
     subscriptions: Arc<Mutex<HashSet<SubscriptionRequest>>>,
-    /// Event sender (internal - for message handler)
-    event_tx: Arc<Mutex<Option<mpsc::UnboundedSender<WebSocketResult<StreamEvent>>>>>,
-    /// Broadcast sender (for multiple consumers)
-    broadcast_tx: Arc<broadcast::Sender<WebSocketResult<StreamEvent>>>,
+    /// Broadcast sender — behind StdMutex so event_stream() can subscribe
+    /// without contending with the async message loop.
+    event_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
     /// WebSocket stream
     ws_stream: Arc<Mutex<Option<WsStream>>>,
     /// Last ping time
@@ -137,17 +136,13 @@ impl VertexWebSocket {
             VertexAuth::new(creds, chain_id, verifying_contract, None)
         }).transpose()?;
 
-        // Create broadcast channel (capacity of 1000 events)
-        let (broadcast_tx, _) = broadcast::channel(1000);
-
         Ok(Self {
             auth,
             urls,
             account_type: AccountType::Spot,
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
-            event_tx: Arc::new(Mutex::new(None)),
-            broadcast_tx: Arc::new(broadcast_tx),
+            event_tx: Arc::new(StdMutex::new(None)),
             ws_stream: Arc::new(Mutex::new(None)),
             last_ping: Arc::new(Mutex::new(Instant::now())),
             ping_interval: Duration::from_secs(30),
@@ -190,7 +185,7 @@ impl VertexWebSocket {
     /// Start message handling task
     fn start_message_handler(
         ws_stream: Arc<Mutex<Option<WsStream>>>,
-        event_tx: mpsc::UnboundedSender<WebSocketResult<StreamEvent>>,
+        event_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
         status: Arc<Mutex<ConnectionStatus>>,
     ) {
         tokio::spawn(async move {
@@ -209,7 +204,9 @@ impl VertexWebSocket {
                     Some(Ok(Message::Text(text))) => {
                         drop(stream_guard);
                         if let Err(e) = Self::handle_message(&text, &event_tx).await {
-                            let _ = event_tx.send(Err(e));
+                            if let Some(tx) = event_tx.lock().unwrap().as_ref() {
+                                let _ = tx.send(Err(e));
+                            }
                         }
                     }
                     Some(Ok(Message::Close(_))) => {
@@ -219,7 +216,9 @@ impl VertexWebSocket {
                     }
                     Some(Err(e)) => {
                         drop(stream_guard);
-                        let _ = event_tx.send(Err(WebSocketError::ConnectionError(e.to_string())));
+                        if let Some(tx) = event_tx.lock().unwrap().as_ref() {
+                            let _ = tx.send(Err(WebSocketError::ConnectionError(e.to_string())));
+                        }
                         break;
                     }
                     None => {
@@ -232,13 +231,14 @@ impl VertexWebSocket {
                     }
                 }
             }
+            let _ = event_tx.lock().unwrap().take();
         });
     }
 
     /// Handle incoming WebSocket message
     async fn handle_message(
         text: &str,
-        event_tx: &mpsc::UnboundedSender<WebSocketResult<StreamEvent>>,
+        event_tx: &Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
     ) -> WebSocketResult<()> {
         let msg: IncomingMessage = serde_json::from_str(text)
             .map_err(|e| WebSocketError::Parse(format!("Failed to parse message: {}", e)))?;
@@ -258,7 +258,9 @@ impl VertexWebSocket {
             Some("data") => {
                 // Data message - parse and emit event
                 if let Some(event) = Self::parse_data_message(&msg)? {
-                    let _ = event_tx.send(Ok(event));
+                    if let Some(tx) = event_tx.lock().unwrap().as_ref() {
+                        let _ = tx.send(Ok(event));
+                    }
                 }
             }
             _ => {
@@ -405,25 +407,16 @@ impl WebSocketConnector for VertexWebSocket {
 
         *self.status.lock().await = ConnectionStatus::Connected;
 
-        // Create event channel
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        *self.event_tx.lock().await = Some(tx.clone());
+        // Create broadcast channel and store sender
+        let (tx, _) = broadcast::channel(1000);
+        *self.event_tx.lock().unwrap() = Some(tx);
 
         // Start message handler
         Self::start_message_handler(
             self.ws_stream.clone(),
-            tx,
+            self.event_tx.clone(),
             self.status.clone(),
         );
-
-        // Start forwarder task (mpsc -> broadcast)
-        let broadcast_tx = self.broadcast_tx.clone();
-        tokio::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                // Forward to broadcast channel (ignore if no receivers)
-                let _ = broadcast_tx.send(event);
-            }
-        });
 
         // Start ping task
         Self::start_ping_task(
@@ -438,7 +431,7 @@ impl WebSocketConnector for VertexWebSocket {
     async fn disconnect(&mut self) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Disconnected;
         *self.ws_stream.lock().await = None;
-        *self.event_tx.lock().await = None;
+        let _ = self.event_tx.lock().unwrap().take();
         self.subscriptions.lock().await.clear();
         Ok(())
     }
@@ -493,20 +486,23 @@ impl WebSocketConnector for VertexWebSocket {
     }
 
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        // Subscribe to broadcast channel
-        let rx = self.broadcast_tx.subscribe();
-
-        // Convert broadcast receiver to stream
-        Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| async move {
-            match result {
-                Ok(event) => Some(event),
-                Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(_)) => {
-                    // Consumer was too slow, some events were dropped
-                    // Return an error event
-                    Some(Err(WebSocketError::ConnectionError("Event stream lagged behind".to_string())))
+        let tx_guard = self.event_tx.lock().unwrap();
+        if let Some(ref tx) = *tx_guard {
+            let rx = tx.subscribe();
+            // Convert broadcast receiver to stream
+            Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| async move {
+                match result {
+                    Ok(event) => Some(event),
+                    Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(_)) => {
+                        // Consumer was too slow, some events were dropped
+                        // Return an error event
+                        Some(Err(WebSocketError::ConnectionError("Event stream lagged behind".to_string())))
+                    }
                 }
-            }
-        }))
+            }))
+        } else {
+            Box::pin(futures_util::stream::empty())
+        }
     }
 
     fn active_subscriptions(&self) -> Vec<SubscriptionRequest> {

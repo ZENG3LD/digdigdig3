@@ -87,9 +87,9 @@ use crate::exchanges::hyperliquid::HyperliquidConnector;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 use crate::exchanges::lighter::LighterConnector;
-use crate::exchanges::uniswap::UniswapConnector;
+use crate::onchain::ethereum::uniswap::UniswapConnector;
 use crate::exchanges::jupiter::JupiterConnector;
-use crate::exchanges::raydium::RaydiumConnector;
+use crate::onchain::solana::raydium::RaydiumConnector;
 use crate::exchanges::gmx::GmxConnector;
 use crate::exchanges::paradex::ParadexConnector;
 use crate::exchanges::dydx::DydxConnector;

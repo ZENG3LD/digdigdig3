@@ -1,13 +1,15 @@
 //! Crypto/Market data providers
 
 pub mod coinglass;
-pub mod bitquery;
-pub mod whale_alert;
 pub mod coingecko;
-pub mod etherscan;
 
 pub use coinglass::{CoinglassConnector, CoinglassAuth, CoinglassParser};
-pub use bitquery::{BitqueryConnector, BitqueryAuth, BitqueryParser};
-pub use whale_alert::{WhaleAlertConnector, WhaleAlertAuth, WhaleAlertParser};
 pub use coingecko::{CoinGeckoConnector, CoinGeckoAuth};
-pub use etherscan::{EtherscanConnector, EtherscanAuth};
+
+// Bitquery → moved to onchain::analytics::bitquery
+// WhaleAlert → moved to onchain::analytics::whale_alert
+// Etherscan → moved to onchain::ethereum::etherscan
+// Compat re-exports so existing consumers don't break:
+pub use crate::onchain::analytics::bitquery::{BitqueryConnector, BitqueryAuth, BitqueryParser};
+pub use crate::onchain::analytics::whale_alert::{WhaleAlertConnector, WhaleAlertAuth, WhaleAlertParser};
+pub use crate::onchain::ethereum::etherscan::{EtherscanConnector, EtherscanAuth};

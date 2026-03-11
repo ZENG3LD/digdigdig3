@@ -59,9 +59,8 @@ pub mod phemex;
 pub mod hyperliquid;
 pub mod lighter;
 pub mod jupiter;
-// Uniswap WebSocket now has real Ethereum RPC support via ethers
-pub mod uniswap;
-pub mod raydium;
+// Uniswap → moved to onchain::ethereum::uniswap
+// Raydium → moved to onchain::solana::raydium
 pub mod gmx;
 
 pub mod upbit;

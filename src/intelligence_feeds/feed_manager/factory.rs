@@ -395,7 +395,7 @@ impl FeedFactory {
                 ))
             }
             (FeedId::Etherscan, FeedCredentials::ApiKey(key)) => {
-                use crate::intelligence_feeds::crypto::etherscan::{EtherscanConnector, EtherscanAuth};
+                use crate::onchain::ethereum::etherscan::{EtherscanConnector, EtherscanAuth};
                 Ok(Box::new(EtherscanConnector::new(EtherscanAuth::new(key))))
             }
             (FeedId::WhaleAlert, FeedCredentials::ApiKey(key)) => {

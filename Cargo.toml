@@ -12,8 +12,9 @@ keywords = ["exchange", "trading", "crypto", "websocket", "connector"]
 categories = ["api-bindings", "asynchronous", "web-programming"]
 
 [features]
-default = []
+default = ["onchain-ethereum"]
 websocket = []
+onchain-ethereum = ["dep:alloy"]
 
 [dependencies]
 # Serialization
@@ -71,8 +72,8 @@ bs58 = "0.5"
 # Uses tokio-tungstenite with native-tls (already available via reqwest)
 # No additional dependencies needed
 
-# Ethereum (for Uniswap WebSocket)
-alloy = { version = "1", features = ["provider-ws", "rpc-types"] }
+# Ethereum (for Uniswap WebSocket) — gated behind onchain-ethereum feature
+alloy = { version = "1", features = ["provider-ws", "rpc-types"], optional = true }
 tracing-subscriber = "0.3.22"
 
 # TOTP (for Angel One 2FA)

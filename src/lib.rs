@@ -40,6 +40,7 @@
 
 pub mod core;
 pub mod exchanges;
+pub mod onchain;
 pub mod stocks;
 pub mod forex;
 pub mod aggregators;

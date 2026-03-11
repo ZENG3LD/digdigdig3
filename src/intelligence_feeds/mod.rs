@@ -85,10 +85,7 @@ pub mod feed_manager;
 
 // Crypto/Market
 pub use crypto::{CoinglassConnector, CoinglassAuth, CoinglassParser};
-pub use crypto::{BitqueryConnector, BitqueryAuth, BitqueryParser};
-pub use crypto::{WhaleAlertConnector, WhaleAlertAuth, WhaleAlertParser};
 pub use crypto::{CoinGeckoConnector, CoinGeckoAuth};
-pub use crypto::{EtherscanConnector, EtherscanAuth};
 
 // Economic Data
 pub use economic::{FredConnector, FredAuth, FredParser};

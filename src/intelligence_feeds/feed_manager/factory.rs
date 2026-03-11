@@ -140,8 +140,8 @@ impl FeedFactory {
             }
             FeedId::Etherscan => {
                 // Etherscan works without a key (lower rate limits — 5 req/sec)
-                use crate::intelligence_feeds::EtherscanAuth;
-                Ok(Box::new(crate::intelligence_feeds::EtherscanConnector::new(
+                use crate::onchain::ethereum::etherscan::{EtherscanConnector, EtherscanAuth};
+                Ok(Box::new(EtherscanConnector::new(
                     EtherscanAuth { api_key: None },
                 )))
             }
@@ -373,9 +373,8 @@ impl FeedFactory {
             }
             // ── crypto ────────────────────────────────────────────────────
             (FeedId::Bitquery, FeedCredentials::Credentials(c)) => {
-                Ok(Box::new(
-                    crate::intelligence_feeds::BitqueryConnector::new(c).await?,
-                ))
+                use crate::onchain::analytics::bitquery::BitqueryConnector;
+                Ok(Box::new(BitqueryConnector::new(c).await?))
             }
             (FeedId::CoinGecko, FeedCredentials::ApiKey(key)) => {
                 use crate::intelligence_feeds::crypto::coingecko::CoinGeckoAuth;
@@ -399,10 +398,8 @@ impl FeedFactory {
                 Ok(Box::new(EtherscanConnector::new(EtherscanAuth::new(key))))
             }
             (FeedId::WhaleAlert, FeedCredentials::ApiKey(key)) => {
-                use crate::intelligence_feeds::WhaleAlertAuth;
-                Ok(Box::new(crate::intelligence_feeds::WhaleAlertConnector::new(
-                    WhaleAlertAuth::new(key),
-                )))
+                use crate::onchain::analytics::whale_alert::{WhaleAlertConnector, WhaleAlertAuth};
+                Ok(Box::new(WhaleAlertConnector::new(WhaleAlertAuth::new(key))))
             }
             // ── cyber ─────────────────────────────────────────────────────
             (FeedId::AbuseIpdb, FeedCredentials::ApiKey(key)) => {

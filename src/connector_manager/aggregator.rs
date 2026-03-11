@@ -603,7 +603,7 @@ pub struct BestBidAsk {
 mod tests {
     use super::*;
     use crate::connector_manager::AnyConnector;
-    use crate::exchanges::okx::OkxConnector;
+    use crate::crypto::cex::okx::OkxConnector;
 
     /// Helper to create a mock OKX connector for testing
     async fn create_mock_connector() -> Arc<AnyConnector> {

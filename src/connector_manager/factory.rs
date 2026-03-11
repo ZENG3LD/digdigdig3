@@ -62,37 +62,37 @@ use crate::connector_manager::AnyConnector;
 // CONNECTOR IMPORTS - CEX
 // ═══════════════════════════════════════════════════════════════════════════════
 
-use crate::exchanges::binance::BinanceConnector;
-use crate::exchanges::bybit::BybitConnector;
-use crate::exchanges::okx::OkxConnector;
-use crate::exchanges::kucoin::KuCoinConnector;
-use crate::exchanges::kraken::KrakenConnector;
-use crate::exchanges::coinbase::CoinbaseConnector;
-use crate::exchanges::gateio::GateioConnector;
-use crate::exchanges::bitfinex::BitfinexConnector;
-use crate::exchanges::bitstamp::BitstampConnector;
-use crate::exchanges::gemini::GeminiConnector;
-use crate::exchanges::mexc::MexcConnector;
-use crate::exchanges::htx::HtxConnector;
-use crate::exchanges::bitget::BitgetConnector;
-use crate::exchanges::bingx::BingxConnector;
-use crate::exchanges::phemex::PhemexConnector;
-use crate::exchanges::crypto_com::CryptoComConnector;
-use crate::exchanges::upbit::UpbitConnector;
-use crate::exchanges::deribit::DeribitConnector;
-use crate::exchanges::hyperliquid::HyperliquidConnector;
+use crate::crypto::cex::binance::BinanceConnector;
+use crate::crypto::cex::bybit::BybitConnector;
+use crate::crypto::cex::okx::OkxConnector;
+use crate::crypto::cex::kucoin::KuCoinConnector;
+use crate::crypto::cex::kraken::KrakenConnector;
+use crate::crypto::cex::coinbase::CoinbaseConnector;
+use crate::crypto::cex::gateio::GateioConnector;
+use crate::crypto::cex::bitfinex::BitfinexConnector;
+use crate::crypto::cex::bitstamp::BitstampConnector;
+use crate::crypto::cex::gemini::GeminiConnector;
+use crate::crypto::cex::mexc::MexcConnector;
+use crate::crypto::cex::htx::HtxConnector;
+use crate::crypto::cex::bitget::BitgetConnector;
+use crate::crypto::cex::bingx::BingxConnector;
+use crate::crypto::cex::phemex::PhemexConnector;
+use crate::crypto::cex::crypto_com::CryptoComConnector;
+use crate::crypto::cex::upbit::UpbitConnector;
+use crate::crypto::cex::deribit::DeribitConnector;
+use crate::crypto::cex::hyperliquid::HyperliquidConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR IMPORTS - DEX
 // ═══════════════════════════════════════════════════════════════════════════════
 
-use crate::exchanges::lighter::LighterConnector;
-use crate::onchain::ethereum::uniswap::UniswapConnector;
-use crate::exchanges::jupiter::JupiterConnector;
-use crate::onchain::solana::raydium::RaydiumConnector;
-use crate::exchanges::gmx::GmxConnector;
-use crate::exchanges::paradex::ParadexConnector;
-use crate::exchanges::dydx::DydxConnector;
+use crate::crypto::dex::lighter::LighterConnector;
+use crate::crypto::swap::uniswap::UniswapConnector;
+use crate::crypto::dex::jupiter::JupiterConnector;
+use crate::crypto::swap::raydium::RaydiumConnector;
+use crate::crypto::dex::gmx::GmxConnector;
+use crate::crypto::dex::paradex::ParadexConnector;
+use crate::crypto::dex::dydx::DydxConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR IMPORTS - STOCKS US

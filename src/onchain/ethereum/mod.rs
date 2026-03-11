@@ -1,8 +1,6 @@
 //! # Ethereum On-Chain
 //!
-//! Direct Ethereum blockchain connections via RPC nodes.
-//! Uniswap requires the `onchain-ethereum` feature (for alloy dependency).
+//! Ethereum blockchain explorers and analytics.
+//! Uniswap has moved to `crypto::swap::uniswap`.
 
-#[cfg(feature = "onchain-ethereum")]
-pub mod uniswap;
 pub mod etherscan;

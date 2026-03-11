@@ -1,8 +1,7 @@
 //! # On-Chain Module
 //!
-//! Direct blockchain connections, on-chain analytics, and decentralized protocol monitors.
-//! Organized by chain (ethereum, solana) and cross-chain analytics providers.
+//! On-chain analytics providers and blockchain explorers.
+//! Direct protocol connectors (Uniswap, Raydium) have moved to `crypto::swap`.
 
 pub mod ethereum;
-pub mod solana;
 pub mod analytics;

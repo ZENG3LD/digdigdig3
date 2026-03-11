@@ -39,7 +39,7 @@
 //! - `utils::time` - timestamp_millis, timestamp_iso8601
 
 pub mod core;
-pub mod exchanges;
+pub mod crypto;
 pub mod onchain;
 pub mod stocks;
 pub mod forex;

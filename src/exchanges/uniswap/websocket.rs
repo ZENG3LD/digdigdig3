@@ -5,7 +5,7 @@
 //! ## Architecture
 //! - Connects to Ethereum node WebSocket (Infura, Alchemy, etc.)
 //! - Subscribes to pool events (Swap, Mint, Burn)
-//! - Decodes event logs using ethers
+//! - Decodes event logs using alloy
 //! - Dispatches to handlers via broadcast channel
 //!
 //! ## Event Types
@@ -35,10 +35,10 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
+use alloy::primitives::{Address, B256, I256, U256};
+use alloy::providers::{Provider, ProviderBuilder, WsConnect};
+use alloy::rpc::types::{Filter, Log};
 use async_trait::async_trait;
-use ethers::prelude::*;
-use ethers::providers::{Provider, Ws};
-use ethers::types::{I256, U256, H160, H256, Log, Filter};
 use futures_util::Stream;
 use tokio::sync::{broadcast, Mutex};
 use tokio::time::sleep;
@@ -77,6 +77,17 @@ const FALLBACK_WS_URLS: &[&str] = &[
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// PROVIDER TYPE ALIAS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Concrete alloy WebSocket provider type.
+///
+/// `ProviderBuilder::new().connect_ws(ws).await` returns a `RootProvider` with
+/// the WS transport baked in. We erase the transport with `DynProvider` so we
+/// can store it behind a plain `Arc<Mutex<Option<...>>>`.
+type EthProvider = alloy::providers::DynProvider;
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // WEBSOCKET
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -95,7 +106,7 @@ pub struct UniswapWebSocket {
     /// Broadcast sender (for multiple consumers)
     broadcast_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
     /// Ethereum provider
-    provider: Arc<Mutex<Option<Provider<Ws>>>>,
+    provider: Arc<Mutex<Option<EthProvider>>>,
     /// Last message time
     last_message: Arc<Mutex<Instant>>,
 }
@@ -125,9 +136,9 @@ impl UniswapWebSocket {
     }
 
     /// Connect to Ethereum WebSocket with fallback logic
-    async fn connect_ws(&self) -> WebSocketResult<Provider<Ws>> {
+    async fn connect_ws(&self) -> WebSocketResult<EthProvider> {
         // Try primary URL first
-        match Provider::<Ws>::connect(&self.ws_url).await {
+        match Self::try_connect(&self.ws_url).await {
             Ok(provider) => return Ok(provider),
             Err(e) => {
                 tracing::warn!("Failed to connect to primary endpoint {}: {}", self.ws_url, e);
@@ -137,7 +148,7 @@ impl UniswapWebSocket {
         // Try fallback URLs
         for fallback_url in FALLBACK_WS_URLS {
             tracing::info!("Trying fallback endpoint: {}", fallback_url);
-            match Provider::<Ws>::connect(fallback_url).await {
+            match Self::try_connect(fallback_url).await {
                 Ok(provider) => {
                     tracing::info!("Successfully connected to fallback endpoint: {}", fallback_url);
                     return Ok(provider);
@@ -159,6 +170,16 @@ impl UniswapWebSocket {
         ))
     }
 
+    /// Attempt a single WebSocket connection and return a type-erased provider.
+    async fn try_connect(url: &str) -> WebSocketResult<EthProvider> {
+        let ws = WsConnect::new(url);
+        let provider = ProviderBuilder::new()
+            .connect_ws(ws)
+            .await
+            .map_err(|e| WebSocketError::ConnectionError(format!("WS connect error: {}", e)))?;
+        Ok(provider.erased())
+    }
+
     /// Subscribe to pool events
     ///
     /// Subscribes to Swap events on specified pool address.
@@ -169,7 +190,7 @@ impl UniswapWebSocket {
         // Add to pool addresses
         self.pool_addresses.lock().await.insert(pool_address.clone());
 
-        // Get provider and clone it
+        // Get provider and clone it (alloy providers are internally ref-counted)
         let provider = {
             let provider_guard = self.provider.lock().await;
             match provider_guard.as_ref() {
@@ -179,17 +200,17 @@ impl UniswapWebSocket {
         };
 
         // Parse pool address
-        let pool_addr: H160 = pool_address.parse()
+        let pool_addr: Address = pool_address.parse()
             .map_err(|e| WebSocketError::ProtocolError(format!("Invalid pool address: {}", e)))?;
 
-        // Parse event signatures
-        let swap_topic: H256 = SWAP_EVENT_SIGNATURE.parse()
+        // Parse event signature as B256 topic
+        let swap_topic: B256 = SWAP_EVENT_SIGNATURE.parse()
             .map_err(|e| WebSocketError::ProtocolError(format!("Invalid SWAP topic: {}", e)))?;
 
         // Create logs filter for Swap events
         let filter = Filter::new()
             .address(pool_addr)
-            .topic0(swap_topic);
+            .event_signature(swap_topic);
 
         // Subscribe to logs
         let broadcast_tx = self.broadcast_tx.clone();
@@ -198,9 +219,9 @@ impl UniswapWebSocket {
 
         // Spawn handler task that subscribes to logs
         tokio::spawn(async move {
-            // Subscribe to logs (this must be done inside the task to own the provider)
             match provider.subscribe_logs(&filter).await {
-                Ok(mut stream) => {
+                Ok(subscription) => {
+                    let mut stream = subscription.into_stream();
                     while let Some(log) = stream.next().await {
                         // Update last message time
                         *last_message.lock().await = Instant::now();
@@ -229,8 +250,7 @@ impl UniswapWebSocket {
         let pool_address = pool_address.to_lowercase();
         self.pool_addresses.lock().await.remove(&pool_address);
 
-        // Note: ethers doesn't provide a direct way to unsubscribe from specific logs
-        // In a production implementation, you'd track subscription handles and cancel them
+        // Note: in a production implementation you'd track subscription handles and cancel them.
 
         Ok(())
     }
@@ -260,16 +280,17 @@ impl UniswapWebSocket {
         // Topics: [event_signature, sender, recipient]
         // Data: [amount0, amount1, sqrtPriceX96, liquidity, tick]
 
-        if log.topics.len() < 3 {
+        let topics = log.inner.topics();
+        if topics.len() < 3 {
             return None;
         }
 
         // Decode indexed parameters (topics)
-        let _sender = format!("0x{:x}", log.topics[1]);
-        let _recipient = format!("0x{:x}", log.topics[2]);
+        let _sender = format!("0x{:x}", topics[1]);
+        let _recipient = format!("0x{:x}", topics[2]);
 
         // Decode non-indexed parameters (data)
-        let data = &log.data;
+        let data = log.inner.data.data.as_ref();
         if data.len() < 160 {
             // Need at least 5 * 32 bytes = 160 bytes
             return None;
@@ -279,9 +300,9 @@ impl UniswapWebSocket {
         let amount0_bytes = &data[0..32];
         let amount1_bytes = &data[32..64];
 
-        // Convert to i256 (simplified - treating as positive for now)
-        let amount0 = I256::from_raw(U256::from_big_endian(amount0_bytes));
-        let amount1 = I256::from_raw(U256::from_big_endian(amount1_bytes));
+        // Convert to I256 using big-endian byte interpretation
+        let amount0 = I256::from_be_bytes::<32>(amount0_bytes.try_into().ok()?);
+        let amount1 = I256::from_be_bytes::<32>(amount1_bytes.try_into().ok()?);
 
         // Determine price and side from amounts
         // In Uniswap, negative amount = token sold, positive = token bought
@@ -289,7 +310,9 @@ impl UniswapWebSocket {
 
         // Create PublicTrade event
         let trade = PublicTrade {
-            id: format!("{:x}", log.transaction_hash.unwrap_or_default()),
+            id: log.transaction_hash
+                .map(|h| format!("{:x}", h))
+                .unwrap_or_default(),
             symbol: pool_address.to_string(),
             price,
             quantity,
@@ -323,26 +346,21 @@ impl UniswapWebSocket {
 
     /// Convert I256 to f64 (simplified implementation)
     fn i256_to_f64(value: I256) -> f64 {
-        // This is a simplified conversion
-        // In production, you'd want to handle decimals properly
-        let u256_val = value.into_raw();
+        // This is a simplified conversion.
+        // In production, you'd want to handle decimals properly.
+        let is_negative = value.is_negative();
+        // into_raw() returns the underlying U256 (two's complement bit pattern)
+        let u256_val: U256 = value.into_raw();
 
-        // Convert U256 to f64 (may lose precision for very large numbers)
-        let high = u256_val.0[3];
-        let mid_high = u256_val.0[2];
-        let mid_low = u256_val.0[1];
-        let low = u256_val.0[0];
+        // Access the four 64-bit limbs (little-endian order: index 0 = least significant)
+        let limbs = u256_val.into_limbs(); // [u64; 4], limbs[0] = lowest bits
 
-        let result = (high as f64) * 2f64.powi(192) +
-                     (mid_high as f64) * 2f64.powi(128) +
-                     (mid_low as f64) * 2f64.powi(64) +
-                     (low as f64);
+        let result = (limbs[3] as f64) * 2f64.powi(192)
+            + (limbs[2] as f64) * 2f64.powi(128)
+            + (limbs[1] as f64) * 2f64.powi(64)
+            + (limbs[0] as f64);
 
-        if value.is_negative() {
-            -result
-        } else {
-            result
-        }
+        if is_negative { -result } else { result }
     }
 
     /// Start heartbeat monitoring task

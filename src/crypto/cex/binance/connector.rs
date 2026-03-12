@@ -630,6 +630,7 @@ impl Trading for BinanceConnector {
                     _ => {}
                 }
 
+                // Post-2025-12-09: STOP_MARKET moved to /fapi/v1/order/algo on Futures.
                 let mut params = HashMap::new();
                 params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
                 params.insert("side".to_string(), side.as_str().to_string());
@@ -644,17 +645,12 @@ impl Trading for BinanceConnector {
                     params.insert("newClientOrderId".to_string(), cid.clone());
                 }
 
-                let response = self.post(BinanceEndpoint::FuturesCreateOrder, params, account_type).await?;
+                let response = self.post(BinanceEndpoint::FuturesAlgoOrder, params, account_type).await?;
                 let order = BinanceParser::parse_order(&response, &symbol.to_string())?;
                 Ok(PlaceOrderResponse::Simple(order))
             }
 
             OrderType::StopLimit { stop_price, limit_price } => {
-                let endpoint = match account_type {
-                    AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotCreateOrder,
-                    _ => BinanceEndpoint::FuturesCreateOrder,
-                };
-
                 let mut params = HashMap::new();
                 params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
                 params.insert("side".to_string(), side.as_str().to_string());
@@ -662,17 +658,20 @@ impl Trading for BinanceConnector {
                 params.insert("stopPrice".to_string(), stop_price.to_string());
                 params.insert("price".to_string(), limit_price.to_string());
 
-                // Spot uses STOP_LOSS_LIMIT / TAKE_PROFIT_LIMIT; Futures uses STOP
-                match account_type {
+                // Spot uses STOP_LOSS_LIMIT on /api/v3/order (unchanged).
+                // Futures: post-2025-12-09 STOP type moved to /fapi/v1/order/algo.
+                let endpoint = match account_type {
                     AccountType::Spot | AccountType::Margin => {
                         params.insert("type".to_string(), "STOP_LOSS_LIMIT".to_string());
                         params.insert("timeInForce".to_string(), "GTC".to_string());
+                        BinanceEndpoint::SpotCreateOrder
                     }
                     _ => {
                         params.insert("type".to_string(), "STOP".to_string());
                         params.insert("timeInForce".to_string(), "GTC".to_string());
+                        BinanceEndpoint::FuturesAlgoOrder
                     }
-                }
+                };
 
                 if req.reduce_only {
                     params.insert("reduceOnly".to_string(), "true".to_string());
@@ -697,6 +696,7 @@ impl Trading for BinanceConnector {
                     _ => {}
                 }
 
+                // Post-2025-12-09: TRAILING_STOP_MARKET moved to /fapi/v1/order/algo on Futures.
                 let mut params = HashMap::new();
                 params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
                 params.insert("side".to_string(), side.as_str().to_string());
@@ -714,7 +714,7 @@ impl Trading for BinanceConnector {
                     params.insert("newClientOrderId".to_string(), cid.clone());
                 }
 
-                let response = self.post(BinanceEndpoint::FuturesCreateOrder, params, account_type).await?;
+                let response = self.post(BinanceEndpoint::FuturesAlgoOrder, params, account_type).await?;
                 let order = BinanceParser::parse_order(&response, &symbol.to_string())?;
                 Ok(PlaceOrderResponse::Simple(order))
             }
@@ -750,10 +750,46 @@ impl Trading for BinanceConnector {
                 Ok(PlaceOrderResponse::Oco(oco))
             }
 
-            OrderType::Bracket { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
-                    "Bracket orders not natively supported on Binance. Use separate TP/SL orders.".to_string()
-                ))
+            OrderType::Bracket { price, take_profit, stop_loss } => {
+                // Spot: map to OTOCO (One-Triggers-a-One-Cancels-the-Other)
+                // Futures: no native bracket — conditional orders are via algo endpoint separately
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        // OTOCO: working order must be LIMIT or LIMIT_MAKER.
+                        // entry price is required for OTOCO.
+                        let entry_price = price.ok_or_else(|| ExchangeError::InvalidRequest(
+                            "Bracket order on Binance Spot requires an entry price (market entry not supported for OTOCO)".to_string()
+                        ))?;
+
+                        let mut params = HashMap::new();
+                        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+                        params.insert("side".to_string(), side.as_str().to_string());
+                        params.insert("quantity".to_string(), quantity.to_string());
+                        // Working leg: LIMIT entry
+                        params.insert("workingType".to_string(), "LIMIT".to_string());
+                        params.insert("workingPrice".to_string(), entry_price.to_string());
+                        params.insert("workingTimeInForce".to_string(), "GTC".to_string());
+                        // Pending above leg: take-profit limit order (above entry for buy)
+                        params.insert("pendingAboveType".to_string(), "LIMIT_MAKER".to_string());
+                        params.insert("pendingAbovePrice".to_string(), take_profit.to_string());
+                        // Pending below leg: stop-loss stop order (below entry for buy)
+                        params.insert("pendingBelowType".to_string(), "STOP_LOSS".to_string());
+                        params.insert("pendingBelowStopPrice".to_string(), stop_loss.to_string());
+
+                        if let Some(cid) = &req.client_order_id {
+                            params.insert("listClientOrderId".to_string(), cid.clone());
+                        }
+
+                        let response = self.post(BinanceEndpoint::SpotOtocoOrder, params, account_type).await?;
+                        let bracket = BinanceParser::parse_otoco_response(&response)?;
+                        Ok(PlaceOrderResponse::Bracket(bracket))
+                    }
+                    _ => {
+                        Err(ExchangeError::UnsupportedOperation(
+                            "Bracket orders not supported on Binance Futures. Use separate conditional/algo orders for TP/SL.".to_string()
+                        ))
+                    }
+                }
             }
 
             OrderType::Iceberg { price, display_quantity } => {
@@ -785,10 +821,43 @@ impl Trading for BinanceConnector {
                 Ok(PlaceOrderResponse::Simple(order))
             }
 
-            OrderType::Twap { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
-                    "TWAP orders not supported via standard Binance API".to_string()
-                ))
+            OrderType::Twap { duration_seconds, .. } => {
+                // Binance TWAP lives in a separate Algo API namespace:
+                // Spot:    POST /sapi/v1/algo/spot/newOrderTwap
+                // Futures: POST /sapi/v1/algo/futures/newOrderTwap
+                // Both use api.binance.com (not fapi) as the base URL.
+                // Constraints: duration 300–86400 seconds; notional 1,000–100,000 USDT (Spot),
+                //              1,000–1,000,000 USDT (Futures).
+
+                // Validate duration range
+                if duration_seconds < 300 || duration_seconds > 86_400 {
+                    return Err(ExchangeError::InvalidRequest(format!(
+                        "Binance TWAP duration must be between 300 and 86400 seconds, got {}",
+                        duration_seconds
+                    )));
+                }
+
+                let endpoint = match account_type {
+                    AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotAlgoTwap,
+                    _ => BinanceEndpoint::FuturesAlgoTwap,
+                };
+
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+                params.insert("side".to_string(), side.as_str().to_string());
+                params.insert("quantity".to_string(), quantity.to_string());
+                params.insert("duration".to_string(), duration_seconds.to_string());
+
+                if let Some(cid) = &req.client_order_id {
+                    params.insert("clientAlgoId".to_string(), cid.clone());
+                }
+
+                // Algo API base URL is always api.binance.com (Spot REST), even for Futures TWAP.
+                // We force Spot account type for URL routing since both /sapi endpoints
+                // live on api.binance.com.
+                let response = self.post(endpoint, params, AccountType::Spot).await?;
+                let algo = BinanceParser::parse_algo_order_response(&response)?;
+                Ok(PlaceOrderResponse::Algo(algo))
             }
 
             OrderType::PostOnly { price } => {
@@ -869,10 +938,47 @@ impl Trading for BinanceConnector {
                 Ok(PlaceOrderResponse::Simple(order))
             }
 
-            OrderType::Gtd { .. } => {
-                Err(ExchangeError::UnsupportedOperation(
-                    "GTD (Good-Till-Date) not supported on Binance".to_string()
-                ))
+            OrderType::Gtd { price, expire_time } => {
+                // GTD is only supported on Binance USDS-M Futures.
+                // Spot only supports GTC, IOC, FOK — GTD returns UnsupportedOperation.
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "GTD (Good-Till-Date) is not supported on Binance Spot/Margin. \
+                             Binance Spot only supports GTC, IOC, FOK timeInForce.".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+
+                // Binance requires goodTillDate > current_time + 600s.
+                // We validate the value is a valid ms timestamp in range:
+                // max = 253402300799000 (year 9999).
+                if expire_time <= 0 || expire_time > 253_402_300_799_000 {
+                    return Err(ExchangeError::InvalidRequest(
+                        "GTD expire_time must be a valid Unix ms timestamp (>0 and < 253402300799000)".to_string()
+                    ));
+                }
+
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+                params.insert("side".to_string(), side.as_str().to_string());
+                params.insert("type".to_string(), "LIMIT".to_string());
+                params.insert("quantity".to_string(), quantity.to_string());
+                params.insert("price".to_string(), price.to_string());
+                params.insert("timeInForce".to_string(), "GTD".to_string());
+                params.insert("goodTillDate".to_string(), expire_time.to_string());
+
+                if req.reduce_only {
+                    params.insert("reduceOnly".to_string(), "true".to_string());
+                }
+                if let Some(cid) = &req.client_order_id {
+                    params.insert("newClientOrderId".to_string(), cid.clone());
+                }
+
+                let response = self.post(BinanceEndpoint::FuturesCreateOrder, params, account_type).await?;
+                let order = BinanceParser::parse_order(&response, &symbol.to_string())?;
+                Ok(PlaceOrderResponse::Simple(order))
             }
 
             OrderType::ReduceOnly { price } => {

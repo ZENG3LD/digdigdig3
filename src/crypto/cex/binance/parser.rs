@@ -10,6 +10,7 @@ use crate::core::types::{
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, SymbolInfo, FeeInfo,
     OcoResponse, CancelAllResponse, OrderResult,
+    AlgoOrderResponse, BracketResponse,
 };
 
 /// Парсер ответов Binance API
@@ -456,6 +457,76 @@ impl BinanceParser {
             first_order,
             second_order,
             list_id,
+        })
+    }
+
+    /// Парсить ответ OTOCO ордера (Bracket на Binance Spot)
+    ///
+    /// Binance OTOCO returns `orderReports` array with 3 orders:
+    /// - [0] working order (entry)
+    /// - [1] pending take-profit
+    /// - [2] pending stop-loss
+    pub fn parse_otoco_response(response: &Value) -> ExchangeResult<BracketResponse> {
+        Self::check_error(response)?;
+
+        let reports = response.get("orderReports")
+            .and_then(|r| r.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'orderReports' in OTOCO response".to_string()))?;
+
+        if reports.len() < 3 {
+            return Err(ExchangeError::Parse(format!(
+                "Expected 3 orders in OTOCO response, got {}", reports.len()
+            )));
+        }
+
+        let entry_order = Self::parse_order_data(&reports[0])?;
+        let tp_order = Self::parse_order_data(&reports[1])?;
+        let sl_order = Self::parse_order_data(&reports[2])?;
+
+        Ok(BracketResponse {
+            entry_order,
+            tp_order,
+            sl_order,
+        })
+    }
+
+    /// Парсить ответ Algo ордера (TWAP, VP и т.д.)
+    ///
+    /// Binance Algo API returns: `{"code": 0, "msg": "", "data": {"clientAlgoId": "...", "success": true}}`
+    pub fn parse_algo_order_response(response: &Value) -> ExchangeResult<AlgoOrderResponse> {
+        // Check top-level code (Algo API uses 0 for success, not 200)
+        if let Some(code) = response.get("code").and_then(|c| c.as_i64()) {
+            if code != 0 {
+                let msg = response.get("msg")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("Algo order failed");
+                return Err(ExchangeError::Api {
+                    code: code as i32,
+                    message: msg.to_string(),
+                });
+            }
+        }
+
+        // Extract from nested `data` object if present
+        let data = response.get("data").unwrap_or(response);
+
+        let algo_id = data.get("clientAlgoId")
+            .or_else(|| data.get("algoId"))
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_default();
+
+        let status = if data.get("success").and_then(|v| v.as_bool()).unwrap_or(true) {
+            "Running".to_string()
+        } else {
+            "Failed".to_string()
+        };
+
+        Ok(AlgoOrderResponse {
+            algo_id,
+            status,
+            executed_count: None,
+            total_count: None,
         })
     }
 

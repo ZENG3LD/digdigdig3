@@ -27,6 +27,7 @@ use crate::core::types::{
     OrderUpdateEvent, BalanceUpdateEvent, PositionUpdateEvent,
     SymbolInfo, CancelAllResponse, OrderResult,
 };
+use crate::core::types::AlgoOrderResponse;
 
 /// Order book level pairs (price, quantity)
 type OrderBookLevels = Vec<(f64, f64)>;
@@ -551,6 +552,59 @@ impl OkxParser {
         // TODO: Implement proper PositionUpdateEvent parsing
         let _ = data;
         Err(ExchangeError::Parse("WebSocket position updates not yet implemented".to_string()))
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ALGO ORDER PARSERS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse algo order placement response.
+    ///
+    /// OKX algo order response: `data[0] = { algoId, clAlgoId, sCode, sMsg }`
+    /// On success `sCode == "0"`.
+    ///
+    /// Used for: conditional (stop), move_order_stop (trailing), oco, twap, iceberg.
+    pub fn parse_algo_order_response(response: &Value) -> ExchangeResult<AlgoOrderResponse> {
+        let data = Self::extract_first_data(response)?;
+
+        // Check per-order status code
+        let s_code = Self::get_str(data, "sCode").unwrap_or("0");
+        if s_code != "0" {
+            let s_msg = Self::get_str(data, "sMsg").unwrap_or("Unknown error");
+            return Err(ExchangeError::Api {
+                code: s_code.parse().unwrap_or(-1),
+                message: format!("Algo order error {}: {}", s_code, s_msg),
+            });
+        }
+
+        let algo_id = Self::get_str(data, "algoId")
+            .ok_or_else(|| ExchangeError::Parse("Missing 'algoId' in algo order response".to_string()))?
+            .to_string();
+
+        Ok(AlgoOrderResponse {
+            algo_id,
+            status: "live".to_string(),
+            executed_count: None,
+            total_count: None,
+        })
+    }
+
+    /// Parse algo order cancel response.
+    ///
+    /// OKX cancel-algos response: `data[0] = { algoId, clAlgoId, sCode, sMsg }`
+    pub fn parse_algo_cancel_response(response: &Value) -> ExchangeResult<String> {
+        let data = Self::extract_first_data(response)?;
+
+        let s_code = Self::get_str(data, "sCode").unwrap_or("0");
+        if s_code != "0" {
+            let s_msg = Self::get_str(data, "sMsg").unwrap_or("Unknown error");
+            return Err(ExchangeError::Api {
+                code: s_code.parse().unwrap_or(-1),
+                message: format!("Algo cancel error {}: {}", s_code, s_msg),
+            });
+        }
+
+        Ok(Self::get_str(data, "algoId").unwrap_or("").to_string())
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

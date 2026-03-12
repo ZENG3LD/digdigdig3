@@ -77,7 +77,13 @@ pub enum BinanceEndpoint {
     SpotOpenOrders,
     SpotAllOrders,
     SpotOcoOrder,
+    /// OTOCO order list (One-Triggers-a-One-Cancels-the-Other) — Spot Bracket
+    SpotOtocoOrder,
     SpotTradeFee,
+
+    // === SPOT ALGO ===
+    /// TWAP algo order for Spot: POST /sapi/v1/algo/spot/newOrderTwap
+    SpotAlgoTwap,
 
     // === SPOT ACCOUNT ===
     SpotAccount,
@@ -99,6 +105,13 @@ pub enum BinanceEndpoint {
     FuturesAllOrders,
     FuturesAmendOrder,
     FuturesBatchOrders,
+    /// Futures conditional/algo orders (post-2025-12-09 migration endpoint)
+    /// STOP, STOP_MARKET, TAKE_PROFIT, TAKE_PROFIT_MARKET, TRAILING_STOP_MARKET
+    FuturesAlgoOrder,
+
+    // === FUTURES ALGO ===
+    /// TWAP algo order for Futures: POST /sapi/v1/algo/futures/newOrderTwap
+    FuturesAlgoTwap,
 
     // === FUTURES ACCOUNT ===
     FuturesAccount,
@@ -136,7 +149,11 @@ impl BinanceEndpoint {
             Self::SpotOpenOrders => "/api/v3/openOrders",
             Self::SpotAllOrders => "/api/v3/allOrders",
             Self::SpotOcoOrder => "/api/v3/orderList/oco",
+            Self::SpotOtocoOrder => "/api/v3/orderList/otoco",
             Self::SpotTradeFee => "/sapi/v1/asset/tradeFee",
+
+            // Spot Algo
+            Self::SpotAlgoTwap => "/sapi/v1/algo/spot/newOrderTwap",
 
             // Spot Account
             Self::SpotAccount => "/api/v3/account",
@@ -158,6 +175,10 @@ impl BinanceEndpoint {
             Self::FuturesAllOrders => "/fapi/v1/allOrders",
             Self::FuturesAmendOrder => "/fapi/v1/order",
             Self::FuturesBatchOrders => "/fapi/v1/batchOrders",
+            Self::FuturesAlgoOrder => "/fapi/v1/order/algo",
+
+            // Futures Algo
+            Self::FuturesAlgoTwap => "/sapi/v1/algo/futures/newOrderTwap",
 
             // Futures Account
             Self::FuturesAccount => "/fapi/v2/account",
@@ -205,6 +226,10 @@ impl BinanceEndpoint {
             | Self::FuturesSetMarginType
             | Self::FuturesPositionMargin
             | Self::SpotOcoOrder
+            | Self::SpotOtocoOrder
+            | Self::SpotAlgoTwap
+            | Self::FuturesAlgoOrder
+            | Self::FuturesAlgoTwap
             | Self::FuturesBatchOrders
             | Self::SpotListenKey
             | Self::FuturesListenKey => "POST",

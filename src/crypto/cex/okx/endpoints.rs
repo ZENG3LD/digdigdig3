@@ -82,6 +82,17 @@ pub enum OkxEndpoint {
     OrderHistory,
     OrderHistoryArchive,
 
+    // === ALGO TRADING ===
+    /// POST /api/v5/trade/order-algo
+    /// For conditional (stop), move_order_stop (trailing), oco, twap, iceberg orders.
+    AlgoOrder,
+    /// POST /api/v5/trade/cancel-algos
+    /// Cancel algo orders by algoId — different endpoint from regular cancel.
+    AlgoOrderCancel,
+    /// GET /api/v5/trade/orders-algo-pending
+    /// Fetch open algo orders.
+    AlgoOpenOrders,
+
     // === ACCOUNT ===
     Balance,
     AssetBalances,
@@ -142,6 +153,11 @@ impl OkxEndpoint {
             // Funding
             Self::FundingRate => "/api/v5/public/funding-rate",
             Self::FundingRateHistory => "/api/v5/public/funding-rate-history",
+
+            // Algo Trading
+            Self::AlgoOrder => "/api/v5/trade/order-algo",
+            Self::AlgoOrderCancel => "/api/v5/trade/cancel-algos",
+            Self::AlgoOpenOrders => "/api/v5/trade/orders-algo-pending",
         }
     }
 
@@ -177,7 +193,9 @@ impl OkxEndpoint {
             | Self::CancelAllAfter
             | Self::AmendOrder
             | Self::SetLeverage
-            | Self::SetPositionMode => "POST",
+            | Self::SetPositionMode
+            | Self::AlgoOrder
+            | Self::AlgoOrderCancel => "POST",
 
             _ => "GET",
         }

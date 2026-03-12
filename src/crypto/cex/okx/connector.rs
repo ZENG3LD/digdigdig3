@@ -21,13 +21,14 @@ use crate::core::{
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
     Price, Quantity, Kline, Ticker, OrderBook,
-    Order, OrderSide, OrderType,Balance, AccountInfo,
+    Order, OrderSide, OrderType, Balance, AccountInfo,
     Position, FundingRate,
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     AmendRequest, CancelAllResponse, OrderResult,
 };
+use crate::core::types::OcoResponse;
 use crate::core::types::SymbolInfo;
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
@@ -215,6 +216,55 @@ impl OkxConnector {
         let data = OkxParser::extract_first_data(&response)?;
         OkxParser::parse_i64(data.get("ts").ok_or_else(|| ExchangeError::Parse("Missing 'ts'".to_string()))?)
             .ok_or_else(|| ExchangeError::Parse("Invalid timestamp".to_string()))
+    }
+
+    /// Build a minimal placeholder Order for algo responses that do not return full order details.
+    ///
+    /// Algo orders on OKX return only `algoId` on placement. This helper creates a
+    /// synthetic Order with the algo_id so callers have a consistent return type.
+    fn build_algo_placeholder_order(
+        &self,
+        algo_id: &str,
+        inst_id: &str,
+        side: OrderSide,
+        quantity: Quantity,
+    ) -> Order {
+        use crate::core::types::{OrderStatus, TimeInForce};
+        Order {
+            id: algo_id.to_string(),
+            client_order_id: None,
+            symbol: inst_id.to_string(),
+            side,
+            order_type: OrderType::Market,
+            status: OrderStatus::Open,
+            price: None,
+            stop_price: None,
+            quantity,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: crate::core::timestamp_millis() as i64,
+            updated_at: None,
+            time_in_force: TimeInForce::Gtc,
+        }
+    }
+
+    /// Cancel an algo order via POST /api/v5/trade/cancel-algos.
+    ///
+    /// Algo orders (stop, trailing, OCO, TWAP, iceberg) use a separate cancel
+    /// endpoint from regular orders and require `algoId` instead of `ordId`.
+    pub async fn cancel_algo_order(
+        &self,
+        inst_id: &str,
+        algo_id: &str,
+    ) -> ExchangeResult<String> {
+        let body = json!([{
+            "algoId": algo_id,
+            "instId": inst_id,
+        }]);
+        let response = self.post(OkxEndpoint::AlgoOrderCancel, body).await?;
+        OkxParser::parse_algo_cancel_response(&response)
     }
 }
 
@@ -436,53 +486,126 @@ impl Trading for OkxConnector {
                 })
             }
             OrderType::StopMarket { stop_price } => {
-                // OKX algo order: tp/sl trigger; uses /api/v5/trade/order-algo
-                // For a simpler approach, use stop-market via conditional orders
-                // OKX represents these as ordType="conditional" with slTriggerPx or tpTriggerPx
-                let (tp_trigger_px, sl_trigger_px) = match side {
-                    OrderSide::Buy => (Some(stop_price), None::<f64>),
-                    OrderSide::Sell => (None, Some(stop_price)),
-                };
-                let mut body = json!({
+                // OKX conditional stop market: POST /api/v5/trade/order-algo
+                // ordType="conditional", triggerPx + ordPx=-1 (market execution)
+                let algo_body = json!({
                     "instId": inst_id,
                     "tdMode": td_mode,
                     "side": side_str,
                     "ordType": "conditional",
                     "sz": quantity.to_string(),
-                    "clOrdId": cl_ord_id,
+                    "triggerPx": stop_price.to_string(),
+                    "orderPx": "-1",  // -1 = market order after trigger
+                    "clAlgoId": cl_ord_id,
                 });
-                if let Some(tp) = tp_trigger_px {
-                    body["tpTriggerPx"] = json!(tp.to_string());
-                    body["tpOrdPx"] = json!("-1"); // market price
-                }
-                if let Some(sl) = sl_trigger_px {
-                    body["slTriggerPx"] = json!(sl.to_string());
-                    body["slOrdPx"] = json!("-1"); // market price
-                }
-                body
+                let response = self.post(OkxEndpoint::AlgoOrder, algo_body).await?;
+                let algo_resp = OkxParser::parse_algo_order_response(&response)?;
+                return Ok(PlaceOrderResponse::Algo(algo_resp));
             }
             OrderType::StopLimit { stop_price, limit_price } => {
-                let (tp_trigger_px, sl_trigger_px) = match side {
-                    OrderSide::Buy => (Some((stop_price, limit_price)), None::<(f64, f64)>),
-                    OrderSide::Sell => (None, Some((stop_price, limit_price))),
-                };
-                let mut body = json!({
+                // OKX conditional stop limit: POST /api/v5/trade/order-algo
+                // ordType="conditional", triggerPx + orderPx=limit_price
+                let algo_body = json!({
                     "instId": inst_id,
                     "tdMode": td_mode,
                     "side": side_str,
                     "ordType": "conditional",
                     "sz": quantity.to_string(),
-                    "clOrdId": cl_ord_id,
+                    "triggerPx": stop_price.to_string(),
+                    "orderPx": limit_price.to_string(),
+                    "clAlgoId": cl_ord_id,
                 });
-                if let Some((trigger, limit)) = tp_trigger_px {
-                    body["tpTriggerPx"] = json!(trigger.to_string());
-                    body["tpOrdPx"] = json!(limit.to_string());
+                let response = self.post(OkxEndpoint::AlgoOrder, algo_body).await?;
+                let algo_resp = OkxParser::parse_algo_order_response(&response)?;
+                return Ok(PlaceOrderResponse::Algo(algo_resp));
+            }
+            OrderType::TrailingStop { callback_rate, activation_price } => {
+                // OKX trailing stop: POST /api/v5/trade/order-algo
+                // ordType="move_order_stop", callbackRatio = callback_rate/100
+                let mut algo_body = json!({
+                    "instId": inst_id,
+                    "tdMode": td_mode,
+                    "side": side_str,
+                    "ordType": "move_order_stop",
+                    "sz": quantity.to_string(),
+                    "callbackRatio": (callback_rate / 100.0).to_string(),
+                    "clAlgoId": cl_ord_id,
+                });
+                if let Some(act_px) = activation_price {
+                    algo_body["activePx"] = json!(act_px.to_string());
                 }
-                if let Some((trigger, limit)) = sl_trigger_px {
-                    body["slTriggerPx"] = json!(trigger.to_string());
-                    body["slOrdPx"] = json!(limit.to_string());
-                }
-                body
+                let response = self.post(OkxEndpoint::AlgoOrder, algo_body).await?;
+                let algo_resp = OkxParser::parse_algo_order_response(&response)?;
+                return Ok(PlaceOrderResponse::Algo(algo_resp));
+            }
+            OrderType::Oco { price, stop_price, stop_limit_price } => {
+                // OKX OCO: POST /api/v5/trade/order-algo with ordType="oco"
+                // tp side = limit leg (price), sl side = stop leg (stop_price)
+                let tp_ord_px = price.to_string();
+                let sl_ord_px = stop_limit_price
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|| "-1".to_string()); // -1 = market if no stop_limit_price
+                let algo_body = json!({
+                    "instId": inst_id,
+                    "tdMode": td_mode,
+                    "side": side_str,
+                    "ordType": "oco",
+                    "sz": quantity.to_string(),
+                    "tpTriggerPx": price.to_string(),
+                    "tpOrdPx": tp_ord_px,
+                    "slTriggerPx": stop_price.to_string(),
+                    "slOrdPx": sl_ord_px,
+                    "clAlgoId": cl_ord_id,
+                });
+                let response = self.post(OkxEndpoint::AlgoOrder, algo_body).await?;
+                let algo_resp = OkxParser::parse_algo_order_response(&response)?;
+                // Build a synthetic OcoResponse from the algo ID
+                let placeholder = self.build_algo_placeholder_order(&algo_resp.algo_id, &inst_id, side, quantity);
+                return Ok(PlaceOrderResponse::Oco(OcoResponse {
+                    first_order: placeholder.clone(),
+                    second_order: placeholder,
+                    list_id: Some(algo_resp.algo_id),
+                }));
+            }
+            OrderType::Twap { duration_seconds, interval_seconds } => {
+                // OKX TWAP algo: POST /api/v5/trade/order-algo with ordType="twap"
+                // timeInterval in seconds, pxVar for price variance, szLimit for sub-order size
+                let time_interval = interval_seconds.unwrap_or(60); // default 60s intervals
+                let algo_body = json!({
+                    "instId": inst_id,
+                    "tdMode": td_mode,
+                    "side": side_str,
+                    "ordType": "twap",
+                    "sz": quantity.to_string(),
+                    "pxVar": "0.01",           // 1% price variance per sub-order
+                    "szLimit": quantity.to_string(),
+                    "pxLimit": "0",             // no hard price limit
+                    "timeInterval": time_interval.to_string(),
+                    "tgtCcy": "base_ccy",       // quantity in base currency
+                    "clAlgoId": cl_ord_id,
+                });
+                let _ = duration_seconds; // duration_seconds not directly used — timeInterval is interval
+                let response = self.post(OkxEndpoint::AlgoOrder, algo_body).await?;
+                let algo_resp = OkxParser::parse_algo_order_response(&response)?;
+                return Ok(PlaceOrderResponse::Algo(algo_resp));
+            }
+            OrderType::Iceberg { price, display_quantity } => {
+                // OKX Iceberg algo: POST /api/v5/trade/order-algo with ordType="iceberg"
+                // szLimit = visible slice size, pxSpread = price tolerance
+                let algo_body = json!({
+                    "instId": inst_id,
+                    "tdMode": td_mode,
+                    "side": side_str,
+                    "ordType": "iceberg",
+                    "sz": quantity.to_string(),
+                    "pxSpread": "0.01",   // 1% price spread for slices
+                    "szLimit": display_quantity.to_string(),
+                    "pxLimit": price.to_string(),
+                    "clAlgoId": cl_ord_id,
+                });
+                let response = self.post(OkxEndpoint::AlgoOrder, algo_body).await?;
+                let algo_resp = OkxParser::parse_algo_order_response(&response)?;
+                return Ok(PlaceOrderResponse::Algo(algo_resp));
             }
             OrderType::ReduceOnly { price } => {
                 let ord_type = if price.is_some() { "limit" } else { "market" };
@@ -500,55 +623,24 @@ impl Trading for OkxConnector {
                 }
                 body
             }
-            OrderType::Gtd { price, expire_time } => {
-                // OKX supports GTC/IOC but not native GTD — place as limit with note
-                let _ = expire_time;
-                json!({
-                    "instId": inst_id,
-                    "tdMode": td_mode,
-                    "side": side_str,
-                    "ordType": "limit",
-                    "px": price.to_string(),
-                    "sz": quantity.to_string(),
-                    "clOrdId": cl_ord_id,
-                })
-            }
-            OrderType::TrailingStop { callback_rate, activation_price } => {
-                // OKX supports trailing stop via algo orders endpoint
-                // ordType="move_order_stop", callbackRatio or callbackSpread
-                let mut body = json!({
-                    "instId": inst_id,
-                    "tdMode": td_mode,
-                    "side": side_str,
-                    "ordType": "move_order_stop",
-                    "sz": quantity.to_string(),
-                    "callbackRatio": callback_rate.to_string(),
-                    "clOrdId": cl_ord_id,
-                });
-                if let Some(act_px) = activation_price {
-                    body["activePx"] = json!(act_px.to_string());
-                }
-                body
-            }
-            OrderType::Twap { duration_seconds, interval_seconds } => {
-                // OKX has TWAP algo: ordType="twap"
-                let _ = interval_seconds;
-                json!({
-                    "instId": inst_id,
-                    "tdMode": td_mode,
-                    "side": side_str,
-                    "ordType": "twap",
-                    "sz": quantity.to_string(),
-                    "pxVar": "0.01",  // 1% price variance
-                    "szLimit": quantity.to_string(),
-                    "pxLimit": "0",   // no limit
-                    "timeInterval": duration_seconds.to_string(),
-                    "clOrdId": cl_ord_id,
-                })
-            }
-            OrderType::Oco { .. } | OrderType::Bracket { .. } | OrderType::Iceberg { .. } => {
+            OrderType::Gtd { .. } => {
+                // OKX does not support GTD (Good-Till-Date) natively.
+                // The 'expTime' field on OKX controls request expiry, NOT order expiry.
+                // GTD must be simulated client-side by cancelling the order at the desired time.
+                // Reference: NautilusTrader OKX integration docs confirm no native GTD.
                 return Err(ExchangeError::UnsupportedOperation(
-                    format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+                    "OKX does not support GTD (Good-Till-Date) natively. \
+                     Simulate GTD by placing a GTC limit order and cancelling it at expire_time.".to_string()
+                ));
+            }
+            OrderType::Bracket { .. } => {
+                // OKX has no single 'bracket' order type.
+                // A bracket can be constructed as: (1) place entry order, (2) place OCO algo on fill.
+                // This two-step process requires external coordination and is not atomic.
+                // Use place_order for the entry, then place_order with Oco after the fill.
+                return Err(ExchangeError::UnsupportedOperation(
+                    "OKX does not support atomic Bracket orders. \
+                     Construct manually: place entry order, then place an OCO algo order after fill.".to_string()
                 ));
             }
         };
@@ -1008,26 +1100,28 @@ impl Positions for OkxConnector {
                     _ => {}
                 }
 
-                // OKX: place algo order with ordType=conditional
-                // For TP/SL on existing position, use ordType=oco (one-cancel-other)
+                // OKX: TP/SL on existing position uses algo order endpoint ordType="oco"
+                // POST /api/v5/trade/order-algo — NOT the regular /api/v5/trade/order
+                let td_mode = get_trade_mode(account_type);
                 let mut body = json!({
                     "instId": format_symbol(&symbol.base, &symbol.quote, account_type),
-                    "tdMode": "cross",
-                    "side": "sell",  // For long position: TP/SL sell side
+                    "tdMode": td_mode,
+                    "side": "sell",  // Closing a long position: sell side
                     "ordType": "oco",
-                    "sz": "0",  // Entire position (0 means position quantity)
+                    "sz": "0",  // 0 = entire position quantity
                 });
 
                 if let Some(tp) = take_profit {
                     body["tpTriggerPx"] = json!(tp.to_string());
-                    body["tpOrdPx"] = json!("-1"); // market price
+                    body["tpOrdPx"] = json!("-1"); // -1 = market execution
                 }
                 if let Some(sl) = stop_loss {
                     body["slTriggerPx"] = json!(sl.to_string());
-                    body["slOrdPx"] = json!("-1"); // market price
+                    body["slOrdPx"] = json!("-1"); // -1 = market execution
                 }
 
-                let response = self.post(OkxEndpoint::PlaceOrder, body).await?;
+                // Use AlgoOrder endpoint — OCO is an algo order type on OKX
+                let response = self.post(OkxEndpoint::AlgoOrder, body).await?;
                 OkxParser::extract_data(&response)?;
                 Ok(())
             }

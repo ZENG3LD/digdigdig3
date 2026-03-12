@@ -829,55 +829,13 @@ impl Trading for BybitConnector {
                     time_in_force: crate::core::TimeInForce::Fok,
                 }))
             }
-            OrderType::Gtd { price, expire_time } => {
-                let order_link_id = req.client_order_id.clone()
-                    .unwrap_or_else(|| format!("cc_{}", crate::core::timestamp_millis()));
-
-                let body = json!({
-                    "category": account_type_to_category(account_type),
-                    "symbol": format_symbol(&symbol, account_type),
-                    "side": match side {
-                        OrderSide::Buy => "Buy",
-                        OrderSide::Sell => "Sell",
-                    },
-                    "orderType": "Limit",
-                    "qty": quantity.to_string(),
-                    "price": price.to_string(),
-                    "timeInForce": "GTC",
-                    "closeOnTrigger": false,
-                    "orderLinkId": order_link_id,
-                    "tpslMode": "Full",
-                });
-                // Bybit uses timeInForce=GTD with expiryDate in days format
-                // For simplicity use GTC and note that Bybit GTD format differs
-                let _ = expire_time;
-
-                let response = self.post(BybitEndpoint::PlaceOrder, body).await?;
-                let result = response.get("result")
-                    .ok_or_else(|| ExchangeError::Parse("Missing result".to_string()))?;
-                let order_id = result.get("orderId")
-                    .and_then(|id| id.as_str())
-                    .ok_or_else(|| ExchangeError::Parse("Missing orderId".to_string()))?
-                    .to_string();
-
-                Ok(PlaceOrderResponse::Simple(Order {
-                    id: order_id,
-                    client_order_id: Some(order_link_id),
-                    symbol: symbol.to_string(),
-                    side,
-                    order_type: OrderType::Gtd { price, expire_time },
-                    status: crate::core::OrderStatus::New,
-                    price: Some(price),
-                    stop_price: None,
-                    quantity,
-                    filled_quantity: 0.0,
-                    average_price: None,
-                    commission: None,
-                    commission_asset: None,
-                    created_at: crate::core::timestamp_millis() as i64,
-                    updated_at: None,
-                    time_in_force: crate::core::TimeInForce::Gtd,
-                }))
+            OrderType::Gtd { .. } => {
+                // GTD (Good-Till-Date) is NOT supported by Bybit v5.
+                // Bybit TimeInForce enum: GTC, IOC, FOK, PostOnly, RPI — no GTD.
+                // Research confirmed: RESEARCH_WAVE2_BATCH1.md §2.1 "GTD on Bybit: NOT SUPPORTED"
+                Err(ExchangeError::UnsupportedOperation(
+                    "GTD orders are not supported on Bybit (not in TimeInForce enum)".to_string()
+                ))
             }
             OrderType::ReduceOnly { price } => {
                 match account_type {
@@ -933,12 +891,67 @@ impl Trading for BybitConnector {
                     time_in_force: crate::core::TimeInForce::Gtc,
                 }))
             }
-            // Bybit does not support Iceberg, OCO, Bracket, TWAP natively via V5 unified
-            OrderType::Iceberg { .. }
-            | OrderType::Oco { .. }
-            | OrderType::Bracket { .. }
-            | OrderType::Twap { .. } => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+            OrderType::Iceberg { price, display_quantity } => {
+                // Bybit v5 supports iceberg orders via /v5/order/create.
+                // Parameters: orderType=Limit, timeInForce=GTC, qty=total, peakOrderQty=visible slice.
+                // Research confirmed: RESEARCH_WAVE2_BATCH1.md §2.1 "Iceberg on Bybit: supported"
+                let order_link_id = req.client_order_id.clone()
+                    .unwrap_or_else(|| format!("cc_{}", crate::core::timestamp_millis()));
+
+                let body = json!({
+                    "category": account_type_to_category(account_type),
+                    "symbol": format_symbol(&symbol, account_type),
+                    "side": match side {
+                        OrderSide::Buy => "Buy",
+                        OrderSide::Sell => "Sell",
+                    },
+                    "orderType": "Limit",
+                    "qty": quantity.to_string(),
+                    "price": price.to_string(),
+                    "timeInForce": "GTC",
+                    "peakOrderQty": display_quantity.to_string(),
+                    "orderLinkId": order_link_id,
+                });
+
+                let response = self.post(BybitEndpoint::PlaceOrder, body).await?;
+                let result = response.get("result")
+                    .ok_or_else(|| ExchangeError::Parse("Missing result".to_string()))?;
+                let order_id = result.get("orderId")
+                    .and_then(|id| id.as_str())
+                    .ok_or_else(|| ExchangeError::Parse("Missing orderId".to_string()))?
+                    .to_string();
+
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: Some(order_link_id),
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::Iceberg { price, display_quantity },
+                    status: crate::core::OrderStatus::New,
+                    price: Some(price),
+                    stop_price: None,
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: crate::core::timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                }))
+            }
+            // OCO: UI only on Bybit — "API users won't have access to OCO orders"
+            // Bracket: no native bracket order type on Bybit API
+            // TWAP: UI-only strategy feature, no public API endpoint
+            // Research confirmed: RESEARCH_WAVE2_BATCH1.md §2.1
+            OrderType::Oco { .. } => Err(ExchangeError::UnsupportedOperation(
+                "OCO orders are not available via Bybit API (UI only)".to_string()
+            )),
+            OrderType::Bracket { .. } => Err(ExchangeError::UnsupportedOperation(
+                "Bracket orders are not supported on Bybit API (no native bracket type)".to_string()
+            )),
+            OrderType::Twap { .. } => Err(ExchangeError::UnsupportedOperation(
+                "TWAP orders are not available via Bybit API (UI-only strategy feature)".to_string()
             )),
         }
     }

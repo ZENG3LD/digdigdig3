@@ -30,7 +30,7 @@ use crate::core::{
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };
-use crate::core::types::{ConnectorStats, SymbolInfo, CancelAllResponse, OrderResult, AmendRequest};
+use crate::core::types::{ConnectorStats, SymbolInfo, CancelAllResponse, AmendRequest};
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
 };
@@ -624,16 +624,61 @@ impl Trading for DeribitConnector {
             }
 
             OrderType::Iceberg { price, display_quantity } => {
-                // Deribit: limit with max_show parameter
+                // Deribit: limit with display_amount (visible slice) and refresh_amount
+                // (how much to show after each fill — defaults to display_amount).
                 let mut params = HashMap::new();
                 params.insert("instrument_name".to_string(), json!(instrument_name));
                 params.insert("amount".to_string(), json!(quantity));
                 params.insert("type".to_string(), json!("limit"));
                 params.insert("price".to_string(), json!(price));
-                params.insert("max_show".to_string(), json!(display_quantity));
+                params.insert("display_amount".to_string(), json!(display_quantity));
+                params.insert("refresh_amount".to_string(), json!(display_quantity));
 
                 let response = self.rpc_call(method, params).await?;
                 DeribitParser::parse_order(&response, &instrument_name).map(PlaceOrderResponse::Simple)
+            }
+
+            OrderType::Bracket { price, take_profit, stop_loss } => {
+                // Deribit: OTOCO (One-Triggers-One-Cancels-Other) via linked_order_type param.
+                // The entry leg is the main order; otoco_config carries the TP and SL legs.
+                //
+                // API reference: private/buy + private/sell with:
+                //   linked_order_type: "one_triggers_one_cancels_other"
+                //   otoco_config: [
+                //     { order_type: "limit" | "market", limit_price: ..., amount: ... },  // TP leg
+                //     { order_type: "stop_market", trigger_price: ..., amount: ... },      // SL leg
+                //   ]
+                let entry_type = if price.is_some() { "limit" } else { "market" };
+
+                let otoco_config = json!([
+                    {
+                        "order_type": "limit",
+                        "limit_price": take_profit,
+                        "amount": quantity,
+                        "reduce_only": true,
+                    },
+                    {
+                        "order_type": "stop_market",
+                        "trigger_price": stop_loss,
+                        "amount": quantity,
+                        "reduce_only": true,
+                    }
+                ]);
+
+                let mut params = HashMap::new();
+                params.insert("instrument_name".to_string(), json!(instrument_name));
+                params.insert("amount".to_string(), json!(quantity));
+                params.insert("type".to_string(), json!(entry_type));
+                params.insert("linked_order_type".to_string(), json!("one_triggers_one_cancels_other"));
+                params.insert("otoco_config".to_string(), otoco_config);
+
+                if let Some(p) = price {
+                    params.insert("price".to_string(), json!(p));
+                }
+
+                let response = self.rpc_call(method, params).await?;
+                DeribitParser::parse_bracket_order(&response, &instrument_name)
+                    .map(PlaceOrderResponse::Bracket)
             }
 
             _ => Err(ExchangeError::UnsupportedOperation(

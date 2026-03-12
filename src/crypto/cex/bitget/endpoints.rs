@@ -114,6 +114,10 @@ pub enum BitgetEndpoint {
     FuturesSetMarginMode,
     FuturesSetMargin,
 
+    // === FUTURES ALGO ===
+    /// TWAP algorithmic order — `POST /api/v2/mix/order/place-twap-order`
+    FuturesTwapOrder,
+
     // === SPOT EXTRA ===
     SpotBatchPlaceOrders,
     SpotBatchCancelOrders,
@@ -184,6 +188,9 @@ impl BitgetEndpoint {
             Self::FuturesSetMarginMode => "/api/v2/mix/account/set-margin-mode",
             Self::FuturesSetMargin => "/api/v2/mix/account/set-margin",
 
+            // Futures Algo
+            Self::FuturesTwapOrder => "/api/v2/mix/order/place-twap-order",
+
             // Spot Extra
             Self::SpotBatchPlaceOrders => "/api/v2/spot/trade/batch-orders",
             Self::SpotBatchCancelOrders => "/api/v2/spot/trade/batch-cancel-order",
@@ -239,6 +246,7 @@ impl BitgetEndpoint {
             | Self::FuturesModifyOrder
             | Self::FuturesPlanOrder
             | Self::FuturesPosTpSl
+            | Self::FuturesTwapOrder
             | Self::FuturesSetLeverage
             | Self::FuturesSetMarginMode
             | Self::FuturesSetMargin => "POST",

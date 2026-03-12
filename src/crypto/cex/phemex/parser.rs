@@ -19,7 +19,7 @@ use crate::core::types::{
     ExchangeError, ExchangeResult, AccountType,
     Kline, OrderBook, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
-    FundingRate, SymbolInfo,
+    FundingRate, SymbolInfo, BracketResponse,
 };
 
 use super::endpoints::{unscale_price, unscale_value};
@@ -393,6 +393,90 @@ impl PhemexParser {
     pub fn parse_order_id(response: &Value) -> ExchangeResult<String> {
         let data = Self::extract_data(response)?;
         Self::require_str(data, "orderID").map(String::from)
+    }
+
+    /// Parse Bracket order response (Phemex ordType=11).
+    ///
+    /// Phemex returns the entry order in `data`.  The TP and SL legs (ordType 12/14)
+    /// may appear in `data.takeProfitOrder` and `data.stopLossOrder` sub-objects when
+    /// the exchange includes them, otherwise we construct minimal pending placeholders
+    /// from the `takeProfitEp` / `stopLossEp` fields on the entry order data.
+    pub fn parse_bracket_order(
+        response: &Value,
+        symbol: &str,
+        price_scale: u8,
+    ) -> ExchangeResult<BracketResponse> {
+        let data = Self::extract_data(response)?;
+        let entry_order = Self::parse_order_data(data, symbol, price_scale)?;
+
+        // Try dedicated sub-objects first (present in some API versions)
+        let tp_order = if let Some(tp_data) = data.get("takeProfitOrder") {
+            Self::parse_order_data(tp_data, symbol, price_scale)
+                .unwrap_or_else(|_| Self::synthetic_tp_from_entry(data, &entry_order, price_scale))
+        } else {
+            Self::synthetic_tp_from_entry(data, &entry_order, price_scale)
+        };
+
+        let sl_order = if let Some(sl_data) = data.get("stopLossOrder") {
+            Self::parse_order_data(sl_data, symbol, price_scale)
+                .unwrap_or_else(|_| Self::synthetic_sl_from_entry(data, &entry_order, price_scale))
+        } else {
+            Self::synthetic_sl_from_entry(data, &entry_order, price_scale)
+        };
+
+        Ok(BracketResponse {
+            entry_order,
+            tp_order,
+            sl_order,
+        })
+    }
+
+    /// Build a synthetic TP order from `takeProfitEp` on the entry order data.
+    fn synthetic_tp_from_entry(data: &Value, entry: &Order, price_scale: u8) -> Order {
+        let tp_price_ep = Self::get_i64(data, "takeProfitEp").unwrap_or(0);
+        let tp_price = unscale_price(tp_price_ep, price_scale);
+        Order {
+            id: "tp_pending".to_string(),
+            client_order_id: None,
+            symbol: entry.symbol.clone(),
+            side: entry.side.opposite(),
+            order_type: OrderType::Limit { price: tp_price },
+            status: OrderStatus::New,
+            price: Some(tp_price),
+            stop_price: None,
+            quantity: entry.quantity,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: entry.created_at,
+            updated_at: None,
+            time_in_force: crate::core::TimeInForce::Gtc,
+        }
+    }
+
+    /// Build a synthetic SL order from `stopLossEp` on the entry order data.
+    fn synthetic_sl_from_entry(data: &Value, entry: &Order, price_scale: u8) -> Order {
+        let sl_price_ep = Self::get_i64(data, "stopLossEp").unwrap_or(0);
+        let sl_price = unscale_price(sl_price_ep, price_scale);
+        Order {
+            id: "sl_pending".to_string(),
+            client_order_id: None,
+            symbol: entry.symbol.clone(),
+            side: entry.side.opposite(),
+            order_type: OrderType::StopMarket { stop_price: sl_price },
+            status: OrderStatus::New,
+            price: None,
+            stop_price: Some(sl_price),
+            quantity: entry.quantity,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: entry.created_at,
+            updated_at: None,
+            time_in_force: crate::core::TimeInForce::Gtc,
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

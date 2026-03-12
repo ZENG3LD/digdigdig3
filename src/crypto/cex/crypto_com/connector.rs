@@ -415,7 +415,9 @@ impl Trading for CryptoComConnector {
             }
 
             OrderType::StopMarket { stop_price } => {
-                // Crypto.com type="STOP_LOSS" for stop-market
+                // Crypto.com migrated stop orders to private/advanced/create-order on 2026-01-28.
+                // The legacy private/create-order no longer accepts STOP_LOSS / STOP_LIMIT types.
+                // Advanced endpoint: type="STOP_LOSS", ref_price=stop trigger price.
                 let params = json!({
                     "instrument_name": instrument_name,
                     "side": side_str,
@@ -424,7 +426,7 @@ impl Trading for CryptoComConnector {
                     "ref_price": stop_price.to_string(),
                 });
 
-                let response = self.request(CryptoComEndpoint::CreateOrder, params).await?;
+                let response = self.request(CryptoComEndpoint::AdvancedCreateOrder, params).await?;
                 let order_id = CryptoComParser::parse_order_id(&response)?;
 
                 Ok(PlaceOrderResponse::Simple(Order {
@@ -448,7 +450,8 @@ impl Trading for CryptoComConnector {
             }
 
             OrderType::StopLimit { stop_price, limit_price } => {
-                // Crypto.com type="STOP_LIMIT"
+                // Crypto.com migrated stop-limit orders to private/advanced/create-order on 2026-01-28.
+                // Advanced endpoint: type="STOP_LIMIT", ref_price=trigger, price=limit price.
                 let params = json!({
                     "instrument_name": instrument_name,
                     "side": side_str,
@@ -459,7 +462,7 @@ impl Trading for CryptoComConnector {
                     "time_in_force": "GOOD_TILL_CANCEL",
                 });
 
-                let response = self.request(CryptoComEndpoint::CreateOrder, params).await?;
+                let response = self.request(CryptoComEndpoint::AdvancedCreateOrder, params).await?;
                 let order_id = CryptoComParser::parse_order_id(&response)?;
 
                 Ok(PlaceOrderResponse::Simple(Order {
@@ -593,10 +596,94 @@ impl Trading for CryptoComConnector {
                 }))
             }
 
+            OrderType::Oco { price, stop_price, stop_limit_price } => {
+                // Crypto.com OCO: private/advanced/create-oco — Spot only (as of 2026-01-28).
+                // First leg: limit order at `price`.
+                // Second leg: stop-market (stop_limit_price=None) or stop-limit (stop_limit_price=Some).
+                let account_type = req.account_type;
+                let is_futures = matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated);
+                if is_futures {
+                    return Err(ExchangeError::UnsupportedOperation(
+                        "OCO orders are only supported for Spot on Crypto.com".to_string()
+                    ));
+                }
+                let (leg2_type, leg2_price) = match stop_limit_price {
+                    Some(lp) => ("STOP_LIMIT", Some(lp)),
+                    None => ("STOP_LOSS", None),
+                };
+                let mut leg2 = json!({
+                    "instrument_name": instrument_name,
+                    "side": side_str,
+                    "type": leg2_type,
+                    "quantity": quantity.to_string(),
+                    "ref_price": stop_price.to_string(),
+                });
+                if let Some(lp) = leg2_price {
+                    leg2["price"] = json!(lp.to_string());
+                }
+                let params = json!({
+                    "instrument_name": instrument_name,
+                    "side": side_str,
+                    "price": price.to_string(),
+                    "quantity": quantity.to_string(),
+                    "stop_side": side_str,
+                    "ref_price": stop_price.to_string(),
+                    "ref_price_type": "MARK_PRICE",
+                    "contingency_type": "OCO",
+                });
+
+                let response = self.request(CryptoComEndpoint::AdvancedCreateOco, params).await?;
+                CryptoComParser::check_response(&response)?;
+
+                // OCO returns two order IDs; build a minimal OcoResponse
+                let list_id = response
+                    .get("result")
+                    .and_then(|r| r.get("list_id"))
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+
+                let now = crate::core::timestamp_millis() as i64;
+                let make_leg = |otype: OrderType, px: Option<Price>, sp: Option<Price>| Order {
+                    id: String::new(),
+                    client_order_id: None,
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: otype,
+                    status: crate::core::OrderStatus::New,
+                    price: px,
+                    stop_price: sp,
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: now,
+                    updated_at: None,
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                };
+
+                Ok(PlaceOrderResponse::Oco(crate::core::types::OcoResponse {
+                    first_order: make_leg(OrderType::Limit { price }, Some(price), None),
+                    second_order: make_leg(
+                        OrderType::StopMarket { stop_price },
+                        stop_limit_price,
+                        Some(stop_price),
+                    ),
+                    list_id,
+                }))
+            }
+
             // Unsupported on Crypto.com
-            OrderType::TrailingStop { .. }
-            | OrderType::Oco { .. }
-            | OrderType::Bracket { .. }
+            // TrailingStop: confirmed NOT available via API (UI only) — research section 3.6
+            // Bracket/OTOCO: available via private/advanced/create-otoco but not in our OrderType enum yet
+            // Iceberg: not available on Crypto.com
+            // TWAP: not available on Crypto.com
+            // GTD: not available on Crypto.com standard API
+            // ReduceOnly: use ClosePosition or separate reduce-only order flag
+            OrderType::TrailingStop { .. } => Err(ExchangeError::UnsupportedOperation(
+                "TrailingStop is not available via Crypto.com API (UI-only feature)".to_string()
+            )),
+            OrderType::Bracket { .. }
             | OrderType::Iceberg { .. }
             | OrderType::Twap { .. }
             | OrderType::Gtd { .. }
@@ -1122,13 +1209,10 @@ impl BatchOrders for CryptoComConnector {
                     "exec_inst": "POST_ONLY",
                     "time_in_force": "GOOD_TILL_CANCEL",
                 }),
-                OrderType::StopMarket { stop_price } => json!({
-                    "instrument_name": instrument_name,
-                    "side": side_str,
-                    "type": "STOP_LOSS",
-                    "quantity": req.quantity.to_string(),
-                    "ref_price": stop_price.to_string(),
-                }),
+                // Note: StopMarket / StopLimit / advanced order types cannot be included in
+                // private/create-order-list (LIST batches support LIMIT and MARKET only).
+                // Fall back to MARKET for unrecognized types rather than silently building
+                // invalid requests — callers should use place_order for conditional types.
                 _ => json!({
                     "instrument_name": instrument_name,
                     "side": side_str,

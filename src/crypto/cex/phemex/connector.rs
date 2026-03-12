@@ -707,10 +707,50 @@ impl Trading for PhemexConnector {
                 PhemexParser::parse_order(&response, &symbol_str, self.default_price_scale).map(PlaceOrderResponse::Simple)
             }
 
+            OrderType::Bracket { price, take_profit, stop_loss } => {
+                // Phemex native Bracket order — ordType 11.
+                // This is a first-class API type: entry + TP (ordType 12) + SL (ordType 14)
+                // submitted as a single request on the standard contract order endpoint.
+                // Contract only (Spot does not support bracket orders).
+                if account_type == AccountType::Spot {
+                    return Err(ExchangeError::UnsupportedOperation(
+                        "Bracket orders not supported for Spot on Phemex".to_string()
+                    ));
+                }
+
+                let tp_price_ep = scale_price(take_profit, self.default_price_scale);
+                let sl_price_ep = scale_price(stop_loss, self.default_price_scale);
+
+                let body = if let Some(p) = price {
+                    json!({
+                        "symbol": symbol_str,
+                        "side": side_str,
+                        "orderQty": quantity as i64,
+                        "ordType": 11,                       // Bracket
+                        "priceEp": scale_price(p, self.default_price_scale),
+                        "timeInForce": "GoodTillCancel",
+                        "takeProfitEp": tp_price_ep,
+                        "stopLossEp": sl_price_ep,
+                    })
+                } else {
+                    json!({
+                        "symbol": symbol_str,
+                        "side": side_str,
+                        "orderQty": quantity as i64,
+                        "ordType": 11,                       // Bracket (market entry)
+                        "takeProfitEp": tp_price_ep,
+                        "stopLossEp": sl_price_ep,
+                    })
+                };
+
+                let response = self.post(endpoint, body, account_type).await?;
+                PhemexParser::parse_bracket_order(&response, &symbol_str, self.default_price_scale)
+                    .map(PlaceOrderResponse::Bracket)
+            }
+
             // Unsupported order types
             OrderType::TrailingStop { .. }
             | OrderType::Oco { .. }
-            | OrderType::Bracket { .. }
             | OrderType::Iceberg { .. }
             | OrderType::Twap { .. }
             | OrderType::Gtd { .. } => Err(ExchangeError::UnsupportedOperation(

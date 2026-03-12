@@ -15,7 +15,7 @@ use crate::core::types::{
     ExchangeError, ExchangeResult, OrderBook, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, PublicTrade, StreamEvent, TradeSide,
-    OrderUpdateEvent, SymbolInfo, Kline,
+    OrderUpdateEvent, SymbolInfo, Kline, BracketResponse,
 };
 
 /// Parser for Deribit JSON-RPC responses
@@ -346,6 +346,124 @@ impl DeribitParser {
         let order_data = result.get("order").unwrap_or(result);
 
         Self::require_str(order_data, "order_id").map(String::from)
+    }
+
+    /// Parse OTOCO (Bracket) response from Deribit `private/buy` / `private/sell`
+    /// with `linked_order_type: "one_triggers_one_cancels_other"`.
+    ///
+    /// Deribit returns the entry order in `result.order`.  The TP and SL legs are
+    /// created atomically when the entry fills; the exchange does not return their
+    /// order IDs in the placement response.  We reconstruct synthetic pending legs
+    /// from the `otoco_config` embedded in `result.order.otoco_config` when present,
+    /// or build minimal placeholder orders if that field is absent.
+    pub fn parse_bracket_order(response: &Value, symbol: &str) -> ExchangeResult<BracketResponse> {
+        let result = Self::extract_result(response)?;
+
+        // Entry order lives at result.order (or result directly for some API versions)
+        let entry_data = result.get("order").unwrap_or(result);
+        let entry_order = Self::parse_order_data(entry_data, symbol)?;
+
+        // Try to find leg configurations from the response
+        let legs_config = entry_data
+            .get("otoco_config")
+            .and_then(|v| v.as_array());
+
+        // Build TP order — first leg in otoco_config
+        let tp_order = if let Some(legs) = legs_config {
+            let leg = legs.get(0).unwrap_or(&serde_json::Value::Null);
+            let tp_price = Self::get_f64(leg, "limit_price")
+                .or_else(|| Self::get_f64(leg, "price"))
+                .unwrap_or(0.0);
+            Order {
+                id: Self::get_str(leg, "order_id").unwrap_or("tp_pending").to_string(),
+                client_order_id: None,
+                symbol: symbol.to_string(),
+                side: entry_order.side.opposite(),
+                order_type: OrderType::Limit { price: tp_price },
+                status: OrderStatus::New,
+                price: Some(tp_price),
+                stop_price: None,
+                quantity: entry_order.quantity,
+                filled_quantity: 0.0,
+                average_price: None,
+                commission: None,
+                commission_asset: None,
+                created_at: entry_order.created_at,
+                updated_at: None,
+                time_in_force: crate::core::TimeInForce::Gtc,
+            }
+        } else {
+            // Minimal placeholder when config not returned
+            Order {
+                id: "tp_pending".to_string(),
+                client_order_id: None,
+                symbol: symbol.to_string(),
+                side: entry_order.side.opposite(),
+                order_type: OrderType::Market,
+                status: OrderStatus::New,
+                price: None,
+                stop_price: None,
+                quantity: entry_order.quantity,
+                filled_quantity: 0.0,
+                average_price: None,
+                commission: None,
+                commission_asset: None,
+                created_at: entry_order.created_at,
+                updated_at: None,
+                time_in_force: crate::core::TimeInForce::Gtc,
+            }
+        };
+
+        // Build SL order — second leg in otoco_config
+        let sl_order = if let Some(legs) = legs_config {
+            let leg = legs.get(1).unwrap_or(&serde_json::Value::Null);
+            let sl_price = Self::get_f64(leg, "trigger_price")
+                .or_else(|| Self::get_f64(leg, "price"))
+                .unwrap_or(0.0);
+            Order {
+                id: Self::get_str(leg, "order_id").unwrap_or("sl_pending").to_string(),
+                client_order_id: None,
+                symbol: symbol.to_string(),
+                side: entry_order.side.opposite(),
+                order_type: OrderType::StopMarket { stop_price: sl_price },
+                status: OrderStatus::New,
+                price: None,
+                stop_price: Some(sl_price),
+                quantity: entry_order.quantity,
+                filled_quantity: 0.0,
+                average_price: None,
+                commission: None,
+                commission_asset: None,
+                created_at: entry_order.created_at,
+                updated_at: None,
+                time_in_force: crate::core::TimeInForce::Gtc,
+            }
+        } else {
+            Order {
+                id: "sl_pending".to_string(),
+                client_order_id: None,
+                symbol: symbol.to_string(),
+                side: entry_order.side.opposite(),
+                order_type: OrderType::Market,
+                status: OrderStatus::New,
+                price: None,
+                stop_price: None,
+                quantity: entry_order.quantity,
+                filled_quantity: 0.0,
+                average_price: None,
+                commission: None,
+                commission_asset: None,
+                created_at: entry_order.created_at,
+                updated_at: None,
+                time_in_force: crate::core::TimeInForce::Gtc,
+            }
+        };
+
+        Ok(BracketResponse {
+            entry_order,
+            tp_order,
+            sl_order,
+        })
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

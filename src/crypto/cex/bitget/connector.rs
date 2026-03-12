@@ -856,6 +856,72 @@ impl Trading for BitgetConnector {
                 ));
             }
 
+            OrderType::Twap { duration_seconds, interval_seconds } => {
+                // Bitget: native TWAP via POST /api/v2/mix/order/place-twap-order
+                // Futures only — up to 30 active TWAP orders per account.
+                if !is_futures {
+                    return Err(ExchangeError::UnsupportedOperation(
+                        "TWAP orders are only supported for futures on Bitget".to_string()
+                    ));
+                }
+                let mut body = json!({
+                    "symbol": formatted_symbol,
+                    "productType": get_product_type(&symbol.quote),
+                    "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
+                    "tradeSide": "open",
+                    "totalQuantity": quantity.to_string(),
+                    // timeInterval in seconds between each sub-order execution
+                    "timeInterval": interval_seconds.unwrap_or(60).to_string(),
+                    // priceType: "market" = TWAP at market; "limit" = limit TWAP
+                    "priceType": "market",
+                    "clientOid": client_oid,
+                });
+                // executeQuantity: sub-order size. Default to total / (duration / interval) slices.
+                let interval = interval_seconds.unwrap_or(60);
+                let num_slices = (duration_seconds / interval).max(1);
+                let slice_qty = quantity / num_slices as f64;
+                body["executeQuantity"] = json!(slice_qty.to_string());
+                body["size"] = json!(quantity.to_string());
+
+                let response = self.post(BitgetEndpoint::FuturesTwapOrder, body, account_type).await?;
+                let algo_id = response
+                    .get("data")
+                    .and_then(|d| d.get("twapOrderId"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                return Ok(PlaceOrderResponse::Algo(crate::core::types::AlgoOrderResponse {
+                    algo_id,
+                    status: "Running".to_string(),
+                    executed_count: None,
+                    total_count: Some(num_slices as u32),
+                }));
+            }
+
+            OrderType::Iceberg { price, display_quantity } => {
+                // Bitget futures: orderType="iceberg" with icebergQuantity per visible slice.
+                if !is_futures {
+                    return Err(ExchangeError::UnsupportedOperation(
+                        "Iceberg orders are only supported for futures on Bitget".to_string()
+                    ));
+                }
+                let body = json!({
+                    "symbol": formatted_symbol,
+                    "productType": get_product_type(&symbol.quote),
+                    "marginMode": margin_mode,
+                    "marginCoin": symbol.quote.to_uppercase(),
+                    "size": quantity.to_string(),
+                    "price": price.to_string(),
+                    "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
+                    "orderType": "limit",
+                    "force": "gtc",
+                    // Bitget iceberg param — display quantity of each visible slice
+                    "icebergQuantity": display_quantity.to_string(),
+                    "clientOid": client_oid,
+                });
+                (BitgetEndpoint::FuturesCreateOrder, body)
+            }
+
             _ => {
                 return Err(ExchangeError::UnsupportedOperation(
                     format!("{:?} order type not supported on Bitget", req.order_type)
@@ -869,6 +935,7 @@ impl Trading for BitgetConnector {
             OrderType::Limit { price } | OrderType::PostOnly { price } | OrderType::Fok { price } | OrderType::Gtd { price, .. } => Some(*price),
             OrderType::Ioc { price } => *price,
             OrderType::StopLimit { limit_price, .. } => Some(*limit_price),
+            OrderType::Iceberg { price, .. } => Some(*price),
             _ => None,
         };
 

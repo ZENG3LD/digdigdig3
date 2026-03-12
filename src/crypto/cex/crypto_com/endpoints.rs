@@ -74,6 +74,17 @@ pub enum CryptoComEndpoint {
     GetOrderHistory,
     GetUserTrades,
 
+    // === ADVANCED ORDER MANAGEMENT (migrated 2026-01-28) ===
+    /// Stop-loss and take-profit conditional orders.
+    /// Replaces the legacy STOP_LOSS / STOP_LIMIT / TAKE_PROFIT types in CreateOrder.
+    AdvancedCreateOrder,
+    /// OCO (One-Cancels-Other) — Spot only.
+    AdvancedCreateOco,
+    /// OTO (One-Triggers-Other).
+    AdvancedCreateOto,
+    /// OTOCO (One-Triggers-One-Cancels-Other).
+    AdvancedCreateOtoco,
+
     // === ACCOUNT ===
     UserBalance,
     GetAccounts,
@@ -115,6 +126,12 @@ impl CryptoComEndpoint {
             Self::GetOrderDetail => "private/get-order-detail",
             Self::GetOrderHistory => "private/get-order-history",
             Self::GetUserTrades => "private/get-trades",
+
+            // Advanced order management (migrated 2026-01-28)
+            Self::AdvancedCreateOrder => "private/advanced/create-order",
+            Self::AdvancedCreateOco => "private/advanced/create-oco",
+            Self::AdvancedCreateOto => "private/advanced/create-oto",
+            Self::AdvancedCreateOtoco => "private/advanced/create-otoco",
 
             // Account
             Self::UserBalance => "private/user-balance",

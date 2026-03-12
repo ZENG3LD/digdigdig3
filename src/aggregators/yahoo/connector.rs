@@ -296,19 +296,122 @@ impl MarketData for YahooFinanceConnector {
 // TRAIT: Trading (UnsupportedOperation - data provider only)
 // ═══════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Trading for YahooFinanceConnector {
+    async fn market_order(
+        &self,
+        _symbol: Symbol,
+        _side: OrderSide,
+        _quantity: Quantity,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Yahoo Finance is a data provider - trading not supported".to_string(),
+        ))
+    }
 
+    async fn limit_order(
+        &self,
+        _symbol: Symbol,
+        _side: OrderSide,
+        _quantity: Quantity,
+        _price: Price,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Yahoo Finance is a data provider - trading not supported".to_string(),
+        ))
+    }
+
+    async fn cancel_order(
+        &self,
+        _symbol: Symbol,
+        _order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Yahoo Finance is a data provider - trading not supported".to_string(),
+        ))
+    }
+
+    async fn get_order(
+        &self,
+        _symbol: Symbol,
+        _order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Yahoo Finance is a data provider - trading not supported".to_string(),
+        ))
+    }
+
+    async fn get_open_orders(
+        &self,
+        _symbol: Option<Symbol>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Yahoo Finance is a data provider - trading not supported".to_string(),
+        ))
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TRAIT: Account (UnsupportedOperation - data provider only)
 // ═══════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Account for YahooFinanceConnector {
+    async fn get_balance(&self, _asset: Option<Asset>, _account_type: AccountType) -> ExchangeResult<Vec<Balance>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Yahoo Finance is a data provider - account operations not supported".to_string(),
+        ))
+    }
 
+    async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Yahoo Finance is a data provider - account operations not supported".to_string(),
+        ))
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TRAIT: Positions (UnsupportedOperation - data provider only)
 // ═══════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Positions for YahooFinanceConnector {
+    async fn get_positions(
+        &self,
+        _symbol: Option<Symbol>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Position>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Yahoo Finance is a data provider - position tracking not supported".to_string(),
+        ))
+    }
 
+    async fn get_funding_rate(
+        &self,
+        _symbol: Symbol,
+        _account_type: AccountType,
+    ) -> ExchangeResult<FundingRate> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Funding rate not available - Yahoo Finance is not a derivatives platform".to_string(),
+        ))
+    }
+
+    async fn set_leverage(
+        &self,
+        _symbol: Symbol,
+        _leverage: u32,
+        _account_type: AccountType,
+    ) -> ExchangeResult<()> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Leverage not applicable - Yahoo Finance is a data provider".to_string(),
+        ))
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // EXTENDED METHODS (Yahoo-specific, not from traits)

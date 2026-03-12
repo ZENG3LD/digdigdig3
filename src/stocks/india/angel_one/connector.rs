@@ -332,11 +332,11 @@ impl AngelOneConnector {
         if let Some(ot) = order_type {
             body["ordertype"] = json!(match ot {
                 OrderType::Market => "MARKET",
-                OrderType::Limit { .. } => "LIMIT",
-                OrderType::StopMarket { .. } => "STOPLOSS_MARKET",
-                OrderType::StopLimit { .. } => "STOPLOSS_LIMIT",
-                // All other order types not natively supported by Angel One
-                _ => "LIMIT",
+                OrderType::Limit => "LIMIT",
+                OrderType::StopLoss => "STOPLOSS_MARKET",
+                OrderType::StopLossLimit => "STOPLOSS_LIMIT",
+                OrderType::TakeProfit => "LIMIT", // Angel One doesn't have native take profit
+                OrderType::TakeProfitLimit => "LIMIT",
             });
         }
 
@@ -574,19 +574,299 @@ impl MarketData for AngelOneConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Trading for AngelOneConnector {
+    async fn market_order(
+        &self,
+        symbol: Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let body = json!({
+            "variety": "NORMAL",
+            "tradingsymbol": format_symbol(&symbol),
+            "symboltoken": format_symbol(&symbol), // Should be actual token
+            "transactiontype": match side {
+                OrderSide::Buy => "BUY",
+                OrderSide::Sell => "SELL",
+            },
+            "exchange": "NSE",
+            "ordertype": "MARKET",
+            "producttype": "INTRADAY",
+            "duration": "DAY",
+            "quantity": quantity.to_string(),
+        });
 
+        let response = self.post(AngelOneEndpoint::PlaceOrder, body).await?;
+        let order_id = AngelOneParser::parse_order_id(&response)?;
+
+        Ok(Order {
+            id: order_id,
+            client_order_id: None,
+            symbol: symbol.to_string(),
+            side,
+            order_type: OrderType::Market,
+            status: OrderStatus::New,
+            price: None,
+            stop_price: None,
+            quantity,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: timestamp_millis() as i64,
+            updated_at: None,
+            time_in_force: TimeInForce::GTC,
+        })
+    }
+
+    async fn limit_order(
+        &self,
+        symbol: Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        price: Price,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let body = json!({
+            "variety": "NORMAL",
+            "tradingsymbol": format_symbol(&symbol),
+            "symboltoken": format_symbol(&symbol),
+            "transactiontype": match side {
+                OrderSide::Buy => "BUY",
+                OrderSide::Sell => "SELL",
+            },
+            "exchange": "NSE",
+            "ordertype": "LIMIT",
+            "producttype": "INTRADAY",
+            "duration": "DAY",
+            "price": price.to_string(),
+            "quantity": quantity.to_string(),
+        });
+
+        let response = self.post(AngelOneEndpoint::PlaceOrder, body).await?;
+        let order_id = AngelOneParser::parse_order_id(&response)?;
+
+        Ok(Order {
+            id: order_id,
+            client_order_id: None,
+            symbol: symbol.to_string(),
+            side,
+            order_type: OrderType::Limit,
+            status: OrderStatus::New,
+            price: Some(price),
+            stop_price: None,
+            quantity,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: timestamp_millis() as i64,
+            updated_at: None,
+            time_in_force: TimeInForce::GTC,
+        })
+    }
+
+    async fn cancel_order(
+        &self,
+        symbol: Symbol,
+        order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let body = json!({
+            "variety": "NORMAL",
+            "orderid": order_id
+        });
+
+        let response = self.post(AngelOneEndpoint::CancelOrder, body).await?;
+        self.check_response(&response)?;
+
+        Ok(Order {
+            id: order_id.to_string(),
+            client_order_id: None,
+            symbol: symbol.to_string(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Limit,
+            status: OrderStatus::Canceled,
+            price: None,
+            stop_price: None,
+            quantity: 0.0,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: 0,
+            updated_at: Some(timestamp_millis() as i64),
+            time_in_force: TimeInForce::GTC,
+        })
+    }
+
+    async fn get_order(
+        &self,
+        _symbol: Symbol,
+        order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let mut params = HashMap::new();
+        params.insert("orderid".to_string(), order_id.to_string());
+
+        let response = self.get(AngelOneEndpoint::GetOrderDetails, params).await?;
+        let details = AngelOneParser::parse_order_details(&response)?;
+
+        Ok(Order {
+            id: details.order_id,
+            client_order_id: None,
+            symbol: details.symbol,
+            side: details.side,
+            order_type: details.order_type,
+            status: details.status,
+            price: details.price,
+            stop_price: None,
+            quantity: details.quantity,
+            filled_quantity: details.filled_quantity.unwrap_or(0.0),
+            average_price: details.average_price,
+            commission: None,
+            commission_asset: None,
+            created_at: timestamp_millis() as i64,
+            updated_at: Some(timestamp_millis() as i64),
+            time_in_force: TimeInForce::GTC,
+        })
+    }
+
+    async fn get_open_orders(
+        &self,
+        _symbol: Option<Symbol>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        let order_book = self.get_order_book().await?;
+
+        let orders: Vec<Order> = order_book.iter()
+            .filter_map(|order| {
+                let status = order.get("orderstatus")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("");
+
+                // Filter for open orders
+                if status == "OPEN" || status == "PENDING" {
+                    let order_id = order.get("orderid")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let symbol = order.get("tradingsymbol")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("")
+                        .to_string();
+
+                    let side = match order.get("transactiontype").and_then(|s| s.as_str()) {
+                        Some("BUY") => OrderSide::Buy,
+                        Some("SELL") => OrderSide::Sell,
+                        _ => OrderSide::Buy,
+                    };
+
+                    let order_type = match order.get("ordertype").and_then(|s| s.as_str()) {
+                        Some("MARKET") => OrderType::Market,
+                        Some("LIMIT") => OrderType::Limit,
+                        Some("STOPLOSS_LIMIT") => OrderType::StopLossLimit,
+                        Some("STOPLOSS_MARKET") => OrderType::StopLoss,
+                        _ => OrderType::Market,
+                    };
+
+                    Some(Order {
+                        id: order_id,
+                        client_order_id: None,
+                        symbol,
+                        side,
+                        order_type,
+                        status: OrderStatus::New,
+                        price: order.get("price").and_then(|p| p.as_f64()),
+                        stop_price: None,
+                        quantity: order.get("quantity").and_then(|q| q.as_f64()).unwrap_or(0.0),
+                        filled_quantity: order.get("filledshares").and_then(|f| f.as_f64()).unwrap_or(0.0),
+                        average_price: order.get("averageprice").and_then(|a| a.as_f64()),
+                        commission: None,
+                        commission_asset: None,
+                        created_at: timestamp_millis() as i64,
+                        updated_at: None,
+                        time_in_force: TimeInForce::GTC,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(orders)
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Account for AngelOneConnector {
+    async fn get_balance(
+        &self,
+        _asset: Option<crate::core::Asset>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Balance>> {
+        let response = self.get(AngelOneEndpoint::GetRMS, HashMap::new()).await?;
+        AngelOneParser::parse_balance(&response)
+    }
 
+    async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
+        let response = self.get(AngelOneEndpoint::GetProfile, HashMap::new()).await?;
+        let mut account_info = AngelOneParser::parse_account_info(&response)?;
+
+        // Add balance information
+        let balances = self.get_balance(None, account_type).await?;
+        account_info.balances = balances;
+
+        Ok(account_info)
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // POSITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Positions for AngelOneConnector {
+    async fn get_positions(
+        &self,
+        _symbol: Option<Symbol>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Position>> {
+        let response = self.get(AngelOneEndpoint::GetPositions, HashMap::new()).await?;
+        AngelOneParser::parse_positions(&response)
+    }
 
+    async fn get_funding_rate(
+        &self,
+        _symbol: Symbol,
+        _account_type: AccountType,
+    ) -> ExchangeResult<FundingRate> {
+        // Angel One doesn't have funding rates (not a crypto perpetual futures exchange)
+        // Indian F&O contracts have expiry dates, not funding rates
+        Err(ExchangeError::UnsupportedOperation(
+            "Funding rates not applicable for Indian equity/F&O markets".to_string()
+        ))
+    }
+
+    async fn set_leverage(
+        &self,
+        _symbol: Symbol,
+        _leverage: u32,
+        _account_type: AccountType,
+    ) -> ExchangeResult<()> {
+        // Angel One doesn't have adjustable leverage
+        // Margin is determined by product type (INTRADAY, DELIVERY, etc.)
+        Err(ExchangeError::UnsupportedOperation(
+            "Leverage is fixed by product type in Indian markets".to_string()
+        ))
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -299,14 +299,14 @@ impl HtxParser {
                 client_order_id: None,
                 symbol: String::new(),
                 side: OrderSide::Buy, // Unknown at this point
-                order_type: OrderType::Limit { price: 0.0 },
+                order_type: OrderType::Limit,
                 status: OrderStatus::New,
                 price: None,
                 stop_price: None,
                 quantity: 0.0,
                 filled_quantity: 0.0,
                 average_price: None,
-                time_in_force: TimeInForce::Gtc,
+                time_in_force: TimeInForce::GTC,
                 commission: None,
                 commission_asset: None,
                 created_at: 0,
@@ -365,7 +365,7 @@ impl HtxParser {
             quantity,
             filled_quantity,
             average_price,
-            time_in_force: TimeInForce::Gtc,
+            time_in_force: TimeInForce::GTC,
             commission: data["field-fees"].as_str().and_then(|s| s.parse::<f64>().ok()),
             commission_asset: None,
             created_at,
@@ -390,10 +390,10 @@ impl HtxParser {
 
         let order_type = match parts[1] {
             "market" => OrderType::Market,
-            "limit" => OrderType::Limit { price: 0.0 },
-            "ioc" => OrderType::Limit { price: 0.0 }, // IOC is a limit order variant
-            "limit-maker" => OrderType::Limit { price: 0.0 }, // Post-only limit
-            _ => OrderType::Limit { price: 0.0 }, // Default to limit
+            "limit" => OrderType::Limit,
+            "ioc" => OrderType::Limit, // IOC is a limit order variant
+            "limit-maker" => OrderType::Limit, // Post-only limit
+            _ => OrderType::Limit, // Default to limit
         };
 
         Ok((side, order_type))
@@ -587,7 +587,7 @@ mod tests {
     fn test_parse_order_type() {
         let (side, order_type) = HtxParser::parse_order_type("buy-limit").unwrap();
         assert_eq!(side, OrderSide::Buy);
-        assert_eq!(order_type, OrderType::Limit { price: 0.0 });
+        assert_eq!(order_type, OrderType::Limit);
 
         let (side, order_type) = HtxParser::parse_order_type("sell-market").unwrap();
         assert_eq!(side, OrderSide::Sell);

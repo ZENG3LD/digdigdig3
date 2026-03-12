@@ -206,7 +206,7 @@ pub fn normalize_symbol(symbol: &str) -> String {
 }
 
 /// Валидация символа dYdX (должен быть формата BASE-USD)
-pub fn is_valid_symbol(symbol: &str) -> bool {
+pub fn _is_valid_symbol(symbol: &str) -> bool {
     symbol.contains('-') && symbol.ends_with("-USD") && symbol == symbol.to_uppercase()
 }
 
@@ -230,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    fn testis_valid_symbol() {
+    fn test_is_valid_symbol() {
         assert!(is_valid_symbol("BTC-USD"));
         assert!(is_valid_symbol("ETH-USD"));
         assert!(!is_valid_symbol("btc-usd")); // lowercase

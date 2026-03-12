@@ -315,7 +315,7 @@ impl PhemexParser {
             .unwrap_or("Limit")
         {
             "Market" => OrderType::Market,
-            _ => OrderType::Limit { price: 0.0 },
+            _ => OrderType::Limit,
         };
 
         let status = Self::parse_order_status(data);
@@ -358,7 +358,7 @@ impl PhemexParser {
             updated_at: data.get("transactTimeNs")
                 .and_then(|t| t.as_i64())
                 .map(|ns| ns / 1_000_000),
-            time_in_force: crate::core::TimeInForce::Gtc,
+            time_in_force: crate::core::TimeInForce::GTC,
         })
     }
 

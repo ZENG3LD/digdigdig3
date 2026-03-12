@@ -115,6 +115,5 @@ pub fn parse_symbol(futu_code: &str) -> Result<Symbol, String> {
     Ok(Symbol {
         base: parts[1].to_string(),
         quote: "USD".to_string(), // Default, would need market-specific logic
-        raw: None,
     })
 }

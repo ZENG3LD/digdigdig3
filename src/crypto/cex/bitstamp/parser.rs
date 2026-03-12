@@ -282,7 +282,7 @@ impl BitstampParser {
         };
 
         // Bitstamp doesn't distinguish limit/market in status response
-        let order_type = OrderType::Limit { price: 0.0 }; // Default to limit
+        let order_type = OrderType::Limit; // Default to limit
 
         // Parse status
         let status = match json.get("status").and_then(|s| s.as_str()) {
@@ -335,7 +335,7 @@ impl BitstampParser {
             commission_asset: None,
             created_at,
             updated_at: None,
-            time_in_force: TimeInForce::Gtc,
+            time_in_force: TimeInForce::GTC,
         })
     }
 

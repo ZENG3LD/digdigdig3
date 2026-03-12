@@ -282,7 +282,7 @@ impl DeribitParser {
         let order_type_str = Self::get_str(data, "order_type").unwrap_or("limit");
         let order_type = match order_type_str {
             "market" => OrderType::Market,
-            _ => OrderType::Limit { price: 0.0 },
+            _ => OrderType::Limit,
         };
 
         let status = Self::parse_order_status(data);
@@ -303,7 +303,7 @@ impl DeribitParser {
             commission_asset: None, // Deribit uses instrument's settlement currency
             created_at: Self::get_i64(data, "creation_timestamp").unwrap_or(0),
             updated_at: Self::get_i64(data, "last_update_timestamp"),
-            time_in_force: crate::core::TimeInForce::Gtc,
+            time_in_force: crate::core::TimeInForce::GTC,
         })
     }
 
@@ -529,7 +529,7 @@ impl DeribitParser {
         let order_type_str = Self::get_str(data, "order_type").unwrap_or("limit");
         let order_type = match order_type_str {
             "market" => OrderType::Market,
-            _ => OrderType::Limit { price: 0.0 },
+            _ => OrderType::Limit,
         };
 
         let status = Self::parse_order_status(data);

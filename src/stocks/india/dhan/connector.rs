@@ -429,11 +429,176 @@ impl MarketData for DhanConnector {
     }
 }
 
+#[async_trait]
+impl Trading for DhanConnector {
+    async fn market_order(
+        &self,
+        symbol: Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let security_id = self.get_security_id(&symbol);
+        let segment = self.get_exchange_segment(account_type);
+        let client_id = {
+            let auth = self.auth.lock().await;
+            auth.client_id().to_string()
+        };
 
+        let body = json!({
+            "dhanClientId": client_id,
+            "transactionType": match side {
+                OrderSide::Buy => "BUY",
+                OrderSide::Sell => "SELL",
+            },
+            "exchangeSegment": segment.as_str(),
+            "productType": map_product_type(account_type),
+            "orderType": "MARKET",
+            "validity": "DAY",
+            "securityId": security_id,
+            "quantity": quantity as i64,
+            "disclosedQuantity": 0,
+            "afterMarketOrder": false,
+        });
 
+        let response = self.post(DhanEndpoint::PlaceOrder, body).await?;
+        DhanParser::parse_order_placement(&response)
+    }
 
+    async fn limit_order(
+        &self,
+        symbol: Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        price: Price,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let security_id = self.get_security_id(&symbol);
+        let segment = self.get_exchange_segment(account_type);
+        let client_id = {
+            let auth = self.auth.lock().await;
+            auth.client_id().to_string()
+        };
 
+        let body = json!({
+            "dhanClientId": client_id,
+            "transactionType": match side {
+                OrderSide::Buy => "BUY",
+                OrderSide::Sell => "SELL",
+            },
+            "exchangeSegment": segment.as_str(),
+            "productType": map_product_type(account_type),
+            "orderType": "LIMIT",
+            "validity": "DAY",
+            "securityId": security_id,
+            "quantity": quantity as i64,
+            "price": price,
+            "disclosedQuantity": 0,
+            "afterMarketOrder": false,
+        });
 
+        let response = self.post(DhanEndpoint::PlaceOrder, body).await?;
+        DhanParser::parse_order_placement(&response)
+    }
+
+    async fn cancel_order(
+        &self,
+        _symbol: Symbol,
+        order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let response = self.delete(DhanEndpoint::CancelOrder, &[("orderId", order_id)]).await?;
+        DhanParser::parse_order_placement(&response)
+    }
+
+    async fn get_order(
+        &self,
+        _symbol: Symbol,
+        order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let mut path = DhanEndpoint::GetOrder.path().to_string();
+        path = path.replace("{orderId}", order_id);
+
+        let base_url = self.urls.rest_url();
+        let url = format!("{}{}", base_url, path);
+
+        let base_url_owned = base_url.to_string();
+        let mut auth = self.auth.lock().await;
+        let headers = auth.build_headers(&base_url_owned, &self.http).await?;
+        drop(auth); // Explicitly drop to release lock
+
+        let response = self.http.get_with_headers(&url, &HashMap::new(), &headers).await?;
+        DhanParser::parse_order(&response)
+    }
+
+    async fn get_open_orders(
+        &self,
+        _symbol: Option<Symbol>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        let response = self.get(DhanEndpoint::GetOrderBook, HashMap::new()).await?;
+        let all_orders = DhanParser::parse_orders(&response)?;
+
+        // Filter for open orders only
+        Ok(all_orders
+            .into_iter()
+            .filter(|o| matches!(o.status, OrderStatus::New | OrderStatus::Open | OrderStatus::PartiallyFilled))
+            .collect())
+    }
+}
+
+#[async_trait]
+impl Account for DhanConnector {
+    async fn get_balance(
+        &self,
+        _asset: Option<crate::core::types::Asset>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Balance>> {
+        let response = self.get(DhanEndpoint::GetHoldings, HashMap::new()).await?;
+        DhanParser::parse_holdings(&response)
+    }
+
+    async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
+        let response = self.get(DhanEndpoint::GetFunds, HashMap::new()).await?;
+        DhanParser::parse_funds(&response)
+    }
+}
+
+#[async_trait]
+impl Positions for DhanConnector {
+    async fn get_positions(
+        &self,
+        _symbol: Option<Symbol>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Position>> {
+        let response = self.get(DhanEndpoint::GetPositions, HashMap::new()).await?;
+        DhanParser::parse_positions(&response)
+    }
+
+    async fn get_funding_rate(
+        &self,
+        _symbol: Symbol,
+        _account_type: AccountType,
+    ) -> ExchangeResult<FundingRate> {
+        // Dhan doesn't have funding rates (equity derivatives don't have funding)
+        Err(ExchangeError::UnsupportedOperation(
+            "Funding rates not available for equity derivatives".to_string(),
+        ))
+    }
+
+    async fn set_leverage(
+        &self,
+        _symbol: Symbol,
+        _leverage: u32,
+        _account_type: AccountType,
+    ) -> ExchangeResult<()> {
+        // Dhan uses fixed margin requirements, leverage not directly settable
+        Err(ExchangeError::UnsupportedOperation(
+            "Leverage setting not supported (uses fixed margin requirements)".to_string(),
+        ))
+    }
+}
 
 #[cfg(test)]
 mod tests {

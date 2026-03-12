@@ -218,7 +218,7 @@ impl DydxParser {
 
         let order_type = match Self::get_str(data, "type").unwrap_or("LIMIT") {
             "MARKET" => OrderType::Market,
-            _ => OrderType::Limit { price: 0.0 },
+            _ => OrderType::Limit,
         };
 
         let status = match Self::get_str(data, "status").unwrap_or("OPEN") {
@@ -259,7 +259,7 @@ impl DydxParser {
             commission_asset: None,
             created_at,
             updated_at,
-            time_in_force: crate::core::TimeInForce::Gtc,
+            time_in_force: crate::core::TimeInForce::GTC,
         })
     }
 

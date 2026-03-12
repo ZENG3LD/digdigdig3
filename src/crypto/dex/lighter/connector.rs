@@ -403,19 +403,119 @@ impl MarketData for LighterConnector {
 // TRADING (Stubs for Phase 3)
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Trading for LighterConnector {
+    async fn market_order(
+        &self,
+        _symbol: Symbol,
+        _side: OrderSide,
+        _quantity: Quantity,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        Err(ExchangeError::NotSupported("Trading not yet implemented (Phase 3)".to_string()))
+    }
 
+    async fn limit_order(
+        &self,
+        _symbol: Symbol,
+        _side: OrderSide,
+        _quantity: Quantity,
+        _price: Price,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        Err(ExchangeError::NotSupported("Trading not yet implemented (Phase 3)".to_string()))
+    }
+
+    async fn cancel_order(
+        &self,
+        _symbol: Symbol,
+        _order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        Err(ExchangeError::NotSupported("Trading not yet implemented (Phase 3)".to_string()))
+    }
+
+    async fn get_order(
+        &self,
+        _symbol: Symbol,
+        _order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        Err(ExchangeError::NotSupported("Trading not yet implemented (Phase 3)".to_string()))
+    }
+
+    async fn get_open_orders(
+        &self,
+        _symbol: Option<Symbol>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::NotSupported("Trading not yet implemented (Phase 3)".to_string()))
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ACCOUNT (Stubs for Phase 2)
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Account for LighterConnector {
+    async fn get_balance(
+        &self,
+        _asset: Option<crate::core::types::Asset>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Balance>> {
+        Err(ExchangeError::NotSupported("Account data not yet implemented (Phase 2)".to_string()))
+    }
 
+    async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
+        Err(ExchangeError::NotSupported("Account data not yet implemented (Phase 2)".to_string()))
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // POSITIONS (Stubs for Phase 2)
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Positions for LighterConnector {
+    async fn get_positions(
+        &self,
+        _symbol: Option<Symbol>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Position>> {
+        Err(ExchangeError::NotSupported("Positions not yet implemented (Phase 2)".to_string()))
+    }
 
+    async fn get_funding_rate(
+        &self,
+        symbol: Symbol,
+        _account_type: AccountType,
+    ) -> ExchangeResult<FundingRate> {
+        let formatted_symbol = if let Some(raw) = symbol.raw() {
+            raw.to_string()
+        } else {
+            format_symbol(&symbol.base, &symbol.quote, AccountType::FuturesCross)
+        };
+        let market_id = self.get_market_id(&formatted_symbol, AccountType::FuturesCross).await?;
+
+        let mut params = HashMap::new();
+        params.insert("market_id".to_string(), market_id.to_string());
+
+        let response = self.get(LighterEndpoint::Fundings, params, 300).await?;
+        let mut funding = LighterParser::parse_funding_rate(&response)?;
+        funding.symbol = symbol.to_string();
+        Ok(funding)
+    }
+
+    async fn set_leverage(
+        &self,
+        _symbol: Symbol,
+        _leverage: u32,
+        _account_type: AccountType,
+    ) -> ExchangeResult<()> {
+        Err(ExchangeError::NotSupported("Leverage not yet implemented (Phase 2)".to_string()))
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // EXTENDED METHODS (Lighter-specific)

@@ -24,7 +24,7 @@
 //! // Private API
 //! let credentials = Credentials::new("organizations/.../apiKeys/...", "-----BEGIN EC PRIVATE KEY-----\n...");
 //! let connector = CoinbaseConnector::new(Some(credentials)).await?;
-//! let balance = connector.get_balance(crate::core::types::BalanceQuery { asset: None, account_type: AccountType::Spot }).await?;
+//! let balance = connector.get_balance(AccountType::Spot).await?;
 //! ```
 
 mod endpoints;

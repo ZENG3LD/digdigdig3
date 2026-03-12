@@ -363,19 +363,269 @@ impl MarketData for KrakenConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Trading for KrakenConnector {
+    async fn market_order(
+        &self,
+        symbol: Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
 
+        let mut params = HashMap::new();
+        params.insert("pair".to_string(), formatted);
+        params.insert("type".to_string(), match side {
+            OrderSide::Buy => "buy".to_string(),
+            OrderSide::Sell => "sell".to_string(),
+        });
+        params.insert("ordertype".to_string(), "market".to_string());
+        params.insert("volume".to_string(), quantity.to_string());
+
+        let response = self.post(KrakenEndpoint::SpotAddOrder, params, account_type).await?;
+        let order_id = KrakenParser::parse_order_id(&response)?;
+
+        // Return minimal order info
+        Ok(Order {
+            id: order_id,
+            client_order_id: None,
+            symbol: symbol.to_string(),
+            side,
+            order_type: OrderType::Market,
+            status: crate::core::OrderStatus::New,
+            price: None,
+            stop_price: None,
+            quantity,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: crate::core::timestamp_millis() as i64,
+            updated_at: None,
+            time_in_force: crate::core::TimeInForce::GTC,
+        })
+    }
+
+    async fn limit_order(
+        &self,
+        symbol: Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        price: Price,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
+
+        let mut params = HashMap::new();
+        params.insert("pair".to_string(), formatted);
+        params.insert("type".to_string(), match side {
+            OrderSide::Buy => "buy".to_string(),
+            OrderSide::Sell => "sell".to_string(),
+        });
+        params.insert("ordertype".to_string(), "limit".to_string());
+        params.insert("price".to_string(), price.to_string());
+        params.insert("volume".to_string(), quantity.to_string());
+
+        let response = self.post(KrakenEndpoint::SpotAddOrder, params, account_type).await?;
+        let order_id = KrakenParser::parse_order_id(&response)?;
+
+        Ok(Order {
+            id: order_id,
+            client_order_id: None,
+            symbol: symbol.to_string(),
+            side,
+            order_type: OrderType::Limit,
+            status: crate::core::OrderStatus::New,
+            price: Some(price),
+            stop_price: None,
+            quantity,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: crate::core::timestamp_millis() as i64,
+            updated_at: None,
+            time_in_force: crate::core::TimeInForce::GTC,
+        })
+    }
+
+    async fn cancel_order(
+        &self,
+        symbol: Symbol,
+        order_id: &str,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let mut params = HashMap::new();
+        params.insert("txid".to_string(), order_id.to_string());
+
+        let response = self.post(KrakenEndpoint::SpotCancelOrder, params, account_type).await?;
+        KrakenParser::extract_result(&response)?;
+
+        // Return cancelled order (minimal info)
+        Ok(Order {
+            id: order_id.to_string(),
+            client_order_id: None,
+            symbol: symbol.to_string(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Limit,
+            status: crate::core::OrderStatus::Canceled,
+            price: None,
+            stop_price: None,
+            quantity: 0.0,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: 0,
+            updated_at: Some(crate::core::timestamp_millis() as i64),
+            time_in_force: crate::core::TimeInForce::GTC,
+        })
+    }
+
+    async fn get_order(
+        &self,
+        _symbol: Symbol,
+        order_id: &str,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let mut params = HashMap::new();
+        params.insert("txid".to_string(), order_id.to_string());
+
+        let response = self.post(KrakenEndpoint::SpotGetOrder, params, account_type).await?;
+        KrakenParser::parse_order(&response, order_id)
+    }
+
+    async fn get_open_orders(
+        &self,
+        _symbol: Option<Symbol>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        let params = HashMap::new();
+        let response = self.post(KrakenEndpoint::SpotOpenOrders, params, account_type).await?;
+        KrakenParser::parse_open_orders(&response)
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Account for KrakenConnector {
+    async fn get_balance(
+        &self,
+        _asset: Option<crate::core::Asset>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Balance>> {
+        let params = HashMap::new();
+        let response = self.post(KrakenEndpoint::SpotBalance, params, account_type).await?;
+        KrakenParser::parse_balances(&response)
+    }
 
+    async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
+        let balances = self.get_balance(None, account_type).await?;
+
+        Ok(AccountInfo {
+            account_type,
+            can_trade: true,
+            can_withdraw: true,
+            can_deposit: true,
+            maker_commission: 0.16, // Kraken default maker fee (varies by tier)
+            taker_commission: 0.26, // Kraken default taker fee
+            balances,
+        })
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // POSITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Positions for KrakenConnector {
+    async fn get_positions(
+        &self,
+        _symbol: Option<Symbol>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Position>> {
+        match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Positions not supported for Spot/Margin".to_string()
+                ));
+            }
+            _ => {}
+        }
 
+        let response = self.get(
+            KrakenEndpoint::FuturesOpenPositions,
+            HashMap::new(),
+            account_type,
+        ).await?;
+
+        KrakenParser::parse_futures_positions(&response)
+    }
+
+    async fn get_funding_rate(
+        &self,
+        symbol: Symbol,
+        account_type: AccountType,
+    ) -> ExchangeResult<FundingRate> {
+        match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Funding rate not supported for Spot/Margin".to_string()
+                ));
+            }
+            _ => {}
+        }
+
+        let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
+
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), formatted.clone());
+
+        let response = self.get(
+            KrakenEndpoint::FuturesHistoricalFunding,
+            params,
+            account_type,
+        ).await?;
+
+        KrakenParser::parse_funding_rate(&response, &formatted)
+    }
+
+    async fn set_leverage(
+        &self,
+        symbol: Symbol,
+        leverage: u32,
+        account_type: AccountType,
+    ) -> ExchangeResult<()> {
+        match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Leverage not supported for Spot/Margin".to_string()
+                ));
+            }
+            _ => {}
+        }
+
+        let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
+
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), formatted);
+        params.insert("maxLeverage".to_string(), leverage.to_string());
+
+        let response = self.post(
+            KrakenEndpoint::FuturesSetLeverage,
+            params,
+            account_type,
+        ).await?;
+
+        KrakenParser::extract_futures_data(&response)?;
+        Ok(())
+    }
+}
 
 // Helper methods
 impl KrakenConnector {

@@ -161,7 +161,7 @@ impl ZerodhaParser {
                 commission_asset: None,
                 created_at: 0,
                 updated_at: None,
-                time_in_force: TimeInForce::Gtc,
+                time_in_force: TimeInForce::GTC,
             });
         }
 
@@ -185,7 +185,7 @@ impl ZerodhaParser {
             order_type: if Self::get_str(data, "order_type") == Some("MARKET") {
                 OrderType::Market
             } else {
-                OrderType::Limit { price: 0.0 }
+                OrderType::Limit
             },
             status,
             price: Self::get_f64(data, "price"),
@@ -197,7 +197,7 @@ impl ZerodhaParser {
             commission_asset: None,
             created_at: Self::get_i64(data, "order_timestamp").unwrap_or(0),
             updated_at: Self::get_i64(data, "exchange_update_timestamp"),
-            time_in_force: TimeInForce::Gtc,
+            time_in_force: TimeInForce::GTC,
         })
     }
 
@@ -239,7 +239,7 @@ impl ZerodhaParser {
                 order_type: if Self::get_str(order, "order_type") == Some("MARKET") {
                     OrderType::Market
                 } else {
-                    OrderType::Limit { price: 0.0 }
+                    OrderType::Limit
                 },
                 status,
                 price: Self::get_f64(order, "price"),
@@ -251,7 +251,7 @@ impl ZerodhaParser {
                 commission_asset: None,
                 created_at: Self::get_i64(order, "order_timestamp").unwrap_or(0),
                 updated_at: Self::get_i64(order, "exchange_update_timestamp"),
-                time_in_force: TimeInForce::Gtc,
+                time_in_force: TimeInForce::GTC,
             })
         }).collect()
     }

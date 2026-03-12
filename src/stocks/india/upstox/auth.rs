@@ -70,7 +70,7 @@ impl UpstoxAuth {
     }
 
     /// Create auth with explicit credentials and token
-    pub fn with_token(
+    pub fn _with_token(
         api_key: impl Into<String>,
         api_secret: impl Into<String>,
         access_token: impl Into<String>,
@@ -84,7 +84,7 @@ impl UpstoxAuth {
     }
 
     /// Set redirect URI for OAuth flow
-    pub fn with_redirect_uri(mut self, uri: impl Into<String>) -> Self {
+    pub fn _with_redirect_uri(mut self, uri: impl Into<String>) -> Self {
         self.redirect_uri = Some(uri.into());
         self
     }
@@ -188,8 +188,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn testwith_token() {
-        let auth = UpstoxAuth::with_token("test_key", "test_secret", "test_token");
+    fn test_with_token() {
+        let auth = UpstoxAuth::_with_token("test_key", "test_secret", "test_token");
         assert_eq!(auth.api_key, "test_key");
         assert_eq!(auth.api_secret, "test_secret");
         assert_eq!(auth.access_token, Some("test_token".to_string()));

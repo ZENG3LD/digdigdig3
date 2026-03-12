@@ -243,7 +243,7 @@ impl VertexParser {
             client_order_id: None,
             symbol,
             side,
-            order_type: OrderType::Limit { price: 0.0 },
+            order_type: OrderType::Limit,
             status,
             price: Self::get_x18(data, "priceX18"),
             stop_price: None,
@@ -254,7 +254,7 @@ impl VertexParser {
             commission_asset: None,
             created_at: Self::get_i64(data, "placed_at").unwrap_or(0) * 1000, // sec to ms
             updated_at: None,
-            time_in_force: crate::core::TimeInForce::Gtc,
+            time_in_force: crate::core::TimeInForce::GTC,
         })
     }
 
@@ -454,7 +454,7 @@ impl VertexParser {
             client_order_id: None,
             symbol,
             side,
-            order_type: OrderType::Limit { price: 0.0 },
+            order_type: OrderType::Limit,
             status,
             price: Self::get_x18(order, "priceX18"),
             quantity: amount.abs(),

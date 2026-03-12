@@ -24,7 +24,7 @@
 //! // Private API
 //! let credentials = Credentials::new("api_key", "api_secret");
 //! let connector = BybitConnector::new(Some(credentials), false).await?;
-//! let balance = connector.get_balance(crate::core::types::BalanceQuery { asset: None, account_type: AccountType::Spot }).await?;
+//! let balance = connector.get_balance(AccountType::Spot).await?;
 //! ```
 
 mod endpoints;

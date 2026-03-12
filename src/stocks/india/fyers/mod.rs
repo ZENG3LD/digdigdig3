@@ -52,11 +52,11 @@
 //! let orders = connector.get_open_orders(Some(symbol), AccountType::Spot).await?;
 //!
 //! // Account
-//! let balances = connector.get_balance(crate::core::types::BalanceQuery { asset: None, account_type: AccountType::Spot }).await?;
+//! let balances = connector.get_balance(None, AccountType::Spot).await?;
 //! let account_info = connector.get_account_info(AccountType::Spot).await?;
 //!
 //! // Positions
-//! let positions = connector.get_positions(crate::core::types::PositionQuery { symbol: None, account_type: AccountType::Spot }).await?;
+//! let positions = connector.get_positions(None, AccountType::Spot).await?;
 //!
 //! // Extended Methods
 //! let holdings = connector.get_holdings().await?;

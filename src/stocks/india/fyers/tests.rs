@@ -106,13 +106,13 @@ mod tests {
         let ticker = result.unwrap();
         println!("✓ Ticker for NSE:SBIN-EQ:");
         println!("  Last Price: {}", ticker.last_price);
-        println!("  Open: {}", ticker.last_price);
-        println!("  High: {}", ticker.high_24h.unwrap_or(0.0));
-        println!("  Low: {}", ticker.low_24h.unwrap_or(0.0));
-        println!("  Volume: {}", ticker.volume_24h.unwrap_or(0.0));
+        println!("  Open: {}", ticker.open);
+        println!("  High: {}", ticker.high);
+        println!("  Low: {}", ticker.low);
+        println!("  Volume: {}", ticker.volume);
 
         assert!(ticker.last_price > 0.0);
-        assert!(ticker.high_24h.unwrap_or(0.0) >= ticker.low_24h.unwrap_or(0.0));
+        assert!(ticker.high >= ticker.low);
     }
 
     #[tokio::test]
@@ -150,7 +150,7 @@ mod tests {
         let symbol = test_symbol();
 
         let result = connector
-            .get_klines(symbol, "5m", Some(10), AccountType::Spot, None)
+            .get_klines(symbol, "5m", Some(10), AccountType::Spot)
             .await;
 
         assert!(result.is_ok(), "get_klines failed: {:?}", result.err());
@@ -177,7 +177,7 @@ mod tests {
     async fn test_get_balance() {
         let connector = create_connector();
 
-        let result = connector.get_balance(crate::core::types::BalanceQuery { asset: None, account_type: AccountType::Spot }).await;
+        let result = connector.get_balance(None, AccountType::Spot).await;
 
         assert!(result.is_ok(), "get_balance failed: {:?}", result.err());
 
@@ -208,10 +208,13 @@ mod tests {
 
         let account_info = result.unwrap();
         println!("✓ Account Info:");
-        println!("  Account Type: {:?}", account_info.account_type);
+        println!("  User ID: {}", account_info.user_id);
+        if let Some(email) = &account_info.email {
+            println!("  Email: {}", email);
+        }
         println!("  Can Trade: {}", account_info.can_trade);
 
-        assert!(account_info.can_trade || !account_info.can_trade); // just verify field exists
+        assert!(!account_info.user_id.is_empty());
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -222,7 +225,7 @@ mod tests {
     async fn test_get_positions() {
         let connector = create_connector();
 
-        let result = connector.get_positions(crate::core::types::PositionQuery { symbol: None, account_type: AccountType::Spot }).await;
+        let result = connector.get_positions(None, AccountType::Spot).await;
 
         assert!(result.is_ok(), "get_positions failed: {:?}", result.err());
 
@@ -231,7 +234,7 @@ mod tests {
 
         for pos in &positions {
             println!(
-                "  {:?} {} @ {} (P&L: {})",
+                "  {} {} @ {} (P&L: {})",
                 pos.side, pos.symbol, pos.entry_price, pos.unrealized_pnl
             );
         }
@@ -267,46 +270,33 @@ mod tests {
             quantity, limit_price
         );
 
-        use crate::core::traits::Trading;
-        use crate::core::types::{OrderRequest, OrderType, TimeInForce, CancelRequest, CancelScope};
         let order_result = connector
-            .place_order(OrderRequest {
-                symbol: symbol.clone(),
-                side: OrderSide::Buy,
-                order_type: OrderType::Limit { price: limit_price },
+            .limit_order(
+                symbol.clone(),
+                OrderSide::Buy,
                 quantity,
-                account_type: AccountType::Spot,
-                client_order_id: None,
-                time_in_force: TimeInForce::Gtc,
-                reduce_only: false,
-            })
+                limit_price,
+                AccountType::Spot,
+            )
             .await;
 
         assert!(
             order_result.is_ok(),
-            "place_order failed: {:?}",
+            "limit_order failed: {:?}",
             order_result.err()
         );
 
-        let response = order_result.unwrap();
-        let order_id = match &response {
-            crate::core::types::PlaceOrderResponse::Simple(o) => o.id.clone(),
-            _ => panic!("Expected simple order response"),
-        };
-        println!("✓ Order placed: ID = {}", order_id);
+        let order = order_result.unwrap();
+        println!("✓ Order placed: ID = {}", order.id);
 
         // Wait a moment
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
         // Cancel the order
-        println!("Canceling order {}", order_id);
+        println!("Canceling order {}", order.id);
 
         let cancel_result = connector
-            .cancel_order(CancelRequest {
-                scope: CancelScope::Single { order_id },
-                symbol: Some(symbol),
-                account_type: AccountType::Spot,
-            })
+            .cancel_order(symbol.clone(), &order.id, AccountType::Spot)
             .await;
 
         assert!(
@@ -335,7 +325,7 @@ mod tests {
 
         for order in &orders {
             println!(
-                "  {} {:?} {} @ {:?} - Status: {:?}",
+                "  {} {} {} @ {:?} - Status: {:?}",
                 order.id, order.side, order.symbol, order.price, order.status
             );
         }

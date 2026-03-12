@@ -814,7 +814,7 @@ async fn _wait_after_connection() {
 }
 
 /// Build authentication message for WebSocket
-fn build_auth_message(auth: &CryptoComAuth, id: i64, nonce: i64) -> serde_json::Value {
+fn _build_auth_message(auth: &CryptoComAuth, id: i64, nonce: i64) -> serde_json::Value {
     let signature = auth.sign_ws_auth(id, nonce);
 
     serde_json::json!({
@@ -827,7 +827,7 @@ fn build_auth_message(auth: &CryptoComAuth, id: i64, nonce: i64) -> serde_json::
 }
 
 /// Build heartbeat response message
-fn build_heartbeat_response(id: i64) -> serde_json::Value {
+fn _build_heartbeat_response(id: i64) -> serde_json::Value {
     serde_json::json!({
         "id": id,
         "method": "public/respond-heartbeat"
@@ -835,7 +835,7 @@ fn build_heartbeat_response(id: i64) -> serde_json::Value {
 }
 
 /// Build subscribe message
-fn build_subscribe_message(id: i64, channels: Vec<String>, nonce: i64) -> serde_json::Value {
+fn _build_subscribe_message(id: i64, channels: Vec<String>, nonce: i64) -> serde_json::Value {
     serde_json::json!({
         "id": id,
         "method": "subscribe",
@@ -852,7 +852,7 @@ mod tests {
     use crate::core::Credentials;
 
     #[test]
-    fn testbuild_auth_message() {
+    fn test_build_auth_message() {
         let credentials = Credentials::new("test_key", "test_secret");
         let auth = CryptoComAuth::new(&credentials).unwrap();
         let msg = build_auth_message(&auth, 1, 1234567890);
@@ -865,14 +865,14 @@ mod tests {
     }
 
     #[test]
-    fn testbuild_heartbeat_response() {
+    fn test_build_heartbeat_response() {
         let msg = build_heartbeat_response(123);
         assert_eq!(msg["id"], 123);
         assert_eq!(msg["method"], "public/respond-heartbeat");
     }
 
     #[test]
-    fn testbuild_subscribe_message() {
+    fn test_build_subscribe_message() {
         let channels = vec!["ticker.BTCUSD-PERP".to_string(), "book.BTCUSD-PERP.10".to_string()];
         let msg = build_subscribe_message(1, channels.clone(), 1234567890);
 

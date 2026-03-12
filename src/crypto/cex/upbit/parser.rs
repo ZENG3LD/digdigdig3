@@ -272,7 +272,7 @@ impl UpbitParser {
         };
 
         let order_type = match Self::get_str(data, "ord_type") {
-            Some("limit") => OrderType::Limit { price: 0.0 },
+            Some("limit") => OrderType::Limit,
             _ => OrderType::Market,
         };
 
@@ -327,7 +327,7 @@ impl UpbitParser {
             commission_asset: None,
             created_at: 0, // TODO: Parse created_at ISO 8601
             updated_at: None,
-            time_in_force: crate::core::TimeInForce::Gtc,
+            time_in_force: crate::core::TimeInForce::GTC,
         })
     }
 

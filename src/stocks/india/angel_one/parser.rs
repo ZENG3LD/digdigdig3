@@ -250,9 +250,9 @@ impl AngelOneParser {
 
         let order_type = match Self::get_str(data, "ordertype") {
             Some("MARKET") => OrderType::Market,
-            Some("LIMIT") => OrderType::Limit { price: 0.0 },
-            Some("STOPLOSS_LIMIT") => OrderType::StopLimit { stop_price: 0.0, limit_price: 0.0 },
-            Some("STOPLOSS_MARKET") => OrderType::StopMarket { stop_price: 0.0 },
+            Some("LIMIT") => OrderType::Limit,
+            Some("STOPLOSS_LIMIT") => OrderType::StopLossLimit,
+            Some("STOPLOSS_MARKET") => OrderType::StopLoss,
             _ => OrderType::Market,
         };
 

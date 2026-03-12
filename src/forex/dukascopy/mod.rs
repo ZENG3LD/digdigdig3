@@ -46,7 +46,6 @@
 //! let symbol = Symbol {
 //!     base: "EUR".to_string(),
 //!     quote: "USD".to_string(),
-//!     raw: None,
 //! };
 //!
 //! // Get klines (constructed from tick data)

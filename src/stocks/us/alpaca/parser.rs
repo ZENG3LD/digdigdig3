@@ -259,10 +259,10 @@ impl AlpacaParser {
 
         let order_type = match Self::get_str(response, "type").or_else(|| Self::get_str(response, "order_type")) {
             Some("market") => OrderType::Market,
-            Some("limit") => OrderType::Limit { price: 0.0 },
-            Some("stop") => OrderType::StopMarket { stop_price: 0.0 },
-            Some("stop_limit") => OrderType::StopLimit { stop_price: 0.0, limit_price: 0.0 },
-            Some("trailing_stop") => OrderType::StopMarket { stop_price: 0.0 }, // Map trailing stop to regular stop
+            Some("limit") => OrderType::Limit,
+            Some("stop") => OrderType::StopLoss,
+            Some("stop_limit") => OrderType::StopLossLimit,
+            Some("trailing_stop") => OrderType::StopLoss, // Map trailing stop to regular stop
             _ => OrderType::Market, // Default fallback
         };
 
@@ -284,11 +284,11 @@ impl AlpacaParser {
             .and_then(|s| Self::parse_timestamp(&Value::String(s.to_string())));
 
         let time_in_force = match Self::get_str(response, "time_in_force") {
-            Some("gtc") => TimeInForce::Gtc,
-            Some("ioc") => TimeInForce::Ioc,
-            Some("fok") => TimeInForce::Fok,
-            Some("day") => TimeInForce::Gtc, // Map day to GTC
-            _ => TimeInForce::Gtc,
+            Some("gtc") => TimeInForce::GTC,
+            Some("ioc") => TimeInForce::IOC,
+            Some("fok") => TimeInForce::FOK,
+            Some("day") => TimeInForce::GTC, // Map day to GTC
+            _ => TimeInForce::GTC,
         };
 
         Ok(Order {

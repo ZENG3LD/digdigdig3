@@ -516,8 +516,8 @@ impl MexcParser {
 
         let order_type = match json["type"].as_str() {
             Some("MARKET") => OrderType::Market,
-            Some("LIMIT") | Some("LIMIT_MAKER") => OrderType::Limit { price: 0.0 },
-            _ => OrderType::Limit { price: 0.0 }, // default
+            Some("LIMIT") | Some("LIMIT_MAKER") => OrderType::Limit,
+            _ => OrderType::Limit, // default
         };
 
         let status = Self::parse_order_status(json["status"].as_str().unwrap_or(""));
@@ -583,10 +583,10 @@ impl MexcParser {
     /// Parse time in force from string
     fn parse_time_in_force(tif: &str) -> TimeInForce {
         match tif {
-            "GTC" => TimeInForce::Gtc,
-            "IOC" => TimeInForce::Ioc,
-            "FOK" => TimeInForce::Fok,
-            _ => TimeInForce::Gtc,
+            "GTC" => TimeInForce::GTC,
+            "IOC" => TimeInForce::IOC,
+            "FOK" => TimeInForce::FOK,
+            _ => TimeInForce::GTC,
         }
     }
 

@@ -295,9 +295,48 @@ impl MarketData for DydxConnector {
     }
 }
 
+#[async_trait]
+impl Account for DydxConnector {
+    async fn get_balance(&self, _asset: Option<crate::core::types::Asset>, _account_type: AccountType) -> ExchangeResult<Vec<Balance>> {
+        // Note: Requires address parameter
+        // Placeholder implementation - требует address
+        Err(ExchangeError::NotSupported(
+            "get_balance requires address parameter in dYdX. Use get_subaccount_balances instead.".to_string()
+        ))
+    }
 
+    async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
+        // Requires address - placeholder
+        Err(ExchangeError::NotSupported(
+            "get_account_info requires address parameter in dYdX".to_string()
+        ))
+    }
+}
 
+#[async_trait]
+impl Positions for DydxConnector {
+    async fn get_positions(&self, _symbol: Option<Symbol>, _account_type: AccountType) -> ExchangeResult<Vec<Position>> {
+        // Requires address and subaccountNumber parameters
+        Err(ExchangeError::NotSupported(
+            "get_positions requires address and subaccountNumber parameters in dYdX. Use get_subaccount_positions instead.".to_string()
+        ))
+    }
 
+    async fn get_funding_rate(&self, symbol: Symbol, _account_type: AccountType) -> ExchangeResult<FundingRate> {
+        let market = format_symbol(&symbol.base, &symbol.quote, _account_type);
+        let mut params = HashMap::new();
+        params.insert("market".to_string(), market.clone());
+
+        let response = self.get(DydxEndpoint::HistoricalFunding, params).await?;
+        DydxParser::parse_funding_rate(&response)
+    }
+
+    async fn set_leverage(&self, _symbol: Symbol, _leverage: u32, _account_type: AccountType) -> ExchangeResult<()> {
+        Err(ExchangeError::NotSupported(
+            "set_leverage not supported in dYdX. Leverage is determined by margin fraction.".to_string()
+        ))
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // EXTENDED METHODS

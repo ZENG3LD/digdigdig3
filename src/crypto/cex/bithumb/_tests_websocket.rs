@@ -30,7 +30,6 @@ fn btc_usdt() -> Symbol {
         base: "BTC".to_string(),
         quote: "USDT".to_string(),
     }
-        raw: None,
 }
 
 /// Load credentials from environment

@@ -213,12 +213,12 @@ impl ActionType {
 /// # Examples
 /// ```
 /// // Perpetuals
-/// assert_eq!(format_symbol("BTC", AccountType::FuturesCross), "BTC");
+/// assert_eq!(_format_symbol("BTC", AccountType::FuturesCross), "BTC");
 ///
 /// // Spot (if input already has @ prefix)
-/// assert_eq!(format_symbol("@107", AccountType::Spot), "@107");
+/// assert_eq!(_format_symbol("@107", AccountType::Spot), "@107");
 /// ```
-pub fn format_symbol(symbol: &str, account_type: AccountType) -> String {
+pub fn _format_symbol(symbol: &str, account_type: AccountType) -> String {
     match account_type {
         AccountType::Spot => {
             // Spot symbols use @index format
@@ -271,7 +271,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn testformat_symbol() {
+    fn test_format_symbol() {
         assert_eq!(format_symbol("BTC", AccountType::FuturesCross), "BTC");
         assert_eq!(format_symbol("eth", AccountType::FuturesCross), "ETH");
         assert_eq!(format_symbol("@107", AccountType::Spot), "@107");

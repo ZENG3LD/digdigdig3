@@ -263,21 +263,18 @@ mod tests {
         let symbol = crate::core::types::Symbol {
             base: "INE669E01016".to_string(),
             quote: "NSE_EQ".to_string(),
-            raw: None,
         };
         assert_eq!(format_symbol(&symbol), "NSE_EQ|INE669E01016");
 
         let symbol2 = crate::core::types::Symbol {
             base: "54321".to_string(),
             quote: "NSE_FO".to_string(),
-            raw: None,
         };
         assert_eq!(format_symbol(&symbol2), "NSE_FO|54321");
 
         let symbol3 = crate::core::types::Symbol {
             base: "INE002A01018".to_string(),
             quote: "".to_string(),
-            raw: None,
         };
         assert_eq!(format_symbol(&symbol3), "NSE_EQ|INE002A01018");
     }

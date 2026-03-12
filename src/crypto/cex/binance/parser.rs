@@ -225,7 +225,7 @@ impl BinanceParser {
 
         let order_type = match Self::get_str(data, "type").unwrap_or("LIMIT").to_uppercase().as_str() {
             "MARKET" => OrderType::Market,
-            _ => OrderType::Limit { price: 0.0 },
+            _ => OrderType::Limit,
         };
 
         let status = Self::parse_order_status(data);
@@ -262,7 +262,7 @@ impl BinanceParser {
                 .and_then(|t| t.as_i64())
                 .unwrap_or(0),
             updated_at: data.get("updateTime").and_then(|t| t.as_i64()),
-            time_in_force: crate::core::TimeInForce::Gtc,
+            time_in_force: crate::core::TimeInForce::GTC,
         })
     }
 

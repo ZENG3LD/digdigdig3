@@ -133,19 +133,110 @@ impl MarketData for FutuConnector {
 // TRAIT: Trading
 // ═══════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Trading for FutuConnector {
+    async fn market_order(
+        &self,
+        _symbol: Symbol,
+        _side: OrderSide,
+        _quantity: Quantity,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        Err(Self::not_implemented_error())
+    }
 
+    async fn limit_order(
+        &self,
+        _symbol: Symbol,
+        _side: OrderSide,
+        _quantity: Quantity,
+        _price: Price,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        Err(Self::not_implemented_error())
+    }
+
+    async fn cancel_order(
+        &self,
+        _symbol: Symbol,
+        _order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        Err(Self::not_implemented_error())
+    }
+
+    async fn get_order(
+        &self,
+        _symbol: Symbol,
+        _order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        Err(Self::not_implemented_error())
+    }
+
+    async fn get_open_orders(
+        &self,
+        _symbol: Option<Symbol>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(Self::not_implemented_error())
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TRAIT: Account
 // ═══════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Account for FutuConnector {
+    async fn get_balance(
+        &self,
+        _asset: Option<Asset>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Balance>> {
+        Err(Self::not_implemented_error())
+    }
 
+    async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
+        Err(Self::not_implemented_error())
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TRAIT: Positions
 // ═══════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Positions for FutuConnector {
+    async fn get_positions(
+        &self,
+        _symbol: Option<Symbol>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Position>> {
+        Err(Self::not_implemented_error())
+    }
 
+    async fn get_funding_rate(
+        &self,
+        _symbol: Symbol,
+        _account_type: AccountType,
+    ) -> ExchangeResult<FundingRate> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Futu does not trade perpetual futures - funding rate not applicable".to_string()
+        ))
+    }
+
+    async fn set_leverage(
+        &self,
+        _symbol: Symbol,
+        _leverage: u32,
+        _account_type: AccountType,
+    ) -> ExchangeResult<()> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Futu does not support leverage setting via API".to_string()
+        ))
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Extended methods (Futu-specific features)

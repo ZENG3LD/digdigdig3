@@ -358,16 +358,242 @@ impl MarketData for BingxConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Trading for BingxConnector {
+    async fn market_order(
+        &self,
+        symbol: Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let endpoint = match account_type {
+            AccountType::Spot | AccountType::Margin => BingxEndpoint::SpotOrder,
+            _ => BingxEndpoint::SwapOrder,
+        };
 
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("side".to_string(), match side {
+            OrderSide::Buy => "BUY".to_string(),
+            OrderSide::Sell => "SELL".to_string(),
+        });
+        params.insert("type".to_string(), "MARKET".to_string());
+
+        // BingX Spot uses quoteOrderQty for market orders
+        // Swap uses quantity
+        match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                params.insert("quoteOrderQty".to_string(), quantity.to_string());
+            }
+            _ => {
+                params.insert("quantity".to_string(), quantity.to_string());
+            }
+        }
+
+        let response = self.post(endpoint, params, account_type).await?;
+        BingxParser::parse_order(&response, &symbol.to_string())
+    }
+
+    async fn limit_order(
+        &self,
+        symbol: Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        price: Price,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let endpoint = match account_type {
+            AccountType::Spot | AccountType::Margin => BingxEndpoint::SpotOrder,
+            _ => BingxEndpoint::SwapOrder,
+        };
+
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("side".to_string(), match side {
+            OrderSide::Buy => "BUY".to_string(),
+            OrderSide::Sell => "SELL".to_string(),
+        });
+        params.insert("type".to_string(), "LIMIT".to_string());
+        params.insert("quantity".to_string(), quantity.to_string());
+        params.insert("price".to_string(), price.to_string());
+
+        let response = self.post(endpoint, params, account_type).await?;
+        BingxParser::parse_order(&response, &symbol.to_string())
+    }
+
+    async fn cancel_order(
+        &self,
+        symbol: Symbol,
+        order_id: &str,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let endpoint = match account_type {
+            AccountType::Spot | AccountType::Margin => BingxEndpoint::SpotOrder,
+            _ => BingxEndpoint::SwapOrder,
+        };
+
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("orderId".to_string(), order_id.to_string());
+
+        let response = self.delete(endpoint, params, account_type).await?;
+        BingxParser::parse_order(&response, &symbol.to_string())
+    }
+
+    async fn get_order(
+        &self,
+        symbol: Symbol,
+        order_id: &str,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let endpoint = match account_type {
+            AccountType::Spot | AccountType::Margin => BingxEndpoint::SpotOrder,
+            _ => BingxEndpoint::SwapOrder,
+        };
+
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("orderId".to_string(), order_id.to_string());
+
+        let response = self.get(endpoint, params, account_type).await?;
+        BingxParser::parse_order(&response, &symbol.to_string())
+    }
+
+    async fn get_open_orders(
+        &self,
+        symbol: Option<Symbol>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        let endpoint = match account_type {
+            AccountType::Spot | AccountType::Margin => BingxEndpoint::SpotOpenOrders,
+            _ => BingxEndpoint::SwapOpenOrders,
+        };
+
+        let mut params = HashMap::new();
+        if let Some(s) = symbol {
+            params.insert("symbol".to_string(), format_symbol(&s.base, &s.quote, account_type));
+        }
+
+        let response = self.get(endpoint, params, account_type).await?;
+        BingxParser::parse_orders(&response)
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Account for BingxConnector {
+    async fn get_balance(
+        &self,
+        _asset: Option<crate::core::Asset>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Balance>> {
+        let endpoint = match account_type {
+            AccountType::Spot | AccountType::Margin => BingxEndpoint::SpotBalance,
+            _ => BingxEndpoint::SwapBalance,
+        };
 
+        let params = HashMap::new();
+        let response = self.get(endpoint, params, account_type).await?;
+
+        match account_type {
+            AccountType::Spot | AccountType::Margin => BingxParser::parse_balances(&response),
+            _ => BingxParser::parse_swap_balance(&response),
+        }
+    }
+
+    async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
+        let balances = self.get_balance(None, account_type).await?;
+
+        Ok(AccountInfo {
+            account_type,
+            can_trade: true,
+            can_withdraw: true,
+            can_deposit: true,
+            maker_commission: 0.1, // Default BingX fees, should query from API
+            taker_commission: 0.1,
+            balances,
+        })
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // POSITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Positions for BingxConnector {
+    async fn get_positions(
+        &self,
+        symbol: Option<Symbol>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Position>> {
+        match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Positions not supported for Spot/Margin".to_string()
+                ));
+            }
+            _ => {}
+        }
 
+        let mut params = HashMap::new();
+        if let Some(s) = symbol {
+            params.insert("symbol".to_string(), format_symbol(&s.base, &s.quote, account_type));
+        }
+
+        let response = self.get(BingxEndpoint::SwapPositions, params, account_type).await?;
+        BingxParser::parse_positions(&response)
+    }
+
+    async fn get_funding_rate(
+        &self,
+        _symbol: Symbol,
+        _account_type: AccountType,
+    ) -> ExchangeResult<FundingRate> {
+        // BingX doesn't have a dedicated funding rate endpoint accessible via REST
+        // Would need to implement via WebSocket or parse from contract info
+        Err(ExchangeError::UnsupportedOperation(
+            "Funding rate not available via REST API".to_string()
+        ))
+    }
+
+    async fn set_leverage(
+        &self,
+        symbol: Symbol,
+        leverage: u32,
+        account_type: AccountType,
+    ) -> ExchangeResult<()> {
+        match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Leverage not supported for Spot/Margin".to_string()
+                ));
+            }
+            _ => {}
+        }
+
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("side".to_string(), "LONG".to_string()); // BingX requires side
+        params.insert("leverage".to_string(), leverage.to_string());
+
+        let response = self.post(BingxEndpoint::SwapLeverage, params, account_type).await?;
+
+        // Check response for errors
+        if response.get("code").and_then(|c| c.as_i64()).unwrap_or(-1) != 0 {
+            let msg = response.get("msg")
+                .and_then(|m| m.as_str())
+                .unwrap_or("Failed to set leverage");
+            return Err(ExchangeError::Api {
+                code: -1,
+                message: msg.to_string(),
+            });
+        }
+
+        Ok(())
+    }
+}

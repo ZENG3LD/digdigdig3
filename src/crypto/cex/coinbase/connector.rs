@@ -494,18 +494,258 @@ impl MarketData for CoinbaseConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Trading for CoinbaseConnector {
+    async fn market_order(
+        &self,
+        symbol: Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        // NOTE: Perpetual futures trading supported but requires proper margin/collateral
+        let product_id = format_symbol(&symbol, account_type);
+        let side_str = match side {
+            OrderSide::Buy => "BUY",
+            OrderSide::Sell => "SELL",
+        };
 
+        // Generate client order ID
+        let client_order_id = uuid::Uuid::new_v4().to_string();
+
+        let size_field = match side {
+            OrderSide::Buy => "quote_size", // For BUY, use quote currency amount
+            OrderSide::Sell => "base_size", // For SELL, use base currency amount
+        };
+
+        let order_config = json!({
+            "market_market_ioc": {
+                size_field: quantity.to_string()
+            }
+        });
+
+        let body = json!({
+            "client_order_id": client_order_id,
+            "product_id": product_id,
+            "side": side_str,
+            "order_configuration": order_config
+        });
+
+        let response = self.post(CoinbaseEndpoint::CreateOrder, body).await?;
+        CoinbaseParser::parse_order(&response)
+    }
+
+    async fn limit_order(
+        &self,
+        symbol: Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        price: Price,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        // NOTE: Perpetual futures trading supported but requires proper margin/collateral
+        let product_id = format_symbol(&symbol, account_type);
+        let side_str = match side {
+            OrderSide::Buy => "BUY",
+            OrderSide::Sell => "SELL",
+        };
+
+        // Generate client order ID
+        let client_order_id = uuid::Uuid::new_v4().to_string();
+
+        let order_config = json!({
+            "limit_limit_gtc": {
+                "base_size": quantity.to_string(),
+                "limit_price": price.to_string(),
+                "post_only": false
+            }
+        });
+
+        let body = json!({
+            "client_order_id": client_order_id,
+            "product_id": product_id,
+            "side": side_str,
+            "order_configuration": order_config
+        });
+
+        let response = self.post(CoinbaseEndpoint::CreateOrder, body).await?;
+        CoinbaseParser::parse_order(&response)
+    }
+
+    async fn cancel_order(
+        &self,
+        symbol: Symbol,
+        order_id: &str,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        // Get order details before cancelling
+        let order = self.get_order(symbol.clone(), order_id, account_type).await?;
+
+        let body = json!({
+            "order_ids": [order_id]
+        });
+
+        let response = self.post(CoinbaseEndpoint::CancelOrders, body).await?;
+
+        // Check if cancellation was successful
+        let results = response.get("results")
+            .and_then(|r| r.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing results array".into()))?;
+
+        let success = results.iter()
+            .any(|r| r.get("success").and_then(|s| s.as_bool()).unwrap_or(false));
+
+        if success {
+            Ok(order)
+        } else {
+            Err(ExchangeError::Api {
+                code: 0,
+                message: "Order cancellation failed".to_string(),
+            })
+        }
+    }
+
+    async fn get_order(
+        &self,
+        _symbol: Symbol,
+        order_id: &str,
+        _account_type: AccountType, // Not used, order_id is globally unique
+    ) -> ExchangeResult<Order> {
+        // Build path with order_id
+        let endpoint = CoinbaseEndpoint::OrderDetails;
+        let path = format!("{}/{}", endpoint.path(), order_id);
+
+        let url = format!("{}{}", CoinbaseUrls::base_url(), path);
+
+        let headers = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?
+            .sign_request("GET", &path)
+            .map_err(ExchangeError::Auth)?;
+
+        self.rate_limit_wait(1).await;
+        let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &headers).await?;
+        self.update_rate_from_headers(&resp_headers);
+        CoinbaseParser::parse_order(&response)
+    }
+
+    async fn get_open_orders(
+        &self,
+        symbol: Option<Symbol>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        let mut params = HashMap::new();
+        params.insert("order_status".to_string(), "OPEN".to_string());
+
+        if let Some(s) = symbol {
+            params.insert("product_id".to_string(), format_symbol(&s, account_type));
+        }
+
+        let query: Vec<String> = params.iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        let query_str = format!("?{}", query.join("&"));
+
+        let path = format!("{}{}", CoinbaseEndpoint::ListOrders.path(), query_str);
+        let url = format!("{}{}", CoinbaseUrls::base_url(), path);
+
+        let headers = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?
+            .sign_request("GET", &path)
+            .map_err(ExchangeError::Auth)?;
+
+        let response = self.http.get_with_headers(&url, &HashMap::new(), &headers).await?;
+
+        let orders = response.get("orders")
+            .and_then(|o| o.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing orders array".into()))?
+            .iter()
+            .filter_map(|order_json| {
+                let order_obj = json!({"order": order_json});
+                CoinbaseParser::parse_order(&order_obj).ok()
+            })
+            .collect();
+
+        Ok(orders)
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Account for CoinbaseConnector {
+    async fn get_balance(
+        &self,
+        _asset: Option<crate::core::types::Asset>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Balance>> {
+        let response = self.get(CoinbaseEndpoint::Accounts, HashMap::new()).await?;
+        CoinbaseParser::parse_balance(&response)
+    }
 
+    async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
+        // Get transaction summary for fee tier info
+        let response = self.get(CoinbaseEndpoint::TransactionSummary, HashMap::new()).await?;
+
+        let maker_commission = response.get("fee_tier")
+            .and_then(|ft| ft.get("maker_fee_rate"))
+            .and_then(|mfr| mfr.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+
+        let taker_commission = response.get("fee_tier")
+            .and_then(|ft| ft.get("taker_fee_rate"))
+            .and_then(|tfr| tfr.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+
+        // Get balances
+        let balances = self.get_balance(None, account_type).await?;
+
+        Ok(AccountInfo {
+            account_type,
+            can_trade: true,
+            can_withdraw: true,
+            can_deposit: true,
+            maker_commission,
+            taker_commission,
+            balances,
+        })
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // POSITIONS (Not supported by Coinbase)
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Positions for CoinbaseConnector {
+    async fn get_positions(
+        &self,
+        _symbol: Option<Symbol>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Position>> {
+        Err(ExchangeError::NotSupported("Coinbase does not support futures/positions".to_string()))
+    }
+
+    async fn get_funding_rate(
+        &self,
+        _symbol: Symbol,
+        _account_type: AccountType,
+    ) -> ExchangeResult<FundingRate> {
+        Err(ExchangeError::NotSupported("Coinbase does not support funding rates".to_string()))
+    }
+
+    async fn set_leverage(
+        &self,
+        _symbol: Symbol,
+        _leverage: u32,
+        _account_type: AccountType,
+    ) -> ExchangeResult<()> {
+        Err(ExchangeError::NotSupported("Coinbase does not support leverage".to_string()))
+    }
+}
 
 fn interval_to_secs(interval: &str) -> u64 {
     match interval {

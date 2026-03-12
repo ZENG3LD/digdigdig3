@@ -333,9 +333,9 @@ impl OandaParser {
 
         let order_type = match order_type_str {
             "MARKET" => OrderType::Market,
-            "LIMIT" => OrderType::Limit { price: 0.0 },
-            "STOP" => OrderType::StopMarket { stop_price: 0.0 },
-            "MARKET_IF_TOUCHED" => OrderType::StopLimit { stop_price: 0.0, limit_price: 0.0 },
+            "LIMIT" => OrderType::Limit,
+            "STOP" => OrderType::StopLoss,
+            "MARKET_IF_TOUCHED" => OrderType::StopLossLimit,
             _ => OrderType::Market,
         };
 
@@ -368,7 +368,7 @@ impl OandaParser {
             commission_asset: None,
             created_at: create_time,
             updated_at: None,
-            time_in_force: crate::core::TimeInForce::Gtc,
+            time_in_force: crate::core::TimeInForce::GTC,
         })
     }
 

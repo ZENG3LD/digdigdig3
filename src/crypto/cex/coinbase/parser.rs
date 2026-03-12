@@ -291,7 +291,7 @@ impl CoinbaseParser {
                 average_price: None,
                 commission: None,
                 commission_asset: None,
-                time_in_force: TimeInForce::Gtc,
+                time_in_force: TimeInForce::GTC,
                 created_at: 0,
                 updated_at: None,
             });
@@ -325,9 +325,9 @@ impl CoinbaseParser {
 
         let order_type = match order_type_str {
             "MARKET" => OrderType::Market,
-            "LIMIT" => OrderType::Limit { price: 0.0 },
-            "STOP" => OrderType::StopMarket { stop_price: 0.0 },
-            "STOP_LIMIT" => OrderType::StopLimit { stop_price: 0.0, limit_price: 0.0 },
+            "LIMIT" => OrderType::Limit,
+            "STOP" => OrderType::StopLoss,
+            "STOP_LIMIT" => OrderType::StopLossLimit,
             _ => OrderType::Market,
         };
 
@@ -385,7 +385,7 @@ impl CoinbaseParser {
             average_price,
             commission: None,
             commission_asset: None,
-            time_in_force: TimeInForce::Gtc,
+            time_in_force: TimeInForce::GTC,
             created_at,
             updated_at: None,
         })

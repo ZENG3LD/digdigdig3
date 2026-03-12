@@ -497,16 +497,256 @@ impl MarketData for HtxConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Trading for HtxConnector {
+    async fn market_order(
+        &self,
+        symbol: Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let account_id = self.get_account_id().await?;
+        let client_order_id = format!("cc_{}", crate::core::timestamp_millis());
 
+        // HTX order type format: "buy-market" or "sell-market"
+        let order_type = match side {
+            OrderSide::Buy => "buy-market",
+            OrderSide::Sell => "sell-market",
+        };
+
+        let body = json!({
+            "account-id": account_id.to_string(),
+            "symbol": format_symbol(&symbol, account_type),
+            "type": order_type,
+            "amount": quantity.to_string(),
+            "client-order-id": client_order_id,
+        });
+
+        let response = self.post(HtxEndpoint::PlaceOrder, body).await?;
+        let order = HtxParser::parse_order(&response)?;
+
+        Ok(Order {
+            id: order.id,
+            client_order_id: Some(client_order_id),
+            symbol: symbol.to_string(),
+            side,
+            order_type: OrderType::Market,
+            status: crate::core::OrderStatus::New,
+            price: None,
+            stop_price: None,
+            quantity,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: crate::core::timestamp_millis() as i64,
+            updated_at: None,
+            time_in_force: crate::core::TimeInForce::GTC,
+        })
+    }
+
+    async fn limit_order(
+        &self,
+        symbol: Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        price: Price,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let account_id = self.get_account_id().await?;
+        let client_order_id = format!("cc_{}", crate::core::timestamp_millis());
+
+        // HTX order type format: "buy-limit" or "sell-limit"
+        let order_type = match side {
+            OrderSide::Buy => "buy-limit",
+            OrderSide::Sell => "sell-limit",
+        };
+
+        let body = json!({
+            "account-id": account_id.to_string(),
+            "symbol": format_symbol(&symbol, account_type),
+            "type": order_type,
+            "amount": quantity.to_string(),
+            "price": price.to_string(),
+            "client-order-id": client_order_id,
+        });
+
+        let response = self.post(HtxEndpoint::PlaceOrder, body).await?;
+        let order = HtxParser::parse_order(&response)?;
+
+        Ok(Order {
+            id: order.id,
+            client_order_id: Some(client_order_id),
+            symbol: symbol.to_string(),
+            side,
+            order_type: OrderType::Limit,
+            status: crate::core::OrderStatus::New,
+            price: Some(price),
+            stop_price: None,
+            quantity,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: crate::core::timestamp_millis() as i64,
+            updated_at: None,
+            time_in_force: crate::core::TimeInForce::GTC,
+        })
+    }
+
+    async fn cancel_order(
+        &self,
+        _symbol: Symbol,
+        order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        // HTX uses path variable for order ID
+        let path = HtxEndpoint::CancelOrder.path_with_vars(&[("order-id", order_id)]);
+
+        let _endpoint = HtxEndpoint::CancelOrder;
+        let base_url = HtxUrls::base_url(self.testnet);
+
+        // Build signed query
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+        let query = auth.build_signed_query("POST", "api.huobi.pro", &path, &HashMap::new());
+
+        let url = format!("{}{}?{}", base_url, path, query);
+
+        // Empty body
+        let body = json!({});
+        let mut headers = HashMap::new();
+        headers.insert("Content-Type".to_string(), "application/json".to_string());
+
+        self.rate_limit_wait(1).await;
+        let (response, resp_headers) = self.http.post_with_response_headers(&url, &body, &headers).await?;
+        self.update_rate_from_headers(&resp_headers);
+
+        // Parse cancelled order (HTX returns the order data)
+        HtxParser::parse_order(&response)
+    }
+
+    async fn get_order(
+        &self,
+        _symbol: Symbol,
+        order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let path = HtxEndpoint::OrderStatus.path_with_vars(&[("order-id", order_id)]);
+
+        // Use path directly with custom GET logic
+        let base_url = HtxUrls::base_url(self.testnet);
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+        let query = auth.build_signed_query("GET", "api.huobi.pro", &path, &HashMap::new());
+
+        let url = format!("{}{}?{}", base_url, path, query);
+
+        self.rate_limit_wait(1).await;
+        let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
+        self.update_rate_from_headers(&resp_headers);
+
+        HtxParser::parse_order(&response)
+    }
+
+    async fn get_open_orders(
+        &self,
+        symbol: Option<Symbol>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        let account_id = self.get_account_id().await?;
+
+        let mut params = HashMap::new();
+        params.insert("account-id".to_string(), account_id.to_string());
+
+        if let Some(s) = symbol {
+            params.insert("symbol".to_string(), format_symbol(&s, account_type));
+        }
+
+        let response = self.get(HtxEndpoint::OpenOrders, params).await?;
+
+        let data = HtxParser::extract_result_v1(&response)?;
+        let orders = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Data is not an array".into()))?
+            .iter()
+            .filter_map(|order_json| {
+                // Parse each order
+                let wrapped = json!({"status": "ok", "data": order_json});
+                HtxParser::parse_order(&wrapped).ok()
+            })
+            .collect();
+
+        Ok(orders)
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Account for HtxConnector {
+    async fn get_balance(&self, _asset: Option<Asset>, _account_type: AccountType) -> ExchangeResult<Vec<Balance>> {
+        let account_id = self.get_account_id().await?;
 
+        // Replace path variable
+        let path = HtxEndpoint::Balance.path_with_vars(&[("account-id", &account_id.to_string())]);
+
+        let base_url = HtxUrls::base_url(self.testnet);
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+        let query = auth.build_signed_query("GET", "api.huobi.pro", &path, &HashMap::new());
+
+        let url = format!("{}{}?{}", base_url, path, query);
+
+        self.rate_limit_wait(1).await;
+        let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
+        self.update_rate_from_headers(&resp_headers);
+
+        HtxParser::parse_balance(&response)
+    }
+
+    async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
+        let balances = self.get_balance(None, _account_type).await?;
+
+        Ok(AccountInfo {
+            account_type: _account_type,
+            can_trade: true,
+            can_withdraw: true,
+            can_deposit: true,
+            maker_commission: 0.002, // 0.2% default
+            taker_commission: 0.002,
+            balances,
+        })
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // POSITIONS (Spot has no positions)
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Positions for HtxConnector {
+    async fn get_positions(&self, _symbol: Option<Symbol>, _account_type: AccountType) -> ExchangeResult<Vec<Position>> {
+        // Spot trading has no positions
+        Ok(vec![])
+    }
 
+    async fn get_funding_rate(
+        &self,
+        _symbol: Symbol,
+        _account_type: AccountType,
+    ) -> ExchangeResult<FundingRate> {
+        Err(ExchangeError::NotSupported("Funding rate not available for spot trading".to_string()))
+    }
+
+    async fn set_leverage(
+        &self,
+        _symbol: Symbol,
+        _leverage: u32,
+        _account_type: AccountType,
+    ) -> ExchangeResult<()> {
+        Err(ExchangeError::NotSupported("Leverage not available for spot trading".to_string()))
+    }
+}

@@ -230,7 +230,7 @@ impl KrxParser {
     /// - "12,345,678" -> 12345678.0
     /// - "935,432,100,000" -> 935432100000.0
     /// - "-1,200" -> -1200.0
-    pub fn parse_krx_number(value: &Value) -> ExchangeResult<f64> {
+    fn parse_krx_number(value: &Value) -> ExchangeResult<f64> {
         if let Some(num) = value.as_f64() {
             return Ok(num);
         }

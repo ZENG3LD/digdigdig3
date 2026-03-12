@@ -57,10 +57,10 @@ impl FyersParser {
     /// Parse order type from integer
     fn parse_order_type(order_type: i64) -> OrderType {
         match order_type {
-            1 => OrderType::Limit { price: 0.0 },
+            1 => OrderType::Limit,
             2 => OrderType::Market,
-            3 => OrderType::StopMarket { stop_price: 0.0 },
-            4 => OrderType::StopLimit { stop_price: 0.0, limit_price: 0.0 },
+            3 => OrderType::StopLoss,
+            4 => OrderType::StopLossLimit,
             _ => OrderType::Market, // default
         }
     }
@@ -234,7 +234,7 @@ impl FyersParser {
                 commission_asset: None,
                 created_at: 0,
                 updated_at: None,
-                time_in_force: TimeInForce::Gtc,
+                time_in_force: TimeInForce::GTC,
             });
         }
 
@@ -269,9 +269,9 @@ impl FyersParser {
                 .unwrap_or(0),
             updated_at: None,
             time_in_force: if data["orderValidity"].as_str() == Some("IOC") {
-                TimeInForce::Ioc
+                TimeInForce::IOC
             } else {
-                TimeInForce::Gtc
+                TimeInForce::GTC
             },
         })
     }
@@ -456,9 +456,9 @@ mod tests {
 
         let ticker = FyersParser::parse_ticker(&response, "NSE:SBIN-EQ").unwrap();
         assert_eq!(ticker.last_price, 550.50);
-        assert_eq!(ticker.last_price, 548.00);
-        assert_eq!(ticker.high_24h.unwrap_or(0.0), 552.00);
-        assert_eq!(ticker.low_24h.unwrap_or(0.0), 547.50);
+        assert_eq!(ticker.open, 548.00);
+        assert_eq!(ticker.high, 552.00);
+        assert_eq!(ticker.low, 547.50);
     }
 
     #[test]
@@ -469,10 +469,10 @@ mod tests {
 
     #[test]
     fn test_parse_order_type() {
-        assert_eq!(FyersParser::parse_order_type(1), OrderType::Limit { price: 0.0 });
+        assert_eq!(FyersParser::parse_order_type(1), OrderType::Limit);
         assert_eq!(FyersParser::parse_order_type(2), OrderType::Market);
-        assert_eq!(FyersParser::parse_order_type(3), OrderType::StopMarket { stop_price: 0.0 });
-        assert_eq!(FyersParser::parse_order_type(4), OrderType::StopLimit { stop_price: 0.0, limit_price: 0.0 });
+        assert_eq!(FyersParser::parse_order_type(3), OrderType::StopLoss);
+        assert_eq!(FyersParser::parse_order_type(4), OrderType::StopLossLimit);
     }
 
     #[test]

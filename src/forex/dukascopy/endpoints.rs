@@ -131,7 +131,6 @@ mod tests {
         let symbol = crate::core::types::Symbol {
             base: "EUR".to_string(),
             quote: "USD".to_string(),
-            raw: None,
         };
         assert_eq!(format_symbol(&symbol), "EURUSD");
     }

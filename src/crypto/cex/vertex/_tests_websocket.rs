@@ -47,7 +47,6 @@ fn btc_perp() -> Symbol {
         base: "BTC".to_string(),
         quote: "PERP".to_string(),
     }
-        raw: None,
 }
 
 /// Load credentials from environment

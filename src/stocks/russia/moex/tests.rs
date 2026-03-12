@@ -95,8 +95,7 @@ async fn test_get_klines_sber() {
         symbol.clone(),
         "1h",
         Some(10),
-        AccountType::Spot,
-        None
+        AccountType::Spot
     ).await;
 
     assert!(result.is_ok(), "Failed to get klines for SBER: {:?}", result.err());
@@ -200,24 +199,21 @@ async fn test_trading_not_supported() {
     let symbol = Symbol::new("SBER", "RUB");
 
     use crate::core::traits::Trading;
-    use crate::core::types::{OrderSide, OrderRequest, OrderType, TimeInForce};
+    use crate::core::types::{OrderSide, Quantity};
 
     // Trading should return UnsupportedOperation error
-    let result = connector.place_order(OrderRequest {
+    let result = connector.market_order(
         symbol,
-        side: OrderSide::Buy,
-        order_type: OrderType::Market,
-        quantity: 1.0,
-        account_type: AccountType::Spot,
-        client_order_id: None,
-        time_in_force: TimeInForce::Gtc,
-        reduce_only: false,
-    }).await;
+        OrderSide::Buy,
+        Quantity::Base(1.0),
+        AccountType::Spot
+    ).await;
 
     assert!(result.is_err());
     match result.unwrap_err() {
         crate::core::types::ExchangeError::UnsupportedOperation(msg) => {
             println!("Expected error: {}", msg);
+            assert!(msg.contains("data provider"));
         }
         e => panic!("Unexpected error type: {:?}", e),
     }

@@ -420,7 +420,7 @@ impl HyperliquidParser {
         };
 
         // TODO: Parse order type from "t" field
-        let order_type = OrderType::Limit { price: 0.0 };
+        let order_type = OrderType::Limit;
 
         let orig_sz = Self::get_f64(data, "origSz").unwrap_or(0.0);
         let sz = Self::get_f64(data, "sz").unwrap_or(0.0);
@@ -452,7 +452,7 @@ impl HyperliquidParser {
             commission_asset: None,
             created_at: Self::get_i64(data, "timestamp").unwrap_or(0),
             updated_at: None,
-            time_in_force: crate::core::TimeInForce::Gtc,
+            time_in_force: crate::core::TimeInForce::GTC,
         })
     }
 

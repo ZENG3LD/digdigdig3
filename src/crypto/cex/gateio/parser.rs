@@ -339,7 +339,7 @@ impl GateioParser {
 
         let order_type = match Self::get_str(data, "type").unwrap_or("limit") {
             "market" => OrderType::Market,
-            _ => OrderType::Limit { price: 0.0 },
+            _ => OrderType::Limit,
         };
 
         let status = Self::parse_order_status(data);
@@ -386,7 +386,7 @@ impl GateioParser {
             updated_at: Self::get_str(data, "update_time")
                 .and_then(|s| s.parse::<i64>().ok())
                 .map(|t| t * 1000), // seconds to ms
-            time_in_force: crate::core::TimeInForce::Gtc,
+            time_in_force: crate::core::TimeInForce::GTC,
         })
     }
 

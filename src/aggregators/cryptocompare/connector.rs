@@ -224,19 +224,126 @@ impl MarketData for CryptoCompareConnector {
 // TRAIT: Trading (UnsupportedOperation for data providers)
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Trading for CryptoCompareConnector {
+    async fn market_order(
+        &self,
+        _symbol: Symbol,
+        _side: OrderSide,
+        _quantity: Quantity,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        Err(ExchangeError::UnsupportedOperation(
+            "CryptoCompare is a data provider - trading not supported".to_string()
+        ))
+    }
 
+    async fn limit_order(
+        &self,
+        _symbol: Symbol,
+        _side: OrderSide,
+        _quantity: Quantity,
+        _price: Price,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        Err(ExchangeError::UnsupportedOperation(
+            "CryptoCompare is a data provider - trading not supported".to_string()
+        ))
+    }
+
+    async fn cancel_order(
+        &self,
+        _symbol: Symbol,
+        _order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        Err(ExchangeError::UnsupportedOperation(
+            "CryptoCompare is a data provider - trading not supported".to_string()
+        ))
+    }
+
+    async fn get_order(
+        &self,
+        _symbol: Symbol,
+        _order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        Err(ExchangeError::UnsupportedOperation(
+            "CryptoCompare is a data provider - trading not supported".to_string()
+        ))
+    }
+
+    async fn get_open_orders(
+        &self,
+        _symbol: Option<Symbol>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "CryptoCompare is a data provider - trading not supported".to_string()
+        ))
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TRAIT: Account (UnsupportedOperation for data providers)
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Account for CryptoCompareConnector {
+    async fn get_balance(
+        &self,
+        _asset: Option<Asset>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Balance>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "CryptoCompare is a data provider - account operations not supported".to_string()
+        ))
+    }
 
+    async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "CryptoCompare is a data provider - account operations not supported".to_string()
+        ))
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TRAIT: Positions (UnsupportedOperation for data providers)
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Positions for CryptoCompareConnector {
+    async fn get_positions(
+        &self,
+        _symbol: Option<Symbol>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Position>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "CryptoCompare is a data provider - position tracking not supported".to_string()
+        ))
+    }
 
+    async fn get_funding_rate(
+        &self,
+        _symbol: Symbol,
+        _account_type: AccountType,
+    ) -> ExchangeResult<crate::core::types::FundingRate> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Funding rate not available - CryptoCompare is spot data aggregator only".to_string()
+        ))
+    }
+
+    async fn set_leverage(
+        &self,
+        _symbol: Symbol,
+        _leverage: u32,
+        _account_type: AccountType,
+    ) -> ExchangeResult<()> {
+        Err(ExchangeError::UnsupportedOperation(
+            "CryptoCompare is a data provider - leverage operations not supported".to_string()
+        ))
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // EXTENDED METHODS (CryptoCompare-specific, not from traits)

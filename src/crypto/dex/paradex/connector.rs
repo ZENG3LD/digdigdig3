@@ -496,11 +496,167 @@ impl MarketData for ParadexConnector {
     }
 }
 
+#[async_trait]
+impl Trading for ParadexConnector {
+    async fn market_order(
+        &self,
+        symbol: Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
 
+        let side_str = match side {
+            OrderSide::Buy => "BUY",
+            OrderSide::Sell => "SELL",
+        };
 
+        // NOTE: Paradex requires signature for each order
+        // This is a simplified version - full implementation needs StarkNet signing
+        let body = json!({
+            "market": symbol_str,
+            "side": side_str,
+            "type": "MARKET",
+            "size": quantity.to_string(),
+            "instruction": "IOC", // Market orders typically IOC
+            // MISSING: signature, signature_timestamp (requires StarkNet signing)
+        });
 
+        let response = self.post(ParadexEndpoint::CreateOrder, body).await?;
+        ParadexParser::parse_order(&response)
+    }
 
+    async fn limit_order(
+        &self,
+        symbol: Symbol,
+        side: OrderSide,
+        price: Price,
+        quantity: Quantity,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
 
+        let side_str = match side {
+            OrderSide::Buy => "BUY",
+            OrderSide::Sell => "SELL",
+        };
+
+        let body = json!({
+            "market": symbol_str,
+            "side": side_str,
+            "type": "LIMIT",
+            "price": price.to_string(),
+            "size": quantity.to_string(),
+            "instruction": "GTC", // Good till cancel
+            // MISSING: signature, signature_timestamp
+        });
+
+        let response = self.post(ParadexEndpoint::CreateOrder, body).await?;
+        ParadexParser::parse_order(&response)
+    }
+
+    async fn cancel_order(
+        &self,
+        _symbol: Symbol,
+        order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        self.delete(ParadexEndpoint::CancelOrder, &[("order_id", order_id)]).await?;
+
+        // Return a minimal cancelled order
+        Ok(Order {
+            id: order_id.to_string(),
+            client_order_id: None,
+            symbol: String::new(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Limit,
+            status: OrderStatus::Canceled,
+            price: None,
+            stop_price: None,
+            quantity: 0.0,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: 0,
+            updated_at: Some(crate::core::timestamp_millis() as i64),
+            time_in_force: TimeInForce::GTC,
+        })
+    }
+
+    async fn get_order(
+        &self,
+        _symbol: Symbol,
+        order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let mut params = HashMap::new();
+        params.insert("order_id".to_string(), order_id.to_string());
+
+        let response = self.get(ParadexEndpoint::GetOrder, params).await?;
+        ParadexParser::parse_order(&response)
+    }
+
+    async fn get_open_orders(&self, symbol: Option<Symbol>, account_type: AccountType) -> ExchangeResult<Vec<Order>> {
+        let mut params = HashMap::new();
+        if let Some(s) = symbol {
+            let symbol_str = format_symbol(&s.base, &s.quote, account_type);
+            params.insert("market".to_string(), symbol_str);
+        }
+
+        let response = self.get(ParadexEndpoint::OpenOrders, params).await?;
+        ParadexParser::parse_orders(&response)
+    }
+}
+
+#[async_trait]
+impl Account for ParadexConnector {
+    async fn get_balance(
+        &self,
+        _asset: Option<crate::core::Asset>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Balance>> {
+        let response = self.get(ParadexEndpoint::Balances, HashMap::new()).await?;
+        ParadexParser::parse_balances(&response)
+    }
+
+    async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
+        let response = self.get(ParadexEndpoint::Account, HashMap::new()).await?;
+        ParadexParser::parse_account_info(&response)
+    }
+}
+
+#[async_trait]
+impl Positions for ParadexConnector {
+    async fn get_positions(&self, symbol: Option<Symbol>, _account_type: AccountType) -> ExchangeResult<Vec<Position>> {
+        let mut params = HashMap::new();
+        if let Some(s) = symbol {
+            let symbol_str = format_symbol(&s.base, &s.quote, AccountType::FuturesCross);
+            params.insert("market".to_string(), symbol_str);
+        }
+
+        let response = self.get(ParadexEndpoint::Positions, params).await?;
+        ParadexParser::parse_positions(&response)
+    }
+
+    async fn get_funding_rate(&self, symbol: Symbol, account_type: AccountType) -> ExchangeResult<FundingRate> {
+        let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
+
+        let mut params = HashMap::new();
+        params.insert("market".to_string(), symbol_str);
+
+        let response = self.get(ParadexEndpoint::MarketsSummary, params).await?;
+        ParadexParser::parse_funding_rate(&response)
+    }
+
+    async fn set_leverage(&self, symbol: Symbol, leverage: u32, _account_type: AccountType) -> ExchangeResult<()> {
+        // Paradex doesn't have explicit set leverage endpoint
+        // Leverage is determined by position size and collateral
+        let _ = (symbol, leverage);
+        Err(ExchangeError::NotSupported("Paradex manages leverage automatically based on margin mode".to_string()))
+    }
+}
 
 #[cfg(test)]
 mod tests {

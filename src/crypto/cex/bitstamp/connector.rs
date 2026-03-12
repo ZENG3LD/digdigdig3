@@ -369,13 +369,120 @@ impl MarketData for BitstampConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Trading for BitstampConnector {
+    async fn market_order(
+        &self,
+        symbol: Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let pair = format_symbol(&symbol, account_type);
 
+        let mut params = HashMap::new();
+        params.insert("amount".to_string(), quantity.to_string());
+
+        let endpoint = match side {
+            OrderSide::Buy => BitstampEndpoint::BuyMarket,
+            OrderSide::Sell => BitstampEndpoint::SellMarket,
+        };
+
+        let response = self.post(endpoint, Some(&pair), params).await?;
+        BitstampParser::parse_order(&response)
+    }
+
+    async fn limit_order(
+        &self,
+        symbol: Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        price: Price,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let pair = format_symbol(&symbol, account_type);
+
+        let mut params = HashMap::new();
+        params.insert("amount".to_string(), quantity.to_string());
+        params.insert("price".to_string(), price.to_string());
+
+        let endpoint = match side {
+            OrderSide::Buy => BitstampEndpoint::BuyLimit,
+            OrderSide::Sell => BitstampEndpoint::SellLimit,
+        };
+
+        let response = self.post(endpoint, Some(&pair), params).await?;
+        BitstampParser::parse_order(&response)
+    }
+
+    async fn cancel_order(
+        &self,
+        _symbol: Symbol,
+        order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let mut params = HashMap::new();
+        params.insert("id".to_string(), order_id.to_string());
+
+        let response = self.post(BitstampEndpoint::CancelOrder, None, params).await?;
+        BitstampParser::parse_order(&response)
+    }
+
+    async fn get_order(
+        &self,
+        _symbol: Symbol,
+        order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let mut params = HashMap::new();
+        params.insert("id".to_string(), order_id.to_string());
+
+        let response = self.post(BitstampEndpoint::OrderStatus, None, params).await?;
+        BitstampParser::parse_order(&response)
+    }
+
+    async fn get_open_orders(
+        &self,
+        _symbol: Option<Symbol>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        let response = self.post(BitstampEndpoint::OpenOrders, None, HashMap::new()).await?;
+        BitstampParser::parse_orders(&response)
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Account for BitstampConnector {
+    async fn get_balance(
+        &self,
+        _asset: Option<Asset>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Balance>> {
+        let response = self.post(BitstampEndpoint::Balance, None, HashMap::new()).await?;
+        BitstampParser::parse_balance(&response)
+    }
 
+    async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
+        let response = self.post(BitstampEndpoint::Balance, None, HashMap::new()).await?;
+        let balances = BitstampParser::parse_balance(&response)?;
+
+        // Bitstamp doesn't have a separate account info endpoint
+        // We'll construct from balances
+        Ok(AccountInfo {
+            account_type: _account_type,
+            can_trade: true,
+            can_withdraw: true,
+            can_deposit: true,
+            maker_commission: 0.5, // Bitstamp default maker fee
+            taker_commission: 0.5, // Bitstamp default taker fee
+            balances,
+        })
+    }
+}
 
 #[cfg(test)]
 mod tests {

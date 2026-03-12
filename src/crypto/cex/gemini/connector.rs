@@ -340,19 +340,157 @@ impl MarketData for GeminiConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Trading for GeminiConnector {
+    async fn market_order(
+        &self,
+        symbol: Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let symbol_str = normalize_symbol(&format_symbol(&symbol.base, &symbol.quote, account_type));
 
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), json!(symbol_str));
+        params.insert("amount".to_string(), json!(quantity.to_string()));
+        params.insert("side".to_string(), json!(match side {
+            OrderSide::Buy => "buy",
+            OrderSide::Sell => "sell",
+        }));
+        params.insert("type".to_string(), json!("exchange market"));
+
+        let response = self.post(GeminiEndpoint::NewOrder, params, &[]).await?;
+        GeminiParser::parse_order(&response)
+    }
+
+    async fn limit_order(
+        &self,
+        symbol: Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        price: Price,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let symbol_str = normalize_symbol(&format_symbol(&symbol.base, &symbol.quote, account_type));
+
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), json!(symbol_str));
+        params.insert("amount".to_string(), json!(quantity.to_string()));
+        params.insert("price".to_string(), json!(price.to_string()));
+        params.insert("side".to_string(), json!(match side {
+            OrderSide::Buy => "buy",
+            OrderSide::Sell => "sell",
+        }));
+        params.insert("type".to_string(), json!("exchange limit"));
+
+        let response = self.post(GeminiEndpoint::NewOrder, params, &[]).await?;
+        GeminiParser::parse_order(&response)
+    }
+
+    async fn cancel_order(
+        &self,
+        _symbol: Symbol,
+        order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let mut params = HashMap::new();
+        params.insert("order_id".to_string(), json!(order_id.parse::<i64>().unwrap_or(0)));
+
+        let response = self.post(GeminiEndpoint::CancelOrder, params, &[]).await?;
+        GeminiParser::parse_order(&response)
+    }
+
+    async fn get_order(
+        &self,
+        _symbol: Symbol,
+        order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let mut params = HashMap::new();
+        params.insert("order_id".to_string(), json!(order_id.parse::<i64>().unwrap_or(0)));
+
+        let response = self.post(GeminiEndpoint::OrderStatus, params, &[]).await?;
+        GeminiParser::parse_order(&response)
+    }
+
+    async fn get_open_orders(
+        &self,
+        _symbol: Option<Symbol>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        let response = self.post(GeminiEndpoint::ActiveOrders, HashMap::new(), &[]).await?;
+        GeminiParser::parse_orders(&response)
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Account for GeminiConnector {
+    async fn get_balance(&self, _asset: Option<Asset>, _account_type: AccountType) -> ExchangeResult<Vec<Balance>> {
+        let response = self.post(GeminiEndpoint::Balances, HashMap::new(), &[]).await?;
+        GeminiParser::parse_balances(&response)
+    }
 
+    async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
+        // Gemini doesn't have a specific account info endpoint
+        // Return minimal info
+        Ok(AccountInfo {
+            account_type: _account_type,
+            can_trade: true,
+            can_withdraw: true,
+            can_deposit: true,
+            maker_commission: 0.0,
+            taker_commission: 0.0,
+            balances: vec![],
+        })
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // POSITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Positions for GeminiConnector {
+    async fn get_positions(
+        &self,
+        _symbol: Option<Symbol>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Position>> {
+        let response = self.post(GeminiEndpoint::Positions, HashMap::new(), &[]).await?;
+        GeminiParser::parse_positions(&response)
+    }
 
+    async fn get_funding_rate(
+        &self,
+        symbol: Symbol,
+        _account_type: AccountType,
+    ) -> ExchangeResult<FundingRate> {
+        let symbol_str = normalize_symbol(&format_symbol(&symbol.base, &symbol.quote, AccountType::FuturesCross));
+
+        let response = self.get(
+            GeminiEndpoint::FundingAmount,
+            &[("symbol", &symbol_str)],
+        ).await?;
+
+        GeminiParser::parse_funding_rate(&response)
+    }
+
+    async fn set_leverage(
+        &self,
+        _symbol: Symbol,
+        _leverage: u32,
+        _account_type: AccountType,
+    ) -> ExchangeResult<()> {
+        // Gemini doesn't have a set leverage endpoint
+        // Leverage is managed through margin settings
+        Err(ExchangeError::NotSupported("Set leverage not supported by Gemini".to_string()))
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // EXTENDED METHODS (Gemini-специфичные)

@@ -134,7 +134,7 @@ mod tests {
         let connector = create_connector();
         let symbol = Symbol::new("SBER", "RUB");
 
-        let result = connector.get_klines(symbol, "1h", Some(10), AccountType::Spot, None).await;
+        let result = connector.get_klines(symbol, "1h", Some(10), AccountType::Spot).await;
         match result {
             Ok(klines) => {
                 println!("Retrieved {} candles", klines.len());
@@ -252,7 +252,7 @@ mod tests {
         let mut connector = create_connector();
         connector.initialize_account().await.expect("Failed to initialize account");
 
-        let result = connector.get_balance(crate::core::types::BalanceQuery { asset: None, account_type: AccountType::Spot }).await;
+        let result = connector.get_balance(None, AccountType::Spot).await;
         match result {
             Ok(balances) => {
                 println!("Found {} currency balances", balances.len());
@@ -275,16 +275,16 @@ mod tests {
         let mut connector = create_connector();
         connector.initialize_account().await.expect("Failed to initialize account");
 
-        let result = connector.get_positions(crate::core::types::PositionQuery { symbol: None, account_type: AccountType::Spot }).await;
+        let result = connector.get_positions(None, AccountType::Spot).await;
         match result {
             Ok(positions) => {
                 println!("Found {} positions", positions.len());
                 for position in &positions {
-                    println!("  {}: qty={}, entry={:?}, mark={:?}, pnl={:?}",
+                    println!("  {}: qty={}, entry={:?}, current={:?}, pnl={:?}",
                         position.symbol,
                         position.quantity,
                         position.entry_price,
-                        position.mark_price,
+                        position.current_price,
                         position.unrealized_pnl
                     );
                 }
@@ -307,7 +307,8 @@ mod tests {
         let result = connector.get_account_info(AccountType::Spot).await;
         match result {
             Ok(info) => {
-                println!("Account info: type={:?}, balances={}",
+                println!("Account info: ID={}, type={}, balances={}",
+                    info.account_id,
                     info.account_type,
                     info.balances.len()
                 );
@@ -358,26 +359,11 @@ mod tests {
         connector.initialize_account().await.expect("Failed to initialize sandbox account");
 
         // Place market order
-        use crate::core::traits::Trading;
-        use crate::core::types::{OrderRequest, OrderType, TimeInForce};
         let symbol = Symbol::new("SBER", "RUB");
-        let result = connector.place_order(OrderRequest {
-            symbol,
-            side: OrderSide::Buy,
-            order_type: OrderType::Market,
-            quantity: 1.0,
-            account_type: AccountType::Spot,
-            client_order_id: None,
-            time_in_force: TimeInForce::Gtc,
-            reduce_only: false,
-        }).await;
+        let result = connector.market_order(symbol, OrderSide::Buy, 1.0, AccountType::Spot).await;
 
         match result {
-            Ok(response) => {
-                let order = match response {
-                    crate::core::types::PlaceOrderResponse::Simple(o) => o,
-                    _ => panic!("Expected simple order response"),
-                };
+            Ok(order) => {
                 println!("Market order placed: ID={}, status={:?}", order.id, order.status);
                 assert!(!order.id.is_empty());
             }
@@ -397,26 +383,11 @@ mod tests {
         connector.initialize_account().await.expect("Failed to initialize sandbox account");
 
         // Place limit order
-        use crate::core::traits::Trading;
-        use crate::core::types::{OrderRequest, OrderType, TimeInForce};
         let symbol = Symbol::new("SBER", "RUB");
-        let result = connector.place_order(OrderRequest {
-            symbol,
-            side: OrderSide::Buy,
-            order_type: OrderType::Limit { price: 100.0 },
-            quantity: 1.0,
-            account_type: AccountType::Spot,
-            client_order_id: None,
-            time_in_force: TimeInForce::Gtc,
-            reduce_only: false,
-        }).await;
+        let result = connector.limit_order(symbol, OrderSide::Buy, 1.0, 100.0, AccountType::Spot).await;
 
         match result {
-            Ok(response) => {
-                let order = match response {
-                    crate::core::types::PlaceOrderResponse::Simple(o) => o,
-                    _ => panic!("Expected simple order response"),
-                };
+            Ok(order) => {
                 println!("Limit order placed: ID={}, price={:?}, status={:?}",
                     order.id, order.price, order.status);
                 assert!(!order.id.is_empty());

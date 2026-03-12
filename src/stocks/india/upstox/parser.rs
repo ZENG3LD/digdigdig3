@@ -258,8 +258,8 @@ impl UpstoxParser {
 
         let order_type = match Self::require_str(order_data, "order_type")? {
             "MARKET" => OrderType::Market,
-            "LIMIT" => OrderType::Limit { price: 0.0 },
-            "SL" | "SL-M" => OrderType::StopMarket { stop_price: 0.0 },
+            "LIMIT" => OrderType::Limit,
+            "SL" | "SL-M" => OrderType::StopLoss,
             _ => OrderType::Market,
         };
 
@@ -297,7 +297,7 @@ impl UpstoxParser {
             commission_asset: None,
             created_at,
             updated_at: None,
-            time_in_force: TimeInForce::Gtc,
+            time_in_force: TimeInForce::GTC,
         })
     }
 

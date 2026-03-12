@@ -352,16 +352,242 @@ impl MarketData for BitfinexConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Trading for BitfinexConnector {
+    async fn market_order(
+        &self,
+        symbol: Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let formatted_symbol = if let Some(raw) = symbol.raw() {
+            raw.to_string()
+        } else {
+            format_symbol(&symbol.base, &symbol.quote, account_type)
+        };
 
+        // Amount: positive=buy, negative=sell
+        let amount = match side {
+            OrderSide::Buy => quantity,
+            OrderSide::Sell => -quantity,
+        };
+
+        let body = json!({
+            "type": "EXCHANGE MARKET",
+            "symbol": formatted_symbol,
+            "amount": amount.to_string(),
+        });
+
+        let response = self.post(BitfinexEndpoint::SubmitOrder, &[], body).await?;
+        BitfinexParser::parse_submit_order(&response)
+    }
+
+    async fn limit_order(
+        &self,
+        symbol: Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        price: Price,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let formatted_symbol = if let Some(raw) = symbol.raw() {
+            raw.to_string()
+        } else {
+            format_symbol(&symbol.base, &symbol.quote, account_type)
+        };
+
+        // Amount: positive=buy, negative=sell
+        let amount = match side {
+            OrderSide::Buy => quantity,
+            OrderSide::Sell => -quantity,
+        };
+
+        let body = json!({
+            "type": "EXCHANGE LIMIT",
+            "symbol": formatted_symbol,
+            "amount": amount.to_string(),
+            "price": price.to_string(),
+        });
+
+        let response = self.post(BitfinexEndpoint::SubmitOrder, &[], body).await?;
+        BitfinexParser::parse_submit_order(&response)
+    }
+
+    async fn cancel_order(
+        &self,
+        _symbol: Symbol,
+        order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let id = order_id.parse::<i64>()
+            .map_err(|_| ExchangeError::InvalidRequest("Invalid order ID".to_string()))?;
+
+        let body = json!({
+            "id": id,
+        });
+
+        let response = self.post(BitfinexEndpoint::CancelOrder, &[], body).await?;
+
+        // Parse from notification response (same format as submit)
+        BitfinexParser::parse_submit_order(&response)
+    }
+
+    async fn get_order(
+        &self,
+        symbol: Symbol,
+        order_id: &str,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let formatted_symbol = if let Some(raw) = symbol.raw() {
+            raw.to_string()
+        } else {
+            format_symbol(&symbol.base, &symbol.quote, account_type)
+        };
+
+        // Get all active orders and filter
+        let body = json!({
+            "symbol": formatted_symbol,
+        });
+
+        let response = self.post(
+            BitfinexEndpoint::ActiveOrdersBySymbol,
+            &[("symbol", &formatted_symbol)],
+            body,
+        ).await?;
+
+        let orders = BitfinexParser::parse_orders(&response)?;
+
+        orders.into_iter()
+            .find(|o| o.id == order_id)
+            .ok_or_else(|| ExchangeError::Parse(format!("Order {} not found", order_id)))
+    }
+
+    async fn get_open_orders(
+        &self,
+        symbol: Option<Symbol>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        let response = if let Some(s) = symbol {
+            let formatted_symbol = if let Some(raw) = s.raw() {
+                raw.to_string()
+            } else {
+                format_symbol(&s.base, &s.quote, account_type)
+            };
+            self.post(
+                BitfinexEndpoint::ActiveOrdersBySymbol,
+                &[("symbol", &formatted_symbol)],
+                json!({}),
+            ).await?
+        } else {
+            self.post(
+                BitfinexEndpoint::ActiveOrders,
+                &[],
+                json!({}),
+            ).await?
+        };
+
+        BitfinexParser::parse_orders(&response)
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Account for BitfinexConnector {
+    async fn get_balance(
+        &self,
+        _asset: Option<crate::core::Asset>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Balance>> {
+        let response = self.post(
+            BitfinexEndpoint::Wallets,
+            &[],
+            json!({}),
+        ).await?;
 
+        BitfinexParser::parse_balances(&response)
+    }
+
+    async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
+        let balances = self.get_balance(None, account_type).await?;
+
+        Ok(AccountInfo {
+            account_type,
+            can_trade: true,
+            can_withdraw: true,
+            can_deposit: true,
+            maker_commission: 0.1,  // Default Bitfinex fees
+            taker_commission: 0.2,
+            balances,
+        })
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // POSITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Positions for BitfinexConnector {
+    async fn get_positions(
+        &self,
+        _symbol: Option<Symbol>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Position>> {
+        if account_type == AccountType::Spot {
+            return Err(ExchangeError::UnsupportedOperation(
+                "Positions not supported for Spot".to_string()
+            ));
+        }
 
+        let response = self.post(
+            BitfinexEndpoint::Positions,
+            &[],
+            json!({}),
+        ).await?;
+
+        BitfinexParser::parse_positions(&response)
+    }
+
+    async fn get_funding_rate(
+        &self,
+        _symbol: Symbol,
+        account_type: AccountType,
+    ) -> ExchangeResult<crate::core::FundingRate> {
+        match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Funding rate not supported for Spot/Margin".to_string()
+                ));
+            }
+            _ => {}
+        }
+
+        // Bitfinex doesn't have a direct funding rate endpoint for perpetuals
+        // Would need to implement via derivatives API or funding book
+        Err(ExchangeError::UnsupportedOperation(
+            "Funding rate endpoint not implemented for Bitfinex".to_string()
+        ))
+    }
+
+    async fn set_leverage(
+        &self,
+        _symbol: Symbol,
+        _leverage: u32,
+        account_type: AccountType,
+    ) -> ExchangeResult<()> {
+        if account_type == AccountType::Spot {
+            return Err(ExchangeError::UnsupportedOperation(
+                "Leverage not supported for Spot".to_string()
+            ));
+        }
+
+        // Bitfinex handles leverage via order flags, not a separate endpoint
+        Err(ExchangeError::UnsupportedOperation(
+            "Set leverage not available - use order flags instead".to_string()
+        ))
+    }
+}

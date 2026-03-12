@@ -419,16 +419,411 @@ impl MarketData for BybitConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Trading for BybitConnector {
+    async fn market_order(
+        &self,
+        symbol: Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let order_link_id = format!("cc_{}", crate::core::timestamp_millis());
 
+        let body = json!({
+            "category": account_type_to_category(account_type),
+            "symbol": format_symbol(&symbol, account_type),
+            "side": match side {
+                OrderSide::Buy => "Buy",
+                OrderSide::Sell => "Sell",
+            },
+            "orderType": "Market",
+            "qty": quantity.to_string(),
+            "orderLinkId": order_link_id,
+        });
+
+        let response = self.post(BybitEndpoint::PlaceOrder, body).await?;
+
+        // Extract order ID from response
+        let result = response.get("result")
+            .ok_or_else(|| ExchangeError::Parse("Missing result".to_string()))?;
+
+        let order_id = result.get("orderId")
+            .and_then(|id| id.as_str())
+            .ok_or_else(|| ExchangeError::Parse("Missing orderId".to_string()))?
+            .to_string();
+
+        // Return minimal order info (can fetch full info with get_order)
+        Ok(Order {
+            id: order_id,
+            client_order_id: Some(order_link_id),
+            symbol: symbol.to_string(),
+            side,
+            order_type: OrderType::Market,
+            status: crate::core::OrderStatus::New,
+            price: None,
+            stop_price: None,
+            quantity,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: crate::core::timestamp_millis() as i64,
+            updated_at: None,
+            time_in_force: crate::core::TimeInForce::GTC,
+        })
+    }
+
+    async fn limit_order(
+        &self,
+        symbol: Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        price: Price,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let order_link_id = format!("cc_{}", crate::core::timestamp_millis());
+
+        let body = json!({
+            "category": account_type_to_category(account_type),
+            "symbol": format_symbol(&symbol, account_type),
+            "side": match side {
+                OrderSide::Buy => "Buy",
+                OrderSide::Sell => "Sell",
+            },
+            "orderType": "Limit",
+            "qty": quantity.to_string(),
+            "price": price.to_string(),
+            "orderLinkId": order_link_id,
+        });
+
+        let response = self.post(BybitEndpoint::PlaceOrder, body).await?;
+
+        let result = response.get("result")
+            .ok_or_else(|| ExchangeError::Parse("Missing result".to_string()))?;
+
+        let order_id = result.get("orderId")
+            .and_then(|id| id.as_str())
+            .ok_or_else(|| ExchangeError::Parse("Missing orderId".to_string()))?
+            .to_string();
+
+        Ok(Order {
+            id: order_id,
+            client_order_id: Some(order_link_id),
+            symbol: symbol.to_string(),
+            side,
+            order_type: OrderType::Limit,
+            status: crate::core::OrderStatus::New,
+            price: Some(price),
+            stop_price: None,
+            quantity,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: crate::core::timestamp_millis() as i64,
+            updated_at: None,
+            time_in_force: crate::core::TimeInForce::GTC,
+        })
+    }
+
+    async fn cancel_order(
+        &self,
+        symbol: Symbol,
+        order_id: &str,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let body = json!({
+            "category": account_type_to_category(account_type),
+            "symbol": format_symbol(&symbol, account_type),
+            "orderId": order_id,
+        });
+
+        let response = self.post(BybitEndpoint::CancelOrder, body).await?;
+        self.check_response(&response)?;
+
+        // Return cancelled order (minimal info)
+        Ok(Order {
+            id: order_id.to_string(),
+            client_order_id: None,
+            symbol: symbol.to_string(),
+            side: OrderSide::Buy, // Unknown
+            order_type: OrderType::Limit,
+            status: crate::core::OrderStatus::Canceled,
+            price: None,
+            stop_price: None,
+            quantity: 0.0,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: 0,
+            updated_at: Some(crate::core::timestamp_millis() as i64),
+            time_in_force: crate::core::TimeInForce::GTC,
+        })
+    }
+
+    async fn get_order(
+        &self,
+        symbol: Symbol,
+        order_id: &str,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let mut params = HashMap::new();
+        params.insert("category".to_string(), account_type_to_category(account_type).to_string());
+        params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
+        params.insert("orderId".to_string(), order_id.to_string());
+
+        let response = self.get(BybitEndpoint::OrderStatus, params).await?;
+        BybitParser::parse_order(&response)
+    }
+
+    async fn get_open_orders(
+        &self,
+        symbol: Option<Symbol>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        let mut params = HashMap::new();
+        params.insert("category".to_string(), account_type_to_category(account_type).to_string());
+
+        if let Some(s) = symbol {
+            params.insert("symbol".to_string(), format_symbol(&s, account_type));
+        }
+
+        let response = self.get(BybitEndpoint::OpenOrders, params).await?;
+
+        // Parse all orders from result.list
+        let result = response.get("result")
+            .ok_or_else(|| ExchangeError::Parse("Missing result".to_string()))?;
+
+        let list = result.get("list")
+            .and_then(|l| l.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing list".to_string()))?;
+
+        let mut orders = Vec::new();
+        for order_data in list {
+            // Create a wrapper to match parser expectations
+            let wrapper = json!({
+                "retCode": 0,
+                "retMsg": "OK",
+                "result": order_data,
+            });
+
+            if let Ok(order) = BybitParser::parse_order(&wrapper) {
+                orders.push(order);
+            }
+        }
+
+        Ok(orders)
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Account for BybitConnector {
+    async fn get_balance(
+        &self,
+        _asset: Option<crate::core::Asset>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Balance>> {
+        let mut params = HashMap::new();
+        params.insert("accountType".to_string(), match account_type {
+            AccountType::Spot | AccountType::Margin => "UNIFIED",
+            AccountType::FuturesCross | AccountType::FuturesIsolated => "CONTRACT",
+        }.to_string());
 
+        let response = self.get(BybitEndpoint::Balance, params).await?;
+        BybitParser::parse_balance(&response)
+    }
+
+    async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
+        let response = self.get(BybitEndpoint::AccountInfo, HashMap::new()).await?;
+
+        // Get balances
+        let balances = self.get_balance(None, account_type).await?;
+
+        // Parse account info from response
+        let result = response.get("result")
+            .ok_or_else(|| ExchangeError::Parse("Missing result".to_string()))?;
+
+        let can_trade = result.get("unifiedMarginStatus")
+            .and_then(|s| s.as_i64())
+            .map(|s| s == 1)
+            .unwrap_or(true);
+
+        Ok(AccountInfo {
+            account_type,
+            can_trade,
+            can_withdraw: true,
+            can_deposit: true,
+            maker_commission: 0.1, // Default, should be fetched from API
+            taker_commission: 0.1,
+            balances,
+        })
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // POSITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Positions for BybitConnector {
+    async fn get_positions(
+        &self,
+        symbol: Option<Symbol>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Position>> {
+        match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Positions not supported for Spot/Margin".to_string()
+                ));
+            }
+            _ => {}
+        }
 
+        let mut params = HashMap::new();
+        params.insert("category".to_string(), account_type_to_category(account_type).to_string());
+
+        if let Some(ref s) = symbol {
+            params.insert("symbol".to_string(), format_symbol(s, account_type));
+        }
+
+        let response = self.get(BybitEndpoint::Positions, params).await?;
+
+        // Parse positions from result.list
+        let result = response.get("result")
+            .ok_or_else(|| ExchangeError::Parse("Missing result".to_string()))?;
+
+        let list = result.get("list")
+            .and_then(|l| l.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing list".to_string()))?;
+
+        let mut positions = Vec::new();
+        for pos_data in list {
+            let symbol_str = pos_data.get("symbol")
+                .and_then(|s| s.as_str())
+                .unwrap_or("");
+
+            let quantity = pos_data.get("size")
+                .and_then(|s| s.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+
+            // Skip zero positions
+            if quantity == 0.0 {
+                continue;
+            }
+
+            let side = pos_data.get("side")
+                .and_then(|s| s.as_str())
+                .map(|s| match s {
+                    "Buy" => crate::core::PositionSide::Long,
+                    "Sell" => crate::core::PositionSide::Short,
+                    _ => crate::core::PositionSide::Long,
+                })
+                .unwrap_or(crate::core::PositionSide::Long);
+
+            let entry_price = pos_data.get("avgPrice")
+                .and_then(|p| p.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+
+            let unrealized_pnl = pos_data.get("unrealisedPnl")
+                .and_then(|p| p.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+
+            let leverage = pos_data.get("leverage")
+                .and_then(|l| l.as_str())
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(1);
+
+            let liquidation_price = pos_data.get("liqPrice")
+                .and_then(|p| p.as_str())
+                .and_then(|s| s.parse::<f64>().ok());
+
+            let mark_price = pos_data.get("markPrice")
+                .and_then(|p| p.as_str())
+                .and_then(|s| s.parse::<f64>().ok());
+
+            let margin_type = match account_type {
+                AccountType::FuturesCross => crate::core::MarginType::Cross,
+                AccountType::FuturesIsolated => crate::core::MarginType::Isolated,
+                _ => crate::core::MarginType::Cross,
+            };
+
+            positions.push(Position {
+                symbol: symbol_str.to_string(),
+                side,
+                quantity,
+                entry_price,
+                mark_price,
+                unrealized_pnl,
+                realized_pnl: None,
+                liquidation_price,
+                leverage,
+                margin_type,
+                margin: None,
+                take_profit: None,
+                stop_loss: None,
+            });
+        }
+
+        Ok(positions)
+    }
+
+    async fn get_funding_rate(
+        &self,
+        symbol: Symbol,
+        account_type: AccountType,
+    ) -> ExchangeResult<FundingRate> {
+        match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Funding rate not supported for Spot/Margin".to_string()
+                ));
+            }
+            _ => {}
+        }
+
+        let mut params = HashMap::new();
+        params.insert("category".to_string(), account_type_to_category(account_type).to_string());
+        params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
+
+        let response = self.get(BybitEndpoint::FundingRate, params).await?;
+        BybitParser::parse_funding_rate(&response)
+    }
+
+    async fn set_leverage(
+        &self,
+        symbol: Symbol,
+        leverage: u32,
+        account_type: AccountType,
+    ) -> ExchangeResult<()> {
+        match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Leverage not supported for Spot/Margin".to_string()
+                ));
+            }
+            _ => {}
+        }
+
+        let body = json!({
+            "category": account_type_to_category(account_type),
+            "symbol": format_symbol(&symbol, account_type),
+            "buyLeverage": leverage.to_string(),
+            "sellLeverage": leverage.to_string(),
+        });
+
+        let response = self.post(BybitEndpoint::SetLeverage, body).await?;
+        self.check_response(&response)?;
+
+        Ok(())
+    }
+}

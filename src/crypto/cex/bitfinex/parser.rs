@@ -221,7 +221,7 @@ impl BitfinexParser {
         let order_type = if order_type_str.contains("MARKET") {
             OrderType::Market
         } else {
-            OrderType::Limit { price: 0.0 }
+            OrderType::Limit
         };
 
         // [13] ORDER_STATUS: "ACTIVE", "EXECUTED", "CANCELED", etc.
@@ -247,7 +247,7 @@ impl BitfinexParser {
             commission_asset: None,
             created_at: Self::get_i64(data, 4).unwrap_or(0),         // [4] MTS_CREATE
             updated_at: Self::get_i64(data, 5),                      // [5] MTS_UPDATE
-            time_in_force: crate::core::TimeInForce::Gtc,
+            time_in_force: crate::core::TimeInForce::GTC,
         })
     }
 

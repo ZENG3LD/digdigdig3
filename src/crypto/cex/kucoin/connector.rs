@@ -561,16 +561,320 @@ impl MarketData for KuCoinConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Trading for KuCoinConnector {
+    async fn market_order(
+        &self,
+        symbol: Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let endpoint = match account_type {
+            AccountType::Spot | AccountType::Margin => KuCoinEndpoint::SpotCreateOrder,
+            _ => KuCoinEndpoint::FuturesCreateOrder,
+        };
 
+        let client_oid = format!("cc_{}", crate::core::timestamp_millis());
+
+        let body = json!({
+            "clientOid": client_oid,
+            "symbol": format_symbol(&symbol.base, &symbol.quote, account_type),
+            "side": match side {
+                OrderSide::Buy => "buy",
+                OrderSide::Sell => "sell",
+            },
+            "type": "market",
+            "size": quantity.to_string(),
+        });
+
+        let response = self.post(endpoint, body, account_type).await?;
+        let order_id = KuCoinParser::parse_order_id(&response)?;
+
+        // Return minimal order info (can fetch full info with get_order)
+        Ok(Order {
+            id: order_id,
+            client_order_id: Some(client_oid),
+            symbol: symbol.to_string(),
+            side,
+            order_type: OrderType::Market,
+            status: crate::core::OrderStatus::New,
+            price: None,
+            stop_price: None,
+            quantity,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: crate::core::timestamp_millis() as i64,
+            updated_at: None,
+            time_in_force: crate::core::TimeInForce::GTC,
+        })
+    }
+
+    async fn limit_order(
+        &self,
+        symbol: Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        price: Price,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let endpoint = match account_type {
+            AccountType::Spot | AccountType::Margin => KuCoinEndpoint::SpotCreateOrder,
+            _ => KuCoinEndpoint::FuturesCreateOrder,
+        };
+
+        let client_oid = format!("cc_{}", crate::core::timestamp_millis());
+
+        let body = json!({
+            "clientOid": client_oid,
+            "symbol": format_symbol(&symbol.base, &symbol.quote, account_type),
+            "side": match side {
+                OrderSide::Buy => "buy",
+                OrderSide::Sell => "sell",
+            },
+            "type": "limit",
+            "size": quantity,
+            "price": price,
+        });
+
+        let response = self.post(endpoint, body, account_type).await?;
+        let order_id = KuCoinParser::parse_order_id(&response)?;
+
+        Ok(Order {
+            id: order_id,
+            client_order_id: Some(client_oid),
+            symbol: symbol.to_string(),
+            side,
+            order_type: OrderType::Limit,
+            status: crate::core::OrderStatus::New,
+            price: Some(price),
+            stop_price: None,
+            quantity,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: crate::core::timestamp_millis() as i64,
+            updated_at: None,
+            time_in_force: crate::core::TimeInForce::GTC,
+        })
+    }
+
+    async fn cancel_order(
+        &self,
+        symbol: Symbol,
+        order_id: &str,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let endpoint = match account_type {
+            AccountType::Spot | AccountType::Margin => KuCoinEndpoint::SpotCancelOrder,
+            _ => KuCoinEndpoint::FuturesCancelOrder,
+        };
+
+        let response = self.delete(endpoint, &[("orderId", order_id)], account_type).await?;
+        self.check_response(&response)?;
+
+        // Return cancelled order (minimal info)
+        Ok(Order {
+            id: order_id.to_string(),
+            client_order_id: None,
+            symbol: symbol.to_string(),
+            side: OrderSide::Buy, // Unknown
+            order_type: OrderType::Limit,
+            status: crate::core::OrderStatus::Canceled,
+            price: None,
+            stop_price: None,
+            quantity: 0.0,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: 0,
+            updated_at: Some(crate::core::timestamp_millis() as i64),
+            time_in_force: crate::core::TimeInForce::GTC,
+        })
+    }
+
+    async fn get_order(
+        &self,
+        _symbol: Symbol,
+        order_id: &str,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let endpoint = match account_type {
+            AccountType::Spot | AccountType::Margin => KuCoinEndpoint::SpotGetOrder,
+            _ => KuCoinEndpoint::FuturesGetOrder,
+        };
+
+        let base_url = self.urls.rest_url(account_type);
+        let path = endpoint.path().replace("{orderId}", order_id);
+        let url = format!("{}{}", base_url, path);
+
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+        let headers = auth.sign_request("GET", &path, "");
+
+        let response = self.http.get_with_headers(&url, &HashMap::new(), &headers).await?;
+        self.check_response(&response)?;
+
+        KuCoinParser::parse_order(&response, "")
+    }
+
+    async fn get_open_orders(
+        &self,
+        symbol: Option<Symbol>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        let endpoint = match account_type {
+            AccountType::Spot | AccountType::Margin => KuCoinEndpoint::SpotOpenOrders,
+            _ => KuCoinEndpoint::FuturesOpenOrders,
+        };
+
+        let mut params = HashMap::new();
+        params.insert("status".to_string(), "active".to_string());
+        if let Some(s) = symbol {
+            params.insert("symbol".to_string(), format_symbol(&s.base, &s.quote, account_type));
+        }
+
+        let response = self.get(endpoint, params, account_type).await?;
+        KuCoinParser::parse_orders(&response)
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Account for KuCoinConnector {
+    async fn get_balance(
+        &self,
+        asset: Option<crate::core::Asset>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Balance>> {
+        let endpoint = match account_type {
+            AccountType::Spot | AccountType::Margin => KuCoinEndpoint::SpotAccounts,
+            _ => KuCoinEndpoint::FuturesAccount,
+        };
 
+        let mut params = HashMap::new();
+        if let Some(a) = asset {
+            params.insert("currency".to_string(), a.to_string());
+        }
+        match account_type {
+            AccountType::Spot => params.insert("type".to_string(), "trade".to_string()),
+            AccountType::Margin => params.insert("type".to_string(), "margin".to_string()),
+            _ => None,
+        };
+
+        let response = self.get(endpoint, params, account_type).await?;
+
+        match account_type {
+            AccountType::Spot | AccountType::Margin => KuCoinParser::parse_balances(&response),
+            _ => KuCoinParser::parse_futures_account(&response),
+        }
+    }
+
+    async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
+        let balances = self.get_balance(None, account_type).await?;
+
+        Ok(AccountInfo {
+            account_type,
+            can_trade: true,
+            can_withdraw: true,
+            can_deposit: true,
+            maker_commission: 0.1, // Default, should be fetched from API
+            taker_commission: 0.1,
+            balances,
+        })
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // POSITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Positions for KuCoinConnector {
+    async fn get_positions(
+        &self,
+        symbol: Option<Symbol>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Position>> {
+        match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Positions not supported for Spot/Margin".to_string()
+                ));
+            }
+            _ => {}
+        }
 
+        let response = if let Some(ref s) = symbol {
+            let mut params = HashMap::new();
+            params.insert("symbol".to_string(), format_symbol(&s.base, &s.quote, account_type));
+            self.get(KuCoinEndpoint::FuturesPosition, params, account_type).await?
+        } else {
+            self.get(KuCoinEndpoint::FuturesPositions, HashMap::new(), account_type).await?
+        };
+
+        if symbol.is_some() {
+            KuCoinParser::parse_position(&response).map(|p| vec![p])
+        } else {
+            KuCoinParser::parse_positions(&response)
+        }
+    }
+
+    async fn get_funding_rate(
+        &self,
+        symbol: Symbol,
+        account_type: AccountType,
+    ) -> ExchangeResult<FundingRate> {
+        match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Funding rate not supported for Spot/Margin".to_string()
+                ));
+            }
+            _ => {}
+        }
+
+        let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
+        let base_url = self.urls.rest_url(account_type);
+        let path = KuCoinEndpoint::FundingRate.path().replace("{symbol}", &formatted);
+        let url = format!("{}{}", base_url, path);
+
+        let response = self.http.get(&url, &HashMap::new()).await?;
+        self.check_response(&response)?;
+
+        KuCoinParser::parse_funding_rate(&response)
+    }
+
+    async fn set_leverage(
+        &self,
+        symbol: Symbol,
+        leverage: u32,
+        account_type: AccountType,
+    ) -> ExchangeResult<()> {
+        match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Leverage not supported for Spot/Margin".to_string()
+                ));
+            }
+            _ => {}
+        }
+
+        let body = json!({
+            "symbol": format_symbol(&symbol.base, &symbol.quote, account_type),
+            "level": leverage,
+        });
+
+        let response = self.post(KuCoinEndpoint::FuturesSetLeverage, body, account_type).await?;
+        self.check_response(&response)?;
+
+        Ok(())
+    }
+}

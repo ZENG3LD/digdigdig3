@@ -331,16 +331,265 @@ impl MarketData for CryptoComConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Trading for CryptoComConnector {
+    async fn market_order(
+        &self,
+        symbol: Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let instrument_type = account_type_to_instrument(account_type);
+        let instrument_name = format_symbol(&symbol.base, &symbol.quote, instrument_type);
 
+        let params = json!({
+            "instrument_name": instrument_name,
+            "side": match side {
+                OrderSide::Buy => "BUY",
+                OrderSide::Sell => "SELL",
+            },
+            "type": "MARKET",
+            "quantity": quantity.to_string(),
+        });
+
+        let response = self.request(CryptoComEndpoint::CreateOrder, params).await?;
+        let order_id = CryptoComParser::parse_order_id(&response)?;
+
+        Ok(Order {
+            id: order_id,
+            client_order_id: None,
+            symbol: symbol.to_string(),
+            side,
+            order_type: OrderType::Market,
+            status: crate::core::OrderStatus::New,
+            price: None,
+            stop_price: None,
+            quantity,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: crate::core::timestamp_millis() as i64,
+            updated_at: None,
+            time_in_force: crate::core::TimeInForce::GTC,
+        })
+    }
+
+    async fn limit_order(
+        &self,
+        symbol: Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        price: Price,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let instrument_type = account_type_to_instrument(account_type);
+        let instrument_name = format_symbol(&symbol.base, &symbol.quote, instrument_type);
+
+        let params = json!({
+            "instrument_name": instrument_name,
+            "side": match side {
+                OrderSide::Buy => "BUY",
+                OrderSide::Sell => "SELL",
+            },
+            "type": "LIMIT",
+            "quantity": quantity.to_string(),
+            "price": price.to_string(),
+            "time_in_force": "GOOD_TILL_CANCEL",
+        });
+
+        let response = self.request(CryptoComEndpoint::CreateOrder, params).await?;
+        let order_id = CryptoComParser::parse_order_id(&response)?;
+
+        Ok(Order {
+            id: order_id,
+            client_order_id: None,
+            symbol: symbol.to_string(),
+            side,
+            order_type: OrderType::Limit,
+            status: crate::core::OrderStatus::New,
+            price: Some(price),
+            stop_price: None,
+            quantity,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: crate::core::timestamp_millis() as i64,
+            updated_at: None,
+            time_in_force: crate::core::TimeInForce::GTC,
+        })
+    }
+
+    async fn cancel_order(
+        &self,
+        symbol: Symbol,
+        order_id: &str,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let instrument_type = account_type_to_instrument(account_type);
+        let instrument_name = format_symbol(&symbol.base, &symbol.quote, instrument_type);
+
+        let params = json!({
+            "instrument_name": instrument_name,
+            "order_id": order_id,
+        });
+
+        let response = self.request(CryptoComEndpoint::CancelOrder, params).await?;
+        CryptoComParser::check_response(&response)?;
+
+        Ok(Order {
+            id: order_id.to_string(),
+            client_order_id: None,
+            symbol: symbol.to_string(),
+            side: OrderSide::Buy, // Unknown
+            order_type: OrderType::Limit,
+            status: crate::core::OrderStatus::Canceled,
+            price: None,
+            stop_price: None,
+            quantity: 0.0,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: 0,
+            updated_at: Some(crate::core::timestamp_millis() as i64),
+            time_in_force: crate::core::TimeInForce::GTC,
+        })
+    }
+
+    async fn get_order(
+        &self,
+        _symbol: Symbol,
+        order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let params = json!({
+            "order_id": order_id,
+        });
+
+        let response = self.request(CryptoComEndpoint::GetOrderDetail, params).await?;
+        CryptoComParser::parse_order(&response)
+    }
+
+    async fn get_open_orders(
+        &self,
+        symbol: Option<Symbol>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        let mut params = json!({});
+
+        if let Some(s) = symbol {
+            let instrument_type = account_type_to_instrument(account_type);
+            let instrument_name = format_symbol(&s.base, &s.quote, instrument_type);
+            params["instrument_name"] = json!(instrument_name);
+        }
+
+        let response = self.request(CryptoComEndpoint::GetOpenOrders, params).await?;
+        CryptoComParser::parse_orders(&response)
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Account for CryptoComConnector {
+    async fn get_balance(
+        &self,
+        _asset: Option<crate::core::Asset>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Balance>> {
+        let params = json!({});
+        let response = self.request(CryptoComEndpoint::UserBalance, params).await?;
+        CryptoComParser::parse_balances(&response)
+    }
 
+    async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
+        let balances = self.get_balance(None, account_type).await?;
+
+        Ok(AccountInfo {
+            account_type,
+            can_trade: true,
+            can_withdraw: true,
+            can_deposit: true,
+            maker_commission: 0.075, // Default Crypto.com fee
+            taker_commission: 0.075,
+            balances,
+        })
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // POSITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Positions for CryptoComConnector {
+    async fn get_positions(
+        &self,
+        symbol: Option<Symbol>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Position>> {
+        match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Positions not supported for Spot".to_string()
+                ));
+            }
+            _ => {}
+        }
 
+        let mut params = json!({});
+
+        if let Some(s) = symbol {
+            let instrument_type = account_type_to_instrument(account_type);
+            let instrument_name = format_symbol(&s.base, &s.quote, instrument_type);
+            params["instrument_name"] = json!(instrument_name);
+        }
+
+        let response = self.request(CryptoComEndpoint::GetPositions, params).await?;
+        CryptoComParser::parse_positions(&response)
+    }
+
+    async fn get_funding_rate(
+        &self,
+        symbol: Symbol,
+        account_type: AccountType,
+    ) -> ExchangeResult<FundingRate> {
+        match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Funding rate not supported for Spot".to_string()
+                ));
+            }
+            _ => {}
+        }
+
+        let instrument_type = account_type_to_instrument(account_type);
+        let instrument_name = format_symbol(&symbol.base, &symbol.quote, instrument_type);
+
+        let params = json!({
+            "instrument_name": instrument_name
+        });
+
+        let response = self.request(CryptoComEndpoint::GetValuations, params).await?;
+        CryptoComParser::parse_funding_rate(&response)
+    }
+
+    async fn set_leverage(
+        &self,
+        _symbol: Symbol,
+        leverage: u32,
+        _account_type: AccountType,
+    ) -> ExchangeResult<()> {
+        let params = json!({
+            "leverage": leverage.to_string()
+        });
+
+        let response = self.request(CryptoComEndpoint::ChangeAccountLeverage, params).await?;
+        CryptoComParser::check_response(&response)
+    }
+}

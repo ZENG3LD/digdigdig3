@@ -420,16 +420,318 @@ impl MarketData for VertexConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Trading for VertexConnector {
+    async fn market_order(
+        &self,
+        symbol: Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        // Vertex doesn't have true market orders - use IOC limit order at extreme price
+        let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
+        let product_id = self.get_product_id(&formatted).await?;
 
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+
+        // Get current price to determine extreme price
+        let current_price = self.get_price(symbol.clone(), account_type).await?;
+
+        // Use extreme price to ensure immediate fill
+        let price = match side {
+            OrderSide::Buy => current_price * 1.1, // 10% above market
+            OrderSide::Sell => current_price * 0.9, // 10% below market
+        };
+
+        let price_x18 = to_x18(price);
+        let amount_x18 = to_x18(match side {
+            OrderSide::Buy => quantity,
+            OrderSide::Sell => -quantity,
+        });
+
+        let nonce = auth.generate_nonce();
+        let expiration = auth.generate_expiration(60, TimeInForce::IOC);
+
+        let (signature, _digest) = auth.sign_order(
+            product_id,
+            &price_x18,
+            &amount_x18,
+            expiration,
+            nonce,
+        ).await?;
+
+        let tx = json!({
+            "place_order": {
+                "sender": auth.get_sender(),
+                "priceX18": price_x18,
+                "amount": amount_x18,
+                "expiration": expiration.to_string(),
+                "nonce": nonce.to_string(),
+            },
+            "signature": signature,
+        });
+
+        let response = self.execute(tx).await?;
+        let order_id = VertexParser::parse_order_id(&response)?;
+
+        Ok(Order {
+            id: order_id,
+            client_order_id: None,
+            symbol: formatted,
+            side,
+            order_type: OrderType::Market,
+            status: crate::core::OrderStatus::New,
+            price: Some(price),
+            stop_price: None,
+            quantity,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: crate::core::timestamp_millis() as i64,
+            updated_at: None,
+            time_in_force: crate::core::TimeInForce::IOC,
+        })
+    }
+
+    async fn limit_order(
+        &self,
+        symbol: Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        price: Price,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
+        let product_id = self.get_product_id(&formatted).await?;
+
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+
+        let price_x18 = to_x18(price);
+        let amount_x18 = to_x18(match side {
+            OrderSide::Buy => quantity,
+            OrderSide::Sell => -quantity,
+        });
+
+        let nonce = auth.generate_nonce();
+        let expiration = auth.generate_expiration(86400, TimeInForce::GTC); // 24h validity
+
+        let (signature, _digest) = auth.sign_order(
+            product_id,
+            &price_x18,
+            &amount_x18,
+            expiration,
+            nonce,
+        ).await?;
+
+        let tx = json!({
+            "place_order": {
+                "sender": auth.get_sender(),
+                "priceX18": price_x18,
+                "amount": amount_x18,
+                "expiration": expiration.to_string(),
+                "nonce": nonce.to_string(),
+            },
+            "signature": signature,
+        });
+
+        let response = self.execute(tx).await?;
+        let order_id = VertexParser::parse_order_id(&response)?;
+
+        Ok(Order {
+            id: order_id,
+            client_order_id: None,
+            symbol: formatted,
+            side,
+            order_type: OrderType::Limit,
+            status: crate::core::OrderStatus::New,
+            price: Some(price),
+            stop_price: None,
+            quantity,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: crate::core::timestamp_millis() as i64,
+            updated_at: None,
+            time_in_force: crate::core::TimeInForce::GTC,
+        })
+    }
+
+    async fn cancel_order(
+        &self,
+        _symbol: Symbol,
+        order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+
+        let nonce = auth.generate_nonce();
+
+        // Parse product_id from order_id if needed
+        // For now, use empty product_ids and just the digest
+        let signature = auth.sign_cancel(vec![], vec![order_id.to_string()], nonce).await?;
+
+        let tx = json!({
+            "cancel_orders": {
+                "sender": auth.get_sender(),
+                "productIds": [],
+                "digests": [order_id],
+                "nonce": nonce.to_string(),
+            },
+            "signature": signature,
+        });
+
+        let response = self.execute(tx).await?;
+        let _ = response;
+
+        Ok(Order {
+            id: order_id.to_string(),
+            client_order_id: None,
+            symbol: "".to_string(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Limit,
+            status: crate::core::OrderStatus::Canceled,
+            price: None,
+            stop_price: None,
+            quantity: 0.0,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: 0,
+            updated_at: Some(crate::core::timestamp_millis() as i64),
+            time_in_force: crate::core::TimeInForce::GTC,
+        })
+    }
+
+    async fn get_order(
+        &self,
+        symbol: Symbol,
+        order_id: &str,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        // Get all orders and filter
+        let orders = self.get_open_orders(Some(symbol), account_type).await?;
+
+        orders.into_iter()
+            .find(|o| o.id == order_id)
+            .ok_or_else(|| ExchangeError::Parse("Order not found".to_string()))
+    }
+
+    async fn get_open_orders(
+        &self,
+        symbol: Option<Symbol>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+
+        let mut params = json!({
+            "sender": auth.get_sender(),
+        });
+
+        if let Some(sym) = symbol {
+            let formatted = format_symbol(&sym.base, &sym.quote, account_type);
+            let product_id = self.get_product_id(&formatted).await?;
+            params.as_object_mut().expect("Value is a JSON object").insert("product_id".to_string(), json!(product_id));
+        }
+
+        let response = self.query("subaccount_orders", params).await?;
+        VertexParser::parse_orders(&response)
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Account for VertexConnector {
+    async fn get_balance(
+        &self,
+        _asset: Option<crate::core::Asset>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Balance>> {
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
 
+        let params = json!({
+            "sender": auth.get_sender(),
+        });
+
+        let response = self.query("subaccount_info", params).await?;
+        VertexParser::parse_balances(&response)
+    }
+
+    async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
+        let balances = self.get_balance(None, account_type).await?;
+
+        Ok(AccountInfo {
+            account_type,
+            can_trade: true,
+            can_withdraw: true,
+            can_deposit: true,
+            maker_commission: 0.02, // 2 bps default
+            taker_commission: 0.04, // 4 bps default
+            balances,
+        })
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // POSITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Positions for VertexConnector {
+    async fn get_positions(
+        &self,
+        _symbol: Option<Symbol>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Position>> {
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
 
+        let params = json!({
+            "sender": auth.get_sender(),
+        });
+
+        let response = self.query("subaccount_info", params).await?;
+        VertexParser::parse_positions(&response)
+    }
+
+    async fn get_funding_rate(
+        &self,
+        symbol: Symbol,
+        account_type: AccountType,
+    ) -> ExchangeResult<FundingRate> {
+        let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
+        let product_id = self.get_product_id(&formatted).await?;
+
+        let body = json!({
+            "funding_rate": {
+                "product_id": product_id,
+            }
+        });
+
+        let response = self.post(VertexEndpoint::FundingRate, body).await?;
+        VertexParser::parse_funding_rate(&response, &formatted)
+    }
+
+    async fn set_leverage(
+        &self,
+        _symbol: Symbol,
+        _leverage: u32,
+        _account_type: AccountType,
+    ) -> ExchangeResult<()> {
+        // Vertex uses cross-margin by default, leverage is dynamic
+        Err(ExchangeError::UnsupportedOperation(
+            "Vertex uses dynamic cross-margin, leverage cannot be set manually".to_string()
+        ))
+    }
+}

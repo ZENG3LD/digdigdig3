@@ -326,16 +326,123 @@ impl MarketData for FinnhubConnector {
 // TRAIT: Trading (UNSUPPORTED - Data Provider Only)
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Trading for FinnhubConnector {
+    async fn market_order(
+        &self,
+        _symbol: Symbol,
+        _side: OrderSide,
+        _quantity: Quantity,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Finnhub is a data provider, not an exchange. Trading is not supported.".to_string()
+        ))
+    }
 
+    async fn limit_order(
+        &self,
+        _symbol: Symbol,
+        _side: OrderSide,
+        _quantity: Quantity,
+        _price: Price,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Finnhub is a data provider, not an exchange. Trading is not supported.".to_string()
+        ))
+    }
+
+    async fn cancel_order(
+        &self,
+        _symbol: Symbol,
+        _order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Finnhub is a data provider, not an exchange. Trading is not supported.".to_string()
+        ))
+    }
+
+    async fn get_order(
+        &self,
+        _symbol: Symbol,
+        _order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Finnhub is a data provider, not an exchange. Trading is not supported.".to_string()
+        ))
+    }
+
+    async fn get_open_orders(
+        &self,
+        _symbol: Option<Symbol>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Finnhub is a data provider, not an exchange. Trading is not supported.".to_string()
+        ))
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TRAIT: Account (UNSUPPORTED - Data Provider Only)
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Account for FinnhubConnector {
+    async fn get_balance(
+        &self,
+        _asset: Option<String>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Balance>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Finnhub is a data provider, not an exchange. Account operations are not supported.".to_string()
+        ))
+    }
 
+    async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Finnhub is a data provider, not an exchange. Account operations are not supported.".to_string()
+        ))
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TRAIT: Positions (UNSUPPORTED - Data Provider Only)
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[async_trait]
+impl Positions for FinnhubConnector {
+    async fn get_positions(
+        &self,
+        _symbol: Option<Symbol>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Position>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Finnhub is a data provider, not an exchange. Position operations are not supported.".to_string()
+        ))
+    }
 
+    async fn get_funding_rate(
+        &self,
+        _symbol: Symbol,
+        _account_type: AccountType,
+    ) -> ExchangeResult<FundingRate> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Finnhub is a data provider, not an exchange. Futures data is not available.".to_string()
+        ))
+    }
+
+    async fn set_leverage(
+        &self,
+        _symbol: Symbol,
+        _leverage: u32,
+        _account_type: AccountType,
+    ) -> ExchangeResult<()> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Finnhub is a data provider, not an exchange. Position operations are not supported.".to_string()
+        ))
+    }
+}

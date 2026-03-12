@@ -45,6 +45,13 @@ mod positions;
 mod websocket;
 mod auth;
 
+// V2 traits — coexist with V1 traits
+pub mod trading_v2;
+pub mod account_v2;
+pub mod positions_v2;
+pub mod operations_v2;
+pub mod auth_v2;
+
 pub use identity::ExchangeIdentity;
 pub use market_data::MarketData;
 pub use trading::Trading;
@@ -52,6 +59,16 @@ pub use account::Account;
 pub use positions::Positions;
 pub use websocket::{WebSocketConnector, WebSocketExt};
 pub use auth::{Credentials, AuthRequest, SignatureLocation, ExchangeAuth};
+
+// V2 trait re-exports
+pub use trading_v2::TradingV2;
+pub use account_v2::AccountV2;
+pub use positions_v2::PositionsV2;
+pub use operations_v2::{
+    CancelAllV2, AmendOrderV2, BatchOrdersV2,
+    AccountTransfersV2, CustodialFundsV2, SubAccountsV2,
+};
+pub use auth_v2::{Authenticated, CredentialKind};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // COMPOSITE TRAIT
@@ -77,5 +94,32 @@ pub trait CoreConnector:
 
 impl<T> CoreConnector for T where
     T: ExchangeIdentity + MarketData + Trading + Account + Positions + Send + Sync
+{
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// V2 COMPOSITE TRAIT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Full V2 core connector — combines all V2 thin traits.
+///
+/// Used for generic code that works with any exchange using the V2 architecture.
+/// Optional operation traits (`CancelAllV2`, `AmendOrderV2`, etc.) are NOT
+/// included here because they are not universally implemented.
+///
+/// # Example
+/// ```ignore
+/// async fn check_portfolio<C: CoreConnectorV2>(conn: &C) {
+///     let balance = conn.get_balance(BalanceQuery { asset: None, account_type: AccountType::Spot }).await?;
+///     let orders = conn.get_open_orders(None, AccountType::Spot).await?;
+/// }
+/// ```
+pub trait CoreConnectorV2:
+    ExchangeIdentity + MarketData + TradingV2 + AccountV2 + Send + Sync
+{
+}
+
+impl<T> CoreConnectorV2 for T where
+    T: ExchangeIdentity + MarketData + TradingV2 + AccountV2 + Send + Sync
 {
 }

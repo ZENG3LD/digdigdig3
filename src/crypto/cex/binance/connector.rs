@@ -20,16 +20,19 @@ use crate::core::{
     HttpClient, Credentials,
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
-    Price, Quantity, Kline, Ticker, OrderBook,
-    Order, OrderSide, OrderType,Balance, AccountInfo,
+    Price, Kline, Ticker, OrderBook,
+    Order, OrderSide, OrderType, Balance, AccountInfo,
     Position, FundingRate,
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
+    AmendRequest, CancelAllResponse, OrderResult,
+    MarginType,
 };
 use crate::core::types::{ConnectorStats, SymbolInfo};
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
+    CancelAll, AmendOrder, BatchOrders,
 };
 use crate::core::utils::WeightRateLimiter;
 
@@ -330,6 +333,40 @@ impl BinanceConnector {
         Ok(response)
     }
 
+    /// PUT запрос (for order amend)
+    async fn put(
+        &self,
+        endpoint: BinanceEndpoint,
+        mut params: HashMap<String, String>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Value> {
+        self.rate_limit_wait(weights::ORDER).await;
+
+        let base_url = self.urls.rest_url(account_type);
+        let path = endpoint.path();
+
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+
+        let headers = auth.sign_request(&mut params);
+
+        let query = if params.is_empty() {
+            String::new()
+        } else {
+            let qs: Vec<String> = params.iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect();
+            format!("?{}", qs.join("&"))
+        };
+
+        let url = format!("{}{}{}", base_url, path, query);
+
+        // HttpClient::put does not return headers; use it directly
+        let response = self.http.put(&url, &json!({}), &headers).await?;
+        BinanceParser::check_error(&response)?;
+        Ok(response)
+    }
+
     /// DELETE запрос
     async fn delete(
         &self,
@@ -567,22 +604,310 @@ impl Trading for BinanceConnector {
 
                 let mut params = HashMap::new();
                 params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
-                params.insert("side".to_string(), match side {
-                    OrderSide::Buy => "BUY".to_string(),
-                    OrderSide::Sell => "SELL".to_string(),
-                });
+                params.insert("side".to_string(), side.as_str().to_string());
                 params.insert("type".to_string(), "LIMIT".to_string());
                 params.insert("quantity".to_string(), quantity.to_string());
                 params.insert("price".to_string(), price.to_string());
                 params.insert("timeInForce".to_string(), "GTC".to_string());
 
+                if let Some(cid) = &req.client_order_id {
+                    params.insert("newClientOrderId".to_string(), cid.clone());
+                }
+
                 let response = self.post(endpoint, params, account_type).await?;
                 let order = BinanceParser::parse_order(&response, &symbol.to_string())?;
                 Ok(PlaceOrderResponse::Simple(order))
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
-            )),
+
+            OrderType::StopMarket { stop_price } => {
+                // Spot: no native STOP_MARKET. Futures only.
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "StopMarket not supported on Spot/Margin (Binance Futures only)".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+                params.insert("side".to_string(), side.as_str().to_string());
+                params.insert("type".to_string(), "STOP_MARKET".to_string());
+                params.insert("quantity".to_string(), quantity.to_string());
+                params.insert("stopPrice".to_string(), stop_price.to_string());
+
+                if req.reduce_only {
+                    params.insert("reduceOnly".to_string(), "true".to_string());
+                }
+                if let Some(cid) = &req.client_order_id {
+                    params.insert("newClientOrderId".to_string(), cid.clone());
+                }
+
+                let response = self.post(BinanceEndpoint::FuturesCreateOrder, params, account_type).await?;
+                let order = BinanceParser::parse_order(&response, &symbol.to_string())?;
+                Ok(PlaceOrderResponse::Simple(order))
+            }
+
+            OrderType::StopLimit { stop_price, limit_price } => {
+                let endpoint = match account_type {
+                    AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotCreateOrder,
+                    _ => BinanceEndpoint::FuturesCreateOrder,
+                };
+
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+                params.insert("side".to_string(), side.as_str().to_string());
+                params.insert("quantity".to_string(), quantity.to_string());
+                params.insert("stopPrice".to_string(), stop_price.to_string());
+                params.insert("price".to_string(), limit_price.to_string());
+
+                // Spot uses STOP_LOSS_LIMIT / TAKE_PROFIT_LIMIT; Futures uses STOP
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        params.insert("type".to_string(), "STOP_LOSS_LIMIT".to_string());
+                        params.insert("timeInForce".to_string(), "GTC".to_string());
+                    }
+                    _ => {
+                        params.insert("type".to_string(), "STOP".to_string());
+                        params.insert("timeInForce".to_string(), "GTC".to_string());
+                    }
+                }
+
+                if req.reduce_only {
+                    params.insert("reduceOnly".to_string(), "true".to_string());
+                }
+                if let Some(cid) = &req.client_order_id {
+                    params.insert("newClientOrderId".to_string(), cid.clone());
+                }
+
+                let response = self.post(endpoint, params, account_type).await?;
+                let order = BinanceParser::parse_order(&response, &symbol.to_string())?;
+                Ok(PlaceOrderResponse::Simple(order))
+            }
+
+            OrderType::TrailingStop { callback_rate, activation_price } => {
+                // Futures only
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "TrailingStop not supported on Spot/Margin (Binance Futures only)".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+                params.insert("side".to_string(), side.as_str().to_string());
+                params.insert("type".to_string(), "TRAILING_STOP_MARKET".to_string());
+                params.insert("quantity".to_string(), quantity.to_string());
+                params.insert("callbackRate".to_string(), callback_rate.to_string());
+
+                if let Some(ap) = activation_price {
+                    params.insert("activationPrice".to_string(), ap.to_string());
+                }
+                if req.reduce_only {
+                    params.insert("reduceOnly".to_string(), "true".to_string());
+                }
+                if let Some(cid) = &req.client_order_id {
+                    params.insert("newClientOrderId".to_string(), cid.clone());
+                }
+
+                let response = self.post(BinanceEndpoint::FuturesCreateOrder, params, account_type).await?;
+                let order = BinanceParser::parse_order(&response, &symbol.to_string())?;
+                Ok(PlaceOrderResponse::Simple(order))
+            }
+
+            OrderType::Oco { price, stop_price, stop_limit_price } => {
+                // Spot only — Binance OCO is not available on Futures
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {}
+                    _ => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "OCO orders not supported on Futures (Binance Spot only)".to_string()
+                        ));
+                    }
+                }
+
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+                params.insert("side".to_string(), side.as_str().to_string());
+                params.insert("quantity".to_string(), quantity.to_string());
+                params.insert("price".to_string(), price.to_string());
+                params.insert("stopPrice".to_string(), stop_price.to_string());
+
+                if let Some(slp) = stop_limit_price {
+                    params.insert("stopLimitPrice".to_string(), slp.to_string());
+                    params.insert("stopLimitTimeInForce".to_string(), "GTC".to_string());
+                }
+                if let Some(cid) = &req.client_order_id {
+                    params.insert("listClientOrderId".to_string(), cid.clone());
+                }
+
+                let response = self.post(BinanceEndpoint::SpotOcoOrder, params, account_type).await?;
+                let oco = BinanceParser::parse_oco_response(&response)?;
+                Ok(PlaceOrderResponse::Oco(oco))
+            }
+
+            OrderType::Bracket { .. } => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "Bracket orders not natively supported on Binance. Use separate TP/SL orders.".to_string()
+                ))
+            }
+
+            OrderType::Iceberg { price, display_quantity } => {
+                // Spot only — Binance Futures does not support iceberg
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {}
+                    _ => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "Iceberg orders not supported on Futures (Binance Spot only)".to_string()
+                        ));
+                    }
+                }
+
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+                params.insert("side".to_string(), side.as_str().to_string());
+                params.insert("type".to_string(), "LIMIT".to_string());
+                params.insert("quantity".to_string(), quantity.to_string());
+                params.insert("price".to_string(), price.to_string());
+                params.insert("icebergQty".to_string(), display_quantity.to_string());
+                params.insert("timeInForce".to_string(), "GTC".to_string());
+
+                if let Some(cid) = &req.client_order_id {
+                    params.insert("newClientOrderId".to_string(), cid.clone());
+                }
+
+                let response = self.post(BinanceEndpoint::SpotCreateOrder, params, account_type).await?;
+                let order = BinanceParser::parse_order(&response, &symbol.to_string())?;
+                Ok(PlaceOrderResponse::Simple(order))
+            }
+
+            OrderType::Twap { .. } => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "TWAP orders not supported via standard Binance API".to_string()
+                ))
+            }
+
+            OrderType::PostOnly { price } => {
+                let endpoint = match account_type {
+                    AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotCreateOrder,
+                    _ => BinanceEndpoint::FuturesCreateOrder,
+                };
+
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+                params.insert("side".to_string(), side.as_str().to_string());
+                params.insert("type".to_string(), "LIMIT".to_string());
+                params.insert("quantity".to_string(), quantity.to_string());
+                params.insert("price".to_string(), price.to_string());
+                // GTX = Post-Only on Binance (Good Till Crossing)
+                params.insert("timeInForce".to_string(), "GTX".to_string());
+
+                if let Some(cid) = &req.client_order_id {
+                    params.insert("newClientOrderId".to_string(), cid.clone());
+                }
+
+                let response = self.post(endpoint, params, account_type).await?;
+                let order = BinanceParser::parse_order(&response, &symbol.to_string())?;
+                Ok(PlaceOrderResponse::Simple(order))
+            }
+
+            OrderType::Ioc { price } => {
+                let endpoint = match account_type {
+                    AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotCreateOrder,
+                    _ => BinanceEndpoint::FuturesCreateOrder,
+                };
+
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+                params.insert("side".to_string(), side.as_str().to_string());
+                params.insert("type".to_string(), "LIMIT".to_string());
+                params.insert("quantity".to_string(), quantity.to_string());
+                params.insert("timeInForce".to_string(), "IOC".to_string());
+
+                // Use the provided price, or fall back to a limit order at market
+                if let Some(p) = price {
+                    params.insert("price".to_string(), p.to_string());
+                } else {
+                    // IOC with no price — use MARKET type instead
+                    params.insert("type".to_string(), "MARKET".to_string());
+                    params.remove("timeInForce");
+                }
+
+                if let Some(cid) = &req.client_order_id {
+                    params.insert("newClientOrderId".to_string(), cid.clone());
+                }
+
+                let response = self.post(endpoint, params, account_type).await?;
+                let order = BinanceParser::parse_order(&response, &symbol.to_string())?;
+                Ok(PlaceOrderResponse::Simple(order))
+            }
+
+            OrderType::Fok { price } => {
+                let endpoint = match account_type {
+                    AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotCreateOrder,
+                    _ => BinanceEndpoint::FuturesCreateOrder,
+                };
+
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+                params.insert("side".to_string(), side.as_str().to_string());
+                params.insert("type".to_string(), "LIMIT".to_string());
+                params.insert("quantity".to_string(), quantity.to_string());
+                params.insert("price".to_string(), price.to_string());
+                params.insert("timeInForce".to_string(), "FOK".to_string());
+
+                if let Some(cid) = &req.client_order_id {
+                    params.insert("newClientOrderId".to_string(), cid.clone());
+                }
+
+                let response = self.post(endpoint, params, account_type).await?;
+                let order = BinanceParser::parse_order(&response, &symbol.to_string())?;
+                Ok(PlaceOrderResponse::Simple(order))
+            }
+
+            OrderType::Gtd { .. } => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "GTD (Good-Till-Date) not supported on Binance".to_string()
+                ))
+            }
+
+            OrderType::ReduceOnly { price } => {
+                // Futures only
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "ReduceOnly not supported on Spot/Margin".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+                params.insert("side".to_string(), side.as_str().to_string());
+                params.insert("reduceOnly".to_string(), "true".to_string());
+                params.insert("quantity".to_string(), quantity.to_string());
+
+                if let Some(p) = price {
+                    params.insert("type".to_string(), "LIMIT".to_string());
+                    params.insert("price".to_string(), p.to_string());
+                    params.insert("timeInForce".to_string(), "GTC".to_string());
+                } else {
+                    params.insert("type".to_string(), "MARKET".to_string());
+                }
+
+                if let Some(cid) = &req.client_order_id {
+                    params.insert("newClientOrderId".to_string(), cid.clone());
+                }
+
+                let response = self.post(BinanceEndpoint::FuturesCreateOrder, params, account_type).await?;
+                let order = BinanceParser::parse_order(&response, &symbol.to_string())?;
+                Ok(PlaceOrderResponse::Simple(order))
+            }
         }
     }
 
@@ -605,9 +930,19 @@ impl Trading for BinanceConnector {
                 let response = self.delete(endpoint, params, account_type).await?;
                 BinanceParser::parse_order(&response, &symbol.to_string())
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
-            )),
+            CancelScope::Batch { .. } => {
+                // Batch cancel is handled by BatchOrders trait; not available via Trading::cancel_order
+                Err(ExchangeError::UnsupportedOperation(
+                    "Use BatchOrders::cancel_orders_batch for batch cancellation on Binance".to_string()
+                ))
+            }
+            CancelScope::All { .. } | CancelScope::BySymbol { .. } => {
+                // Delegate to CancelAll logic but return a placeholder order since Trading::cancel_order
+                // returns a single Order. Users should call CancelAll::cancel_all_orders instead.
+                Err(ExchangeError::UnsupportedOperation(
+                    "Use CancelAll::cancel_all_orders for cancel-all on Binance".to_string()
+                ))
+            }
         }
     }
 
@@ -669,12 +1004,37 @@ impl Trading for BinanceConnector {
 
     async fn get_order_history(
         &self,
-        _filter: OrderHistoryFilter,
-        _account_type: AccountType,
+        filter: OrderHistoryFilter,
+        account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_order_history not yet implemented".to_string()
-        ))
+        let endpoint = match account_type {
+            AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotAllOrders,
+            _ => BinanceEndpoint::FuturesAllOrders,
+        };
+
+        let mut params = HashMap::new();
+
+        // Symbol is required for Binance allOrders endpoint
+        if let Some(ref sym) = filter.symbol {
+            params.insert("symbol".to_string(), format_symbol(&sym.base, &sym.quote, account_type));
+        } else {
+            return Err(ExchangeError::InvalidRequest(
+                "Symbol is required for get_order_history on Binance".to_string()
+            ));
+        }
+
+        if let Some(start) = filter.start_time {
+            params.insert("startTime".to_string(), start.to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("endTime".to_string(), end.to_string());
+        }
+        if let Some(lim) = filter.limit {
+            params.insert("limit".to_string(), lim.min(1000).to_string());
+        }
+
+        let response = self.get(endpoint, params, account_type).await?;
+        BinanceParser::parse_orders(&response)
     }
 }
 
@@ -753,10 +1113,26 @@ impl Account for BinanceConnector {
         })
     }
 
-    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_fees not yet implemented".to_string()
-        ))
+    async fn get_fees(&self, symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        // Try the trade fee endpoint first (sapi — requires higher tier API key)
+        // Fall back to account endpoint (commissionRates)
+        let mut params = HashMap::new();
+        if let Some(sym) = symbol {
+            params.insert("symbol".to_string(), sym.replace('/', "").to_uppercase());
+        }
+
+        // Use /sapi/v1/asset/tradeFee which returns per-symbol fee data
+        // This requires a Spot API key with the sapi permission
+        match self.get(BinanceEndpoint::SpotTradeFee, params.clone(), AccountType::Spot).await {
+            Ok(response) => BinanceParser::parse_fee_info(&response, symbol),
+            Err(_) => {
+                // Fallback to account commissionRates
+                let mut account_params = HashMap::new();
+                account_params.insert("omitZeroBalances".to_string(), "true".to_string());
+                let response = self.get(BinanceEndpoint::SpotAccount, account_params, AccountType::Spot).await?;
+                BinanceParser::parse_fee_info(&response, symbol)
+            }
+        }
     }
 }
 
@@ -840,9 +1216,336 @@ impl Positions for BinanceConnector {
 
                 Ok(())
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} not supported on {:?}", req, self.exchange_id())
-            )),
+
+            PositionModification::SetMarginMode { ref symbol, margin_type, account_type } => {
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "SetMarginMode not supported for Spot/Margin".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+
+                let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
+                let margin_type_str = match margin_type {
+                    MarginType::Isolated => "ISOLATED",
+                    MarginType::Cross => "CROSSED",
+                };
+
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), formatted);
+                params.insert("marginType".to_string(), margin_type_str.to_string());
+
+                let response = self.post(BinanceEndpoint::FuturesSetMarginType, params, account_type).await?;
+                BinanceParser::check_error(&response)?;
+                Ok(())
+            }
+
+            PositionModification::AddMargin { ref symbol, amount, account_type } => {
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "AddMargin not supported for Spot/Margin".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+
+                let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
+
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), formatted);
+                params.insert("amount".to_string(), amount.to_string());
+                params.insert("type".to_string(), "1".to_string()); // 1 = add margin
+
+                let response = self.post(BinanceEndpoint::FuturesPositionMargin, params, account_type).await?;
+                BinanceParser::check_error(&response)?;
+                Ok(())
+            }
+
+            PositionModification::RemoveMargin { ref symbol, amount, account_type } => {
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "RemoveMargin not supported for Spot/Margin".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+
+                let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
+
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), formatted);
+                params.insert("amount".to_string(), amount.to_string());
+                params.insert("type".to_string(), "2".to_string()); // 2 = remove margin
+
+                let response = self.post(BinanceEndpoint::FuturesPositionMargin, params, account_type).await?;
+                BinanceParser::check_error(&response)?;
+                Ok(())
+            }
+
+            PositionModification::ClosePosition { ref symbol, account_type } => {
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "ClosePosition not supported for Spot/Margin".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+
+                // Get the open position to find its quantity
+                let positions = self.get_positions(PositionQuery {
+                    symbol: Some(symbol.clone()),
+                    account_type,
+                }).await?;
+
+                let position = positions.into_iter().next()
+                    .ok_or_else(|| ExchangeError::InvalidRequest(
+                        format!("No open position found for {}", symbol)
+                    ))?;
+
+                // Place a reduce-only market order in the opposite direction
+                let close_side = if position.side == crate::core::PositionSide::Long {
+                    OrderSide::Sell
+                } else {
+                    OrderSide::Buy
+                };
+
+                let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
+
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), formatted);
+                params.insert("side".to_string(), close_side.as_str().to_string());
+                params.insert("type".to_string(), "MARKET".to_string());
+                params.insert("quantity".to_string(), position.quantity.to_string());
+                params.insert("reduceOnly".to_string(), "true".to_string());
+
+                let response = self.post(BinanceEndpoint::FuturesCreateOrder, params, account_type).await?;
+                BinanceParser::check_error(&response)?;
+                Ok(())
+            }
+
+            PositionModification::SetTpSl { .. } => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "SetTpSl is not a single native endpoint on Binance. Place separate TP/SL orders.".to_string()
+                ))
+            }
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CANCEL ALL
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Cancel all open orders (optionally filtered to a single symbol).
+///
+/// - Spot: `DELETE /api/v3/openOrders` — requires `symbol` param
+/// - Futures: `DELETE /fapi/v1/allOpenOrders` — requires `symbol` param
+///
+/// Note: Binance requires `symbol` on both endpoints; passing `All` with
+/// `symbol = None` is not supported and returns `UnsupportedOperation`.
+#[async_trait]
+impl CancelAll for BinanceConnector {
+    async fn cancel_all_orders(
+        &self,
+        scope: CancelScope,
+        account_type: AccountType,
+    ) -> ExchangeResult<CancelAllResponse> {
+        let symbol = match &scope {
+            CancelScope::All { symbol } => symbol.clone(),
+            CancelScope::BySymbol { symbol } => Some(symbol.clone()),
+            _ => {
+                return Err(ExchangeError::InvalidRequest(
+                    "cancel_all_orders only accepts All or BySymbol scope".to_string()
+                ));
+            }
+        };
+
+        let sym = symbol.ok_or_else(|| ExchangeError::InvalidRequest(
+            "Binance cancel-all requires a symbol. Pass CancelScope::BySymbol or CancelScope::All with Some(symbol).".to_string()
+        ))?;
+
+        let endpoint = match account_type {
+            AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotCancelAllOrders,
+            _ => BinanceEndpoint::FuturesCancelAllOrders,
+        };
+
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), format_symbol(&sym.base, &sym.quote, account_type));
+
+        let response = self.delete(endpoint, params, account_type).await?;
+        BinanceParser::parse_cancel_all_response(&response)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AMEND ORDER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Modify a live futures order in-place.
+///
+/// Binance Futures: `PUT /fapi/v1/order`
+/// Spot does NOT support amend — this returns `UnsupportedOperation` for Spot/Margin.
+#[async_trait]
+impl AmendOrder for BinanceConnector {
+    async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
+        match req.account_type {
+            AccountType::Spot | AccountType::Margin => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Amend order not supported on Spot/Margin (Binance Futures only)".to_string()
+                ));
+            }
+            _ => {}
+        }
+
+        // At least one field must be changed
+        if req.fields.price.is_none() && req.fields.quantity.is_none() {
+            return Err(ExchangeError::InvalidRequest(
+                "At least one of price or quantity must be provided for amend".to_string()
+            ));
+        }
+
+        let account_type = req.account_type;
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), format_symbol(&req.symbol.base, &req.symbol.quote, account_type));
+        params.insert("orderId".to_string(), req.order_id.clone());
+
+        if let Some(price) = req.fields.price {
+            params.insert("price".to_string(), price.to_string());
+        }
+        if let Some(quantity) = req.fields.quantity {
+            params.insert("quantity".to_string(), quantity.to_string());
+        }
+        if let Some(stop_price) = req.fields.trigger_price {
+            params.insert("stopPrice".to_string(), stop_price.to_string());
+        }
+
+        let response = self.put(BinanceEndpoint::FuturesAmendOrder, params, account_type).await?;
+        BinanceParser::parse_order(&response, &req.symbol.to_string())
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BATCH ORDERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Native batch order placement and cancellation.
+///
+/// - Futures: `POST /fapi/v1/batchOrders` — max 5 orders per batch
+/// - Spot: no native batch endpoint → returns `UnsupportedOperation`
+#[async_trait]
+impl BatchOrders for BinanceConnector {
+    async fn place_orders_batch(
+        &self,
+        orders: Vec<OrderRequest>,
+    ) -> ExchangeResult<Vec<OrderResult>> {
+        if orders.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Detect account type from first order — all orders in batch must be same type
+        let account_type = orders[0].account_type;
+
+        match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Batch orders not supported on Spot/Margin (Binance Futures only)".to_string()
+                ));
+            }
+            _ => {}
+        }
+
+        if orders.len() > self.max_batch_place_size() {
+            return Err(ExchangeError::InvalidRequest(
+                format!("Batch size {} exceeds Binance limit of {}", orders.len(), self.max_batch_place_size())
+            ));
+        }
+
+        // Build each order as a JSON object for the batchOrders array
+        let batch_orders_json: Vec<serde_json::Value> = orders.iter().map(|req| {
+            let mut obj = serde_json::Map::new();
+            obj.insert("symbol".to_string(), json!(format_symbol(&req.symbol.base, &req.symbol.quote, account_type)));
+            obj.insert("side".to_string(), json!(req.side.as_str()));
+
+            match &req.order_type {
+                OrderType::Market => {
+                    obj.insert("type".to_string(), json!("MARKET"));
+                    obj.insert("quantity".to_string(), json!(req.quantity.to_string()));
+                }
+                OrderType::Limit { price } => {
+                    obj.insert("type".to_string(), json!("LIMIT"));
+                    obj.insert("quantity".to_string(), json!(req.quantity.to_string()));
+                    obj.insert("price".to_string(), json!(price.to_string()));
+                    obj.insert("timeInForce".to_string(), json!("GTC"));
+                }
+                _ => {
+                    // For other types, encode as MARKET (best-effort fallback)
+                    obj.insert("type".to_string(), json!("MARKET"));
+                    obj.insert("quantity".to_string(), json!(req.quantity.to_string()));
+                }
+            }
+
+            if req.reduce_only {
+                obj.insert("reduceOnly".to_string(), json!("true"));
+            }
+            if let Some(ref cid) = req.client_order_id {
+                obj.insert("newClientOrderId".to_string(), json!(cid));
+            }
+
+            serde_json::Value::Object(obj)
+        }).collect();
+
+        let batch_json_str = serde_json::to_string(&batch_orders_json)
+            .map_err(|e| ExchangeError::Parse(format!("Failed to serialize batch orders: {}", e)))?;
+
+        let mut params = HashMap::new();
+        params.insert("batchOrders".to_string(), batch_json_str);
+
+        let response = self.post(BinanceEndpoint::FuturesBatchOrders, params, account_type).await?;
+        BinanceParser::parse_batch_orders_response(&response)
+    }
+
+    async fn cancel_orders_batch(
+        &self,
+        order_ids: Vec<String>,
+        symbol: Option<&str>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<OrderResult>> {
+        match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Batch cancel not supported on Spot/Margin (Binance Futures only)".to_string()
+                ));
+            }
+            _ => {}
+        }
+
+        let sym = symbol.ok_or_else(|| ExchangeError::InvalidRequest(
+            "Symbol is required for batch cancel on Binance".to_string()
+        ))?;
+
+        // Futures batch cancel: DELETE /fapi/v1/batchOrders with orderIdList param
+        let order_ids_json = serde_json::to_string(&order_ids)
+            .map_err(|e| ExchangeError::Parse(format!("Failed to serialize order IDs: {}", e)))?;
+
+        let mut params = HashMap::new();
+        // Symbol for batch cancel needs to be formatted — we have it as a raw string
+        params.insert("symbol".to_string(), sym.replace('/', "").to_uppercase());
+        params.insert("orderIdList".to_string(), order_ids_json);
+
+        let response = self.delete(BinanceEndpoint::FuturesBatchOrders, params, account_type).await?;
+        BinanceParser::parse_batch_orders_response(&response)
+    }
+
+    fn max_batch_place_size(&self) -> usize {
+        5 // Binance Futures limit
+    }
+
+    fn max_batch_cancel_size(&self) -> usize {
+        10 // Binance Futures limit
     }
 }

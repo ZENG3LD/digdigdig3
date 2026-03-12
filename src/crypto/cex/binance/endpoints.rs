@@ -72,8 +72,12 @@ pub enum BinanceEndpoint {
     // === SPOT TRADING ===
     SpotCreateOrder,
     SpotCancelOrder,
+    SpotCancelAllOrders,
     SpotGetOrder,
     SpotOpenOrders,
+    SpotAllOrders,
+    SpotOcoOrder,
+    SpotTradeFee,
 
     // === SPOT ACCOUNT ===
     SpotAccount,
@@ -89,13 +93,19 @@ pub enum BinanceEndpoint {
     // === FUTURES TRADING ===
     FuturesCreateOrder,
     FuturesCancelOrder,
+    FuturesCancelAllOrders,
     FuturesGetOrder,
     FuturesOpenOrders,
+    FuturesAllOrders,
+    FuturesAmendOrder,
+    FuturesBatchOrders,
 
     // === FUTURES ACCOUNT ===
     FuturesAccount,
     FuturesPositions,
     FuturesSetLeverage,
+    FuturesSetMarginType,
+    FuturesPositionMargin,
 
     // === WEBSOCKET ===
     SpotListenKey,
@@ -120,8 +130,12 @@ impl BinanceEndpoint {
             // Spot Trading
             Self::SpotCreateOrder => "/api/v3/order",
             Self::SpotCancelOrder => "/api/v3/order",
+            Self::SpotCancelAllOrders => "/api/v3/openOrders",
             Self::SpotGetOrder => "/api/v3/order",
             Self::SpotOpenOrders => "/api/v3/openOrders",
+            Self::SpotAllOrders => "/api/v3/allOrders",
+            Self::SpotOcoOrder => "/api/v3/orderList/oco",
+            Self::SpotTradeFee => "/sapi/v1/asset/tradeFee",
 
             // Spot Account
             Self::SpotAccount => "/api/v3/account",
@@ -137,13 +151,19 @@ impl BinanceEndpoint {
             // Futures Trading
             Self::FuturesCreateOrder => "/fapi/v1/order",
             Self::FuturesCancelOrder => "/fapi/v1/order",
+            Self::FuturesCancelAllOrders => "/fapi/v1/allOpenOrders",
             Self::FuturesGetOrder => "/fapi/v1/order",
             Self::FuturesOpenOrders => "/fapi/v1/openOrders",
+            Self::FuturesAllOrders => "/fapi/v1/allOrders",
+            Self::FuturesAmendOrder => "/fapi/v1/order",
+            Self::FuturesBatchOrders => "/fapi/v1/batchOrders",
 
             // Futures Account
             Self::FuturesAccount => "/fapi/v2/account",
             Self::FuturesPositions => "/fapi/v2/positionRisk",
             Self::FuturesSetLeverage => "/fapi/v1/leverage",
+            Self::FuturesSetMarginType => "/fapi/v1/marginType",
+            Self::FuturesPositionMargin => "/fapi/v1/positionMargin",
 
             // WebSocket
             Self::SpotListenKey => "/api/v3/userDataStream",
@@ -180,11 +200,19 @@ impl BinanceEndpoint {
             Self::SpotCreateOrder
             | Self::FuturesCreateOrder
             | Self::FuturesSetLeverage
+            | Self::FuturesSetMarginType
+            | Self::FuturesPositionMargin
+            | Self::SpotOcoOrder
+            | Self::FuturesBatchOrders
             | Self::SpotListenKey
             | Self::FuturesListenKey => "POST",
 
             Self::SpotCancelOrder
-            | Self::FuturesCancelOrder => "DELETE",
+            | Self::SpotCancelAllOrders
+            | Self::FuturesCancelOrder
+            | Self::FuturesCancelAllOrders => "DELETE",
+
+            Self::FuturesAmendOrder => "PUT",
 
             _ => "GET",
         }

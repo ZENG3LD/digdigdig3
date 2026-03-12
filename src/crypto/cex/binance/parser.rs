@@ -8,7 +8,8 @@ use crate::core::types::{
     ExchangeError, ExchangeResult,
     Kline, OrderBook, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
-    FundingRate, SymbolInfo,
+    FundingRate, SymbolInfo, FeeInfo,
+    OcoResponse, CancelAllResponse, OrderResult,
 };
 
 /// Парсер ответов Binance API
@@ -416,6 +417,189 @@ impl BinanceParser {
             });
         }
         Ok(result)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // OCO / CANCEL ALL / BATCH
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Парсить ответ OCO ордера
+    ///
+    /// Binance returns `orderReports` array with 2 orders plus a `listOrderId`.
+    pub fn parse_oco_response(response: &Value) -> ExchangeResult<OcoResponse> {
+        Self::check_error(response)?;
+
+        let reports = response.get("orderReports")
+            .and_then(|r| r.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'orderReports' in OCO response".to_string()))?;
+
+        if reports.len() < 2 {
+            return Err(ExchangeError::Parse(format!(
+                "Expected 2 orders in OCO response, got {}", reports.len()
+            )));
+        }
+
+        let first_order = Self::parse_order_data(&reports[0])?;
+        let second_order = Self::parse_order_data(&reports[1])?;
+
+        let list_id = response.get("listClientOrderId")
+            .or_else(|| response.get("orderListId"))
+            .and_then(|v| {
+                if let Some(s) = v.as_str() {
+                    Some(s.to_string())
+                } else {
+                    v.as_i64().map(|n| n.to_string())
+                }
+            });
+
+        Ok(OcoResponse {
+            first_order,
+            second_order,
+            list_id,
+        })
+    }
+
+    /// Парсить ответ cancel-all (массив отменённых ордеров или пустой объект)
+    ///
+    /// Binance Spot `DELETE /api/v3/openOrders` returns an array of cancelled orders.
+    /// Binance Futures `DELETE /fapi/v1/allOpenOrders` returns `{"code": 200, "msg": "The operation of cancel all open order is done."}`.
+    pub fn parse_cancel_all_response(response: &Value) -> ExchangeResult<CancelAllResponse> {
+        Self::check_error(response)?;
+
+        // Futures returns a success code object
+        if response.is_object() && !response.as_object().map(|o| o.contains_key("code")).unwrap_or(false) {
+            // Spot case: might be an array wrapped in object — shouldn't happen, but handle
+            return Ok(CancelAllResponse {
+                cancelled_count: 0,
+                failed_count: 0,
+                details: vec![],
+            });
+        }
+
+        // Spot case: array of cancelled orders
+        if let Some(arr) = response.as_array() {
+            let details: Vec<OrderResult> = arr.iter().map(|item| {
+                match Self::parse_order_data(item) {
+                    Ok(order) => OrderResult {
+                        order: Some(order),
+                        client_order_id: None,
+                        success: true,
+                        error: None,
+                        error_code: None,
+                    },
+                    Err(e) => OrderResult {
+                        order: None,
+                        client_order_id: None,
+                        success: false,
+                        error: Some(e.to_string()),
+                        error_code: None,
+                    },
+                }
+            }).collect();
+
+            let cancelled_count = details.iter().filter(|d| d.success).count() as u32;
+            let failed_count = details.iter().filter(|d| !d.success).count() as u32;
+
+            return Ok(CancelAllResponse {
+                cancelled_count,
+                failed_count,
+                details,
+            });
+        }
+
+        // Futures success object: {"code": 200, "msg": "..."}
+        Ok(CancelAllResponse {
+            cancelled_count: 0, // Futures does not return individual cancelled orders
+            failed_count: 0,
+            details: vec![],
+        })
+    }
+
+    /// Парсить ответ batch orders
+    ///
+    /// Binance Futures batch returns an array where each element is either
+    /// an order object or an error object with `code`/`msg`.
+    pub fn parse_batch_orders_response(response: &Value) -> ExchangeResult<Vec<OrderResult>> {
+        Self::check_error(response)?;
+
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array in batch orders response".to_string()))?;
+
+        Ok(arr.iter().map(|item| {
+            // Check if this item is an error
+            if let Some(code) = item.get("code").and_then(|c| c.as_i64()) {
+                if code < 0 {
+                    let msg = item.get("msg")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("Unknown batch error")
+                        .to_string();
+                    return OrderResult {
+                        order: None,
+                        client_order_id: item.get("clientOrderId")
+                            .and_then(|v| v.as_str())
+                            .map(String::from),
+                        success: false,
+                        error: Some(msg),
+                        error_code: Some(code as i32),
+                    };
+                }
+            }
+
+            match Self::parse_order_data(item) {
+                Ok(order) => OrderResult {
+                    client_order_id: order.client_order_id.clone(),
+                    order: Some(order),
+                    success: true,
+                    error: None,
+                    error_code: None,
+                },
+                Err(e) => OrderResult {
+                    order: None,
+                    client_order_id: None,
+                    success: false,
+                    error: Some(e.to_string()),
+                    error_code: None,
+                },
+            }
+        }).collect())
+    }
+
+    /// Парсить fee info из /api/v3/account или /sapi/v1/asset/tradeFee
+    pub fn parse_fee_info(response: &Value, symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        Self::check_error(response)?;
+
+        // Trade fee endpoint returns array of {symbol, makerCommission, takerCommission}
+        if let Some(arr) = response.as_array() {
+            if let Some(first) = arr.first() {
+                let maker_rate = Self::get_f64(first, "makerCommission").unwrap_or(0.001);
+                let taker_rate = Self::get_f64(first, "takerCommission").unwrap_or(0.001);
+                return Ok(FeeInfo {
+                    maker_rate,
+                    taker_rate,
+                    symbol: Self::get_str(first, "symbol").map(String::from),
+                    tier: None,
+                });
+            }
+            return Err(ExchangeError::Parse("Empty fee array".to_string()));
+        }
+
+        // Account endpoint: commissionRates object
+        if let Some(rates) = response.get("commissionRates") {
+            let maker_rate = rates.get("maker")
+                .and_then(Self::parse_f64)
+                .unwrap_or(0.001);
+            let taker_rate = rates.get("taker")
+                .and_then(Self::parse_f64)
+                .unwrap_or(0.001);
+            return Ok(FeeInfo {
+                maker_rate,
+                taker_rate,
+                symbol: symbol.map(String::from),
+                tier: None,
+            });
+        }
+
+        Err(ExchangeError::Parse("Cannot extract fee info from response".to_string()))
     }
 
     fn parse_position_data(data: &Value) -> Option<Position> {

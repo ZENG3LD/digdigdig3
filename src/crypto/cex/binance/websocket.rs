@@ -735,7 +735,7 @@ impl BinanceWebSocket {
 
         let order_type = match data.get("o").and_then(|o| o.as_str()).unwrap_or("LIMIT") {
             "MARKET" => OrderType::Market,
-            _ => OrderType::Limit,
+            _ => OrderType::Limit { price: 0.0 },
         };
 
         let status = match data.get("X").and_then(|x| x.as_str()).unwrap_or("NEW") {
@@ -846,7 +846,7 @@ impl BinanceWebSocket {
 
         let order_type = match order.get("o").and_then(|o| o.as_str()).unwrap_or("LIMIT") {
             "MARKET" => OrderType::Market,
-            _ => OrderType::Limit,
+            _ => OrderType::Limit { price: 0.0 },
         };
 
         let status = match order.get("X").and_then(|x| x.as_str()).unwrap_or("NEW") {

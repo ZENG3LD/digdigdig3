@@ -241,7 +241,7 @@ impl CryptoComParser {
 
         let order_type = match Self::get_str(data, "type").unwrap_or("LIMIT") {
             "MARKET" => OrderType::Market,
-            _ => OrderType::Limit,
+            _ => OrderType::Limit { price: 0.0 },
         };
 
         let status = Self::parse_order_status(data);
@@ -262,7 +262,7 @@ impl CryptoComParser {
             commission_asset: Self::get_str(data, "fee_currency").map(String::from),
             created_at: Self::get_i64(data, "create_time").unwrap_or(0),
             updated_at: Self::get_i64(data, "update_time"),
-            time_in_force: crate::core::TimeInForce::GTC,
+            time_in_force: crate::core::TimeInForce::Gtc,
         })
     }
 

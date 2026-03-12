@@ -494,77 +494,112 @@ impl MarketData for AlpacaConnector {
 
 #[async_trait]
 impl Trading for AlpacaConnector {
-    async fn market_order(
-        &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let symbol_str = format_symbol(&symbol);
+    async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
+        let symbol = req.symbol.clone();
+        let side = req.side;
+        let quantity = req.quantity;
+        let _account_type = req.account_type;
 
-        let body = json!({
-            "symbol": symbol_str,
-            "qty": quantity.to_string(),
-            "side": side.as_str().to_lowercase(),
-            "type": "market",
-            "time_in_force": "day",
-        });
-
-        let response = self.post_trading(AlpacaEndpoint::Orders, body).await?;
-        AlpacaParser::parse_order(&response)
+        match req.order_type {
+            OrderType::Market => {
+                let symbol_str = format_symbol(&symbol);
+                
+                        let body = json!({
+                            "symbol": symbol_str,
+                            "qty": quantity.to_string(),
+                            "side": side.as_str().to_lowercase(),
+                            "type": "market",
+                            "time_in_force": "day",
+                        });
+                
+                        let response = self.post_trading(AlpacaEndpoint::Orders, body).await?;
+                        AlpacaParser::parse_order(&response).map(PlaceOrderResponse::Simple)
+            }
+            OrderType::Limit { price } => {
+                let symbol_str = format_symbol(&symbol);
+                
+                        let body = json!({
+                            "symbol": symbol_str,
+                            "qty": quantity.to_string(),
+                            "side": side.as_str().to_lowercase(),
+                            "type": "limit",
+                            "time_in_force": "gtc",
+                            "limit_price": price.to_string(),
+                        });
+                
+                        let response = self.post_trading(AlpacaEndpoint::Orders, body).await?;
+                        AlpacaParser::parse_order(&response).map(PlaceOrderResponse::Simple)
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+            )),
+        }
     }
 
-    async fn limit_order(
+    async fn get_order_history(
         &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        price: Price,
+        _filter: OrderHistoryFilter,
         _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let symbol_str = format_symbol(&symbol);
-
-        let body = json!({
-            "symbol": symbol_str,
-            "qty": quantity.to_string(),
-            "side": side.as_str().to_lowercase(),
-            "type": "limit",
-            "time_in_force": "gtc",
-            "limit_price": price.to_string(),
-        });
-
-        let response = self.post_trading(AlpacaEndpoint::Orders, body).await?;
-        AlpacaParser::parse_order(&response)
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_order_history not yet implemented".to_string()
+        ))
     }
+async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+        match req.scope {
+            CancelScope::Single { ref order_id } => {
+                let _symbol = req.symbol.as_ref()
+                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel".into()))?
+                    .clone();
+                let _account_type = req.account_type;
 
-    async fn cancel_order(
-        &self,
-        _symbol: Symbol,
-        order_id: &str,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let endpoint = AlpacaEndpoint::OrderById(order_id.to_string());
-        let response = self.delete_trading(endpoint, HashMap::new()).await?;
-        AlpacaParser::parse_order(&response)
+            let endpoint = AlpacaEndpoint::OrderById(order_id.to_string());
+            let response = self.delete_trading(endpoint, HashMap::new()).await?;
+            AlpacaParser::parse_order(&response)
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
+            )),
+        }
     }
 
     async fn get_order(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         order_id: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Order> {
+        // Parse symbol string into Symbol struct
+        let _symbol_parts: Vec<&str> = _symbol.split('/').collect();
+        let _symbol = if _symbol_parts.len() == 2 {
+            crate::core::Symbol::new(_symbol_parts[0], _symbol_parts[1])
+        } else {
+            crate::core::Symbol { base: _symbol.to_string(), quote: String::new(), raw: Some(_symbol.to_string()) }
+        };
+
         let endpoint = AlpacaEndpoint::OrderById(order_id.to_string());
         let response = self.get_trading(endpoint, HashMap::new()).await?;
         AlpacaParser::parse_order(&response)
+    
     }
 
     async fn get_open_orders(
         &self,
-        symbol: Option<Symbol>,
+        symbol: Option<&str>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
+        // Convert Option<&str> to Option<Symbol>
+        let symbol_str = symbol;
+        let symbol: Option<crate::core::Symbol> = symbol_str.map(|s| {
+            let parts: Vec<&str> = s.split('/').collect();
+            if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: s.to_string(), quote: String::new(), raw: Some(s.to_string()) }
+            }
+        });
+
         let mut params = HashMap::new();
         params.insert("status".to_string(), "open".to_string());
 
@@ -574,6 +609,7 @@ impl Trading for AlpacaConnector {
 
         let response = self.get_trading(AlpacaEndpoint::Orders, params).await?;
         AlpacaParser::parse_orders(&response)
+    
     }
 }
 
@@ -583,11 +619,10 @@ impl Trading for AlpacaConnector {
 
 #[async_trait]
 impl Account for AlpacaConnector {
-    async fn get_balance(
-        &self,
-        asset: Option<Asset>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Balance>> {
+    async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        let asset = query.asset.clone();
+        let _account_type = query.account_type;
+
         let response = self.get_trading(AlpacaEndpoint::Account, HashMap::new()).await?;
         let balances = AlpacaParser::parse_balance(&response)?;
 
@@ -597,11 +632,18 @@ impl Account for AlpacaConnector {
         } else {
             Ok(balances)
         }
+    
     }
 
     async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
         let response = self.get_trading(AlpacaEndpoint::Account, HashMap::new()).await?;
         AlpacaParser::parse_account_info(&response, account_type)
+    }
+
+    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_fees not yet implemented".to_string()
+        ))
     }
 }
 
@@ -611,11 +653,10 @@ impl Account for AlpacaConnector {
 
 #[async_trait]
 impl Positions for AlpacaConnector {
-    async fn get_positions(
-        &self,
-        symbol: Option<Symbol>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Position>> {
+    async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
+        let symbol = query.symbol.clone();
+        let _account_type = query.account_type;
+
         if let Some(sym) = symbol {
             // Get specific position
             let symbol_str = format_symbol(&sym);
@@ -628,29 +669,47 @@ impl Positions for AlpacaConnector {
             let response = self.get_trading(AlpacaEndpoint::Positions, HashMap::new()).await?;
             AlpacaParser::parse_positions(&response)
         }
+    
     }
 
     async fn get_funding_rate(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
+        // Parse symbol string into Symbol struct
+        let _symbol_str = _symbol;
+        let _symbol = {
+            let parts: Vec<&str> = _symbol_str.split('/').collect();
+            if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: _symbol_str.to_string(), quote: String::new(), raw: Some(_symbol_str.to_string()) }
+            }
+        };
+
         // Alpaca doesn't support funding rates (stocks broker, not futures)
         Err(ExchangeError::UnsupportedOperation(
             "Funding rate not available - Alpaca is a stock broker, not a futures exchange".to_string()
         ))
+    
     }
 
-    async fn set_leverage(
-        &self,
-        _symbol: Symbol,
-        _leverage: u32,
-        _account_type: AccountType,
-    ) -> ExchangeResult<()> {
-        // Alpaca doesn't support leverage settings (stocks broker, not futures)
-        Err(ExchangeError::UnsupportedOperation(
-            "Leverage not available - Alpaca is a stock broker, not a futures exchange".to_string()
-        ))
+    async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
+        match req {
+            PositionModification::SetLeverage { symbol: ref _symbol, leverage: _leverage, account_type: _account_type } => {
+                let _symbol = _symbol.clone();
+
+                // Alpaca doesn't support leverage settings (stocks broker, not futures)
+                Err(ExchangeError::UnsupportedOperation(
+                "Leverage not available - Alpaca is a stock broker, not a futures exchange".to_string()
+                ))
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} not supported on {:?}", req, self.exchange_id())
+            )),
+        }
     }
 }
 

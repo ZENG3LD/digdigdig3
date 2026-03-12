@@ -260,74 +260,57 @@ impl MarketData for TwelvedataConnector {
 
 #[async_trait]
 impl Trading for TwelvedataConnector {
-    async fn market_order(
-        &self,
-        _symbol: Symbol,
-        _side: OrderSide,
-        _quantity: Quantity,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
+    async fn place_order(&self, _req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         Err(ExchangeError::UnsupportedOperation(
-            "Twelvedata is a data provider - no trading capabilities".to_string(),
+            "Twelvedata is a data provider - no trading capabilities".to_string()
         ))
     }
 
-    async fn limit_order(
-        &self,
-        _symbol: Symbol,
-        _side: OrderSide,
-        _quantity: Quantity,
-        _price: Price,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
+    async fn cancel_order(&self, _req: CancelRequest) -> ExchangeResult<Order> {
         Err(ExchangeError::UnsupportedOperation(
-            "Twelvedata is a data provider - no trading capabilities".to_string(),
-        ))
-    }
-
-    async fn cancel_order(
-        &self,
-        _symbol: Symbol,
-        _order_id: &str,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        Err(ExchangeError::UnsupportedOperation(
-            "Twelvedata is a data provider - no trading capabilities".to_string(),
+            "Twelvedata is a data provider - no trading capabilities".to_string()
         ))
     }
 
     async fn get_order(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         _order_id: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Order> {
         Err(ExchangeError::UnsupportedOperation(
-            "Twelvedata is a data provider - no trading capabilities".to_string(),
+            "Twelvedata is a data provider - no trading capabilities".to_string()
         ))
     }
 
     async fn get_open_orders(
         &self,
-        _symbol: Option<Symbol>,
+        _symbol: Option<&str>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
         Err(ExchangeError::UnsupportedOperation(
-            "Twelvedata is a data provider - no trading capabilities".to_string(),
+            "Twelvedata is a data provider - no trading capabilities".to_string()
+        ))
+    }
+
+    async fn get_order_history(
+        &self,
+        _filter: OrderHistoryFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Twelvedata is a data provider - no trading capabilities".to_string()
         ))
     }
 }
 
 #[async_trait]
 impl Account for TwelvedataConnector {
-    async fn get_balance(
-        &self,
-        _asset: Option<Asset>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Balance>> {
+    async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         Err(ExchangeError::UnsupportedOperation(
             "Twelvedata is a data provider - no account/balance information".to_string(),
         ))
+    
     }
 
     async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
@@ -335,38 +318,35 @@ impl Account for TwelvedataConnector {
             "Twelvedata is a data provider - no account information".to_string(),
         ))
     }
+
+    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Twelvedata is a data provider - no account/balance information".to_string()
+        ))
+    }
 }
 
 #[async_trait]
 impl Positions for TwelvedataConnector {
-    async fn get_positions(
-        &self,
-        _symbol: Option<Symbol>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Position>> {
+    async fn get_positions(&self, _query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         Err(ExchangeError::UnsupportedOperation(
-            "Twelvedata is a data provider - no positions (no trading)".to_string(),
+            "Twelvedata is a data provider - no positions (no trading)".to_string()
         ))
     }
 
     async fn get_funding_rate(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
         Err(ExchangeError::UnsupportedOperation(
-            "Twelvedata is a stocks data provider - no futures funding rates".to_string(),
+            "Twelvedata is a data provider - no positions (no trading)".to_string()
         ))
     }
 
-    async fn set_leverage(
-        &self,
-        _symbol: Symbol,
-        _leverage: u32,
-        _account_type: AccountType,
-    ) -> ExchangeResult<()> {
+    async fn modify_position(&self, _req: PositionModification) -> ExchangeResult<()> {
         Err(ExchangeError::UnsupportedOperation(
-            "Twelvedata is a data provider - no leverage (no trading)".to_string(),
+            "Twelvedata is a data provider - no positions (no trading)".to_string()
         ))
     }
 }

@@ -23,6 +23,9 @@ use crate::core::{
     Price, Quantity, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, Balance, AccountInfo,
     Position, FundingRate,
+    OrderRequest, CancelRequest, CancelScope,
+    BalanceQuery, PositionQuery, PositionModification,
+    OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };
 use crate::core::types::SymbolInfo;
 use crate::core::traits::{
@@ -333,151 +336,186 @@ impl MarketData for CryptoComConnector {
 
 #[async_trait]
 impl Trading for CryptoComConnector {
-    async fn market_order(
-        &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let instrument_type = account_type_to_instrument(account_type);
-        let instrument_name = format_symbol(&symbol.base, &symbol.quote, instrument_type);
+    async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
+        let symbol = req.symbol.clone();
+        let side = req.side;
+        let quantity = req.quantity;
+        let account_type = req.account_type;
 
-        let params = json!({
-            "instrument_name": instrument_name,
-            "side": match side {
-                OrderSide::Buy => "BUY",
-                OrderSide::Sell => "SELL",
-            },
-            "type": "MARKET",
-            "quantity": quantity.to_string(),
-        });
-
-        let response = self.request(CryptoComEndpoint::CreateOrder, params).await?;
-        let order_id = CryptoComParser::parse_order_id(&response)?;
-
-        Ok(Order {
-            id: order_id,
-            client_order_id: None,
-            symbol: symbol.to_string(),
-            side,
-            order_type: OrderType::Market,
-            status: crate::core::OrderStatus::New,
-            price: None,
-            stop_price: None,
-            quantity,
-            filled_quantity: 0.0,
-            average_price: None,
-            commission: None,
-            commission_asset: None,
-            created_at: crate::core::timestamp_millis() as i64,
-            updated_at: None,
-            time_in_force: crate::core::TimeInForce::GTC,
-        })
+        match req.order_type {
+            OrderType::Market => {
+                let instrument_type = account_type_to_instrument(account_type);
+                        let instrument_name = format_symbol(&symbol.base, &symbol.quote, instrument_type);
+                
+                        let params = json!({
+                            "instrument_name": instrument_name,
+                            "side": match side {
+                                OrderSide::Buy => "BUY",
+                                OrderSide::Sell => "SELL",
+                            },
+                            "type": "MARKET",
+                            "quantity": quantity.to_string(),
+                        });
+                
+                        let response = self.request(CryptoComEndpoint::CreateOrder, params).await?;
+                        let order_id = CryptoComParser::parse_order_id(&response)?;
+                
+                        Ok(PlaceOrderResponse::Simple(Order {
+                            id: order_id,
+                            client_order_id: None,
+                            symbol: symbol.to_string(),
+                            side,
+                            order_type: OrderType::Market,
+                            status: crate::core::OrderStatus::New,
+                            price: None,
+                            stop_price: None,
+                            quantity,
+                            filled_quantity: 0.0,
+                            average_price: None,
+                            commission: None,
+                            commission_asset: None,
+                            created_at: crate::core::timestamp_millis() as i64,
+                            updated_at: None,
+                            time_in_force: crate::core::TimeInForce::Gtc,
+                        }))
+            }
+            OrderType::Limit { price } => {
+                let instrument_type = account_type_to_instrument(account_type);
+                        let instrument_name = format_symbol(&symbol.base, &symbol.quote, instrument_type);
+                
+                        let params = json!({
+                            "instrument_name": instrument_name,
+                            "side": match side {
+                                OrderSide::Buy => "BUY",
+                                OrderSide::Sell => "SELL",
+                            },
+                            "type": "LIMIT",
+                            "quantity": quantity.to_string(),
+                            "price": price.to_string(),
+                            "time_in_force": "GOOD_TILL_CANCEL",
+                        });
+                
+                        let response = self.request(CryptoComEndpoint::CreateOrder, params).await?;
+                        let order_id = CryptoComParser::parse_order_id(&response)?;
+                
+                        Ok(PlaceOrderResponse::Simple(Order {
+                            id: order_id,
+                            client_order_id: None,
+                            symbol: symbol.to_string(),
+                            side,
+                            order_type: OrderType::Limit { price: 0.0 },
+                            status: crate::core::OrderStatus::New,
+                            price: Some(price),
+                            stop_price: None,
+                            quantity,
+                            filled_quantity: 0.0,
+                            average_price: None,
+                            commission: None,
+                            commission_asset: None,
+                            created_at: crate::core::timestamp_millis() as i64,
+                            updated_at: None,
+                            time_in_force: crate::core::TimeInForce::Gtc,
+                        }))
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+            )),
+        }
     }
 
-    async fn limit_order(
+    async fn get_order_history(
         &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        price: Price,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let instrument_type = account_type_to_instrument(account_type);
-        let instrument_name = format_symbol(&symbol.base, &symbol.quote, instrument_type);
-
-        let params = json!({
-            "instrument_name": instrument_name,
-            "side": match side {
-                OrderSide::Buy => "BUY",
-                OrderSide::Sell => "SELL",
-            },
-            "type": "LIMIT",
-            "quantity": quantity.to_string(),
-            "price": price.to_string(),
-            "time_in_force": "GOOD_TILL_CANCEL",
-        });
-
-        let response = self.request(CryptoComEndpoint::CreateOrder, params).await?;
-        let order_id = CryptoComParser::parse_order_id(&response)?;
-
-        Ok(Order {
-            id: order_id,
-            client_order_id: None,
-            symbol: symbol.to_string(),
-            side,
-            order_type: OrderType::Limit,
-            status: crate::core::OrderStatus::New,
-            price: Some(price),
-            stop_price: None,
-            quantity,
-            filled_quantity: 0.0,
-            average_price: None,
-            commission: None,
-            commission_asset: None,
-            created_at: crate::core::timestamp_millis() as i64,
-            updated_at: None,
-            time_in_force: crate::core::TimeInForce::GTC,
-        })
+        _filter: OrderHistoryFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_order_history not yet implemented".to_string()
+        ))
     }
+async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+        match req.scope {
+            CancelScope::Single { ref order_id } => {
+                let symbol = req.symbol.as_ref()
+                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel".into()))?
+                    .clone();
+                let account_type = req.account_type;
 
-    async fn cancel_order(
-        &self,
-        symbol: Symbol,
-        order_id: &str,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let instrument_type = account_type_to_instrument(account_type);
-        let instrument_name = format_symbol(&symbol.base, &symbol.quote, instrument_type);
+            let instrument_type = account_type_to_instrument(account_type);
+            let instrument_name = format_symbol(&symbol.base, &symbol.quote, instrument_type);
 
-        let params = json!({
-            "instrument_name": instrument_name,
-            "order_id": order_id,
-        });
+            let params = json!({
+                "instrument_name": instrument_name,
+                "order_id": order_id,
+            });
 
-        let response = self.request(CryptoComEndpoint::CancelOrder, params).await?;
-        CryptoComParser::check_response(&response)?;
+            let response = self.request(CryptoComEndpoint::CancelOrder, params).await?;
+            CryptoComParser::check_response(&response)?;
 
-        Ok(Order {
-            id: order_id.to_string(),
-            client_order_id: None,
-            symbol: symbol.to_string(),
-            side: OrderSide::Buy, // Unknown
-            order_type: OrderType::Limit,
-            status: crate::core::OrderStatus::Canceled,
-            price: None,
-            stop_price: None,
-            quantity: 0.0,
-            filled_quantity: 0.0,
-            average_price: None,
-            commission: None,
-            commission_asset: None,
-            created_at: 0,
-            updated_at: Some(crate::core::timestamp_millis() as i64),
-            time_in_force: crate::core::TimeInForce::GTC,
-        })
+            Ok(Order {
+                id: order_id.to_string(),
+                client_order_id: None,
+                symbol: symbol.to_string(),
+                side: OrderSide::Buy, // Unknown
+                order_type: OrderType::Limit { price: 0.0 },
+                status: crate::core::OrderStatus::Canceled,
+                price: None,
+                stop_price: None,
+                quantity: 0.0,
+                filled_quantity: 0.0,
+                average_price: None,
+                commission: None,
+                commission_asset: None,
+                created_at: 0,
+                updated_at: Some(crate::core::timestamp_millis() as i64),
+                time_in_force: crate::core::TimeInForce::Gtc,
+            })
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
+            )),
+        }
     }
 
     async fn get_order(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         order_id: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Order> {
+        // Parse symbol string into Symbol struct
+        let _symbol_parts: Vec<&str> = _symbol.split('/').collect();
+        let _symbol = if _symbol_parts.len() == 2 {
+            crate::core::Symbol::new(_symbol_parts[0], _symbol_parts[1])
+        } else {
+            crate::core::Symbol { base: _symbol.to_string(), quote: String::new(), raw: Some(_symbol.to_string()) }
+        };
+
         let params = json!({
             "order_id": order_id,
         });
 
         let response = self.request(CryptoComEndpoint::GetOrderDetail, params).await?;
         CryptoComParser::parse_order(&response)
+    
     }
 
     async fn get_open_orders(
         &self,
-        symbol: Option<Symbol>,
+        symbol: Option<&str>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
+        // Convert Option<&str> to Option<Symbol>
+        let symbol_str = symbol;
+        let symbol: Option<crate::core::Symbol> = symbol_str.map(|s| {
+            let parts: Vec<&str> = s.split('/').collect();
+            if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: s.to_string(), quote: String::new(), raw: Some(s.to_string()) }
+            }
+        });
+
         let mut params = json!({});
 
         if let Some(s) = symbol {
@@ -488,6 +526,7 @@ impl Trading for CryptoComConnector {
 
         let response = self.request(CryptoComEndpoint::GetOpenOrders, params).await?;
         CryptoComParser::parse_orders(&response)
+    
     }
 }
 
@@ -497,18 +536,18 @@ impl Trading for CryptoComConnector {
 
 #[async_trait]
 impl Account for CryptoComConnector {
-    async fn get_balance(
-        &self,
-        _asset: Option<crate::core::Asset>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Balance>> {
+    async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        let _asset = query.asset.clone();
+        let _account_type = query.account_type;
+
         let params = json!({});
         let response = self.request(CryptoComEndpoint::UserBalance, params).await?;
         CryptoComParser::parse_balances(&response)
+    
     }
 
     async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
-        let balances = self.get_balance(None, account_type).await?;
+        let balances = self.get_balance(BalanceQuery { asset: None, account_type }).await?;
 
         Ok(AccountInfo {
             account_type,
@@ -520,6 +559,12 @@ impl Account for CryptoComConnector {
             balances,
         })
     }
+
+    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_fees not yet implemented".to_string()
+        ))
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -528,11 +573,10 @@ impl Account for CryptoComConnector {
 
 #[async_trait]
 impl Positions for CryptoComConnector {
-    async fn get_positions(
-        &self,
-        symbol: Option<Symbol>,
-        account_type: AccountType,
-    ) -> ExchangeResult<Vec<Position>> {
+    async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
+        let symbol = query.symbol.clone();
+        let account_type = query.account_type;
+
         match account_type {
             AccountType::Spot | AccountType::Margin => {
                 return Err(ExchangeError::UnsupportedOperation(
@@ -552,13 +596,25 @@ impl Positions for CryptoComConnector {
 
         let response = self.request(CryptoComEndpoint::GetPositions, params).await?;
         CryptoComParser::parse_positions(&response)
+    
     }
 
     async fn get_funding_rate(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
+        // Parse symbol string into Symbol struct
+        let symbol_str = symbol;
+        let symbol = {
+            let parts: Vec<&str> = symbol_str.split('/').collect();
+            if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: symbol_str.to_string(), quote: String::new(), raw: Some(symbol_str.to_string()) }
+            }
+        };
+
         match account_type {
             AccountType::Spot | AccountType::Margin => {
                 return Err(ExchangeError::UnsupportedOperation(
@@ -577,19 +633,25 @@ impl Positions for CryptoComConnector {
 
         let response = self.request(CryptoComEndpoint::GetValuations, params).await?;
         CryptoComParser::parse_funding_rate(&response)
+    
     }
 
-    async fn set_leverage(
-        &self,
-        _symbol: Symbol,
-        leverage: u32,
-        _account_type: AccountType,
-    ) -> ExchangeResult<()> {
-        let params = json!({
-            "leverage": leverage.to_string()
-        });
+    async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
+        match req {
+            PositionModification::SetLeverage { symbol: ref _symbol, leverage: leverage, account_type: _account_type } => {
+                let _symbol = _symbol.clone();
 
-        let response = self.request(CryptoComEndpoint::ChangeAccountLeverage, params).await?;
-        CryptoComParser::check_response(&response)
+                let params = json!({
+                "leverage": leverage.to_string()
+                });
+
+                let response = self.request(CryptoComEndpoint::ChangeAccountLeverage, params).await?;
+                CryptoComParser::check_response(&response)
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} not supported on {:?}", req, self.exchange_id())
+            )),
+        }
     }
 }

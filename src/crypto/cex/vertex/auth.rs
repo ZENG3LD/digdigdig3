@@ -134,9 +134,9 @@ impl VertexAuth {
         let expiration = now + seconds_valid;
 
         match tif {
-            TimeInForce::GTC => expiration,
-            TimeInForce::IOC => expiration | (1 << 62),
-            TimeInForce::FOK => expiration | (1 << 63),
+            TimeInForce::Gtc => expiration,
+            TimeInForce::Ioc => expiration | (1 << 62),
+            TimeInForce::Fok => expiration | (1 << 63),
             TimeInForce::PostOnly => expiration | (1 << 62) | (1 << 63),
         }
     }
@@ -479,9 +479,9 @@ mod tests {
             None,
         ).unwrap();
 
-        let base_expiration = auth.generate_expiration(300, TimeInForce::GTC);
-        let ioc_expiration = auth.generate_expiration(300, TimeInForce::IOC);
-        let fok_expiration = auth.generate_expiration(300, TimeInForce::FOK);
+        let base_expiration = auth.generate_expiration(300, TimeInForce::Gtc);
+        let ioc_expiration = auth.generate_expiration(300, TimeInForce::Ioc);
+        let fok_expiration = auth.generate_expiration(300, TimeInForce::Fok);
         let post_expiration = auth.generate_expiration(300, TimeInForce::PostOnly);
 
         // GTC should have no flags set

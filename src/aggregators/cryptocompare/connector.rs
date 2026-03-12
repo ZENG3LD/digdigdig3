@@ -5,9 +5,11 @@ use reqwest::Client;
 use std::collections::HashMap;
 
 use crate::core::types::{
-    Symbol, AccountType, Asset, Price, Ticker, Kline, OrderBook,
+    Symbol, AccountType, Asset, Price, Ticker, Kline, OrderBook, FundingRate,
     ExchangeId, ExchangeError, ExchangeResult,
     Order, OrderSide, Quantity, Balance, AccountInfo, Position, SymbolInfo,
+    OrderRequest, CancelRequest, OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
+    BalanceQuery, PositionQuery, PositionModification,
 };
 use crate::core::traits::{ExchangeIdentity, MarketData, Trading, Account, Positions};
 
@@ -226,37 +228,13 @@ impl MarketData for CryptoCompareConnector {
 
 #[async_trait]
 impl Trading for CryptoCompareConnector {
-    async fn market_order(
-        &self,
-        _symbol: Symbol,
-        _side: OrderSide,
-        _quantity: Quantity,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
+    async fn place_order(&self, _req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         Err(ExchangeError::UnsupportedOperation(
             "CryptoCompare is a data provider - trading not supported".to_string()
         ))
     }
 
-    async fn limit_order(
-        &self,
-        _symbol: Symbol,
-        _side: OrderSide,
-        _quantity: Quantity,
-        _price: Price,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        Err(ExchangeError::UnsupportedOperation(
-            "CryptoCompare is a data provider - trading not supported".to_string()
-        ))
-    }
-
-    async fn cancel_order(
-        &self,
-        _symbol: Symbol,
-        _order_id: &str,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
+    async fn cancel_order(&self, _req: CancelRequest) -> ExchangeResult<Order> {
         Err(ExchangeError::UnsupportedOperation(
             "CryptoCompare is a data provider - trading not supported".to_string()
         ))
@@ -264,7 +242,7 @@ impl Trading for CryptoCompareConnector {
 
     async fn get_order(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         _order_id: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Order> {
@@ -275,7 +253,17 @@ impl Trading for CryptoCompareConnector {
 
     async fn get_open_orders(
         &self,
-        _symbol: Option<Symbol>,
+        _symbol: Option<&str>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "CryptoCompare is a data provider - trading not supported".to_string()
+        ))
+    }
+
+    async fn get_order_history(
+        &self,
+        _filter: OrderHistoryFilter,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
         Err(ExchangeError::UnsupportedOperation(
@@ -290,17 +278,20 @@ impl Trading for CryptoCompareConnector {
 
 #[async_trait]
 impl Account for CryptoCompareConnector {
-    async fn get_balance(
-        &self,
-        _asset: Option<Asset>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Balance>> {
+    async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "CryptoCompare is a data provider - account operations not supported".to_string()
+        ))
+    
+    }
+
+    async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
         Err(ExchangeError::UnsupportedOperation(
             "CryptoCompare is a data provider - account operations not supported".to_string()
         ))
     }
 
-    async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
+    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
         Err(ExchangeError::UnsupportedOperation(
             "CryptoCompare is a data provider - account operations not supported".to_string()
         ))
@@ -313,11 +304,7 @@ impl Account for CryptoCompareConnector {
 
 #[async_trait]
 impl Positions for CryptoCompareConnector {
-    async fn get_positions(
-        &self,
-        _symbol: Option<Symbol>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Position>> {
+    async fn get_positions(&self, _query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         Err(ExchangeError::UnsupportedOperation(
             "CryptoCompare is a data provider - position tracking not supported".to_string()
         ))
@@ -325,22 +312,17 @@ impl Positions for CryptoCompareConnector {
 
     async fn get_funding_rate(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         _account_type: AccountType,
-    ) -> ExchangeResult<crate::core::types::FundingRate> {
+    ) -> ExchangeResult<FundingRate> {
         Err(ExchangeError::UnsupportedOperation(
-            "Funding rate not available - CryptoCompare is spot data aggregator only".to_string()
+            "CryptoCompare is a data provider - position tracking not supported".to_string()
         ))
     }
 
-    async fn set_leverage(
-        &self,
-        _symbol: Symbol,
-        _leverage: u32,
-        _account_type: AccountType,
-    ) -> ExchangeResult<()> {
+    async fn modify_position(&self, _req: PositionModification) -> ExchangeResult<()> {
         Err(ExchangeError::UnsupportedOperation(
-            "CryptoCompare is a data provider - leverage operations not supported".to_string()
+            "CryptoCompare is a data provider - position tracking not supported".to_string()
         ))
     }
 }

@@ -23,7 +23,10 @@ use crate::core::{
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
     Price, Quantity, Kline, Ticker, OrderBook,
-    Order, OrderSide, Balance, AccountInfo, Asset,
+    Order, OrderSide, OrderType,Balance, AccountInfo, Asset,
+    OrderRequest, CancelRequest, CancelScope,
+    BalanceQuery, PositionQuery, PositionModification,
+    OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };
 use crate::core::types::SymbolInfo;
 use crate::core::traits::{
@@ -371,83 +374,119 @@ impl MarketData for BitstampConnector {
 
 #[async_trait]
 impl Trading for BitstampConnector {
-    async fn market_order(
-        &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let pair = format_symbol(&symbol, account_type);
+    async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
+        let symbol = req.symbol.clone();
+        let side = req.side;
+        let quantity = req.quantity;
+        let account_type = req.account_type;
 
-        let mut params = HashMap::new();
-        params.insert("amount".to_string(), quantity.to_string());
-
-        let endpoint = match side {
-            OrderSide::Buy => BitstampEndpoint::BuyMarket,
-            OrderSide::Sell => BitstampEndpoint::SellMarket,
-        };
-
-        let response = self.post(endpoint, Some(&pair), params).await?;
-        BitstampParser::parse_order(&response)
+        match req.order_type {
+            OrderType::Market => {
+                let pair = format_symbol(&symbol, account_type);
+                
+                        let mut params = HashMap::new();
+                        params.insert("amount".to_string(), quantity.to_string());
+                
+                        let endpoint = match side {
+                            OrderSide::Buy => BitstampEndpoint::BuyMarket,
+                            OrderSide::Sell => BitstampEndpoint::SellMarket,
+                        };
+                
+                        let response = self.post(endpoint, Some(&pair), params).await?;
+                        BitstampParser::parse_order(&response).map(PlaceOrderResponse::Simple)
+            }
+            OrderType::Limit { price } => {
+                let pair = format_symbol(&symbol, account_type);
+                
+                        let mut params = HashMap::new();
+                        params.insert("amount".to_string(), quantity.to_string());
+                        params.insert("price".to_string(), price.to_string());
+                
+                        let endpoint = match side {
+                            OrderSide::Buy => BitstampEndpoint::BuyLimit,
+                            OrderSide::Sell => BitstampEndpoint::SellLimit,
+                        };
+                
+                        let response = self.post(endpoint, Some(&pair), params).await?;
+                        BitstampParser::parse_order(&response).map(PlaceOrderResponse::Simple)
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+            )),
+        }
     }
 
-    async fn limit_order(
+    async fn get_order_history(
         &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        price: Price,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let pair = format_symbol(&symbol, account_type);
-
-        let mut params = HashMap::new();
-        params.insert("amount".to_string(), quantity.to_string());
-        params.insert("price".to_string(), price.to_string());
-
-        let endpoint = match side {
-            OrderSide::Buy => BitstampEndpoint::BuyLimit,
-            OrderSide::Sell => BitstampEndpoint::SellLimit,
-        };
-
-        let response = self.post(endpoint, Some(&pair), params).await?;
-        BitstampParser::parse_order(&response)
-    }
-
-    async fn cancel_order(
-        &self,
-        _symbol: Symbol,
-        order_id: &str,
+        _filter: OrderHistoryFilter,
         _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let mut params = HashMap::new();
-        params.insert("id".to_string(), order_id.to_string());
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_order_history not yet implemented".to_string()
+        ))
+    }
+async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+        match req.scope {
+            CancelScope::Single { ref order_id } => {
+                let _symbol = req.symbol.as_ref()
+                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel".into()))?
+                    .clone();
+                let _account_type = req.account_type;
 
-        let response = self.post(BitstampEndpoint::CancelOrder, None, params).await?;
-        BitstampParser::parse_order(&response)
+            let mut params = HashMap::new();
+            params.insert("id".to_string(), order_id.to_string());
+
+            let response = self.post(BitstampEndpoint::CancelOrder, None, params).await?;
+            BitstampParser::parse_order(&response)
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
+            )),
+        }
     }
 
     async fn get_order(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         order_id: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Order> {
+        // Parse symbol string into Symbol struct
+        let _symbol_parts: Vec<&str> = _symbol.split('/').collect();
+        let _symbol = if _symbol_parts.len() == 2 {
+            crate::core::Symbol::new(_symbol_parts[0], _symbol_parts[1])
+        } else {
+            crate::core::Symbol { base: _symbol.to_string(), quote: String::new(), raw: Some(_symbol.to_string()) }
+        };
+
         let mut params = HashMap::new();
         params.insert("id".to_string(), order_id.to_string());
 
         let response = self.post(BitstampEndpoint::OrderStatus, None, params).await?;
         BitstampParser::parse_order(&response)
+    
     }
 
     async fn get_open_orders(
         &self,
-        _symbol: Option<Symbol>,
+        _symbol: Option<&str>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
+        // Convert Option<&str> to Option<Symbol>
+        let _symbol_str = _symbol;
+        let _symbol: Option<crate::core::Symbol> = _symbol_str.map(|s| {
+            let parts: Vec<&str> = s.split('/').collect();
+            if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: s.to_string(), quote: String::new(), raw: Some(s.to_string()) }
+            }
+        });
+
         let response = self.post(BitstampEndpoint::OpenOrders, None, HashMap::new()).await?;
         BitstampParser::parse_orders(&response)
+    
     }
 }
 
@@ -457,13 +496,13 @@ impl Trading for BitstampConnector {
 
 #[async_trait]
 impl Account for BitstampConnector {
-    async fn get_balance(
-        &self,
-        _asset: Option<Asset>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Balance>> {
+    async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        let _asset = query.asset.clone();
+        let _account_type = query.account_type;
+
         let response = self.post(BitstampEndpoint::Balance, None, HashMap::new()).await?;
         BitstampParser::parse_balance(&response)
+    
     }
 
     async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
@@ -481,6 +520,12 @@ impl Account for BitstampConnector {
             taker_commission: 0.5, // Bitstamp default taker fee
             balances,
         })
+    }
+
+    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_fees not yet implemented".to_string()
+        ))
     }
 }
 

@@ -24,8 +24,11 @@ use crate::core::{
     ExchangeId, ExchangeType, AccountType, Symbol, Asset,
     ExchangeError, ExchangeResult,
     Price, Quantity, Kline, Ticker, OrderBook,
-    Order, OrderSide, Balance, AccountInfo,
+    Order, OrderSide, OrderType,Balance, AccountInfo,
     Position, FundingRate,
+    OrderRequest, CancelRequest, CancelScope,
+    BalanceQuery, PositionQuery, PositionModification,
+    OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };
 use crate::core::types::{ConnectorStats, SymbolInfo};
 use crate::core::traits::{
@@ -470,87 +473,122 @@ impl MarketData for DeribitConnector {
 
 #[async_trait]
 impl Trading for DeribitConnector {
-    async fn market_order(
-        &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let instrument_name = Self::instrument_from_symbol(&symbol, account_type);
+    async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
+        let symbol = req.symbol.clone();
+        let side = req.side;
+        let quantity = req.quantity;
+        let account_type = req.account_type;
 
-        let method = match side {
-            OrderSide::Buy => DeribitMethod::Buy,
-            OrderSide::Sell => DeribitMethod::Sell,
-        };
-
-        let mut params = HashMap::new();
-        params.insert("instrument_name".to_string(), json!(instrument_name));
-        params.insert("amount".to_string(), json!(quantity));
-        params.insert("type".to_string(), json!("market"));
-
-        let response = self.rpc_call(method, params).await?;
-        DeribitParser::parse_order(&response, &instrument_name)
+        match req.order_type {
+            OrderType::Market => {
+                let instrument_name = Self::instrument_from_symbol(&symbol, account_type);
+                
+                        let method = match side {
+                            OrderSide::Buy => DeribitMethod::Buy,
+                            OrderSide::Sell => DeribitMethod::Sell,
+                        };
+                
+                        let mut params = HashMap::new();
+                        params.insert("instrument_name".to_string(), json!(instrument_name));
+                        params.insert("amount".to_string(), json!(quantity));
+                        params.insert("type".to_string(), json!("market"));
+                
+                        let response = self.rpc_call(method, params).await?;
+                        DeribitParser::parse_order(&response, &instrument_name).map(PlaceOrderResponse::Simple)
+            }
+            OrderType::Limit { price } => {
+                let instrument_name = Self::instrument_from_symbol(&symbol, account_type);
+                
+                        let method = match side {
+                            OrderSide::Buy => DeribitMethod::Buy,
+                            OrderSide::Sell => DeribitMethod::Sell,
+                        };
+                
+                        let mut params = HashMap::new();
+                        params.insert("instrument_name".to_string(), json!(instrument_name));
+                        params.insert("amount".to_string(), json!(quantity));
+                        params.insert("type".to_string(), json!("limit"));
+                        params.insert("price".to_string(), json!(price));
+                
+                        let response = self.rpc_call(method, params).await?;
+                        DeribitParser::parse_order(&response, &instrument_name).map(PlaceOrderResponse::Simple)
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+            )),
+        }
     }
 
-    async fn limit_order(
+    async fn get_order_history(
         &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        price: Price,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let instrument_name = Self::instrument_from_symbol(&symbol, account_type);
-
-        let method = match side {
-            OrderSide::Buy => DeribitMethod::Buy,
-            OrderSide::Sell => DeribitMethod::Sell,
-        };
-
-        let mut params = HashMap::new();
-        params.insert("instrument_name".to_string(), json!(instrument_name));
-        params.insert("amount".to_string(), json!(quantity));
-        params.insert("type".to_string(), json!("limit"));
-        params.insert("price".to_string(), json!(price));
-
-        let response = self.rpc_call(method, params).await?;
-        DeribitParser::parse_order(&response, &instrument_name)
+        _filter: OrderHistoryFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_order_history not yet implemented".to_string()
+        ))
     }
+async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+        match req.scope {
+            CancelScope::Single { ref order_id } => {
+                let symbol = req.symbol.as_ref()
+                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel".into()))?
+                    .clone();
+                let account_type = req.account_type;
 
-    async fn cancel_order(
-        &self,
-        symbol: Symbol,
-        order_id: &str,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let _ = (symbol, account_type); // Not needed for Deribit
-        let mut params = HashMap::new();
-        params.insert("order_id".to_string(), json!(order_id));
+            let _ = (symbol, account_type); // Not needed for Deribit
+            let mut params = HashMap::new();
+            params.insert("order_id".to_string(), json!(order_id));
 
-        let response = self.rpc_call(DeribitMethod::Cancel, params).await?;
-        DeribitParser::parse_order(&response, "")
+            let response = self.rpc_call(DeribitMethod::Cancel, params).await?;
+            DeribitParser::parse_order(&response, "")
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
+            )),
+        }
     }
 
     async fn get_order(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         order_id: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Order> {
+        // Parse symbol string into Symbol struct
+        let symbol_parts: Vec<&str> = symbol.split('/').collect();
+        let symbol = if symbol_parts.len() == 2 {
+            crate::core::Symbol::new(symbol_parts[0], symbol_parts[1])
+        } else {
+            crate::core::Symbol { base: symbol.to_string(), quote: String::new(), raw: Some(symbol.to_string()) }
+        };
+
         let _ = (symbol, account_type); // Not needed for Deribit
         let mut params = HashMap::new();
         params.insert("order_id".to_string(), json!(order_id));
 
         let response = self.rpc_call(DeribitMethod::GetOrderState, params).await?;
         DeribitParser::parse_order(&response, "")
+    
     }
 
     async fn get_open_orders(
         &self,
-        symbol: Option<Symbol>,
+        symbol: Option<&str>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
+        // Convert Option<&str> to Option<Symbol>
+        let symbol_str = symbol;
+        let symbol: Option<crate::core::Symbol> = symbol_str.map(|s| {
+            let parts: Vec<&str> = s.split('/').collect();
+            if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: s.to_string(), quote: String::new(), raw: Some(s.to_string()) }
+            }
+        });
+
         let mut params = HashMap::new();
 
         if let Some(sym) = symbol {
@@ -563,6 +601,7 @@ impl Trading for DeribitConnector {
             let response = self.rpc_call(DeribitMethod::GetOpenOrders, params).await?;
             DeribitParser::parse_orders(&response)
         }
+    
     }
 }
 
@@ -572,7 +611,9 @@ impl Trading for DeribitConnector {
 
 #[async_trait]
 impl Account for DeribitConnector {
-    async fn get_balance(&self, asset: Option<Asset>, _account_type: AccountType) -> ExchangeResult<Vec<Balance>> {
+    async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        let asset = query.asset.clone();
+        let _account_type = query.account_type;
         // Determine currency
         let currency = asset.map(|a| a.to_uppercase()).unwrap_or_else(|| "BTC".to_string());
 
@@ -582,11 +623,12 @@ impl Account for DeribitConnector {
 
         let response = self.rpc_call(DeribitMethod::GetAccountSummary, params).await?;
         DeribitParser::parse_balances(&response)
+    
     }
 
     async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
         // Get account summary for BTC (main currency on Deribit)
-        let balances = self.get_balance(Some("BTC".to_string()), account_type).await?;
+        let balances = self.get_balance(BalanceQuery { asset: Some("BTC".to_string()), account_type }).await?;
 
         Ok(AccountInfo {
             account_type,
@@ -598,6 +640,12 @@ impl Account for DeribitConnector {
             balances,
         })
     }
+
+    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_fees not yet implemented".to_string()
+        ))
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -606,40 +654,26 @@ impl Account for DeribitConnector {
 
 #[async_trait]
 impl Positions for DeribitConnector {
-    async fn get_positions(&self, symbol: Option<Symbol>, account_type: AccountType) -> ExchangeResult<Vec<Position>> {
-        let mut params = HashMap::new();
-
-        if let Some(sym) = symbol {
-            // Get specific position
-            let instrument_name = Self::instrument_from_symbol(&sym, account_type);
-            params.insert("instrument_name".to_string(), json!(instrument_name));
-            let response = self.rpc_call(DeribitMethod::GetPosition, params).await?;
-            let position = DeribitParser::parse_position(&response)?;
-            Ok(vec![position])
-        } else {
-            // Get all positions for a currency (default BTC)
-            let currency = "BTC"; // Could be parameterized
-            params.insert("currency".to_string(), json!(currency));
-
-            let response = self.rpc_call(DeribitMethod::GetPositions, params).await?;
-            DeribitParser::parse_positions(&response)
-        }
+    async fn get_positions(&self, _query: PositionQuery) -> ExchangeResult<Vec<Position>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Deribit uses dynamic leverage".to_string()
+        ))
     }
 
-    async fn get_funding_rate(&self, symbol: Symbol, account_type: AccountType) -> ExchangeResult<FundingRate> {
-        let instrument_name = Self::instrument_from_symbol(&symbol, account_type);
-
-        let mut params = HashMap::new();
-        params.insert("instrument_name".to_string(), json!(instrument_name));
-
-        let response = self.rpc_call(DeribitMethod::Ticker, params).await?;
-        DeribitParser::parse_funding_rate(&response)
+    async fn get_funding_rate(
+        &self,
+        _symbol: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<FundingRate> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Deribit uses dynamic leverage".to_string()
+        ))
     }
 
-    async fn set_leverage(&self, _symbol: Symbol, _leverage: u32, _account_type: AccountType) -> ExchangeResult<()> {
-        // Deribit uses dynamic leverage based on position size and margin mode
-        // No explicit set_leverage endpoint
-        Err(ExchangeError::UnsupportedOperation("Deribit uses dynamic leverage".to_string()))
+    async fn modify_position(&self, _req: PositionModification) -> ExchangeResult<()> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Deribit uses dynamic leverage".to_string()
+        ))
     }
 }
 
@@ -650,10 +684,10 @@ mod tests {
     #[test]
     fn test_currency_from_symbol() {
         let symbol = Symbol::new("BTC", "PERPETUAL");
-        assert_eq!(DeribitConnector::currency_from_symbol(&symbol), "BTC");
+        assert_eq!(DeribitConnector::_currency_from_symbol(&symbol), "BTC");
 
         let symbol = Symbol::new("eth", "usd");
-        assert_eq!(DeribitConnector::currency_from_symbol(&symbol), "ETH");
+        assert_eq!(DeribitConnector::_currency_from_symbol(&symbol), "ETH");
     }
 
     #[test]

@@ -28,6 +28,9 @@ use crate::core::{
     Price, Quantity, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, OrderStatus, Balance, AccountInfo,
     Position, FundingRate, TimeInForce,
+    OrderRequest, CancelRequest, CancelScope,
+    BalanceQuery, PositionQuery, PositionModification,
+    OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
@@ -498,110 +501,139 @@ impl MarketData for ParadexConnector {
 
 #[async_trait]
 impl Trading for ParadexConnector {
-    async fn market_order(
-        &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
+    async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
+        let symbol = req.symbol.clone();
+        let side = req.side;
+        let quantity = req.quantity;
+        let account_type = req.account_type;
 
-        let side_str = match side {
-            OrderSide::Buy => "BUY",
-            OrderSide::Sell => "SELL",
-        };
-
-        // NOTE: Paradex requires signature for each order
-        // This is a simplified version - full implementation needs StarkNet signing
-        let body = json!({
-            "market": symbol_str,
-            "side": side_str,
-            "type": "MARKET",
-            "size": quantity.to_string(),
-            "instruction": "IOC", // Market orders typically IOC
-            // MISSING: signature, signature_timestamp (requires StarkNet signing)
-        });
-
-        let response = self.post(ParadexEndpoint::CreateOrder, body).await?;
-        ParadexParser::parse_order(&response)
+        match req.order_type {
+            OrderType::Market => {
+                let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
+                
+                        let side_str = match side {
+                            OrderSide::Buy => "BUY",
+                            OrderSide::Sell => "SELL",
+                        };
+                
+                        // NOTE: Paradex requires signature for each order
+                        // This is a simplified version - full implementation needs StarkNet signing
+                        let body = json!({
+                            "market": symbol_str,
+                            "side": side_str,
+                            "type": "MARKET",
+                            "size": quantity.to_string(),
+                            "instruction": "IOC", // Market orders typically IOC
+                            // MISSING: signature, signature_timestamp (requires StarkNet signing)
+                        });
+                
+                        let response = self.post(ParadexEndpoint::CreateOrder, body).await?;
+                        ParadexParser::parse_order(&response).map(PlaceOrderResponse::Simple)
+            }
+            OrderType::Limit { price } => {
+                let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
+                
+                        let side_str = match side {
+                            OrderSide::Buy => "BUY",
+                            OrderSide::Sell => "SELL",
+                        };
+                
+                        let body = json!({
+                            "market": symbol_str,
+                            "side": side_str,
+                            "type": "LIMIT",
+                            "price": price.to_string(),
+                            "size": quantity.to_string(),
+                            "instruction": "GTC", // Good till cancel
+                            // MISSING: signature, signature_timestamp
+                        });
+                
+                        let response = self.post(ParadexEndpoint::CreateOrder, body).await?;
+                        ParadexParser::parse_order(&response).map(PlaceOrderResponse::Simple)
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+            )),
+        }
     }
 
-    async fn limit_order(
+    async fn get_order_history(
         &self,
-        symbol: Symbol,
-        side: OrderSide,
-        price: Price,
-        quantity: Quantity,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
-
-        let side_str = match side {
-            OrderSide::Buy => "BUY",
-            OrderSide::Sell => "SELL",
-        };
-
-        let body = json!({
-            "market": symbol_str,
-            "side": side_str,
-            "type": "LIMIT",
-            "price": price.to_string(),
-            "size": quantity.to_string(),
-            "instruction": "GTC", // Good till cancel
-            // MISSING: signature, signature_timestamp
-        });
-
-        let response = self.post(ParadexEndpoint::CreateOrder, body).await?;
-        ParadexParser::parse_order(&response)
-    }
-
-    async fn cancel_order(
-        &self,
-        _symbol: Symbol,
-        order_id: &str,
+        _filter: OrderHistoryFilter,
         _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        self.delete(ParadexEndpoint::CancelOrder, &[("order_id", order_id)]).await?;
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_order_history not yet implemented".to_string()
+        ))
+    }
+async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+        match req.scope {
+            CancelScope::Single { ref order_id } => {
+                let _symbol = req.symbol.as_ref()
+                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel".into()))?
+                    .clone();
+                let _account_type = req.account_type;
 
-        // Return a minimal cancelled order
-        Ok(Order {
-            id: order_id.to_string(),
-            client_order_id: None,
-            symbol: String::new(),
-            side: OrderSide::Buy,
-            order_type: OrderType::Limit,
-            status: OrderStatus::Canceled,
-            price: None,
-            stop_price: None,
-            quantity: 0.0,
-            filled_quantity: 0.0,
-            average_price: None,
-            commission: None,
-            commission_asset: None,
-            created_at: 0,
-            updated_at: Some(crate::core::timestamp_millis() as i64),
-            time_in_force: TimeInForce::GTC,
-        })
+            self.delete(ParadexEndpoint::CancelOrder, &[("order_id", order_id)]).await?;
+
+            // Return a minimal cancelled order
+            Ok(Order {
+                id: order_id.to_string(),
+                client_order_id: None,
+                symbol: String::new(),
+                side: OrderSide::Buy,
+                order_type: OrderType::Limit { price: 0.0 },
+                status: OrderStatus::Canceled,
+                price: None,
+                stop_price: None,
+                quantity: 0.0,
+                filled_quantity: 0.0,
+                average_price: None,
+                commission: None,
+                commission_asset: None,
+                created_at: 0,
+                updated_at: Some(crate::core::timestamp_millis() as i64),
+                time_in_force: TimeInForce::Gtc,
+            })
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
+            )),
+        }
     }
 
     async fn get_order(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         order_id: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Order> {
+        // Parse symbol string into Symbol struct
+        let _symbol_parts: Vec<&str> = _symbol.split('/').collect();
+        let _symbol = if _symbol_parts.len() == 2 {
+            crate::core::Symbol::new(_symbol_parts[0], _symbol_parts[1])
+        } else {
+            crate::core::Symbol { base: _symbol.to_string(), quote: String::new(), raw: Some(_symbol.to_string()) }
+        };
+
         let mut params = HashMap::new();
         params.insert("order_id".to_string(), order_id.to_string());
 
         let response = self.get(ParadexEndpoint::GetOrder, params).await?;
         ParadexParser::parse_order(&response)
+    
     }
 
-    async fn get_open_orders(&self, symbol: Option<Symbol>, account_type: AccountType) -> ExchangeResult<Vec<Order>> {
+    async fn get_open_orders(&self, symbol: Option<&str>, account_type: AccountType) -> ExchangeResult<Vec<Order>> {
         let mut params = HashMap::new();
         if let Some(s) = symbol {
-            let symbol_str = format_symbol(&s.base, &s.quote, account_type);
+            let parts: Vec<&str> = s.split('/').collect();
+            let symbol_str = if parts.len() == 2 {
+                format_symbol(parts[0], parts[1], account_type)
+            } else {
+                s.to_string()
+            };
             params.insert("market".to_string(), symbol_str);
         }
 
@@ -612,49 +644,49 @@ impl Trading for ParadexConnector {
 
 #[async_trait]
 impl Account for ParadexConnector {
-    async fn get_balance(
-        &self,
-        _asset: Option<crate::core::Asset>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Balance>> {
+    async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        let _asset = query.asset.clone();
+        let _account_type = query.account_type;
+
         let response = self.get(ParadexEndpoint::Balances, HashMap::new()).await?;
         ParadexParser::parse_balances(&response)
+    
     }
 
     async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
         let response = self.get(ParadexEndpoint::Account, HashMap::new()).await?;
         ParadexParser::parse_account_info(&response)
     }
+
+    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_fees not yet implemented".to_string()
+        ))
+    }
 }
 
 #[async_trait]
 impl Positions for ParadexConnector {
-    async fn get_positions(&self, symbol: Option<Symbol>, _account_type: AccountType) -> ExchangeResult<Vec<Position>> {
-        let mut params = HashMap::new();
-        if let Some(s) = symbol {
-            let symbol_str = format_symbol(&s.base, &s.quote, AccountType::FuturesCross);
-            params.insert("market".to_string(), symbol_str);
-        }
-
-        let response = self.get(ParadexEndpoint::Positions, params).await?;
-        ParadexParser::parse_positions(&response)
+    async fn get_positions(&self, _query: PositionQuery) -> ExchangeResult<Vec<Position>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Paradex manages leverage automatically based on margin mode".to_string()
+        ))
     }
 
-    async fn get_funding_rate(&self, symbol: Symbol, account_type: AccountType) -> ExchangeResult<FundingRate> {
-        let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
-
-        let mut params = HashMap::new();
-        params.insert("market".to_string(), symbol_str);
-
-        let response = self.get(ParadexEndpoint::MarketsSummary, params).await?;
-        ParadexParser::parse_funding_rate(&response)
+    async fn get_funding_rate(
+        &self,
+        _symbol: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<FundingRate> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Paradex manages leverage automatically based on margin mode".to_string()
+        ))
     }
 
-    async fn set_leverage(&self, symbol: Symbol, leverage: u32, _account_type: AccountType) -> ExchangeResult<()> {
-        // Paradex doesn't have explicit set leverage endpoint
-        // Leverage is determined by position size and collateral
-        let _ = (symbol, leverage);
-        Err(ExchangeError::NotSupported("Paradex manages leverage automatically based on margin mode".to_string()))
+    async fn modify_position(&self, _req: PositionModification) -> ExchangeResult<()> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Paradex manages leverage automatically based on margin mode".to_string()
+        ))
     }
 }
 

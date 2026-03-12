@@ -13,6 +13,9 @@ use crate::core::{
     Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, OrderStatus, TimeInForce, Price, Quantity,
     Balance, AccountInfo, Position, FundingRate, Asset,
+    OrderRequest, CancelRequest, CancelScope,
+    BalanceQuery, PositionQuery, PositionModification,
+    OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
@@ -290,122 +293,157 @@ impl MarketData for ZerodhaConnector {
 
 #[async_trait]
 impl Trading for ZerodhaConnector {
-    async fn market_order(
-        &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let symbol_key = format_symbol(&symbol);
-        let parts: Vec<&str> = symbol_key.split(':').collect();
+    async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
+        let symbol = req.symbol.clone();
+        let side = req.side;
+        let quantity = req.quantity;
+        let _account_type = req.account_type;
 
-        if parts.len() != 2 {
-            return Err(ExchangeError::Parse(format!("Invalid symbol format: {}", symbol_key)));
+        match req.order_type {
+            OrderType::Market => {
+                let symbol_key = format_symbol(&symbol);
+                        let parts: Vec<&str> = symbol_key.split(':').collect();
+                
+                        if parts.len() != 2 {
+                            return Err(ExchangeError::Parse(format!("Invalid symbol format: {}", symbol_key)));
+                        }
+                
+                        let exchange = parts[0];
+                        let tradingsymbol = parts[1];
+                
+                        let mut body = HashMap::new();
+                        body.insert("exchange".to_string(), exchange.to_string());
+                        body.insert("tradingsymbol".to_string(), tradingsymbol.to_string());
+                        body.insert("transaction_type".to_string(), match side {
+                            OrderSide::Buy => "BUY",
+                            OrderSide::Sell => "SELL",
+                        }.to_string());
+                        body.insert("quantity".to_string(), quantity.to_string());
+                        body.insert("order_type".to_string(), "MARKET".to_string());
+                        body.insert("product".to_string(), "CNC".to_string()); // Delivery
+                
+                        let response = self.post(ZerodhaEndpoint::PlaceOrder("regular".to_string()), body).await?;
+                        ZerodhaParser::parse_order(&response).map(PlaceOrderResponse::Simple)
+            }
+            OrderType::Limit { price } => {
+                let symbol_key = format_symbol(&symbol);
+                        let parts: Vec<&str> = symbol_key.split(':').collect();
+                
+                        if parts.len() != 2 {
+                            return Err(ExchangeError::Parse(format!("Invalid symbol format: {}", symbol_key)));
+                        }
+                
+                        let exchange = parts[0];
+                        let tradingsymbol = parts[1];
+                
+                        let mut body = HashMap::new();
+                        body.insert("exchange".to_string(), exchange.to_string());
+                        body.insert("tradingsymbol".to_string(), tradingsymbol.to_string());
+                        body.insert("transaction_type".to_string(), match side {
+                            OrderSide::Buy => "BUY",
+                            OrderSide::Sell => "SELL",
+                        }.to_string());
+                        body.insert("quantity".to_string(), quantity.to_string());
+                        body.insert("order_type".to_string(), "LIMIT".to_string());
+                        body.insert("price".to_string(), price.to_string());
+                        body.insert("product".to_string(), "CNC".to_string()); // Delivery
+                
+                        let response = self.post(ZerodhaEndpoint::PlaceOrder("regular".to_string()), body).await?;
+                        ZerodhaParser::parse_order(&response).map(PlaceOrderResponse::Simple)
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+            )),
         }
-
-        let exchange = parts[0];
-        let tradingsymbol = parts[1];
-
-        let mut body = HashMap::new();
-        body.insert("exchange".to_string(), exchange.to_string());
-        body.insert("tradingsymbol".to_string(), tradingsymbol.to_string());
-        body.insert("transaction_type".to_string(), match side {
-            OrderSide::Buy => "BUY",
-            OrderSide::Sell => "SELL",
-        }.to_string());
-        body.insert("quantity".to_string(), quantity.to_string());
-        body.insert("order_type".to_string(), "MARKET".to_string());
-        body.insert("product".to_string(), "CNC".to_string()); // Delivery
-
-        let response = self.post(ZerodhaEndpoint::PlaceOrder("regular".to_string()), body).await?;
-        ZerodhaParser::parse_order(&response)
     }
 
-    async fn limit_order(
+    async fn get_order_history(
         &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        price: Price,
+        _filter: OrderHistoryFilter,
         _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let symbol_key = format_symbol(&symbol);
-        let parts: Vec<&str> = symbol_key.split(':').collect();
-
-        if parts.len() != 2 {
-            return Err(ExchangeError::Parse(format!("Invalid symbol format: {}", symbol_key)));
-        }
-
-        let exchange = parts[0];
-        let tradingsymbol = parts[1];
-
-        let mut body = HashMap::new();
-        body.insert("exchange".to_string(), exchange.to_string());
-        body.insert("tradingsymbol".to_string(), tradingsymbol.to_string());
-        body.insert("transaction_type".to_string(), match side {
-            OrderSide::Buy => "BUY",
-            OrderSide::Sell => "SELL",
-        }.to_string());
-        body.insert("quantity".to_string(), quantity.to_string());
-        body.insert("order_type".to_string(), "LIMIT".to_string());
-        body.insert("price".to_string(), price.to_string());
-        body.insert("product".to_string(), "CNC".to_string()); // Delivery
-
-        let response = self.post(ZerodhaEndpoint::PlaceOrder("regular".to_string()), body).await?;
-        ZerodhaParser::parse_order(&response)
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_order_history not yet implemented".to_string()
+        ))
     }
+async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+        match req.scope {
+            CancelScope::Single { ref order_id } => {
+                let _symbol = req.symbol.as_ref()
+                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel".into()))?
+                    .clone();
+                let _account_type = req.account_type;
 
-    async fn cancel_order(
-        &self,
-        _symbol: Symbol,
-        order_id: &str,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let _response = self.delete(
-            ZerodhaEndpoint::CancelOrder("regular".to_string(), order_id.to_string())
-        ).await?;
+            let _response = self.delete(
+                ZerodhaEndpoint::CancelOrder("regular".to_string(), order_id.to_string())
+            ).await?;
 
-        // Return a basic success result
-        Ok(Order {
-            id: order_id.to_string(),
-            client_order_id: None,
-            symbol: String::new(),
-            side: OrderSide::Buy,
-            order_type: OrderType::Market,
-            status: OrderStatus::Canceled,
-            price: None,
-            stop_price: None,
-            quantity: 0.0,
-            filled_quantity: 0.0,
-            average_price: None,
-            commission: None,
-            commission_asset: None,
-            created_at: 0,
-            updated_at: Some(crate::core::timestamp_millis() as i64),
-            time_in_force: TimeInForce::GTC,
-        })
+            // Return a basic success result
+            Ok(Order {
+                id: order_id.to_string(),
+                client_order_id: None,
+                symbol: String::new(),
+                side: OrderSide::Buy,
+                order_type: OrderType::Market,
+                status: OrderStatus::Canceled,
+                price: None,
+                stop_price: None,
+                quantity: 0.0,
+                filled_quantity: 0.0,
+                average_price: None,
+                commission: None,
+                commission_asset: None,
+                created_at: 0,
+                updated_at: Some(crate::core::timestamp_millis() as i64),
+                time_in_force: TimeInForce::Gtc,
+            })
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
+            )),
+        }
     }
 
     async fn get_order(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         order_id: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Order> {
+        // Parse symbol string into Symbol struct
+        let _symbol_parts: Vec<&str> = _symbol.split('/').collect();
+        let _symbol = if _symbol_parts.len() == 2 {
+            crate::core::Symbol::new(_symbol_parts[0], _symbol_parts[1])
+        } else {
+            crate::core::Symbol { base: _symbol.to_string(), quote: String::new(), raw: Some(_symbol.to_string()) }
+        };
+
         let response = self.get(
             ZerodhaEndpoint::GetOrder(order_id.to_string()),
             HashMap::new()
         ).await?;
 
         ZerodhaParser::parse_order(&response)
+    
     }
 
     async fn get_open_orders(
         &self,
-        _symbol: Option<Symbol>,
+        _symbol: Option<&str>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
+        // Convert Option<&str> to Option<Symbol>
+        let _symbol_str = _symbol;
+        let _symbol: Option<crate::core::Symbol> = _symbol_str.map(|s| {
+            let parts: Vec<&str> = s.split('/').collect();
+            if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: s.to_string(), quote: String::new(), raw: Some(s.to_string()) }
+            }
+        });
+
         let response = self.get(ZerodhaEndpoint::GetOrders, HashMap::new()).await?;
         let all_orders = ZerodhaParser::parse_orders(&response)?;
 
@@ -413,58 +451,82 @@ impl Trading for ZerodhaConnector {
         Ok(all_orders.into_iter()
             .filter(|o| matches!(o.status, OrderStatus::Open))
             .collect())
+    
     }
 }
 
 #[async_trait]
 impl Account for ZerodhaConnector {
-    async fn get_balance(
-        &self,
-        _asset: Option<Asset>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Balance>> {
+    async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        let _asset = query.asset.clone();
+        let _account_type = query.account_type;
+
         let response = self.get(ZerodhaEndpoint::GetMargins, HashMap::new()).await?;
         ZerodhaParser::parse_balance(&response)
+    
     }
 
     async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
         let response = self.get(ZerodhaEndpoint::UserProfile, HashMap::new()).await?;
         ZerodhaParser::parse_account_info(&response)
     }
+
+    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_fees not yet implemented".to_string()
+        ))
+    }
 }
 
 #[async_trait]
 impl Positions for ZerodhaConnector {
-    async fn get_positions(
-        &self,
-        _symbol: Option<Symbol>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Position>> {
+    async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
+        let _symbol = query.symbol.clone();
+        let _account_type = query.account_type;
+
         let response = self.get(ZerodhaEndpoint::Positions, HashMap::new()).await?;
         ZerodhaParser::parse_positions(&response)
+    
     }
 
     async fn get_funding_rate(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
+        // Parse symbol string into Symbol struct
+        let _symbol_str = _symbol;
+        let _symbol = {
+            let parts: Vec<&str> = _symbol_str.split('/').collect();
+            if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: _symbol_str.to_string(), quote: String::new(), raw: Some(_symbol_str.to_string()) }
+            }
+        };
+
         // Zerodha is a stock broker, not futures exchange
         Err(ExchangeError::UnsupportedOperation(
             "Funding rates not supported for stock broker".to_string()
         ))
+    
     }
 
-    async fn set_leverage(
-        &self,
-        _symbol: Symbol,
-        _leverage: u32,
-        _account_type: AccountType,
-    ) -> ExchangeResult<()> {
-        // Zerodha is a stock broker, leverage is product-specific (MIS/NRML)
-        Err(ExchangeError::UnsupportedOperation(
-            "Leverage setting not supported. Use product types (MIS/NRML) instead".to_string()
-        ))
+    async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
+        match req {
+            PositionModification::SetLeverage { symbol: ref _symbol, leverage: _leverage, account_type: _account_type } => {
+                let _symbol = _symbol.clone();
+
+                // Zerodha is a stock broker, leverage is product-specific (MIS/NRML)
+                Err(ExchangeError::UnsupportedOperation(
+                "Leverage setting not supported. Use product types (MIS/NRML) instead".to_string()
+                ))
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} not supported on {:?}", req, self.exchange_id())
+            )),
+        }
     }
 }
 

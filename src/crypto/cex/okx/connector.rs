@@ -21,8 +21,11 @@ use crate::core::{
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
     Price, Quantity, Kline, Ticker, OrderBook,
-    Order, OrderSide, Balance, AccountInfo,
+    Order, OrderSide, OrderType,Balance, AccountInfo,
     Position, FundingRate,
+    OrderRequest, CancelRequest, CancelScope,
+    BalanceQuery, PositionQuery, PositionModification,
+    OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };
 use crate::core::types::SymbolInfo;
 use crate::core::traits::{
@@ -356,95 +359,135 @@ impl MarketData for OkxConnector {
 
 #[async_trait]
 impl Trading for OkxConnector {
-    async fn market_order(
-        &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let body = json!({
-            "instId": format_symbol(&symbol.base, &symbol.quote, account_type),
-            "tdMode": get_trade_mode(account_type),
-            "side": match side {
-                OrderSide::Buy => "buy",
-                OrderSide::Sell => "sell",
-            },
-            "ordType": "market",
-            "sz": quantity.to_string(),
-        });
+    async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
+        let symbol = req.symbol.clone();
+        let side = req.side;
+        let quantity = req.quantity;
+        let account_type = req.account_type;
 
-        let response = self.post(OkxEndpoint::PlaceOrder, body).await?;
-        let order_id = OkxParser::parse_order_response(&response)?;
+        match req.order_type {
+            OrderType::Market => {
+                let body = json!({
+                            "instId": format_symbol(&symbol.base, &symbol.quote, account_type),
+                            "tdMode": get_trade_mode(account_type),
+                            "side": match side {
+                                OrderSide::Buy => "buy",
+                                OrderSide::Sell => "sell",
+                            },
+                            "ordType": "market",
+                            "sz": quantity.to_string(),
+                        });
+                
+                        let response = self.post(OkxEndpoint::PlaceOrder, body).await?;
+                        let order_id = OkxParser::parse_order_response(&response)?;
 
-        // Get full order details
-        self.get_order(symbol, &order_id, account_type).await
+                        // Get full order details
+                        let symbol_str = symbol.to_string();
+                        let order = self.get_order(&symbol_str, &order_id, account_type).await?;
+                        Ok(PlaceOrderResponse::Simple(order))
+            }
+            OrderType::Limit { price } => {
+                let body = json!({
+                            "instId": format_symbol(&symbol.base, &symbol.quote, account_type),
+                            "tdMode": get_trade_mode(account_type),
+                            "side": match side {
+                                OrderSide::Buy => "buy",
+                                OrderSide::Sell => "sell",
+                            },
+                            "ordType": "limit",
+                            "px": price.to_string(),
+                            "sz": quantity.to_string(),
+                        });
+                
+                        let response = self.post(OkxEndpoint::PlaceOrder, body).await?;
+                        let order_id = OkxParser::parse_order_response(&response)?;
+
+                        // Get full order details
+                        let symbol_str = symbol.to_string();
+                        let order = self.get_order(&symbol_str, &order_id, account_type).await?;
+                        Ok(PlaceOrderResponse::Simple(order))
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+            )),
+        }
     }
 
-    async fn limit_order(
+    async fn get_order_history(
         &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        price: Price,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let body = json!({
-            "instId": format_symbol(&symbol.base, &symbol.quote, account_type),
-            "tdMode": get_trade_mode(account_type),
-            "side": match side {
-                OrderSide::Buy => "buy",
-                OrderSide::Sell => "sell",
-            },
-            "ordType": "limit",
-            "px": price.to_string(),
-            "sz": quantity.to_string(),
-        });
-
-        let response = self.post(OkxEndpoint::PlaceOrder, body).await?;
-        let order_id = OkxParser::parse_order_response(&response)?;
-
-        // Get full order details
-        self.get_order(symbol, &order_id, account_type).await
+        _filter: OrderHistoryFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_order_history not yet implemented".to_string()
+        ))
     }
+async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+        match req.scope {
+            CancelScope::Single { ref order_id } => {
+                let symbol = req.symbol.as_ref()
+                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel".into()))?
+                    .clone();
+                let account_type = req.account_type;
 
-    async fn cancel_order(
-        &self,
-        symbol: Symbol,
-        order_id: &str,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let body = json!({
-            "instId": format_symbol(&symbol.base, &symbol.quote, account_type),
-            "ordId": order_id,
-        });
+            let body = json!({
+                "instId": format_symbol(&symbol.base, &symbol.quote, account_type),
+                "ordId": order_id,
+            });
 
-        let response = self.post(OkxEndpoint::CancelOrder, body).await?;
-        OkxParser::parse_order_response(&response)?;
+            let response = self.post(OkxEndpoint::CancelOrder, body).await?;
+            OkxParser::parse_order_response(&response)?;
 
-        // Get full order details after cancellation
-        self.get_order(symbol, order_id, account_type).await
+            // Get full order details after cancellation
+            let symbol_str = symbol.to_string();
+            self.get_order(&symbol_str, order_id, account_type).await
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
+            )),
+        }
     }
 
     async fn get_order(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         order_id: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Order> {
+        // Parse symbol string into Symbol struct
+        let symbol_parts: Vec<&str> = symbol.split('/').collect();
+        let symbol = if symbol_parts.len() == 2 {
+            crate::core::Symbol::new(symbol_parts[0], symbol_parts[1])
+        } else {
+            crate::core::Symbol { base: symbol.to_string(), quote: String::new(), raw: Some(symbol.to_string()) }
+        };
+
         let mut params = HashMap::new();
         params.insert("instId".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
         params.insert("ordId".to_string(), order_id.to_string());
 
         let response = self.get(OkxEndpoint::GetOrder, params).await?;
         OkxParser::parse_order(&response)
+    
     }
 
     async fn get_open_orders(
         &self,
-        symbol: Option<Symbol>,
+        symbol: Option<&str>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
+        // Convert Option<&str> to Option<Symbol>
+        let symbol_str = symbol;
+        let symbol: Option<crate::core::Symbol> = symbol_str.map(|s| {
+            let parts: Vec<&str> = s.split('/').collect();
+            if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: s.to_string(), quote: String::new(), raw: Some(s.to_string()) }
+            }
+        });
+
         let mut params = HashMap::new();
 
         if let Some(s) = symbol {
@@ -455,6 +498,7 @@ impl Trading for OkxConnector {
 
         let response = self.get(OkxEndpoint::OpenOrders, params).await?;
         OkxParser::parse_orders(&response)
+    
     }
 }
 
@@ -464,7 +508,9 @@ impl Trading for OkxConnector {
 
 #[async_trait]
 impl Account for OkxConnector {
-    async fn get_balance(&self, asset: Option<crate::core::Asset>, _account_type: AccountType) -> ExchangeResult<Vec<Balance>> {
+    async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        let asset = query.asset.clone();
+        let _account_type = query.account_type;
         let mut params = HashMap::new();
         if let Some(a) = asset {
             params.insert("ccy".to_string(), a);
@@ -472,11 +518,12 @@ impl Account for OkxConnector {
 
         let response = self.get(OkxEndpoint::Balance, params).await?;
         OkxParser::parse_balance(&response)
+    
     }
 
     async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
         // Get balances
-        let balances = self.get_balance(None, account_type).await?;
+        let balances = self.get_balance(BalanceQuery { asset: None, account_type }).await?;
 
         Ok(AccountInfo {
             account_type,
@@ -488,6 +535,12 @@ impl Account for OkxConnector {
             balances,
         })
     }
+
+    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_fees not yet implemented".to_string()
+        ))
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -496,11 +549,10 @@ impl Account for OkxConnector {
 
 #[async_trait]
 impl Positions for OkxConnector {
-    async fn get_positions(
-        &self,
-        symbol: Option<Symbol>,
-        account_type: AccountType,
-    ) -> ExchangeResult<Vec<Position>> {
+    async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
+        let symbol = query.symbol.clone();
+        let account_type = query.account_type;
+
         let mut params = HashMap::new();
 
         if let Some(s) = symbol {
@@ -511,40 +563,58 @@ impl Positions for OkxConnector {
 
         let response = self.get(OkxEndpoint::Positions, params).await?;
         OkxParser::parse_positions(&response)
+    
     }
 
     async fn get_funding_rate(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
+        // Parse symbol string into Symbol struct
+        let symbol_str = symbol;
+        let symbol = {
+            let parts: Vec<&str> = symbol_str.split('/').collect();
+            if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: symbol_str.to_string(), quote: String::new(), raw: Some(symbol_str.to_string()) }
+            }
+        };
+
         let mut params = HashMap::new();
         params.insert("instId".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
 
         let response = self.get(OkxEndpoint::FundingRate, params).await?;
         OkxParser::parse_funding_rate(&response)
+    
     }
 
-    async fn set_leverage(
-        &self,
-        symbol: Symbol,
-        leverage: u32,
-        account_type: AccountType,
-    ) -> ExchangeResult<()> {
-        let margin_mode = match account_type {
-            AccountType::FuturesCross => "cross",
-            AccountType::FuturesIsolated => "isolated",
-            _ => return Err(ExchangeError::InvalidRequest("Leverage only supported for futures".to_string())),
-        };
+    async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
+        match req {
+            PositionModification::SetLeverage { ref symbol, leverage, account_type } => {
+                let symbol = symbol.clone();
 
-        let body = json!({
-            "instId": format_symbol(&symbol.base, &symbol.quote, account_type),
-            "lever": leverage.to_string(),
-            "mgnMode": margin_mode,
-        });
+                let margin_mode = match account_type {
+                AccountType::FuturesCross => "cross",
+                AccountType::FuturesIsolated => "isolated",
+                _ => return Err(ExchangeError::InvalidRequest("Leverage only supported for futures".to_string())),
+                };
 
-        let response = self.post(OkxEndpoint::SetLeverage, body).await?;
-        OkxParser::extract_data(&response)?;
-        Ok(())
+                let body = json!({
+                "instId": format_symbol(&symbol.base, &symbol.quote, account_type),
+                "lever": leverage.to_string(),
+                "mgnMode": margin_mode,
+                });
+
+                let response = self.post(OkxEndpoint::SetLeverage, body).await?;
+                OkxParser::extract_data(&response)?;
+                Ok(())
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} not supported on {:?}", req, self.exchange_id())
+            )),
+        }
     }
 }

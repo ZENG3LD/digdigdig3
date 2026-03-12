@@ -25,6 +25,9 @@ use crate::core::{
     ExchangeError, ExchangeResult,
     Price, Quantity, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, Balance, AccountInfo,
+    OrderRequest, CancelRequest, CancelScope,
+    BalanceQuery, PositionQuery, PositionModification,
+    OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account,
@@ -520,133 +523,168 @@ impl MarketData for MexcConnector {
 
 #[async_trait]
 impl Trading for MexcConnector {
-    async fn market_order(
-        &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let client_order_id = format!("cc_{}", crate::core::timestamp_millis());
+    async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
+        let symbol = req.symbol.clone();
+        let side = req.side;
+        let quantity = req.quantity;
+        let account_type = req.account_type;
 
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
-        params.insert("side".to_string(), match side {
-            OrderSide::Buy => "BUY",
-            OrderSide::Sell => "SELL",
-        }.to_string());
-        params.insert("type".to_string(), "MARKET".to_string());
-        params.insert("quantity".to_string(), quantity.to_string());
-        params.insert("newClientOrderId".to_string(), client_order_id.clone());
-
-        let response = self.post(MexcEndpoint::PlaceOrder, params).await?;
-
-        // Extract order ID from response
-        let order_id = response["orderId"].as_str()
-            .ok_or_else(|| ExchangeError::Parse("Missing orderId".into()))?
-            .to_string();
-
-        // Return minimal order info (can fetch full info with get_order)
-        Ok(Order {
-            id: order_id,
-            client_order_id: Some(client_order_id),
-            symbol: symbol.to_string(),
-            side,
-            order_type: OrderType::Market,
-            status: crate::core::OrderStatus::New,
-            price: None,
-            stop_price: None,
-            quantity,
-            filled_quantity: 0.0,
-            average_price: None,
-            commission: None,
-            commission_asset: None,
-            created_at: crate::core::timestamp_millis() as i64,
-            updated_at: None,
-            time_in_force: crate::core::TimeInForce::GTC,
-        })
+        match req.order_type {
+            OrderType::Market => {
+                let client_order_id = format!("cc_{}", crate::core::timestamp_millis());
+                
+                        let mut params = HashMap::new();
+                        params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
+                        params.insert("side".to_string(), match side {
+                            OrderSide::Buy => "BUY",
+                            OrderSide::Sell => "SELL",
+                        }.to_string());
+                        params.insert("type".to_string(), "MARKET".to_string());
+                        params.insert("quantity".to_string(), quantity.to_string());
+                        params.insert("newClientOrderId".to_string(), client_order_id.clone());
+                
+                        let response = self.post(MexcEndpoint::PlaceOrder, params).await?;
+                
+                        // Extract order ID from response
+                        let order_id = response["orderId"].as_str()
+                            .ok_or_else(|| ExchangeError::Parse("Missing orderId".into()))?
+                            .to_string();
+                
+                        // Return minimal order info (can fetch full info with get_order)
+                        Ok(PlaceOrderResponse::Simple(Order {
+                            id: order_id,
+                            client_order_id: Some(client_order_id),
+                            symbol: symbol.to_string(),
+                            side,
+                            order_type: OrderType::Market,
+                            status: crate::core::OrderStatus::New,
+                            price: None,
+                            stop_price: None,
+                            quantity,
+                            filled_quantity: 0.0,
+                            average_price: None,
+                            commission: None,
+                            commission_asset: None,
+                            created_at: crate::core::timestamp_millis() as i64,
+                            updated_at: None,
+                            time_in_force: crate::core::TimeInForce::Gtc,
+                        }))
+            }
+            OrderType::Limit { price } => {
+                let client_order_id = format!("cc_{}", crate::core::timestamp_millis());
+                
+                        let mut params = HashMap::new();
+                        params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
+                        params.insert("side".to_string(), match side {
+                            OrderSide::Buy => "BUY",
+                            OrderSide::Sell => "SELL",
+                        }.to_string());
+                        params.insert("type".to_string(), "LIMIT".to_string());
+                        params.insert("quantity".to_string(), quantity.to_string());
+                        params.insert("price".to_string(), price.to_string());
+                        params.insert("newClientOrderId".to_string(), client_order_id.clone());
+                
+                        let response = self.post(MexcEndpoint::PlaceOrder, params).await?;
+                
+                        let order_id = response["orderId"].as_str()
+                            .ok_or_else(|| ExchangeError::Parse("Missing orderId".into()))?
+                            .to_string();
+                
+                        Ok(PlaceOrderResponse::Simple(Order {
+                            id: order_id,
+                            client_order_id: Some(client_order_id),
+                            symbol: symbol.to_string(),
+                            side,
+                            order_type: OrderType::Limit { price: 0.0 },
+                            status: crate::core::OrderStatus::New,
+                            price: Some(price),
+                            stop_price: None,
+                            quantity,
+                            filled_quantity: 0.0,
+                            average_price: None,
+                            commission: None,
+                            commission_asset: None,
+                            created_at: crate::core::timestamp_millis() as i64,
+                            updated_at: None,
+                            time_in_force: crate::core::TimeInForce::Gtc,
+                        }))
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+            )),
+        }
     }
 
-    async fn limit_order(
+    async fn get_order_history(
         &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        price: Price,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let client_order_id = format!("cc_{}", crate::core::timestamp_millis());
-
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
-        params.insert("side".to_string(), match side {
-            OrderSide::Buy => "BUY",
-            OrderSide::Sell => "SELL",
-        }.to_string());
-        params.insert("type".to_string(), "LIMIT".to_string());
-        params.insert("quantity".to_string(), quantity.to_string());
-        params.insert("price".to_string(), price.to_string());
-        params.insert("newClientOrderId".to_string(), client_order_id.clone());
-
-        let response = self.post(MexcEndpoint::PlaceOrder, params).await?;
-
-        let order_id = response["orderId"].as_str()
-            .ok_or_else(|| ExchangeError::Parse("Missing orderId".into()))?
-            .to_string();
-
-        Ok(Order {
-            id: order_id,
-            client_order_id: Some(client_order_id),
-            symbol: symbol.to_string(),
-            side,
-            order_type: OrderType::Limit,
-            status: crate::core::OrderStatus::New,
-            price: Some(price),
-            stop_price: None,
-            quantity,
-            filled_quantity: 0.0,
-            average_price: None,
-            commission: None,
-            commission_asset: None,
-            created_at: crate::core::timestamp_millis() as i64,
-            updated_at: None,
-            time_in_force: crate::core::TimeInForce::GTC,
-        })
+        _filter: OrderHistoryFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_order_history not yet implemented".to_string()
+        ))
     }
+async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+        match req.scope {
+            CancelScope::Single { ref order_id } => {
+                let symbol = req.symbol.as_ref()
+                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel".into()))?
+                    .clone();
+                let account_type = req.account_type;
 
-    async fn cancel_order(
-        &self,
-        symbol: Symbol,
-        order_id: &str,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
-        params.insert("orderId".to_string(), order_id.to_string());
+            let mut params = HashMap::new();
+            params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
+            params.insert("orderId".to_string(), order_id.to_string());
 
-        let response = self.delete(MexcEndpoint::CancelOrder, params).await?;
-        MexcParser::parse_order(&response)
+            let response = self.delete(MexcEndpoint::CancelOrder, params).await?;
+            MexcParser::parse_order(&response)
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
+            )),
+        }
     }
 
     async fn get_order(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         order_id: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Order> {
+        // Parse symbol string into Symbol struct
+        let symbol_parts: Vec<&str> = symbol.split('/').collect();
+        let symbol = if symbol_parts.len() == 2 {
+            crate::core::Symbol::new(symbol_parts[0], symbol_parts[1])
+        } else {
+            crate::core::Symbol { base: symbol.to_string(), quote: String::new(), raw: Some(symbol.to_string()) }
+        };
+
         let mut params = HashMap::new();
         params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
         params.insert("orderId".to_string(), order_id.to_string());
 
         let response = self.get(MexcEndpoint::QueryOrder, params).await?;
         MexcParser::parse_order(&response)
+    
     }
 
     async fn get_open_orders(
         &self,
-        symbol: Option<Symbol>,
+        symbol: Option<&str>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
+        // Convert Option<&str> to Option<Symbol>
+        let symbol_str = symbol;
+        let symbol: Option<crate::core::Symbol> = symbol_str.map(|s| {
+            let parts: Vec<&str> = s.split('/').collect();
+            if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: s.to_string(), quote: String::new(), raw: Some(s.to_string()) }
+            }
+        });
+
         let mut params = HashMap::new();
 
         if let Some(s) = symbol {
@@ -655,6 +693,7 @@ impl Trading for MexcConnector {
 
         let response = self.get(MexcEndpoint::OpenOrders, params).await?;
         MexcParser::parse_orders(&response)
+    
     }
 }
 
@@ -664,13 +703,13 @@ impl Trading for MexcConnector {
 
 #[async_trait]
 impl Account for MexcConnector {
-    async fn get_balance(
-        &self,
-        _asset: Option<crate::core::Asset>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Balance>> {
+    async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        let _asset = query.asset.clone();
+        let _account_type = query.account_type;
+
         let response = self.get(MexcEndpoint::Account, HashMap::new()).await?;
         MexcParser::parse_balance(&response)
+    
     }
 
     async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
@@ -711,6 +750,12 @@ impl Account for MexcConnector {
             taker_commission,
             balances,
         })
+    }
+
+    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_fees not yet implemented".to_string()
+        ))
     }
 }
 

@@ -269,7 +269,7 @@ impl GeminiParser {
 
         let order_type = match Self::get_str(data, "type").unwrap_or("exchange limit") {
             "exchange market" | "market" => OrderType::Market,
-            _ => OrderType::Limit,
+            _ => OrderType::Limit { price: 0.0 },
         };
 
         let status = Self::parse_order_status(data);
@@ -296,7 +296,7 @@ impl GeminiParser {
             commission_asset: None,
             created_at: Self::get_i64(data, "timestampms").unwrap_or(0),
             updated_at: None,
-            time_in_force: crate::core::TimeInForce::GTC,
+            time_in_force: crate::core::TimeInForce::Gtc,
         })
     }
 
@@ -601,7 +601,7 @@ impl GeminiParser {
 
         let order_type = match Self::get_str(data, "order_type").unwrap_or("exchange limit") {
             "exchange market" | "market" => OrderType::Market,
-            _ => OrderType::Limit,
+            _ => OrderType::Limit { price: 0.0 },
         };
 
         let status = match event_type {
@@ -790,7 +790,7 @@ mod tests {
         assert_eq!(order.id, "987654321");
         assert_eq!(order.symbol, "btcusd");
         assert_eq!(order.side, OrderSide::Buy);
-        assert_eq!(order.order_type, OrderType::Limit);
+        assert!(matches!(order.order_type, OrderType::Limit { .. }));
         assert_eq!(order.status, OrderStatus::PartiallyFilled);
     }
 

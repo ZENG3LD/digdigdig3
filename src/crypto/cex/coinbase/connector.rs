@@ -67,8 +67,11 @@ use crate::core::{
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
     Price, Quantity, Kline, Ticker, OrderBook,
-    Order, OrderSide, Balance, AccountInfo,
+    Order, OrderSide, OrderType,Balance, AccountInfo,
     Position, FundingRate,
+    OrderRequest, CancelRequest, CancelScope,
+    BalanceQuery, PositionQuery, PositionModification,
+    OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };
 use crate::core::types::SymbolInfo;
 use crate::core::traits::{
@@ -496,118 +499,133 @@ impl MarketData for CoinbaseConnector {
 
 #[async_trait]
 impl Trading for CoinbaseConnector {
-    async fn market_order(
-        &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        // NOTE: Perpetual futures trading supported but requires proper margin/collateral
-        let product_id = format_symbol(&symbol, account_type);
-        let side_str = match side {
-            OrderSide::Buy => "BUY",
-            OrderSide::Sell => "SELL",
-        };
+    async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
+        let symbol = req.symbol.clone();
+        let side = req.side;
+        let quantity = req.quantity;
+        let account_type = req.account_type;
 
-        // Generate client order ID
-        let client_order_id = uuid::Uuid::new_v4().to_string();
-
-        let size_field = match side {
-            OrderSide::Buy => "quote_size", // For BUY, use quote currency amount
-            OrderSide::Sell => "base_size", // For SELL, use base currency amount
-        };
-
-        let order_config = json!({
-            "market_market_ioc": {
-                size_field: quantity.to_string()
+        match req.order_type {
+            OrderType::Market => {
+                // NOTE: Perpetual futures trading supported but requires proper margin/collateral
+                        let product_id = format_symbol(&symbol, account_type);
+                        let side_str = match side {
+                            OrderSide::Buy => "BUY",
+                            OrderSide::Sell => "SELL",
+                        };
+                
+                        // Generate client order ID
+                        let client_order_id = uuid::Uuid::new_v4().to_string();
+                
+                        let size_field = match side {
+                            OrderSide::Buy => "quote_size", // For BUY, use quote currency amount
+                            OrderSide::Sell => "base_size", // For SELL, use base currency amount
+                        };
+                
+                        let order_config = json!({
+                            "market_market_ioc": {
+                                size_field: quantity.to_string()
+                            }
+                        });
+                
+                        let body = json!({
+                            "client_order_id": client_order_id,
+                            "product_id": product_id,
+                            "side": side_str,
+                            "order_configuration": order_config
+                        });
+                
+                        let response = self.post(CoinbaseEndpoint::CreateOrder, body).await?;
+                        CoinbaseParser::parse_order(&response).map(PlaceOrderResponse::Simple)
             }
-        });
-
-        let body = json!({
-            "client_order_id": client_order_id,
-            "product_id": product_id,
-            "side": side_str,
-            "order_configuration": order_config
-        });
-
-        let response = self.post(CoinbaseEndpoint::CreateOrder, body).await?;
-        CoinbaseParser::parse_order(&response)
+            OrderType::Limit { price } => {
+                // NOTE: Perpetual futures trading supported but requires proper margin/collateral
+                        let product_id = format_symbol(&symbol, account_type);
+                        let side_str = match side {
+                            OrderSide::Buy => "BUY",
+                            OrderSide::Sell => "SELL",
+                        };
+                
+                        // Generate client order ID
+                        let client_order_id = uuid::Uuid::new_v4().to_string();
+                
+                        let order_config = json!({
+                            "limit_limit_gtc": {
+                                "base_size": quantity.to_string(),
+                                "limit_price": price.to_string(),
+                                "post_only": false
+                            }
+                        });
+                
+                        let body = json!({
+                            "client_order_id": client_order_id,
+                            "product_id": product_id,
+                            "side": side_str,
+                            "order_configuration": order_config
+                        });
+                
+                        let response = self.post(CoinbaseEndpoint::CreateOrder, body).await?;
+                        CoinbaseParser::parse_order(&response).map(PlaceOrderResponse::Simple)
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+            )),
+        }
     }
 
-    async fn limit_order(
+    async fn get_order_history(
         &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        price: Price,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        // NOTE: Perpetual futures trading supported but requires proper margin/collateral
-        let product_id = format_symbol(&symbol, account_type);
-        let side_str = match side {
-            OrderSide::Buy => "BUY",
-            OrderSide::Sell => "SELL",
-        };
-
-        // Generate client order ID
-        let client_order_id = uuid::Uuid::new_v4().to_string();
-
-        let order_config = json!({
-            "limit_limit_gtc": {
-                "base_size": quantity.to_string(),
-                "limit_price": price.to_string(),
-                "post_only": false
-            }
-        });
-
-        let body = json!({
-            "client_order_id": client_order_id,
-            "product_id": product_id,
-            "side": side_str,
-            "order_configuration": order_config
-        });
-
-        let response = self.post(CoinbaseEndpoint::CreateOrder, body).await?;
-        CoinbaseParser::parse_order(&response)
+        _filter: OrderHistoryFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_order_history not yet implemented".to_string()
+        ))
     }
+async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+        match req.scope {
+            CancelScope::Single { ref order_id } => {
+                let symbol = req.symbol.as_ref()
+                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel".into()))?
+                    .clone();
+                let account_type = req.account_type;
 
-    async fn cancel_order(
-        &self,
-        symbol: Symbol,
-        order_id: &str,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        // Get order details before cancelling
-        let order = self.get_order(symbol.clone(), order_id, account_type).await?;
+            // Get order details before cancelling
+            let order = self.get_order(&symbol.to_string(), order_id, account_type).await?;
 
-        let body = json!({
-            "order_ids": [order_id]
-        });
+            let body = json!({
+                "order_ids": [order_id]
+            });
 
-        let response = self.post(CoinbaseEndpoint::CancelOrders, body).await?;
+            let response = self.post(CoinbaseEndpoint::CancelOrders, body).await?;
 
-        // Check if cancellation was successful
-        let results = response.get("results")
-            .and_then(|r| r.as_array())
-            .ok_or_else(|| ExchangeError::Parse("Missing results array".into()))?;
+            // Check if cancellation was successful
+            let results = response.get("results")
+                .and_then(|r| r.as_array())
+                .ok_or_else(|| ExchangeError::Parse("Missing results array".into()))?;
 
-        let success = results.iter()
-            .any(|r| r.get("success").and_then(|s| s.as_bool()).unwrap_or(false));
+            let success = results.iter()
+                .any(|r| r.get("success").and_then(|s| s.as_bool()).unwrap_or(false));
 
-        if success {
-            Ok(order)
-        } else {
-            Err(ExchangeError::Api {
-                code: 0,
-                message: "Order cancellation failed".to_string(),
-            })
+            if success {
+                Ok(order)
+            } else {
+                Err(ExchangeError::Api {
+                    code: 0,
+                    message: "Order cancellation failed".to_string(),
+                })
+            }
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
+            )),
         }
     }
 
     async fn get_order(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         order_id: &str,
         _account_type: AccountType, // Not used, order_id is globally unique
     ) -> ExchangeResult<Order> {
@@ -630,9 +648,20 @@ impl Trading for CoinbaseConnector {
 
     async fn get_open_orders(
         &self,
-        symbol: Option<Symbol>,
+        symbol: Option<&str>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
+        // Convert Option<&str> to Option<Symbol>
+        let symbol_str = symbol;
+        let symbol: Option<crate::core::Symbol> = symbol_str.map(|s| {
+            let parts: Vec<&str> = s.split('/').collect();
+            if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: s.to_string(), quote: String::new(), raw: Some(s.to_string()) }
+            }
+        });
+
         let mut params = HashMap::new();
         params.insert("order_status".to_string(), "OPEN".to_string());
 
@@ -666,6 +695,7 @@ impl Trading for CoinbaseConnector {
             .collect();
 
         Ok(orders)
+    
     }
 }
 
@@ -675,11 +705,9 @@ impl Trading for CoinbaseConnector {
 
 #[async_trait]
 impl Account for CoinbaseConnector {
-    async fn get_balance(
-        &self,
-        _asset: Option<crate::core::types::Asset>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Balance>> {
+    async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        let _asset = query.asset;
+        let _account_type = query.account_type;
         let response = self.get(CoinbaseEndpoint::Accounts, HashMap::new()).await?;
         CoinbaseParser::parse_balance(&response)
     }
@@ -701,7 +729,7 @@ impl Account for CoinbaseConnector {
             .unwrap_or(0.0);
 
         // Get balances
-        let balances = self.get_balance(None, account_type).await?;
+        let balances = self.get_balance(BalanceQuery { asset: None, account_type }).await?;
 
         Ok(AccountInfo {
             account_type,
@@ -713,6 +741,12 @@ impl Account for CoinbaseConnector {
             balances,
         })
     }
+
+    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_fees not yet implemented".to_string()
+        ))
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -721,29 +755,46 @@ impl Account for CoinbaseConnector {
 
 #[async_trait]
 impl Positions for CoinbaseConnector {
-    async fn get_positions(
-        &self,
-        _symbol: Option<Symbol>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Position>> {
+    async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
+        let _symbol = query.symbol.clone();
+        let _account_type = query.account_type;
+
         Err(ExchangeError::NotSupported("Coinbase does not support futures/positions".to_string()))
+    
     }
 
     async fn get_funding_rate(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
+        // Parse symbol string into Symbol struct
+        let _symbol_str = _symbol;
+        let _symbol = {
+            let parts: Vec<&str> = _symbol_str.split('/').collect();
+            if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: _symbol_str.to_string(), quote: String::new(), raw: Some(_symbol_str.to_string()) }
+            }
+        };
+
         Err(ExchangeError::NotSupported("Coinbase does not support funding rates".to_string()))
+    
     }
 
-    async fn set_leverage(
-        &self,
-        _symbol: Symbol,
-        _leverage: u32,
-        _account_type: AccountType,
-    ) -> ExchangeResult<()> {
-        Err(ExchangeError::NotSupported("Coinbase does not support leverage".to_string()))
+    async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
+        match req {
+            PositionModification::SetLeverage { symbol: ref _symbol, leverage: _leverage, account_type: _account_type } => {
+                let _symbol = _symbol.clone();
+
+                Err(ExchangeError::NotSupported("Coinbase does not support leverage".to_string()))
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} not supported on {:?}", req, self.exchange_id())
+            )),
+        }
     }
 }
 

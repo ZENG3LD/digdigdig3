@@ -291,15 +291,15 @@ mod tests {
 
     #[test]
     fn test_symbol_formatting() {
-        use super::super::endpoints::{format_symbol, format_isin};
+        use super::super::endpoints::{_format_symbol, _format_isin};
 
         let symbol = Symbol::new("005930", "");
-        assert_eq!(format_symbol(&symbol), "005930");
+        assert_eq!(_format_symbol(&symbol), "005930");
 
-        let isin = format_isin("005930");
+        let isin = _format_isin("005930");
         assert_eq!(isin, "KR7005930003");
 
-        let isin = format_isin("KR7005930003");
+        let isin = _format_isin("KR7005930003");
         assert_eq!(isin, "KR7005930003"); // Already ISIN, return as-is
     }
 

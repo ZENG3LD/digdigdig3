@@ -245,7 +245,7 @@ impl ParadexParser {
             commission_asset: None,
             created_at: Self::get_i64(data, "created_at").unwrap_or(0),
             updated_at: Self::get_i64(data, "last_updated_at"),
-            time_in_force: crate::core::TimeInForce::GTC,
+            time_in_force: crate::core::TimeInForce::Gtc,
         })
     }
 
@@ -273,12 +273,12 @@ impl ParadexParser {
     fn parse_order_type(type_str: &str) -> OrderType {
         match type_str.to_uppercase().as_str() {
             "MARKET" => OrderType::Market,
-            "LIMIT" => OrderType::Limit,
-            "STOP_LIMIT" => OrderType::StopLossLimit,
-            "STOP_MARKET" => OrderType::StopLoss,
-            "TAKE_PROFIT_LIMIT" => OrderType::TakeProfitLimit,
-            "TAKE_PROFIT_MARKET" => OrderType::TakeProfit,
-            _ => OrderType::Limit, // default
+            "LIMIT" => OrderType::Limit { price: 0.0 },
+            "STOP_LIMIT" => OrderType::StopLimit { stop_price: 0.0, limit_price: 0.0 },
+            "STOP_MARKET" => OrderType::StopMarket { stop_price: 0.0 },
+            "TAKE_PROFIT_LIMIT" => OrderType::Limit { price: 0.0 },
+            "TAKE_PROFIT_MARKET" => OrderType::Limit { price: 0.0 },
+            _ => OrderType::Limit { price: 0.0 }, // default
         }
     }
 

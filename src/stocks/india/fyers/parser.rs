@@ -57,10 +57,10 @@ impl FyersParser {
     /// Parse order type from integer
     fn parse_order_type(order_type: i64) -> OrderType {
         match order_type {
-            1 => OrderType::Limit,
+            1 => OrderType::Limit { price: 0.0 },
             2 => OrderType::Market,
-            3 => OrderType::StopLoss,
-            4 => OrderType::StopLossLimit,
+            3 => OrderType::StopMarket { stop_price: 0.0 },
+            4 => OrderType::StopLimit { stop_price: 0.0, limit_price: 0.0 },
             _ => OrderType::Market, // default
         }
     }
@@ -234,7 +234,7 @@ impl FyersParser {
                 commission_asset: None,
                 created_at: 0,
                 updated_at: None,
-                time_in_force: TimeInForce::GTC,
+                time_in_force: TimeInForce::Gtc,
             });
         }
 
@@ -269,9 +269,9 @@ impl FyersParser {
                 .unwrap_or(0),
             updated_at: None,
             time_in_force: if data["orderValidity"].as_str() == Some("IOC") {
-                TimeInForce::IOC
+                TimeInForce::Ioc
             } else {
-                TimeInForce::GTC
+                TimeInForce::Gtc
             },
         })
     }

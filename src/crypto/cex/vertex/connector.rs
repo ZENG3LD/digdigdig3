@@ -45,6 +45,9 @@ use crate::core::{
     Price, Quantity, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, Balance, AccountInfo,
     Position, FundingRate,
+    OrderRequest, CancelRequest, CancelScope,
+    BalanceQuery, PositionQuery, PositionModification,
+    OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
@@ -422,212 +425,247 @@ impl MarketData for VertexConnector {
 
 #[async_trait]
 impl Trading for VertexConnector {
-    async fn market_order(
-        &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        // Vertex doesn't have true market orders - use IOC limit order at extreme price
-        let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
-        let product_id = self.get_product_id(&formatted).await?;
+    async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
+        let symbol = req.symbol.clone();
+        let side = req.side;
+        let quantity = req.quantity;
+        let account_type = req.account_type;
 
-        let auth = self.auth.as_ref()
-            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
-
-        // Get current price to determine extreme price
-        let current_price = self.get_price(symbol.clone(), account_type).await?;
-
-        // Use extreme price to ensure immediate fill
-        let price = match side {
-            OrderSide::Buy => current_price * 1.1, // 10% above market
-            OrderSide::Sell => current_price * 0.9, // 10% below market
-        };
-
-        let price_x18 = to_x18(price);
-        let amount_x18 = to_x18(match side {
-            OrderSide::Buy => quantity,
-            OrderSide::Sell => -quantity,
-        });
-
-        let nonce = auth.generate_nonce();
-        let expiration = auth.generate_expiration(60, TimeInForce::IOC);
-
-        let (signature, _digest) = auth.sign_order(
-            product_id,
-            &price_x18,
-            &amount_x18,
-            expiration,
-            nonce,
-        ).await?;
-
-        let tx = json!({
-            "place_order": {
-                "sender": auth.get_sender(),
-                "priceX18": price_x18,
-                "amount": amount_x18,
-                "expiration": expiration.to_string(),
-                "nonce": nonce.to_string(),
-            },
-            "signature": signature,
-        });
-
-        let response = self.execute(tx).await?;
-        let order_id = VertexParser::parse_order_id(&response)?;
-
-        Ok(Order {
-            id: order_id,
-            client_order_id: None,
-            symbol: formatted,
-            side,
-            order_type: OrderType::Market,
-            status: crate::core::OrderStatus::New,
-            price: Some(price),
-            stop_price: None,
-            quantity,
-            filled_quantity: 0.0,
-            average_price: None,
-            commission: None,
-            commission_asset: None,
-            created_at: crate::core::timestamp_millis() as i64,
-            updated_at: None,
-            time_in_force: crate::core::TimeInForce::IOC,
-        })
+        match req.order_type {
+            OrderType::Market => {
+                // Vertex doesn't have true market orders - use IOC limit order at extreme price
+                        let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
+                        let product_id = self.get_product_id(&formatted).await?;
+                
+                        let auth = self.auth.as_ref()
+                            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+                
+                        // Get current price to determine extreme price
+                        let current_price = self.get_price(symbol.clone(), account_type).await?;
+                
+                        // Use extreme price to ensure immediate fill
+                        let price = match side {
+                            OrderSide::Buy => current_price * 1.1, // 10% above market
+                            OrderSide::Sell => current_price * 0.9, // 10% below market
+                        };
+                
+                        let price_x18 = to_x18(price);
+                        let amount_x18 = to_x18(match side {
+                            OrderSide::Buy => quantity,
+                            OrderSide::Sell => -quantity,
+                        });
+                
+                        let nonce = auth.generate_nonce();
+                        let expiration = auth.generate_expiration(60, TimeInForce::Ioc);
+                
+                        let (signature, _digest) = auth.sign_order(
+                            product_id,
+                            &price_x18,
+                            &amount_x18,
+                            expiration,
+                            nonce,
+                        ).await?;
+                
+                        let tx = json!({
+                            "place_order": {
+                                "sender": auth.get_sender(),
+                                "priceX18": price_x18,
+                                "amount": amount_x18,
+                                "expiration": expiration.to_string(),
+                                "nonce": nonce.to_string(),
+                            },
+                            "signature": signature,
+                        });
+                
+                        let response = self.execute(tx).await?;
+                        let order_id = VertexParser::parse_order_id(&response)?;
+                
+                        Ok(Order {
+                            id: order_id,
+                            client_order_id: None,
+                            symbol: formatted,
+                            side,
+                            order_type: OrderType::Market,
+                            status: crate::core::OrderStatus::New,
+                            price: Some(price),
+                            stop_price: None,
+                            quantity,
+                            filled_quantity: 0.0,
+                            average_price: None,
+                            commission: None,
+                            commission_asset: None,
+                            created_at: crate::core::timestamp_millis() as i64,
+                            updated_at: None,
+                            time_in_force: crate::core::TimeInForce::Ioc,
+                        })
+            }
+            OrderType::Limit { price } => {
+                let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
+                        let product_id = self.get_product_id(&formatted).await?;
+                
+                        let auth = self.auth.as_ref()
+                            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+                
+                        let price_x18 = to_x18(price);
+                        let amount_x18 = to_x18(match side {
+                            OrderSide::Buy => quantity,
+                            OrderSide::Sell => -quantity,
+                        });
+                
+                        let nonce = auth.generate_nonce();
+                        let expiration = auth.generate_expiration(86400, TimeInForce::Gtc); // 24h validity
+                
+                        let (signature, _digest) = auth.sign_order(
+                            product_id,
+                            &price_x18,
+                            &amount_x18,
+                            expiration,
+                            nonce,
+                        ).await?;
+                
+                        let tx = json!({
+                            "place_order": {
+                                "sender": auth.get_sender(),
+                                "priceX18": price_x18,
+                                "amount": amount_x18,
+                                "expiration": expiration.to_string(),
+                                "nonce": nonce.to_string(),
+                            },
+                            "signature": signature,
+                        });
+                
+                        let response = self.execute(tx).await?;
+                        let order_id = VertexParser::parse_order_id(&response)?;
+                
+                        Ok(Order {
+                            id: order_id,
+                            client_order_id: None,
+                            symbol: formatted,
+                            side,
+                            order_type: OrderType::Limit { price: 0.0 },
+                            status: crate::core::OrderStatus::New,
+                            price: Some(price),
+                            stop_price: None,
+                            quantity,
+                            filled_quantity: 0.0,
+                            average_price: None,
+                            commission: None,
+                            commission_asset: None,
+                            created_at: crate::core::timestamp_millis() as i64,
+                            updated_at: None,
+                            time_in_force: crate::core::TimeInForce::Gtc,
+                        })
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+            )),
+        }
     }
 
-    async fn limit_order(
+    async fn get_order_history(
         &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        price: Price,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
-        let product_id = self.get_product_id(&formatted).await?;
-
-        let auth = self.auth.as_ref()
-            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
-
-        let price_x18 = to_x18(price);
-        let amount_x18 = to_x18(match side {
-            OrderSide::Buy => quantity,
-            OrderSide::Sell => -quantity,
-        });
-
-        let nonce = auth.generate_nonce();
-        let expiration = auth.generate_expiration(86400, TimeInForce::GTC); // 24h validity
-
-        let (signature, _digest) = auth.sign_order(
-            product_id,
-            &price_x18,
-            &amount_x18,
-            expiration,
-            nonce,
-        ).await?;
-
-        let tx = json!({
-            "place_order": {
-                "sender": auth.get_sender(),
-                "priceX18": price_x18,
-                "amount": amount_x18,
-                "expiration": expiration.to_string(),
-                "nonce": nonce.to_string(),
-            },
-            "signature": signature,
-        });
-
-        let response = self.execute(tx).await?;
-        let order_id = VertexParser::parse_order_id(&response)?;
-
-        Ok(Order {
-            id: order_id,
-            client_order_id: None,
-            symbol: formatted,
-            side,
-            order_type: OrderType::Limit,
-            status: crate::core::OrderStatus::New,
-            price: Some(price),
-            stop_price: None,
-            quantity,
-            filled_quantity: 0.0,
-            average_price: None,
-            commission: None,
-            commission_asset: None,
-            created_at: crate::core::timestamp_millis() as i64,
-            updated_at: None,
-            time_in_force: crate::core::TimeInForce::GTC,
-        })
-    }
-
-    async fn cancel_order(
-        &self,
-        _symbol: Symbol,
-        order_id: &str,
+        _filter: OrderHistoryFilter,
         _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let auth = self.auth.as_ref()
-            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_order_history not yet implemented".to_string()
+        ))
+    }
+async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+        match req.scope {
+            CancelScope::Single { ref order_id } => {
+                let _symbol = req.symbol.as_ref()
+                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel".into()))?
+                    .clone();
+                let _account_type = req.account_type;
 
-        let nonce = auth.generate_nonce();
+            let auth = self.auth.as_ref()
+                .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
 
-        // Parse product_id from order_id if needed
-        // For now, use empty product_ids and just the digest
-        let signature = auth.sign_cancel(vec![], vec![order_id.to_string()], nonce).await?;
+            let nonce = auth.generate_nonce();
 
-        let tx = json!({
-            "cancel_orders": {
-                "sender": auth.get_sender(),
-                "productIds": [],
-                "digests": [order_id],
-                "nonce": nonce.to_string(),
-            },
-            "signature": signature,
-        });
+            // Parse product_id from order_id if needed
+            // For now, use empty product_ids and just the digest
+            let signature = auth.sign_cancel(vec![], vec![order_id.to_string()], nonce).await?;
 
-        let response = self.execute(tx).await?;
-        let _ = response;
+            let tx = json!({
+                "cancel_orders": {
+                    "sender": auth.get_sender(),
+                    "productIds": [],
+                    "digests": [order_id],
+                    "nonce": nonce.to_string(),
+                },
+                "signature": signature,
+            });
 
-        Ok(Order {
-            id: order_id.to_string(),
-            client_order_id: None,
-            symbol: "".to_string(),
-            side: OrderSide::Buy,
-            order_type: OrderType::Limit,
-            status: crate::core::OrderStatus::Canceled,
-            price: None,
-            stop_price: None,
-            quantity: 0.0,
-            filled_quantity: 0.0,
-            average_price: None,
-            commission: None,
-            commission_asset: None,
-            created_at: 0,
-            updated_at: Some(crate::core::timestamp_millis() as i64),
-            time_in_force: crate::core::TimeInForce::GTC,
-        })
+            let response = self.execute(tx).await?;
+            let _ = response;
+
+            Ok(Order {
+                id: order_id.to_string(),
+                client_order_id: None,
+                symbol: "".to_string(),
+                side: OrderSide::Buy,
+                order_type: OrderType::Limit { price: 0.0 },
+                status: crate::core::OrderStatus::Canceled,
+                price: None,
+                stop_price: None,
+                quantity: 0.0,
+                filled_quantity: 0.0,
+                average_price: None,
+                commission: None,
+                commission_asset: None,
+                created_at: 0,
+                updated_at: Some(crate::core::timestamp_millis() as i64),
+                time_in_force: crate::core::TimeInForce::Gtc,
+            })
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
+            )),
+        }
     }
 
     async fn get_order(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         order_id: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Order> {
+        // Parse symbol string into Symbol struct
+        let symbol_parts: Vec<&str> = symbol.split('/').collect();
+        let symbol = if symbol_parts.len() == 2 {
+            crate::core::Symbol::new(symbol_parts[0], symbol_parts[1])
+        } else {
+            crate::core::Symbol { base: symbol.to_string(), quote: String::new(), raw: Some(symbol.to_string()) }
+        };
+
         // Get all orders and filter
         let orders = self.get_open_orders(Some(symbol), account_type).await?;
 
         orders.into_iter()
             .find(|o| o.id == order_id)
             .ok_or_else(|| ExchangeError::Parse("Order not found".to_string()))
+    
     }
 
     async fn get_open_orders(
         &self,
-        symbol: Option<Symbol>,
+        symbol: Option<&str>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
+        // Convert Option<&str> to Option<Symbol>
+        let symbol_str = symbol;
+        let symbol: Option<crate::core::Symbol> = symbol_str.map(|s| {
+            let parts: Vec<&str> = s.split('/').collect();
+            if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: s.to_string(), quote: String::new(), raw: Some(s.to_string()) }
+            }
+        });
+
         let auth = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
 
@@ -643,6 +681,7 @@ impl Trading for VertexConnector {
 
         let response = self.query("subaccount_orders", params).await?;
         VertexParser::parse_orders(&response)
+    
     }
 }
 
@@ -652,11 +691,10 @@ impl Trading for VertexConnector {
 
 #[async_trait]
 impl Account for VertexConnector {
-    async fn get_balance(
-        &self,
-        _asset: Option<crate::core::Asset>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Balance>> {
+    async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        let _asset = query.asset.clone();
+        let _account_type = query.account_type;
+
         let auth = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
 
@@ -666,10 +704,11 @@ impl Account for VertexConnector {
 
         let response = self.query("subaccount_info", params).await?;
         VertexParser::parse_balances(&response)
+    
     }
 
     async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
-        let balances = self.get_balance(None, account_type).await?;
+        let balances = self.get_balance(BalanceQuery { asset: None, account_type }).await?;
 
         Ok(AccountInfo {
             account_type,
@@ -681,6 +720,12 @@ impl Account for VertexConnector {
             balances,
         })
     }
+
+    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_fees not yet implemented".to_string()
+        ))
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -689,11 +734,10 @@ impl Account for VertexConnector {
 
 #[async_trait]
 impl Positions for VertexConnector {
-    async fn get_positions(
-        &self,
-        _symbol: Option<Symbol>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Position>> {
+    async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
+        let _symbol = query.symbol.clone();
+        let _account_type = query.account_type;
+
         let auth = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
 
@@ -703,13 +747,25 @@ impl Positions for VertexConnector {
 
         let response = self.query("subaccount_info", params).await?;
         VertexParser::parse_positions(&response)
+    
     }
 
     async fn get_funding_rate(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
+        // Parse symbol string into Symbol struct
+        let symbol_str = symbol;
+        let symbol = {
+            let parts: Vec<&str> = symbol_str.split('/').collect();
+            if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: symbol_str.to_string(), quote: String::new(), raw: Some(symbol_str.to_string()) }
+            }
+        };
+
         let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
         let product_id = self.get_product_id(&formatted).await?;
 
@@ -721,17 +777,23 @@ impl Positions for VertexConnector {
 
         let response = self.post(VertexEndpoint::FundingRate, body).await?;
         VertexParser::parse_funding_rate(&response, &formatted)
+    
     }
 
-    async fn set_leverage(
-        &self,
-        _symbol: Symbol,
-        _leverage: u32,
-        _account_type: AccountType,
-    ) -> ExchangeResult<()> {
-        // Vertex uses cross-margin by default, leverage is dynamic
-        Err(ExchangeError::UnsupportedOperation(
-            "Vertex uses dynamic cross-margin, leverage cannot be set manually".to_string()
-        ))
+    async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
+        match req {
+            PositionModification::SetLeverage { symbol: ref _symbol, leverage: _leverage, account_type: _account_type } => {
+                let _symbol = _symbol.clone();
+
+                // Vertex uses cross-margin by default, leverage is dynamic
+                Err(ExchangeError::UnsupportedOperation(
+                "Vertex uses dynamic cross-margin, leverage cannot be set manually".to_string()
+                ))
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} not supported on {:?}", req, self.exchange_id())
+            )),
+        }
     }
 }

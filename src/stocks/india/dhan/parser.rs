@@ -290,8 +290,8 @@ impl DhanParser {
     fn parse_order_type(order_type: &str) -> OrderType {
         match order_type {
             "MARKET" => OrderType::Market,
-            "LIMIT" => OrderType::Limit,
-            "STOP_LOSS" | "STOP_LOSS_MARKET" => OrderType::StopLoss,
+            "LIMIT" => OrderType::Limit { price: 0.0 },
+            "STOP_LOSS" | "STOP_LOSS_MARKET" => OrderType::StopMarket { stop_price: 0.0 },
             _ => OrderType::Market,
         }
     }
@@ -326,7 +326,7 @@ impl DhanParser {
             commission_asset: None,
             created_at: chrono::Utc::now().timestamp_millis(),
             updated_at: None,
-            time_in_force: crate::core::types::TimeInForce::GTC,
+            time_in_force: crate::core::types::TimeInForce::Gtc,
         })
     }
 
@@ -370,7 +370,7 @@ impl DhanParser {
             commission_asset: None,
             created_at: chrono::Utc::now().timestamp_millis(),
             updated_at: None,
-            time_in_force: crate::core::types::TimeInForce::GTC,
+            time_in_force: crate::core::types::TimeInForce::Gtc,
         })
     }
 

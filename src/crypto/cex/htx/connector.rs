@@ -26,6 +26,9 @@ use crate::core::{
     Price, Quantity, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, Balance, AccountInfo,
     Position, FundingRate, Asset,
+    OrderRequest, CancelRequest, CancelScope,
+    BalanceQuery, PositionQuery, PositionModification,
+    OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
@@ -499,140 +502,163 @@ impl MarketData for HtxConnector {
 
 #[async_trait]
 impl Trading for HtxConnector {
-    async fn market_order(
-        &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let account_id = self.get_account_id().await?;
-        let client_order_id = format!("cc_{}", crate::core::timestamp_millis());
+    async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
+        let symbol = req.symbol.clone();
+        let side = req.side;
+        let quantity = req.quantity;
+        let account_type = req.account_type;
 
-        // HTX order type format: "buy-market" or "sell-market"
-        let order_type = match side {
-            OrderSide::Buy => "buy-market",
-            OrderSide::Sell => "sell-market",
-        };
-
-        let body = json!({
-            "account-id": account_id.to_string(),
-            "symbol": format_symbol(&symbol, account_type),
-            "type": order_type,
-            "amount": quantity.to_string(),
-            "client-order-id": client_order_id,
-        });
-
-        let response = self.post(HtxEndpoint::PlaceOrder, body).await?;
-        let order = HtxParser::parse_order(&response)?;
-
-        Ok(Order {
-            id: order.id,
-            client_order_id: Some(client_order_id),
-            symbol: symbol.to_string(),
-            side,
-            order_type: OrderType::Market,
-            status: crate::core::OrderStatus::New,
-            price: None,
-            stop_price: None,
-            quantity,
-            filled_quantity: 0.0,
-            average_price: None,
-            commission: None,
-            commission_asset: None,
-            created_at: crate::core::timestamp_millis() as i64,
-            updated_at: None,
-            time_in_force: crate::core::TimeInForce::GTC,
-        })
+        match req.order_type {
+            OrderType::Market => {
+                let account_id = self.get_account_id().await?;
+                        let client_order_id = format!("cc_{}", crate::core::timestamp_millis());
+                
+                        // HTX order type format: "buy-market" or "sell-market"
+                        let order_type = match side {
+                            OrderSide::Buy => "buy-market",
+                            OrderSide::Sell => "sell-market",
+                        };
+                
+                        let body = json!({
+                            "account-id": account_id.to_string(),
+                            "symbol": format_symbol(&symbol, account_type),
+                            "type": order_type,
+                            "amount": quantity.to_string(),
+                            "client-order-id": client_order_id,
+                        });
+                
+                        let response = self.post(HtxEndpoint::PlaceOrder, body).await?;
+                        let order = HtxParser::parse_order(&response)?;
+                
+                        Ok(PlaceOrderResponse::Simple(Order {
+                            id: order.id,
+                            client_order_id: Some(client_order_id),
+                            symbol: symbol.to_string(),
+                            side,
+                            order_type: OrderType::Market,
+                            status: crate::core::OrderStatus::New,
+                            price: None,
+                            stop_price: None,
+                            quantity,
+                            filled_quantity: 0.0,
+                            average_price: None,
+                            commission: None,
+                            commission_asset: None,
+                            created_at: crate::core::timestamp_millis() as i64,
+                            updated_at: None,
+                            time_in_force: crate::core::TimeInForce::Gtc,
+                        }))
+            }
+            OrderType::Limit { price } => {
+                let account_id = self.get_account_id().await?;
+                        let client_order_id = format!("cc_{}", crate::core::timestamp_millis());
+                
+                        // HTX order type format: "buy-limit" or "sell-limit"
+                        let order_type = match side {
+                            OrderSide::Buy => "buy-limit",
+                            OrderSide::Sell => "sell-limit",
+                        };
+                
+                        let body = json!({
+                            "account-id": account_id.to_string(),
+                            "symbol": format_symbol(&symbol, account_type),
+                            "type": order_type,
+                            "amount": quantity.to_string(),
+                            "price": price.to_string(),
+                            "client-order-id": client_order_id,
+                        });
+                
+                        let response = self.post(HtxEndpoint::PlaceOrder, body).await?;
+                        let order = HtxParser::parse_order(&response)?;
+                
+                        Ok(PlaceOrderResponse::Simple(Order {
+                            id: order.id,
+                            client_order_id: Some(client_order_id),
+                            symbol: symbol.to_string(),
+                            side,
+                            order_type: OrderType::Limit { price: 0.0 },
+                            status: crate::core::OrderStatus::New,
+                            price: Some(price),
+                            stop_price: None,
+                            quantity,
+                            filled_quantity: 0.0,
+                            average_price: None,
+                            commission: None,
+                            commission_asset: None,
+                            created_at: crate::core::timestamp_millis() as i64,
+                            updated_at: None,
+                            time_in_force: crate::core::TimeInForce::Gtc,
+                        }))
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+            )),
+        }
     }
 
-    async fn limit_order(
+    async fn get_order_history(
         &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        price: Price,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let account_id = self.get_account_id().await?;
-        let client_order_id = format!("cc_{}", crate::core::timestamp_millis());
-
-        // HTX order type format: "buy-limit" or "sell-limit"
-        let order_type = match side {
-            OrderSide::Buy => "buy-limit",
-            OrderSide::Sell => "sell-limit",
-        };
-
-        let body = json!({
-            "account-id": account_id.to_string(),
-            "symbol": format_symbol(&symbol, account_type),
-            "type": order_type,
-            "amount": quantity.to_string(),
-            "price": price.to_string(),
-            "client-order-id": client_order_id,
-        });
-
-        let response = self.post(HtxEndpoint::PlaceOrder, body).await?;
-        let order = HtxParser::parse_order(&response)?;
-
-        Ok(Order {
-            id: order.id,
-            client_order_id: Some(client_order_id),
-            symbol: symbol.to_string(),
-            side,
-            order_type: OrderType::Limit,
-            status: crate::core::OrderStatus::New,
-            price: Some(price),
-            stop_price: None,
-            quantity,
-            filled_quantity: 0.0,
-            average_price: None,
-            commission: None,
-            commission_asset: None,
-            created_at: crate::core::timestamp_millis() as i64,
-            updated_at: None,
-            time_in_force: crate::core::TimeInForce::GTC,
-        })
-    }
-
-    async fn cancel_order(
-        &self,
-        _symbol: Symbol,
-        order_id: &str,
+        _filter: OrderHistoryFilter,
         _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        // HTX uses path variable for order ID
-        let path = HtxEndpoint::CancelOrder.path_with_vars(&[("order-id", order_id)]);
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_order_history not yet implemented".to_string()
+        ))
+    }
+async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+        match req.scope {
+            CancelScope::Single { ref order_id } => {
+                let _symbol = req.symbol.as_ref()
+                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel".into()))?
+                    .clone();
+                let _account_type = req.account_type;
 
-        let _endpoint = HtxEndpoint::CancelOrder;
-        let base_url = HtxUrls::base_url(self.testnet);
+            // HTX uses path variable for order ID
+            let path = HtxEndpoint::CancelOrder.path_with_vars(&[("order-id", order_id)]);
 
-        // Build signed query
-        let auth = self.auth.as_ref()
-            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
-        let query = auth.build_signed_query("POST", "api.huobi.pro", &path, &HashMap::new());
+            let _endpoint = HtxEndpoint::CancelOrder;
+            let base_url = HtxUrls::base_url(self.testnet);
 
-        let url = format!("{}{}?{}", base_url, path, query);
+            // Build signed query
+            let auth = self.auth.as_ref()
+                .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+            let query = auth.build_signed_query("POST", "api.huobi.pro", &path, &HashMap::new());
 
-        // Empty body
-        let body = json!({});
-        let mut headers = HashMap::new();
-        headers.insert("Content-Type".to_string(), "application/json".to_string());
+            let url = format!("{}{}?{}", base_url, path, query);
 
-        self.rate_limit_wait(1).await;
-        let (response, resp_headers) = self.http.post_with_response_headers(&url, &body, &headers).await?;
-        self.update_rate_from_headers(&resp_headers);
+            // Empty body
+            let body = json!({});
+            let mut headers = HashMap::new();
+            headers.insert("Content-Type".to_string(), "application/json".to_string());
 
-        // Parse cancelled order (HTX returns the order data)
-        HtxParser::parse_order(&response)
+            self.rate_limit_wait(1).await;
+            let (response, resp_headers) = self.http.post_with_response_headers(&url, &body, &headers).await?;
+            self.update_rate_from_headers(&resp_headers);
+
+            // Parse cancelled order (HTX returns the order data)
+            HtxParser::parse_order(&response)
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
+            )),
+        }
     }
 
     async fn get_order(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         order_id: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Order> {
+        // Parse symbol string into Symbol struct
+        let _symbol_parts: Vec<&str> = _symbol.split('/').collect();
+        let _symbol = if _symbol_parts.len() == 2 {
+            crate::core::Symbol::new(_symbol_parts[0], _symbol_parts[1])
+        } else {
+            crate::core::Symbol { base: _symbol.to_string(), quote: String::new(), raw: Some(_symbol.to_string()) }
+        };
+
         let path = HtxEndpoint::OrderStatus.path_with_vars(&[("order-id", order_id)]);
 
         // Use path directly with custom GET logic
@@ -648,13 +674,25 @@ impl Trading for HtxConnector {
         self.update_rate_from_headers(&resp_headers);
 
         HtxParser::parse_order(&response)
+    
     }
 
     async fn get_open_orders(
         &self,
-        symbol: Option<Symbol>,
+        symbol: Option<&str>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
+        // Convert Option<&str> to Option<Symbol>
+        let symbol_str = symbol;
+        let symbol: Option<crate::core::Symbol> = symbol_str.map(|s| {
+            let parts: Vec<&str> = s.split('/').collect();
+            if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: s.to_string(), quote: String::new(), raw: Some(s.to_string()) }
+            }
+        });
+
         let account_id = self.get_account_id().await?;
 
         let mut params = HashMap::new();
@@ -678,6 +716,7 @@ impl Trading for HtxConnector {
             .collect();
 
         Ok(orders)
+    
     }
 }
 
@@ -687,7 +726,9 @@ impl Trading for HtxConnector {
 
 #[async_trait]
 impl Account for HtxConnector {
-    async fn get_balance(&self, _asset: Option<Asset>, _account_type: AccountType) -> ExchangeResult<Vec<Balance>> {
+    async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        let _asset = query.asset.clone();
+        let _account_type = query.account_type;
         let account_id = self.get_account_id().await?;
 
         // Replace path variable
@@ -705,10 +746,11 @@ impl Account for HtxConnector {
         self.update_rate_from_headers(&resp_headers);
 
         HtxParser::parse_balance(&response)
+    
     }
 
     async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
-        let balances = self.get_balance(None, _account_type).await?;
+        let balances = self.get_balance(BalanceQuery { asset: None, account_type: _account_type }).await?;
 
         Ok(AccountInfo {
             account_type: _account_type,
@@ -720,6 +762,12 @@ impl Account for HtxConnector {
             balances,
         })
     }
+
+    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_fees not yet implemented".to_string()
+        ))
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -728,25 +776,42 @@ impl Account for HtxConnector {
 
 #[async_trait]
 impl Positions for HtxConnector {
-    async fn get_positions(&self, _symbol: Option<Symbol>, _account_type: AccountType) -> ExchangeResult<Vec<Position>> {
+    async fn get_positions(&self, _query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         // Spot trading has no positions
         Ok(vec![])
     }
 
     async fn get_funding_rate(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
+        // Parse symbol string into Symbol struct
+        let _symbol_str = _symbol;
+        let _symbol = {
+            let parts: Vec<&str> = _symbol_str.split('/').collect();
+            if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: _symbol_str.to_string(), quote: String::new(), raw: Some(_symbol_str.to_string()) }
+            }
+        };
+
         Err(ExchangeError::NotSupported("Funding rate not available for spot trading".to_string()))
+    
     }
 
-    async fn set_leverage(
-        &self,
-        _symbol: Symbol,
-        _leverage: u32,
-        _account_type: AccountType,
-    ) -> ExchangeResult<()> {
-        Err(ExchangeError::NotSupported("Leverage not available for spot trading".to_string()))
+    async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
+        match req {
+            PositionModification::SetLeverage { symbol: ref _symbol, leverage: _leverage, account_type: _account_type } => {
+                let _symbol = _symbol.clone();
+
+                Err(ExchangeError::NotSupported("Leverage not available for spot trading".to_string()))
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} not supported on {:?}", req, self.exchange_id())
+            )),
+        }
     }
 }

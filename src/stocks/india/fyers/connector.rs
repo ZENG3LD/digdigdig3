@@ -13,7 +13,10 @@ use reqwest;
 use crate::core::{
     timestamp_seconds, AccountInfo, AccountType, Asset, Balance, ExchangeError,
     ExchangeId, ExchangeResult, ExchangeType, FundingRate, HttpClient, Kline, Order, OrderBook,
-    OrderSide, Position, Price, Quantity, Symbol, Ticker,
+    OrderSide, OrderType, Position, Price, Quantity, Symbol, Ticker,
+    OrderRequest, CancelRequest, CancelScope,
+    BalanceQuery, PositionQuery, PositionModification,
+    OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };
 use crate::core::traits::{Account, ExchangeIdentity, MarketData, Positions, Trading};
 use crate::core::types::SymbolInfo;
@@ -355,85 +358,108 @@ impl MarketData for FyersConnector {
 
 #[async_trait]
 impl Trading for FyersConnector {
-    async fn market_order(
-        &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
+    async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
+        let symbol = req.symbol.clone();
+        let side = req.side;
+        let quantity = req.quantity;
+        let account_type = req.account_type;
 
-        let body = json!({
-            "symbol": symbol_str,
-            "qty": quantity as i64,
-            "type": 2, // MARKET
-            "side": match side {
-                OrderSide::Buy => 1,
-                OrderSide::Sell => -1,
-            },
-            "productType": "INTRADAY",
-            "limitPrice": 0,
-            "stopPrice": 0,
-            "validity": "DAY",
-            "disclosedQty": 0,
-            "offlineOrder": false
-        });
-
-        let response = self.post(FyersEndpoint::PlaceOrder, body).await?;
-        FyersParser::parse_order(&response)
+        match req.order_type {
+            OrderType::Market => {
+                let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
+                
+                        let body = json!({
+                            "symbol": symbol_str,
+                            "qty": quantity as i64,
+                            "type": 2, // MARKET
+                            "side": match side {
+                                OrderSide::Buy => 1,
+                                OrderSide::Sell => -1,
+                            },
+                            "productType": "INTRADAY",
+                            "limitPrice": 0,
+                            "stopPrice": 0,
+                            "validity": "DAY",
+                            "disclosedQty": 0,
+                            "offlineOrder": false
+                        });
+                
+                        let response = self.post(FyersEndpoint::PlaceOrder, body).await?;
+                        FyersParser::parse_order(&response).map(PlaceOrderResponse::Simple)
+            }
+            OrderType::Limit { price } => {
+                let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
+                
+                        let body = json!({
+                            "symbol": symbol_str,
+                            "qty": quantity as i64,
+                            "type": 1, // LIMIT
+                            "side": match side {
+                                OrderSide::Buy => 1,
+                                OrderSide::Sell => -1,
+                            },
+                            "productType": "INTRADAY",
+                            "limitPrice": price,
+                            "stopPrice": 0,
+                            "validity": "DAY",
+                            "disclosedQty": 0,
+                            "offlineOrder": false
+                        });
+                
+                        let response = self.post(FyersEndpoint::PlaceOrder, body).await?;
+                        FyersParser::parse_order(&response).map(PlaceOrderResponse::Simple)
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+            )),
+        }
     }
 
-    async fn limit_order(
+    async fn get_order_history(
         &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        price: Price,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
-
-        let body = json!({
-            "symbol": symbol_str,
-            "qty": quantity as i64,
-            "type": 1, // LIMIT
-            "side": match side {
-                OrderSide::Buy => 1,
-                OrderSide::Sell => -1,
-            },
-            "productType": "INTRADAY",
-            "limitPrice": price,
-            "stopPrice": 0,
-            "validity": "DAY",
-            "disclosedQty": 0,
-            "offlineOrder": false
-        });
-
-        let response = self.post(FyersEndpoint::PlaceOrder, body).await?;
-        FyersParser::parse_order(&response)
-    }
-
-    async fn cancel_order(
-        &self,
-        _symbol: Symbol,
-        order_id: &str,
+        _filter: OrderHistoryFilter,
         _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let body = json!({
-            "id": order_id
-        });
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_order_history not yet implemented".to_string()
+        ))
+    }
+async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+        match req.scope {
+            CancelScope::Single { ref order_id } => {
+                let _symbol = req.symbol.as_ref()
+                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel".into()))?
+                    .clone();
+                let _account_type = req.account_type;
 
-        let response = self.delete(FyersEndpoint::CancelOrder, HashMap::new(), body).await?;
-        FyersParser::parse_order(&response)
+            let body = json!({
+                "id": order_id
+            });
+
+            let response = self.delete(FyersEndpoint::CancelOrder, HashMap::new(), body).await?;
+            FyersParser::parse_order(&response)
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
+            )),
+        }
     }
 
     async fn get_order(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         order_id: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Order> {
+        // Parse symbol string into Symbol struct
+        let _symbol_parts: Vec<&str> = _symbol.split('/').collect();
+        let _symbol = if _symbol_parts.len() == 2 {
+            crate::core::Symbol::new(_symbol_parts[0], _symbol_parts[1])
+        } else {
+            crate::core::Symbol { base: _symbol.to_string(), quote: String::new(), raw: Some(_symbol.to_string()) }
+        };
+
         // Fyers doesn't have a single order endpoint, so we get all orders and filter
         let response = self.get(FyersEndpoint::GetOrders, HashMap::new()).await?;
         let orders = FyersParser::parse_orders(&response)?;
@@ -442,13 +468,25 @@ impl Trading for FyersConnector {
             .into_iter()
             .find(|o| o.id == order_id)
             .ok_or_else(|| ExchangeError::NotFound(format!("Order {} not found", order_id)))
+    
     }
 
     async fn get_open_orders(
         &self,
-        symbol: Option<Symbol>,
+        symbol: Option<&str>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
+        // Convert Option<&str> to Option<Symbol>
+        let symbol_str = symbol;
+        let symbol: Option<crate::core::Symbol> = symbol_str.map(|s| {
+            let parts: Vec<&str> = s.split('/').collect();
+            if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: s.to_string(), quote: String::new(), raw: Some(s.to_string()) }
+            }
+        });
+
         let response = self.get(FyersEndpoint::GetOrders, HashMap::new()).await?;
         let mut orders = FyersParser::parse_orders(&response)?;
 
@@ -467,33 +505,39 @@ impl Trading for FyersConnector {
         }
 
         Ok(orders)
+    
     }
 }
 
 #[async_trait]
 impl Account for FyersConnector {
-    async fn get_balance(
-        &self,
-        _asset: Option<Asset>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Balance>> {
+    async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        let _asset = query.asset.clone();
+        let _account_type = query.account_type;
+
         let response = self.get(FyersEndpoint::Funds, HashMap::new()).await?;
         FyersParser::parse_balance(&response)
+    
     }
 
     async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
         let response = self.get(FyersEndpoint::Profile, HashMap::new()).await?;
         FyersParser::parse_account_info(&response)
     }
+
+    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_fees not yet implemented".to_string()
+        ))
+    }
 }
 
 #[async_trait]
 impl Positions for FyersConnector {
-    async fn get_positions(
-        &self,
-        symbol: Option<Symbol>,
-        account_type: AccountType,
-    ) -> ExchangeResult<Vec<Position>> {
+    async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
+        let symbol = query.symbol.clone();
+        let account_type = query.account_type;
+
         let response = self.get(FyersEndpoint::Positions, HashMap::new()).await?;
         let mut positions = FyersParser::parse_positions(&response)?;
 
@@ -504,31 +548,49 @@ impl Positions for FyersConnector {
         }
 
         Ok(positions)
+    
     }
 
     async fn get_funding_rate(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
+        // Parse symbol string into Symbol struct
+        let _symbol_str = _symbol;
+        let _symbol = {
+            let parts: Vec<&str> = _symbol_str.split('/').collect();
+            if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: _symbol_str.to_string(), quote: String::new(), raw: Some(_symbol_str.to_string()) }
+            }
+        };
+
         // Fyers is not a perpetual futures exchange
         // F&O contracts on NSE/BSE don't have funding rates
         Err(ExchangeError::UnsupportedOperation(
             "Funding rates not applicable for Indian F&O market".to_string(),
         ))
+    
     }
 
-    async fn set_leverage(
-        &self,
-        _symbol: Symbol,
-        _leverage: u32,
-        _account_type: AccountType,
-    ) -> ExchangeResult<()> {
-        // Leverage in Indian markets is product-specific (INTRADAY/MARGIN)
-        // Not configurable per symbol
-        Err(ExchangeError::UnsupportedOperation(
-            "Leverage is product-specific in Indian markets. Use productType in orders.".to_string(),
-        ))
+    async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
+        match req {
+            PositionModification::SetLeverage { symbol: ref _symbol, leverage: _leverage, account_type: _account_type } => {
+                let _symbol = _symbol.clone();
+
+                // Leverage in Indian markets is product-specific (INTRADAY/MARGIN)
+                // Not configurable per symbol
+                Err(ExchangeError::UnsupportedOperation(
+                "Leverage is product-specific in Indian markets. Use productType in orders.".to_string(),
+                ))
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} not supported on {:?}", req, self.exchange_id())
+            )),
+        }
     }
 }
 

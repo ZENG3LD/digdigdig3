@@ -278,8 +278,8 @@ impl BybitParser {
 
         let order_type = match data["orderType"].as_str() {
             Some("Market") => OrderType::Market,
-            Some("Limit") => OrderType::Limit,
-            _ => OrderType::Limit, // default
+            Some("Limit") => OrderType::Limit { price: 0.0 },
+            _ => OrderType::Limit { price: 0.0 }, // default
         };
 
         let status = Self::parse_order_status(data["orderStatus"].as_str().unwrap_or(""));
@@ -317,7 +317,7 @@ impl BybitParser {
             quantity,
             filled_quantity,
             average_price,
-            time_in_force: TimeInForce::GTC,
+            time_in_force: TimeInForce::Gtc,
             commission: None,
             commission_asset: None,
             created_at,

@@ -26,8 +26,11 @@ use crate::core::{
     ExchangeId, AccountType, Symbol,
     ExchangeError, ExchangeResult,
     Price, Quantity, Kline, Ticker, OrderBook,
-    Order, OrderSide, Balance, AccountInfo,
+    Order, OrderSide, OrderType,Balance, AccountInfo,
     Position, FundingRate, PublicTrade,
+    OrderRequest, CancelRequest, CancelScope,
+    BalanceQuery, PositionQuery, PositionModification,
+    OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
@@ -405,51 +408,87 @@ impl MarketData for LighterConnector {
 
 #[async_trait]
 impl Trading for LighterConnector {
-    async fn market_order(
-        &self,
-        _symbol: Symbol,
-        _side: OrderSide,
-        _quantity: Quantity,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        Err(ExchangeError::NotSupported("Trading not yet implemented (Phase 3)".to_string()))
+    async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
+        let _symbol = req.symbol.clone();
+        let _side = req.side;
+        let _quantity = req.quantity;
+        let _account_type = req.account_type;
+
+        match req.order_type {
+            OrderType::Market => {
+                Err(ExchangeError::UnsupportedOperation("Trading not yet implemented (Phase 3)".to_string()))
+            }
+            OrderType::Limit { price: _price } => {
+                Err(ExchangeError::UnsupportedOperation("Trading not yet implemented (Phase 3)".to_string()))
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+            )),
+        }
     }
 
-    async fn limit_order(
+    async fn get_order_history(
         &self,
-        _symbol: Symbol,
-        _side: OrderSide,
-        _quantity: Quantity,
-        _price: Price,
+        _filter: OrderHistoryFilter,
         _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        Err(ExchangeError::NotSupported("Trading not yet implemented (Phase 3)".to_string()))
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_order_history not yet implemented".to_string()
+        ))
     }
+async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+        match req.scope {
+            CancelScope::Single { order_id: ref _order_id } => {
+                let _symbol = req.symbol.as_ref()
+                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel".into()))?
+                    .clone();
+                let _account_type = req.account_type;
 
-    async fn cancel_order(
-        &self,
-        _symbol: Symbol,
-        _order_id: &str,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        Err(ExchangeError::NotSupported("Trading not yet implemented (Phase 3)".to_string()))
+            Err(ExchangeError::UnsupportedOperation("Trading not yet implemented (Phase 3)".to_string()))
+
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
+            )),
+        }
     }
 
     async fn get_order(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         _order_id: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Order> {
-        Err(ExchangeError::NotSupported("Trading not yet implemented (Phase 3)".to_string()))
+        // Parse symbol string into Symbol struct
+        let _symbol_parts: Vec<&str> = _symbol.split('/').collect();
+        let _symbol = if _symbol_parts.len() == 2 {
+            crate::core::Symbol::new(_symbol_parts[0], _symbol_parts[1])
+        } else {
+            crate::core::Symbol { base: _symbol.to_string(), quote: String::new(), raw: Some(_symbol.to_string()) }
+        };
+
+        Err(ExchangeError::UnsupportedOperation("Trading not yet implemented (Phase 3)".to_string()))
+    
     }
 
     async fn get_open_orders(
         &self,
-        _symbol: Option<Symbol>,
+        _symbol: Option<&str>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::NotSupported("Trading not yet implemented (Phase 3)".to_string()))
+        // Convert Option<&str> to Option<Symbol>
+        let _symbol_str = _symbol;
+        let _symbol: Option<crate::core::Symbol> = _symbol_str.map(|s| {
+            let parts: Vec<&str> = s.split('/').collect();
+            if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: s.to_string(), quote: String::new(), raw: Some(s.to_string()) }
+            }
+        });
+
+        Err(ExchangeError::UnsupportedOperation("Trading not yet implemented (Phase 3)".to_string()))
+    
     }
 }
 
@@ -459,16 +498,18 @@ impl Trading for LighterConnector {
 
 #[async_trait]
 impl Account for LighterConnector {
-    async fn get_balance(
-        &self,
-        _asset: Option<crate::core::types::Asset>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Balance>> {
+    async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         Err(ExchangeError::NotSupported("Account data not yet implemented (Phase 2)".to_string()))
     }
 
     async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
         Err(ExchangeError::NotSupported("Account data not yet implemented (Phase 2)".to_string()))
+    }
+
+    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_fees not yet implemented".to_string()
+        ))
     }
 }
 
@@ -478,19 +519,30 @@ impl Account for LighterConnector {
 
 #[async_trait]
 impl Positions for LighterConnector {
-    async fn get_positions(
-        &self,
-        _symbol: Option<Symbol>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Position>> {
+    async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
+        let _symbol = query.symbol.clone();
+        let _account_type = query.account_type;
+
         Err(ExchangeError::NotSupported("Positions not yet implemented (Phase 2)".to_string()))
+    
     }
 
     async fn get_funding_rate(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
+        // Parse symbol string into Symbol struct
+        let symbol_str = symbol;
+        let symbol = {
+            let parts: Vec<&str> = symbol_str.split('/').collect();
+            if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: symbol_str.to_string(), quote: String::new(), raw: Some(symbol_str.to_string()) }
+            }
+        };
+
         let formatted_symbol = if let Some(raw) = symbol.raw() {
             raw.to_string()
         } else {
@@ -505,15 +557,21 @@ impl Positions for LighterConnector {
         let mut funding = LighterParser::parse_funding_rate(&response)?;
         funding.symbol = symbol.to_string();
         Ok(funding)
+    
     }
 
-    async fn set_leverage(
-        &self,
-        _symbol: Symbol,
-        _leverage: u32,
-        _account_type: AccountType,
-    ) -> ExchangeResult<()> {
-        Err(ExchangeError::NotSupported("Leverage not yet implemented (Phase 2)".to_string()))
+    async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
+        match req {
+            PositionModification::SetLeverage { symbol: ref _symbol, leverage: _leverage, account_type: _account_type } => {
+                let _symbol = _symbol.clone();
+
+                Err(ExchangeError::NotSupported("Leverage not yet implemented (Phase 2)".to_string()))
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} not supported on {:?}", req, self.exchange_id())
+            )),
+        }
     }
 }
 

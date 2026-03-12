@@ -26,6 +26,9 @@ use crate::core::{
     Price, Quantity, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, Balance, AccountInfo,
     Position, FundingRate, OrderStatus, TimeInForce,
+    OrderRequest, CancelRequest, CancelScope,
+    BalanceQuery, PositionQuery, PositionModification,
+    OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
@@ -332,11 +335,9 @@ impl AngelOneConnector {
         if let Some(ot) = order_type {
             body["ordertype"] = json!(match ot {
                 OrderType::Market => "MARKET",
-                OrderType::Limit => "LIMIT",
-                OrderType::StopLoss => "STOPLOSS_MARKET",
-                OrderType::StopLossLimit => "STOPLOSS_LIMIT",
-                OrderType::TakeProfit => "LIMIT", // Angel One doesn't have native take profit
-                OrderType::TakeProfitLimit => "LIMIT",
+                OrderType::StopMarket { .. } => "STOPLOSS_MARKET",
+                OrderType::StopLimit { .. } => "STOPLOSS_LIMIT",
+                _ => "LIMIT",
             });
         }
 
@@ -576,138 +577,161 @@ impl MarketData for AngelOneConnector {
 
 #[async_trait]
 impl Trading for AngelOneConnector {
-    async fn market_order(
-        &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let body = json!({
-            "variety": "NORMAL",
-            "tradingsymbol": format_symbol(&symbol),
-            "symboltoken": format_symbol(&symbol), // Should be actual token
-            "transactiontype": match side {
-                OrderSide::Buy => "BUY",
-                OrderSide::Sell => "SELL",
-            },
-            "exchange": "NSE",
-            "ordertype": "MARKET",
-            "producttype": "INTRADAY",
-            "duration": "DAY",
-            "quantity": quantity.to_string(),
-        });
+    async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
+        let symbol = req.symbol.clone();
+        let side = req.side;
+        let quantity = req.quantity;
+        let account_type = req.account_type;
 
-        let response = self.post(AngelOneEndpoint::PlaceOrder, body).await?;
-        let order_id = AngelOneParser::parse_order_id(&response)?;
+        match req.order_type {
+            OrderType::Market => {
+                let body = json!({
+                            "variety": "NORMAL",
+                            "tradingsymbol": format_symbol(&symbol),
+                            "symboltoken": format_symbol(&symbol), // Should be actual token
+                            "transactiontype": match side {
+                                OrderSide::Buy => "BUY",
+                                OrderSide::Sell => "SELL",
+                            },
+                            "exchange": "NSE",
+                            "ordertype": "MARKET",
+                            "producttype": "INTRADAY",
+                            "duration": "DAY",
+                            "quantity": quantity.to_string(),
+                        });
+                
+                        let response = self.post(AngelOneEndpoint::PlaceOrder, body).await?;
+                        let order_id = AngelOneParser::parse_order_id(&response)?;
 
-        Ok(Order {
-            id: order_id,
-            client_order_id: None,
-            symbol: symbol.to_string(),
-            side,
-            order_type: OrderType::Market,
-            status: OrderStatus::New,
-            price: None,
-            stop_price: None,
-            quantity,
-            filled_quantity: 0.0,
-            average_price: None,
-            commission: None,
-            commission_asset: None,
-            created_at: timestamp_millis() as i64,
-            updated_at: None,
-            time_in_force: TimeInForce::GTC,
-        })
+                        Ok(PlaceOrderResponse::Simple(Order {
+                            id: order_id,
+                            client_order_id: None,
+                            symbol: symbol.to_string(),
+                            side,
+                            order_type: OrderType::Market,
+                            status: OrderStatus::New,
+                            price: None,
+                            stop_price: None,
+                            quantity,
+                            filled_quantity: 0.0,
+                            average_price: None,
+                            commission: None,
+                            commission_asset: None,
+                            created_at: timestamp_millis() as i64,
+                            updated_at: None,
+                            time_in_force: TimeInForce::Gtc,
+                        }))
+            }
+            OrderType::Limit { price } => {
+                let body = json!({
+                            "variety": "NORMAL",
+                            "tradingsymbol": format_symbol(&symbol),
+                            "symboltoken": format_symbol(&symbol),
+                            "transactiontype": match side {
+                                OrderSide::Buy => "BUY",
+                                OrderSide::Sell => "SELL",
+                            },
+                            "exchange": "NSE",
+                            "ordertype": "LIMIT",
+                            "producttype": "INTRADAY",
+                            "duration": "DAY",
+                            "price": price.to_string(),
+                            "quantity": quantity.to_string(),
+                        });
+                
+                        let response = self.post(AngelOneEndpoint::PlaceOrder, body).await?;
+                        let order_id = AngelOneParser::parse_order_id(&response)?;
+
+                        Ok(PlaceOrderResponse::Simple(Order {
+                            id: order_id,
+                            client_order_id: None,
+                            symbol: symbol.to_string(),
+                            side,
+                            order_type: OrderType::Limit { price: 0.0 },
+                            status: OrderStatus::New,
+                            price: Some(price),
+                            stop_price: None,
+                            quantity,
+                            filled_quantity: 0.0,
+                            average_price: None,
+                            commission: None,
+                            commission_asset: None,
+                            created_at: timestamp_millis() as i64,
+                            updated_at: None,
+                            time_in_force: TimeInForce::Gtc,
+                        }))
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+            )),
+        }
     }
 
-    async fn limit_order(
+    async fn get_order_history(
         &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        price: Price,
+        _filter: OrderHistoryFilter,
         _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let body = json!({
-            "variety": "NORMAL",
-            "tradingsymbol": format_symbol(&symbol),
-            "symboltoken": format_symbol(&symbol),
-            "transactiontype": match side {
-                OrderSide::Buy => "BUY",
-                OrderSide::Sell => "SELL",
-            },
-            "exchange": "NSE",
-            "ordertype": "LIMIT",
-            "producttype": "INTRADAY",
-            "duration": "DAY",
-            "price": price.to_string(),
-            "quantity": quantity.to_string(),
-        });
-
-        let response = self.post(AngelOneEndpoint::PlaceOrder, body).await?;
-        let order_id = AngelOneParser::parse_order_id(&response)?;
-
-        Ok(Order {
-            id: order_id,
-            client_order_id: None,
-            symbol: symbol.to_string(),
-            side,
-            order_type: OrderType::Limit,
-            status: OrderStatus::New,
-            price: Some(price),
-            stop_price: None,
-            quantity,
-            filled_quantity: 0.0,
-            average_price: None,
-            commission: None,
-            commission_asset: None,
-            created_at: timestamp_millis() as i64,
-            updated_at: None,
-            time_in_force: TimeInForce::GTC,
-        })
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_order_history not yet implemented".to_string()
+        ))
     }
+async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+        match req.scope {
+            CancelScope::Single { ref order_id } => {
+                let symbol = req.symbol.as_ref()
+                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel".into()))?
+                    .clone();
+                let _account_type = req.account_type;
 
-    async fn cancel_order(
-        &self,
-        symbol: Symbol,
-        order_id: &str,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let body = json!({
-            "variety": "NORMAL",
-            "orderid": order_id
-        });
+            let body = json!({
+                "variety": "NORMAL",
+                "orderid": order_id
+            });
 
-        let response = self.post(AngelOneEndpoint::CancelOrder, body).await?;
-        self.check_response(&response)?;
+            let response = self.post(AngelOneEndpoint::CancelOrder, body).await?;
+            self.check_response(&response)?;
 
-        Ok(Order {
-            id: order_id.to_string(),
-            client_order_id: None,
-            symbol: symbol.to_string(),
-            side: OrderSide::Buy,
-            order_type: OrderType::Limit,
-            status: OrderStatus::Canceled,
-            price: None,
-            stop_price: None,
-            quantity: 0.0,
-            filled_quantity: 0.0,
-            average_price: None,
-            commission: None,
-            commission_asset: None,
-            created_at: 0,
-            updated_at: Some(timestamp_millis() as i64),
-            time_in_force: TimeInForce::GTC,
-        })
+            Ok(Order {
+                id: order_id.to_string(),
+                client_order_id: None,
+                symbol: symbol.to_string(),
+                side: OrderSide::Buy,
+                order_type: OrderType::Limit { price: 0.0 },
+                status: OrderStatus::Canceled,
+                price: None,
+                stop_price: None,
+                quantity: 0.0,
+                filled_quantity: 0.0,
+                average_price: None,
+                commission: None,
+                commission_asset: None,
+                created_at: 0,
+                updated_at: Some(timestamp_millis() as i64),
+                time_in_force: TimeInForce::Gtc,
+            })
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
+            )),
+        }
     }
 
     async fn get_order(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         order_id: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Order> {
+        // Parse symbol string into Symbol struct
+        let _symbol_parts: Vec<&str> = _symbol.split('/').collect();
+        let _symbol = if _symbol_parts.len() == 2 {
+            crate::core::Symbol::new(_symbol_parts[0], _symbol_parts[1])
+        } else {
+            crate::core::Symbol { base: _symbol.to_string(), quote: String::new(), raw: Some(_symbol.to_string()) }
+        };
+
         let mut params = HashMap::new();
         params.insert("orderid".to_string(), order_id.to_string());
 
@@ -730,15 +754,27 @@ impl Trading for AngelOneConnector {
             commission_asset: None,
             created_at: timestamp_millis() as i64,
             updated_at: Some(timestamp_millis() as i64),
-            time_in_force: TimeInForce::GTC,
+            time_in_force: TimeInForce::Gtc,
         })
+    
     }
 
     async fn get_open_orders(
         &self,
-        _symbol: Option<Symbol>,
+        _symbol: Option<&str>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
+        // Convert Option<&str> to Option<Symbol>
+        let _symbol_str = _symbol;
+        let _symbol: Option<crate::core::Symbol> = _symbol_str.map(|s| {
+            let parts: Vec<&str> = s.split('/').collect();
+            if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: s.to_string(), quote: String::new(), raw: Some(s.to_string()) }
+            }
+        });
+
         let order_book = self.get_order_book().await?;
 
         let orders: Vec<Order> = order_book.iter()
@@ -766,9 +802,9 @@ impl Trading for AngelOneConnector {
 
                     let order_type = match order.get("ordertype").and_then(|s| s.as_str()) {
                         Some("MARKET") => OrderType::Market,
-                        Some("LIMIT") => OrderType::Limit,
-                        Some("STOPLOSS_LIMIT") => OrderType::StopLossLimit,
-                        Some("STOPLOSS_MARKET") => OrderType::StopLoss,
+                        Some("LIMIT") => OrderType::Limit { price: 0.0 },
+                        Some("STOPLOSS_LIMIT") => OrderType::StopLimit { stop_price: 0.0, limit_price: 0.0 },
+                        Some("STOPLOSS_MARKET") => OrderType::StopMarket { stop_price: 0.0 },
                         _ => OrderType::Market,
                     };
 
@@ -788,7 +824,7 @@ impl Trading for AngelOneConnector {
                         commission_asset: None,
                         created_at: timestamp_millis() as i64,
                         updated_at: None,
-                        time_in_force: TimeInForce::GTC,
+                        time_in_force: TimeInForce::Gtc,
                     })
                 } else {
                     None
@@ -797,6 +833,7 @@ impl Trading for AngelOneConnector {
             .collect();
 
         Ok(orders)
+    
     }
 }
 
@@ -806,13 +843,13 @@ impl Trading for AngelOneConnector {
 
 #[async_trait]
 impl Account for AngelOneConnector {
-    async fn get_balance(
-        &self,
-        _asset: Option<crate::core::Asset>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Balance>> {
+    async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        let _asset = query.asset.clone();
+        let _account_type = query.account_type;
+
         let response = self.get(AngelOneEndpoint::GetRMS, HashMap::new()).await?;
         AngelOneParser::parse_balance(&response)
+    
     }
 
     async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
@@ -820,10 +857,16 @@ impl Account for AngelOneConnector {
         let mut account_info = AngelOneParser::parse_account_info(&response)?;
 
         // Add balance information
-        let balances = self.get_balance(None, account_type).await?;
+        let balances = self.get_balance(BalanceQuery { asset: None, account_type }).await?;
         account_info.balances = balances;
 
         Ok(account_info)
+    }
+
+    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_fees not yet implemented".to_string()
+        ))
     }
 }
 
@@ -833,38 +876,55 @@ impl Account for AngelOneConnector {
 
 #[async_trait]
 impl Positions for AngelOneConnector {
-    async fn get_positions(
-        &self,
-        _symbol: Option<Symbol>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Position>> {
+    async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
+        let _symbol = query.symbol.clone();
+        let _account_type = query.account_type;
+
         let response = self.get(AngelOneEndpoint::GetPositions, HashMap::new()).await?;
         AngelOneParser::parse_positions(&response)
+    
     }
 
     async fn get_funding_rate(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
+        // Parse symbol string into Symbol struct
+        let _symbol_str = _symbol;
+        let _symbol = {
+            let parts: Vec<&str> = _symbol_str.split('/').collect();
+            if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: _symbol_str.to_string(), quote: String::new(), raw: Some(_symbol_str.to_string()) }
+            }
+        };
+
         // Angel One doesn't have funding rates (not a crypto perpetual futures exchange)
         // Indian F&O contracts have expiry dates, not funding rates
         Err(ExchangeError::UnsupportedOperation(
             "Funding rates not applicable for Indian equity/F&O markets".to_string()
         ))
+    
     }
 
-    async fn set_leverage(
-        &self,
-        _symbol: Symbol,
-        _leverage: u32,
-        _account_type: AccountType,
-    ) -> ExchangeResult<()> {
-        // Angel One doesn't have adjustable leverage
-        // Margin is determined by product type (INTRADAY, DELIVERY, etc.)
-        Err(ExchangeError::UnsupportedOperation(
-            "Leverage is fixed by product type in Indian markets".to_string()
-        ))
+    async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
+        match req {
+            PositionModification::SetLeverage { symbol: ref _symbol, leverage: _leverage, account_type: _account_type } => {
+                let _symbol = _symbol.clone();
+
+                // Angel One doesn't have adjustable leverage
+                // Margin is determined by product type (INTRADAY, DELIVERY, etc.)
+                Err(ExchangeError::UnsupportedOperation(
+                "Leverage is fixed by product type in Indian markets".to_string()
+                ))
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} not supported on {:?}", req, self.exchange_id())
+            )),
+        }
     }
 }
 

@@ -23,8 +23,11 @@ use crate::core::{
     ExchangeId, ExchangeType, AccountType, Symbol, Asset,
     ExchangeError, ExchangeResult,
     Price, Quantity, Kline, Ticker, OrderBook,
-    Order, OrderSide, OrderStatus, Balance, AccountInfo,
+    Order, OrderSide, OrderType,OrderStatus, Balance, AccountInfo,
     Position,
+    OrderRequest, CancelRequest, CancelScope,
+    BalanceQuery, PositionQuery, PositionModification,
+    OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
@@ -462,94 +465,119 @@ impl MarketData for UpstoxConnector {
 
 #[async_trait]
 impl Trading for UpstoxConnector {
-    async fn market_order(
-        &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let instrument_key = format_symbol(&symbol);
-        let transaction_type = match side {
-            OrderSide::Buy => "BUY",
-            OrderSide::Sell => "SELL",
-        };
+    async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
+        let symbol = req.symbol.clone();
+        let side = req.side;
+        let quantity = req.quantity;
+        let account_type = req.account_type;
 
-        let body = json!({
-            "quantity": quantity as i64,
-            "product": "I", // Intraday
-            "validity": "DAY",
-            "price": 0,
-            "instrument_token": instrument_key,
-            "order_type": "MARKET",
-            "transaction_type": transaction_type,
-            "disclosed_quantity": 0,
-            "trigger_price": 0,
-            "is_amo": false
-        });
-
-        let response = self.post(UpstoxEndpoint::OrderPlaceV3, body, true).await?;
-        let order_id = UpstoxParser::parse_order_id(&response)?;
-
-        // Fetch order details
-        self.get_order(symbol, &order_id, _account_type).await
+        match req.order_type {
+            OrderType::Market => {
+                let instrument_key = format_symbol(&symbol);
+                        let transaction_type = match side {
+                            OrderSide::Buy => "BUY",
+                            OrderSide::Sell => "SELL",
+                        };
+                
+                        let body = json!({
+                            "quantity": quantity as i64,
+                            "product": "I", // Intraday
+                            "validity": "DAY",
+                            "price": 0,
+                            "instrument_token": instrument_key,
+                            "order_type": "MARKET",
+                            "transaction_type": transaction_type,
+                            "disclosed_quantity": 0,
+                            "trigger_price": 0,
+                            "is_amo": false
+                        });
+                
+                        let response = self.post(UpstoxEndpoint::OrderPlaceV3, body, true).await?;
+                        let order_id = UpstoxParser::parse_order_id(&response)?;
+                
+                        // Fetch order details
+                        let order = self.get_order(&format_symbol(&symbol), &order_id, account_type).await?;
+                        Ok(PlaceOrderResponse::Simple(order))
+            }
+            OrderType::Limit { price } => {
+                let instrument_key = format_symbol(&symbol);
+                        let transaction_type = match side {
+                            OrderSide::Buy => "BUY",
+                            OrderSide::Sell => "SELL",
+                        };
+                
+                        let body = json!({
+                            "quantity": quantity as i64,
+                            "product": "I", // Intraday
+                            "validity": "DAY",
+                            "price": price,
+                            "instrument_token": instrument_key,
+                            "order_type": "LIMIT",
+                            "transaction_type": transaction_type,
+                            "disclosed_quantity": 0,
+                            "trigger_price": 0,
+                            "is_amo": false
+                        });
+                
+                        let response = self.post(UpstoxEndpoint::OrderPlaceV3, body, true).await?;
+                        let order_id = UpstoxParser::parse_order_id(&response)?;
+                
+                        // Fetch order details
+                        let order = self.get_order(&format_symbol(&symbol), &order_id, account_type).await?;
+                        Ok(PlaceOrderResponse::Simple(order))
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+            )),
+        }
     }
 
-    async fn limit_order(
+    async fn get_order_history(
         &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        price: Price,
+        _filter: OrderHistoryFilter,
         _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let instrument_key = format_symbol(&symbol);
-        let transaction_type = match side {
-            OrderSide::Buy => "BUY",
-            OrderSide::Sell => "SELL",
-        };
-
-        let body = json!({
-            "quantity": quantity as i64,
-            "product": "I", // Intraday
-            "validity": "DAY",
-            "price": price,
-            "instrument_token": instrument_key,
-            "order_type": "LIMIT",
-            "transaction_type": transaction_type,
-            "disclosed_quantity": 0,
-            "trigger_price": 0,
-            "is_amo": false
-        });
-
-        let response = self.post(UpstoxEndpoint::OrderPlaceV3, body, true).await?;
-        let order_id = UpstoxParser::parse_order_id(&response)?;
-
-        // Fetch order details
-        self.get_order(symbol, &order_id, _account_type).await
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_order_history not yet implemented".to_string()
+        ))
     }
+async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+        match req.scope {
+            CancelScope::Single { ref order_id } => {
+                let _symbol = req.symbol.as_ref()
+                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel".into()))?
+                    .clone();
+                let _account_type = req.account_type;
 
-    async fn cancel_order(
-        &self,
-        _symbol: Symbol,
-        order_id: &str,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let mut params = HashMap::new();
-        params.insert("order_id".to_string(), order_id.to_string());
+            let mut params = HashMap::new();
+            params.insert("order_id".to_string(), order_id.to_string());
 
-        let _response = self.delete(UpstoxEndpoint::OrderCancel, params).await?;
+            let _response = self.delete(UpstoxEndpoint::OrderCancel, params).await?;
 
-        // Fetch updated order details after cancellation
-        self.get_order(_symbol, order_id, _account_type).await
+            // Fetch updated order details after cancellation
+            self.get_order(&format_symbol(&_symbol), order_id, _account_type).await
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
+            )),
+        }
     }
 
     async fn get_order(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         order_id: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Order> {
+        // Parse symbol string into Symbol struct
+        let _symbol_parts: Vec<&str> = _symbol.split('/').collect();
+        let _symbol = if _symbol_parts.len() == 2 {
+            crate::core::Symbol::new(_symbol_parts[0], _symbol_parts[1])
+        } else {
+            crate::core::Symbol { base: _symbol.to_string(), quote: String::new(), raw: Some(_symbol.to_string()) }
+        };
+
         // Get all orders and find the specific one
         let response = self.get(UpstoxEndpoint::OrderBook, HashMap::new(), false).await?;
         let orders = UpstoxParser::parse_orders(&response)?;
@@ -557,13 +585,25 @@ impl Trading for UpstoxConnector {
         orders.into_iter()
             .find(|o| o.id == order_id)
             .ok_or_else(|| ExchangeError::InvalidRequest(format!("Order {} not found", order_id)))
+    
     }
 
     async fn get_open_orders(
         &self,
-        _symbol: Option<Symbol>,
+        _symbol: Option<&str>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
+        // Convert Option<&str> to Option<Symbol>
+        let _symbol_str = _symbol;
+        let _symbol: Option<crate::core::Symbol> = _symbol_str.map(|s| {
+            let parts: Vec<&str> = s.split('/').collect();
+            if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: s.to_string(), quote: String::new(), raw: Some(s.to_string()) }
+            }
+        });
+
         let response = self.get(UpstoxEndpoint::OrderBook, HashMap::new(), false).await?;
         let orders = UpstoxParser::parse_orders(&response)?;
 
@@ -571,6 +611,7 @@ impl Trading for UpstoxConnector {
         Ok(orders.into_iter()
             .filter(|o| matches!(o.status, OrderStatus::Open | OrderStatus::New | OrderStatus::PartiallyFilled))
             .collect())
+    
     }
 }
 
@@ -580,13 +621,13 @@ impl Trading for UpstoxConnector {
 
 #[async_trait]
 impl Account for UpstoxConnector {
-    async fn get_balance(
-        &self,
-        _asset: Option<Asset>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Balance>> {
+    async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        let _asset = query.asset.clone();
+        let _account_type = query.account_type;
+
         let response = self.get(UpstoxEndpoint::FundsAndMargin, HashMap::new(), false).await?;
         UpstoxParser::parse_balance(&response)
+    
     }
 
     async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
@@ -605,6 +646,12 @@ impl Account for UpstoxConnector {
             balances: vec![],
         })
     }
+
+    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_fees not yet implemented".to_string()
+        ))
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -613,37 +660,42 @@ impl Account for UpstoxConnector {
 
 #[async_trait]
 impl Positions for UpstoxConnector {
-    async fn get_positions(
-        &self,
-        _symbol: Option<Symbol>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Position>> {
+    async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
+        let _symbol = query.symbol.clone();
+        let _account_type = query.account_type;
+
         let response = self.get(UpstoxEndpoint::PositionsShortTerm, HashMap::new(), false).await?;
         UpstoxParser::parse_positions(&response)
+    
     }
 
     async fn get_funding_rate(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<crate::core::FundingRate> {
         // Upstox doesn't have perpetual contracts (no funding rate)
-        Err(ExchangeError::NotSupported(
+        Err(ExchangeError::UnsupportedOperation(
             "Funding rate not supported - Upstox offers futures, not perpetuals".to_string()
         ))
     }
 
-    async fn set_leverage(
-        &self,
-        _symbol: Symbol,
-        _leverage: u32,
-        _account_type: AccountType,
-    ) -> ExchangeResult<()> {
-        // Upstox doesn't support dynamic leverage setting
-        // Margin requirements are fixed by exchange/SEBI regulations
-        Err(ExchangeError::NotSupported(
-            "Dynamic leverage not supported - margins are regulated by SEBI".to_string()
-        ))
+    async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
+        match req {
+            PositionModification::SetLeverage { symbol: ref _symbol, leverage: _leverage, account_type: _account_type } => {
+                let _symbol = _symbol.clone();
+
+                // Upstox doesn't support dynamic leverage setting
+                // Margin requirements are fixed by exchange/SEBI regulations
+                Err(ExchangeError::UnsupportedOperation(
+                "Dynamic leverage not supported - margins are regulated by SEBI".to_string()
+                ))
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} not supported on {:?}", req, self.exchange_id())
+            )),
+        }
     }
 }
 

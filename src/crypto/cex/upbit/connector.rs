@@ -24,7 +24,10 @@ use crate::core::{
     ExchangeId, AccountType, Symbol,
     ExchangeError, ExchangeResult,
     Price, Quantity, Kline, Ticker, OrderBook,
-    Order, OrderSide, Balance, AccountInfo, Asset,
+    Order, OrderSide, OrderType,Balance, AccountInfo,
+    OrderRequest, CancelRequest, CancelScope,
+    BalanceQuery, PositionQuery, PositionModification,
+    OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };
 use crate::core::types::SymbolInfo;
 use crate::core::traits::{
@@ -425,95 +428,119 @@ impl MarketData for UpbitConnector {
 
 #[async_trait]
 impl Trading for UpbitConnector {
-    async fn market_order(
-        &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let upbit_symbol = if let Some(raw) = symbol.raw() {
-            raw.to_string()
-        } else {
-            format_symbol(&symbol.base, &symbol.quote, account_type)
-        };
+    async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
+        let symbol = req.symbol.clone();
+        let side = req.side;
+        let quantity = req.quantity;
+        let account_type = req.account_type;
 
-        // Upbit order types: "price" (market buy with total spend), "market" (market sell)
-        let (ord_type, side_str) = match side {
-            OrderSide::Buy => ("price", "bid"),
-            OrderSide::Sell => ("market", "ask"),
-        };
-
-        let mut body = json!({
-            "market": upbit_symbol,
-            "side": side_str,
-            "ord_type": ord_type,
-        });
-
-        // Market buy: quantity is total amount to spend
-        // Market sell: quantity is volume to sell
-        match side {
-            OrderSide::Buy => {
-                body["price"] = json!(quantity.to_string());
-            },
-            OrderSide::Sell => {
-                body["volume"] = json!(quantity.to_string());
-            },
+        match req.order_type {
+            OrderType::Market => {
+                let upbit_symbol = if let Some(raw) = symbol.raw() {
+                            raw.to_string()
+                        } else {
+                            format_symbol(&symbol.base, &symbol.quote, account_type)
+                        };
+                
+                        // Upbit order types: "price" (market buy with total spend), "market" (market sell)
+                        let (ord_type, side_str) = match side {
+                            OrderSide::Buy => ("price", "bid"),
+                            OrderSide::Sell => ("market", "ask"),
+                        };
+                
+                        let mut body = json!({
+                            "market": upbit_symbol,
+                            "side": side_str,
+                            "ord_type": ord_type,
+                        });
+                
+                        // Market buy: quantity is total amount to spend
+                        // Market sell: quantity is volume to sell
+                        match side {
+                            OrderSide::Buy => {
+                                body["price"] = json!(quantity.to_string());
+                            },
+                            OrderSide::Sell => {
+                                body["volume"] = json!(quantity.to_string());
+                            },
+                        }
+                
+                        let response = self.post(UpbitEndpoint::CreateOrder, body, account_type).await?;
+                        UpbitParser::parse_order(&response, &upbit_symbol).map(PlaceOrderResponse::Simple)
+            }
+            OrderType::Limit { price } => {
+                let upbit_symbol = if let Some(raw) = symbol.raw() {
+                            raw.to_string()
+                        } else {
+                            format_symbol(&symbol.base, &symbol.quote, account_type)
+                        };
+                
+                        let side_str = match side {
+                            OrderSide::Buy => "bid",
+                            OrderSide::Sell => "ask",
+                        };
+                
+                        let body = json!({
+                            "market": upbit_symbol,
+                            "side": side_str,
+                            "ord_type": "limit",
+                            "volume": quantity.to_string(),
+                            "price": price.to_string(),
+                        });
+                
+                        let response = self.post(UpbitEndpoint::CreateOrder, body, account_type).await?;
+                        UpbitParser::parse_order(&response, &upbit_symbol).map(PlaceOrderResponse::Simple)
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+            )),
         }
-
-        let response = self.post(UpbitEndpoint::CreateOrder, body, account_type).await?;
-        UpbitParser::parse_order(&response, &upbit_symbol)
     }
 
-    async fn limit_order(
+    async fn get_order_history(
         &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        price: Price,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let upbit_symbol = if let Some(raw) = symbol.raw() {
-            raw.to_string()
-        } else {
-            format_symbol(&symbol.base, &symbol.quote, account_type)
-        };
+        _filter: OrderHistoryFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_order_history not yet implemented".to_string()
+        ))
+    }
+async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+        match req.scope {
+            CancelScope::Single { ref order_id } => {
+                let symbol = req.symbol.as_ref()
+                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel".into()))?;
+                let account_type = req.account_type;
 
-        let side_str = match side {
-            OrderSide::Buy => "bid",
-            OrderSide::Sell => "ask",
-        };
+                let upbit_symbol = if let Some(raw) = symbol.raw() {
+                    raw.to_string()
+                } else {
+                    format_symbol(&symbol.base, &symbol.quote, account_type)
+                };
+                let mut params = HashMap::new();
+                params.insert("uuid".to_string(), order_id.to_string());
 
-        let body = json!({
-            "market": upbit_symbol,
-            "side": side_str,
-            "ord_type": "limit",
-            "volume": quantity.to_string(),
-            "price": price.to_string(),
-        });
-
-        let response = self.post(UpbitEndpoint::CreateOrder, body, account_type).await?;
-        UpbitParser::parse_order(&response, &upbit_symbol)
+                let response = self.delete(UpbitEndpoint::CancelOrder, params, account_type).await?;
+                UpbitParser::parse_order(&response, &upbit_symbol)
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
+            )),
+        }
     }
 
-    async fn cancel_order(&self, symbol: Symbol, order_id: &str, account_type: AccountType) -> ExchangeResult<Order> {
-        let upbit_symbol = if let Some(raw) = symbol.raw() {
-            raw.to_string()
+    async fn get_order(&self, symbol: &str, order_id: &str, account_type: AccountType) -> ExchangeResult<Order> {
+        let parts: Vec<&str> = symbol.split('/').collect();
+        let sym = if parts.len() == 2 {
+            crate::core::Symbol::new(parts[0], parts[1])
         } else {
-            format_symbol(&symbol.base, &symbol.quote, account_type)
+            crate::core::Symbol { base: symbol.to_string(), quote: String::new(), raw: Some(symbol.to_string()) }
         };
-        let mut params = HashMap::new();
-        params.insert("uuid".to_string(), order_id.to_string());
-
-        let response = self.delete(UpbitEndpoint::CancelOrder, params, account_type).await?;
-        UpbitParser::parse_order(&response, &upbit_symbol)
-    }
-
-    async fn get_order(&self, symbol: Symbol, order_id: &str, account_type: AccountType) -> ExchangeResult<Order> {
-        let upbit_symbol = if let Some(raw) = symbol.raw() {
+        let upbit_symbol = if let Some(raw) = sym.raw() {
             raw.to_string()
         } else {
-            format_symbol(&symbol.base, &symbol.quote, account_type)
+            format_symbol(&sym.base, &sym.quote, account_type)
         };
         let mut params = HashMap::new();
         params.insert("uuid".to_string(), order_id.to_string());
@@ -522,15 +549,21 @@ impl Trading for UpbitConnector {
         UpbitParser::parse_order(&response, &upbit_symbol)
     }
 
-    async fn get_open_orders(&self, symbol: Option<Symbol>, account_type: AccountType) -> ExchangeResult<Vec<Order>> {
+    async fn get_open_orders(&self, symbol: Option<&str>, account_type: AccountType) -> ExchangeResult<Vec<Order>> {
         let mut params = HashMap::new();
         params.insert("state".to_string(), "wait".to_string());
 
         if let Some(s) = symbol {
-            let upbit_symbol = if let Some(raw) = s.raw() {
+            let parts: Vec<&str> = s.split('/').collect();
+            let sym = if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: s.to_string(), quote: String::new(), raw: Some(s.to_string()) }
+            };
+            let upbit_symbol = if let Some(raw) = sym.raw() {
                 raw.to_string()
             } else {
-                format_symbol(&s.base, &s.quote, account_type)
+                format_symbol(&sym.base, &sym.quote, account_type)
             };
             params.insert("market".to_string(), upbit_symbol);
         }
@@ -542,7 +575,9 @@ impl Trading for UpbitConnector {
 
 #[async_trait]
 impl Account for UpbitConnector {
-    async fn get_balance(&self, asset: Option<Asset>, account_type: AccountType) -> ExchangeResult<Vec<Balance>> {
+    async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        let asset = query.asset.clone();
+        let account_type = query.account_type;
         let response = self.get(UpbitEndpoint::Balances, HashMap::new(), account_type).await?;
         let balances = UpbitParser::parse_balances(&response)?;
 
@@ -554,10 +589,11 @@ impl Account for UpbitConnector {
         } else {
             Ok(balances)
         }
+    
     }
 
     async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
-        let balances = self.get_balance(None, account_type).await?;
+        let balances = self.get_balance(BalanceQuery { asset: None, account_type }).await?;
 
         Ok(AccountInfo {
             account_type,
@@ -568,5 +604,11 @@ impl Account for UpbitConnector {
             maker_commission: 0.05, // Upbit default maker commission 0.05%
             taker_commission: 0.05, // Upbit default taker commission 0.05%
         })
+    }
+
+    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_fees not yet implemented".to_string()
+        ))
     }
 }

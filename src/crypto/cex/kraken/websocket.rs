@@ -750,9 +750,9 @@ impl KrakenWebSocket {
             .and_then(|v| v.as_str())
             .map(|s| match s {
                 "market" => OrderType::Market,
-                _ => OrderType::Limit,
+                _ => OrderType::Limit { price: 0.0 },
             })
-            .unwrap_or(OrderType::Limit);
+            .unwrap_or(OrderType::Limit { price: 0.0 });
 
         let status = exec_data.get("order_status")
             .and_then(|v| v.as_str())
@@ -862,7 +862,7 @@ impl KrakenWebSocket {
             client_order_id: None,
             symbol: symbol.to_string(),
             side,
-            order_type: OrderType::Limit,
+            order_type: OrderType::Limit { price: 0.0 },
             status: OrderStatus::PartiallyFilled,
             price: last_price,
             quantity: last_qty,

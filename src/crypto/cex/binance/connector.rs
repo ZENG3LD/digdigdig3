@@ -21,8 +21,11 @@ use crate::core::{
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
     Price, Quantity, Kline, Ticker, OrderBook,
-    Order, OrderSide, Balance, AccountInfo,
+    Order, OrderSide, OrderType,Balance, AccountInfo,
     Position, FundingRate,
+    OrderRequest, CancelRequest, CancelScope,
+    BalanceQuery, PositionQuery, PositionModification,
+    OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };
 use crate::core::types::{ConnectorStats, SymbolInfo};
 use crate::core::traits::{
@@ -530,100 +533,118 @@ impl MarketData for BinanceConnector {
 
 #[async_trait]
 impl Trading for BinanceConnector {
-    async fn market_order(
-        &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let endpoint = match account_type {
-            AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotCreateOrder,
-            _ => BinanceEndpoint::FuturesCreateOrder,
-        };
+    async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
+        let symbol = req.symbol;
+        let side = req.side;
+        let quantity = req.quantity;
+        let account_type = req.account_type;
 
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
-        params.insert("side".to_string(), match side {
-            OrderSide::Buy => "BUY".to_string(),
-            OrderSide::Sell => "SELL".to_string(),
-        });
-        params.insert("type".to_string(), "MARKET".to_string());
-        params.insert("quantity".to_string(), quantity.to_string());
+        match req.order_type {
+            OrderType::Market => {
+                let endpoint = match account_type {
+                    AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotCreateOrder,
+                    _ => BinanceEndpoint::FuturesCreateOrder,
+                };
 
-        let response = self.post(endpoint, params, account_type).await?;
-        BinanceParser::parse_order(&response, &symbol.to_string())
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+                params.insert("side".to_string(), match side {
+                    OrderSide::Buy => "BUY".to_string(),
+                    OrderSide::Sell => "SELL".to_string(),
+                });
+                params.insert("type".to_string(), "MARKET".to_string());
+                params.insert("quantity".to_string(), quantity.to_string());
+
+                let response = self.post(endpoint, params, account_type).await?;
+                let order = BinanceParser::parse_order(&response, &symbol.to_string())?;
+                Ok(PlaceOrderResponse::Simple(order))
+            }
+            OrderType::Limit { price } => {
+                let endpoint = match account_type {
+                    AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotCreateOrder,
+                    _ => BinanceEndpoint::FuturesCreateOrder,
+                };
+
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+                params.insert("side".to_string(), match side {
+                    OrderSide::Buy => "BUY".to_string(),
+                    OrderSide::Sell => "SELL".to_string(),
+                });
+                params.insert("type".to_string(), "LIMIT".to_string());
+                params.insert("quantity".to_string(), quantity.to_string());
+                params.insert("price".to_string(), price.to_string());
+                params.insert("timeInForce".to_string(), "GTC".to_string());
+
+                let response = self.post(endpoint, params, account_type).await?;
+                let order = BinanceParser::parse_order(&response, &symbol.to_string())?;
+                Ok(PlaceOrderResponse::Simple(order))
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+            )),
+        }
     }
 
-    async fn limit_order(
-        &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        price: Price,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let endpoint = match account_type {
-            AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotCreateOrder,
-            _ => BinanceEndpoint::FuturesCreateOrder,
-        };
+    async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+        match req.scope {
+            CancelScope::Single { ref order_id } => {
+                let symbol = req.symbol.as_ref()
+                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel".into()))?;
+                let account_type = req.account_type;
 
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
-        params.insert("side".to_string(), match side {
-            OrderSide::Buy => "BUY".to_string(),
-            OrderSide::Sell => "SELL".to_string(),
-        });
-        params.insert("type".to_string(), "LIMIT".to_string());
-        params.insert("quantity".to_string(), quantity.to_string());
-        params.insert("price".to_string(), price.to_string());
-        params.insert("timeInForce".to_string(), "GTC".to_string());
+                let endpoint = match account_type {
+                    AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotCancelOrder,
+                    _ => BinanceEndpoint::FuturesCancelOrder,
+                };
 
-        let response = self.post(endpoint, params, account_type).await?;
-        BinanceParser::parse_order(&response, &symbol.to_string())
-    }
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+                params.insert("orderId".to_string(), order_id.to_string());
 
-    async fn cancel_order(
-        &self,
-        symbol: Symbol,
-        order_id: &str,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let endpoint = match account_type {
-            AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotCancelOrder,
-            _ => BinanceEndpoint::FuturesCancelOrder,
-        };
-
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
-        params.insert("orderId".to_string(), order_id.to_string());
-
-        let response = self.delete(endpoint, params, account_type).await?;
-        BinanceParser::parse_order(&response, &symbol.to_string())
+                let response = self.delete(endpoint, params, account_type).await?;
+                BinanceParser::parse_order(&response, &symbol.to_string())
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
+            )),
+        }
     }
 
     async fn get_order(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         order_id: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Order> {
+        // Parse symbol string into base/quote for format_symbol
+        let parts: Vec<&str> = symbol.split('/').collect();
+        let (base, quote) = if parts.len() == 2 {
+            (parts[0], parts[1])
+        } else {
+            (symbol, "")
+        };
+
         let endpoint = match account_type {
             AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotGetOrder,
             _ => BinanceEndpoint::FuturesGetOrder,
         };
 
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("symbol".to_string(), if quote.is_empty() {
+            symbol.to_string()
+        } else {
+            format_symbol(base, quote, account_type)
+        });
         params.insert("orderId".to_string(), order_id.to_string());
 
         let response = self.get(endpoint, params, account_type).await?;
-        BinanceParser::parse_order(&response, &symbol.to_string())
+        BinanceParser::parse_order(&response, symbol)
     }
 
     async fn get_open_orders(
         &self,
-        symbol: Option<Symbol>,
+        symbol: Option<&str>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
         let endpoint = match account_type {
@@ -633,11 +654,27 @@ impl Trading for BinanceConnector {
 
         let mut params = HashMap::new();
         if let Some(s) = symbol {
-            params.insert("symbol".to_string(), format_symbol(&s.base, &s.quote, account_type));
+            let parts: Vec<&str> = s.split('/').collect();
+            let formatted = if parts.len() == 2 {
+                format_symbol(parts[0], parts[1], account_type)
+            } else {
+                s.to_string()
+            };
+            params.insert("symbol".to_string(), formatted);
         }
 
         let response = self.get(endpoint, params, account_type).await?;
         BinanceParser::parse_orders(&response)
+    }
+
+    async fn get_order_history(
+        &self,
+        _filter: OrderHistoryFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_order_history not yet implemented".to_string()
+        ))
     }
 }
 
@@ -647,11 +684,10 @@ impl Trading for BinanceConnector {
 
 #[async_trait]
 impl Account for BinanceConnector {
-    async fn get_balance(
-        &self,
-        _asset: Option<crate::core::Asset>,
-        account_type: AccountType,
-    ) -> ExchangeResult<Vec<Balance>> {
+    async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        let _asset = query.asset.as_deref();
+        let account_type = query.account_type;
+
         let endpoint = match account_type {
             AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotAccount,
             _ => BinanceEndpoint::FuturesAccount,
@@ -716,6 +752,12 @@ impl Account for BinanceConnector {
             balances,
         })
     }
+
+    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_fees not yet implemented".to_string()
+        ))
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -724,11 +766,9 @@ impl Account for BinanceConnector {
 
 #[async_trait]
 impl Positions for BinanceConnector {
-    async fn get_positions(
-        &self,
-        symbol: Option<Symbol>,
-        account_type: AccountType,
-    ) -> ExchangeResult<Vec<Position>> {
+    async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
+        let symbol = query.symbol;
+        let account_type = query.account_type;
         match account_type {
             AccountType::Spot | AccountType::Margin => {
                 return Err(ExchangeError::UnsupportedOperation(
@@ -749,7 +789,7 @@ impl Positions for BinanceConnector {
 
     async fn get_funding_rate(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
         match account_type {
@@ -761,36 +801,48 @@ impl Positions for BinanceConnector {
             _ => {}
         }
 
+        // Parse symbol string into parts for format_symbol
+        let parts: Vec<&str> = symbol.split('/').collect();
+        let formatted = if parts.len() == 2 {
+            format_symbol(parts[0], parts[1], account_type)
+        } else {
+            symbol.to_string()
+        };
+
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("symbol".to_string(), formatted);
         params.insert("limit".to_string(), "1".to_string());
 
         let response = self.get(BinanceEndpoint::FundingRate, params, account_type).await?;
         BinanceParser::parse_funding_rate(&response)
     }
 
-    async fn set_leverage(
-        &self,
-        symbol: Symbol,
-        leverage: u32,
-        account_type: AccountType,
-    ) -> ExchangeResult<()> {
-        match account_type {
-            AccountType::Spot | AccountType::Margin => {
-                return Err(ExchangeError::UnsupportedOperation(
-                    "Leverage not supported for Spot/Margin".to_string()
-                ));
+    async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
+        match req {
+            PositionModification::SetLeverage { ref symbol, leverage, account_type } => {
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "Leverage not supported for Spot/Margin".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+
+                let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
+
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), formatted);
+                params.insert("leverage".to_string(), leverage.to_string());
+
+                let response = self.post(BinanceEndpoint::FuturesSetLeverage, params, account_type).await?;
+                BinanceParser::check_error(&response)?;
+
+                Ok(())
             }
-            _ => {}
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} not supported on {:?}", req, self.exchange_id())
+            )),
         }
-
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
-        params.insert("leverage".to_string(), leverage.to_string());
-
-        let response = self.post(BinanceEndpoint::FuturesSetLeverage, params, account_type).await?;
-        BinanceParser::check_error(&response)?;
-
-        Ok(())
     }
 }

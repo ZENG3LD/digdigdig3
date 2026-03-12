@@ -336,7 +336,7 @@ impl BitgetParser {
 
         let order_type = match Self::get_str(data, "orderType").unwrap_or("limit").to_lowercase().as_str() {
             "market" => OrderType::Market,
-            _ => OrderType::Limit,
+            _ => OrderType::Limit { price: 0.0 },
         };
 
         let status = Self::parse_order_status(data);
@@ -364,7 +364,7 @@ impl BitgetParser {
             commission_asset: None,
             created_at: Self::get_i64(data, "cTime").unwrap_or(0),
             updated_at: Self::get_i64(data, "uTime"),
-            time_in_force: crate::core::TimeInForce::GTC,
+            time_in_force: crate::core::TimeInForce::Gtc,
         })
     }
 
@@ -772,9 +772,9 @@ impl BitgetParser {
         };
 
         let order_type = match order_type_str {
-            "limit" => OrderType::Limit,
+            "limit" => OrderType::Limit { price: 0.0 },
             "market" => OrderType::Market,
-            _ => OrderType::Limit,
+            _ => OrderType::Limit { price: 0.0 },
         };
 
         let quantity = Self::get_f64(order_data, "sz").unwrap_or(0.0);

@@ -369,60 +369,46 @@ impl MarketData for KrxConnector {
 
 #[async_trait]
 impl Trading for KrxConnector {
-    async fn market_order(
-        &self,
-        _symbol: Symbol,
-        _side: OrderSide,
-        _quantity: Quantity,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
+    async fn place_order(&self, _req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         Err(ExchangeError::UnsupportedOperation(
-            "KRX is a data provider - trading not supported".to_string(),
+            "KRX is a data provider - trading not supported".to_string()
         ))
     }
 
-    async fn limit_order(
-        &self,
-        _symbol: Symbol,
-        _side: OrderSide,
-        _quantity: Quantity,
-        _price: Price,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
+    async fn cancel_order(&self, _req: CancelRequest) -> ExchangeResult<Order> {
         Err(ExchangeError::UnsupportedOperation(
-            "KRX is a data provider - trading not supported".to_string(),
-        ))
-    }
-
-    async fn cancel_order(
-        &self,
-        _symbol: Symbol,
-        _order_id: &str,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        Err(ExchangeError::UnsupportedOperation(
-            "KRX is a data provider - trading not supported".to_string(),
+            "KRX is a data provider - trading not supported".to_string()
         ))
     }
 
     async fn get_order(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         _order_id: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Order> {
         Err(ExchangeError::UnsupportedOperation(
-            "KRX is a data provider - trading not supported".to_string(),
+            "KRX is a data provider - trading not supported".to_string()
         ))
     }
 
     async fn get_open_orders(
         &self,
-        _symbol: Option<Symbol>,
+        _symbol: Option<&str>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
         Err(ExchangeError::UnsupportedOperation(
-            "KRX is a data provider - trading not supported".to_string(),
+            "KRX is a data provider - trading not supported".to_string()
+        ))
+    }
+
+    async fn get_order_history(
+        &self,
+        _filter: OrderHistoryFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "KRX is a data provider - trading not supported".to_string()
         ))
     }
 }
@@ -433,19 +419,22 @@ impl Trading for KrxConnector {
 
 #[async_trait]
 impl Account for KrxConnector {
-    async fn get_balance(
-        &self,
-        _asset: Option<Asset>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Balance>> {
+    async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         Err(ExchangeError::UnsupportedOperation(
             "KRX is a data provider - account operations not supported".to_string(),
         ))
+    
     }
 
     async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
         Err(ExchangeError::UnsupportedOperation(
             "KRX is a data provider - account operations not supported".to_string(),
+        ))
+    }
+
+    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "KRX is a data provider - account operations not supported".to_string()
         ))
     }
 }
@@ -456,34 +445,25 @@ impl Account for KrxConnector {
 
 #[async_trait]
 impl Positions for KrxConnector {
-    async fn get_positions(
-        &self,
-        _symbol: Option<Symbol>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Position>> {
+    async fn get_positions(&self, _query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         Err(ExchangeError::UnsupportedOperation(
-            "KRX is a data provider - position tracking not supported".to_string(),
+            "KRX is a data provider - position tracking not supported".to_string()
         ))
     }
 
     async fn get_funding_rate(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
         Err(ExchangeError::UnsupportedOperation(
-            "KRX is stock exchange - funding rate not applicable".to_string(),
+            "KRX is a data provider - position tracking not supported".to_string()
         ))
     }
 
-    async fn set_leverage(
-        &self,
-        _symbol: Symbol,
-        _leverage: u32,
-        _account_type: AccountType,
-    ) -> ExchangeResult<()> {
+    async fn modify_position(&self, _req: PositionModification) -> ExchangeResult<()> {
         Err(ExchangeError::UnsupportedOperation(
-            "KRX is a data provider - leverage not applicable".to_string(),
+            "KRX is a data provider - position tracking not supported".to_string()
         ))
     }
 }

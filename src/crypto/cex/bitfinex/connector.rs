@@ -21,8 +21,11 @@ use crate::core::{
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
     Price, Quantity, Kline, Ticker, OrderBook,
-    Order, OrderSide, Balance, AccountInfo,
+    Order, OrderSide, OrderType,Balance, AccountInfo,
     Position,
+    OrderRequest, CancelRequest, CancelScope,
+    BalanceQuery, PositionQuery, PositionModification,
+    OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };
 use crate::core::types::SymbolInfo;
 use crate::core::traits::{
@@ -354,91 +357,114 @@ impl MarketData for BitfinexConnector {
 
 #[async_trait]
 impl Trading for BitfinexConnector {
-    async fn market_order(
-        &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let formatted_symbol = if let Some(raw) = symbol.raw() {
-            raw.to_string()
-        } else {
-            format_symbol(&symbol.base, &symbol.quote, account_type)
-        };
+    async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
+        let symbol = req.symbol.clone();
+        let side = req.side;
+        let quantity = req.quantity;
+        let account_type = req.account_type;
 
-        // Amount: positive=buy, negative=sell
-        let amount = match side {
-            OrderSide::Buy => quantity,
-            OrderSide::Sell => -quantity,
-        };
-
-        let body = json!({
-            "type": "EXCHANGE MARKET",
-            "symbol": formatted_symbol,
-            "amount": amount.to_string(),
-        });
-
-        let response = self.post(BitfinexEndpoint::SubmitOrder, &[], body).await?;
-        BitfinexParser::parse_submit_order(&response)
+        match req.order_type {
+            OrderType::Market => {
+                let formatted_symbol = if let Some(raw) = symbol.raw() {
+                            raw.to_string()
+                        } else {
+                            format_symbol(&symbol.base, &symbol.quote, account_type)
+                        };
+                
+                        // Amount: positive=buy, negative=sell
+                        let amount = match side {
+                            OrderSide::Buy => quantity,
+                            OrderSide::Sell => -quantity,
+                        };
+                
+                        let body = json!({
+                            "type": "EXCHANGE MARKET",
+                            "symbol": formatted_symbol,
+                            "amount": amount.to_string(),
+                        });
+                
+                        let response = self.post(BitfinexEndpoint::SubmitOrder, &[], body).await?;
+                        BitfinexParser::parse_submit_order(&response).map(PlaceOrderResponse::Simple)
+            }
+            OrderType::Limit { price } => {
+                let formatted_symbol = if let Some(raw) = symbol.raw() {
+                            raw.to_string()
+                        } else {
+                            format_symbol(&symbol.base, &symbol.quote, account_type)
+                        };
+                
+                        // Amount: positive=buy, negative=sell
+                        let amount = match side {
+                            OrderSide::Buy => quantity,
+                            OrderSide::Sell => -quantity,
+                        };
+                
+                        let body = json!({
+                            "type": "EXCHANGE LIMIT",
+                            "symbol": formatted_symbol,
+                            "amount": amount.to_string(),
+                            "price": price.to_string(),
+                        });
+                
+                        let response = self.post(BitfinexEndpoint::SubmitOrder, &[], body).await?;
+                        BitfinexParser::parse_submit_order(&response).map(PlaceOrderResponse::Simple)
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+            )),
+        }
     }
 
-    async fn limit_order(
+    async fn get_order_history(
         &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        price: Price,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let formatted_symbol = if let Some(raw) = symbol.raw() {
-            raw.to_string()
-        } else {
-            format_symbol(&symbol.base, &symbol.quote, account_type)
-        };
-
-        // Amount: positive=buy, negative=sell
-        let amount = match side {
-            OrderSide::Buy => quantity,
-            OrderSide::Sell => -quantity,
-        };
-
-        let body = json!({
-            "type": "EXCHANGE LIMIT",
-            "symbol": formatted_symbol,
-            "amount": amount.to_string(),
-            "price": price.to_string(),
-        });
-
-        let response = self.post(BitfinexEndpoint::SubmitOrder, &[], body).await?;
-        BitfinexParser::parse_submit_order(&response)
-    }
-
-    async fn cancel_order(
-        &self,
-        _symbol: Symbol,
-        order_id: &str,
+        _filter: OrderHistoryFilter,
         _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let id = order_id.parse::<i64>()
-            .map_err(|_| ExchangeError::InvalidRequest("Invalid order ID".to_string()))?;
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_order_history not yet implemented".to_string()
+        ))
+    }
+async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+        match req.scope {
+            CancelScope::Single { ref order_id } => {
+                let _symbol = req.symbol.as_ref()
+                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel".into()))?
+                    .clone();
+                let _account_type = req.account_type;
 
-        let body = json!({
-            "id": id,
-        });
+            let id = order_id.parse::<i64>()
+                .map_err(|_| ExchangeError::InvalidRequest("Invalid order ID".to_string()))?;
 
-        let response = self.post(BitfinexEndpoint::CancelOrder, &[], body).await?;
+            let body = json!({
+                "id": id,
+            });
 
-        // Parse from notification response (same format as submit)
-        BitfinexParser::parse_submit_order(&response)
+            let response = self.post(BitfinexEndpoint::CancelOrder, &[], body).await?;
+
+            // Parse from notification response (same format as submit)
+            BitfinexParser::parse_submit_order(&response)
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
+            )),
+        }
     }
 
     async fn get_order(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         order_id: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Order> {
+        // Parse symbol string into Symbol struct
+        let symbol_parts: Vec<&str> = symbol.split('/').collect();
+        let symbol = if symbol_parts.len() == 2 {
+            crate::core::Symbol::new(symbol_parts[0], symbol_parts[1])
+        } else {
+            crate::core::Symbol { base: symbol.to_string(), quote: String::new(), raw: Some(symbol.to_string()) }
+        };
+
         let formatted_symbol = if let Some(raw) = symbol.raw() {
             raw.to_string()
         } else {
@@ -461,13 +487,25 @@ impl Trading for BitfinexConnector {
         orders.into_iter()
             .find(|o| o.id == order_id)
             .ok_or_else(|| ExchangeError::Parse(format!("Order {} not found", order_id)))
+    
     }
 
     async fn get_open_orders(
         &self,
-        symbol: Option<Symbol>,
+        symbol: Option<&str>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
+        // Convert Option<&str> to Option<Symbol>
+        let symbol_str = symbol;
+        let symbol: Option<crate::core::Symbol> = symbol_str.map(|s| {
+            let parts: Vec<&str> = s.split('/').collect();
+            if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: s.to_string(), quote: String::new(), raw: Some(s.to_string()) }
+            }
+        });
+
         let response = if let Some(s) = symbol {
             let formatted_symbol = if let Some(raw) = s.raw() {
                 raw.to_string()
@@ -488,6 +526,7 @@ impl Trading for BitfinexConnector {
         };
 
         BitfinexParser::parse_orders(&response)
+    
     }
 }
 
@@ -497,11 +536,10 @@ impl Trading for BitfinexConnector {
 
 #[async_trait]
 impl Account for BitfinexConnector {
-    async fn get_balance(
-        &self,
-        _asset: Option<crate::core::Asset>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Balance>> {
+    async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        let _asset = query.asset.clone();
+        let _account_type = query.account_type;
+
         let response = self.post(
             BitfinexEndpoint::Wallets,
             &[],
@@ -509,10 +547,11 @@ impl Account for BitfinexConnector {
         ).await?;
 
         BitfinexParser::parse_balances(&response)
+    
     }
 
     async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
-        let balances = self.get_balance(None, account_type).await?;
+        let balances = self.get_balance(BalanceQuery { asset: None, account_type }).await?;
 
         Ok(AccountInfo {
             account_type,
@@ -524,6 +563,12 @@ impl Account for BitfinexConnector {
             balances,
         })
     }
+
+    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_fees not yet implemented".to_string()
+        ))
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -532,11 +577,10 @@ impl Account for BitfinexConnector {
 
 #[async_trait]
 impl Positions for BitfinexConnector {
-    async fn get_positions(
-        &self,
-        _symbol: Option<Symbol>,
-        account_type: AccountType,
-    ) -> ExchangeResult<Vec<Position>> {
+    async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
+        let _symbol = query.symbol.clone();
+        let account_type = query.account_type;
+
         if account_type == AccountType::Spot {
             return Err(ExchangeError::UnsupportedOperation(
                 "Positions not supported for Spot".to_string()
@@ -550,11 +594,12 @@ impl Positions for BitfinexConnector {
         ).await?;
 
         BitfinexParser::parse_positions(&response)
+    
     }
 
     async fn get_funding_rate(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<crate::core::FundingRate> {
         match account_type {
@@ -573,21 +618,26 @@ impl Positions for BitfinexConnector {
         ))
     }
 
-    async fn set_leverage(
-        &self,
-        _symbol: Symbol,
-        _leverage: u32,
-        account_type: AccountType,
-    ) -> ExchangeResult<()> {
-        if account_type == AccountType::Spot {
-            return Err(ExchangeError::UnsupportedOperation(
-                "Leverage not supported for Spot".to_string()
-            ));
-        }
+    async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
+        match req {
+            PositionModification::SetLeverage { symbol: ref _symbol, leverage: _leverage, account_type: account_type } => {
+                let _symbol = _symbol.clone();
 
-        // Bitfinex handles leverage via order flags, not a separate endpoint
-        Err(ExchangeError::UnsupportedOperation(
-            "Set leverage not available - use order flags instead".to_string()
-        ))
+                if account_type == AccountType::Spot {
+                return Err(ExchangeError::UnsupportedOperation(
+                "Leverage not supported for Spot".to_string()
+                ));
+                }
+
+                // Bitfinex handles leverage via order flags, not a separate endpoint
+                Err(ExchangeError::UnsupportedOperation(
+                "Set leverage not available - use order flags instead".to_string()
+                ))
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} not supported on {:?}", req, self.exchange_id())
+            )),
+        }
     }
 }

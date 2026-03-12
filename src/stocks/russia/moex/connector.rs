@@ -9,6 +9,8 @@ use std::collections::HashMap;
 use crate::core::types::{
     AccountType, Asset, Balance, ExchangeError, ExchangeId, ExchangeResult, Kline, Order, OrderBook,
     Position, Price, Symbol, Ticker, AccountInfo, OrderSide, Quantity, FundingRate, SymbolInfo,
+    OrderRequest, CancelRequest, OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
+    BalanceQuery, PositionQuery, PositionModification,
 };
 use crate::core::traits::{ExchangeIdentity, MarketData, Trading, Account, Positions};
 
@@ -296,37 +298,13 @@ impl MarketData for MoexConnector {
 
 #[async_trait]
 impl Trading for MoexConnector {
-    async fn market_order(
-        &self,
-        _symbol: Symbol,
-        _side: OrderSide,
-        _quantity: Quantity,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
+    async fn place_order(&self, _req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         Err(ExchangeError::UnsupportedOperation(
             "MOEX ISS is a data provider - trading not supported. Use MOEX WebAPI for trading.".to_string()
         ))
     }
 
-    async fn limit_order(
-        &self,
-        _symbol: Symbol,
-        _side: OrderSide,
-        _quantity: Quantity,
-        _price: Price,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        Err(ExchangeError::UnsupportedOperation(
-            "MOEX ISS is a data provider - trading not supported. Use MOEX WebAPI for trading.".to_string()
-        ))
-    }
-
-    async fn cancel_order(
-        &self,
-        _symbol: Symbol,
-        _order_id: &str,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
+    async fn cancel_order(&self, _req: CancelRequest) -> ExchangeResult<Order> {
         Err(ExchangeError::UnsupportedOperation(
             "MOEX ISS is a data provider - trading not supported. Use MOEX WebAPI for trading.".to_string()
         ))
@@ -334,7 +312,7 @@ impl Trading for MoexConnector {
 
     async fn get_order(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         _order_id: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Order> {
@@ -345,7 +323,17 @@ impl Trading for MoexConnector {
 
     async fn get_open_orders(
         &self,
-        _symbol: Option<Symbol>,
+        _symbol: Option<&str>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "MOEX ISS is a data provider - trading not supported. Use MOEX WebAPI for trading.".to_string()
+        ))
+    }
+
+    async fn get_order_history(
+        &self,
+        _filter: OrderHistoryFilter,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
         Err(ExchangeError::UnsupportedOperation(
@@ -360,17 +348,20 @@ impl Trading for MoexConnector {
 
 #[async_trait]
 impl Account for MoexConnector {
-    async fn get_balance(
-        &self,
-        _asset: Option<Asset>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Balance>> {
+    async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "MOEX ISS is a data provider - account operations not supported. Use MOEX WebAPI or broker API.".to_string()
+        ))
+    
+    }
+
+    async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
         Err(ExchangeError::UnsupportedOperation(
             "MOEX ISS is a data provider - account operations not supported. Use MOEX WebAPI or broker API.".to_string()
         ))
     }
 
-    async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
+    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
         Err(ExchangeError::UnsupportedOperation(
             "MOEX ISS is a data provider - account operations not supported. Use MOEX WebAPI or broker API.".to_string()
         ))
@@ -383,11 +374,7 @@ impl Account for MoexConnector {
 
 #[async_trait]
 impl Positions for MoexConnector {
-    async fn get_positions(
-        &self,
-        _symbol: Option<Symbol>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Position>> {
+    async fn get_positions(&self, _query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         Err(ExchangeError::UnsupportedOperation(
             "MOEX ISS is a data provider - position tracking not supported. Use MOEX WebAPI or broker API.".to_string()
         ))
@@ -395,22 +382,17 @@ impl Positions for MoexConnector {
 
     async fn get_funding_rate(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
         Err(ExchangeError::UnsupportedOperation(
-            "Funding rates not applicable - MOEX does not have perpetual futures like crypto exchanges.".to_string()
+            "MOEX ISS is a data provider - position tracking not supported. Use MOEX WebAPI or broker API.".to_string()
         ))
     }
 
-    async fn set_leverage(
-        &self,
-        _symbol: Symbol,
-        _leverage: u32,
-        _account_type: AccountType,
-    ) -> ExchangeResult<()> {
+    async fn modify_position(&self, _req: PositionModification) -> ExchangeResult<()> {
         Err(ExchangeError::UnsupportedOperation(
-            "MOEX ISS is a data provider - leverage management not supported. Use MOEX WebAPI or broker API.".to_string()
+            "MOEX ISS is a data provider - position tracking not supported. Use MOEX WebAPI or broker API.".to_string()
         ))
     }
 }

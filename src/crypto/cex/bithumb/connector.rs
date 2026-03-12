@@ -23,6 +23,9 @@ use crate::core::{
     Price, Quantity, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, Balance, AccountInfo,
     Position, FundingRate,
+    OrderRequest, CancelRequest, CancelScope,
+    BalanceQuery, PositionQuery, PositionModification,
+    OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };
 use crate::core::http::RetryConfig;
 use crate::core::traits::{
@@ -335,138 +338,173 @@ impl MarketData for BithumbConnector {
 
 #[async_trait]
 impl Trading for BithumbConnector {
-    async fn market_order(
-        &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
-        params.insert("side".to_string(), match side {
-            OrderSide::Buy => "buy".to_string(),
-            OrderSide::Sell => "sell".to_string(),
-        });
-        params.insert("type".to_string(), "market".to_string());
-        params.insert("quantity".to_string(), quantity.to_string());
+    async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
+        let symbol = req.symbol.clone();
+        let side = req.side;
+        let quantity = req.quantity;
+        let account_type = req.account_type;
 
-        let response = self.post(BithumbEndpoint::SpotCreateOrder, params, account_type).await?;
-        let order_id = BithumbParser::parse_order_id(&response)?;
-
-        // Return minimal order info
-        Ok(Order {
-            id: order_id,
-            client_order_id: None,
-            symbol: symbol.to_string(),
-            side,
-            order_type: OrderType::Market,
-            status: crate::core::OrderStatus::New,
-            price: None,
-            stop_price: None,
-            quantity,
-            filled_quantity: 0.0,
-            average_price: None,
-            commission: None,
-            commission_asset: None,
-            created_at: crate::core::timestamp_millis() as i64,
-            updated_at: None,
-            time_in_force: crate::core::TimeInForce::GTC,
-        })
+        match req.order_type {
+            OrderType::Market => {
+                let mut params = HashMap::new();
+                        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+                        params.insert("side".to_string(), match side {
+                            OrderSide::Buy => "buy".to_string(),
+                            OrderSide::Sell => "sell".to_string(),
+                        });
+                        params.insert("type".to_string(), "market".to_string());
+                        params.insert("quantity".to_string(), quantity.to_string());
+                
+                        let response = self.post(BithumbEndpoint::SpotCreateOrder, params, account_type).await?;
+                        let order_id = BithumbParser::parse_order_id(&response)?;
+                
+                        // Return minimal order info
+                        Ok(Order {
+                            id: order_id,
+                            client_order_id: None,
+                            symbol: symbol.to_string(),
+                            side,
+                            order_type: OrderType::Market,
+                            status: crate::core::OrderStatus::New,
+                            price: None,
+                            stop_price: None,
+                            quantity,
+                            filled_quantity: 0.0,
+                            average_price: None,
+                            commission: None,
+                            commission_asset: None,
+                            created_at: crate::core::timestamp_millis() as i64,
+                            updated_at: None,
+                            time_in_force: crate::core::TimeInForce::Gtc,
+                        })
+            }
+            OrderType::Limit { price } => {
+                let mut params = HashMap::new();
+                        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+                        params.insert("side".to_string(), match side {
+                            OrderSide::Buy => "buy".to_string(),
+                            OrderSide::Sell => "sell".to_string(),
+                        });
+                        params.insert("type".to_string(), "limit".to_string());
+                        params.insert("quantity".to_string(), quantity.to_string());
+                        params.insert("price".to_string(), price.to_string());
+                
+                        let response = self.post(BithumbEndpoint::SpotCreateOrder, params, account_type).await?;
+                        let order_id = BithumbParser::parse_order_id(&response)?;
+                
+                        Ok(Order {
+                            id: order_id,
+                            client_order_id: None,
+                            symbol: symbol.to_string(),
+                            side,
+                            order_type: OrderType::Limit { price: 0.0 },
+                            status: crate::core::OrderStatus::New,
+                            price: Some(price),
+                            stop_price: None,
+                            quantity,
+                            filled_quantity: 0.0,
+                            average_price: None,
+                            commission: None,
+                            commission_asset: None,
+                            created_at: crate::core::timestamp_millis() as i64,
+                            updated_at: None,
+                            time_in_force: crate::core::TimeInForce::Gtc,
+                        })
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+            )),
+        }
     }
 
-    async fn limit_order(
+    async fn get_order_history(
         &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        price: Price,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
-        params.insert("side".to_string(), match side {
-            OrderSide::Buy => "buy".to_string(),
-            OrderSide::Sell => "sell".to_string(),
-        });
-        params.insert("type".to_string(), "limit".to_string());
-        params.insert("quantity".to_string(), quantity.to_string());
-        params.insert("price".to_string(), price.to_string());
-
-        let response = self.post(BithumbEndpoint::SpotCreateOrder, params, account_type).await?;
-        let order_id = BithumbParser::parse_order_id(&response)?;
-
-        Ok(Order {
-            id: order_id,
-            client_order_id: None,
-            symbol: symbol.to_string(),
-            side,
-            order_type: OrderType::Limit,
-            status: crate::core::OrderStatus::New,
-            price: Some(price),
-            stop_price: None,
-            quantity,
-            filled_quantity: 0.0,
-            average_price: None,
-            commission: None,
-            commission_asset: None,
-            created_at: crate::core::timestamp_millis() as i64,
-            updated_at: None,
-            time_in_force: crate::core::TimeInForce::GTC,
-        })
+        _filter: OrderHistoryFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_order_history not yet implemented".to_string()
+        ))
     }
+async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+        match req.scope {
+            CancelScope::Single { ref order_id } => {
+                let symbol = req.symbol.as_ref()
+                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel".into()))?
+                    .clone();
+                let account_type = req.account_type;
 
-    async fn cancel_order(
-        &self,
-        symbol: Symbol,
-        order_id: &str,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let mut params = HashMap::new();
-        params.insert("orderId".to_string(), order_id.to_string());
+            let mut params = HashMap::new();
+            params.insert("orderId".to_string(), order_id.to_string());
 
-        let response = self.post(BithumbEndpoint::SpotCancelOrder, params, account_type).await?;
-        BithumbParser::check_response(&response)?;
+            let response = self.post(BithumbEndpoint::SpotCancelOrder, params, account_type).await?;
+            BithumbParser::check_response(&response)?;
 
-        // Return cancelled order (minimal info)
-        Ok(Order {
-            id: order_id.to_string(),
-            client_order_id: None,
-            symbol: symbol.to_string(),
-            side: OrderSide::Buy, // Unknown
-            order_type: OrderType::Limit,
-            status: crate::core::OrderStatus::Canceled,
-            price: None,
-            stop_price: None,
-            quantity: 0.0,
-            filled_quantity: 0.0,
-            average_price: None,
-            commission: None,
-            commission_asset: None,
-            created_at: 0,
-            updated_at: Some(crate::core::timestamp_millis() as i64),
-            time_in_force: crate::core::TimeInForce::GTC,
-        })
+            // Return cancelled order (minimal info)
+            Ok(Order {
+                id: order_id.to_string(),
+                client_order_id: None,
+                symbol: symbol.to_string(),
+                side: OrderSide::Buy, // Unknown
+                order_type: OrderType::Limit { price: 0.0 },
+                status: crate::core::OrderStatus::Canceled,
+                price: None,
+                stop_price: None,
+                quantity: 0.0,
+                filled_quantity: 0.0,
+                average_price: None,
+                commission: None,
+                commission_asset: None,
+                created_at: 0,
+                updated_at: Some(crate::core::timestamp_millis() as i64),
+                time_in_force: crate::core::TimeInForce::Gtc,
+            })
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
+            )),
+        }
     }
 
     async fn get_order(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         order_id: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Order> {
+        // Parse symbol string into Symbol struct
+        let _symbol_parts: Vec<&str> = _symbol.split('/').collect();
+        let _symbol = if _symbol_parts.len() == 2 {
+            crate::core::Symbol::new(_symbol_parts[0], _symbol_parts[1])
+        } else {
+            crate::core::Symbol { base: _symbol.to_string(), quote: String::new(), raw: Some(_symbol.to_string()) }
+        };
+
         let mut params = HashMap::new();
         params.insert("orderId".to_string(), order_id.to_string());
 
         let response = self.post(BithumbEndpoint::SpotOrderDetail, params, account_type).await?;
         BithumbParser::parse_order(&response, "")
+    
     }
 
     async fn get_open_orders(
         &self,
-        symbol: Option<Symbol>,
+        symbol: Option<&str>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
+        // Convert Option<&str> to Option<Symbol>
+        let symbol_str = symbol;
+        let symbol: Option<crate::core::Symbol> = symbol_str.map(|s| {
+            let parts: Vec<&str> = s.split('/').collect();
+            if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: s.to_string(), quote: String::new(), raw: Some(s.to_string()) }
+            }
+        });
+
         let mut params = HashMap::new();
         if let Some(s) = symbol {
             params.insert("symbol".to_string(), format_symbol(&s.base, &s.quote, account_type));
@@ -474,6 +512,7 @@ impl Trading for BithumbConnector {
 
         let response = self.post(BithumbEndpoint::SpotOpenOrders, params, account_type).await?;
         BithumbParser::parse_orders(&response)
+    
     }
 }
 
@@ -483,18 +522,18 @@ impl Trading for BithumbConnector {
 
 #[async_trait]
 impl Account for BithumbConnector {
-    async fn get_balance(
-        &self,
-        _asset: Option<crate::core::Asset>,
-        account_type: AccountType,
-    ) -> ExchangeResult<Vec<Balance>> {
+    async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        let _asset = query.asset.clone();
+        let account_type = query.account_type;
+
         let params = HashMap::new();
         let response = self.post(BithumbEndpoint::SpotAccount, params, account_type).await?;
         BithumbParser::parse_balances(&response)
+    
     }
 
     async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
-        let balances = self.get_balance(None, account_type).await?;
+        let balances = self.get_balance(BalanceQuery { asset: None, account_type }).await?;
 
         Ok(AccountInfo {
             account_type,
@@ -506,6 +545,12 @@ impl Account for BithumbConnector {
             balances,
         })
     }
+
+    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "get_fees not yet implemented".to_string()
+        ))
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -514,36 +559,53 @@ impl Account for BithumbConnector {
 
 #[async_trait]
 impl Positions for BithumbConnector {
-    async fn get_positions(
-        &self,
-        _symbol: Option<Symbol>,
-        account_type: AccountType,
-    ) -> ExchangeResult<Vec<Position>> {
+    async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
+        let _symbol = query.symbol.clone();
+        let account_type = query.account_type;
+
         // Bithumb Pro primarily supports spot trading
         // Futures API is limited and not well documented
         Err(ExchangeError::UnsupportedOperation(
             format!("Positions not supported for {:?}", account_type)
         ))
+    
     }
 
     async fn get_funding_rate(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
+        // Parse symbol string into Symbol struct
+        let _symbol_str = _symbol;
+        let _symbol = {
+            let parts: Vec<&str> = _symbol_str.split('/').collect();
+            if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: _symbol_str.to_string(), quote: String::new(), raw: Some(_symbol_str.to_string()) }
+            }
+        };
+
         Err(ExchangeError::UnsupportedOperation(
             format!("Funding rate not supported for {:?}", account_type)
         ))
+    
     }
 
-    async fn set_leverage(
-        &self,
-        _symbol: Symbol,
-        _leverage: u32,
-        account_type: AccountType,
-    ) -> ExchangeResult<()> {
-        Err(ExchangeError::UnsupportedOperation(
-            format!("Set leverage not supported for {:?}", account_type)
-        ))
+    async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
+        match req {
+            PositionModification::SetLeverage { symbol: ref _symbol, leverage: _leverage, account_type: account_type } => {
+                let _symbol = _symbol.clone();
+
+                Err(ExchangeError::UnsupportedOperation(
+                format!("Set leverage not supported for {:?}", account_type)
+                ))
+    
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} not supported on {:?}", req, self.exchange_id())
+            )),
+        }
     }
 }

@@ -7,11 +7,11 @@ use serde_json::Value;
 use crate::core::types::{
     ExchangeError, ExchangeResult,
     Kline, OrderBook, Ticker, Order, Balance, Position,
-    OrderSide, OrderType, OrderStatus, PositionSide,
+    OrderSide, OrderType, OrderStatus, PositionSide, TimeInForce,
     FundingRate, PublicTrade, StreamEvent, TradeSide,
     OrderUpdateEvent, BalanceUpdateEvent, PositionUpdateEvent,
     BalanceChangeReason, PositionChangeReason,
-    CancelAllResponse,
+    CancelAllResponse, OrderResult,
 };
 
 /// Парсер ответов KuCoin API
@@ -838,6 +838,82 @@ impl KuCoinParser {
     pub fn parse_amend_order(response: &Value, symbol: &str) -> ExchangeResult<Order> {
         let data = Self::extract_data(response)?;
         Self::parse_order_data(data, symbol)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // BATCH ORDERS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse response from POST /api/v1/hf/orders/multi (Spot) or
+    /// POST /api/v1/orders/multi (Futures).
+    ///
+    /// KuCoin batch response is an array of per-order results under `data`.
+    /// Each element may contain `orderId` (success) or `msg`/`code` (failure).
+    pub fn parse_batch_orders_response(response: &Value) -> ExchangeResult<Vec<OrderResult>> {
+        let data = Self::extract_data(response)?;
+
+        let arr = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Batch orders response 'data' is not an array".to_string()))?;
+
+        let results = arr.iter().map(|item| {
+            // KuCoin batch: each item has `orderId` on success, or `code`+`msg` on failure
+            let success = item.get("orderId").and_then(|v| v.as_str()).is_some();
+            let order_id = item.get("orderId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let client_oid = item.get("clientOid")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let error = if !success {
+                item.get("msg")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                    .or_else(|| Some("Unknown batch order error".to_string()))
+            } else {
+                None
+            };
+            let error_code = if !success {
+                item.get("code")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<i32>().ok())
+            } else {
+                None
+            };
+
+            let order = if success {
+                Some(Order {
+                    id: order_id,
+                    client_order_id: client_oid.clone(),
+                    symbol: String::new(),
+                    side: OrderSide::Buy,
+                    order_type: OrderType::Limit { price: 0.0 },
+                    status: OrderStatus::New,
+                    price: None,
+                    stop_price: None,
+                    quantity: 0.0,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: 0,
+                    updated_at: None,
+                    time_in_force: TimeInForce::Gtc,
+                })
+            } else {
+                None
+            };
+
+            OrderResult {
+                order,
+                client_order_id: client_oid,
+                success,
+                error,
+                error_code,
+            }
+        }).collect();
+
+        Ok(results)
     }
 }
 

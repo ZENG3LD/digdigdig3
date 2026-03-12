@@ -30,11 +30,11 @@ use crate::core::{
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
-    AmendRequest, CancelAllResponse,
+    AmendRequest, CancelAllResponse, OrderResult,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
-    CancelAll, AmendOrder,
+    CancelAll, AmendOrder, BatchOrders,
 };
 use crate::core::types::ConnectorStats;
 use crate::core::utils::WeightRateLimiter;
@@ -725,8 +725,98 @@ impl Trading for KuCoinConnector {
                 });
                 (body, OrderType::Gtd { price, expire_time }, Some(price), None, crate::core::TimeInForce::Gtc)
             }
-            OrderType::TrailingStop { .. } | OrderType::Oco { .. } | OrderType::Bracket { .. }
-            | OrderType::Iceberg { .. } | OrderType::Twap { .. } => {
+            OrderType::Oco { price, stop_price, stop_limit_price } => {
+                // KuCoin native OCO endpoint: POST /api/v3/oco/order (spot only)
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {}
+                    _ => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "OCO orders are only supported for Spot on KuCoin".to_string()
+                        ));
+                    }
+                }
+                let limit_price = stop_limit_price.unwrap_or(stop_price);
+                let oco_body = json!({
+                    "clientOid": client_oid,
+                    "symbol": formatted_symbol,
+                    "side": side_str,
+                    "price": price.to_string(),
+                    "size": quantity.to_string(),
+                    "stopPrice": stop_price.to_string(),
+                    "limitPrice": limit_price.to_string(),
+                    "tradeType": "TRADE",
+                });
+                let base_url = self.urls.rest_url(account_type);
+                let path = KuCoinEndpoint::SpotOcoOrder.path();
+                let url = format!("{}{}", base_url, path);
+                let auth = self.auth.as_ref()
+                    .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+                let body_str = oco_body.to_string();
+                let headers = auth.sign_request("POST", path, &body_str);
+                let (response, resp_headers) = self.http.post_with_response_headers(&url, &oco_body, &headers).await?;
+                self.update_rate_from_headers(&resp_headers);
+                self.check_response(&response)?;
+                let order_id = KuCoinParser::parse_order_id(&response)?;
+                return Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: Some(client_oid),
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::Oco { price, stop_price, stop_limit_price },
+                    status: crate::core::OrderStatus::New,
+                    price: Some(price),
+                    stop_price: Some(stop_price),
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: crate::core::timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                }));
+            }
+            OrderType::Iceberg { price, display_quantity } => {
+                // KuCoin Spot: iceberg flag on HF order (same endpoint, extra fields)
+                let tif = match req.time_in_force {
+                    crate::core::TimeInForce::Ioc => "IOC",
+                    crate::core::TimeInForce::Fok => "FOK",
+                    _ => "GTC",
+                };
+                let iceberg_body = json!({
+                    "clientOid": client_oid,
+                    "symbol": formatted_symbol,
+                    "side": side_str,
+                    "type": "limit",
+                    "size": quantity.to_string(),
+                    "price": price.to_string(),
+                    "timeInForce": tif,
+                    "iceberg": true,
+                    "visibleSize": display_quantity.to_string(),
+                });
+                // Use the standard create order endpoint — KuCoin HF supports iceberg flag
+                let response = self.post(endpoint, iceberg_body, account_type).await?;
+                let order_id = KuCoinParser::parse_order_id(&response)?;
+                return Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: Some(client_oid),
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::Iceberg { price, display_quantity },
+                    status: crate::core::OrderStatus::New,
+                    price: Some(price),
+                    stop_price: None,
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: crate::core::timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                }));
+            }
+            OrderType::TrailingStop { .. } | OrderType::Bracket { .. } | OrderType::Twap { .. } => {
                 return Err(ExchangeError::UnsupportedOperation(
                     format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
                 ));
@@ -1353,6 +1443,130 @@ impl CancelAll for KuCoinConnector {
         let response = self.http.delete(&url, &HashMap::new(), &headers).await?;
         self.check_response(&response)?;
         KuCoinParser::parse_cancel_all_response(&response)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AMEND ORDER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BATCH ORDERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Native batch order placement.
+///
+/// - Spot HF:    `POST /api/v1/hf/orders/multi` — max 5 limit orders, same pair
+/// - Futures:    `POST /api/v1/orders/multi`     — max 20 orders (futures base URL)
+///
+/// Batch cancel is not a discrete endpoint on KuCoin; cancel-all handles that.
+#[async_trait]
+impl BatchOrders for KuCoinConnector {
+    async fn place_orders_batch(
+        &self,
+        orders: Vec<OrderRequest>,
+    ) -> ExchangeResult<Vec<OrderResult>> {
+        if orders.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let account_type = orders[0].account_type;
+        let max = self.max_batch_place_size();
+
+        if orders.len() > max {
+            return Err(ExchangeError::InvalidRequest(
+                format!("Batch size {} exceeds KuCoin limit of {}", orders.len(), max)
+            ));
+        }
+
+        let (endpoint, batch_json) = match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                // Spot HF batch: all orders must be for the same symbol, limit only
+                let batch: Vec<Value> = orders.iter().map(|req| {
+                    let symbol = format_symbol(&req.symbol.base, &req.symbol.quote, account_type);
+                    let side_str = match req.side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" };
+                    let client_oid = req.client_order_id.clone()
+                        .unwrap_or_else(|| format!("cc_{}", crate::core::timestamp_millis()));
+                    let tif = match req.time_in_force {
+                        crate::core::TimeInForce::Ioc => "IOC",
+                        crate::core::TimeInForce::Fok => "FOK",
+                        _ => "GTC",
+                    };
+                    let mut obj = json!({
+                        "clientOid": client_oid,
+                        "symbol": symbol,
+                        "side": side_str,
+                        "type": "limit",
+                        "timeInForce": tif,
+                        "size": req.quantity.to_string(),
+                    });
+                    if let OrderType::Limit { price } = req.order_type {
+                        obj["price"] = json!(price.to_string());
+                    }
+                    obj
+                }).collect();
+                (KuCoinEndpoint::SpotBatchOrders, json!(batch))
+            }
+            AccountType::FuturesCross | AccountType::FuturesIsolated => {
+                // Futures batch: supports limit, market, stop orders
+                let batch: Vec<Value> = orders.iter().map(|req| {
+                    let symbol = format_symbol(&req.symbol.base, &req.symbol.quote, account_type);
+                    let side_str = match req.side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" };
+                    let client_oid = req.client_order_id.clone()
+                        .unwrap_or_else(|| format!("cc_{}", crate::core::timestamp_millis()));
+                    let mut obj = json!({
+                        "clientOid": client_oid,
+                        "symbol": symbol,
+                        "side": side_str,
+                        "size": req.quantity.to_string(),
+                    });
+                    match req.order_type {
+                        OrderType::Market => {
+                            obj["type"] = json!("market");
+                        }
+                        OrderType::Limit { price } => {
+                            obj["type"] = json!("limit");
+                            obj["price"] = json!(price.to_string());
+                        }
+                        _ => {
+                            obj["type"] = json!("market");
+                        }
+                    }
+                    if req.reduce_only {
+                        obj["reduceOnly"] = json!(true);
+                    }
+                    obj
+                }).collect();
+                (KuCoinEndpoint::FuturesBatchOrders, json!(batch))
+            }
+        };
+
+        let response = self.post(endpoint, batch_json, account_type).await?;
+        KuCoinParser::parse_batch_orders_response(&response)
+    }
+
+    async fn cancel_orders_batch(
+        &self,
+        order_ids: Vec<String>,
+        _symbol: Option<&str>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<OrderResult>> {
+        // KuCoin does not have a native batch cancel endpoint.
+        let _ = order_ids;
+        Err(ExchangeError::UnsupportedOperation(
+            "KuCoin does not have a native batch cancel endpoint. Use CancelAll::cancel_all_orders instead.".to_string()
+        ))
+    }
+
+    fn max_batch_place_size(&self) -> usize {
+        // Spot HF: 5 limit orders (same pair). Futures: 20.
+        // We use account_type to distinguish but trait doesn't pass it.
+        // Return the more restrictive spot limit as the default.
+        5
+    }
+
+    fn max_batch_cancel_size(&self) -> usize {
+        0 // No native batch cancel
     }
 }
 

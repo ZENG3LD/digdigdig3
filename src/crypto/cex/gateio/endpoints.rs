@@ -99,6 +99,12 @@ pub enum GateioEndpoint {
     FuturesOpenOrders,
     FuturesCancelAllOrders,
 
+    // === SPOT PRICE-TRIGGERED (STOP) ORDERS ===
+    SpotPriceOrders,
+
+    // === SPOT AMEND ORDER ===
+    SpotAmendOrder,
+
     // === SPOT BATCH ORDERS ===
     SpotBatchOrders,
 
@@ -152,6 +158,12 @@ impl GateioEndpoint {
             Self::FuturesOpenOrders => format!("/futures/{}/orders", settle.unwrap_or("usdt")),
             Self::FuturesCancelAllOrders => format!("/futures/{}/orders", settle.unwrap_or("usdt")),
 
+            // Spot Price-Triggered (Stop) Orders
+            Self::SpotPriceOrders => "/spot/price_orders".to_string(),
+
+            // Spot Amend Order
+            Self::SpotAmendOrder => "/spot/orders/{order_id}".to_string(),
+
             // Spot Batch Orders
             Self::SpotBatchOrders => "/spot/batch_orders".to_string(),
 
@@ -194,6 +206,7 @@ impl GateioEndpoint {
         match self {
             Self::SpotCreateOrder
             | Self::FuturesCreateOrder
+            | Self::SpotPriceOrders
             | Self::SpotBatchOrders
             | Self::FuturesBatchOrders
             | Self::FuturesSetLeverage => "POST",
@@ -203,7 +216,8 @@ impl GateioEndpoint {
             | Self::FuturesCancelOrder
             | Self::FuturesCancelAllOrders => "DELETE",
 
-            Self::FuturesAmendOrder => "PATCH",
+            Self::FuturesAmendOrder
+            | Self::SpotAmendOrder => "PATCH",
 
             _ => "GET",
         }

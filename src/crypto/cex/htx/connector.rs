@@ -1028,54 +1028,58 @@ impl CancelAll for HtxConnector {
     ) -> ExchangeResult<CancelAllResponse> {
         let account_id = self.get_account_id().await?;
 
+        // HTX batchCancelOpenOrders: POST /v1/order/orders/batchCancelOpenOrders
+        // Optional fields: account-id, symbol, side
+        // Without symbol: cancels ALL open orders across all pairs
         match scope {
             CancelScope::All { symbol: None } => {
-                // Cancel all orders without symbol filter
+                // Cancel all open orders — no symbol filter
                 let body = json!({
                     "account-id": account_id.to_string(),
                 });
 
-                let response = self.post(HtxEndpoint::CancelAllOrders, body).await?;
+                let response = self.post(HtxEndpoint::CancelOpenOrders, body).await?;
 
-                // HTX returns {"status": "ok", "data": {"success": [...], "failed": [...]}}
+                // HTX returns {"status": "ok", "data": {"success-count": N, "failed-count": M, "next-id": -1}}
                 let data = HtxParser::extract_result_v1(&response)?;
-                let success_count = data.get("success")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.len() as u32)
+                let cancelled_count = data.get("success-count")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as u32)
                     .unwrap_or(0);
-                let failed_count = data.get("failed")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.len() as u32)
+                let failed_count = data.get("failed-count")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as u32)
                     .unwrap_or(0);
 
                 Ok(CancelAllResponse {
-                    cancelled_count: success_count,
+                    cancelled_count,
                     failed_count,
                     details: vec![],
                 })
             }
 
             CancelScope::All { symbol: Some(sym) } | CancelScope::BySymbol { symbol: sym } => {
+                // Cancel all open orders for a specific symbol
                 let htx_symbol = format_symbol(&sym, account_type);
                 let body = json!({
                     "account-id": account_id.to_string(),
                     "symbol": htx_symbol,
                 });
 
-                let response = self.post(HtxEndpoint::CancelAllOrders, body).await?;
+                let response = self.post(HtxEndpoint::CancelOpenOrders, body).await?;
 
                 let data = HtxParser::extract_result_v1(&response)?;
-                let success_count = data.get("success")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.len() as u32)
+                let cancelled_count = data.get("success-count")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as u32)
                     .unwrap_or(0);
-                let failed_count = data.get("failed")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.len() as u32)
+                let failed_count = data.get("failed-count")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as u32)
                     .unwrap_or(0);
 
                 Ok(CancelAllResponse {
-                    cancelled_count: success_count,
+                    cancelled_count,
                     failed_count,
                     details: vec![],
                 })

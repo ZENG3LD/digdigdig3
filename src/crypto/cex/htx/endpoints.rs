@@ -79,14 +79,15 @@ pub enum HtxEndpoint {
     Ledger,           // GET /v2/account/ledger
 
     // === TRADING ===
-    PlaceOrder,       // POST /v1/order/orders/place
-    CancelOrder,      // POST /v1/order/orders/{order-id}/submitcancel
-    CancelAllOrders,  // POST /v1/order/orders/batchcancel
-    OrderStatus,      // GET /v1/order/orders/{order-id}
-    OpenOrders,       // GET /v1/order/openOrders
-    OrderHistory,     // GET /v1/order/orders
-    MatchResults,     // GET /v1/order/matchresults
-    TransactFee,      // GET /v2/reference/transact-fee-rate
+    PlaceOrder,             // POST /v1/order/orders/place
+    CancelOrder,            // POST /v1/order/orders/{order-id}/submitcancel
+    CancelAllOrders,        // POST /v1/order/orders/batchcancel (by IDs, up to 50)
+    CancelOpenOrders,       // POST /v1/order/orders/batchCancelOpenOrders (true cancel-all)
+    OrderStatus,            // GET /v1/order/orders/{order-id}
+    OpenOrders,             // GET /v1/order/openOrders
+    OrderHistory,           // GET /v1/order/orders
+    MatchResults,           // GET /v1/order/matchresults
+    TransactFee,            // GET /v2/reference/transact-fee-rate
 
     // === WALLET ===
     DepositAddress,   // GET /v2/account/deposit/address
@@ -129,6 +130,7 @@ impl HtxEndpoint {
             Self::PlaceOrder => "/v1/order/orders/place",
             Self::CancelOrder => "/v1/order/orders/{order-id}/submitcancel",
             Self::CancelAllOrders => "/v1/order/orders/batchcancel",
+            Self::CancelOpenOrders => "/v1/order/orders/batchCancelOpenOrders",
             Self::OrderStatus => "/v1/order/orders/{order-id}",
             Self::OpenOrders => "/v1/order/openOrders",
             Self::OrderHistory => "/v1/order/orders",
@@ -159,6 +161,7 @@ impl HtxEndpoint {
             Self::PlaceOrder
             | Self::CancelOrder
             | Self::CancelAllOrders
+            | Self::CancelOpenOrders
             | Self::Withdraw
             | Self::WithdrawCancel => "POST",
 

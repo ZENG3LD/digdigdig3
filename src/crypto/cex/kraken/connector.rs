@@ -490,8 +490,19 @@ impl Trading for KrakenConnector {
                 }
                 (p, OrderType::ReduceOnly { price }, price, None, crate::core::TimeInForce::Gtc)
             }
+            OrderType::Iceberg { price, display_quantity } => {
+                // Kraken native iceberg: ordertype=iceberg, displayvol=visible slice size
+                let mut p = HashMap::new();
+                p.insert("pair".to_string(), formatted.clone());
+                p.insert("type".to_string(), side_str.to_string());
+                p.insert("ordertype".to_string(), "iceberg".to_string());
+                p.insert("price".to_string(), price.to_string());
+                p.insert("volume".to_string(), quantity.to_string());
+                p.insert("displayvol".to_string(), display_quantity.to_string());
+                (p, OrderType::Iceberg { price, display_quantity }, Some(price), None, crate::core::TimeInForce::Gtc)
+            }
             OrderType::TrailingStop { .. } | OrderType::Oco { .. } | OrderType::Bracket { .. }
-            | OrderType::Iceberg { .. } | OrderType::Twap { .. } => {
+            | OrderType::Twap { .. } => {
                 return Err(ExchangeError::UnsupportedOperation(
                     format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
                 ));

@@ -77,6 +77,15 @@ pub enum KuCoinEndpoint {
     SpotAllOrders,
     SpotCancelAllOrders,
 
+    // === SPOT OCO ===
+    SpotOcoOrder,
+
+    // === SPOT BATCH ORDERS (HF Pro) ===
+    SpotBatchOrders,
+
+    // === FUTURES BATCH ORDERS ===
+    FuturesBatchOrders,
+
     // === SPOT ACCOUNT ===
     SpotAccounts,
     SpotAccountDetail,
@@ -134,6 +143,15 @@ impl KuCoinEndpoint {
             Self::SpotOpenOrders => "/api/v1/orders",
             Self::SpotAllOrders => "/api/v1/orders",
             Self::SpotCancelAllOrders => "/api/v1/orders",
+
+            // Spot OCO
+            Self::SpotOcoOrder => "/api/v3/oco/order",
+
+            // Spot Batch Orders (HF Pro account — up to 5 limit orders, same pair)
+            Self::SpotBatchOrders => "/api/v1/hf/orders/multi",
+
+            // Futures Batch Orders (up to 20 orders)
+            Self::FuturesBatchOrders => "/api/v1/orders/multi",
 
             // Spot Account
             Self::SpotAccounts => "/api/v1/accounts",
@@ -202,6 +220,9 @@ impl KuCoinEndpoint {
             Self::SpotCreateOrder
             | Self::FuturesCreateOrder
             | Self::FuturesAmendOrder
+            | Self::SpotOcoOrder
+            | Self::SpotBatchOrders
+            | Self::FuturesBatchOrders
             | Self::WsPublicToken
             | Self::WsPrivateToken => "POST",
 

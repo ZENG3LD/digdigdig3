@@ -681,47 +681,166 @@ impl Trading for GateioConnector {
                 })
             }
             OrderType::StopMarket { stop_price } => {
-                // Gate.io: futures price-triggered orders (priceTriggered)
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
-                            "StopMarket not supported for Spot on Gate.io".to_string()
-                        ));
+                        // Spot: POST /spot/price_orders with order_type: "market"
+                        // Rule: trigger >= stop_price for buy, <= stop_price for sell
+                        let trigger_rule = match side {
+                            OrderSide::Buy => ">=",
+                            OrderSide::Sell => "<=",
+                        };
+                        let body = json!({
+                            "trigger": {
+                                "price": stop_price.to_string(),
+                                "rule": trigger_rule,
+                                "expiration": 86400,  // 24h expiration
+                            },
+                            "put": {
+                                "type": "market",
+                                "side": side_str,
+                                "amount": quantity.to_string(),
+                                "account": "spot",
+                            },
+                            "market": formatted_symbol,
+                            "text": text,
+                        });
+                        let response = self.post(GateioEndpoint::SpotPriceOrders, body, account_type).await?;
+                        return GateioParser::parse_order(&response, &symbol.to_string())
+                            .map(PlaceOrderResponse::Simple);
                     }
-                    _ => {}
+                    _ => {
+                        // Futures: POST /futures/{settle}/price_orders with market trigger
+                        let size = match side { OrderSide::Buy => quantity as i64, OrderSide::Sell => -(quantity as i64) };
+                        let trigger_rule = match side {
+                            OrderSide::Buy => ">=",
+                            OrderSide::Sell => "<=",
+                        };
+                        let body = json!({
+                            "trigger": {
+                                "strategy_type": 0,
+                                "price_type": 0,
+                                "price": stop_price.to_string(),
+                                "rule": 1,  // 1 = >= for buy, 2 = <= for sell
+                                "expiration": 86400,
+                            },
+                            "initial": {
+                                "contract": formatted_symbol,
+                                "size": size,
+                                "price": "0",
+                                "tif": "ioc",
+                                "text": text.clone(),
+                            },
+                        });
+                        let _ = trigger_rule;
+                        let base_url = self.urls.rest_url(account_type);
+                        let settle = self.urls.settle(account_type);
+                        let path = format!("/futures/{}/price_orders", settle);
+                        let url = format!("{}{}", base_url, path);
+                        let auth = self.auth.as_ref()
+                            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+                        let body_str = body.to_string();
+                        let headers = auth.sign_request("POST", &path, "", &body_str);
+                        let response = self.http.post(&url, &body, &headers).await?;
+                        GateioParser::check_error(&response)?;
+                        return GateioParser::parse_order(&response, &symbol.to_string())
+                            .map(PlaceOrderResponse::Simple);
+                    }
                 }
-                let size = match side { OrderSide::Buy => quantity as i64, OrderSide::Sell => -(quantity as i64) };
-                json!({
-                    "contract": formatted_symbol,
-                    "size": size,
-                    "price": "0",
-                    "tif": "ioc",
-                    "close": false,
-                    "text": text,
-                    // Gate.io stop orders are a separate endpoint; this is a fallback market order
-                    // For a true stop, use /futures/usdt/price_orders endpoint
-                })
             }
-            OrderType::StopLimit { stop_price: _, limit_price } => {
+            OrderType::StopLimit { stop_price, limit_price } => {
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
-                        return Err(ExchangeError::UnsupportedOperation(
-                            "StopLimit not supported for Spot on Gate.io".to_string()
-                        ));
+                        // Spot: POST /spot/price_orders with order_type: "limit"
+                        let trigger_rule = match side {
+                            OrderSide::Buy => ">=",
+                            OrderSide::Sell => "<=",
+                        };
+                        let body = json!({
+                            "trigger": {
+                                "price": stop_price.to_string(),
+                                "rule": trigger_rule,
+                                "expiration": 86400,
+                            },
+                            "put": {
+                                "type": "limit",
+                                "side": side_str,
+                                "amount": quantity.to_string(),
+                                "price": limit_price.to_string(),
+                                "account": "spot",
+                                "time_in_force": "gtc",
+                            },
+                            "market": formatted_symbol,
+                            "text": text,
+                        });
+                        let response = self.post(GateioEndpoint::SpotPriceOrders, body, account_type).await?;
+                        return GateioParser::parse_order(&response, &symbol.to_string())
+                            .map(PlaceOrderResponse::Simple);
                     }
-                    _ => {}
+                    _ => {
+                        // Futures: POST /futures/{settle}/price_orders with limit trigger
+                        let size = match side { OrderSide::Buy => quantity as i64, OrderSide::Sell => -(quantity as i64) };
+                        let body = json!({
+                            "trigger": {
+                                "strategy_type": 0,
+                                "price_type": 0,
+                                "price": stop_price.to_string(),
+                                "rule": 1,
+                                "expiration": 86400,
+                            },
+                            "initial": {
+                                "contract": formatted_symbol,
+                                "size": size,
+                                "price": limit_price.to_string(),
+                                "tif": "gtc",
+                                "text": text.clone(),
+                            },
+                        });
+                        let base_url = self.urls.rest_url(account_type);
+                        let settle = self.urls.settle(account_type);
+                        let path = format!("/futures/{}/price_orders", settle);
+                        let url = format!("{}{}", base_url, path);
+                        let auth = self.auth.as_ref()
+                            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+                        let body_str = body.to_string();
+                        let headers = auth.sign_request("POST", &path, "", &body_str);
+                        let response = self.http.post(&url, &body, &headers).await?;
+                        GateioParser::check_error(&response)?;
+                        return GateioParser::parse_order(&response, &symbol.to_string())
+                            .map(PlaceOrderResponse::Simple);
+                    }
                 }
-                let size = match side { OrderSide::Buy => quantity as i64, OrderSide::Sell => -(quantity as i64) };
-                json!({
-                    "contract": formatted_symbol,
-                    "size": size,
-                    "price": limit_price.to_string(),
-                    "tif": "gtc",
-                    "text": text,
-                })
+            }
+            OrderType::Iceberg { price, display_quantity } => {
+                // Gate.io Spot + Futures: set `iceberg` flag on regular limit order.
+                // `iceberg` field = amount to show on orderbook (the visible slice size).
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        json!({
+                            "currency_pair": formatted_symbol,
+                            "side": side_str,
+                            "amount": quantity.to_string(),
+                            "price": price.to_string(),
+                            "type": "limit",
+                            "time_in_force": "gtc",
+                            "iceberg": display_quantity.to_string(),
+                            "text": text,
+                        })
+                    }
+                    _ => {
+                        let size = match side { OrderSide::Buy => quantity as i64, OrderSide::Sell => -(quantity as i64) };
+                        json!({
+                            "contract": formatted_symbol,
+                            "size": size,
+                            "price": price.to_string(),
+                            "tif": "gtc",
+                            "iceberg": display_quantity as i64,
+                            "text": text,
+                        })
+                    }
+                }
             }
             OrderType::TrailingStop { .. } | OrderType::Oco { .. } | OrderType::Bracket { .. }
-            | OrderType::Iceberg { .. } | OrderType::Twap { .. } | OrderType::Gtd { .. } => {
+            | OrderType::Twap { .. } | OrderType::Gtd { .. } => {
                 return Err(ExchangeError::UnsupportedOperation(
                     format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
                 ));
@@ -1370,22 +1489,13 @@ impl CancelAll for GateioConnector {
 // AMEND ORDER
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Amend a live futures order in-place.
+/// Amend a live order in-place.
 ///
+/// Gate.io Spot:    `PATCH /api/v4/spot/orders/{order_id}` (introduced v4.35.0)
 /// Gate.io Futures: `PATCH /api/v4/futures/{settle}/orders/{order_id}`
-/// Spot does NOT support amend — returns `UnsupportedOperation` for Spot/Margin.
 #[async_trait]
 impl AmendOrder for GateioConnector {
     async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
-        match req.account_type {
-            AccountType::Spot | AccountType::Margin => {
-                return Err(ExchangeError::UnsupportedOperation(
-                    "Amend order is not supported for Spot/Margin on Gate.io (futures only)".to_string()
-                ));
-            }
-            _ => {}
-        }
-
         if req.fields.price.is_none() && req.fields.quantity.is_none() {
             return Err(ExchangeError::InvalidRequest(
                 "At least one of price or quantity must be provided for amend".to_string()
@@ -1393,21 +1503,44 @@ impl AmendOrder for GateioConnector {
         }
 
         let account_type = req.account_type;
-        let settle = self.urls.settle(account_type);
-        let path = format!("/futures/{}/orders/{}", settle, req.order_id);
-
-        let mut body = json!({});
-        if let Some(price) = req.fields.price {
-            body["price"] = json!(price.to_string());
-        }
-        if let Some(qty) = req.fields.quantity {
-            // Gate.io futures uses integer size
-            body["size"] = json!(qty as i64);
-        }
-
         let symbol_str = format_symbol(&req.symbol.base, &req.symbol.quote, account_type);
-        let response = self.patch(&path, body, account_type).await?;
-        GateioParser::parse_amend_order(&response, &symbol_str)
+
+        match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                // Spot amend: PATCH /spot/orders/{order_id}
+                // Gate.io Spot v4.35.0: supports amend_text, price (amount for market)
+                let path = format!("/spot/orders/{}", req.order_id);
+                let mut body = json!({
+                    "currency_pair": symbol_str,
+                });
+                if let Some(price) = req.fields.price {
+                    body["price"] = json!(price.to_string());
+                }
+                if let Some(qty) = req.fields.quantity {
+                    // Spot uses `amount` for quantity
+                    body["amount"] = json!(qty.to_string());
+                }
+                let response = self.patch(&path, body, account_type).await?;
+                GateioParser::parse_amend_order(&response, &symbol_str)
+            }
+            _ => {
+                // Futures amend: PATCH /futures/{settle}/orders/{order_id}
+                let settle = self.urls.settle(account_type);
+                let path = format!("/futures/{}/orders/{}", settle, req.order_id);
+
+                let mut body = json!({});
+                if let Some(price) = req.fields.price {
+                    body["price"] = json!(price.to_string());
+                }
+                if let Some(qty) = req.fields.quantity {
+                    // Gate.io futures uses integer size
+                    body["size"] = json!(qty as i64);
+                }
+
+                let response = self.patch(&path, body, account_type).await?;
+                GateioParser::parse_amend_order(&response, &symbol_str)
+            }
+        }
     }
 }
 

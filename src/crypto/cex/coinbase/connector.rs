@@ -75,8 +75,9 @@ use crate::core::{
 };
 use crate::core::types::SymbolInfo;
 use crate::core::traits::{
-    ExchangeIdentity, MarketData, Trading, Account, Positions,
+    ExchangeIdentity, MarketData, Trading, Account, Positions, CancelAll,
 };
+use crate::core::types::{CancelAllResponse, OrderResult};
 use crate::core::types::ConnectorStats;
 use crate::core::utils::WeightRateLimiter;
 
@@ -1062,6 +1063,95 @@ impl Positions for CoinbaseConnector {
                 format!("{:?} not supported on {:?}", req, self.exchange_id())
             )),
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CANCEL ALL (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl CancelAll for CoinbaseConnector {
+    /// Cancel all open orders, optionally filtered to a single symbol.
+    ///
+    /// Coinbase has no single "cancel all" endpoint — implementation is 2-step:
+    /// 1. Fetch all open orders (optionally filtered by symbol).
+    /// 2. Call `POST /orders/batch_cancel` in chunks of 100.
+    async fn cancel_all_orders(
+        &self,
+        scope: CancelScope,
+        account_type: AccountType,
+    ) -> ExchangeResult<CancelAllResponse> {
+        let symbol_filter = match &scope {
+            CancelScope::All { symbol } => symbol.as_ref().map(|s| s.to_string()),
+            CancelScope::BySymbol { symbol } => Some(symbol.to_string()),
+            _ => return Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} not supported in cancel_all_orders", scope)
+            )),
+        };
+
+        // Step 1: fetch open orders
+        let open_orders = self.get_open_orders(
+            symbol_filter.as_deref(),
+            account_type,
+        ).await?;
+
+        if open_orders.is_empty() {
+            return Ok(CancelAllResponse {
+                cancelled_count: 0,
+                failed_count: 0,
+                details: vec![],
+            });
+        }
+
+        let order_ids: Vec<String> = open_orders.iter().map(|o| o.id.clone()).collect();
+
+        // Step 2: batch cancel in chunks of 100 (Coinbase limit)
+        let mut cancelled_count = 0u32;
+        let mut failed_count = 0u32;
+        let mut details: Vec<OrderResult> = Vec::new();
+
+        for chunk in order_ids.chunks(100) {
+            let body = serde_json::json!({ "order_ids": chunk });
+            let response = self.post(CoinbaseEndpoint::CancelOrders, body).await?;
+
+            if let Some(results) = response.get("results").and_then(|r| r.as_array()) {
+                for item in results {
+                    let success = item.get("success")
+                        .and_then(|s| s.as_bool())
+                        .unwrap_or(false);
+                    let order_id = item.get("order_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let failure_reason = item.get("failure_reason")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string());
+
+                    if success {
+                        cancelled_count += 1;
+                    } else {
+                        failed_count += 1;
+                    }
+
+                    details.push(OrderResult {
+                        order: None,
+                        client_order_id: None,
+                        success,
+                        error: failure_reason,
+                        error_code: None,
+                    });
+                    let _ = order_id;
+                }
+            }
+        }
+
+        Ok(CancelAllResponse {
+            cancelled_count,
+            failed_count,
+            details,
+        })
     }
 }
 

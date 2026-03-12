@@ -65,7 +65,10 @@ pub enum BingxEndpoint {
     SwapOpenOrders,
     SwapAllOrders,
     SwapCancelAllOrders,
+    SwapBatchCancelOrders,
     SwapCloseAllPositions,
+    SwapAmend,
+    SwapFundingRate,
 
     // === SWAP ACCOUNT ===
     SwapBalance,
@@ -112,8 +115,11 @@ impl BingxEndpoint {
             Self::SwapOrder => "/openApi/swap/v2/trade/order",
             Self::SwapOpenOrders => "/openApi/swap/v2/trade/openOrders",
             Self::SwapAllOrders => "/openApi/swap/v2/trade/allOrders",
-            Self::SwapCancelAllOrders => "/openApi/swap/v2/trade/allOrders",
+            Self::SwapCancelAllOrders => "/openApi/swap/v2/trade/allOpenOrders",
+            Self::SwapBatchCancelOrders => "/openApi/swap/v2/trade/batchOrders",
             Self::SwapCloseAllPositions => "/openApi/swap/v2/trade/closeAllPositions",
+            Self::SwapAmend => "/openApi/swap/v1/trade/amend",
+            Self::SwapFundingRate => "/openApi/swap/v2/quote/fundingRate",
 
             // Swap Account
             Self::SwapBalance => "/openApi/swap/v2/user/balance",
@@ -156,9 +162,12 @@ impl BingxEndpoint {
             | Self::SwapOrder
             | Self::SwapCloseAllPositions
             | Self::SwapLeverage
-            | Self::SwapMarginType => "POST",
+            | Self::SwapMarginType
+            | Self::SwapAmend => "POST",
 
-            Self::SpotCancelAllOrders | Self::SwapCancelAllOrders => "DELETE",
+            Self::SpotCancelAllOrders
+            | Self::SwapCancelAllOrders
+            | Self::SwapBatchCancelOrders => "DELETE",
 
             _ => "GET",
         }

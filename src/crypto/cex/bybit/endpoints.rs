@@ -87,7 +87,13 @@ pub enum BybitEndpoint {
     // === POSITIONS (FUTURES) ===
     Positions,        // GET /v5/position/list
     SetLeverage,      // POST /v5/position/set-leverage
+    SetMarginMode,    // POST /v5/position/switch-isolated
+    AddMargin,        // POST /v5/position/add-margin
+    TpSlMode,         // POST /v5/position/set-tpsl
     FundingRate,      // GET /v5/market/funding/history
+
+    // === FEES ===
+    FeeRate,          // GET /v5/account/fee-rate
 }
 
 impl BybitEndpoint {
@@ -117,7 +123,13 @@ impl BybitEndpoint {
             // Positions
             Self::Positions => "/v5/position/list",
             Self::SetLeverage => "/v5/position/set-leverage",
+            Self::SetMarginMode => "/v5/position/switch-isolated",
+            Self::AddMargin => "/v5/position/add-margin",
+            Self::TpSlMode => "/v5/position/trading-stop",
             Self::FundingRate => "/v5/market/funding/history",
+
+            // Fees
+            Self::FeeRate => "/v5/account/fee-rate",
         }
     }
 
@@ -128,7 +140,10 @@ impl BybitEndpoint {
             Self::PlaceOrder
             | Self::CancelOrder
             | Self::CancelAllOrders
-            | Self::SetLeverage => "POST",
+            | Self::SetLeverage
+            | Self::SetMarginMode
+            | Self::AddMargin
+            | Self::TpSlMode => "POST",
 
             // GET requests
             _ => "GET",
@@ -144,7 +159,8 @@ impl BybitEndpoint {
             | Self::Klines
             | Self::Symbols
             | Self::RecentTrades
-            | Self::ServerTime => false,
+            | Self::ServerTime
+            | Self::FundingRate => false,
 
             // Private endpoints
             _ => true,

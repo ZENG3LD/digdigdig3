@@ -97,6 +97,13 @@ pub enum BitgetEndpoint {
     FuturesGetOrder,
     FuturesOpenOrders,
     FuturesAllOrders,
+    FuturesBatchPlaceOrders,
+    FuturesBatchCancelOrders,
+    FuturesCancelBySymbol,
+    FuturesClosePositions,
+    FuturesModifyOrder,
+    FuturesPlanOrder,
+    FuturesPosTpSl,
 
     // === FUTURES ACCOUNT ===
     FuturesAccount,
@@ -104,6 +111,19 @@ pub enum BitgetEndpoint {
     FuturesPositions,
     FuturesPosition,
     FuturesSetLeverage,
+    FuturesSetMarginMode,
+    FuturesSetMargin,
+
+    // === SPOT EXTRA ===
+    SpotBatchPlaceOrders,
+    SpotBatchCancelOrders,
+    SpotCancelBySymbol,
+    SpotModifyOrder,
+    SpotFills,
+
+    // === COMMON ===
+    TradeRate,
+    VipFeeRate,
 }
 
 impl BitgetEndpoint {
@@ -147,6 +167,13 @@ impl BitgetEndpoint {
             Self::FuturesGetOrder => "/api/v2/mix/order/detail",
             Self::FuturesOpenOrders => "/api/v2/mix/order/orders-pending",
             Self::FuturesAllOrders => "/api/v2/mix/order/orders-history",
+            Self::FuturesBatchPlaceOrders => "/api/v2/mix/order/batch-place-order",
+            Self::FuturesBatchCancelOrders => "/api/v2/mix/order/batch-cancel-orders",
+            Self::FuturesCancelBySymbol => "/api/v2/mix/order/cancel-all-orders",
+            Self::FuturesClosePositions => "/api/v2/mix/order/close-positions",
+            Self::FuturesModifyOrder => "/api/v2/mix/order/modify-order",
+            Self::FuturesPlanOrder => "/api/v2/mix/order/place-plan-order",
+            Self::FuturesPosTpSl => "/api/v2/mix/order/place-tpsl-order",
 
             // Futures Account
             Self::FuturesAccount => "/api/v2/mix/account/account",
@@ -154,6 +181,19 @@ impl BitgetEndpoint {
             Self::FuturesPositions => "/api/v2/mix/position/all-position",
             Self::FuturesPosition => "/api/v2/mix/position/single-position",
             Self::FuturesSetLeverage => "/api/v2/mix/account/set-leverage",
+            Self::FuturesSetMarginMode => "/api/v2/mix/account/set-margin-mode",
+            Self::FuturesSetMargin => "/api/v2/mix/account/set-margin",
+
+            // Spot Extra
+            Self::SpotBatchPlaceOrders => "/api/v2/spot/trade/batch-orders",
+            Self::SpotBatchCancelOrders => "/api/v2/spot/trade/batch-cancel-order",
+            Self::SpotCancelBySymbol => "/api/v2/spot/trade/cancel-symbol-orders",
+            Self::SpotModifyOrder => "/api/v2/spot/trade/modify-order",
+            Self::SpotFills => "/api/v2/spot/trade/fills",
+
+            // Common
+            Self::TradeRate => "/api/v2/common/trade-rate",
+            Self::VipFeeRate => "/api/v2/spot/market/vip-fee-rate",
         }
     }
 
@@ -186,9 +226,22 @@ impl BitgetEndpoint {
         match self {
             Self::SpotCreateOrder
             | Self::SpotCancelOrder
+            | Self::SpotBatchPlaceOrders
+            | Self::SpotBatchCancelOrders
+            | Self::SpotCancelBySymbol
+            | Self::SpotModifyOrder
             | Self::FuturesCreateOrder
             | Self::FuturesCancelOrder
-            | Self::FuturesSetLeverage => "POST",
+            | Self::FuturesBatchPlaceOrders
+            | Self::FuturesBatchCancelOrders
+            | Self::FuturesCancelBySymbol
+            | Self::FuturesClosePositions
+            | Self::FuturesModifyOrder
+            | Self::FuturesPlanOrder
+            | Self::FuturesPosTpSl
+            | Self::FuturesSetLeverage
+            | Self::FuturesSetMarginMode
+            | Self::FuturesSetMargin => "POST",
 
             _ => "GET",
         }

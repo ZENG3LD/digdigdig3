@@ -21,7 +21,12 @@ use crate::core::{
     Price, Ticker, OrderBook, Kline,
     ExchangeIdentity, MarketData,
 };
-use crate::core::types::ConnectorStats;
+use crate::core::traits::{Trading, Account};
+use crate::core::types::{
+    ConnectorStats,
+    OrderRequest, CancelRequest, Order, OrderHistoryFilter, PlaceOrderResponse,
+    BalanceQuery, Balance, AccountInfo, FeeInfo,
+};
 use crate::core::utils::SimpleRateLimiter;
 
 use super::{RaydiumUrls, RaydiumAuth, RaydiumParser, RaydiumEndpoint};
@@ -224,5 +229,112 @@ impl MarketData for RaydiumConnector {
         let params = HashMap::new();
         let _response = self.get_request(RaydiumEndpoint::Version, &params).await?;
         Ok(())
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TRADING
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Raydium swap execution requires:
+// 1. Solana wallet integration (solana-sdk)
+// 2. Wallet keypair for transaction signing
+// 3. Swap API provides unsigned transaction; must sign locally
+// 4. Submit signed transaction to Solana RPC (sendTransaction)
+// 5. Confirm via Solana transaction signature
+//
+// REST API provides swap routing and unsigned tx data only.
+
+#[async_trait]
+impl Trading for RaydiumConnector {
+    async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
+        let _ = req;
+        Err(ExchangeError::UnsupportedOperation(
+            "Raydium swap execution requires Solana wallet integration (solana-sdk). \
+             Use Swap API to get transaction data, then sign and broadcast via Solana RPC."
+                .to_string(),
+        ))
+    }
+
+    async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+        let _ = req;
+        Err(ExchangeError::UnsupportedOperation(
+            "Raydium AMM swaps are atomic Solana transactions — they cannot be cancelled. \
+             Transactions either confirm or fail."
+                .to_string(),
+        ))
+    }
+
+    async fn get_order(
+        &self,
+        _symbol: &str,
+        _order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Raydium has no order tracking. \
+             Use Solana transaction signature to check swap status via getTransaction RPC call."
+                .to_string(),
+        ))
+    }
+
+    async fn get_open_orders(
+        &self,
+        _symbol: Option<&str>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Raydium AMM swaps are atomic — there are no open/pending orders. \
+             Pure AMM model does not support limit orders."
+                .to_string(),
+        ))
+    }
+
+    async fn get_order_history(
+        &self,
+        _filter: OrderHistoryFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Raydium does not provide order history via REST API. \
+             Query transaction history via Solana RPC (getSignaturesForAddress)."
+                .to_string(),
+        ))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ACCOUNT
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl Account for RaydiumConnector {
+    async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Raydium has no account system. \
+             Query SPL token balances via Solana RPC (getTokenAccountsByOwner)."
+                .to_string(),
+        ))
+    }
+
+    async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Raydium is a permissionless Solana AMM — there is no account concept. \
+             Use Solana wallet address to query on-chain account data."
+                .to_string(),
+        ))
+    }
+
+    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        // Raydium uses protocol fee tiers per pool (not maker/taker):
+        // - CPMM pools: typically 0.25% (configurable)
+        // - CLMM pools: 0.01%, 0.05%, 0.30%, or 1.00%
+        // - Legacy AMM v4: 0.25% (0.22% to LPs, 0.03% protocol)
+        // Not translatable to FeeInfo maker/taker structure.
+        Err(ExchangeError::UnsupportedOperation(
+            "Raydium uses pool fee tiers (0.01%–1.00%) paid to LPs, not maker/taker rates. \
+             Fee is per pool — query pool data via /pools/info endpoint."
+                .to_string(),
+        ))
     }
 }

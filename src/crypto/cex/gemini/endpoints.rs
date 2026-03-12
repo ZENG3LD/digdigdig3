@@ -316,10 +316,10 @@ mod tests {
 
     #[test]
     fn test_is_perpetual() {
-        assert!(is_perpetual("btcgusdperp"));
-        assert!(is_perpetual("BTCGUSDPERP"));
-        assert!(!is_perpetual("btcusd"));
-        assert!(!is_perpetual("ethusd"));
+        assert!(_is_perpetual("btcgusdperp"));
+        assert!(_is_perpetual("BTCGUSDPERP"));
+        assert!(!_is_perpetual("btcusd"));
+        assert!(!_is_perpetual("ethusd"));
     }
 
     #[test]

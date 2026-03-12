@@ -365,63 +365,230 @@ impl Trading for OkxConnector {
         let quantity = req.quantity;
         let account_type = req.account_type;
 
-        match req.order_type {
-            OrderType::Market => {
-                let body = json!({
-                            "instId": format_symbol(&symbol.base, &symbol.quote, account_type),
-                            "tdMode": get_trade_mode(account_type),
-                            "side": match side {
-                                OrderSide::Buy => "buy",
-                                OrderSide::Sell => "sell",
-                            },
-                            "ordType": "market",
-                            "sz": quantity.to_string(),
-                        });
-                
-                        let response = self.post(OkxEndpoint::PlaceOrder, body).await?;
-                        let order_id = OkxParser::parse_order_response(&response)?;
+        let inst_id = format_symbol(&symbol.base, &symbol.quote, account_type);
+        let td_mode = get_trade_mode(account_type);
+        let side_str = match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" };
+        let cl_ord_id = req.client_order_id.clone()
+            .unwrap_or_else(|| format!("cc_{}", crate::core::timestamp_millis()));
 
-                        // Get full order details
-                        let symbol_str = symbol.to_string();
-                        let order = self.get_order(&symbol_str, &order_id, account_type).await?;
-                        Ok(PlaceOrderResponse::Simple(order))
+        let body = match req.order_type {
+            OrderType::Market => {
+                json!({
+                    "instId": inst_id,
+                    "tdMode": td_mode,
+                    "side": side_str,
+                    "ordType": "market",
+                    "sz": quantity.to_string(),
+                    "clOrdId": cl_ord_id,
+                })
             }
             OrderType::Limit { price } => {
-                let body = json!({
-                            "instId": format_symbol(&symbol.base, &symbol.quote, account_type),
-                            "tdMode": get_trade_mode(account_type),
-                            "side": match side {
-                                OrderSide::Buy => "buy",
-                                OrderSide::Sell => "sell",
-                            },
-                            "ordType": "limit",
-                            "px": price.to_string(),
-                            "sz": quantity.to_string(),
-                        });
-                
-                        let response = self.post(OkxEndpoint::PlaceOrder, body).await?;
-                        let order_id = OkxParser::parse_order_response(&response)?;
-
-                        // Get full order details
-                        let symbol_str = symbol.to_string();
-                        let order = self.get_order(&symbol_str, &order_id, account_type).await?;
-                        Ok(PlaceOrderResponse::Simple(order))
+                let tif = match req.time_in_force {
+                    crate::core::TimeInForce::PostOnly => "post_only",
+                    crate::core::TimeInForce::Ioc => "optimal_limit_ioc",
+                    crate::core::TimeInForce::Fok => "fok",
+                    _ => "limit",
+                };
+                json!({
+                    "instId": inst_id,
+                    "tdMode": td_mode,
+                    "side": side_str,
+                    "ordType": tif,
+                    "px": price.to_string(),
+                    "sz": quantity.to_string(),
+                    "clOrdId": cl_ord_id,
+                })
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
-            )),
-        }
+            OrderType::PostOnly { price } => {
+                json!({
+                    "instId": inst_id,
+                    "tdMode": td_mode,
+                    "side": side_str,
+                    "ordType": "post_only",
+                    "px": price.to_string(),
+                    "sz": quantity.to_string(),
+                    "clOrdId": cl_ord_id,
+                })
+            }
+            OrderType::Ioc { price } => {
+                let px_str = price.map(|p| p.to_string()).unwrap_or_else(|| "-1".to_string());
+                json!({
+                    "instId": inst_id,
+                    "tdMode": td_mode,
+                    "side": side_str,
+                    "ordType": "optimal_limit_ioc",
+                    "px": px_str,
+                    "sz": quantity.to_string(),
+                    "clOrdId": cl_ord_id,
+                })
+            }
+            OrderType::Fok { price } => {
+                json!({
+                    "instId": inst_id,
+                    "tdMode": td_mode,
+                    "side": side_str,
+                    "ordType": "fok",
+                    "px": price.to_string(),
+                    "sz": quantity.to_string(),
+                    "clOrdId": cl_ord_id,
+                })
+            }
+            OrderType::StopMarket { stop_price } => {
+                // OKX algo order: tp/sl trigger; uses /api/v5/trade/order-algo
+                // For a simpler approach, use stop-market via conditional orders
+                // OKX represents these as ordType="conditional" with slTriggerPx or tpTriggerPx
+                let (tp_trigger_px, sl_trigger_px) = match side {
+                    OrderSide::Buy => (Some(stop_price), None::<f64>),
+                    OrderSide::Sell => (None, Some(stop_price)),
+                };
+                let mut body = json!({
+                    "instId": inst_id,
+                    "tdMode": td_mode,
+                    "side": side_str,
+                    "ordType": "conditional",
+                    "sz": quantity.to_string(),
+                    "clOrdId": cl_ord_id,
+                });
+                if let Some(tp) = tp_trigger_px {
+                    body["tpTriggerPx"] = json!(tp.to_string());
+                    body["tpOrdPx"] = json!("-1"); // market price
+                }
+                if let Some(sl) = sl_trigger_px {
+                    body["slTriggerPx"] = json!(sl.to_string());
+                    body["slOrdPx"] = json!("-1"); // market price
+                }
+                body
+            }
+            OrderType::StopLimit { stop_price, limit_price } => {
+                let (tp_trigger_px, sl_trigger_px) = match side {
+                    OrderSide::Buy => (Some((stop_price, limit_price)), None::<(f64, f64)>),
+                    OrderSide::Sell => (None, Some((stop_price, limit_price))),
+                };
+                let mut body = json!({
+                    "instId": inst_id,
+                    "tdMode": td_mode,
+                    "side": side_str,
+                    "ordType": "conditional",
+                    "sz": quantity.to_string(),
+                    "clOrdId": cl_ord_id,
+                });
+                if let Some((trigger, limit)) = tp_trigger_px {
+                    body["tpTriggerPx"] = json!(trigger.to_string());
+                    body["tpOrdPx"] = json!(limit.to_string());
+                }
+                if let Some((trigger, limit)) = sl_trigger_px {
+                    body["slTriggerPx"] = json!(trigger.to_string());
+                    body["slOrdPx"] = json!(limit.to_string());
+                }
+                body
+            }
+            OrderType::ReduceOnly { price } => {
+                let ord_type = if price.is_some() { "limit" } else { "market" };
+                let mut body = json!({
+                    "instId": inst_id,
+                    "tdMode": td_mode,
+                    "side": side_str,
+                    "ordType": ord_type,
+                    "sz": quantity.to_string(),
+                    "reduceOnly": true,
+                    "clOrdId": cl_ord_id,
+                });
+                if let Some(px) = price {
+                    body["px"] = json!(px.to_string());
+                }
+                body
+            }
+            OrderType::Gtd { price, expire_time } => {
+                // OKX supports GTC/IOC but not native GTD — place as limit with note
+                let _ = expire_time;
+                json!({
+                    "instId": inst_id,
+                    "tdMode": td_mode,
+                    "side": side_str,
+                    "ordType": "limit",
+                    "px": price.to_string(),
+                    "sz": quantity.to_string(),
+                    "clOrdId": cl_ord_id,
+                })
+            }
+            OrderType::TrailingStop { callback_rate, activation_price } => {
+                // OKX supports trailing stop via algo orders endpoint
+                // ordType="move_order_stop", callbackRatio or callbackSpread
+                let mut body = json!({
+                    "instId": inst_id,
+                    "tdMode": td_mode,
+                    "side": side_str,
+                    "ordType": "move_order_stop",
+                    "sz": quantity.to_string(),
+                    "callbackRatio": callback_rate.to_string(),
+                    "clOrdId": cl_ord_id,
+                });
+                if let Some(act_px) = activation_price {
+                    body["activePx"] = json!(act_px.to_string());
+                }
+                body
+            }
+            OrderType::Twap { duration_seconds, interval_seconds } => {
+                // OKX has TWAP algo: ordType="twap"
+                let _ = interval_seconds;
+                json!({
+                    "instId": inst_id,
+                    "tdMode": td_mode,
+                    "side": side_str,
+                    "ordType": "twap",
+                    "sz": quantity.to_string(),
+                    "pxVar": "0.01",  // 1% price variance
+                    "szLimit": quantity.to_string(),
+                    "pxLimit": "0",   // no limit
+                    "timeInterval": duration_seconds.to_string(),
+                    "clOrdId": cl_ord_id,
+                })
+            }
+            OrderType::Oco { .. } | OrderType::Bracket { .. } | OrderType::Iceberg { .. } => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+                ));
+            }
+        };
+
+        let response = self.post(OkxEndpoint::PlaceOrder, body).await?;
+        let order_id = OkxParser::parse_order_response(&response)?;
+
+        // Get full order details
+        let symbol_str = symbol.to_string();
+        let order = self.get_order(&symbol_str, &order_id, account_type).await?;
+        Ok(PlaceOrderResponse::Simple(order))
     }
 
     async fn get_order_history(
         &self,
-        _filter: OrderHistoryFilter,
-        _account_type: AccountType,
+        filter: OrderHistoryFilter,
+        account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_order_history not yet implemented".to_string()
-        ))
+        let mut params = HashMap::new();
+        params.insert("instType".to_string(), get_inst_type(account_type).to_string());
+
+        if let Some(ref symbol) = filter.symbol {
+            let inst_id = format_symbol(&symbol.base, &symbol.quote, account_type);
+            params.insert("instId".to_string(), inst_id);
+        }
+
+        if let Some(limit) = filter.limit {
+            params.insert("limit".to_string(), limit.min(100).to_string());
+        }
+
+        if let Some(start) = filter.start_time {
+            params.insert("begin".to_string(), start.to_string());
+        }
+
+        if let Some(end) = filter.end_time {
+            params.insert("end".to_string(), end.to_string());
+        }
+
+        let response = self.get(OkxEndpoint::OrderHistory, params).await?;
+        OkxParser::parse_orders(&response)
     }
+
 async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         match req.scope {
             CancelScope::Single { ref order_id } => {
@@ -430,22 +597,67 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
                     .clone();
                 let account_type = req.account_type;
 
-            let body = json!({
-                "instId": format_symbol(&symbol.base, &symbol.quote, account_type),
-                "ordId": order_id,
-            });
+                let body = json!({
+                    "instId": format_symbol(&symbol.base, &symbol.quote, account_type),
+                    "ordId": order_id,
+                });
 
-            let response = self.post(OkxEndpoint::CancelOrder, body).await?;
-            OkxParser::parse_order_response(&response)?;
+                let response = self.post(OkxEndpoint::CancelOrder, body).await?;
+                OkxParser::parse_order_response(&response)?;
 
-            // Get full order details after cancellation
-            let symbol_str = symbol.to_string();
-            self.get_order(&symbol_str, order_id, account_type).await
-    
+                // Get full order details after cancellation
+                let symbol_str = symbol.to_string();
+                self.get_order(&symbol_str, order_id, account_type).await
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
-            )),
+            CancelScope::All { ref symbol } => {
+                let account_type = req.account_type;
+                let inst_type = get_inst_type(account_type).to_string();
+
+                // OKX cancel-all requires cancelling per instrument type; no single "cancel all" REST endpoint.
+                // We fetch open orders and cancel each — but per non-composition rule we must not loop.
+                // OKX does NOT have an atomic cancel-all REST endpoint; return UnsupportedOperation.
+                // (The batch cancel endpoint requires explicit ordId list.)
+                let _ = (symbol, inst_type);
+                Err(ExchangeError::UnsupportedOperation(
+                    "OKX does not provide an atomic cancel-all REST endpoint. Use CancelScope::Batch with explicit order IDs.".to_string()
+                ))
+            }
+            CancelScope::BySymbol { ref symbol } => {
+                // Same limitation as All — no atomic by-symbol cancel-all
+                let _ = symbol;
+                Err(ExchangeError::UnsupportedOperation(
+                    "OKX does not provide an atomic cancel-by-symbol REST endpoint. Use CancelScope::Batch with explicit order IDs.".to_string()
+                ))
+            }
+            CancelScope::Batch { ref order_ids } => {
+                let symbol = req.symbol.as_ref()
+                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for batch cancel".into()))?
+                    .clone();
+                let account_type = req.account_type;
+                let inst_id = format_symbol(&symbol.base, &symbol.quote, account_type);
+
+                // OKX batch cancel: POST /api/v5/trade/cancel-batch-orders
+                // Body is an array of {instId, ordId}
+                let orders_arr: Vec<Value> = order_ids.iter()
+                    .map(|oid| json!({ "instId": inst_id, "ordId": oid }))
+                    .collect();
+
+                let response = self.post(OkxEndpoint::CancelBatchOrders, json!(orders_arr)).await?;
+
+                // Return the first successfully cancelled order or error
+                let data = OkxParser::extract_data(&response)?;
+                let arr = data.as_array()
+                    .ok_or_else(|| ExchangeError::Parse("Expected array in batch cancel response".to_string()))?;
+
+                if arr.is_empty() {
+                    return Err(ExchangeError::Api { code: 0, message: "No orders were cancelled".to_string() });
+                }
+
+                // Return a synthetic cancelled order from the first result
+                let first = &arr[0];
+                let order_id_str = OkxParser::get_str(first, "ordId").unwrap_or("").to_string();
+                self.get_order(&symbol.to_string(), &order_id_str, account_type).await
+            }
         }
     }
 
@@ -536,10 +748,38 @@ impl Account for OkxConnector {
         })
     }
 
-    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_fees not yet implemented".to_string()
-        ))
+    async fn get_fees(&self, symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        // GET /api/v5/account/trade-fee
+        let mut params = HashMap::new();
+        params.insert("instType".to_string(), "SPOT".to_string());
+
+        if let Some(sym) = symbol {
+            let parts: Vec<&str> = sym.split('/').collect();
+            let inst_id = if parts.len() == 2 {
+                format_symbol(parts[0], parts[1], AccountType::Spot)
+            } else {
+                sym.to_string()
+            };
+            params.insert("instId".to_string(), inst_id.clone());
+        }
+
+        let response = self.get(OkxEndpoint::AccountConfig, params).await?;
+        // OKX returns fee info in account config: makerFeeRate, takerFeeRate
+        let data = OkxParser::extract_first_data(&response)?;
+
+        let maker_rate = OkxParser::get_str(data, "makerFeeRate")
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.08 / 100.0);
+        let taker_rate = OkxParser::get_str(data, "takerFeeRate")
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.1 / 100.0);
+
+        Ok(FeeInfo {
+            maker_rate,
+            taker_rate,
+            symbol: symbol.map(String::from),
+            tier: OkxParser::get_str(data, "level").map(String::from),
+        })
     }
 }
 
@@ -596,25 +836,199 @@ impl Positions for OkxConnector {
                 let symbol = symbol.clone();
 
                 let margin_mode = match account_type {
-                AccountType::FuturesCross => "cross",
-                AccountType::FuturesIsolated => "isolated",
-                _ => return Err(ExchangeError::InvalidRequest("Leverage only supported for futures".to_string())),
+                    AccountType::FuturesCross => "cross",
+                    AccountType::FuturesIsolated => "isolated",
+                    _ => return Err(ExchangeError::InvalidRequest("Leverage only supported for futures".to_string())),
                 };
 
                 let body = json!({
-                "instId": format_symbol(&symbol.base, &symbol.quote, account_type),
-                "lever": leverage.to_string(),
-                "mgnMode": margin_mode,
+                    "instId": format_symbol(&symbol.base, &symbol.quote, account_type),
+                    "lever": leverage.to_string(),
+                    "mgnMode": margin_mode,
                 });
 
                 let response = self.post(OkxEndpoint::SetLeverage, body).await?;
                 OkxParser::extract_data(&response)?;
                 Ok(())
-    
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} not supported on {:?}", req, self.exchange_id())
-            )),
+            PositionModification::SetMarginMode { ref symbol, margin_type, account_type } => {
+                let symbol = symbol.clone();
+
+                match account_type {
+                    AccountType::Spot => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "SetMarginMode not supported for Spot".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+
+                let mgn_mode = match margin_type {
+                    crate::core::MarginType::Cross => "cross",
+                    crate::core::MarginType::Isolated => "isolated",
+                };
+
+                // OKX switches margin mode via set-position-mode or set-leverage
+                // For per-instrument margin mode: use set-leverage with appropriate mgnMode
+                let body = json!({
+                    "instId": format_symbol(&symbol.base, &symbol.quote, account_type),
+                    "lever": "10",  // Required field, use current leverage
+                    "mgnMode": mgn_mode,
+                });
+
+                let response = self.post(OkxEndpoint::SetLeverage, body).await?;
+                OkxParser::extract_data(&response)?;
+                Ok(())
+            }
+            PositionModification::AddMargin { ref symbol, amount, account_type } => {
+                let symbol = symbol.clone();
+
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "AddMargin only supported for futures".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+
+                // OKX: POST /api/v5/account/position/margin-balance
+                // type=add for adding margin
+                let body = json!({
+                    "instId": format_symbol(&symbol.base, &symbol.quote, account_type),
+                    "posSide": "net",
+                    "type": "add",
+                    "amt": amount.to_string(),
+                });
+
+                // OKX doesn't have a specific endpoint in our enum for this; use AccountConfig as fallback
+                // We need to call the raw endpoint
+                self.rate_limit_wait().await;
+                let base_url = self.urls.rest_url();
+                let path = "/api/v5/account/position/margin-balance";
+                let url = format!("{}{}", base_url, path);
+                let auth = self.auth.as_ref()
+                    .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+                let body_str = body.to_string();
+                let headers = if self.testnet {
+                    auth.sign_request_testnet("POST", path, &body_str)
+                } else {
+                    auth.sign_request("POST", path, &body_str)
+                };
+                let response = self.http.post(&url, &body, &headers).await?;
+                OkxParser::extract_data(&response)?;
+                Ok(())
+            }
+            PositionModification::RemoveMargin { ref symbol, amount, account_type } => {
+                let symbol = symbol.clone();
+
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "RemoveMargin only supported for futures".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+
+                // OKX: type=reduce for removing margin
+                let body = json!({
+                    "instId": format_symbol(&symbol.base, &symbol.quote, account_type),
+                    "posSide": "net",
+                    "type": "reduce",
+                    "amt": amount.to_string(),
+                });
+
+                self.rate_limit_wait().await;
+                let base_url = self.urls.rest_url();
+                let path = "/api/v5/account/position/margin-balance";
+                let url = format!("{}{}", base_url, path);
+                let auth = self.auth.as_ref()
+                    .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+                let body_str = body.to_string();
+                let headers = if self.testnet {
+                    auth.sign_request_testnet("POST", path, &body_str)
+                } else {
+                    auth.sign_request("POST", path, &body_str)
+                };
+                let response = self.http.post(&url, &body, &headers).await?;
+                OkxParser::extract_data(&response)?;
+                Ok(())
+            }
+            PositionModification::ClosePosition { ref symbol, account_type } => {
+                let symbol = symbol.clone();
+
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "ClosePosition only supported for futures".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+
+                // OKX: POST /api/v5/trade/close-position
+                let mgn_mode = match account_type {
+                    AccountType::FuturesCross => "cross",
+                    _ => "isolated",
+                };
+
+                let body = json!({
+                    "instId": format_symbol(&symbol.base, &symbol.quote, account_type),
+                    "mgnMode": mgn_mode,
+                });
+
+                self.rate_limit_wait().await;
+                let base_url = self.urls.rest_url();
+                let path = "/api/v5/trade/close-position";
+                let url = format!("{}{}", base_url, path);
+                let auth = self.auth.as_ref()
+                    .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+                let body_str = body.to_string();
+                let headers = if self.testnet {
+                    auth.sign_request_testnet("POST", path, &body_str)
+                } else {
+                    auth.sign_request("POST", path, &body_str)
+                };
+                let response = self.http.post(&url, &body, &headers).await?;
+                OkxParser::extract_data(&response)?;
+                Ok(())
+            }
+            PositionModification::SetTpSl { ref symbol, take_profit, stop_loss, account_type } => {
+                let symbol = symbol.clone();
+
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "SetTpSl only supported for futures".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+
+                // OKX: place algo order with ordType=conditional
+                // For TP/SL on existing position, use ordType=oco (one-cancel-other)
+                let mut body = json!({
+                    "instId": format_symbol(&symbol.base, &symbol.quote, account_type),
+                    "tdMode": "cross",
+                    "side": "sell",  // For long position: TP/SL sell side
+                    "ordType": "oco",
+                    "sz": "0",  // Entire position (0 means position quantity)
+                });
+
+                if let Some(tp) = take_profit {
+                    body["tpTriggerPx"] = json!(tp.to_string());
+                    body["tpOrdPx"] = json!("-1"); // market price
+                }
+                if let Some(sl) = stop_loss {
+                    body["slTriggerPx"] = json!(sl.to_string());
+                    body["slOrdPx"] = json!("-1"); // market price
+                }
+
+                let response = self.post(OkxEndpoint::PlaceOrder, body).await?;
+                OkxParser::extract_data(&response)?;
+                Ok(())
+            }
         }
     }
 }

@@ -25,11 +25,13 @@ use crate::core::{
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook, Balance, AccountInfo,
     Position, FundingRate,
+    Order, OrderSide, OrderStatus, OrderType, TimeInForce,
+    OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
-    FeeInfo,
+    OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };
 use crate::core::traits::{
-    ExchangeIdentity, MarketData, Account, Positions,
+    ExchangeIdentity, MarketData, Trading, Account, Positions,
 };
 use crate::core::utils::SimpleRateLimiter;
 use crate::core::types::{ConnectorStats, SymbolInfo};
@@ -347,6 +349,73 @@ impl Positions for DydxConnector {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// TRADING (Read-only via Indexer; write operations require Node gRPC)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl Trading for DydxConnector {
+    async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
+        // dYdX v4 order placement requires Cosmos SDK gRPC (MsgPlaceOrder).
+        // The Indexer REST API is read-only; write operations go through validator
+        // nodes via gRPC/Protobuf and require a signed Cosmos transaction.
+        // This is beyond the REST-only scope of this connector.
+        let _ = req;
+        Err(ExchangeError::UnsupportedOperation(
+            "dYdX v4 order placement requires Cosmos gRPC (Node API). \
+             The Indexer REST API is read-only. Implement via gRPC MsgPlaceOrder.".to_string()
+        ))
+    }
+
+    async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+        // dYdX v4 order cancellation also requires Node gRPC (MsgCancelOrder).
+        let _ = req;
+        Err(ExchangeError::UnsupportedOperation(
+            "dYdX v4 order cancellation requires Cosmos gRPC (Node API). \
+             The Indexer REST API is read-only.".to_string()
+        ))
+    }
+
+    async fn get_order(
+        &self,
+        _symbol: &str,
+        order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        let mut params = HashMap::new();
+        params.insert("orderId".to_string(), order_id.to_string());
+
+        let response = self.get(DydxEndpoint::SpecificOrder, params).await?;
+        DydxParser::parse_order(&response)
+    }
+
+    async fn get_open_orders(
+        &self,
+        symbol: Option<&str>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        // Requires address + subaccountNumber — not available in the generic trait call.
+        // Return UnsupportedOperation with a helpful message.
+        let _ = symbol;
+        Err(ExchangeError::UnsupportedOperation(
+            "dYdX open orders require address and subaccountNumber. \
+             Use get_orders_for_subaccount() instead.".to_string()
+        ))
+    }
+
+    async fn get_order_history(
+        &self,
+        _filter: OrderHistoryFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        // Also requires address + subaccountNumber.
+        Err(ExchangeError::UnsupportedOperation(
+            "dYdX order history requires address and subaccountNumber. \
+             Use get_orders_for_subaccount() instead.".to_string()
+        ))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // EXTENDED METHODS
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -390,6 +459,32 @@ impl DydxConnector {
         markets.get(ticker)
             .cloned()
             .ok_or_else(|| ExchangeError::Parse(format!("Market {} not found", ticker)))
+    }
+
+    /// Получить orders для конкретного subaccount (read-only via Indexer)
+    pub async fn get_orders_for_subaccount(
+        &self,
+        address: &str,
+        subaccount_number: u32,
+        ticker: Option<&str>,
+        status: Option<&str>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Vec<Order>> {
+        let mut params = HashMap::new();
+        params.insert("address".to_string(), address.to_string());
+        params.insert("subaccountNumber".to_string(), subaccount_number.to_string());
+        if let Some(t) = ticker {
+            params.insert("ticker".to_string(), t.to_string());
+        }
+        if let Some(s) = status {
+            params.insert("status".to_string(), s.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+
+        let response = self.get(DydxEndpoint::Orders, params).await?;
+        DydxParser::parse_orders(&response)
     }
 
     /// Получить все markets

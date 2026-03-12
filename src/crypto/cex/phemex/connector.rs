@@ -23,19 +23,19 @@ use serde_json::{json, Value};
 
 use crate::core::{
     HttpClient, Credentials,
-    ExchangeId, ExchangeType, AccountType, Symbol, Asset,
+    ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
-    Price, Quantity, Kline, Ticker, OrderBook,
-    Order, OrderSide, OrderType,Balance, AccountInfo,
+    Price, Kline, Ticker, OrderBook,
+    Order, OrderSide, OrderType, Balance, AccountInfo,
     Position, FundingRate,
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
+    CancelAllResponse, AmendRequest, MarginType,
+    ExchangeIdentity, MarketData, Trading, Account, Positions,
+    CancelAll, AmendOrder,
 };
 use crate::core::types::SymbolInfo;
-use crate::core::traits::{
-    ExchangeIdentity, MarketData, Trading, Account, Positions,
-};
 use crate::core::types::ConnectorStats;
 use crate::core::utils::GroupRateLimiter;
 
@@ -492,126 +492,326 @@ impl Trading for PhemexConnector {
         let side = req.side;
         let quantity = req.quantity;
         let account_type = req.account_type;
+        let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
+        let side_str = match side {
+            OrderSide::Buy => "Buy",
+            OrderSide::Sell => "Sell",
+        };
+
+        let endpoint = match account_type {
+            AccountType::Spot => PhemexEndpoint::SpotCreateOrder,
+            _ => PhemexEndpoint::ContractCreateOrder,
+        };
 
         match req.order_type {
             OrderType::Market => {
-                let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
-                        let side_str = match side {
-                            OrderSide::Buy => "Buy",
-                            OrderSide::Sell => "Sell",
-                        };
-                
-                        let body = match account_type {
-                            AccountType::Spot => {
-                                // Spot market order
-                                json!({
-                                    "symbol": symbol_str,
-                                    "side": side_str,
-                                    "ordType": "Market",
-                                    "qtyType": "ByBase",
-                                    "baseQtyEv": scale_value(quantity, self.default_value_scale),
-                                })
-                            }
-                            _ => {
-                                // Contract market order
-                                json!({
-                                    "symbol": symbol_str,
-                                    "side": side_str,
-                                    "orderQty": quantity as i64,
-                                    "ordType": "Market",
-                                })
-                            }
-                        };
-                
-                        let endpoint = match account_type {
-                            AccountType::Spot => PhemexEndpoint::SpotCreateOrder,
-                            _ => PhemexEndpoint::ContractCreateOrder,
-                        };
-                
-                        let response = self.post(endpoint, body, account_type).await?;
-                        PhemexParser::parse_order(&response, &symbol_str, self.default_price_scale).map(PlaceOrderResponse::Simple)
+                let body = match account_type {
+                    AccountType::Spot => json!({
+                        "symbol": symbol_str,
+                        "side": side_str,
+                        "ordType": "Market",
+                        "qtyType": "ByBase",
+                        "baseQtyEv": scale_value(quantity, self.default_value_scale),
+                    }),
+                    _ => json!({
+                        "symbol": symbol_str,
+                        "side": side_str,
+                        "orderQty": quantity as i64,
+                        "ordType": "Market",
+                    }),
+                };
+                let response = self.post(endpoint, body, account_type).await?;
+                PhemexParser::parse_order(&response, &symbol_str, self.default_price_scale).map(PlaceOrderResponse::Simple)
             }
+
             OrderType::Limit { price } => {
-                let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
-                        let side_str = match side {
-                            OrderSide::Buy => "Buy",
-                            OrderSide::Sell => "Sell",
-                        };
-                
-                        let body = match account_type {
-                            AccountType::Spot => {
-                                // Spot order
-                                json!({
-                                    "symbol": symbol_str,
-                                    "side": side_str,
-                                    "ordType": "Limit",
-                                    "qtyType": "ByBase",
-                                    "baseQtyEv": scale_value(quantity, self.default_value_scale),
-                                    "priceEp": scale_price(price, self.default_price_scale),
-                                    "timeInForce": "GoodTillCancel",
-                                })
-                            }
-                            _ => {
-                                // Contract order
-                                json!({
-                                    "symbol": symbol_str,
-                                    "side": side_str,
-                                    "orderQty": quantity as i64,
-                                    "ordType": "Limit",
-                                    "priceEp": scale_price(price, self.default_price_scale),
-                                    "timeInForce": "GoodTillCancel",
-                                })
-                            }
-                        };
-                
-                        let endpoint = match account_type {
-                            AccountType::Spot => PhemexEndpoint::SpotCreateOrder,
-                            _ => PhemexEndpoint::ContractCreateOrder,
-                        };
-                
-                        let response = self.post(endpoint, body, account_type).await?;
-                        PhemexParser::parse_order(&response, &symbol_str, self.default_price_scale).map(PlaceOrderResponse::Simple)
+                let body = match account_type {
+                    AccountType::Spot => json!({
+                        "symbol": symbol_str,
+                        "side": side_str,
+                        "ordType": "Limit",
+                        "qtyType": "ByBase",
+                        "baseQtyEv": scale_value(quantity, self.default_value_scale),
+                        "priceEp": scale_price(price, self.default_price_scale),
+                        "timeInForce": "GoodTillCancel",
+                    }),
+                    _ => json!({
+                        "symbol": symbol_str,
+                        "side": side_str,
+                        "orderQty": quantity as i64,
+                        "ordType": "Limit",
+                        "priceEp": scale_price(price, self.default_price_scale),
+                        "timeInForce": "GoodTillCancel",
+                    }),
+                };
+                let response = self.post(endpoint, body, account_type).await?;
+                PhemexParser::parse_order(&response, &symbol_str, self.default_price_scale).map(PlaceOrderResponse::Simple)
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+
+            OrderType::StopMarket { stop_price } => {
+                // Phemex ordType="Stop" for stop-market (contract only)
+                if account_type == AccountType::Spot {
+                    return Err(ExchangeError::UnsupportedOperation(
+                        "StopMarket not supported for Spot on Phemex".to_string()
+                    ));
+                }
+                let body = json!({
+                    "symbol": symbol_str,
+                    "side": side_str,
+                    "orderQty": quantity as i64,
+                    "ordType": "Stop",
+                    "stopPxEp": scale_price(stop_price, self.default_price_scale),
+                    "triggerType": "ByLastPrice",
+                });
+                let response = self.post(endpoint, body, account_type).await?;
+                PhemexParser::parse_order(&response, &symbol_str, self.default_price_scale).map(PlaceOrderResponse::Simple)
+            }
+
+            OrderType::StopLimit { stop_price, limit_price } => {
+                // Phemex ordType="StopLimit"
+                if account_type == AccountType::Spot {
+                    return Err(ExchangeError::UnsupportedOperation(
+                        "StopLimit not supported for Spot on Phemex".to_string()
+                    ));
+                }
+                let body = json!({
+                    "symbol": symbol_str,
+                    "side": side_str,
+                    "orderQty": quantity as i64,
+                    "ordType": "StopLimit",
+                    "priceEp": scale_price(limit_price, self.default_price_scale),
+                    "stopPxEp": scale_price(stop_price, self.default_price_scale),
+                    "triggerType": "ByLastPrice",
+                    "timeInForce": "GoodTillCancel",
+                });
+                let response = self.post(endpoint, body, account_type).await?;
+                PhemexParser::parse_order(&response, &symbol_str, self.default_price_scale).map(PlaceOrderResponse::Simple)
+            }
+
+            OrderType::PostOnly { price } => {
+                // Phemex PostOnly: Limit with timeInForce="PostOnly"
+                let body = match account_type {
+                    AccountType::Spot => json!({
+                        "symbol": symbol_str,
+                        "side": side_str,
+                        "ordType": "Limit",
+                        "qtyType": "ByBase",
+                        "baseQtyEv": scale_value(quantity, self.default_value_scale),
+                        "priceEp": scale_price(price, self.default_price_scale),
+                        "timeInForce": "PostOnly",
+                    }),
+                    _ => json!({
+                        "symbol": symbol_str,
+                        "side": side_str,
+                        "orderQty": quantity as i64,
+                        "ordType": "Limit",
+                        "priceEp": scale_price(price, self.default_price_scale),
+                        "timeInForce": "PostOnly",
+                    }),
+                };
+                let response = self.post(endpoint, body, account_type).await?;
+                PhemexParser::parse_order(&response, &symbol_str, self.default_price_scale).map(PlaceOrderResponse::Simple)
+            }
+
+            OrderType::Ioc { price } => {
+                // ImmediateOrCancel — if price is Some use Limit IOC, else Market
+                let body = match (account_type, price) {
+                    (AccountType::Spot, Some(p)) => json!({
+                        "symbol": symbol_str,
+                        "side": side_str,
+                        "ordType": "Limit",
+                        "qtyType": "ByBase",
+                        "baseQtyEv": scale_value(quantity, self.default_value_scale),
+                        "priceEp": scale_price(p, self.default_price_scale),
+                        "timeInForce": "ImmediateOrCancel",
+                    }),
+                    (AccountType::Spot, None) => json!({
+                        "symbol": symbol_str,
+                        "side": side_str,
+                        "ordType": "Market",
+                        "qtyType": "ByBase",
+                        "baseQtyEv": scale_value(quantity, self.default_value_scale),
+                        "timeInForce": "ImmediateOrCancel",
+                    }),
+                    (_, Some(p)) => json!({
+                        "symbol": symbol_str,
+                        "side": side_str,
+                        "orderQty": quantity as i64,
+                        "ordType": "Limit",
+                        "priceEp": scale_price(p, self.default_price_scale),
+                        "timeInForce": "ImmediateOrCancel",
+                    }),
+                    (_, None) => json!({
+                        "symbol": symbol_str,
+                        "side": side_str,
+                        "orderQty": quantity as i64,
+                        "ordType": "Market",
+                        "timeInForce": "ImmediateOrCancel",
+                    }),
+                };
+                let response = self.post(endpoint, body, account_type).await?;
+                PhemexParser::parse_order(&response, &symbol_str, self.default_price_scale).map(PlaceOrderResponse::Simple)
+            }
+
+            OrderType::Fok { price } => {
+                // FillOrKill — Limit with timeInForce="FillOrKill"
+                let body = match account_type {
+                    AccountType::Spot => json!({
+                        "symbol": symbol_str,
+                        "side": side_str,
+                        "ordType": "Limit",
+                        "qtyType": "ByBase",
+                        "baseQtyEv": scale_value(quantity, self.default_value_scale),
+                        "priceEp": scale_price(price, self.default_price_scale),
+                        "timeInForce": "FillOrKill",
+                    }),
+                    _ => json!({
+                        "symbol": symbol_str,
+                        "side": side_str,
+                        "orderQty": quantity as i64,
+                        "ordType": "Limit",
+                        "priceEp": scale_price(price, self.default_price_scale),
+                        "timeInForce": "FillOrKill",
+                    }),
+                };
+                let response = self.post(endpoint, body, account_type).await?;
+                PhemexParser::parse_order(&response, &symbol_str, self.default_price_scale).map(PlaceOrderResponse::Simple)
+            }
+
+            OrderType::ReduceOnly { price } => {
+                // Contract only: Limit or Market with reduceOnly=true
+                if account_type == AccountType::Spot {
+                    return Err(ExchangeError::UnsupportedOperation(
+                        "ReduceOnly not supported for Spot on Phemex".to_string()
+                    ));
+                }
+                let body = match price {
+                    Some(p) => json!({
+                        "symbol": symbol_str,
+                        "side": side_str,
+                        "orderQty": quantity as i64,
+                        "ordType": "Limit",
+                        "priceEp": scale_price(p, self.default_price_scale),
+                        "timeInForce": "GoodTillCancel",
+                        "reduceOnly": true,
+                    }),
+                    None => json!({
+                        "symbol": symbol_str,
+                        "side": side_str,
+                        "orderQty": quantity as i64,
+                        "ordType": "Market",
+                        "reduceOnly": true,
+                    }),
+                };
+                let response = self.post(endpoint, body, account_type).await?;
+                PhemexParser::parse_order(&response, &symbol_str, self.default_price_scale).map(PlaceOrderResponse::Simple)
+            }
+
+            // Unsupported order types
+            OrderType::TrailingStop { .. }
+            | OrderType::Oco { .. }
+            | OrderType::Bracket { .. }
+            | OrderType::Iceberg { .. }
+            | OrderType::Twap { .. }
+            | OrderType::Gtd { .. } => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} order type not supported on Phemex", req.order_type)
             )),
         }
     }
 
-    async fn get_order_history(
-        &self,
-        _filter: OrderHistoryFilter,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_order_history not yet implemented".to_string()
-        ))
-    }
-async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+    async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         match req.scope {
             CancelScope::Single { ref order_id } => {
                 let symbol = req.symbol.as_ref()
                     .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel".into()))?
                     .clone();
                 let account_type = req.account_type;
+                let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
 
-            let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), symbol_str.clone());
+                params.insert("orderID".to_string(), order_id.to_string());
 
-            let mut params = HashMap::new();
-            params.insert("symbol".to_string(), symbol_str.clone());
-            params.insert("orderID".to_string(), order_id.to_string());
+                let endpoint = match account_type {
+                    AccountType::Spot => PhemexEndpoint::SpotCancelOrder,
+                    _ => PhemexEndpoint::ContractCancelOrder,
+                };
 
-            let endpoint = match account_type {
-                AccountType::Spot => PhemexEndpoint::SpotCancelOrder,
-                _ => PhemexEndpoint::ContractCancelOrder,
-            };
-
-            let response = self.delete(endpoint, params, account_type).await?;
-            PhemexParser::parse_order(&response, &symbol_str, self.default_price_scale)
-    
+                let response = self.delete(endpoint, params, account_type).await?;
+                PhemexParser::parse_order(&response, &symbol_str, self.default_price_scale)
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
+
+            CancelScope::All { ref symbol } => {
+                // Use cancel-all endpoint, optionally filtered by symbol
+                let account_type = req.account_type;
+                let mut params = HashMap::new();
+
+                if let Some(sym) = symbol {
+                    params.insert("symbol".to_string(), format_symbol(&sym.base, &sym.quote, account_type));
+                }
+
+                let endpoint = match account_type {
+                    AccountType::Spot => PhemexEndpoint::SpotCancelAllOrders,
+                    _ => PhemexEndpoint::ContractCancelAllOrders,
+                };
+
+                let _response = self.delete(endpoint, params, account_type).await?;
+                // Return a minimal placeholder order (exchange returns list, not single)
+                Ok(Order {
+                    id: "cancel_all".to_string(),
+                    client_order_id: None,
+                    symbol: symbol.as_ref().map(|s| s.to_string()).unwrap_or_default(),
+                    side: OrderSide::Buy,
+                    order_type: OrderType::Market,
+                    status: crate::core::OrderStatus::Canceled,
+                    price: None,
+                    stop_price: None,
+                    quantity: 0.0,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: 0,
+                    updated_at: Some(crate::core::timestamp_millis() as i64),
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                })
+            }
+
+            CancelScope::BySymbol { ref symbol } => {
+                // Cancel all orders for a specific symbol
+                let account_type = req.account_type;
+                let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), symbol_str.clone());
+
+                let endpoint = match account_type {
+                    AccountType::Spot => PhemexEndpoint::SpotCancelAllOrders,
+                    _ => PhemexEndpoint::ContractCancelAllOrders,
+                };
+
+                let _response = self.delete(endpoint, params, account_type).await?;
+                Ok(Order {
+                    id: "cancel_by_symbol".to_string(),
+                    client_order_id: None,
+                    symbol: symbol_str,
+                    side: OrderSide::Buy,
+                    order_type: OrderType::Market,
+                    status: crate::core::OrderStatus::Canceled,
+                    price: None,
+                    stop_price: None,
+                    quantity: 0.0,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: 0,
+                    updated_at: Some(crate::core::timestamp_millis() as i64),
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                })
+            }
+
+            CancelScope::Batch { .. } => Err(ExchangeError::UnsupportedOperation(
+                "Batch cancel not supported via cancel_order on Phemex; use CancelAll trait".to_string()
             )),
         }
     }
@@ -642,7 +842,6 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
 
         let response = self.get(PhemexEndpoint::ContractGetOrder, params, account_type).await?;
         PhemexParser::parse_order(&response, "", self.default_price_scale)
-    
     }
 
     async fn get_open_orders(
@@ -650,9 +849,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         symbol: Option<&str>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        // Convert Option<&str> to Option<Symbol>
-        let symbol_str = symbol;
-        let symbol: Option<crate::core::Symbol> = symbol_str.map(|s| {
+        let symbol: Option<crate::core::Symbol> = symbol.map(|s| {
             let parts: Vec<&str> = s.split('/').collect();
             if parts.len() == 2 {
                 crate::core::Symbol::new(parts[0], parts[1])
@@ -674,7 +871,121 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
 
         let response = self.get(endpoint, params, account_type).await?;
         PhemexParser::parse_orders(&response, self.default_price_scale)
-    
+    }
+
+    async fn get_order_history(
+        &self,
+        filter: OrderHistoryFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        // GET /exchange/order/list (requires symbol for contract)
+        let mut params = HashMap::new();
+
+        if let Some(ref sym) = filter.symbol {
+            params.insert("symbol".to_string(), format_symbol(&sym.base, &sym.quote, account_type));
+        }
+
+        if let Some(start) = filter.start_time {
+            params.insert("start".to_string(), (start / 1000).to_string());
+        }
+
+        if let Some(end) = filter.end_time {
+            params.insert("end".to_string(), (end / 1000).to_string());
+        }
+
+        if let Some(lim) = filter.limit {
+            params.insert("limit".to_string(), lim.min(200).to_string());
+        }
+
+        let response = self.get(PhemexEndpoint::ContractClosedOrders, params, account_type).await?;
+        PhemexParser::parse_orders(&response, self.default_price_scale)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CANCEL ALL (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl CancelAll for PhemexConnector {
+    async fn cancel_all_orders(
+        &self,
+        scope: CancelScope,
+        account_type: AccountType,
+    ) -> ExchangeResult<CancelAllResponse> {
+        let mut params = HashMap::new();
+
+        match &scope {
+            CancelScope::All { symbol } => {
+                if let Some(sym) = symbol {
+                    params.insert("symbol".to_string(), format_symbol(&sym.base, &sym.quote, account_type));
+                }
+            }
+            CancelScope::BySymbol { symbol } => {
+                params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+            }
+            _ => return Err(ExchangeError::InvalidRequest(
+                "cancel_all_orders requires CancelScope::All or BySymbol".to_string()
+            )),
+        }
+
+        let endpoint = match account_type {
+            AccountType::Spot => PhemexEndpoint::SpotCancelAllOrders,
+            _ => PhemexEndpoint::ContractCancelAllOrders,
+        };
+
+        let _response = self.delete(endpoint, params, account_type).await?;
+
+        Ok(CancelAllResponse {
+            cancelled_count: 0, // Phemex doesn't return count in cancel-all response
+            failed_count: 0,
+            details: vec![],
+        })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AMEND ORDER (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AmendOrder for PhemexConnector {
+    async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
+        let symbol = req.symbol.clone();
+        let account_type = req.account_type;
+        let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
+
+        let endpoint = match account_type {
+            AccountType::Spot => PhemexEndpoint::SpotAmendOrder,
+            _ => PhemexEndpoint::ContractAmendOrder,
+        };
+
+        let mut body = json!({
+            "symbol": symbol_str,
+            "orderID": req.order_id,
+        });
+
+        if let Some(price) = req.fields.price {
+            body["priceEp"] = json!(scale_price(price, self.default_price_scale));
+        }
+
+        if let Some(qty) = req.fields.quantity {
+            match account_type {
+                AccountType::Spot => {
+                    body["baseQtyEv"] = json!(scale_value(qty, self.default_value_scale));
+                }
+                _ => {
+                    body["orderQty"] = json!(qty as i64);
+                }
+            }
+        }
+
+        if let Some(trigger) = req.fields.trigger_price {
+            body["stopPxEp"] = json!(scale_price(trigger, self.default_price_scale));
+        }
+
+        let response = self.put(endpoint, HashMap::new(), body, account_type).await?;
+        PhemexParser::parse_order(&response, &symbol_str, self.default_price_scale)
     }
 }
 
@@ -711,7 +1022,6 @@ impl Account for PhemexConnector {
                 PhemexParser::parse_contract_account(&response, self.default_value_scale)
             }
         }
-    
     }
 
     async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
@@ -723,15 +1033,20 @@ impl Account for PhemexConnector {
             can_trade: true,
             can_withdraw: false,
             can_deposit: false,
-            maker_commission: 0.0,  // Default fee, should be fetched from API
-            taker_commission: 0.0,  // Default fee, should be fetched from API
+            maker_commission: 0.0,
+            taker_commission: 0.0,
         })
     }
 
-    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_fees not yet implemented".to_string()
-        ))
+    async fn get_fees(&self, symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        // Phemex doesn't expose a public fee endpoint; return standard fee tiers.
+        // Maker: 0.01%, Taker: 0.06% (standard tier)
+        Ok(FeeInfo {
+            maker_rate: 0.0001,
+            taker_rate: 0.0006,
+            symbol: symbol.map(String::from),
+            tier: Some("standard".to_string()),
+        })
     }
 }
 
@@ -758,7 +1073,6 @@ impl Positions for PhemexConnector {
         }
 
         Ok(positions)
-    
     }
 
     async fn get_funding_rate(
@@ -766,7 +1080,6 @@ impl Positions for PhemexConnector {
         symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
-        // Parse symbol string into Symbol struct
         let symbol_str = symbol;
         let symbol = {
             let parts: Vec<&str> = symbol_str.split('/').collect();
@@ -782,38 +1095,108 @@ impl Positions for PhemexConnector {
 
         let response = self.get(PhemexEndpoint::FundingRateHistory, params, account_type).await?;
         PhemexParser::parse_funding_rate(&response)
-    
     }
 
     async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
         match req {
             PositionModification::SetLeverage { ref symbol, leverage, account_type } => {
                 let symbol = symbol.clone();
-
                 let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
 
-                // For Phemex, leverage depends on margin mode
-                // leverageEr: positive = isolated, zero/negative = cross
-                // Convert leverage to Er format (ratioScale = 8)
-                // For cross margin, use 0. For isolated, calculate based on leverage percentage
+                // leverageEr: positive = isolated, zero = cross
                 let leverage_er = if account_type == AccountType::FuturesIsolated {
-                ((leverage as f64 / 100.0) * 100_000_000.0) as i64
+                    ((leverage as f64 / 100.0) * 100_000_000.0) as i64
                 } else {
-                0i64 // Cross margin
+                    0i64
                 };
 
                 let body = json!({
-                "symbol": symbol_str,
-                "leverageEr": leverage_er,
+                    "symbol": symbol_str,
+                    "leverageEr": leverage_er,
                 });
 
                 let _response = self.put(PhemexEndpoint::SetLeverage, HashMap::new(), body, account_type).await?;
                 Ok(())
-    
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} not supported on {:?}", req, self.exchange_id())
-            )),
+
+            PositionModification::SetMarginMode { ref symbol, ref margin_type, account_type } => {
+                let symbol = symbol.clone();
+                let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
+
+                // Phemex uses leverageEr: 0 = cross, positive = isolated
+                // Toggle by setting leverage to 0 (cross) or a default (10x isolated)
+                let leverage_er = match margin_type {
+                    MarginType::Cross => 0i64,
+                    MarginType::Isolated => 1_000_000i64, // ~10x default
+                };
+
+                let body = json!({
+                    "symbol": symbol_str,
+                    "leverageEr": leverage_er,
+                });
+
+                let _response = self.put(PhemexEndpoint::SetLeverage, HashMap::new(), body, account_type).await?;
+                Ok(())
+            }
+
+            PositionModification::AddMargin { ref symbol, amount, account_type } => {
+                let symbol = symbol.clone();
+                let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
+
+                // POST /positions/assign — assign balance to isolated margin
+                let body = json!({
+                    "symbol": symbol_str,
+                    "posBalanceEv": scale_value(amount, self.default_value_scale),
+                    "add": true,
+                });
+
+                let _response = self.post(PhemexEndpoint::AssignBalance, body, account_type).await?;
+                Ok(())
+            }
+
+            PositionModification::RemoveMargin { ref symbol, amount, account_type } => {
+                let symbol = symbol.clone();
+                let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
+
+                // POST /positions/assign with negative amount
+                let body = json!({
+                    "symbol": symbol_str,
+                    "posBalanceEv": scale_value(amount, self.default_value_scale),
+                    "add": false,
+                });
+
+                let _response = self.post(PhemexEndpoint::AssignBalance, body, account_type).await?;
+                Ok(())
+            }
+
+            PositionModification::ClosePosition { ref symbol, account_type } => {
+                let symbol = symbol.clone();
+                let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
+
+                // Close position: market order with reduceOnly=true for the full position qty
+                // Phemex doesn't have a dedicated close-position endpoint;
+                // use a market sell/buy with reduceOnly=true
+                // We use a very large quantity — exchange will cap at position size
+                let body = json!({
+                    "symbol": symbol_str,
+                    "side": "Sell",
+                    "orderQty": 999999999i64,
+                    "ordType": "Market",
+                    "reduceOnly": true,
+                });
+
+                let _response = self.post(PhemexEndpoint::ContractCreateOrder, body, account_type).await?;
+                Ok(())
+            }
+
+            PositionModification::SetTpSl { .. } => {
+                // Phemex supports TP/SL via order placement with ordType="TakeProfitLimit" or "Stop"
+                // For simplicity, we return UnsupportedOperation as Phemex SetTpSl
+                // requires separate orders for TP and SL (no unified endpoint)
+                Err(ExchangeError::UnsupportedOperation(
+                    "SetTpSl not supported as a single operation on Phemex; place separate TP/SL orders".to_string()
+                ))
+            }
         }
     }
 }

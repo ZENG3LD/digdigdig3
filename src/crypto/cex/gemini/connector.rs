@@ -21,14 +21,15 @@ use serde_json::{json, Value};
 
 use crate::core::{
     HttpClient, Credentials,
-    ExchangeId, AccountType, Symbol, Asset,
+    ExchangeId, AccountType, Symbol,
     ExchangeError, ExchangeResult,
-    Price, Quantity, Kline, Ticker, OrderBook,
-    Order, OrderSide, OrderType,Balance, AccountInfo,
+    Price, Kline, Ticker, OrderBook,
+    Order, OrderSide, OrderType, Balance, AccountInfo,
     Position, FundingRate,
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
+    CancelAllResponse, CancelAll,
 };
 use crate::core::types::SymbolInfo;
 use crate::core::traits::{
@@ -350,38 +351,100 @@ impl Trading for GeminiConnector {
         let side = req.side;
         let quantity = req.quantity;
         let account_type = req.account_type;
+        let symbol_str = normalize_symbol(&format_symbol(&symbol.base, &symbol.quote, account_type));
 
         match req.order_type {
             OrderType::Market => {
-                let symbol_str = normalize_symbol(&format_symbol(&symbol.base, &symbol.quote, account_type));
-                
-                        let mut params = HashMap::new();
-                        params.insert("symbol".to_string(), json!(symbol_str));
-                        params.insert("amount".to_string(), json!(quantity.to_string()));
-                        params.insert("side".to_string(), json!(match side {
-                            OrderSide::Buy => "buy",
-                            OrderSide::Sell => "sell",
-                        }));
-                        params.insert("type".to_string(), json!("exchange market"));
-                
-                        let response = self.post(GeminiEndpoint::NewOrder, params, &[]).await?;
-                        GeminiParser::parse_order(&response).map(PlaceOrderResponse::Simple)
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), json!(symbol_str));
+                params.insert("amount".to_string(), json!(quantity.to_string()));
+                params.insert("side".to_string(), json!(match side {
+                    OrderSide::Buy => "buy",
+                    OrderSide::Sell => "sell",
+                }));
+                params.insert("type".to_string(), json!("exchange market"));
+
+                let response = self.post(GeminiEndpoint::NewOrder, params, &[]).await?;
+                GeminiParser::parse_order(&response).map(PlaceOrderResponse::Simple)
             }
             OrderType::Limit { price } => {
-                let symbol_str = normalize_symbol(&format_symbol(&symbol.base, &symbol.quote, account_type));
-                
-                        let mut params = HashMap::new();
-                        params.insert("symbol".to_string(), json!(symbol_str));
-                        params.insert("amount".to_string(), json!(quantity.to_string()));
-                        params.insert("price".to_string(), json!(price.to_string()));
-                        params.insert("side".to_string(), json!(match side {
-                            OrderSide::Buy => "buy",
-                            OrderSide::Sell => "sell",
-                        }));
-                        params.insert("type".to_string(), json!("exchange limit"));
-                
-                        let response = self.post(GeminiEndpoint::NewOrder, params, &[]).await?;
-                        GeminiParser::parse_order(&response).map(PlaceOrderResponse::Simple)
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), json!(symbol_str));
+                params.insert("amount".to_string(), json!(quantity.to_string()));
+                params.insert("price".to_string(), json!(price.to_string()));
+                params.insert("side".to_string(), json!(match side {
+                    OrderSide::Buy => "buy",
+                    OrderSide::Sell => "sell",
+                }));
+                params.insert("type".to_string(), json!("exchange limit"));
+
+                let response = self.post(GeminiEndpoint::NewOrder, params, &[]).await?;
+                GeminiParser::parse_order(&response).map(PlaceOrderResponse::Simple)
+            }
+            OrderType::StopLimit { stop_price, limit_price } => {
+                // Gemini: type="exchange stop limit", stop_price=trigger, price=limit
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), json!(symbol_str));
+                params.insert("amount".to_string(), json!(quantity.to_string()));
+                params.insert("price".to_string(), json!(limit_price.to_string()));
+                params.insert("stop_price".to_string(), json!(stop_price.to_string()));
+                params.insert("side".to_string(), json!(match side {
+                    OrderSide::Buy => "buy",
+                    OrderSide::Sell => "sell",
+                }));
+                params.insert("type".to_string(), json!("exchange stop limit"));
+
+                let response = self.post(GeminiEndpoint::NewOrder, params, &[]).await?;
+                GeminiParser::parse_order(&response).map(PlaceOrderResponse::Simple)
+            }
+            OrderType::PostOnly { price } => {
+                // Gemini: type="exchange limit" with options=["maker-or-cancel"]
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), json!(symbol_str));
+                params.insert("amount".to_string(), json!(quantity.to_string()));
+                params.insert("price".to_string(), json!(price.to_string()));
+                params.insert("side".to_string(), json!(match side {
+                    OrderSide::Buy => "buy",
+                    OrderSide::Sell => "sell",
+                }));
+                params.insert("type".to_string(), json!("exchange limit"));
+                params.insert("options".to_string(), json!(["maker-or-cancel"]));
+
+                let response = self.post(GeminiEndpoint::NewOrder, params, &[]).await?;
+                GeminiParser::parse_order(&response).map(PlaceOrderResponse::Simple)
+            }
+            OrderType::Ioc { price } => {
+                // Gemini: type="exchange limit" with options=["immediate-or-cancel"]
+                let limit_price = price.unwrap_or(0.0);
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), json!(symbol_str));
+                params.insert("amount".to_string(), json!(quantity.to_string()));
+                params.insert("price".to_string(), json!(limit_price.to_string()));
+                params.insert("side".to_string(), json!(match side {
+                    OrderSide::Buy => "buy",
+                    OrderSide::Sell => "sell",
+                }));
+                params.insert("type".to_string(), json!("exchange limit"));
+                params.insert("options".to_string(), json!(["immediate-or-cancel"]));
+
+                let response = self.post(GeminiEndpoint::NewOrder, params, &[]).await?;
+                GeminiParser::parse_order(&response).map(PlaceOrderResponse::Simple)
+            }
+            OrderType::Fok { price } => {
+                // Gemini: type="exchange limit" with options=["fill-or-kill"]
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), json!(symbol_str));
+                params.insert("amount".to_string(), json!(quantity.to_string()));
+                params.insert("price".to_string(), json!(price.to_string()));
+                params.insert("side".to_string(), json!(match side {
+                    OrderSide::Buy => "buy",
+                    OrderSide::Sell => "sell",
+                }));
+                params.insert("type".to_string(), json!("exchange limit"));
+                params.insert("options".to_string(), json!(["fill-or-kill"]));
+
+                let response = self.post(GeminiEndpoint::NewOrder, params, &[]).await?;
+                GeminiParser::parse_order(&response).map(PlaceOrderResponse::Simple)
             }
             _ => Err(ExchangeError::UnsupportedOperation(
                 format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
@@ -391,27 +454,39 @@ impl Trading for GeminiConnector {
 
     async fn get_order_history(
         &self,
-        _filter: OrderHistoryFilter,
-        _account_type: AccountType,
+        filter: OrderHistoryFilter,
+        account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_order_history not yet implemented".to_string()
-        ))
+        // Gemini uses /v1/mytrades (PastTrades) for trade history
+        let mut params = HashMap::new();
+
+        // Add symbol filter if provided
+        if let Some(ref symbol) = filter.symbol {
+            let symbol_str = normalize_symbol(&format_symbol(&symbol.base, &symbol.quote, account_type));
+            params.insert("symbol".to_string(), json!(symbol_str));
+        }
+
+        // Limit trades returned (max 500 per Gemini docs)
+        let limit = filter.limit.unwrap_or(50).min(500);
+        params.insert("limit_trades".to_string(), json!(limit));
+
+        // Timestamp filter
+        if let Some(since) = filter.start_time {
+            params.insert("timestamp".to_string(), json!(since / 1000)); // convert ms to sec
+        }
+
+        let response = self.post(GeminiEndpoint::PastTrades, params, &[]).await?;
+        GeminiParser::parse_past_trades(&response)
     }
-async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+
+    async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         match req.scope {
             CancelScope::Single { ref order_id } => {
-                let _symbol = req.symbol.as_ref()
-                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel".into()))?
-                    .clone();
-                let _account_type = req.account_type;
+                let mut params = HashMap::new();
+                params.insert("order_id".to_string(), json!(order_id.parse::<i64>().unwrap_or(0)));
 
-            let mut params = HashMap::new();
-            params.insert("order_id".to_string(), json!(order_id.parse::<i64>().unwrap_or(0)));
-
-            let response = self.post(GeminiEndpoint::CancelOrder, params, &[]).await?;
-            GeminiParser::parse_order(&response)
-    
+                let response = self.post(GeminiEndpoint::CancelOrder, params, &[]).await?;
+                GeminiParser::parse_order(&response)
             }
             _ => Err(ExchangeError::UnsupportedOperation(
                 format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
@@ -425,20 +500,11 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         order_id: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Order> {
-        // Parse symbol string into Symbol struct
-        let _symbol_parts: Vec<&str> = _symbol.split('/').collect();
-        let _symbol = if _symbol_parts.len() == 2 {
-            crate::core::Symbol::new(_symbol_parts[0], _symbol_parts[1])
-        } else {
-            crate::core::Symbol { base: _symbol.to_string(), quote: String::new(), raw: Some(_symbol.to_string()) }
-        };
-
         let mut params = HashMap::new();
         params.insert("order_id".to_string(), json!(order_id.parse::<i64>().unwrap_or(0)));
 
         let response = self.post(GeminiEndpoint::OrderStatus, params, &[]).await?;
         GeminiParser::parse_order(&response)
-    
     }
 
     async fn get_open_orders(
@@ -446,20 +512,8 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         _symbol: Option<&str>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        // Convert Option<&str> to Option<Symbol>
-        let _symbol_str = _symbol;
-        let _symbol: Option<crate::core::Symbol> = _symbol_str.map(|s| {
-            let parts: Vec<&str> = s.split('/').collect();
-            if parts.len() == 2 {
-                crate::core::Symbol::new(parts[0], parts[1])
-            } else {
-                crate::core::Symbol { base: s.to_string(), quote: String::new(), raw: Some(s.to_string()) }
-            }
-        });
-
         let response = self.post(GeminiEndpoint::ActiveOrders, HashMap::new(), &[]).await?;
         GeminiParser::parse_orders(&response)
-    
     }
 }
 
@@ -469,17 +523,13 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
 
 #[async_trait]
 impl Account for GeminiConnector {
-    async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
-        let _asset = query.asset.clone();
-        let _account_type = query.account_type;
+    async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         let response = self.post(GeminiEndpoint::Balances, HashMap::new(), &[]).await?;
         GeminiParser::parse_balances(&response)
-    
     }
 
     async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
         // Gemini doesn't have a specific account info endpoint
-        // Return minimal info
         Ok(AccountInfo {
             account_type: _account_type,
             can_trade: true,
@@ -491,10 +541,10 @@ impl Account for GeminiConnector {
         })
     }
 
-    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_fees not yet implemented".to_string()
-        ))
+    async fn get_fees(&self, symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        // Use /v1/notionalvolume which returns API fee tier in basis points
+        let response = self.post(GeminiEndpoint::NotionalVolume, HashMap::new(), &[]).await?;
+        GeminiParser::parse_notional_volume_fees(&response, symbol)
     }
 }
 
@@ -504,13 +554,9 @@ impl Account for GeminiConnector {
 
 #[async_trait]
 impl Positions for GeminiConnector {
-    async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
-        let _symbol = query.symbol.clone();
-        let _account_type = query.account_type;
-
+    async fn get_positions(&self, _query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         let response = self.post(GeminiEndpoint::Positions, HashMap::new(), &[]).await?;
         GeminiParser::parse_positions(&response)
-    
     }
 
     async fn get_funding_rate(
@@ -518,18 +564,14 @@ impl Positions for GeminiConnector {
         symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
-        // Parse symbol string into Symbol struct
-        let symbol_str = symbol;
-        let symbol = {
-            let parts: Vec<&str> = symbol_str.split('/').collect();
-            if parts.len() == 2 {
-                crate::core::Symbol::new(parts[0], parts[1])
-            } else {
-                crate::core::Symbol { base: symbol_str.to_string(), quote: String::new(), raw: Some(symbol_str.to_string()) }
-            }
+        let symbol_parts: Vec<&str> = symbol.split('/').collect();
+        let sym = if symbol_parts.len() == 2 {
+            crate::core::Symbol::new(symbol_parts[0], symbol_parts[1])
+        } else {
+            crate::core::Symbol { base: symbol.to_string(), quote: String::new(), raw: Some(symbol.to_string()) }
         };
 
-        let symbol_str = normalize_symbol(&format_symbol(&symbol.base, &symbol.quote, AccountType::FuturesCross));
+        let symbol_str = normalize_symbol(&format_symbol(&sym.base, &sym.quote, AccountType::FuturesCross));
 
         let response = self.get(
             GeminiEndpoint::FundingAmount,
@@ -537,23 +579,56 @@ impl Positions for GeminiConnector {
         ).await?;
 
         GeminiParser::parse_funding_rate(&response)
-    
     }
 
     async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
         match req {
-            PositionModification::SetLeverage { symbol: ref _symbol, leverage: _leverage, account_type: _account_type } => {
-                let _symbol = _symbol.clone();
-
+            PositionModification::SetLeverage { .. } => {
                 // Gemini doesn't have a set leverage endpoint
-                // Leverage is managed through margin settings
                 Err(ExchangeError::NotSupported("Set leverage not supported by Gemini".to_string()))
-    
             }
             _ => Err(ExchangeError::UnsupportedOperation(
                 format!("{:?} not supported on {:?}", req, self.exchange_id())
             )),
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CANCEL ALL TRAIT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl CancelAll for GeminiConnector {
+    async fn cancel_all_orders(
+        &self,
+        _scope: CancelScope,
+        _account_type: AccountType,
+    ) -> ExchangeResult<CancelAllResponse> {
+        // Gemini /v1/order/cancel/all cancels all session orders globally.
+        // There is no per-symbol cancel-all in the REST API.
+        let response = self.post(GeminiEndpoint::CancelAllOrders, HashMap::new(), &[]).await?;
+
+        // Response: {"result":"ok","details":{"cancelledOrders":[...],"cancelRejects":[...]}}
+        let cancelled_count = response
+            .get("details")
+            .and_then(|d| d.get("cancelledOrders"))
+            .and_then(|arr| arr.as_array())
+            .map(|arr| arr.len() as u32)
+            .unwrap_or(0);
+
+        let failed_count = response
+            .get("details")
+            .and_then(|d| d.get("cancelRejects"))
+            .and_then(|arr| arr.as_array())
+            .map(|arr| arr.len() as u32)
+            .unwrap_or(0);
+
+        Ok(CancelAllResponse {
+            cancelled_count,
+            failed_count,
+            details: vec![],
+        })
     }
 }
 
@@ -566,12 +641,6 @@ impl GeminiConnector {
     pub async fn get_symbols(&self) -> ExchangeResult<Vec<String>> {
         let response = self.get(GeminiEndpoint::Symbols, &[]).await?;
         GeminiParser::parse_symbols(&response)
-    }
-
-    /// Cancel all active orders
-    pub async fn cancel_all_orders(&self) -> ExchangeResult<()> {
-        self.post(GeminiEndpoint::CancelAllOrders, HashMap::new(), &[]).await?;
-        Ok(())
     }
 
     /// Get notional volume and fee information

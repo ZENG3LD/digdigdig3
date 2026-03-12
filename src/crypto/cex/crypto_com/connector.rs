@@ -20,17 +20,17 @@ use crate::core::{
     HttpClient, Credentials,
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
-    Price, Quantity, Kline, Ticker, OrderBook,
+    Price, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, Balance, AccountInfo,
     Position, FundingRate,
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
+    CancelAllResponse, AmendRequest, MarginType,
+    ExchangeIdentity, MarketData, Trading, Account, Positions,
+    CancelAll, AmendOrder,
 };
 use crate::core::types::SymbolInfo;
-use crate::core::traits::{
-    ExchangeIdentity, MarketData, Trading, Account, Positions,
-};
 use crate::core::types::ConnectorStats;
 use crate::core::utils::SimpleRateLimiter;
 
@@ -342,97 +342,271 @@ impl Trading for CryptoComConnector {
         let quantity = req.quantity;
         let account_type = req.account_type;
 
+        let instrument_type = account_type_to_instrument(account_type);
+        let instrument_name = format_symbol(&symbol.base, &symbol.quote, instrument_type);
+        let side_str = match side {
+            OrderSide::Buy => "BUY",
+            OrderSide::Sell => "SELL",
+        };
+
         match req.order_type {
             OrderType::Market => {
-                let instrument_type = account_type_to_instrument(account_type);
-                        let instrument_name = format_symbol(&symbol.base, &symbol.quote, instrument_type);
-                
-                        let params = json!({
-                            "instrument_name": instrument_name,
-                            "side": match side {
-                                OrderSide::Buy => "BUY",
-                                OrderSide::Sell => "SELL",
-                            },
-                            "type": "MARKET",
-                            "quantity": quantity.to_string(),
-                        });
-                
-                        let response = self.request(CryptoComEndpoint::CreateOrder, params).await?;
-                        let order_id = CryptoComParser::parse_order_id(&response)?;
-                
-                        Ok(PlaceOrderResponse::Simple(Order {
-                            id: order_id,
-                            client_order_id: None,
-                            symbol: symbol.to_string(),
-                            side,
-                            order_type: OrderType::Market,
-                            status: crate::core::OrderStatus::New,
-                            price: None,
-                            stop_price: None,
-                            quantity,
-                            filled_quantity: 0.0,
-                            average_price: None,
-                            commission: None,
-                            commission_asset: None,
-                            created_at: crate::core::timestamp_millis() as i64,
-                            updated_at: None,
-                            time_in_force: crate::core::TimeInForce::Gtc,
-                        }))
+                let params = json!({
+                    "instrument_name": instrument_name,
+                    "side": side_str,
+                    "type": "MARKET",
+                    "quantity": quantity.to_string(),
+                });
+
+                let response = self.request(CryptoComEndpoint::CreateOrder, params).await?;
+                let order_id = CryptoComParser::parse_order_id(&response)?;
+
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: None,
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::Market,
+                    status: crate::core::OrderStatus::New,
+                    price: None,
+                    stop_price: None,
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: crate::core::timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                }))
             }
+
             OrderType::Limit { price } => {
-                let instrument_type = account_type_to_instrument(account_type);
-                        let instrument_name = format_symbol(&symbol.base, &symbol.quote, instrument_type);
-                
-                        let params = json!({
-                            "instrument_name": instrument_name,
-                            "side": match side {
-                                OrderSide::Buy => "BUY",
-                                OrderSide::Sell => "SELL",
-                            },
-                            "type": "LIMIT",
-                            "quantity": quantity.to_string(),
-                            "price": price.to_string(),
-                            "time_in_force": "GOOD_TILL_CANCEL",
-                        });
-                
-                        let response = self.request(CryptoComEndpoint::CreateOrder, params).await?;
-                        let order_id = CryptoComParser::parse_order_id(&response)?;
-                
-                        Ok(PlaceOrderResponse::Simple(Order {
-                            id: order_id,
-                            client_order_id: None,
-                            symbol: symbol.to_string(),
-                            side,
-                            order_type: OrderType::Limit { price: 0.0 },
-                            status: crate::core::OrderStatus::New,
-                            price: Some(price),
-                            stop_price: None,
-                            quantity,
-                            filled_quantity: 0.0,
-                            average_price: None,
-                            commission: None,
-                            commission_asset: None,
-                            created_at: crate::core::timestamp_millis() as i64,
-                            updated_at: None,
-                            time_in_force: crate::core::TimeInForce::Gtc,
-                        }))
+                let params = json!({
+                    "instrument_name": instrument_name,
+                    "side": side_str,
+                    "type": "LIMIT",
+                    "quantity": quantity.to_string(),
+                    "price": price.to_string(),
+                    "time_in_force": "GOOD_TILL_CANCEL",
+                });
+
+                let response = self.request(CryptoComEndpoint::CreateOrder, params).await?;
+                let order_id = CryptoComParser::parse_order_id(&response)?;
+
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: None,
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::Limit { price },
+                    status: crate::core::OrderStatus::New,
+                    price: Some(price),
+                    stop_price: None,
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: crate::core::timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                }))
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+
+            OrderType::StopMarket { stop_price } => {
+                // Crypto.com type="STOP_LOSS" for stop-market
+                let params = json!({
+                    "instrument_name": instrument_name,
+                    "side": side_str,
+                    "type": "STOP_LOSS",
+                    "quantity": quantity.to_string(),
+                    "ref_price": stop_price.to_string(),
+                });
+
+                let response = self.request(CryptoComEndpoint::CreateOrder, params).await?;
+                let order_id = CryptoComParser::parse_order_id(&response)?;
+
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: None,
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::StopMarket { stop_price },
+                    status: crate::core::OrderStatus::New,
+                    price: None,
+                    stop_price: Some(stop_price),
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: crate::core::timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                }))
+            }
+
+            OrderType::StopLimit { stop_price, limit_price } => {
+                // Crypto.com type="STOP_LIMIT"
+                let params = json!({
+                    "instrument_name": instrument_name,
+                    "side": side_str,
+                    "type": "STOP_LIMIT",
+                    "quantity": quantity.to_string(),
+                    "price": limit_price.to_string(),
+                    "ref_price": stop_price.to_string(),
+                    "time_in_force": "GOOD_TILL_CANCEL",
+                });
+
+                let response = self.request(CryptoComEndpoint::CreateOrder, params).await?;
+                let order_id = CryptoComParser::parse_order_id(&response)?;
+
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: None,
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::StopLimit { stop_price, limit_price },
+                    status: crate::core::OrderStatus::New,
+                    price: Some(limit_price),
+                    stop_price: Some(stop_price),
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: crate::core::timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                }))
+            }
+
+            OrderType::PostOnly { price } => {
+                // Crypto.com exec_inst="POST_ONLY" on a LIMIT order
+                let params = json!({
+                    "instrument_name": instrument_name,
+                    "side": side_str,
+                    "type": "LIMIT",
+                    "quantity": quantity.to_string(),
+                    "price": price.to_string(),
+                    "exec_inst": "POST_ONLY",
+                    "time_in_force": "GOOD_TILL_CANCEL",
+                });
+
+                let response = self.request(CryptoComEndpoint::CreateOrder, params).await?;
+                let order_id = CryptoComParser::parse_order_id(&response)?;
+
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: None,
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::PostOnly { price },
+                    status: crate::core::OrderStatus::New,
+                    price: Some(price),
+                    stop_price: None,
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: crate::core::timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: crate::core::TimeInForce::PostOnly,
+                }))
+            }
+
+            OrderType::Ioc { price } => {
+                // IMMEDIATE_OR_CANCEL with optional limit price
+                let (order_type_str, price_field) = match price {
+                    Some(p) => ("LIMIT", Some(p)),
+                    None => ("MARKET", None),
+                };
+
+                let mut params = json!({
+                    "instrument_name": instrument_name,
+                    "side": side_str,
+                    "type": order_type_str,
+                    "quantity": quantity.to_string(),
+                    "time_in_force": "IMMEDIATE_OR_CANCEL",
+                });
+
+                if let Some(p) = price_field {
+                    params["price"] = json!(p.to_string());
+                }
+
+                let response = self.request(CryptoComEndpoint::CreateOrder, params).await?;
+                let order_id = CryptoComParser::parse_order_id(&response)?;
+
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: None,
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::Ioc { price },
+                    status: crate::core::OrderStatus::New,
+                    price: price_field,
+                    stop_price: None,
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: crate::core::timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: crate::core::TimeInForce::Ioc,
+                }))
+            }
+
+            OrderType::Fok { price } => {
+                // FILL_OR_KILL — LIMIT with time_in_force=FILL_OR_KILL
+                let params = json!({
+                    "instrument_name": instrument_name,
+                    "side": side_str,
+                    "type": "LIMIT",
+                    "quantity": quantity.to_string(),
+                    "price": price.to_string(),
+                    "time_in_force": "FILL_OR_KILL",
+                });
+
+                let response = self.request(CryptoComEndpoint::CreateOrder, params).await?;
+                let order_id = CryptoComParser::parse_order_id(&response)?;
+
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: None,
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::Fok { price },
+                    status: crate::core::OrderStatus::New,
+                    price: Some(price),
+                    stop_price: None,
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: crate::core::timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: crate::core::TimeInForce::Fok,
+                }))
+            }
+
+            // Unsupported on Crypto.com
+            OrderType::TrailingStop { .. }
+            | OrderType::Oco { .. }
+            | OrderType::Bracket { .. }
+            | OrderType::Iceberg { .. }
+            | OrderType::Twap { .. }
+            | OrderType::Gtd { .. }
+            | OrderType::ReduceOnly { .. } => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} order type not supported on Crypto.com", req.order_type)
             )),
         }
     }
 
-    async fn get_order_history(
-        &self,
-        _filter: OrderHistoryFilter,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_order_history not yet implemented".to_string()
-        ))
-    }
-async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+    async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         match req.scope {
             CancelScope::Single { ref order_id } => {
                 let symbol = req.symbol.as_ref()
@@ -440,39 +614,104 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
                     .clone();
                 let account_type = req.account_type;
 
-            let instrument_type = account_type_to_instrument(account_type);
-            let instrument_name = format_symbol(&symbol.base, &symbol.quote, instrument_type);
+                let instrument_type = account_type_to_instrument(account_type);
+                let instrument_name = format_symbol(&symbol.base, &symbol.quote, instrument_type);
 
-            let params = json!({
-                "instrument_name": instrument_name,
-                "order_id": order_id,
-            });
+                let params = json!({
+                    "instrument_name": instrument_name,
+                    "order_id": order_id,
+                });
 
-            let response = self.request(CryptoComEndpoint::CancelOrder, params).await?;
-            CryptoComParser::check_response(&response)?;
+                let response = self.request(CryptoComEndpoint::CancelOrder, params).await?;
+                CryptoComParser::check_response(&response)?;
 
-            Ok(Order {
-                id: order_id.to_string(),
-                client_order_id: None,
-                symbol: symbol.to_string(),
-                side: OrderSide::Buy, // Unknown
-                order_type: OrderType::Limit { price: 0.0 },
-                status: crate::core::OrderStatus::Canceled,
-                price: None,
-                stop_price: None,
-                quantity: 0.0,
-                filled_quantity: 0.0,
-                average_price: None,
-                commission: None,
-                commission_asset: None,
-                created_at: 0,
-                updated_at: Some(crate::core::timestamp_millis() as i64),
-                time_in_force: crate::core::TimeInForce::Gtc,
-            })
-    
+                Ok(Order {
+                    id: order_id.to_string(),
+                    client_order_id: None,
+                    symbol: symbol.to_string(),
+                    side: OrderSide::Buy, // Unknown from cancel response
+                    order_type: OrderType::Limit { price: 0.0 },
+                    status: crate::core::OrderStatus::Canceled,
+                    price: None,
+                    stop_price: None,
+                    quantity: 0.0,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: 0,
+                    updated_at: Some(crate::core::timestamp_millis() as i64),
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                })
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
+
+            CancelScope::All { ref symbol } => {
+                let account_type = req.account_type;
+                let mut params = json!({});
+
+                if let Some(sym) = symbol {
+                    let instrument_type = account_type_to_instrument(account_type);
+                    let instrument_name = format_symbol(&sym.base, &sym.quote, instrument_type);
+                    params["instrument_name"] = json!(instrument_name);
+                }
+
+                let response = self.request(CryptoComEndpoint::CancelAllOrders, params).await?;
+                CryptoComParser::check_response(&response)?;
+
+                Ok(Order {
+                    id: "cancel_all".to_string(),
+                    client_order_id: None,
+                    symbol: symbol.as_ref().map(|s| s.to_string()).unwrap_or_default(),
+                    side: OrderSide::Buy,
+                    order_type: OrderType::Market,
+                    status: crate::core::OrderStatus::Canceled,
+                    price: None,
+                    stop_price: None,
+                    quantity: 0.0,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: 0,
+                    updated_at: Some(crate::core::timestamp_millis() as i64),
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                })
+            }
+
+            CancelScope::BySymbol { ref symbol } => {
+                let account_type = req.account_type;
+                let instrument_type = account_type_to_instrument(account_type);
+                let instrument_name = format_symbol(&symbol.base, &symbol.quote, instrument_type);
+
+                let params = json!({
+                    "instrument_name": instrument_name,
+                });
+
+                let response = self.request(CryptoComEndpoint::CancelAllOrders, params).await?;
+                CryptoComParser::check_response(&response)?;
+
+                Ok(Order {
+                    id: "cancel_by_symbol".to_string(),
+                    client_order_id: None,
+                    symbol: symbol.to_string(),
+                    side: OrderSide::Buy,
+                    order_type: OrderType::Market,
+                    status: crate::core::OrderStatus::Canceled,
+                    price: None,
+                    stop_price: None,
+                    quantity: 0.0,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: 0,
+                    updated_at: Some(crate::core::timestamp_millis() as i64),
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                })
+            }
+
+            CancelScope::Batch { .. } => Err(ExchangeError::UnsupportedOperation(
+                "Batch cancel not supported via cancel_order on Crypto.com".to_string()
             )),
         }
     }
@@ -483,21 +722,12 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         order_id: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Order> {
-        // Parse symbol string into Symbol struct
-        let _symbol_parts: Vec<&str> = _symbol.split('/').collect();
-        let _symbol = if _symbol_parts.len() == 2 {
-            crate::core::Symbol::new(_symbol_parts[0], _symbol_parts[1])
-        } else {
-            crate::core::Symbol { base: _symbol.to_string(), quote: String::new(), raw: Some(_symbol.to_string()) }
-        };
-
         let params = json!({
             "order_id": order_id,
         });
 
         let response = self.request(CryptoComEndpoint::GetOrderDetail, params).await?;
         CryptoComParser::parse_order(&response)
-    
     }
 
     async fn get_open_orders(
@@ -505,9 +735,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         symbol: Option<&str>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        // Convert Option<&str> to Option<Symbol>
-        let symbol_str = symbol;
-        let symbol: Option<crate::core::Symbol> = symbol_str.map(|s| {
+        let symbol: Option<crate::core::Symbol> = symbol.map(|s| {
             let parts: Vec<&str> = s.split('/').collect();
             if parts.len() == 2 {
                 crate::core::Symbol::new(parts[0], parts[1])
@@ -526,7 +754,114 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
 
         let response = self.request(CryptoComEndpoint::GetOpenOrders, params).await?;
         CryptoComParser::parse_orders(&response)
-    
+    }
+
+    async fn get_order_history(
+        &self,
+        filter: OrderHistoryFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        // private/get-order-history supports start_ts, end_ts, page, page_size
+        let mut params = json!({});
+
+        if let Some(ref sym) = filter.symbol {
+            let instrument_type = account_type_to_instrument(account_type);
+            let instrument_name = format_symbol(&sym.base, &sym.quote, instrument_type);
+            params["instrument_name"] = json!(instrument_name);
+        }
+
+        if let Some(start) = filter.start_time {
+            params["start_ts"] = json!(start);
+        }
+
+        if let Some(end) = filter.end_time {
+            params["end_ts"] = json!(end);
+        }
+
+        if let Some(lim) = filter.limit {
+            params["page_size"] = json!(lim.min(200));
+        }
+
+        let response = self.request(CryptoComEndpoint::GetOrderHistory, params).await?;
+        CryptoComParser::parse_orders(&response)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CANCEL ALL (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl CancelAll for CryptoComConnector {
+    async fn cancel_all_orders(
+        &self,
+        scope: CancelScope,
+        account_type: AccountType,
+    ) -> ExchangeResult<CancelAllResponse> {
+        let mut params = json!({});
+
+        match &scope {
+            CancelScope::All { symbol } => {
+                if let Some(sym) = symbol {
+                    let instrument_type = account_type_to_instrument(account_type);
+                    let instrument_name = format_symbol(&sym.base, &sym.quote, instrument_type);
+                    params["instrument_name"] = json!(instrument_name);
+                }
+            }
+            CancelScope::BySymbol { symbol } => {
+                let instrument_type = account_type_to_instrument(account_type);
+                let instrument_name = format_symbol(&symbol.base, &symbol.quote, instrument_type);
+                params["instrument_name"] = json!(instrument_name);
+            }
+            _ => return Err(ExchangeError::InvalidRequest(
+                "cancel_all_orders requires CancelScope::All or BySymbol".to_string()
+            )),
+        }
+
+        let response = self.request(CryptoComEndpoint::CancelAllOrders, params).await?;
+        CryptoComParser::check_response(&response)?;
+
+        Ok(CancelAllResponse {
+            cancelled_count: 0, // Crypto.com doesn't return count
+            failed_count: 0,
+            details: vec![],
+        })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AMEND ORDER (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AmendOrder for CryptoComConnector {
+    async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
+        let symbol = req.symbol.clone();
+        let account_type = req.account_type;
+
+        let instrument_type = account_type_to_instrument(account_type);
+        let instrument_name = format_symbol(&symbol.base, &symbol.quote, instrument_type);
+
+        let mut params = json!({
+            "order_id": req.order_id,
+            "instrument_name": instrument_name,
+        });
+
+        if let Some(price) = req.fields.price {
+            params["price"] = json!(price.to_string());
+        }
+
+        if let Some(qty) = req.fields.quantity {
+            params["quantity"] = json!(qty.to_string());
+        }
+
+        // trigger_price maps to ref_price for stop orders
+        if let Some(trigger) = req.fields.trigger_price {
+            params["ref_price"] = json!(trigger.to_string());
+        }
+
+        let response = self.request(CryptoComEndpoint::AmendOrder, params).await?;
+        CryptoComParser::parse_order(&response)
     }
 }
 
@@ -543,7 +878,6 @@ impl Account for CryptoComConnector {
         let params = json!({});
         let response = self.request(CryptoComEndpoint::UserBalance, params).await?;
         CryptoComParser::parse_balances(&response)
-    
     }
 
     async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
@@ -560,10 +894,29 @@ impl Account for CryptoComConnector {
         })
     }
 
-    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_fees not yet implemented".to_string()
-        ))
+    async fn get_fees(&self, symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        // Use get-fee-rate for account-wide or get-instrument-fee-rate for symbol-specific
+        let (endpoint, params) = if let Some(sym) = symbol {
+            // Symbol-specific fee: need to parse symbol string
+            let parts: Vec<&str> = sym.split('/').collect();
+            let instrument_name = if parts.len() == 2 {
+                // Try to parse as BASE/QUOTE
+                let sym_struct = crate::core::Symbol::new(parts[0], parts[1]);
+                format_symbol(&sym_struct.base, &sym_struct.quote,
+                    super::endpoints::InstrumentType::Spot)
+            } else {
+                sym.to_string()
+            };
+            (
+                CryptoComEndpoint::GetInstrumentFeeRate,
+                json!({ "instrument_name": instrument_name }),
+            )
+        } else {
+            (CryptoComEndpoint::GetFeeRate, json!({}))
+        };
+
+        let response = self.request(endpoint, params).await?;
+        CryptoComParser::parse_fee_rate(&response)
     }
 }
 
@@ -596,7 +949,6 @@ impl Positions for CryptoComConnector {
 
         let response = self.request(CryptoComEndpoint::GetPositions, params).await?;
         CryptoComParser::parse_positions(&response)
-    
     }
 
     async fn get_funding_rate(
@@ -604,7 +956,6 @@ impl Positions for CryptoComConnector {
         symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
-        // Parse symbol string into Symbol struct
         let symbol_str = symbol;
         let symbol = {
             let parts: Vec<&str> = symbol_str.split('/').collect();
@@ -633,25 +984,90 @@ impl Positions for CryptoComConnector {
 
         let response = self.request(CryptoComEndpoint::GetValuations, params).await?;
         CryptoComParser::parse_funding_rate(&response)
-    
     }
 
     async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
         match req {
-            PositionModification::SetLeverage { symbol: ref _symbol, leverage: leverage, account_type: _account_type } => {
-                let _symbol = _symbol.clone();
-
+            PositionModification::SetLeverage { leverage, .. } => {
                 let params = json!({
-                "leverage": leverage.to_string()
+                    "leverage": leverage.to_string()
                 });
 
                 let response = self.request(CryptoComEndpoint::ChangeAccountLeverage, params).await?;
                 CryptoComParser::check_response(&response)
-    
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} not supported on {:?}", req, self.exchange_id())
-            )),
+
+            PositionModification::SetMarginMode { ref symbol, ref margin_type, account_type } => {
+                let symbol = symbol.clone();
+                let instrument_type = account_type_to_instrument(account_type);
+                let instrument_name = format_symbol(&symbol.base, &symbol.quote, instrument_type);
+
+                // change-isolated-margin-leverage: leverage=0 for cross, >0 for isolated
+                let leverage = match margin_type {
+                    MarginType::Cross => "0".to_string(),
+                    MarginType::Isolated => "10".to_string(), // default 10x isolated
+                };
+
+                let params = json!({
+                    "instrument_name": instrument_name,
+                    "leverage": leverage,
+                });
+
+                let response = self.request(CryptoComEndpoint::ChangeIsolatedMarginLeverage, params).await?;
+                CryptoComParser::check_response(&response)
+            }
+
+            PositionModification::AddMargin { ref symbol, amount, account_type } => {
+                let symbol = symbol.clone();
+                let instrument_type = account_type_to_instrument(account_type);
+                let instrument_name = format_symbol(&symbol.base, &symbol.quote, instrument_type);
+
+                // create-isolated-margin-transfer direction=IN to add margin
+                let params = json!({
+                    "instrument_name": instrument_name,
+                    "direction": "IN",
+                    "amount": amount.to_string(),
+                });
+
+                // Note: Crypto.com uses a different endpoint for margin transfers
+                // private/create-isolated-margin-transfer is not in our endpoint enum
+                // We'll use ChangeIsolatedMarginLeverage as the closest available
+                // For completeness, flag as unsupported with a descriptive message
+                let _ = params; // suppress unused warning
+                Err(ExchangeError::UnsupportedOperation(
+                    "AddMargin requires private/create-isolated-margin-transfer endpoint (not yet mapped)".to_string()
+                ))
+            }
+
+            PositionModification::RemoveMargin { ref symbol, amount, account_type } => {
+                let _ = (symbol, amount, account_type);
+                Err(ExchangeError::UnsupportedOperation(
+                    "RemoveMargin requires private/create-isolated-margin-transfer endpoint (not yet mapped)".to_string()
+                ))
+            }
+
+            PositionModification::ClosePosition { ref symbol, account_type } => {
+                let symbol = symbol.clone();
+                let instrument_type = account_type_to_instrument(account_type);
+                let instrument_name = format_symbol(&symbol.base, &symbol.quote, instrument_type);
+
+                // private/close-position with type=MARKET
+                let params = json!({
+                    "instrument_name": instrument_name,
+                    "type": "MARKET",
+                });
+
+                let response = self.request(CryptoComEndpoint::ClosePosition, params).await?;
+                CryptoComParser::check_response(&response)
+            }
+
+            PositionModification::SetTpSl { .. } => {
+                // Crypto.com doesn't have a unified SetTpSl endpoint
+                // TP/SL must be placed as separate TAKE_PROFIT / STOP_LOSS orders
+                Err(ExchangeError::UnsupportedOperation(
+                    "SetTpSl not supported as a single operation on Crypto.com; place separate TP/SL orders".to_string()
+                ))
+            }
         }
     }
 }

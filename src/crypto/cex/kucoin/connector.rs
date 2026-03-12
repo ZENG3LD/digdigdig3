@@ -572,106 +572,222 @@ impl Trading for KuCoinConnector {
         let quantity = req.quantity;
         let account_type = req.account_type;
 
-        match req.order_type {
+        let endpoint = match account_type {
+            AccountType::Spot | AccountType::Margin => KuCoinEndpoint::SpotCreateOrder,
+            _ => KuCoinEndpoint::FuturesCreateOrder,
+        };
+        let client_oid = req.client_order_id.clone()
+            .unwrap_or_else(|| format!("cc_{}", crate::core::timestamp_millis()));
+        let formatted_symbol = format_symbol(&symbol.base, &symbol.quote, account_type);
+        let side_str = match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" };
+
+        let (body, order_type_out, price_out, stop_price_out, tif_out) = match req.order_type {
             OrderType::Market => {
-                let endpoint = match account_type {
-                            AccountType::Spot | AccountType::Margin => KuCoinEndpoint::SpotCreateOrder,
-                            _ => KuCoinEndpoint::FuturesCreateOrder,
-                        };
-                
-                        let client_oid = format!("cc_{}", crate::core::timestamp_millis());
-                
-                        let body = json!({
-                            "clientOid": client_oid,
-                            "symbol": format_symbol(&symbol.base, &symbol.quote, account_type),
-                            "side": match side {
-                                OrderSide::Buy => "buy",
-                                OrderSide::Sell => "sell",
-                            },
-                            "type": "market",
-                            "size": quantity.to_string(),
-                        });
-                
-                        let response = self.post(endpoint, body, account_type).await?;
-                        let order_id = KuCoinParser::parse_order_id(&response)?;
-                
-                        // Return minimal order info (can fetch full info with get_order)
-                        Ok(PlaceOrderResponse::Simple(Order {
-                            id: order_id,
-                            client_order_id: Some(client_oid),
-                            symbol: symbol.to_string(),
-                            side,
-                            order_type: OrderType::Market,
-                            status: crate::core::OrderStatus::New,
-                            price: None,
-                            stop_price: None,
-                            quantity,
-                            filled_quantity: 0.0,
-                            average_price: None,
-                            commission: None,
-                            commission_asset: None,
-                            created_at: crate::core::timestamp_millis() as i64,
-                            updated_at: None,
-                            time_in_force: crate::core::TimeInForce::Gtc,
-                        }))
+                let body = json!({
+                    "clientOid": client_oid,
+                    "symbol": formatted_symbol,
+                    "side": side_str,
+                    "type": "market",
+                    "size": quantity.to_string(),
+                });
+                (body, OrderType::Market, None, None, crate::core::TimeInForce::Gtc)
             }
             OrderType::Limit { price } => {
-                let endpoint = match account_type {
-                            AccountType::Spot | AccountType::Margin => KuCoinEndpoint::SpotCreateOrder,
-                            _ => KuCoinEndpoint::FuturesCreateOrder,
-                        };
-                
-                        let client_oid = format!("cc_{}", crate::core::timestamp_millis());
-                
-                        let body = json!({
-                            "clientOid": client_oid,
-                            "symbol": format_symbol(&symbol.base, &symbol.quote, account_type),
-                            "side": match side {
-                                OrderSide::Buy => "buy",
-                                OrderSide::Sell => "sell",
-                            },
-                            "type": "limit",
-                            "size": quantity,
-                            "price": price,
-                        });
-                
-                        let response = self.post(endpoint, body, account_type).await?;
-                        let order_id = KuCoinParser::parse_order_id(&response)?;
-                
-                        Ok(PlaceOrderResponse::Simple(Order {
-                            id: order_id,
-                            client_order_id: Some(client_oid),
-                            symbol: symbol.to_string(),
-                            side,
-                            order_type: OrderType::Limit { price: 0.0 },
-                            status: crate::core::OrderStatus::New,
-                            price: Some(price),
-                            stop_price: None,
-                            quantity,
-                            filled_quantity: 0.0,
-                            average_price: None,
-                            commission: None,
-                            commission_asset: None,
-                            created_at: crate::core::timestamp_millis() as i64,
-                            updated_at: None,
-                            time_in_force: crate::core::TimeInForce::Gtc,
-                        }))
+                let tif = match req.time_in_force {
+                    crate::core::TimeInForce::PostOnly => "limit", // KuCoin uses postOnly flag
+                    crate::core::TimeInForce::Ioc => "IOC",
+                    crate::core::TimeInForce::Fok => "FOK",
+                    _ => "GTC",
+                };
+                let post_only = matches!(req.time_in_force, crate::core::TimeInForce::PostOnly);
+                let body = json!({
+                    "clientOid": client_oid,
+                    "symbol": formatted_symbol,
+                    "side": side_str,
+                    "type": "limit",
+                    "size": quantity.to_string(),
+                    "price": price.to_string(),
+                    "timeInForce": tif,
+                    "postOnly": post_only,
+                });
+                (body, OrderType::Limit { price }, Some(price), None, crate::core::TimeInForce::Gtc)
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
-            )),
-        }
+            OrderType::PostOnly { price } => {
+                let body = json!({
+                    "clientOid": client_oid,
+                    "symbol": formatted_symbol,
+                    "side": side_str,
+                    "type": "limit",
+                    "size": quantity.to_string(),
+                    "price": price.to_string(),
+                    "postOnly": true,
+                });
+                (body, OrderType::PostOnly { price }, Some(price), None, crate::core::TimeInForce::Gtc)
+            }
+            OrderType::Ioc { price } => {
+                let px = price.unwrap_or(0.0);
+                let body = json!({
+                    "clientOid": client_oid,
+                    "symbol": formatted_symbol,
+                    "side": side_str,
+                    "type": "limit",
+                    "size": quantity.to_string(),
+                    "price": px.to_string(),
+                    "timeInForce": "IOC",
+                });
+                (body, OrderType::Ioc { price }, price, None, crate::core::TimeInForce::Ioc)
+            }
+            OrderType::Fok { price } => {
+                let body = json!({
+                    "clientOid": client_oid,
+                    "symbol": formatted_symbol,
+                    "side": side_str,
+                    "type": "limit",
+                    "size": quantity.to_string(),
+                    "price": price.to_string(),
+                    "timeInForce": "FOK",
+                });
+                (body, OrderType::Fok { price }, Some(price), None, crate::core::TimeInForce::Fok)
+            }
+            OrderType::StopMarket { stop_price } => {
+                // KuCoin stop orders: use stopPrice + stop=up/down
+                let stop_dir = match side {
+                    OrderSide::Buy => "up",
+                    OrderSide::Sell => "down",
+                };
+                let body = json!({
+                    "clientOid": client_oid,
+                    "symbol": formatted_symbol,
+                    "side": side_str,
+                    "type": "market",
+                    "size": quantity.to_string(),
+                    "stop": stop_dir,
+                    "stopPrice": stop_price.to_string(),
+                    "stopPriceType": "TP",  // trade price
+                });
+                (body, OrderType::StopMarket { stop_price }, None, Some(stop_price), crate::core::TimeInForce::Gtc)
+            }
+            OrderType::StopLimit { stop_price, limit_price } => {
+                let stop_dir = match side {
+                    OrderSide::Buy => "up",
+                    OrderSide::Sell => "down",
+                };
+                let body = json!({
+                    "clientOid": client_oid,
+                    "symbol": formatted_symbol,
+                    "side": side_str,
+                    "type": "limit",
+                    "size": quantity.to_string(),
+                    "price": limit_price.to_string(),
+                    "stop": stop_dir,
+                    "stopPrice": stop_price.to_string(),
+                    "stopPriceType": "TP",
+                });
+                (body, OrderType::StopLimit { stop_price, limit_price }, Some(limit_price), Some(stop_price), crate::core::TimeInForce::Gtc)
+            }
+            OrderType::ReduceOnly { price } => {
+                // KuCoin Futures supports reduceOnly flag
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "ReduceOnly orders only supported for futures on KuCoin".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+                let ord_type = if price.is_some() { "limit" } else { "market" };
+                let mut body = json!({
+                    "clientOid": client_oid,
+                    "symbol": formatted_symbol,
+                    "side": side_str,
+                    "type": ord_type,
+                    "size": quantity.to_string(),
+                    "reduceOnly": true,
+                });
+                if let Some(px) = price {
+                    body["price"] = json!(px.to_string());
+                }
+                (body, OrderType::ReduceOnly { price }, price, None, crate::core::TimeInForce::Gtc)
+            }
+            OrderType::Gtd { price, expire_time } => {
+                // KuCoin does not support GTD natively — place as GTC limit order
+                let _ = expire_time;
+                let body = json!({
+                    "clientOid": client_oid,
+                    "symbol": formatted_symbol,
+                    "side": side_str,
+                    "type": "limit",
+                    "size": quantity.to_string(),
+                    "price": price.to_string(),
+                    "timeInForce": "GTC",
+                });
+                (body, OrderType::Gtd { price, expire_time }, Some(price), None, crate::core::TimeInForce::Gtc)
+            }
+            OrderType::TrailingStop { .. } | OrderType::Oco { .. } | OrderType::Bracket { .. }
+            | OrderType::Iceberg { .. } | OrderType::Twap { .. } => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+                ));
+            }
+        };
+
+        let response = self.post(endpoint, body, account_type).await?;
+        let order_id = KuCoinParser::parse_order_id(&response)?;
+
+        Ok(PlaceOrderResponse::Simple(Order {
+            id: order_id,
+            client_order_id: Some(client_oid),
+            symbol: symbol.to_string(),
+            side,
+            order_type: order_type_out,
+            status: crate::core::OrderStatus::New,
+            price: price_out,
+            stop_price: stop_price_out,
+            quantity,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: crate::core::timestamp_millis() as i64,
+            updated_at: None,
+            time_in_force: tif_out,
+        }))
     }
 
     async fn get_order_history(
         &self,
-        _filter: OrderHistoryFilter,
-        _account_type: AccountType,
+        filter: OrderHistoryFilter,
+        account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_order_history not yet implemented".to_string()
-        ))
+        let endpoint = match account_type {
+            AccountType::Spot | AccountType::Margin => KuCoinEndpoint::SpotAllOrders,
+            _ => KuCoinEndpoint::FuturesAllOrders,
+        };
+
+        let mut params = HashMap::new();
+        // KuCoin uses status=done for filled/cancelled orders
+        params.insert("status".to_string(), "done".to_string());
+
+        if let Some(ref symbol) = filter.symbol {
+            params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        }
+
+        if let Some(start) = filter.start_time {
+            params.insert("startAt".to_string(), start.to_string());
+        }
+
+        if let Some(end) = filter.end_time {
+            params.insert("endAt".to_string(), end.to_string());
+        }
+
+        if let Some(limit) = filter.limit {
+            params.insert("pageSize".to_string(), limit.min(500).to_string());
+        }
+
+        let response = self.get(endpoint, params, account_type).await?;
+        KuCoinParser::parse_orders(&response)
     }
+
 async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         match req.scope {
             CancelScope::Single { ref order_id } => {
@@ -680,38 +796,87 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
                     .clone();
                 let account_type = req.account_type;
 
-            let endpoint = match account_type {
-                AccountType::Spot | AccountType::Margin => KuCoinEndpoint::SpotCancelOrder,
-                _ => KuCoinEndpoint::FuturesCancelOrder,
-            };
+                let endpoint = match account_type {
+                    AccountType::Spot | AccountType::Margin => KuCoinEndpoint::SpotCancelOrder,
+                    _ => KuCoinEndpoint::FuturesCancelOrder,
+                };
 
-            let response = self.delete(endpoint, &[("orderId", order_id)], account_type).await?;
-            self.check_response(&response)?;
+                let response = self.delete(endpoint, &[("orderId", order_id)], account_type).await?;
+                self.check_response(&response)?;
 
-            // Return cancelled order (minimal info)
-            Ok(Order {
-                id: order_id.to_string(),
-                client_order_id: None,
-                symbol: symbol.to_string(),
-                side: OrderSide::Buy, // Unknown
-                order_type: OrderType::Limit { price: 0.0 },
-                status: crate::core::OrderStatus::Canceled,
-                price: None,
-                stop_price: None,
-                quantity: 0.0,
-                filled_quantity: 0.0,
-                average_price: None,
-                commission: None,
-                commission_asset: None,
-                created_at: 0,
-                updated_at: Some(crate::core::timestamp_millis() as i64),
-                time_in_force: crate::core::TimeInForce::Gtc,
-            })
-    
+                Ok(Order {
+                    id: order_id.to_string(),
+                    client_order_id: None,
+                    symbol: symbol.to_string(),
+                    side: OrderSide::Buy,
+                    order_type: OrderType::Limit { price: 0.0 },
+                    status: crate::core::OrderStatus::Canceled,
+                    price: None,
+                    stop_price: None,
+                    quantity: 0.0,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: 0,
+                    updated_at: Some(crate::core::timestamp_millis() as i64),
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                })
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
-            )),
+            CancelScope::All { ref symbol } => {
+                let account_type = req.account_type;
+                let cancelled_ids = self.cancel_all_orders(symbol.clone(), account_type).await?;
+                let count = cancelled_ids.len();
+                let sym_str = symbol.as_ref().map(|s| s.to_string()).unwrap_or_default();
+                Ok(Order {
+                    id: format!("batch_cancel_{}", crate::core::timestamp_millis()),
+                    client_order_id: None,
+                    symbol: sym_str,
+                    side: OrderSide::Buy,
+                    order_type: OrderType::Market,
+                    status: crate::core::OrderStatus::Canceled,
+                    price: None,
+                    stop_price: None,
+                    quantity: count as f64,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: 0,
+                    updated_at: Some(crate::core::timestamp_millis() as i64),
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                })
+            }
+            CancelScope::BySymbol { ref symbol } => {
+                let account_type = req.account_type;
+                let cancelled_ids = self.cancel_all_orders(Some(symbol.clone()), account_type).await?;
+                let count = cancelled_ids.len();
+                Ok(Order {
+                    id: format!("batch_cancel_{}", crate::core::timestamp_millis()),
+                    client_order_id: None,
+                    symbol: symbol.to_string(),
+                    side: OrderSide::Buy,
+                    order_type: OrderType::Market,
+                    status: crate::core::OrderStatus::Canceled,
+                    price: None,
+                    stop_price: None,
+                    quantity: count as f64,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: 0,
+                    updated_at: Some(crate::core::timestamp_millis() as i64),
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                })
+            }
+            CancelScope::Batch { ref order_ids } => {
+                // KuCoin does not have a native batch cancel endpoint — return UnsupportedOperation
+                let _ = order_ids;
+                Err(ExchangeError::UnsupportedOperation(
+                    "KuCoin does not support batch cancel. Cancel orders individually.".to_string()
+                ))
+            }
         }
     }
 
@@ -830,10 +995,51 @@ impl Account for KuCoinConnector {
         })
     }
 
-    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_fees not yet implemented".to_string()
-        ))
+    async fn get_fees(&self, symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        // KuCoin GET /api/v1/base-fee (account-level) or /api/v1/trade-fees?symbols=... (per-symbol)
+        let account_type = AccountType::Spot;
+
+        let mut params = HashMap::new();
+        if let Some(sym) = symbol {
+            let parts: Vec<&str> = sym.split('/').collect();
+            let kucoin_symbol = if parts.len() == 2 {
+                format_symbol(parts[0], parts[1], account_type)
+            } else {
+                sym.to_string()
+            };
+            params.insert("symbols".to_string(), kucoin_symbol);
+        }
+
+        // Use base-fee endpoint (no symbol needed for account-wide fees)
+        let base_url = self.urls.rest_url(account_type);
+        let path = "/api/v1/base-fee";
+        let url = format!("{}{}", base_url, path);
+
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+        let headers = auth.sign_request("GET", path, "");
+
+        let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &headers).await?;
+        self.update_rate_from_headers(&resp_headers);
+        self.check_response(&response)?;
+
+        let data = KuCoinParser::extract_data(&response)?;
+
+        let maker_rate = data.get("makerFeeRate")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.001);
+        let taker_rate = data.get("takerFeeRate")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.001);
+
+        Ok(FeeInfo {
+            maker_rate,
+            taker_rate,
+            symbol: symbol.map(String::from),
+            tier: None,
+        })
     }
 }
 
@@ -915,28 +1121,172 @@ impl Positions for KuCoinConnector {
                 let symbol = symbol.clone();
 
                 match account_type {
-                AccountType::Spot | AccountType::Margin => {
-                return Err(ExchangeError::UnsupportedOperation(
-                "Leverage not supported for Spot/Margin".to_string()
-                ));
-                }
-                _ => {}
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "Leverage not supported for Spot/Margin".to_string()
+                        ));
+                    }
+                    _ => {}
                 }
 
                 let body = json!({
-                "symbol": format_symbol(&symbol.base, &symbol.quote, account_type),
-                "level": leverage,
+                    "symbol": format_symbol(&symbol.base, &symbol.quote, account_type),
+                    "level": leverage,
                 });
 
                 let response = self.post(KuCoinEndpoint::FuturesSetLeverage, body, account_type).await?;
                 self.check_response(&response)?;
+                Ok(())
+            }
+            PositionModification::SetMarginMode { ref symbol, margin_type, account_type } => {
+                let symbol = symbol.clone();
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "SetMarginMode not supported for Spot/Margin on KuCoin".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+
+                // KuCoin Futures uses per-position margin mode set via leverage endpoint
+                // "autoDeposit" flag controls isolated vs cross margin behavior
+                let auto_deposit = match margin_type {
+                    crate::core::MarginType::Isolated => false,
+                    crate::core::MarginType::Cross => true,
+                };
+
+                let body = json!({
+                    "symbol": format_symbol(&symbol.base, &symbol.quote, account_type),
+                    "autoDeposit": auto_deposit,
+                });
+
+                // KuCoin auto-deposit endpoint: POST /api/v1/position/margin/auto-deposit-status
+                let base_url = self.urls.rest_url(account_type);
+                let path = "/api/v1/position/margin/auto-deposit-status";
+                let url = format!("{}{}", base_url, path);
+
+                let auth = self.auth.as_ref()
+                    .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+                let body_str = body.to_string();
+                let headers = auth.sign_request("POST", path, &body_str);
+
+                let response = self.http.post(&url, &body, &headers).await?;
+                self.check_response(&response)?;
+                Ok(())
+            }
+            PositionModification::AddMargin { ref symbol, amount, account_type } => {
+                let symbol = symbol.clone();
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "AddMargin only supported for futures on KuCoin".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+
+                let body = json!({
+                    "symbol": format_symbol(&symbol.base, &symbol.quote, account_type),
+                    "bizNo": format!("cc_{}", crate::core::timestamp_millis()),
+                    "margin": amount,
+                });
+
+                // KuCoin: POST /api/v1/position/margin/deposit-margin
+                let base_url = self.urls.rest_url(account_type);
+                let path = "/api/v1/position/margin/deposit-margin";
+                let url = format!("{}{}", base_url, path);
+
+                let auth = self.auth.as_ref()
+                    .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+                let body_str = body.to_string();
+                let headers = auth.sign_request("POST", path, &body_str);
+
+                let response = self.http.post(&url, &body, &headers).await?;
+                self.check_response(&response)?;
+                Ok(())
+            }
+            PositionModification::RemoveMargin { .. } => {
+                // KuCoin does not support removing margin from a futures position
+                Err(ExchangeError::UnsupportedOperation(
+                    "KuCoin does not support RemoveMargin on futures positions".to_string()
+                ))
+            }
+            PositionModification::ClosePosition { ref symbol, account_type } => {
+                let symbol = symbol.clone();
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "ClosePosition only supported for futures on KuCoin".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+
+                // KuCoin: place a market order with closeOrder=true to close entire position
+                let client_oid = format!("cc_{}", crate::core::timestamp_millis());
+                let body = json!({
+                    "clientOid": client_oid,
+                    "symbol": format_symbol(&symbol.base, &symbol.quote, account_type),
+                    "side": "buy",   // Will be auto-determined for close
+                    "type": "market",
+                    "size": 0,       // 0 = entire position
+                    "closeOrder": true,
+                });
+
+                let response = self.post(KuCoinEndpoint::FuturesCreateOrder, body, account_type).await?;
+                self.check_response(&response)?;
+                Ok(())
+            }
+            PositionModification::SetTpSl { ref symbol, take_profit, stop_loss, account_type } => {
+                let symbol = symbol.clone();
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "SetTpSl only supported for futures on KuCoin".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+
+                // KuCoin: POST /api/v1/stop-order with stop type
+                // For existing position, use stop-sell for TP (if long) and stop-sell for SL
+                if let Some(tp) = take_profit {
+                    let client_oid = format!("tp_{}", crate::core::timestamp_millis());
+                    let body = json!({
+                        "clientOid": client_oid,
+                        "symbol": format_symbol(&symbol.base, &symbol.quote, account_type),
+                        "side": "sell",
+                        "type": "market",
+                        "size": 0,
+                        "closeOrder": true,
+                        "stop": "up",
+                        "stopPrice": tp.to_string(),
+                        "stopPriceType": "TP",
+                    });
+                    let response = self.post(KuCoinEndpoint::FuturesCreateOrder, body, account_type).await?;
+                    self.check_response(&response)?;
+                }
+
+                if let Some(sl) = stop_loss {
+                    let client_oid = format!("sl_{}", crate::core::timestamp_millis());
+                    let body = json!({
+                        "clientOid": client_oid,
+                        "symbol": format_symbol(&symbol.base, &symbol.quote, account_type),
+                        "side": "sell",
+                        "type": "market",
+                        "size": 0,
+                        "closeOrder": true,
+                        "stop": "down",
+                        "stopPrice": sl.to_string(),
+                        "stopPriceType": "TP",
+                    });
+                    let response = self.post(KuCoinEndpoint::FuturesCreateOrder, body, account_type).await?;
+                    self.check_response(&response)?;
+                }
 
                 Ok(())
-    
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} not supported on {:?}", req, self.exchange_id())
-            )),
         }
     }
 }

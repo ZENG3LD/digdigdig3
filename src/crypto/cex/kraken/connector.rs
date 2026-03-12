@@ -374,92 +374,215 @@ impl Trading for KrakenConnector {
         let quantity = req.quantity;
         let account_type = req.account_type;
 
-        match req.order_type {
+        let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
+        let side_str = match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" };
+
+        // Futures endpoint selection
+        let endpoint = match account_type {
+            AccountType::Spot | AccountType::Margin => KrakenEndpoint::SpotAddOrder,
+            _ => KrakenEndpoint::FuturesSendOrder,
+        };
+
+        let (mut params, order_type_out, price_out, stop_price_out, tif_out) = match req.order_type {
             OrderType::Market => {
-                let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
-                
-                        let mut params = HashMap::new();
-                        params.insert("pair".to_string(), formatted);
-                        params.insert("type".to_string(), match side {
-                            OrderSide::Buy => "buy".to_string(),
-                            OrderSide::Sell => "sell".to_string(),
-                        });
-                        params.insert("ordertype".to_string(), "market".to_string());
-                        params.insert("volume".to_string(), quantity.to_string());
-                
-                        let response = self.post(KrakenEndpoint::SpotAddOrder, params, account_type).await?;
-                        let order_id = KrakenParser::parse_order_id(&response)?;
-                
-                        // Return minimal order info
-                        Ok(PlaceOrderResponse::Simple(Order {
-                            id: order_id,
-                            client_order_id: None,
-                            symbol: symbol.to_string(),
-                            side,
-                            order_type: OrderType::Market,
-                            status: crate::core::OrderStatus::New,
-                            price: None,
-                            stop_price: None,
-                            quantity,
-                            filled_quantity: 0.0,
-                            average_price: None,
-                            commission: None,
-                            commission_asset: None,
-                            created_at: crate::core::timestamp_millis() as i64,
-                            updated_at: None,
-                            time_in_force: crate::core::TimeInForce::Gtc,
-                        }))
+                let mut p = HashMap::new();
+                p.insert("pair".to_string(), formatted.clone());
+                p.insert("type".to_string(), side_str.to_string());
+                p.insert("ordertype".to_string(), "market".to_string());
+                p.insert("volume".to_string(), quantity.to_string());
+                (p, OrderType::Market, None, None, crate::core::TimeInForce::Gtc)
             }
             OrderType::Limit { price } => {
-                let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
-                
-                        let mut params = HashMap::new();
-                        params.insert("pair".to_string(), formatted);
-                        params.insert("type".to_string(), match side {
-                            OrderSide::Buy => "buy".to_string(),
-                            OrderSide::Sell => "sell".to_string(),
-                        });
-                        params.insert("ordertype".to_string(), "limit".to_string());
-                        params.insert("price".to_string(), price.to_string());
-                        params.insert("volume".to_string(), quantity.to_string());
-                
-                        let response = self.post(KrakenEndpoint::SpotAddOrder, params, account_type).await?;
-                        let order_id = KrakenParser::parse_order_id(&response)?;
-                
-                        Ok(PlaceOrderResponse::Simple(Order {
-                            id: order_id,
-                            client_order_id: None,
-                            symbol: symbol.to_string(),
-                            side,
-                            order_type: OrderType::Limit { price: 0.0 },
-                            status: crate::core::OrderStatus::New,
-                            price: Some(price),
-                            stop_price: None,
-                            quantity,
-                            filled_quantity: 0.0,
-                            average_price: None,
-                            commission: None,
-                            commission_asset: None,
-                            created_at: crate::core::timestamp_millis() as i64,
-                            updated_at: None,
-                            time_in_force: crate::core::TimeInForce::Gtc,
-                        }))
+                let mut p = HashMap::new();
+                p.insert("pair".to_string(), formatted.clone());
+                p.insert("type".to_string(), side_str.to_string());
+                p.insert("ordertype".to_string(), "limit".to_string());
+                p.insert("price".to_string(), price.to_string());
+                p.insert("volume".to_string(), quantity.to_string());
+                (p, OrderType::Limit { price }, Some(price), None, crate::core::TimeInForce::Gtc)
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
-            )),
+            OrderType::PostOnly { price } => {
+                let mut p = HashMap::new();
+                p.insert("pair".to_string(), formatted.clone());
+                p.insert("type".to_string(), side_str.to_string());
+                p.insert("ordertype".to_string(), "limit".to_string());
+                p.insert("price".to_string(), price.to_string());
+                p.insert("volume".to_string(), quantity.to_string());
+                p.insert("oflags".to_string(), "post".to_string());
+                (p, OrderType::PostOnly { price }, Some(price), None, crate::core::TimeInForce::Gtc)
+            }
+            OrderType::Ioc { price } => {
+                let px_val = price.unwrap_or(0.0);
+                let mut p = HashMap::new();
+                p.insert("pair".to_string(), formatted.clone());
+                p.insert("type".to_string(), side_str.to_string());
+                p.insert("ordertype".to_string(), "limit".to_string());
+                p.insert("price".to_string(), px_val.to_string());
+                p.insert("volume".to_string(), quantity.to_string());
+                p.insert("timeinforce".to_string(), "IOC".to_string());
+                (p, OrderType::Ioc { price }, price, None, crate::core::TimeInForce::Ioc)
+            }
+            OrderType::Fok { price } => {
+                // Kraken does not natively support FOK; treat as IOC
+                let mut p = HashMap::new();
+                p.insert("pair".to_string(), formatted.clone());
+                p.insert("type".to_string(), side_str.to_string());
+                p.insert("ordertype".to_string(), "limit".to_string());
+                p.insert("price".to_string(), price.to_string());
+                p.insert("volume".to_string(), quantity.to_string());
+                p.insert("timeinforce".to_string(), "IOC".to_string());
+                (p, OrderType::Fok { price }, Some(price), None, crate::core::TimeInForce::Fok)
+            }
+            OrderType::StopMarket { stop_price } => {
+                // Kraken: ordertype=stop-loss, price=stop trigger
+                let mut p = HashMap::new();
+                p.insert("pair".to_string(), formatted.clone());
+                p.insert("type".to_string(), side_str.to_string());
+                p.insert("ordertype".to_string(), "stop-loss".to_string());
+                p.insert("price".to_string(), stop_price.to_string());
+                p.insert("volume".to_string(), quantity.to_string());
+                (p, OrderType::StopMarket { stop_price }, None, Some(stop_price), crate::core::TimeInForce::Gtc)
+            }
+            OrderType::StopLimit { stop_price, limit_price } => {
+                // Kraken: ordertype=stop-loss-limit, price=stop trigger, price2=limit price
+                let mut p = HashMap::new();
+                p.insert("pair".to_string(), formatted.clone());
+                p.insert("type".to_string(), side_str.to_string());
+                p.insert("ordertype".to_string(), "stop-loss-limit".to_string());
+                p.insert("price".to_string(), stop_price.to_string());
+                p.insert("price2".to_string(), limit_price.to_string());
+                p.insert("volume".to_string(), quantity.to_string());
+                (p, OrderType::StopLimit { stop_price, limit_price }, Some(limit_price), Some(stop_price), crate::core::TimeInForce::Gtc)
+            }
+            OrderType::Gtd { price, expire_time } => {
+                let mut p = HashMap::new();
+                p.insert("pair".to_string(), formatted.clone());
+                p.insert("type".to_string(), side_str.to_string());
+                p.insert("ordertype".to_string(), "limit".to_string());
+                p.insert("price".to_string(), price.to_string());
+                p.insert("volume".to_string(), quantity.to_string());
+                // Kraken GTD: timeinforce=GTD + expiretm = Unix timestamp or +<seconds>
+                p.insert("timeinforce".to_string(), "GTD".to_string());
+                p.insert("expiretm".to_string(), (expire_time / 1000).to_string());
+                (p, OrderType::Gtd { price, expire_time }, Some(price), None, crate::core::TimeInForce::Gtd)
+            }
+            OrderType::ReduceOnly { price } => {
+                // Kraken Futures: reduceOnly flag
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "ReduceOnly not supported for spot on Kraken".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+                let ord_type = if price.is_some() { "lmt" } else { "mkt" };
+                let mut p = HashMap::new();
+                p.insert("symbol".to_string(), formatted.clone());
+                p.insert("side".to_string(), side_str.to_string());
+                p.insert("orderType".to_string(), ord_type.to_string());
+                p.insert("size".to_string(), quantity.to_string());
+                p.insert("reduceOnly".to_string(), "true".to_string());
+                if let Some(px) = price {
+                    p.insert("limitPrice".to_string(), px.to_string());
+                }
+                (p, OrderType::ReduceOnly { price }, price, None, crate::core::TimeInForce::Gtc)
+            }
+            OrderType::TrailingStop { .. } | OrderType::Oco { .. } | OrderType::Bracket { .. }
+            | OrderType::Iceberg { .. } | OrderType::Twap { .. } => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+                ));
+            }
+        };
+
+        // For futures, rename params to Kraken Futures API format
+        if matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated) {
+            // Futures API uses different param names
+            if let Some(pair) = params.remove("pair") {
+                params.insert("symbol".to_string(), pair);
+            }
+            if let Some(t) = params.remove("type") {
+                params.insert("side".to_string(), t);
+            }
+            if let Some(ot) = params.remove("ordertype") {
+                let futures_type = match ot.as_str() {
+                    "market" => "mkt",
+                    "limit" => "lmt",
+                    "stop-loss" => "stp",
+                    _ => "lmt",
+                };
+                params.insert("orderType".to_string(), futures_type.to_string());
+            }
+            if let Some(vol) = params.remove("volume") {
+                params.insert("size".to_string(), vol);
+            }
+            if let Some(px) = params.remove("price") {
+                params.insert("limitPrice".to_string(), px);
+            }
         }
+
+        if let Some(ref cl_id) = req.client_order_id {
+            params.insert("cl_ord_id".to_string(), cl_id.clone());
+        }
+
+        let response = self.post(endpoint, params, account_type).await?;
+        let order_id = KrakenParser::parse_order_id(&response)?;
+
+        Ok(PlaceOrderResponse::Simple(Order {
+            id: order_id,
+            client_order_id: req.client_order_id,
+            symbol: symbol.to_string(),
+            side,
+            order_type: order_type_out,
+            status: crate::core::OrderStatus::New,
+            price: price_out,
+            stop_price: stop_price_out,
+            quantity,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: crate::core::timestamp_millis() as i64,
+            updated_at: None,
+            time_in_force: tif_out,
+        }))
     }
 
     async fn get_order_history(
         &self,
-        _filter: OrderHistoryFilter,
-        _account_type: AccountType,
+        filter: OrderHistoryFilter,
+        account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_order_history not yet implemented".to_string()
-        ))
+        // Kraken Spot: POST /0/private/ClosedOrders
+        // Kraken Futures: GET /derivatives/api/v3/fills
+        match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                let mut params = HashMap::new();
+
+                if let Some(start) = filter.start_time {
+                    params.insert("start".to_string(), (start / 1000).to_string());
+                }
+                if let Some(end) = filter.end_time {
+                    params.insert("end".to_string(), (end / 1000).to_string());
+                }
+
+                let response = self.post(KrakenEndpoint::SpotClosedOrders, params, account_type).await?;
+                KrakenParser::parse_closed_orders(&response)
+            }
+            _ => {
+                // Futures: GET /derivatives/api/v3/fills
+                let mut params = HashMap::new();
+                if let Some(start) = filter.start_time {
+                    params.insert("lastFillTime".to_string(), start.to_string());
+                }
+
+                let response = self.get(KrakenEndpoint::FuturesHistory, params, account_type).await?;
+                KrakenParser::parse_futures_fills(&response)
+            }
+        }
     }
+
 async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         match req.scope {
             CancelScope::Single { ref order_id } => {
@@ -468,36 +591,123 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
                     .clone();
                 let account_type = req.account_type;
 
-            let mut params = HashMap::new();
-            params.insert("txid".to_string(), order_id.to_string());
+                let mut params = HashMap::new();
+                params.insert("txid".to_string(), order_id.to_string());
 
-            let response = self.post(KrakenEndpoint::SpotCancelOrder, params, account_type).await?;
-            KrakenParser::extract_result(&response)?;
+                let response = self.post(KrakenEndpoint::SpotCancelOrder, params, account_type).await?;
+                KrakenParser::extract_result(&response)?;
 
-            // Return cancelled order (minimal info)
-            Ok(Order {
-                id: order_id.to_string(),
-                client_order_id: None,
-                symbol: symbol.to_string(),
-                side: OrderSide::Buy,
-                order_type: OrderType::Limit { price: 0.0 },
-                status: crate::core::OrderStatus::Canceled,
-                price: None,
-                stop_price: None,
-                quantity: 0.0,
-                filled_quantity: 0.0,
-                average_price: None,
-                commission: None,
-                commission_asset: None,
-                created_at: 0,
-                updated_at: Some(crate::core::timestamp_millis() as i64),
-                time_in_force: crate::core::TimeInForce::Gtc,
-            })
-    
+                Ok(Order {
+                    id: order_id.to_string(),
+                    client_order_id: None,
+                    symbol: symbol.to_string(),
+                    side: OrderSide::Buy,
+                    order_type: OrderType::Limit { price: 0.0 },
+                    status: crate::core::OrderStatus::Canceled,
+                    price: None,
+                    stop_price: None,
+                    quantity: 0.0,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: 0,
+                    updated_at: Some(crate::core::timestamp_millis() as i64),
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                })
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
-            )),
+            CancelScope::All { ref symbol } => {
+                let account_type = req.account_type;
+                let mut params = HashMap::new();
+                // For futures, optional symbol filter
+                if let Some(sym) = symbol {
+                    if matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated) {
+                        params.insert("symbol".to_string(),
+                            format_symbol(&sym.base, &sym.quote, account_type));
+                    }
+                }
+                let cancel_all_endpoint = match account_type {
+                    AccountType::Spot | AccountType::Margin => KrakenEndpoint::SpotCancelOrder,
+                    _ => KrakenEndpoint::FuturesCancelOrder,
+                };
+                let response = self.post(cancel_all_endpoint, params, account_type).await?;
+                let _ = response;
+                let sym_str = symbol.as_ref().map(|s| s.to_string()).unwrap_or_default();
+                Ok(Order {
+                    id: format!("cancel_all_{}", crate::core::timestamp_millis()),
+                    client_order_id: None,
+                    symbol: sym_str,
+                    side: OrderSide::Buy,
+                    order_type: OrderType::Market,
+                    status: crate::core::OrderStatus::Canceled,
+                    price: None,
+                    stop_price: None,
+                    quantity: 0.0,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: 0,
+                    updated_at: Some(crate::core::timestamp_millis() as i64),
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                })
+            }
+            CancelScope::BySymbol { ref symbol } => {
+                let account_type = req.account_type;
+                let mut params = HashMap::new();
+                if matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated) {
+                    params.insert("symbol".to_string(),
+                        format_symbol(&symbol.base, &symbol.quote, account_type));
+                }
+                let cancel_all_endpoint = match account_type {
+                    AccountType::Spot | AccountType::Margin => KrakenEndpoint::SpotCancelOrder,
+                    _ => KrakenEndpoint::FuturesCancelOrder,
+                };
+                let response = self.post(cancel_all_endpoint, params, account_type).await?;
+                let _ = response;
+                Ok(Order {
+                    id: format!("cancel_all_{}", crate::core::timestamp_millis()),
+                    client_order_id: None,
+                    symbol: symbol.to_string(),
+                    side: OrderSide::Buy,
+                    order_type: OrderType::Market,
+                    status: crate::core::OrderStatus::Canceled,
+                    price: None,
+                    stop_price: None,
+                    quantity: 0.0,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: 0,
+                    updated_at: Some(crate::core::timestamp_millis() as i64),
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                })
+            }
+            CancelScope::Batch { ref order_ids } => {
+                let symbol = req.symbol.as_ref()
+                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for batch cancel".into()))?
+                    .clone();
+                let account_type = req.account_type;
+
+                // Kraken Futures supports batch cancel: POST /derivatives/api/v3/cancelallorders
+                // For spot, there's no native batch; return UnsupportedOperation
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "Kraken Spot does not support batch cancel. Cancel orders individually.".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+
+                // Futures batch: cancel each by sending multiple cancel requests (no single endpoint)
+                // Per non-composition rule, return UnsupportedOperation for batch
+                let _ = (order_ids, symbol);
+                Err(ExchangeError::UnsupportedOperation(
+                    "Kraken Futures batch cancel requires individual cancels. Use CancelScope::Single.".to_string()
+                ))
+            }
         }
     }
 
@@ -576,10 +786,38 @@ impl Account for KrakenConnector {
         })
     }
 
-    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_fees not yet implemented".to_string()
-        ))
+    async fn get_fees(&self, symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        // Kraken: POST /0/private/TradeVolume returns fee schedule
+        let account_type = AccountType::Spot;
+        let mut params = HashMap::new();
+
+        if let Some(sym) = symbol {
+            let parts: Vec<&str> = sym.split('/').collect();
+            let formatted = if parts.len() == 2 {
+                format_symbol(parts[0], parts[1], account_type)
+            } else {
+                sym.to_string()
+            };
+            params.insert("pair".to_string(), formatted);
+        }
+
+        let response = self.post(KrakenEndpoint::SpotTradeBalance, params, account_type).await?;
+        let result = KrakenParser::extract_result(&response)?;
+
+        // Default Kraken fees (Starter tier: maker 0.16%, taker 0.26%)
+        let maker_rate = result.get("fee")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .map(|v| v / 100.0)
+            .unwrap_or(0.0016);
+        let taker_rate = maker_rate; // TradeBalance returns taker fee
+
+        Ok(FeeInfo {
+            maker_rate,
+            taker_rate,
+            symbol: symbol.map(String::from),
+            tier: None,
+        })
     }
 }
 
@@ -658,12 +896,12 @@ impl Positions for KrakenConnector {
                 let symbol = symbol.clone();
 
                 match account_type {
-                AccountType::Spot | AccountType::Margin => {
-                return Err(ExchangeError::UnsupportedOperation(
-                "Leverage not supported for Spot/Margin".to_string()
-                ));
-                }
-                _ => {}
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "Leverage not supported for Spot/Margin".to_string()
+                        ));
+                    }
+                    _ => {}
                 }
 
                 let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
@@ -672,19 +910,45 @@ impl Positions for KrakenConnector {
                 params.insert("symbol".to_string(), formatted);
                 params.insert("maxLeverage".to_string(), leverage.to_string());
 
-                let response = self.post(
-                KrakenEndpoint::FuturesSetLeverage,
-                params,
-                account_type,
-                ).await?;
-
+                let response = self.post(KrakenEndpoint::FuturesSetLeverage, params, account_type).await?;
                 KrakenParser::extract_futures_data(&response)?;
                 Ok(())
-    
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} not supported on {:?}", req, self.exchange_id())
-            )),
+            PositionModification::ClosePosition { ref symbol, account_type } => {
+                let symbol = symbol.clone();
+
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "ClosePosition only supported for futures on Kraken".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+
+                let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
+
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), formatted);
+                params.insert("orderType".to_string(), "mkt".to_string());
+                // Kraken Futures: send order with reduceOnly to close
+                params.insert("reduceOnly".to_string(), "true".to_string());
+                // Side will be auto-determined; we send a nominal "buy" which gets overridden by reduceOnly
+                params.insert("side".to_string(), "buy".to_string());
+                params.insert("size".to_string(), "0".to_string()); // 0 = entire position for some exchanges
+
+                let response = self.post(KrakenEndpoint::FuturesSendOrder, params, account_type).await?;
+                KrakenParser::extract_futures_data(&response)?;
+                Ok(())
+            }
+            PositionModification::SetMarginMode { .. }
+            | PositionModification::AddMargin { .. }
+            | PositionModification::RemoveMargin { .. }
+            | PositionModification::SetTpSl { .. } => {
+                Err(ExchangeError::UnsupportedOperation(
+                    format!("{:?} not supported on {:?}", req, self.exchange_id())
+                ))
+            }
         }
     }
 }

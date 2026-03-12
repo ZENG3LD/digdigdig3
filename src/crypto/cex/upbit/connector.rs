@@ -23,16 +23,16 @@ use crate::core::{
     HttpClient, Credentials,
     ExchangeId, AccountType, Symbol,
     ExchangeError, ExchangeResult,
-    Price, Quantity, Kline, Ticker, OrderBook,
-    Order, OrderSide, OrderType,Balance, AccountInfo,
+    Price, Kline, Ticker, OrderBook,
+    Order, OrderSide, OrderType, Balance, AccountInfo,
     OrderRequest, CancelRequest, CancelScope,
-    BalanceQuery, PositionQuery, PositionModification,
+    BalanceQuery,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
+    CancelAllResponse,
+    ExchangeIdentity, MarketData, Trading, Account,
+    CancelAll,
 };
 use crate::core::types::SymbolInfo;
-use crate::core::traits::{
-    ExchangeIdentity, MarketData, Trading, Account,
-};
 use crate::core::types::ConnectorStats;
 use crate::core::utils::GroupRateLimiter;
 
@@ -499,12 +499,30 @@ impl Trading for UpbitConnector {
 
     async fn get_order_history(
         &self,
-        _filter: OrderHistoryFilter,
-        _account_type: AccountType,
+        filter: OrderHistoryFilter,
+        account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_order_history not yet implemented".to_string()
-        ))
+        // GET /v1/orders with state=done (filled) or state=cancel
+        let mut params = HashMap::new();
+
+        // Default to "done" (filled orders) if no status specified
+        params.insert("state".to_string(), "done".to_string());
+
+        if let Some(ref sym) = filter.symbol {
+            let upbit_symbol = if let Some(raw) = sym.raw() {
+                raw.to_string()
+            } else {
+                format_symbol(&sym.base, &sym.quote, account_type)
+            };
+            params.insert("market".to_string(), upbit_symbol);
+        }
+
+        if let Some(lim) = filter.limit {
+            params.insert("limit".to_string(), lim.min(100).to_string());
+        }
+
+        let response = self.get(UpbitEndpoint::ListOrders, params, account_type).await?;
+        UpbitParser::parse_orders(&response)
     }
 async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         match req.scope {
@@ -607,8 +625,57 @@ impl Account for UpbitConnector {
     }
 
     async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        // Upbit does not expose a fee endpoint via API
         Err(ExchangeError::UnsupportedOperation(
-            "get_fees not yet implemented".to_string()
+            "Upbit does not provide a fee query API endpoint".to_string()
         ))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CANCEL ALL (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl CancelAll for UpbitConnector {
+    async fn cancel_all_orders(
+        &self,
+        scope: CancelScope,
+        account_type: AccountType,
+    ) -> ExchangeResult<CancelAllResponse> {
+        // DELETE /v1/orders — batch cancel by market or side
+        let mut params = HashMap::new();
+
+        match &scope {
+            CancelScope::All { symbol } => {
+                if let Some(sym) = symbol {
+                    let upbit_symbol = if let Some(raw) = sym.raw() {
+                        raw.to_string()
+                    } else {
+                        format_symbol(&sym.base, &sym.quote, account_type)
+                    };
+                    params.insert("market".to_string(), upbit_symbol);
+                }
+            }
+            CancelScope::BySymbol { symbol } => {
+                let upbit_symbol = if let Some(raw) = symbol.raw() {
+                    raw.to_string()
+                } else {
+                    format_symbol(&symbol.base, &symbol.quote, account_type)
+                };
+                params.insert("market".to_string(), upbit_symbol);
+            }
+            _ => return Err(ExchangeError::InvalidRequest(
+                "cancel_all_orders requires CancelScope::All or BySymbol".to_string()
+            )),
+        }
+
+        let _response = self.delete(UpbitEndpoint::BatchCancelOrders, params, account_type).await?;
+
+        Ok(CancelAllResponse {
+            cancelled_count: 0, // Upbit doesn't return count
+            failed_count: 0,
+            details: vec![],
+        })
     }
 }

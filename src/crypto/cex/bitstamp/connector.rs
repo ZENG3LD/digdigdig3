@@ -22,16 +22,16 @@ use crate::core::{
     HttpClient, Credentials,
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
-    Price, Quantity, Kline, Ticker, OrderBook,
-    Order, OrderSide, OrderType,Balance, AccountInfo, Asset,
+    Price, Kline, Ticker, OrderBook,
+    Order, OrderSide, OrderType, Balance, AccountInfo,
     OrderRequest, CancelRequest, CancelScope,
-    BalanceQuery, PositionQuery, PositionModification,
+    BalanceQuery,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
+    CancelAllResponse,
+    ExchangeIdentity, MarketData, Trading, Account,
+    CancelAll,
 };
 use crate::core::types::SymbolInfo;
-use crate::core::traits::{
-    ExchangeIdentity, MarketData, Trading, Account,
-};
 use crate::core::types::ConnectorStats;
 use crate::core::utils::SimpleRateLimiter;
 
@@ -418,12 +418,20 @@ impl Trading for BitstampConnector {
 
     async fn get_order_history(
         &self,
-        _filter: OrderHistoryFilter,
+        filter: OrderHistoryFilter,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_order_history not yet implemented".to_string()
-        ))
+        // POST /api/v2/user_transactions/ returns trade executions
+        let mut params = HashMap::new();
+        params.insert("sort".to_string(), "desc".to_string());
+
+        if let Some(lim) = filter.limit {
+            params.insert("limit".to_string(), lim.min(1000).to_string());
+        }
+
+        // Bitstamp user_transactions supports offset but not a direct date filter in v2
+        let response = self.post(BitstampEndpoint::UserTransactions, None, params).await?;
+        BitstampParser::parse_user_transactions(&response)
     }
 async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         match req.scope {
@@ -522,10 +530,33 @@ impl Account for BitstampConnector {
         })
     }
 
-    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_fees not yet implemented".to_string()
-        ))
+    async fn get_fees(&self, symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        // POST /api/v2/fees/trading/ — returns per-pair fee info
+        let response = self.post(BitstampEndpoint::TradingFees, None, HashMap::new()).await?;
+        BitstampParser::parse_fee_rate(&response, symbol)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CANCEL ALL (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl CancelAll for BitstampConnector {
+    async fn cancel_all_orders(
+        &self,
+        _scope: CancelScope,
+        _account_type: AccountType,
+    ) -> ExchangeResult<CancelAllResponse> {
+        // Bitstamp only supports cancel-all globally (no per-symbol cancel-all via API)
+        let response = self.post(BitstampEndpoint::CancelAllOrders, None, HashMap::new()).await?;
+        BitstampParser::check_error(&response)?;
+
+        Ok(CancelAllResponse {
+            cancelled_count: 0, // Bitstamp returns true/false, not count
+            failed_count: 0,
+            details: vec![],
+        })
     }
 }
 

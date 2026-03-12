@@ -32,7 +32,8 @@ use crate::core::{
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account,
 };
-use crate::core::types::ConnectorStats;
+use crate::core::{CancelAll, BatchOrders};
+use crate::core::types::{ConnectorStats, CancelAllResponse, OrderResult};
 use crate::core::utils::WeightRateLimiter;
 
 use super::endpoints::{MexcUrls, MexcEndpoint, format_symbol, map_kline_interval};
@@ -99,14 +100,13 @@ impl MexcConnector {
     /// Wait for rate limit if needed
     async fn rate_limit_wait(&self) {
         loop {
-            // Scope the lock to ensure it's dropped before await
             let wait_time = {
                 let mut limiter = self.rate_limiter.lock().expect("Mutex poisoned");
                 if limiter.try_acquire(1) {
-                    return; // Successfully acquired, exit early
+                    return;
                 }
                 limiter.time_until_ready(1)
-            }; // Lock is dropped here
+            };
 
             if wait_time > Duration::ZERO {
                 tokio::time::sleep(wait_time).await;
@@ -136,10 +136,8 @@ impl MexcConnector {
         endpoint: MexcEndpoint,
         params: HashMap<String, String>,
     ) -> ExchangeResult<Value> {
-        // Wait for rate limit (weight 1 for most GET requests)
         self.rate_limit_wait().await;
 
-        // Route to correct base URL based on endpoint type
         let base_url = if endpoint.is_futures() {
             MexcUrls::futures_base_url()
         } else {
@@ -147,15 +145,12 @@ impl MexcConnector {
         };
         let path = endpoint.path();
 
-        // Build query string and URL
         let (url, headers) = if endpoint.is_private() {
-            // Authenticated request
             let auth = self.auth.as_ref()
                 .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
 
             let (headers, signed_params) = auth.sign_request(params);
 
-            // Build query string from signed params
             let query_parts: Vec<String> = signed_params.iter()
                 .map(|(k, v)| format!("{}={}", k, v))
                 .collect();
@@ -164,7 +159,6 @@ impl MexcConnector {
             let url = format!("{}{}?{}", base_url, path, query_string);
             (url, headers)
         } else {
-            // Public request
             let query = if params.is_empty() {
                 String::new()
             } else {
@@ -194,19 +188,16 @@ impl MexcConnector {
         endpoint: MexcEndpoint,
         params: HashMap<String, String>,
     ) -> ExchangeResult<Value> {
-        // Wait for rate limit (weight 1 for most POST requests)
         self.rate_limit_wait().await;
 
         let base_url = MexcUrls::base_url();
         let path = endpoint.path();
 
-        // Auth required for POST
         let auth = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
 
         let (headers, signed_params) = auth.sign_request(params);
 
-        // Build query string from signed params
         let query_parts: Vec<String> = signed_params.iter()
             .map(|(k, v)| format!("{}={}", k, v))
             .collect();
@@ -214,7 +205,6 @@ impl MexcConnector {
 
         let url = format!("{}{}?{}", base_url, path, query_string);
 
-        // POST with empty body (all params in query string)
         let (response, resp_headers) = self.http.post_with_response_headers(&url, &json!({}), &headers).await?;
         self.update_weight_from_headers(&resp_headers);
         MexcParser::check_error(&response)?;
@@ -227,19 +217,16 @@ impl MexcConnector {
         endpoint: MexcEndpoint,
         params: HashMap<String, String>,
     ) -> ExchangeResult<Value> {
-        // Wait for rate limit (weight 1 for most DELETE requests)
         self.rate_limit_wait().await;
 
         let base_url = MexcUrls::base_url();
         let path = endpoint.path();
 
-        // Auth required for DELETE
         let auth = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
 
         let (headers, signed_params) = auth.sign_request(params);
 
-        // Build query string from signed params
         let query_parts: Vec<String> = signed_params.iter()
             .map(|(k, v)| format!("{}={}", k, v))
             .collect();
@@ -347,7 +334,6 @@ impl MarketData for MexcConnector {
                 Ok(price)
             },
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
-                // Get ticker which contains price info
                 let ticker = self.get_ticker(symbol, account_type).await?;
                 Ok(ticker.last_price)
             }
@@ -373,7 +359,6 @@ impl MarketData for MexcConnector {
                 MexcParser::parse_orderbook(&response)
             },
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
-                // Futures: symbol in path
                 let base_url = MexcUrls::futures_base_url();
                 let formatted_symbol = format_symbol(&symbol, account_type);
                 let path = format!("/api/v1/contract/depth/{}", formatted_symbol);
@@ -383,7 +368,6 @@ impl MarketData for MexcConnector {
                 let response = self.http.get(&url, &HashMap::new()).await?;
                 MexcParser::check_error(&response)?;
 
-                // Futures orderbook is in data field
                 let data = response.get("data")
                     .ok_or_else(|| ExchangeError::Parse("Missing data field in futures orderbook".into()))?;
                 MexcParser::parse_orderbook_futures(data)
@@ -409,8 +393,6 @@ impl MarketData for MexcConnector {
                     params.insert("limit".to_string(), l.min(1000).to_string());
                 }
 
-                // MEXC requires BOTH startTime + endTime together.
-                // endTime alone is silently ignored.
                 if let Some(et) = end_time {
                     let interval_ms = interval_to_ms(interval);
                     let count = limit.unwrap_or(1000) as i64;
@@ -423,12 +405,10 @@ impl MarketData for MexcConnector {
                 MexcParser::parse_klines(&response)
             },
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
-                // Futures: symbol in path, different interval format
                 let base_url = MexcUrls::futures_base_url();
                 let formatted_symbol = format_symbol(&symbol, account_type);
                 let path = format!("/api/v1/contract/kline/{}", formatted_symbol);
 
-                // Map interval to MEXC futures format
                 let futures_interval = match interval {
                     "1m" => "Min1",
                     "5m" => "Min5",
@@ -440,7 +420,7 @@ impl MarketData for MexcConnector {
                     "1d" => "Day1",
                     "1w" => "Week1",
                     "1M" => "Month1",
-                    _ => "Min60", // Default to 1 hour
+                    _ => "Min60",
                 };
 
                 let mut params = HashMap::new();
@@ -461,7 +441,6 @@ impl MarketData for MexcConnector {
                 let response = self.http.get(&url, &HashMap::new()).await?;
                 MexcParser::check_error(&response)?;
 
-                // Futures klines are in data field
                 let klines_data = response.get("data")
                     .ok_or_else(|| ExchangeError::Parse("Missing data field in futures klines".into()))?;
                 MexcParser::parse_klines_futures(klines_data)
@@ -483,12 +462,10 @@ impl MarketData for MexcConnector {
                 MexcParser::parse_ticker(&response)
             },
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
-                // Futures ticker returns all symbols, filter for our symbol
                 let response = self.get(MexcEndpoint::FuturesTicker, HashMap::new()).await?;
 
                 let formatted_symbol = format_symbol(&symbol, account_type);
 
-                // Response is in data.data array
                 let data_array = response.get("data")
                     .or_else(|| response.as_array().map(|_| &response))
                     .ok_or_else(|| ExchangeError::Parse("Invalid futures ticker response".into()))?;
@@ -528,103 +505,201 @@ impl Trading for MexcConnector {
         let side = req.side;
         let quantity = req.quantity;
         let account_type = req.account_type;
+        let client_order_id = format!("cc_{}", crate::core::timestamp_millis());
+
+        let side_str = match side {
+            OrderSide::Buy => "BUY",
+            OrderSide::Sell => "SELL",
+        };
 
         match req.order_type {
             OrderType::Market => {
-                let client_order_id = format!("cc_{}", crate::core::timestamp_millis());
-                
-                        let mut params = HashMap::new();
-                        params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
-                        params.insert("side".to_string(), match side {
-                            OrderSide::Buy => "BUY",
-                            OrderSide::Sell => "SELL",
-                        }.to_string());
-                        params.insert("type".to_string(), "MARKET".to_string());
-                        params.insert("quantity".to_string(), quantity.to_string());
-                        params.insert("newClientOrderId".to_string(), client_order_id.clone());
-                
-                        let response = self.post(MexcEndpoint::PlaceOrder, params).await?;
-                
-                        // Extract order ID from response
-                        let order_id = response["orderId"].as_str()
-                            .ok_or_else(|| ExchangeError::Parse("Missing orderId".into()))?
-                            .to_string();
-                
-                        // Return minimal order info (can fetch full info with get_order)
-                        Ok(PlaceOrderResponse::Simple(Order {
-                            id: order_id,
-                            client_order_id: Some(client_order_id),
-                            symbol: symbol.to_string(),
-                            side,
-                            order_type: OrderType::Market,
-                            status: crate::core::OrderStatus::New,
-                            price: None,
-                            stop_price: None,
-                            quantity,
-                            filled_quantity: 0.0,
-                            average_price: None,
-                            commission: None,
-                            commission_asset: None,
-                            created_at: crate::core::timestamp_millis() as i64,
-                            updated_at: None,
-                            time_in_force: crate::core::TimeInForce::Gtc,
-                        }))
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
+                params.insert("side".to_string(), side_str.to_string());
+                params.insert("type".to_string(), "MARKET".to_string());
+                params.insert("quantity".to_string(), quantity.to_string());
+                params.insert("newClientOrderId".to_string(), client_order_id.clone());
+
+                let response = self.post(MexcEndpoint::PlaceOrder, params).await?;
+
+                let order_id = response["orderId"].as_str()
+                    .ok_or_else(|| ExchangeError::Parse("Missing orderId".into()))?
+                    .to_string();
+
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: Some(client_order_id),
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::Market,
+                    status: crate::core::OrderStatus::New,
+                    price: None,
+                    stop_price: None,
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: crate::core::timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                }))
             }
+
             OrderType::Limit { price } => {
-                let client_order_id = format!("cc_{}", crate::core::timestamp_millis());
-                
-                        let mut params = HashMap::new();
-                        params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
-                        params.insert("side".to_string(), match side {
-                            OrderSide::Buy => "BUY",
-                            OrderSide::Sell => "SELL",
-                        }.to_string());
-                        params.insert("type".to_string(), "LIMIT".to_string());
-                        params.insert("quantity".to_string(), quantity.to_string());
-                        params.insert("price".to_string(), price.to_string());
-                        params.insert("newClientOrderId".to_string(), client_order_id.clone());
-                
-                        let response = self.post(MexcEndpoint::PlaceOrder, params).await?;
-                
-                        let order_id = response["orderId"].as_str()
-                            .ok_or_else(|| ExchangeError::Parse("Missing orderId".into()))?
-                            .to_string();
-                
-                        Ok(PlaceOrderResponse::Simple(Order {
-                            id: order_id,
-                            client_order_id: Some(client_order_id),
-                            symbol: symbol.to_string(),
-                            side,
-                            order_type: OrderType::Limit { price: 0.0 },
-                            status: crate::core::OrderStatus::New,
-                            price: Some(price),
-                            stop_price: None,
-                            quantity,
-                            filled_quantity: 0.0,
-                            average_price: None,
-                            commission: None,
-                            commission_asset: None,
-                            created_at: crate::core::timestamp_millis() as i64,
-                            updated_at: None,
-                            time_in_force: crate::core::TimeInForce::Gtc,
-                        }))
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
+                params.insert("side".to_string(), side_str.to_string());
+                params.insert("type".to_string(), "LIMIT".to_string());
+                params.insert("quantity".to_string(), quantity.to_string());
+                params.insert("price".to_string(), price.to_string());
+                params.insert("newClientOrderId".to_string(), client_order_id.clone());
+
+                let response = self.post(MexcEndpoint::PlaceOrder, params).await?;
+
+                let order_id = response["orderId"].as_str()
+                    .ok_or_else(|| ExchangeError::Parse("Missing orderId".into()))?
+                    .to_string();
+
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: Some(client_order_id),
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::Limit { price: 0.0 },
+                    status: crate::core::OrderStatus::New,
+                    price: Some(price),
+                    stop_price: None,
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: crate::core::timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                }))
             }
+
+            OrderType::PostOnly { price } => {
+                // MEXC: LIMIT_MAKER (post-only limit order)
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
+                params.insert("side".to_string(), side_str.to_string());
+                params.insert("type".to_string(), "LIMIT_MAKER".to_string());
+                params.insert("quantity".to_string(), quantity.to_string());
+                params.insert("price".to_string(), price.to_string());
+                params.insert("newClientOrderId".to_string(), client_order_id.clone());
+
+                let response = self.post(MexcEndpoint::PlaceOrder, params).await?;
+
+                let order_id = response["orderId"].as_str()
+                    .ok_or_else(|| ExchangeError::Parse("Missing orderId".into()))?
+                    .to_string();
+
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: Some(client_order_id),
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::PostOnly { price },
+                    status: crate::core::OrderStatus::New,
+                    price: Some(price),
+                    stop_price: None,
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: crate::core::timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                }))
+            }
+
+            OrderType::Ioc { price } => {
+                // MEXC: LIMIT with timeInForce=IOC
+                let price_val = price.unwrap_or(0.0);
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
+                params.insert("side".to_string(), side_str.to_string());
+                params.insert("type".to_string(), "LIMIT".to_string());
+                params.insert("timeInForce".to_string(), "IOC".to_string());
+                params.insert("quantity".to_string(), quantity.to_string());
+                params.insert("price".to_string(), price_val.to_string());
+                params.insert("newClientOrderId".to_string(), client_order_id.clone());
+
+                let response = self.post(MexcEndpoint::PlaceOrder, params).await?;
+
+                let order_id = response["orderId"].as_str()
+                    .ok_or_else(|| ExchangeError::Parse("Missing orderId".into()))?
+                    .to_string();
+
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: Some(client_order_id),
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::Ioc { price },
+                    status: crate::core::OrderStatus::New,
+                    price,
+                    stop_price: None,
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: crate::core::timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: crate::core::TimeInForce::Ioc,
+                }))
+            }
+
+            OrderType::Fok { price } => {
+                // MEXC: LIMIT with timeInForce=FOK
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
+                params.insert("side".to_string(), side_str.to_string());
+                params.insert("type".to_string(), "LIMIT".to_string());
+                params.insert("timeInForce".to_string(), "FOK".to_string());
+                params.insert("quantity".to_string(), quantity.to_string());
+                params.insert("price".to_string(), price.to_string());
+                params.insert("newClientOrderId".to_string(), client_order_id.clone());
+
+                let response = self.post(MexcEndpoint::PlaceOrder, params).await?;
+
+                let order_id = response["orderId"].as_str()
+                    .ok_or_else(|| ExchangeError::Parse("Missing orderId".into()))?
+                    .to_string();
+
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: Some(client_order_id),
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::Fok { price },
+                    status: crate::core::OrderStatus::New,
+                    price: Some(price),
+                    stop_price: None,
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: crate::core::timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: crate::core::TimeInForce::Fok,
+                }))
+            }
+
             _ => Err(ExchangeError::UnsupportedOperation(
                 format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
             )),
         }
     }
 
-    async fn get_order_history(
-        &self,
-        _filter: OrderHistoryFilter,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_order_history not yet implemented".to_string()
-        ))
-    }
-async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+    async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         match req.scope {
             CancelScope::Single { ref order_id } => {
                 let symbol = req.symbol.as_ref()
@@ -632,18 +707,44 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
                     .clone();
                 let account_type = req.account_type;
 
-            let mut params = HashMap::new();
-            params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
-            params.insert("orderId".to_string(), order_id.to_string());
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
+                params.insert("orderId".to_string(), order_id.to_string());
 
-            let response = self.delete(MexcEndpoint::CancelOrder, params).await?;
-            MexcParser::parse_order(&response)
-    
+                let response = self.delete(MexcEndpoint::CancelOrder, params).await?;
+                MexcParser::parse_order(&response)
             }
+
             _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
+                format!("{:?} cancel scope not supported — use CancelAll trait", req.scope)
             )),
         }
+    }
+
+    async fn get_order_history(
+        &self,
+        filter: OrderHistoryFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        // MEXC: GET /api/v3/allOrders — requires symbol
+        let symbol = filter.symbol
+            .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for order history on MEXC".to_string()))?;
+
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
+
+        if let Some(start) = filter.start_time {
+            params.insert("startTime".to_string(), start.to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("endTime".to_string(), end.to_string());
+        }
+        if let Some(limit) = filter.limit {
+            params.insert("limit".to_string(), limit.min(1000).to_string());
+        }
+
+        let response = self.get(MexcEndpoint::AllOrders, params).await?;
+        MexcParser::parse_orders(&response)
     }
 
     async fn get_order(
@@ -652,7 +753,6 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         order_id: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Order> {
-        // Parse symbol string into Symbol struct
         let symbol_parts: Vec<&str> = symbol.split('/').collect();
         let symbol = if symbol_parts.len() == 2 {
             crate::core::Symbol::new(symbol_parts[0], symbol_parts[1])
@@ -666,7 +766,6 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
 
         let response = self.get(MexcEndpoint::QueryOrder, params).await?;
         MexcParser::parse_order(&response)
-    
     }
 
     async fn get_open_orders(
@@ -674,9 +773,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         symbol: Option<&str>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        // Convert Option<&str> to Option<Symbol>
-        let symbol_str = symbol;
-        let symbol: Option<crate::core::Symbol> = symbol_str.map(|s| {
+        let symbol: Option<crate::core::Symbol> = symbol.map(|s| {
             let parts: Vec<&str> = s.split('/').collect();
             if parts.len() == 2 {
                 crate::core::Symbol::new(parts[0], parts[1])
@@ -693,7 +790,6 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
 
         let response = self.get(MexcEndpoint::OpenOrders, params).await?;
         MexcParser::parse_orders(&response)
-    
     }
 }
 
@@ -709,16 +805,13 @@ impl Account for MexcConnector {
 
         let response = self.get(MexcEndpoint::Account, HashMap::new()).await?;
         MexcParser::parse_balance(&response)
-    
     }
 
     async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
         let response = self.get(MexcEndpoint::Account, HashMap::new()).await?;
 
-        // Get balances
         let balances = MexcParser::parse_balance(&response)?;
 
-        // Parse account info from response
         let can_trade = response.get("canTrade")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
@@ -733,13 +826,13 @@ impl Account for MexcConnector {
 
         let maker_commission = response.get("makerCommission")
             .and_then(|v| v.as_i64())
-            .map(|c| c as f64 / 10000.0) // Convert from basis points
-            .unwrap_or(0.002); // Default 0.2%
+            .map(|c| c as f64 / 10000.0)
+            .unwrap_or(0.002);
 
         let taker_commission = response.get("takerCommission")
             .and_then(|v| v.as_i64())
             .map(|c| c as f64 / 10000.0)
-            .unwrap_or(0.002); // Default 0.2%
+            .unwrap_or(0.002);
 
         Ok(AccountInfo {
             account_type,
@@ -752,10 +845,213 @@ impl Account for MexcConnector {
         })
     }
 
-    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+    async fn get_fees(&self, symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        // MEXC: GET /api/v3/tradeFee?symbol=BTCUSDT
+        let mut params = HashMap::new();
+
+        if let Some(sym) = symbol {
+            let symbol_parts: Vec<&str> = sym.split('/').collect();
+            let mexc_symbol = if symbol_parts.len() == 2 {
+                let s = crate::core::Symbol::new(symbol_parts[0], symbol_parts[1]);
+                format_symbol(&s, AccountType::Spot)
+            } else {
+                sym.to_uppercase().replace('/', "")
+            };
+            params.insert("symbol".to_string(), mexc_symbol);
+        }
+
+        let response = self.get(MexcEndpoint::TradeFee, params).await?;
+
+        // Response: [{"symbol": "BTCUSDT", "makerCommission": "0.002", "takerCommission": "0.002"}]
+        let fee_data = if let Some(arr) = response.as_array() {
+            arr.first().cloned()
+        } else {
+            Some(response.clone())
+        };
+
+        let fee_data = fee_data
+            .ok_or_else(|| ExchangeError::Parse("No fee data".to_string()))?;
+
+        let maker_rate = fee_data.get("makerCommission")
+            .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok())
+                .or_else(|| v.as_f64()))
+            .unwrap_or(0.002);
+
+        let taker_rate = fee_data.get("takerCommission")
+            .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok())
+                .or_else(|| v.as_f64()))
+            .unwrap_or(0.002);
+
+        Ok(FeeInfo {
+            maker_rate,
+            taker_rate,
+            symbol: symbol.map(|s| s.to_string()),
+            tier: None,
+        })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CANCEL ALL (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl CancelAll for MexcConnector {
+    async fn cancel_all_orders(
+        &self,
+        scope: CancelScope,
+        account_type: AccountType,
+    ) -> ExchangeResult<CancelAllResponse> {
+        match scope {
+            CancelScope::All { symbol: Some(sym) } | CancelScope::BySymbol { symbol: sym } => {
+                // MEXC requires symbol for cancel all
+                let formatted_symbol = format_symbol(&sym, account_type);
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), formatted_symbol);
+
+                let response = self.delete(MexcEndpoint::CancelAllOrders, params).await?;
+
+                // Response is array of cancelled orders
+                let cancelled = if let Some(arr) = response.as_array() {
+                    arr.len() as u32
+                } else {
+                    0
+                };
+
+                Ok(CancelAllResponse {
+                    cancelled_count: cancelled,
+                    failed_count: 0,
+                    details: vec![],
+                })
+            }
+
+            CancelScope::All { symbol: None } => {
+                Err(ExchangeError::InvalidRequest(
+                    "MEXC requires a symbol to cancel all orders — use BySymbol scope".to_string()
+                ))
+            }
+
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} not supported in cancel_all_orders", scope)
+            )),
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BATCH ORDERS (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl BatchOrders for MexcConnector {
+    async fn place_orders_batch(
+        &self,
+        orders: Vec<OrderRequest>,
+    ) -> ExchangeResult<Vec<OrderResult>> {
+        // MEXC: POST /api/v3/batchOrders — max 20 orders
+        // Build batch order array
+        let batch_orders: Vec<Value> = orders.iter().map(|req| {
+            let side_str = match req.side {
+                OrderSide::Buy => "BUY",
+                OrderSide::Sell => "SELL",
+            };
+            let (order_type, price) = match &req.order_type {
+                OrderType::Market => ("MARKET".to_string(), None),
+                OrderType::Limit { price } => ("LIMIT".to_string(), Some(*price)),
+                OrderType::PostOnly { price } => ("LIMIT_MAKER".to_string(), Some(*price)),
+                _ => ("LIMIT".to_string(), None),
+            };
+
+            let mut order_obj = json!({
+                "symbol": format_symbol(&req.symbol, req.account_type),
+                "side": side_str,
+                "type": order_type,
+                "quantity": req.quantity.to_string(),
+            });
+
+            if let Some(p) = price {
+                order_obj["price"] = json!(p.to_string());
+            }
+
+            order_obj
+        }).collect();
+
+        // MEXC batch orders use JSON body
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+
+        let params = HashMap::new();
+        let (headers, _) = auth.sign_request(params);
+
+        let base_url = MexcUrls::base_url();
+        let path = MexcEndpoint::BatchOrders.path();
+        let url = format!("{}{}", base_url, path);
+
+        self.rate_limit_wait().await;
+        let body = json!({ "batchOrders": batch_orders });
+        let (response, _) = self.http.post_with_response_headers(&url, &body, &headers).await?;
+        MexcParser::check_error(&response)?;
+
+        // Parse response — array of order results
+        let results = if let Some(arr) = response.as_array() {
+            arr.iter().map(|item| {
+                let success = item.get("orderId").is_some();
+                let order_id = item.get("orderId")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                OrderResult {
+                    order: order_id.map(|id| Order {
+                        id,
+                        client_order_id: None,
+                        symbol: String::new(),
+                        side: OrderSide::Buy,
+                        order_type: OrderType::Market,
+                        status: crate::core::OrderStatus::New,
+                        price: None,
+                        stop_price: None,
+                        quantity: 0.0,
+                        filled_quantity: 0.0,
+                        average_price: None,
+                        commission: None,
+                        commission_asset: None,
+                        created_at: 0,
+                        updated_at: None,
+                        time_in_force: crate::core::TimeInForce::Gtc,
+                    }),
+                    client_order_id: None,
+                    success,
+                    error: if success { None } else {
+                        item.get("msg").and_then(|v| v.as_str()).map(|s| s.to_string())
+                    },
+                    error_code: None,
+                }
+            }).collect()
+        } else {
+            vec![]
+        };
+
+        Ok(results)
+    }
+
+    async fn cancel_orders_batch(
+        &self,
+        order_ids: Vec<String>,
+        symbol: Option<&str>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<OrderResult>> {
+        // MEXC doesn't have a true batch cancel — cancel one by one
         Err(ExchangeError::UnsupportedOperation(
-            "get_fees not yet implemented".to_string()
+            "MEXC does not support native batch cancel — use CancelAll for symbol-level cancel".to_string()
         ))
+    }
+
+    fn max_batch_place_size(&self) -> usize {
+        20
+    }
+
+    fn max_batch_cancel_size(&self) -> usize {
+        0 // Not supported
     }
 }
 

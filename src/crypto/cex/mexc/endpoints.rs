@@ -70,6 +70,9 @@ pub enum MexcEndpoint {
     OpenOrders,       // GET /api/v3/openOrders
     AllOrders,        // GET /api/v3/allOrders
 
+    // === BATCH ORDERS ===
+    BatchOrders,          // POST /api/v3/batchOrders
+
     // === FUTURES MARKET DATA ===
     FuturesPing,          // GET /api/v1/contract/ping
     FuturesTicker,        // GET /api/v1/contract/ticker
@@ -108,6 +111,7 @@ impl MexcEndpoint {
             Self::QueryOrder => "/api/v3/order",
             Self::OpenOrders => "/api/v3/openOrders",
             Self::AllOrders => "/api/v3/allOrders",
+            Self::BatchOrders => "/api/v3/batchOrders",
 
             // Futures Market Data
             Self::FuturesPing => "/api/v1/contract/ping",
@@ -124,7 +128,8 @@ impl MexcEndpoint {
         match self {
             // POST requests
             Self::PlaceOrder
-            | Self::TestOrder => "POST",
+            | Self::TestOrder
+            | Self::BatchOrders => "POST",
 
             // DELETE requests
             Self::CancelOrder

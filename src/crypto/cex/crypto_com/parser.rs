@@ -432,6 +432,35 @@ impl CryptoComParser {
     /// ```json
     /// {"code":0,"result":{"data":[{"symbol":"BTC_USDT","inst_type":"CCY_PAIR","display_name":"BTC/USDT","base_ccy":"BTC","quote_ccy":"USDT","quote_decimals":2,"quantity_decimals":4,"price_tick_size":"0.01","qty_tick_size":"0.0001","max_leverage":"50","tradable":true,"expiry_timestamp_ms":0,"put_call":"NONE","strike_price":"0","underlying_symbol":""},...]}}
     /// ```
+    /// Parse fee rate from private/get-fee-rate or private/get-instrument-fee-rate response
+    pub fn parse_fee_rate(response: &Value) -> ExchangeResult<crate::core::FeeInfo> {
+        Self::check_response(response)?;
+        let result = Self::extract_result(response)?;
+
+        // get-fee-rate: result.maker_rate, result.taker_rate (strings, already in decimal form e.g. "0.001")
+        // get-instrument-fee-rate: result.maker_rate, result.taker_rate per instrument
+        let maker = result.get("maker_rate")
+            .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok())
+                .or_else(|| v.as_f64()))
+            .unwrap_or(0.001); // 0.1% default maker
+
+        let taker = result.get("taker_rate")
+            .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok())
+                .or_else(|| v.as_f64()))
+            .unwrap_or(0.00075); // 0.075% default taker
+
+        let symbol = result.get("instrument_name")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        Ok(crate::core::FeeInfo {
+            maker_rate: maker,
+            taker_rate: taker,
+            symbol,
+            tier: None,
+        })
+    }
+
     pub fn parse_exchange_info(response: &Value) -> ExchangeResult<Vec<SymbolInfo>> {
         let result = response.get("result")
             .ok_or_else(|| ExchangeError::Parse("Missing 'result' field".to_string()))?;

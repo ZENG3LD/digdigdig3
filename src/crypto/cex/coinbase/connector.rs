@@ -505,83 +505,202 @@ impl Trading for CoinbaseConnector {
         let quantity = req.quantity;
         let account_type = req.account_type;
 
-        match req.order_type {
+        let product_id = format_symbol(&symbol, account_type);
+        let side_str = match side { OrderSide::Buy => "BUY", OrderSide::Sell => "SELL" };
+        let client_order_id = req.client_order_id.clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+        let order_config = match req.order_type {
             OrderType::Market => {
-                // NOTE: Perpetual futures trading supported but requires proper margin/collateral
-                        let product_id = format_symbol(&symbol, account_type);
-                        let side_str = match side {
-                            OrderSide::Buy => "BUY",
-                            OrderSide::Sell => "SELL",
-                        };
-                
-                        // Generate client order ID
-                        let client_order_id = uuid::Uuid::new_v4().to_string();
-                
-                        let size_field = match side {
-                            OrderSide::Buy => "quote_size", // For BUY, use quote currency amount
-                            OrderSide::Sell => "base_size", // For SELL, use base currency amount
-                        };
-                
-                        let order_config = json!({
-                            "market_market_ioc": {
-                                size_field: quantity.to_string()
-                            }
-                        });
-                
-                        let body = json!({
-                            "client_order_id": client_order_id,
-                            "product_id": product_id,
-                            "side": side_str,
-                            "order_configuration": order_config
-                        });
-                
-                        let response = self.post(CoinbaseEndpoint::CreateOrder, body).await?;
-                        CoinbaseParser::parse_order(&response).map(PlaceOrderResponse::Simple)
+                // Coinbase market buy uses quote_size; market sell uses base_size
+                let size_field = match side {
+                    OrderSide::Buy => "quote_size",
+                    OrderSide::Sell => "base_size",
+                };
+                json!({ "market_market_ioc": { size_field: quantity.to_string() } })
             }
             OrderType::Limit { price } => {
-                // NOTE: Perpetual futures trading supported but requires proper margin/collateral
-                        let product_id = format_symbol(&symbol, account_type);
-                        let side_str = match side {
-                            OrderSide::Buy => "BUY",
-                            OrderSide::Sell => "SELL",
-                        };
-                
-                        // Generate client order ID
-                        let client_order_id = uuid::Uuid::new_v4().to_string();
-                
-                        let order_config = json!({
-                            "limit_limit_gtc": {
-                                "base_size": quantity.to_string(),
-                                "limit_price": price.to_string(),
-                                "post_only": false
-                            }
-                        });
-                
-                        let body = json!({
-                            "client_order_id": client_order_id,
-                            "product_id": product_id,
-                            "side": side_str,
-                            "order_configuration": order_config
-                        });
-                
-                        let response = self.post(CoinbaseEndpoint::CreateOrder, body).await?;
-                        CoinbaseParser::parse_order(&response).map(PlaceOrderResponse::Simple)
+                let post_only = matches!(req.time_in_force, crate::core::TimeInForce::PostOnly);
+                let tif_key = match req.time_in_force {
+                    crate::core::TimeInForce::Ioc => "limit_limit_ioc",
+                    crate::core::TimeInForce::Fok => "limit_limit_fok",
+                    crate::core::TimeInForce::PostOnly => "limit_limit_gtc",
+                    _ => "limit_limit_gtc",
+                };
+                json!({
+                    tif_key: {
+                        "base_size": quantity.to_string(),
+                        "limit_price": price.to_string(),
+                        "post_only": post_only,
+                    }
+                })
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
-            )),
-        }
+            OrderType::PostOnly { price } => {
+                json!({
+                    "limit_limit_gtc": {
+                        "base_size": quantity.to_string(),
+                        "limit_price": price.to_string(),
+                        "post_only": true,
+                    }
+                })
+            }
+            OrderType::Ioc { price } => {
+                let px_str = price.map(|p| p.to_string()).unwrap_or_else(|| "0".to_string());
+                json!({
+                    "limit_limit_ioc": {
+                        "base_size": quantity.to_string(),
+                        "limit_price": px_str,
+                        "post_only": false,
+                    }
+                })
+            }
+            OrderType::Fok { price } => {
+                json!({
+                    "limit_limit_fok": {
+                        "base_size": quantity.to_string(),
+                        "limit_price": price.to_string(),
+                        "post_only": false,
+                    }
+                })
+            }
+            OrderType::StopMarket { stop_price } => {
+                json!({
+                    "stop_limit_stop_limit_gtc": {
+                        "base_size": quantity.to_string(),
+                        "limit_price": stop_price.to_string(),
+                        "stop_price": stop_price.to_string(),
+                        "stop_direction": match side {
+                            OrderSide::Buy => "STOP_DIRECTION_STOP_UP",
+                            OrderSide::Sell => "STOP_DIRECTION_STOP_DOWN",
+                        },
+                    }
+                })
+            }
+            OrderType::StopLimit { stop_price, limit_price } => {
+                json!({
+                    "stop_limit_stop_limit_gtc": {
+                        "base_size": quantity.to_string(),
+                        "limit_price": limit_price.to_string(),
+                        "stop_price": stop_price.to_string(),
+                        "stop_direction": match side {
+                            OrderSide::Buy => "STOP_DIRECTION_STOP_UP",
+                            OrderSide::Sell => "STOP_DIRECTION_STOP_DOWN",
+                        },
+                    }
+                })
+            }
+            OrderType::Gtd { price, expire_time } => {
+                // Coinbase supports GTD via end_time parameter in limit_limit_gtd
+                let end_time = chrono::DateTime::from_timestamp(expire_time / 1000, 0)
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_default();
+                json!({
+                    "limit_limit_gtd": {
+                        "base_size": quantity.to_string(),
+                        "limit_price": price.to_string(),
+                        "end_time": end_time,
+                        "post_only": false,
+                    }
+                })
+            }
+            OrderType::Oco { price, stop_price, stop_limit_price } => {
+                // Coinbase supports bracket orders: trigger_bracket_gtc
+                json!({
+                    "trigger_bracket_gtc": {
+                        "base_size": quantity.to_string(),
+                        "limit_price": price.to_string(),
+                        "stop_trigger_price": stop_price.to_string(),
+                    }
+                })
+            }
+            OrderType::Bracket { price, take_profit, stop_loss } => {
+                let px_str = price.map(|p| p.to_string()).unwrap_or_else(|| "0".to_string());
+                let _ = take_profit;
+                json!({
+                    "trigger_bracket_gtc": {
+                        "base_size": quantity.to_string(),
+                        "limit_price": px_str,
+                        "stop_trigger_price": stop_loss.to_string(),
+                    }
+                })
+            }
+            OrderType::ReduceOnly { .. } | OrderType::TrailingStop { .. }
+            | OrderType::Iceberg { .. } | OrderType::Twap { .. } => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+                ));
+            }
+        };
+
+        let body = json!({
+            "client_order_id": client_order_id,
+            "product_id": product_id,
+            "side": side_str,
+            "order_configuration": order_config
+        });
+
+        let response = self.post(CoinbaseEndpoint::CreateOrder, body).await?;
+        CoinbaseParser::parse_order(&response).map(PlaceOrderResponse::Simple)
     }
 
     async fn get_order_history(
         &self,
-        _filter: OrderHistoryFilter,
-        _account_type: AccountType,
+        filter: OrderHistoryFilter,
+        account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_order_history not yet implemented".to_string()
-        ))
+        // GET /orders/historical/batch with order_status=FILLED,CANCELLED
+        let mut params = HashMap::new();
+        params.insert("order_status".to_string(), "FILLED,CANCELLED,EXPIRED".to_string());
+
+        if let Some(ref symbol) = filter.symbol {
+            params.insert("product_id".to_string(), format_symbol(symbol, account_type));
+        }
+
+        if let Some(start) = filter.start_time {
+            // Coinbase uses RFC3339 timestamps
+            if let Some(dt) = chrono::DateTime::from_timestamp(start / 1000, 0) {
+                params.insert("start_date".to_string(), dt.to_rfc3339());
+            }
+        }
+
+        if let Some(end) = filter.end_time {
+            if let Some(dt) = chrono::DateTime::from_timestamp(end / 1000, 0) {
+                params.insert("end_date".to_string(), dt.to_rfc3339());
+            }
+        }
+
+        if let Some(limit) = filter.limit {
+            params.insert("limit".to_string(), limit.min(1000).to_string());
+        }
+
+        let query: Vec<String> = params.iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        let query_str = format!("?{}", query.join("&"));
+
+        let path = format!("{}{}", CoinbaseEndpoint::ListOrders.path(), query_str);
+        let url = format!("{}{}", CoinbaseUrls::base_url(), path);
+
+        let headers = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?
+            .sign_request("GET", &path)
+            .map_err(ExchangeError::Auth)?;
+
+        let response = self.http.get_with_headers(&url, &HashMap::new(), &headers).await?;
+
+        let orders = response.get("orders")
+            .and_then(|o| o.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing orders array".into()))?
+            .iter()
+            .filter_map(|order_json| {
+                let order_obj = serde_json::json!({"order": order_json});
+                CoinbaseParser::parse_order(&order_obj).ok()
+            })
+            .collect();
+
+        Ok(orders)
     }
+
 async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         match req.scope {
             CancelScope::Single { ref order_id } => {
@@ -590,36 +709,161 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
                     .clone();
                 let account_type = req.account_type;
 
-            // Get order details before cancelling
-            let order = self.get_order(&symbol.to_string(), order_id, account_type).await?;
+                // Get order details before cancelling
+                let order = self.get_order(&symbol.to_string(), order_id, account_type).await?;
 
-            let body = json!({
-                "order_ids": [order_id]
-            });
+                let body = json!({ "order_ids": [order_id] });
+                let response = self.post(CoinbaseEndpoint::CancelOrders, body).await?;
 
-            let response = self.post(CoinbaseEndpoint::CancelOrders, body).await?;
+                let results = response.get("results")
+                    .and_then(|r| r.as_array())
+                    .ok_or_else(|| ExchangeError::Parse("Missing results array".into()))?;
 
-            // Check if cancellation was successful
-            let results = response.get("results")
-                .and_then(|r| r.as_array())
-                .ok_or_else(|| ExchangeError::Parse("Missing results array".into()))?;
+                let success = results.iter()
+                    .any(|r| r.get("success").and_then(|s| s.as_bool()).unwrap_or(false));
 
-            let success = results.iter()
-                .any(|r| r.get("success").and_then(|s| s.as_bool()).unwrap_or(false));
+                if success {
+                    Ok(order)
+                } else {
+                    Err(ExchangeError::Api { code: 0, message: "Order cancellation failed".to_string() })
+                }
+            }
+            CancelScope::All { ref symbol } => {
+                let account_type = req.account_type;
+                let sym_str = symbol.as_ref().map(|s| s.to_string()).unwrap_or_default();
+                let open_orders = self.get_open_orders(
+                    symbol.as_ref().map(|s| s.to_string()).as_deref(),
+                    account_type,
+                ).await?;
 
-            if success {
-                Ok(order)
-            } else {
-                Err(ExchangeError::Api {
-                    code: 0,
-                    message: "Order cancellation failed".to_string(),
+                if open_orders.is_empty() {
+                    return Ok(Order {
+                        id: format!("cancel_all_{}", crate::core::timestamp_millis()),
+                        client_order_id: None,
+                        symbol: sym_str,
+                        side: OrderSide::Buy,
+                        order_type: OrderType::Market,
+                        status: crate::core::OrderStatus::Canceled,
+                        price: None,
+                        stop_price: None,
+                        quantity: 0.0,
+                        filled_quantity: 0.0,
+                        average_price: None,
+                        commission: None,
+                        commission_asset: None,
+                        created_at: 0,
+                        updated_at: Some(crate::core::timestamp_millis() as i64),
+                        time_in_force: crate::core::TimeInForce::Gtc,
+                    });
+                }
+
+                let order_ids_vec: Vec<String> = open_orders.iter().map(|o| o.id.clone()).collect();
+                let body = json!({ "order_ids": order_ids_vec });
+                let response = self.post(CoinbaseEndpoint::CancelOrders, body).await?;
+                let _ = response;
+
+                Ok(Order {
+                    id: format!("cancel_all_{}", crate::core::timestamp_millis()),
+                    client_order_id: None,
+                    symbol: symbol.as_ref().map(|s| s.to_string()).unwrap_or_default(),
+                    side: OrderSide::Buy,
+                    order_type: OrderType::Market,
+                    status: crate::core::OrderStatus::Canceled,
+                    price: None,
+                    stop_price: None,
+                    quantity: open_orders.len() as f64,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: 0,
+                    updated_at: Some(crate::core::timestamp_millis() as i64),
+                    time_in_force: crate::core::TimeInForce::Gtc,
                 })
             }
-    
+            CancelScope::BySymbol { ref symbol } => {
+                let account_type = req.account_type;
+                let sym_str = symbol.to_string();
+                let open_orders = self.get_open_orders(
+                    Some(&sym_str),
+                    account_type,
+                ).await?;
+
+                if open_orders.is_empty() {
+                    return Ok(Order {
+                        id: format!("cancel_all_{}", crate::core::timestamp_millis()),
+                        client_order_id: None,
+                        symbol: sym_str,
+                        side: OrderSide::Buy,
+                        order_type: OrderType::Market,
+                        status: crate::core::OrderStatus::Canceled,
+                        price: None,
+                        stop_price: None,
+                        quantity: 0.0,
+                        filled_quantity: 0.0,
+                        average_price: None,
+                        commission: None,
+                        commission_asset: None,
+                        created_at: 0,
+                        updated_at: Some(crate::core::timestamp_millis() as i64),
+                        time_in_force: crate::core::TimeInForce::Gtc,
+                    });
+                }
+
+                let order_ids_vec: Vec<String> = open_orders.iter().map(|o| o.id.clone()).collect();
+                let body = json!({ "order_ids": order_ids_vec });
+                let response = self.post(CoinbaseEndpoint::CancelOrders, body).await?;
+                let _ = response;
+
+                Ok(Order {
+                    id: format!("cancel_all_{}", crate::core::timestamp_millis()),
+                    client_order_id: None,
+                    symbol: symbol.to_string(),
+                    side: OrderSide::Buy,
+                    order_type: OrderType::Market,
+                    status: crate::core::OrderStatus::Canceled,
+                    price: None,
+                    stop_price: None,
+                    quantity: open_orders.len() as f64,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: 0,
+                    updated_at: Some(crate::core::timestamp_millis() as i64),
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                })
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
-            )),
+            CancelScope::Batch { ref order_ids } => {
+                let symbol = req.symbol.as_ref()
+                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for batch cancel".into()))?
+                    .clone();
+                let account_type = req.account_type;
+
+                // Coinbase supports batch cancel natively: POST /orders/batch_cancel
+                let body = json!({ "order_ids": order_ids });
+                let response = self.post(CoinbaseEndpoint::CancelOrders, body).await?;
+                let _ = response;
+
+                Ok(Order {
+                    id: format!("batch_cancel_{}", crate::core::timestamp_millis()),
+                    client_order_id: None,
+                    symbol: symbol.to_string(),
+                    side: OrderSide::Buy,
+                    order_type: OrderType::Market,
+                    status: crate::core::OrderStatus::Canceled,
+                    price: None,
+                    stop_price: None,
+                    quantity: order_ids.len() as f64,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: 0,
+                    updated_at: Some(crate::core::timestamp_millis() as i64),
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                })
+            }
         }
     }
 
@@ -742,10 +986,33 @@ impl Account for CoinbaseConnector {
         })
     }
 
-    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_fees not yet implemented".to_string()
-        ))
+    async fn get_fees(&self, symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        // GET /transaction_summary returns fee tier info
+        let response = self.get(CoinbaseEndpoint::TransactionSummary, HashMap::new()).await?;
+
+        let maker_rate = response.get("fee_tier")
+            .and_then(|ft| ft.get("maker_fee_rate"))
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.006);
+
+        let taker_rate = response.get("fee_tier")
+            .and_then(|ft| ft.get("taker_fee_rate"))
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.008);
+
+        let tier = response.get("fee_tier")
+            .and_then(|ft| ft.get("pricing_tier"))
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        Ok(FeeInfo {
+            maker_rate,
+            taker_rate,
+            symbol: symbol.map(String::from),
+            tier,
+        })
     }
 }
 

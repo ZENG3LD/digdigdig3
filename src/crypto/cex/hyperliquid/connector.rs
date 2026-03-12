@@ -19,7 +19,12 @@ use crate::core::{
     ExchangeId, ExchangeType, AccountType, Symbol,
     Price, Ticker, OrderBook, Kline,
     ExchangeIdentity, MarketData,
+    Order, OrderRequest, CancelRequest,
+    Balance, AccountInfo, Position, FundingRate,
+    PlaceOrderResponse, BalanceQuery, PositionQuery, PositionModification,
+    OrderHistoryFilter, FeeInfo,
 };
+use crate::core::traits::{Trading, Account, Positions};
 use crate::core::types::{ConnectorStats, SymbolInfo};
 use crate::core::utils::WeightRateLimiter;
 
@@ -310,5 +315,113 @@ impl MarketData for HyperliquidConnector {
                 HyperliquidParser::parse_perp_exchange_info(&response)
             }
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRADING TRAIT (stub — EIP-712 signing not yet implemented)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl Trading for HyperliquidConnector {
+    async fn place_order(&self, _req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
+        Err(ExchangeError::NotSupported(
+            "Hyperliquid trading requires EIP-712 wallet signing which is not yet implemented".to_string()
+        ))
+    }
+
+    async fn cancel_order(&self, _req: CancelRequest) -> ExchangeResult<Order> {
+        Err(ExchangeError::NotSupported(
+            "Hyperliquid trading requires EIP-712 wallet signing which is not yet implemented".to_string()
+        ))
+    }
+
+    async fn get_order(
+        &self,
+        _symbol: &str,
+        _order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        Err(ExchangeError::NotSupported(
+            "Hyperliquid trading requires EIP-712 wallet signing which is not yet implemented".to_string()
+        ))
+    }
+
+    async fn get_open_orders(
+        &self,
+        _symbol: Option<&str>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::NotSupported(
+            "Hyperliquid trading requires EIP-712 wallet signing which is not yet implemented".to_string()
+        ))
+    }
+
+    async fn get_order_history(
+        &self,
+        _filter: OrderHistoryFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::NotSupported(
+            "Hyperliquid trading requires EIP-712 wallet signing which is not yet implemented".to_string()
+        ))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT TRAIT (stub — requires authenticated info endpoint)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl Account for HyperliquidConnector {
+    async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        Err(ExchangeError::NotSupported(
+            "Hyperliquid account data requires EIP-712 wallet signing which is not yet implemented".to_string()
+        ))
+    }
+
+    async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
+        Err(ExchangeError::NotSupported(
+            "Hyperliquid account data requires EIP-712 wallet signing which is not yet implemented".to_string()
+        ))
+    }
+
+    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        // Hyperliquid standard fees: 0.02% maker, 0.05% taker (no fee query endpoint)
+        Ok(FeeInfo {
+            maker_rate: 0.0002,
+            taker_rate: 0.0005,
+            symbol: _symbol.map(String::from),
+            tier: None,
+        })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// POSITIONS TRAIT (stub — requires authenticated info endpoint)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl Positions for HyperliquidConnector {
+    async fn get_positions(&self, _query: PositionQuery) -> ExchangeResult<Vec<Position>> {
+        Err(ExchangeError::NotSupported(
+            "Hyperliquid position data requires EIP-712 wallet signing which is not yet implemented".to_string()
+        ))
+    }
+
+    async fn get_funding_rate(
+        &self,
+        _symbol: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<FundingRate> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Hyperliquid funding rate query not yet implemented".to_string()
+        ))
+    }
+
+    async fn modify_position(&self, _req: PositionModification) -> ExchangeResult<()> {
+        Err(ExchangeError::NotSupported(
+            "Hyperliquid position modification requires EIP-712 wallet signing which is not yet implemented".to_string()
+        ))
     }
 }

@@ -21,7 +21,7 @@ use crate::core::{
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
     Price, Quantity, Kline, Ticker, OrderBook,
-    Order, OrderSide, OrderType,Balance, AccountInfo,
+    Order, OrderSide, OrderType, Balance, AccountInfo,
     Position,
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
@@ -31,7 +31,10 @@ use crate::core::types::SymbolInfo;
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
 };
-use crate::core::types::ConnectorStats;
+use crate::core::{CancelAll, AmendOrder};
+use crate::core::types::{
+    ConnectorStats, CancelAllResponse, OrderResult, AmendRequest,
+};
 use crate::core::utils::SimpleRateLimiter;
 
 use super::endpoints::{BitfinexUrls, BitfinexEndpoint, format_symbol, build_candle_key};
@@ -171,6 +174,60 @@ impl BitfinexConnector {
         BitfinexParser::check_error(&response)?;
         Ok(response)
     }
+
+    /// Build a minimal Order struct from known fields after place_order
+    fn make_order(
+        &self,
+        id: String,
+        symbol: &Symbol,
+        side: OrderSide,
+        order_type: OrderType,
+        quantity: Quantity,
+        price: Option<Price>,
+        stop_price: Option<Price>,
+    ) -> Order {
+        Order {
+            id,
+            client_order_id: None,
+            symbol: symbol.to_string(),
+            side,
+            order_type,
+            status: crate::core::OrderStatus::New,
+            price,
+            stop_price,
+            quantity,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: crate::core::timestamp_millis() as i64,
+            updated_at: None,
+            time_in_force: crate::core::TimeInForce::Gtc,
+        }
+    }
+
+    /// Format symbol helper
+    fn fmt_symbol(symbol: &Symbol, account_type: AccountType) -> String {
+        if let Some(raw) = symbol.raw() {
+            raw.to_string()
+        } else {
+            format_symbol(&symbol.base, &symbol.quote, account_type)
+        }
+    }
+
+    /// Determine if account type is derivatives (margin/futures)
+    fn is_derivatives(account_type: AccountType) -> bool {
+        matches!(account_type, AccountType::Margin | AccountType::FuturesCross | AccountType::FuturesIsolated)
+    }
+
+    /// Get order type string prefix ("EXCHANGE " for spot, "" for margin/futures)
+    fn order_type_prefix(account_type: AccountType) -> &'static str {
+        if Self::is_derivatives(account_type) {
+            ""
+        } else {
+            "EXCHANGE "
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -228,11 +285,7 @@ impl MarketData for BitfinexConnector {
         symbol: Symbol,
         account_type: AccountType,
     ) -> ExchangeResult<Price> {
-        let formatted_symbol = if let Some(raw) = symbol.raw() {
-            raw.to_string()
-        } else {
-            format_symbol(&symbol.base, &symbol.quote, account_type)
-        };
+        let formatted_symbol = Self::fmt_symbol(&symbol, account_type);
 
         let response = self.get(
             BitfinexEndpoint::Ticker,
@@ -250,11 +303,7 @@ impl MarketData for BitfinexConnector {
         _depth: Option<u16>,
         account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        let formatted_symbol = if let Some(raw) = symbol.raw() {
-            raw.to_string()
-        } else {
-            format_symbol(&symbol.base, &symbol.quote, account_type)
-        };
+        let formatted_symbol = Self::fmt_symbol(&symbol, account_type);
 
         // Use P0 precision (highest aggregation) for best performance
         let response = self.get(
@@ -274,11 +323,7 @@ impl MarketData for BitfinexConnector {
         account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let formatted_symbol = if let Some(raw) = symbol.raw() {
-            raw.to_string()
-        } else {
-            format_symbol(&symbol.base, &symbol.quote, account_type)
-        };
+        let formatted_symbol = Self::fmt_symbol(&symbol, account_type);
         let candle_key = build_candle_key(&formatted_symbol, interval);
 
         let mut params = HashMap::new();
@@ -305,11 +350,7 @@ impl MarketData for BitfinexConnector {
         symbol: Symbol,
         account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        let formatted_symbol = if let Some(raw) = symbol.raw() {
-            raw.to_string()
-        } else {
-            format_symbol(&symbol.base, &symbol.quote, account_type)
-        };
+        let formatted_symbol = Self::fmt_symbol(&symbol, account_type);
 
         let response = self.get(
             BitfinexEndpoint::Ticker,
@@ -362,93 +403,232 @@ impl Trading for BitfinexConnector {
         let side = req.side;
         let quantity = req.quantity;
         let account_type = req.account_type;
+        let formatted_symbol = Self::fmt_symbol(&symbol, account_type);
+        let prefix = Self::order_type_prefix(account_type);
+
+        // Amount: positive=buy, negative=sell
+        let amount = match side {
+            OrderSide::Buy => quantity,
+            OrderSide::Sell => -quantity,
+        };
 
         match req.order_type {
             OrderType::Market => {
-                let formatted_symbol = if let Some(raw) = symbol.raw() {
-                            raw.to_string()
-                        } else {
-                            format_symbol(&symbol.base, &symbol.quote, account_type)
-                        };
-                
-                        // Amount: positive=buy, negative=sell
-                        let amount = match side {
-                            OrderSide::Buy => quantity,
-                            OrderSide::Sell => -quantity,
-                        };
-                
-                        let body = json!({
-                            "type": "EXCHANGE MARKET",
-                            "symbol": formatted_symbol,
-                            "amount": amount.to_string(),
-                        });
-                
-                        let response = self.post(BitfinexEndpoint::SubmitOrder, &[], body).await?;
-                        BitfinexParser::parse_submit_order(&response).map(PlaceOrderResponse::Simple)
+                let body = json!({
+                    "type": format!("{}MARKET", prefix),
+                    "symbol": formatted_symbol,
+                    "amount": amount.to_string(),
+                });
+                let response = self.post(BitfinexEndpoint::SubmitOrder, &[], body).await?;
+                BitfinexParser::parse_submit_order(&response).map(PlaceOrderResponse::Simple)
             }
+
             OrderType::Limit { price } => {
-                let formatted_symbol = if let Some(raw) = symbol.raw() {
-                            raw.to_string()
-                        } else {
-                            format_symbol(&symbol.base, &symbol.quote, account_type)
-                        };
-                
-                        // Amount: positive=buy, negative=sell
-                        let amount = match side {
-                            OrderSide::Buy => quantity,
-                            OrderSide::Sell => -quantity,
-                        };
-                
-                        let body = json!({
-                            "type": "EXCHANGE LIMIT",
-                            "symbol": formatted_symbol,
-                            "amount": amount.to_string(),
-                            "price": price.to_string(),
-                        });
-                
-                        let response = self.post(BitfinexEndpoint::SubmitOrder, &[], body).await?;
-                        BitfinexParser::parse_submit_order(&response).map(PlaceOrderResponse::Simple)
+                let body = json!({
+                    "type": format!("{}LIMIT", prefix),
+                    "symbol": formatted_symbol,
+                    "amount": amount.to_string(),
+                    "price": price.to_string(),
+                });
+                let response = self.post(BitfinexEndpoint::SubmitOrder, &[], body).await?;
+                BitfinexParser::parse_submit_order(&response).map(PlaceOrderResponse::Simple)
             }
+
+            OrderType::StopMarket { stop_price } => {
+                // Bitfinex: EXCHANGE STOP (triggers market at stop_price)
+                let body = json!({
+                    "type": format!("{}STOP", prefix),
+                    "symbol": formatted_symbol,
+                    "amount": amount.to_string(),
+                    "price": stop_price.to_string(),
+                });
+                let response = self.post(BitfinexEndpoint::SubmitOrder, &[], body).await?;
+                BitfinexParser::parse_submit_order(&response).map(PlaceOrderResponse::Simple)
+            }
+
+            OrderType::StopLimit { stop_price, limit_price } => {
+                // Bitfinex: EXCHANGE STOP LIMIT
+                let body = json!({
+                    "type": format!("{}STOP LIMIT", prefix),
+                    "symbol": formatted_symbol,
+                    "amount": amount.to_string(),
+                    "price": limit_price.to_string(),
+                    "price_aux_limit": stop_price.to_string(),
+                });
+                let response = self.post(BitfinexEndpoint::SubmitOrder, &[], body).await?;
+                BitfinexParser::parse_submit_order(&response).map(PlaceOrderResponse::Simple)
+            }
+
+            OrderType::TrailingStop { callback_rate, activation_price: _ } => {
+                // Bitfinex: EXCHANGE TRAILING STOP
+                // trail_pct is callback_rate in percent
+                let body = json!({
+                    "type": format!("{}TRAILING STOP", prefix),
+                    "symbol": formatted_symbol,
+                    "amount": amount.to_string(),
+                    "price": callback_rate.to_string(), // trail distance as % string
+                });
+                let response = self.post(BitfinexEndpoint::SubmitOrder, &[], body).await?;
+                BitfinexParser::parse_submit_order(&response).map(PlaceOrderResponse::Simple)
+            }
+
+            OrderType::PostOnly { price } => {
+                // Bitfinex: EXCHANGE LIMIT with flags = 4096 (POST_ONLY)
+                let body = json!({
+                    "type": format!("{}LIMIT", prefix),
+                    "symbol": formatted_symbol,
+                    "amount": amount.to_string(),
+                    "price": price.to_string(),
+                    "flags": 4096,
+                });
+                let response = self.post(BitfinexEndpoint::SubmitOrder, &[], body).await?;
+                BitfinexParser::parse_submit_order(&response).map(PlaceOrderResponse::Simple)
+            }
+
+            OrderType::Ioc { price } => {
+                // Bitfinex: EXCHANGE IOC
+                let price_val = price.unwrap_or(0.0);
+                let body = json!({
+                    "type": format!("{}IOC", prefix),
+                    "symbol": formatted_symbol,
+                    "amount": amount.to_string(),
+                    "price": price_val.to_string(),
+                });
+                let response = self.post(BitfinexEndpoint::SubmitOrder, &[], body).await?;
+                BitfinexParser::parse_submit_order(&response).map(PlaceOrderResponse::Simple)
+            }
+
+            OrderType::Fok { price } => {
+                // Bitfinex: EXCHANGE FOK
+                let body = json!({
+                    "type": format!("{}FOK", prefix),
+                    "symbol": formatted_symbol,
+                    "amount": amount.to_string(),
+                    "price": price.to_string(),
+                });
+                let response = self.post(BitfinexEndpoint::SubmitOrder, &[], body).await?;
+                BitfinexParser::parse_submit_order(&response).map(PlaceOrderResponse::Simple)
+            }
+
+            OrderType::Iceberg { price, display_quantity } => {
+                // Bitfinex: EXCHANGE LIMIT with max_show parameter
+                let body = json!({
+                    "type": format!("{}LIMIT", prefix),
+                    "symbol": formatted_symbol,
+                    "amount": amount.to_string(),
+                    "price": price.to_string(),
+                    "meta": {
+                        "max_show": display_quantity.to_string(),
+                    },
+                    "flags": 64, // Hidden flag
+                });
+                let response = self.post(BitfinexEndpoint::SubmitOrder, &[], body).await?;
+                BitfinexParser::parse_submit_order(&response).map(PlaceOrderResponse::Simple)
+            }
+
+            OrderType::ReduceOnly { price } => {
+                // Bitfinex: LIMIT with reduce-only flag (only valid for margin/futures)
+                if !Self::is_derivatives(account_type) {
+                    return Err(ExchangeError::UnsupportedOperation(
+                        "ReduceOnly not supported for Spot".to_string()
+                    ));
+                }
+                let order_type_str = if price.is_some() { "LIMIT" } else { "MARKET" };
+                let mut body = json!({
+                    "type": order_type_str,
+                    "symbol": formatted_symbol,
+                    "amount": amount.to_string(),
+                    "flags": 1024, // REDUCE_ONLY flag
+                });
+                if let Some(p) = price {
+                    body["price"] = json!(p.to_string());
+                }
+                let response = self.post(BitfinexEndpoint::SubmitOrder, &[], body).await?;
+                BitfinexParser::parse_submit_order(&response).map(PlaceOrderResponse::Simple)
+            }
+
             _ => Err(ExchangeError::UnsupportedOperation(
                 format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
             )),
         }
     }
 
-    async fn get_order_history(
-        &self,
-        _filter: OrderHistoryFilter,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_order_history not yet implemented".to_string()
-        ))
-    }
-async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+    async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         match req.scope {
             CancelScope::Single { ref order_id } => {
-                let _symbol = req.symbol.as_ref()
-                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel".into()))?
-                    .clone();
-                let _account_type = req.account_type;
+                let id = order_id.parse::<i64>()
+                    .map_err(|_| ExchangeError::InvalidRequest("Invalid order ID".to_string()))?;
 
-            let id = order_id.parse::<i64>()
-                .map_err(|_| ExchangeError::InvalidRequest("Invalid order ID".to_string()))?;
-
-            let body = json!({
-                "id": id,
-            });
-
-            let response = self.post(BitfinexEndpoint::CancelOrder, &[], body).await?;
-
-            // Parse from notification response (same format as submit)
-            BitfinexParser::parse_submit_order(&response)
-    
+                let body = json!({ "id": id });
+                let response = self.post(BitfinexEndpoint::CancelOrder, &[], body).await?;
+                BitfinexParser::parse_submit_order(&response)
             }
+
+            CancelScope::Batch { ref order_ids } => {
+                // Bitfinex: POST /auth/w/order/cancel/multi with {"id": [...]}
+                let ids: Vec<i64> = order_ids.iter()
+                    .filter_map(|id| id.parse::<i64>().ok())
+                    .collect();
+
+                if ids.is_empty() {
+                    return Err(ExchangeError::InvalidRequest("No valid order IDs".to_string()));
+                }
+
+                let body = json!({ "id": ids });
+                let _response = self.post(BitfinexEndpoint::CancelMultipleOrders, &[], body).await?;
+
+                // Return a placeholder — Bitfinex multi-cancel returns notifications, not a single order
+                Ok(Order {
+                    id: ids[0].to_string(),
+                    client_order_id: None,
+                    symbol: req.symbol.as_ref().map(|s| s.to_string()).unwrap_or_default(),
+                    side: OrderSide::Buy,
+                    order_type: OrderType::Market,
+                    status: crate::core::OrderStatus::Canceled,
+                    price: None,
+                    stop_price: None,
+                    quantity: 0.0,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: 0,
+                    updated_at: Some(crate::core::timestamp_millis() as i64),
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                })
+            }
+
             _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
+                format!("{:?} cancel scope not supported — use CancelAll trait for All/BySymbol", req.scope)
             )),
         }
+    }
+
+    async fn get_order_history(
+        &self,
+        filter: OrderHistoryFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        let mut body = json!({});
+
+        if let Some(sym) = &filter.symbol {
+            // sym is already a Symbol struct
+            let formatted_symbol = Self::fmt_symbol(sym, _account_type);
+            body["symbol"] = json!(formatted_symbol);
+        }
+
+        if let Some(start) = filter.start_time {
+            body["start"] = json!(start);
+        }
+        if let Some(end) = filter.end_time {
+            body["end"] = json!(end);
+        }
+        if let Some(limit) = filter.limit {
+            body["limit"] = json!(limit.min(2500));
+        }
+
+        let response = self.post(BitfinexEndpoint::OrderHistory, &[], body).await?;
+        BitfinexParser::parse_orders(&response)
     }
 
     async fn get_order(
@@ -457,7 +637,6 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         order_id: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Order> {
-        // Parse symbol string into Symbol struct
         let symbol_parts: Vec<&str> = symbol.split('/').collect();
         let symbol = if symbol_parts.len() == 2 {
             crate::core::Symbol::new(symbol_parts[0], symbol_parts[1])
@@ -465,16 +644,9 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
             crate::core::Symbol { base: symbol.to_string(), quote: String::new(), raw: Some(symbol.to_string()) }
         };
 
-        let formatted_symbol = if let Some(raw) = symbol.raw() {
-            raw.to_string()
-        } else {
-            format_symbol(&symbol.base, &symbol.quote, account_type)
-        };
+        let formatted_symbol = Self::fmt_symbol(&symbol, account_type);
 
-        // Get all active orders and filter
-        let body = json!({
-            "symbol": formatted_symbol,
-        });
+        let body = json!({ "symbol": formatted_symbol });
 
         let response = self.post(
             BitfinexEndpoint::ActiveOrdersBySymbol,
@@ -487,7 +659,6 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         orders.into_iter()
             .find(|o| o.id == order_id)
             .ok_or_else(|| ExchangeError::Parse(format!("Order {} not found", order_id)))
-    
     }
 
     async fn get_open_orders(
@@ -495,9 +666,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         symbol: Option<&str>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        // Convert Option<&str> to Option<Symbol>
-        let symbol_str = symbol;
-        let symbol: Option<crate::core::Symbol> = symbol_str.map(|s| {
+        let symbol: Option<crate::core::Symbol> = symbol.map(|s| {
             let parts: Vec<&str> = s.split('/').collect();
             if parts.len() == 2 {
                 crate::core::Symbol::new(parts[0], parts[1])
@@ -507,11 +676,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         });
 
         let response = if let Some(s) = symbol {
-            let formatted_symbol = if let Some(raw) = s.raw() {
-                raw.to_string()
-            } else {
-                format_symbol(&s.base, &s.quote, account_type)
-            };
+            let formatted_symbol = Self::fmt_symbol(&s, account_type);
             self.post(
                 BitfinexEndpoint::ActiveOrdersBySymbol,
                 &[("symbol", &formatted_symbol)],
@@ -526,7 +691,6 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         };
 
         BitfinexParser::parse_orders(&response)
-    
     }
 }
 
@@ -537,9 +701,6 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
 #[async_trait]
 impl Account for BitfinexConnector {
     async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
-        let _asset = query.asset.clone();
-        let _account_type = query.account_type;
-
         let response = self.post(
             BitfinexEndpoint::Wallets,
             &[],
@@ -547,7 +708,6 @@ impl Account for BitfinexConnector {
         ).await?;
 
         BitfinexParser::parse_balances(&response)
-    
     }
 
     async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
@@ -564,10 +724,41 @@ impl Account for BitfinexConnector {
         })
     }
 
-    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_fees not yet implemented".to_string()
-        ))
+    async fn get_fees(&self, symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        // Bitfinex: POST /auth/r/trades/hist returns trades with fee info
+        // Use a recent trade to get actual fee rates, or return defaults from account summary
+        let body = json!({ "limit": 1 });
+        let response = self.post(BitfinexEndpoint::TradeHistory, &[], body).await?;
+
+        // Try to extract fee from most recent trade
+        if let Some(arr) = response.as_array() {
+            if let Some(trade) = arr.first() {
+                if let Some(trade_arr) = trade.as_array() {
+                    // Trade array format: [ID, PAIR, MTS_CREATE, ORDER_ID, EXEC_AMOUNT, EXEC_PRICE, ORDER_TYPE, ORDER_PRICE, MAKER, FEE, FEE_CURRENCY]
+                    if trade_arr.len() > 9 {
+                        let fee = trade_arr[9].as_f64().unwrap_or(0.0).abs();
+                        let amount = trade_arr[4].as_f64().unwrap_or(1.0).abs();
+                        let price = trade_arr[5].as_f64().unwrap_or(1.0);
+                        let rate = if amount * price > 0.0 { fee / (amount * price) } else { 0.002 };
+
+                        return Ok(FeeInfo {
+                            maker_rate: rate,
+                            taker_rate: rate,
+                            symbol: symbol.map(|s| s.to_string()),
+                            tier: None,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Fallback: default Bitfinex fees
+        Ok(FeeInfo {
+            maker_rate: 0.001,  // 0.1%
+            taker_rate: 0.002,  // 0.2%
+            symbol: symbol.map(|s| s.to_string()),
+            tier: None,
+        })
     }
 }
 
@@ -578,7 +769,6 @@ impl Account for BitfinexConnector {
 #[async_trait]
 impl Positions for BitfinexConnector {
     async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
-        let _symbol = query.symbol.clone();
         let account_type = query.account_type;
 
         if account_type == AccountType::Spot {
@@ -594,7 +784,6 @@ impl Positions for BitfinexConnector {
         ).await?;
 
         BitfinexParser::parse_positions(&response)
-    
     }
 
     async fn get_funding_rate(
@@ -620,24 +809,92 @@ impl Positions for BitfinexConnector {
 
     async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
         match req {
-            PositionModification::SetLeverage { symbol: ref _symbol, leverage: _leverage, account_type: account_type } => {
-                let _symbol = _symbol.clone();
-
+            PositionModification::SetLeverage { account_type, .. } => {
                 if account_type == AccountType::Spot {
-                return Err(ExchangeError::UnsupportedOperation(
-                "Leverage not supported for Spot".to_string()
-                ));
+                    return Err(ExchangeError::UnsupportedOperation(
+                        "Leverage not supported for Spot".to_string()
+                    ));
                 }
-
                 // Bitfinex handles leverage via order flags, not a separate endpoint
                 Err(ExchangeError::UnsupportedOperation(
-                "Set leverage not available - use order flags instead".to_string()
+                    "Set leverage not available - use order flags instead".to_string()
                 ))
-    
             }
             _ => Err(ExchangeError::UnsupportedOperation(
                 format!("{:?} not supported on {:?}", req, self.exchange_id())
             )),
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CANCEL ALL (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl CancelAll for BitfinexConnector {
+    async fn cancel_all_orders(
+        &self,
+        scope: CancelScope,
+        _account_type: AccountType,
+    ) -> ExchangeResult<CancelAllResponse> {
+        match scope {
+            CancelScope::All { symbol: None } => {
+                // Cancel all orders across all symbols
+                let body = json!({ "all": 1 });
+                let _response = self.post(BitfinexEndpoint::CancelMultipleOrders, &[], body).await?;
+
+                Ok(CancelAllResponse {
+                    cancelled_count: 0, // Bitfinex doesn't return count
+                    failed_count: 0,
+                    details: vec![],
+                })
+            }
+
+            CancelScope::All { symbol: Some(sym) } | CancelScope::BySymbol { symbol: sym } => {
+                // Cancel all orders for a specific symbol
+                let formatted_symbol = Self::fmt_symbol(&sym, _account_type);
+                let body = json!({ "symbol": formatted_symbol });
+                let _response = self.post(BitfinexEndpoint::CancelMultipleOrders, &[], body).await?;
+
+                Ok(CancelAllResponse {
+                    cancelled_count: 0,
+                    failed_count: 0,
+                    details: vec![],
+                })
+            }
+
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} not supported in cancel_all_orders", scope)
+            )),
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AMEND ORDER (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AmendOrder for BitfinexConnector {
+    async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
+        let id = req.order_id.parse::<i64>()
+            .map_err(|_| ExchangeError::InvalidRequest("Invalid order ID".to_string()))?;
+
+        let mut body = json!({ "id": id });
+
+        if let Some(price) = req.fields.price {
+            body["price"] = json!(price.to_string());
+        }
+        if let Some(qty) = req.fields.quantity {
+            // For Bitfinex, amount sign determines buy/sell — preserve original sign
+            body["amount"] = json!(qty.to_string());
+        }
+        if let Some(stop_price) = req.fields.trigger_price {
+            body["price_aux_limit"] = json!(stop_price.to_string());
+        }
+
+        let response = self.post(BitfinexEndpoint::UpdateOrder, &[], body).await?;
+        BitfinexParser::parse_submit_order(&response)
     }
 }

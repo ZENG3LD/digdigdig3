@@ -24,8 +24,12 @@ use crate::core::{
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
 };
-use crate::core::traits::{ExchangeIdentity, MarketData};
-use crate::core::types::ConnectorStats;
+use crate::core::traits::{ExchangeIdentity, MarketData, Trading, Account};
+use crate::core::types::{
+    ConnectorStats,
+    OrderRequest, CancelRequest, Order, OrderHistoryFilter, PlaceOrderResponse,
+    BalanceQuery, Balance, AccountInfo, FeeInfo,
+};
 use crate::core::utils::SimpleRateLimiter;
 
 use super::endpoints::{self, JupiterUrls, JupiterEndpoint, MintRegistry};
@@ -307,6 +311,107 @@ impl MarketData for JupiterConnector {
     }
 }
 
-// Note: Trading and Account traits are not implemented for Jupiter connector
-// as this is Phase 2 (market data only). Trading would require Solana wallet
-// integration and transaction signing, which is beyond scope.
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRADING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Jupiter trading (swap execution) requires:
+// 1. Solana wallet integration (@solana/web3.js or solana-sdk)
+// 2. Wallet keypair for transaction signing
+// 3. Quote API → Swap API → sign tx → submit via Solana RPC
+// 4. Transaction confirmation monitoring
+//
+// The Jupiter REST API provides quote/routing data only.
+// Actual swap execution requires signed Solana transactions.
+
+#[async_trait]
+impl Trading for JupiterConnector {
+    async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
+        let _ = req;
+        Err(ExchangeError::UnsupportedOperation(
+            "Jupiter swap execution requires Solana wallet integration. \
+             Use Quote API to get routing, then sign and submit transaction via Solana RPC."
+                .to_string(),
+        ))
+    }
+
+    async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+        let _ = req;
+        Err(ExchangeError::UnsupportedOperation(
+            "Jupiter swaps are atomic Solana transactions — they cannot be cancelled. \
+             Transactions either confirm or fail."
+                .to_string(),
+        ))
+    }
+
+    async fn get_order(
+        &self,
+        _symbol: &str,
+        _order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Jupiter does not have order tracking. \
+             Use Solana transaction signature to check swap status via Solana RPC."
+                .to_string(),
+        ))
+    }
+
+    async fn get_open_orders(
+        &self,
+        _symbol: Option<&str>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Jupiter swaps are atomic — there are no open/pending orders. \
+             Limit orders (if using Jupiter Limit Order) require separate integration."
+                .to_string(),
+        ))
+    }
+
+    async fn get_order_history(
+        &self,
+        _filter: OrderHistoryFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Jupiter does not provide order history via REST API. \
+             Query Solana transaction history via RPC for swap records."
+                .to_string(),
+        ))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl Account for JupiterConnector {
+    async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Jupiter has no account system. \
+             Query SPL token balances directly via Solana RPC (getTokenAccountsByOwner)."
+                .to_string(),
+        ))
+    }
+
+    async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Jupiter is a DEX aggregator with no account concept. \
+             Use Solana wallet address to query on-chain account data."
+                .to_string(),
+        ))
+    }
+
+    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        // Jupiter charges a platform fee on top of routing fees.
+        // DEX fees vary per source pool (Raydium: 0.25%, Orca: 0.3%, etc.).
+        // Jupiter platform fee: 0% (as of 2025, fees embedded in price impact).
+        Err(ExchangeError::UnsupportedOperation(
+            "Jupiter fees are protocol-level (0% platform fee + per-DEX pool fees). \
+             Not translatable to maker/taker rates. Fee is included in swap price impact."
+                .to_string(),
+        ))
+    }
+}

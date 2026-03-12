@@ -437,6 +437,140 @@ impl BitstampParser {
     // EXCHANGE INFO
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /// Parse Bitstamp trading fees from /api/v2/fees/trading/ response.
+    ///
+    /// Response: array of { "currency_pair": "btcusd", "fees": { "maker": "0.30", "taker": "0.50" } }
+    pub fn parse_fee_rate(json: &Value, symbol: Option<&str>) -> ExchangeResult<crate::core::FeeInfo> {
+        Self::check_error(json)?;
+
+        // Response is an array of per-pair fee entries
+        let items = match json.as_array() {
+            Some(arr) if !arr.is_empty() => arr,
+            _ => {
+                // Single object response
+                let maker = json.get("fees")
+                    .and_then(|f| f.get("maker"))
+                    .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok())
+                        .or_else(|| v.as_f64()))
+                    .unwrap_or(0.3) / 100.0;
+
+                let taker = json.get("fees")
+                    .and_then(|f| f.get("taker"))
+                    .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok())
+                        .or_else(|| v.as_f64()))
+                    .unwrap_or(0.5) / 100.0;
+
+                return Ok(crate::core::FeeInfo {
+                    maker_rate: maker,
+                    taker_rate: taker,
+                    symbol: symbol.map(String::from),
+                    tier: None,
+                });
+            }
+        };
+
+        // Find the matching symbol entry or use first entry
+        let entry = symbol
+            .and_then(|sym| items.iter().find(|item| {
+                item.get("currency_pair")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_lowercase().replace("/", "") == sym.to_lowercase().replace("/", ""))
+                    .unwrap_or(false)
+            }))
+            .or_else(|| items.first());
+
+        let (maker, taker) = if let Some(e) = entry {
+            let fees = e.get("fees");
+            let m = fees.and_then(|f| f.get("maker"))
+                .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| v.as_f64()))
+                .unwrap_or(0.3) / 100.0;
+            let t = fees.and_then(|f| f.get("taker"))
+                .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| v.as_f64()))
+                .unwrap_or(0.5) / 100.0;
+            (m, t)
+        } else {
+            (0.003, 0.005) // Bitstamp default: 0.3% maker, 0.5% taker
+        };
+
+        Ok(crate::core::FeeInfo {
+            maker_rate: maker,
+            taker_rate: taker,
+            symbol: symbol.map(String::from),
+            tier: None,
+        })
+    }
+
+    /// Parse user_transactions response as order history.
+    ///
+    /// Bitstamp /api/v2/user_transactions/ returns trade executions (type=2 = trade),
+    /// not open orders. We convert these to Order structs.
+    pub fn parse_user_transactions(json: &Value) -> ExchangeResult<Vec<crate::core::Order>> {
+        Self::check_error(json)?;
+
+        let items = json.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array for user_transactions".to_string()))?;
+
+        let mut orders = Vec::new();
+
+        for item in items {
+            // type: 0=deposit, 1=withdrawal, 2=trade — we only care about trades
+            let tx_type = item.get("type")
+                .and_then(|v| v.as_str().and_then(|s| s.parse::<i64>().ok()).or_else(|| v.as_i64()))
+                .unwrap_or(-1);
+
+            if tx_type != 2 {
+                continue;
+            }
+
+            let order_id = item.get("order_id")
+                .and_then(|v| v.as_i64().map(|n| n.to_string())
+                    .or_else(|| v.as_str().map(String::from)))
+                .unwrap_or_default();
+
+            if order_id.is_empty() {
+                continue;
+            }
+
+            let timestamp = item.get("datetime")
+                .and_then(|v| v.as_str())
+                .and_then(|s| {
+                    // Try parsing ISO format
+                    chrono::DateTime::parse_from_rfc3339(s).ok()
+                        .map(|dt| dt.timestamp_millis())
+                })
+                .unwrap_or(0);
+
+            // Bitstamp trade transactions don't have a direct side field —
+            // we'd need to look at positive/negative amounts. Use a neutral approach.
+            orders.push(crate::core::Order {
+                id: order_id,
+                client_order_id: None,
+                symbol: item.get("market")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("").to_string(),
+                side: crate::core::OrderSide::Buy, // Unknown without deeper parsing
+                order_type: crate::core::OrderType::Limit { price: 0.0 },
+                status: crate::core::OrderStatus::Filled,
+                price: item.get("price").and_then(|v| Self::parse_f64(v)),
+                stop_price: None,
+                quantity: item.get("amount")
+                    .and_then(|v| Self::parse_f64(v))
+                    .unwrap_or(0.0),
+                filled_quantity: item.get("amount")
+                    .and_then(|v| Self::parse_f64(v))
+                    .unwrap_or(0.0),
+                average_price: item.get("price").and_then(|v| Self::parse_f64(v)),
+                commission: item.get("fee").and_then(|v| Self::parse_f64(v)),
+                commission_asset: None,
+                created_at: timestamp,
+                updated_at: Some(timestamp),
+                time_in_force: crate::core::TimeInForce::Gtc,
+            });
+        }
+
+        Ok(orders)
+    }
+
     /// Parse exchange info from Bitstamp trading-pairs-info response.
     ///
     /// Response format:

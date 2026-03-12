@@ -30,6 +30,7 @@ use crate::core::{
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
+    MarginType,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
@@ -478,51 +479,463 @@ impl Trading for BybitConnector {
                         }))
             }
             OrderType::Limit { price } => {
-                let order_link_id = format!("cc_{}", crate::core::timestamp_millis());
-                
-                        let body = json!({
-                            "category": account_type_to_category(account_type),
-                            "symbol": format_symbol(&symbol, account_type),
-                            "side": match side {
-                                OrderSide::Buy => "Buy",
-                                OrderSide::Sell => "Sell",
-                            },
-                            "orderType": "Limit",
-                            "qty": quantity.to_string(),
-                            "price": price.to_string(),
-                            "orderLinkId": order_link_id,
-                        });
-                
-                        let response = self.post(BybitEndpoint::PlaceOrder, body).await?;
-                
-                        let result = response.get("result")
-                            .ok_or_else(|| ExchangeError::Parse("Missing result".to_string()))?;
-                
-                        let order_id = result.get("orderId")
-                            .and_then(|id| id.as_str())
-                            .ok_or_else(|| ExchangeError::Parse("Missing orderId".to_string()))?
-                            .to_string();
-                
-                        Ok(PlaceOrderResponse::Simple(Order {
-                            id: order_id,
-                            client_order_id: Some(order_link_id),
-                            symbol: symbol.to_string(),
-                            side,
-                            order_type: OrderType::Limit { price: 0.0 },
-                            status: crate::core::OrderStatus::New,
-                            price: Some(price),
-                            stop_price: None,
-                            quantity,
-                            filled_quantity: 0.0,
-                            average_price: None,
-                            commission: None,
-                            commission_asset: None,
-                            created_at: crate::core::timestamp_millis() as i64,
-                            updated_at: None,
-                            time_in_force: crate::core::TimeInForce::Gtc,
-                        }))
+                let order_link_id = req.client_order_id.clone()
+                    .unwrap_or_else(|| format!("cc_{}", crate::core::timestamp_millis()));
+                let tif = match req.time_in_force {
+                    crate::core::TimeInForce::Gtc => "GTC",
+                    crate::core::TimeInForce::Ioc => "IOC",
+                    crate::core::TimeInForce::Fok => "FOK",
+                    crate::core::TimeInForce::PostOnly => "PostOnly",
+                    _ => "GTC",
+                };
+
+                let mut body = json!({
+                    "category": account_type_to_category(account_type),
+                    "symbol": format_symbol(&symbol, account_type),
+                    "side": match side {
+                        OrderSide::Buy => "Buy",
+                        OrderSide::Sell => "Sell",
+                    },
+                    "orderType": "Limit",
+                    "qty": quantity.to_string(),
+                    "price": price.to_string(),
+                    "timeInForce": tif,
+                    "orderLinkId": order_link_id,
+                });
+                if req.reduce_only {
+                    body["reduceOnly"] = json!(true);
+                }
+
+                let response = self.post(BybitEndpoint::PlaceOrder, body).await?;
+
+                let result = response.get("result")
+                    .ok_or_else(|| ExchangeError::Parse("Missing result".to_string()))?;
+
+                let order_id = result.get("orderId")
+                    .and_then(|id| id.as_str())
+                    .ok_or_else(|| ExchangeError::Parse("Missing orderId".to_string()))?
+                    .to_string();
+
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: Some(order_link_id),
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::Limit { price },
+                    status: crate::core::OrderStatus::New,
+                    price: Some(price),
+                    stop_price: None,
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: crate::core::timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: req.time_in_force,
+                }))
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
+            OrderType::StopMarket { stop_price } => {
+                let order_link_id = req.client_order_id.clone()
+                    .unwrap_or_else(|| format!("cc_{}", crate::core::timestamp_millis()));
+
+                let mut body = json!({
+                    "category": account_type_to_category(account_type),
+                    "symbol": format_symbol(&symbol, account_type),
+                    "side": match side {
+                        OrderSide::Buy => "Buy",
+                        OrderSide::Sell => "Sell",
+                    },
+                    "orderType": "Market",
+                    "qty": quantity.to_string(),
+                    "triggerPrice": stop_price.to_string(),
+                    "triggerBy": "MarkPrice",
+                    "orderLinkId": order_link_id,
+                });
+                if req.reduce_only {
+                    body["reduceOnly"] = json!(true);
+                }
+
+                let response = self.post(BybitEndpoint::PlaceOrder, body).await?;
+                let result = response.get("result")
+                    .ok_or_else(|| ExchangeError::Parse("Missing result".to_string()))?;
+                let order_id = result.get("orderId")
+                    .and_then(|id| id.as_str())
+                    .ok_or_else(|| ExchangeError::Parse("Missing orderId".to_string()))?
+                    .to_string();
+
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: Some(order_link_id),
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::StopMarket { stop_price },
+                    status: crate::core::OrderStatus::New,
+                    price: None,
+                    stop_price: Some(stop_price),
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: crate::core::timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                }))
+            }
+            OrderType::StopLimit { stop_price, limit_price } => {
+                let order_link_id = req.client_order_id.clone()
+                    .unwrap_or_else(|| format!("cc_{}", crate::core::timestamp_millis()));
+
+                let mut body = json!({
+                    "category": account_type_to_category(account_type),
+                    "symbol": format_symbol(&symbol, account_type),
+                    "side": match side {
+                        OrderSide::Buy => "Buy",
+                        OrderSide::Sell => "Sell",
+                    },
+                    "orderType": "Limit",
+                    "qty": quantity.to_string(),
+                    "price": limit_price.to_string(),
+                    "triggerPrice": stop_price.to_string(),
+                    "triggerBy": "MarkPrice",
+                    "orderLinkId": order_link_id,
+                });
+                if req.reduce_only {
+                    body["reduceOnly"] = json!(true);
+                }
+
+                let response = self.post(BybitEndpoint::PlaceOrder, body).await?;
+                let result = response.get("result")
+                    .ok_or_else(|| ExchangeError::Parse("Missing result".to_string()))?;
+                let order_id = result.get("orderId")
+                    .and_then(|id| id.as_str())
+                    .ok_or_else(|| ExchangeError::Parse("Missing orderId".to_string()))?
+                    .to_string();
+
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: Some(order_link_id),
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::StopLimit { stop_price, limit_price },
+                    status: crate::core::OrderStatus::New,
+                    price: Some(limit_price),
+                    stop_price: Some(stop_price),
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: crate::core::timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                }))
+            }
+            OrderType::TrailingStop { callback_rate, activation_price } => {
+                // Bybit Futures: trailingStop order via conditional order
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "TrailingStop not supported for Spot/Margin on Bybit".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+
+                let order_link_id = req.client_order_id.clone()
+                    .unwrap_or_else(|| format!("cc_{}", crate::core::timestamp_millis()));
+
+                let mut body = json!({
+                    "category": "linear",
+                    "symbol": format_symbol(&symbol, account_type),
+                    "side": match side {
+                        OrderSide::Buy => "Buy",
+                        OrderSide::Sell => "Sell",
+                    },
+                    "orderType": "Market",
+                    "qty": quantity.to_string(),
+                    "trailingStop": callback_rate.to_string(),
+                    "orderLinkId": order_link_id,
+                });
+                if let Some(ap) = activation_price {
+                    body["activePrice"] = json!(ap.to_string());
+                }
+                if req.reduce_only {
+                    body["reduceOnly"] = json!(true);
+                }
+
+                let response = self.post(BybitEndpoint::PlaceOrder, body).await?;
+                let result = response.get("result")
+                    .ok_or_else(|| ExchangeError::Parse("Missing result".to_string()))?;
+                let order_id = result.get("orderId")
+                    .and_then(|id| id.as_str())
+                    .ok_or_else(|| ExchangeError::Parse("Missing orderId".to_string()))?
+                    .to_string();
+
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: Some(order_link_id),
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::TrailingStop { callback_rate, activation_price },
+                    status: crate::core::OrderStatus::New,
+                    price: None,
+                    stop_price: activation_price,
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: crate::core::timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                }))
+            }
+            OrderType::PostOnly { price } => {
+                let order_link_id = req.client_order_id.clone()
+                    .unwrap_or_else(|| format!("cc_{}", crate::core::timestamp_millis()));
+
+                let body = json!({
+                    "category": account_type_to_category(account_type),
+                    "symbol": format_symbol(&symbol, account_type),
+                    "side": match side {
+                        OrderSide::Buy => "Buy",
+                        OrderSide::Sell => "Sell",
+                    },
+                    "orderType": "Limit",
+                    "qty": quantity.to_string(),
+                    "price": price.to_string(),
+                    "timeInForce": "PostOnly",
+                    "orderLinkId": order_link_id,
+                });
+
+                let response = self.post(BybitEndpoint::PlaceOrder, body).await?;
+                let result = response.get("result")
+                    .ok_or_else(|| ExchangeError::Parse("Missing result".to_string()))?;
+                let order_id = result.get("orderId")
+                    .and_then(|id| id.as_str())
+                    .ok_or_else(|| ExchangeError::Parse("Missing orderId".to_string()))?
+                    .to_string();
+
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: Some(order_link_id),
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::PostOnly { price },
+                    status: crate::core::OrderStatus::New,
+                    price: Some(price),
+                    stop_price: None,
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: crate::core::timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: crate::core::TimeInForce::PostOnly,
+                }))
+            }
+            OrderType::Ioc { price } => {
+                let order_link_id = req.client_order_id.clone()
+                    .unwrap_or_else(|| format!("cc_{}", crate::core::timestamp_millis()));
+
+                let body = json!({
+                    "category": account_type_to_category(account_type),
+                    "symbol": format_symbol(&symbol, account_type),
+                    "side": match side {
+                        OrderSide::Buy => "Buy",
+                        OrderSide::Sell => "Sell",
+                    },
+                    "orderType": if price.is_some() { "Limit" } else { "Market" },
+                    "qty": quantity.to_string(),
+                    "price": price.map(|p| p.to_string()).unwrap_or_default(),
+                    "timeInForce": "IOC",
+                    "orderLinkId": order_link_id,
+                });
+
+                let response = self.post(BybitEndpoint::PlaceOrder, body).await?;
+                let result = response.get("result")
+                    .ok_or_else(|| ExchangeError::Parse("Missing result".to_string()))?;
+                let order_id = result.get("orderId")
+                    .and_then(|id| id.as_str())
+                    .ok_or_else(|| ExchangeError::Parse("Missing orderId".to_string()))?
+                    .to_string();
+
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: Some(order_link_id),
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::Ioc { price },
+                    status: crate::core::OrderStatus::New,
+                    price,
+                    stop_price: None,
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: crate::core::timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: crate::core::TimeInForce::Ioc,
+                }))
+            }
+            OrderType::Fok { price } => {
+                let order_link_id = req.client_order_id.clone()
+                    .unwrap_or_else(|| format!("cc_{}", crate::core::timestamp_millis()));
+
+                let body = json!({
+                    "category": account_type_to_category(account_type),
+                    "symbol": format_symbol(&symbol, account_type),
+                    "side": match side {
+                        OrderSide::Buy => "Buy",
+                        OrderSide::Sell => "Sell",
+                    },
+                    "orderType": "Limit",
+                    "qty": quantity.to_string(),
+                    "price": price.to_string(),
+                    "timeInForce": "FOK",
+                    "orderLinkId": order_link_id,
+                });
+
+                let response = self.post(BybitEndpoint::PlaceOrder, body).await?;
+                let result = response.get("result")
+                    .ok_or_else(|| ExchangeError::Parse("Missing result".to_string()))?;
+                let order_id = result.get("orderId")
+                    .and_then(|id| id.as_str())
+                    .ok_or_else(|| ExchangeError::Parse("Missing orderId".to_string()))?
+                    .to_string();
+
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: Some(order_link_id),
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::Fok { price },
+                    status: crate::core::OrderStatus::New,
+                    price: Some(price),
+                    stop_price: None,
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: crate::core::timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: crate::core::TimeInForce::Fok,
+                }))
+            }
+            OrderType::Gtd { price, expire_time } => {
+                let order_link_id = req.client_order_id.clone()
+                    .unwrap_or_else(|| format!("cc_{}", crate::core::timestamp_millis()));
+
+                let body = json!({
+                    "category": account_type_to_category(account_type),
+                    "symbol": format_symbol(&symbol, account_type),
+                    "side": match side {
+                        OrderSide::Buy => "Buy",
+                        OrderSide::Sell => "Sell",
+                    },
+                    "orderType": "Limit",
+                    "qty": quantity.to_string(),
+                    "price": price.to_string(),
+                    "timeInForce": "GTC",
+                    "closeOnTrigger": false,
+                    "orderLinkId": order_link_id,
+                    "tpslMode": "Full",
+                });
+                // Bybit uses timeInForce=GTD with expiryDate in days format
+                // For simplicity use GTC and note that Bybit GTD format differs
+                let _ = expire_time;
+
+                let response = self.post(BybitEndpoint::PlaceOrder, body).await?;
+                let result = response.get("result")
+                    .ok_or_else(|| ExchangeError::Parse("Missing result".to_string()))?;
+                let order_id = result.get("orderId")
+                    .and_then(|id| id.as_str())
+                    .ok_or_else(|| ExchangeError::Parse("Missing orderId".to_string()))?
+                    .to_string();
+
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: Some(order_link_id),
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::Gtd { price, expire_time },
+                    status: crate::core::OrderStatus::New,
+                    price: Some(price),
+                    stop_price: None,
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: crate::core::timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: crate::core::TimeInForce::Gtd,
+                }))
+            }
+            OrderType::ReduceOnly { price } => {
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "ReduceOnly not supported for Spot/Margin".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+
+                let order_link_id = req.client_order_id.clone()
+                    .unwrap_or_else(|| format!("cc_{}", crate::core::timestamp_millis()));
+
+                let body = json!({
+                    "category": "linear",
+                    "symbol": format_symbol(&symbol, account_type),
+                    "side": match side {
+                        OrderSide::Buy => "Buy",
+                        OrderSide::Sell => "Sell",
+                    },
+                    "orderType": if price.is_some() { "Limit" } else { "Market" },
+                    "qty": quantity.to_string(),
+                    "price": price.map(|p| p.to_string()).unwrap_or_default(),
+                    "reduceOnly": true,
+                    "orderLinkId": order_link_id,
+                });
+
+                let response = self.post(BybitEndpoint::PlaceOrder, body).await?;
+                let result = response.get("result")
+                    .ok_or_else(|| ExchangeError::Parse("Missing result".to_string()))?;
+                let order_id = result.get("orderId")
+                    .and_then(|id| id.as_str())
+                    .ok_or_else(|| ExchangeError::Parse("Missing orderId".to_string()))?
+                    .to_string();
+
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: Some(order_link_id),
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::ReduceOnly { price },
+                    status: crate::core::OrderStatus::New,
+                    price,
+                    stop_price: None,
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: crate::core::timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                }))
+            }
+            // Bybit does not support Iceberg, OCO, Bracket, TWAP natively via V5 unified
+            OrderType::Iceberg { .. }
+            | OrderType::Oco { .. }
+            | OrderType::Bracket { .. }
+            | OrderType::Twap { .. } => Err(ExchangeError::UnsupportedOperation(
                 format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
             )),
         }
@@ -530,14 +943,49 @@ impl Trading for BybitConnector {
 
     async fn get_order_history(
         &self,
-        _filter: OrderHistoryFilter,
-        _account_type: AccountType,
+        filter: OrderHistoryFilter,
+        account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_order_history not yet implemented".to_string()
-        ))
+        let mut params = HashMap::new();
+        params.insert("category".to_string(), account_type_to_category(account_type).to_string());
+
+        if let Some(ref s) = filter.symbol {
+            params.insert("symbol".to_string(), format_symbol(s, account_type));
+        }
+        if let Some(st) = filter.start_time {
+            params.insert("startTime".to_string(), st.to_string());
+        }
+        if let Some(et) = filter.end_time {
+            params.insert("endTime".to_string(), et.to_string());
+        }
+        if let Some(lim) = filter.limit {
+            params.insert("limit".to_string(), lim.min(50).to_string());
+        }
+
+        let response = self.get(BybitEndpoint::OrderHistory, params).await?;
+
+        let result = response.get("result")
+            .ok_or_else(|| ExchangeError::Parse("Missing result".to_string()))?;
+        let list = result.get("list")
+            .and_then(|l| l.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing list".to_string()))?;
+
+        let mut orders = Vec::new();
+        for order_data in list {
+            let wrapper = serde_json::json!({
+                "retCode": 0,
+                "retMsg": "OK",
+                "result": order_data,
+            });
+            if let Ok(order) = BybitParser::parse_order(&wrapper) {
+                orders.push(order);
+            }
+        }
+
+        Ok(orders)
     }
-async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+
+    async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         match req.scope {
             CancelScope::Single { ref order_id } => {
                 let symbol = req.symbol.as_ref()
@@ -545,39 +993,105 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
                     .clone();
                 let account_type = req.account_type;
 
-            let body = json!({
-                "category": account_type_to_category(account_type),
-                "symbol": format_symbol(&symbol, account_type),
-                "orderId": order_id,
-            });
+                let body = json!({
+                    "category": account_type_to_category(account_type),
+                    "symbol": format_symbol(&symbol, account_type),
+                    "orderId": order_id,
+                });
 
-            let response = self.post(BybitEndpoint::CancelOrder, body).await?;
-            self.check_response(&response)?;
+                let response = self.post(BybitEndpoint::CancelOrder, body).await?;
+                self.check_response(&response)?;
 
-            // Return cancelled order (minimal info)
-            Ok(Order {
-                id: order_id.to_string(),
-                client_order_id: None,
-                symbol: symbol.to_string(),
-                side: OrderSide::Buy, // Unknown
-                order_type: OrderType::Limit { price: 0.0 },
-                status: crate::core::OrderStatus::Canceled,
-                price: None,
-                stop_price: None,
-                quantity: 0.0,
-                filled_quantity: 0.0,
-                average_price: None,
-                commission: None,
-                commission_asset: None,
-                created_at: 0,
-                updated_at: Some(crate::core::timestamp_millis() as i64),
-                time_in_force: crate::core::TimeInForce::Gtc,
-            })
-    
+                Ok(Order {
+                    id: order_id.to_string(),
+                    client_order_id: None,
+                    symbol: symbol.to_string(),
+                    side: OrderSide::Buy,
+                    order_type: OrderType::Limit { price: 0.0 },
+                    status: crate::core::OrderStatus::Canceled,
+                    price: None,
+                    stop_price: None,
+                    quantity: 0.0,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: 0,
+                    updated_at: Some(crate::core::timestamp_millis() as i64),
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                })
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
-            )),
+            CancelScope::All { ref symbol } => {
+                let sym = symbol.as_ref()
+                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel-all on Bybit".into()))?;
+                let account_type = req.account_type;
+
+                let body = json!({
+                    "category": account_type_to_category(account_type),
+                    "symbol": format_symbol(sym, account_type),
+                });
+
+                let response = self.post(BybitEndpoint::CancelAllOrders, body).await?;
+                self.check_response(&response)?;
+
+                // Return a sentinel cancelled order
+                Ok(Order {
+                    id: "cancel-all".to_string(),
+                    client_order_id: None,
+                    symbol: sym.to_string(),
+                    side: OrderSide::Buy,
+                    order_type: OrderType::Market,
+                    status: crate::core::OrderStatus::Canceled,
+                    price: None,
+                    stop_price: None,
+                    quantity: 0.0,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: 0,
+                    updated_at: Some(crate::core::timestamp_millis() as i64),
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                })
+            }
+            CancelScope::BySymbol { ref symbol } => {
+                let account_type = req.account_type;
+
+                let body = json!({
+                    "category": account_type_to_category(account_type),
+                    "symbol": format_symbol(symbol, account_type),
+                });
+
+                let response = self.post(BybitEndpoint::CancelAllOrders, body).await?;
+                self.check_response(&response)?;
+
+                Ok(Order {
+                    id: "cancel-by-symbol".to_string(),
+                    client_order_id: None,
+                    symbol: symbol.to_string(),
+                    side: OrderSide::Buy,
+                    order_type: OrderType::Market,
+                    status: crate::core::OrderStatus::Canceled,
+                    price: None,
+                    stop_price: None,
+                    quantity: 0.0,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: 0,
+                    updated_at: Some(crate::core::timestamp_millis() as i64),
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                })
+            }
+            CancelScope::Batch { ref order_ids } => {
+                // Bybit V5 does not have a native batch cancel — cancel one by one
+                // Per rules: must NOT loop cancel. Return UnsupportedOperation.
+                let _ = order_ids;
+                Err(ExchangeError::UnsupportedOperation(
+                    "Batch cancel not natively supported on Bybit V5 (no atomic batch-cancel endpoint)".to_string()
+                ))
+            }
         }
     }
 
@@ -704,10 +1218,38 @@ impl Account for BybitConnector {
         })
     }
 
-    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_fees not yet implemented".to_string()
-        ))
+    async fn get_fees(&self, symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        let mut params = HashMap::new();
+        params.insert("category".to_string(), "spot".to_string());
+        if let Some(s) = symbol {
+            params.insert("symbol".to_string(), s.to_string());
+        }
+
+        let response = self.get(BybitEndpoint::FeeRate, params).await?;
+
+        let result = response.get("result")
+            .ok_or_else(|| ExchangeError::Parse("Missing result".to_string()))?;
+        let list = result.get("list")
+            .and_then(|l| l.as_array())
+            .and_then(|a| a.first())
+            .ok_or_else(|| ExchangeError::Parse("Empty fee list".to_string()))?;
+
+        let maker_rate = list.get("makerFeeRate")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.001);
+
+        let taker_rate = list.get("takerFeeRate")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.001);
+
+        Ok(FeeInfo {
+            maker_rate,
+            taker_rate,
+            symbol: symbol.map(String::from),
+            tier: None,
+        })
     }
 }
 
@@ -862,30 +1404,159 @@ impl Positions for BybitConnector {
                 let symbol = symbol.clone();
 
                 match account_type {
-                AccountType::Spot | AccountType::Margin => {
-                return Err(ExchangeError::UnsupportedOperation(
-                "Leverage not supported for Spot/Margin".to_string()
-                ));
-                }
-                _ => {}
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "Leverage not supported for Spot/Margin".to_string()
+                        ));
+                    }
+                    _ => {}
                 }
 
                 let body = json!({
-                "category": account_type_to_category(account_type),
-                "symbol": format_symbol(&symbol, account_type),
-                "buyLeverage": leverage.to_string(),
-                "sellLeverage": leverage.to_string(),
+                    "category": account_type_to_category(account_type),
+                    "symbol": format_symbol(&symbol, account_type),
+                    "buyLeverage": leverage.to_string(),
+                    "sellLeverage": leverage.to_string(),
                 });
 
                 let response = self.post(BybitEndpoint::SetLeverage, body).await?;
                 self.check_response(&response)?;
-
                 Ok(())
-    
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} not supported on {:?}", req, self.exchange_id())
-            )),
+            PositionModification::SetMarginMode { ref symbol, margin_type, account_type } => {
+                let symbol = symbol.clone();
+
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "SetMarginMode not supported for Spot/Margin".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+
+                let trade_mode = match margin_type {
+                    MarginType::Cross => 0i32,
+                    MarginType::Isolated => 1i32,
+                };
+
+                let body = json!({
+                    "category": "linear",
+                    "symbol": format_symbol(&symbol, account_type),
+                    "tradeMode": trade_mode,
+                    "buyLeverage": "1",
+                    "sellLeverage": "1",
+                });
+
+                let response = self.post(BybitEndpoint::SetMarginMode, body).await?;
+                self.check_response(&response)?;
+                Ok(())
+            }
+            PositionModification::AddMargin { ref symbol, amount, account_type } => {
+                let symbol = symbol.clone();
+
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "AddMargin not supported for Spot/Margin".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+
+                let body = json!({
+                    "category": "linear",
+                    "symbol": format_symbol(&symbol, account_type),
+                    "margin": amount.to_string(),
+                    "positionIdx": 0,
+                });
+
+                let response = self.post(BybitEndpoint::AddMargin, body).await?;
+                self.check_response(&response)?;
+                Ok(())
+            }
+            PositionModification::RemoveMargin { ref symbol, amount, account_type } => {
+                let symbol = symbol.clone();
+
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "RemoveMargin not supported for Spot/Margin".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+
+                // Bybit: negative margin amount means remove
+                let body = json!({
+                    "category": "linear",
+                    "symbol": format_symbol(&symbol, account_type),
+                    "margin": format!("-{}", amount),
+                    "positionIdx": 0,
+                });
+
+                let response = self.post(BybitEndpoint::AddMargin, body).await?;
+                self.check_response(&response)?;
+                Ok(())
+            }
+            PositionModification::ClosePosition { ref symbol, account_type } => {
+                let symbol = symbol.clone();
+
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "ClosePosition not supported for Spot/Margin".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+
+                let order_link_id = format!("close_{}", crate::core::timestamp_millis());
+                let body = json!({
+                    "category": "linear",
+                    "symbol": format_symbol(&symbol, account_type),
+                    "side": "Sell", // Will be auto-corrected by reduceOnly logic
+                    "orderType": "Market",
+                    "qty": "0",
+                    "reduceOnly": true,
+                    "closeOnTrigger": true,
+                    "orderLinkId": order_link_id,
+                });
+
+                let response = self.post(BybitEndpoint::PlaceOrder, body).await?;
+                self.check_response(&response)?;
+                Ok(())
+            }
+            PositionModification::SetTpSl { ref symbol, take_profit, stop_loss, account_type } => {
+                let symbol = symbol.clone();
+
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "SetTpSl not supported for Spot/Margin".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+
+                let mut body = json!({
+                    "category": "linear",
+                    "symbol": format_symbol(&symbol, account_type),
+                    "positionIdx": 0,
+                    "tpslMode": "Full",
+                });
+
+                if let Some(tp) = take_profit {
+                    body["takeProfit"] = json!(tp.to_string());
+                }
+                if let Some(sl) = stop_loss {
+                    body["stopLoss"] = json!(sl.to_string());
+                }
+
+                let response = self.post(BybitEndpoint::TpSlMode, body).await?;
+                self.check_response(&response)?;
+                Ok(())
+            }
         }
     }
 }

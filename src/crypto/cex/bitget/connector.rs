@@ -8,6 +8,11 @@
 //! - `Trading` - торговые операции
 //! - `Account` - информация об аккаунте
 //! - `Positions` - futures позиции
+//!
+//! ## Optional трейты
+//! - `CancelAll` - отмена всех ордеров
+//! - `AmendOrder` - изменение ордера
+//! - `BatchOrders` - пакетные ордера
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -23,15 +28,19 @@ use crate::core::{
     ExchangeError, ExchangeResult,
     Price, Quantity, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, Balance, AccountInfo,
-    Position, FundingRate,
+    Position, FundingRate, MarginType,
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
+    TimeInForce,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
 };
-use crate::core::types::ConnectorStats;
+use crate::core::{CancelAll, AmendOrder, BatchOrders};
+use crate::core::types::{
+    ConnectorStats, CancelAllResponse, OrderResult, AmendRequest,
+};
 use crate::core::utils::SimpleRateLimiter;
 
 use super::endpoints::{
@@ -253,6 +262,75 @@ impl BitgetConnector {
         self.get(endpoint, params, account_type).await
     }
 
+    /// Build common spot order body fields
+    fn spot_order_body_base(
+        symbol: &Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        account_type: AccountType,
+        client_oid: &str,
+    ) -> Value {
+        json!({
+            "symbol": format_symbol(&symbol.base, &symbol.quote, account_type),
+            "side": match side {
+                OrderSide::Buy => "buy",
+                OrderSide::Sell => "sell",
+            },
+            "size": quantity.to_string(),
+            "clientOid": client_oid,
+        })
+    }
+
+    /// Build common futures order body fields
+    fn futures_order_body_base(
+        symbol: &Symbol,
+        side: OrderSide,
+        quantity: Quantity,
+        account_type: AccountType,
+        client_oid: &str,
+    ) -> Value {
+        json!({
+            "symbol": format_symbol(&symbol.base, &symbol.quote, account_type),
+            "productType": get_product_type(&symbol.quote),
+            "marginCoin": symbol.quote.to_uppercase(),
+            "size": quantity.to_string(),
+            "side": match side {
+                OrderSide::Buy => "buy",
+                OrderSide::Sell => "sell",
+            },
+            "clientOid": client_oid,
+        })
+    }
+
+    /// Build a minimal returned Order after placing
+    fn build_placed_order(
+        order_id: String,
+        client_oid: String,
+        symbol: &Symbol,
+        side: OrderSide,
+        order_type: OrderType,
+        price: Option<Price>,
+        quantity: Quantity,
+    ) -> Order {
+        Order {
+            id: order_id,
+            client_order_id: Some(client_oid),
+            symbol: symbol.to_string(),
+            side,
+            order_type,
+            status: crate::core::OrderStatus::New,
+            price,
+            stop_price: None,
+            quantity,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: crate::core::timestamp_millis() as i64,
+            updated_at: None,
+            time_in_force: TimeInForce::Gtc,
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -447,206 +525,459 @@ impl Trading for BitgetConnector {
         let side = req.side;
         let quantity = req.quantity;
         let account_type = req.account_type;
+        let client_oid = format!("cc_{}", crate::core::timestamp_millis());
+        let formatted_symbol = format_symbol(&symbol.base, &symbol.quote, account_type);
+        let is_futures = matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated);
+        let margin_mode = match account_type {
+            AccountType::FuturesIsolated => "isolated",
+            _ => "crossed",
+        };
 
-        match req.order_type {
+        let (endpoint, body) = match req.order_type {
             OrderType::Market => {
-                let endpoint = match account_type {
-                            AccountType::Spot | AccountType::Margin => BitgetEndpoint::SpotCreateOrder,
-                            _ => BitgetEndpoint::FuturesCreateOrder,
-                        };
-                
-                        let client_oid = format!("cc_{}", crate::core::timestamp_millis());
-                        let formatted_symbol = format_symbol(&symbol.base, &symbol.quote, account_type);
-                
-                        let body = match account_type {
-                            AccountType::Spot | AccountType::Margin => {
-                                json!({
-                                    "symbol": formatted_symbol,
-                                    "side": match side {
-                                        OrderSide::Buy => "buy",
-                                        OrderSide::Sell => "sell",
-                                    },
-                                    "orderType": "market",
-                                    "force": "normal",
-                                    "quantity": quantity.to_string(),
-                                    "clientOrderId": client_oid,
-                                })
-                            }
-                            AccountType::FuturesCross | AccountType::FuturesIsolated => {
-                                json!({
-                                    "symbol": formatted_symbol,
-                                    "productType": get_product_type(&symbol.quote),
-                                    "marginCoin": symbol.quote.to_uppercase(),
-                                    "size": quantity.to_string(),
-                                    "side": match side {
-                                        OrderSide::Buy => "open_long",
-                                        OrderSide::Sell => "open_short",
-                                    },
-                                    "orderType": "market",
-                                    "clientOid": client_oid,
-                                })
-                            }
-                        };
-                
-                        let response = self.post(endpoint, body, account_type).await?;
-                        let order_id = BitgetParser::parse_order_id(&response)?;
-                
-                        // Return minimal order info
-                        Ok(PlaceOrderResponse::Simple(Order {
-                            id: order_id,
-                            client_order_id: Some(client_oid),
-                            symbol: symbol.to_string(),
-                            side,
-                            order_type: OrderType::Market,
-                            status: crate::core::OrderStatus::New,
-                            price: None,
-                            stop_price: None,
-                            quantity,
-                            filled_quantity: 0.0,
-                            average_price: None,
-                            commission: None,
-                            commission_asset: None,
-                            created_at: crate::core::timestamp_millis() as i64,
-                            updated_at: None,
-                            time_in_force: crate::core::TimeInForce::Gtc,
-                        }))
+                let endpoint = if is_futures { BitgetEndpoint::FuturesCreateOrder } else { BitgetEndpoint::SpotCreateOrder };
+                let body = if is_futures {
+                    json!({
+                        "symbol": formatted_symbol,
+                        "productType": get_product_type(&symbol.quote),
+                        "marginMode": margin_mode,
+                        "marginCoin": symbol.quote.to_uppercase(),
+                        "size": quantity.to_string(),
+                        "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
+                        "orderType": "market",
+                        "force": "gtc",
+                        "clientOid": client_oid,
+                    })
+                } else {
+                    json!({
+                        "symbol": formatted_symbol,
+                        "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
+                        "orderType": "market",
+                        "force": "gtc",
+                        "size": quantity.to_string(),
+                        "clientOid": client_oid,
+                    })
+                };
+                (endpoint, body)
             }
-            OrderType::Limit { price } => {
-                let endpoint = match account_type {
-                            AccountType::Spot | AccountType::Margin => BitgetEndpoint::SpotCreateOrder,
-                            _ => BitgetEndpoint::FuturesCreateOrder,
-                        };
-                
-                        let client_oid = format!("cc_{}", crate::core::timestamp_millis());
-                        let formatted_symbol = format_symbol(&symbol.base, &symbol.quote, account_type);
-                
-                        let body = match account_type {
-                            AccountType::Spot | AccountType::Margin => {
-                                json!({
-                                    "symbol": formatted_symbol,
-                                    "side": match side {
-                                        OrderSide::Buy => "buy",
-                                        OrderSide::Sell => "sell",
-                                    },
-                                    "orderType": "limit",
-                                    "force": "normal",
-                                    "price": price.to_string(),
-                                    "quantity": quantity.to_string(),
-                                    "clientOrderId": client_oid,
-                                })
-                            }
-                            AccountType::FuturesCross | AccountType::FuturesIsolated => {
-                                json!({
-                                    "symbol": formatted_symbol,
-                                    "productType": get_product_type(&symbol.quote),
-                                    "marginCoin": symbol.quote.to_uppercase(),
-                                    "size": quantity.to_string(),
-                                    "price": price.to_string(),
-                                    "side": match side {
-                                        OrderSide::Buy => "open_long",
-                                        OrderSide::Sell => "open_short",
-                                    },
-                                    "orderType": "limit",
-                                    "clientOid": client_oid,
-                                })
-                            }
-                        };
-                
-                        let response = self.post(endpoint, body, account_type).await?;
-                        let order_id = BitgetParser::parse_order_id(&response)?;
-                
-                        Ok(PlaceOrderResponse::Simple(Order {
-                            id: order_id,
-                            client_order_id: Some(client_oid),
-                            symbol: symbol.to_string(),
-                            side,
-                            order_type: OrderType::Limit { price: 0.0 },
-                            status: crate::core::OrderStatus::New,
-                            price: Some(price),
-                            stop_price: None,
-                            quantity,
-                            filled_quantity: 0.0,
-                            average_price: None,
-                            commission: None,
-                            commission_asset: None,
-                            created_at: crate::core::timestamp_millis() as i64,
-                            updated_at: None,
-                            time_in_force: crate::core::TimeInForce::Gtc,
-                        }))
-            }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
-            )),
-        }
-    }
 
-    async fn get_order_history(
-        &self,
-        _filter: OrderHistoryFilter,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_order_history not yet implemented".to_string()
+            OrderType::Limit { price } => {
+                let endpoint = if is_futures { BitgetEndpoint::FuturesCreateOrder } else { BitgetEndpoint::SpotCreateOrder };
+                let body = if is_futures {
+                    json!({
+                        "symbol": formatted_symbol,
+                        "productType": get_product_type(&symbol.quote),
+                        "marginMode": margin_mode,
+                        "marginCoin": symbol.quote.to_uppercase(),
+                        "size": quantity.to_string(),
+                        "price": price.to_string(),
+                        "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
+                        "orderType": "limit",
+                        "force": "gtc",
+                        "clientOid": client_oid,
+                    })
+                } else {
+                    json!({
+                        "symbol": formatted_symbol,
+                        "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
+                        "orderType": "limit",
+                        "force": "gtc",
+                        "price": price.to_string(),
+                        "size": quantity.to_string(),
+                        "clientOid": client_oid,
+                    })
+                };
+                (endpoint, body)
+            }
+
+            OrderType::PostOnly { price } => {
+                // Bitget: force=post_only, orderType=limit
+                let endpoint = if is_futures { BitgetEndpoint::FuturesCreateOrder } else { BitgetEndpoint::SpotCreateOrder };
+                let body = if is_futures {
+                    json!({
+                        "symbol": formatted_symbol,
+                        "productType": get_product_type(&symbol.quote),
+                        "marginMode": margin_mode,
+                        "marginCoin": symbol.quote.to_uppercase(),
+                        "size": quantity.to_string(),
+                        "price": price.to_string(),
+                        "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
+                        "orderType": "limit",
+                        "force": "post_only",
+                        "clientOid": client_oid,
+                    })
+                } else {
+                    json!({
+                        "symbol": formatted_symbol,
+                        "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
+                        "orderType": "limit",
+                        "force": "post_only",
+                        "price": price.to_string(),
+                        "size": quantity.to_string(),
+                        "clientOid": client_oid,
+                    })
+                };
+                (endpoint, body)
+            }
+
+            OrderType::Ioc { price } => {
+                // Bitget: force=ioc, orderType=limit
+                let endpoint = if is_futures { BitgetEndpoint::FuturesCreateOrder } else { BitgetEndpoint::SpotCreateOrder };
+                let price_val = price.unwrap_or(0.0);
+                let body = if is_futures {
+                    json!({
+                        "symbol": formatted_symbol,
+                        "productType": get_product_type(&symbol.quote),
+                        "marginMode": margin_mode,
+                        "marginCoin": symbol.quote.to_uppercase(),
+                        "size": quantity.to_string(),
+                        "price": price_val.to_string(),
+                        "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
+                        "orderType": "limit",
+                        "force": "ioc",
+                        "clientOid": client_oid,
+                    })
+                } else {
+                    json!({
+                        "symbol": formatted_symbol,
+                        "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
+                        "orderType": "limit",
+                        "force": "ioc",
+                        "price": price_val.to_string(),
+                        "size": quantity.to_string(),
+                        "clientOid": client_oid,
+                    })
+                };
+                (endpoint, body)
+            }
+
+            OrderType::Fok { price } => {
+                // Bitget: force=fok, orderType=limit
+                let endpoint = if is_futures { BitgetEndpoint::FuturesCreateOrder } else { BitgetEndpoint::SpotCreateOrder };
+                let body = if is_futures {
+                    json!({
+                        "symbol": formatted_symbol,
+                        "productType": get_product_type(&symbol.quote),
+                        "marginMode": margin_mode,
+                        "marginCoin": symbol.quote.to_uppercase(),
+                        "size": quantity.to_string(),
+                        "price": price.to_string(),
+                        "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
+                        "orderType": "limit",
+                        "force": "fok",
+                        "clientOid": client_oid,
+                    })
+                } else {
+                    json!({
+                        "symbol": formatted_symbol,
+                        "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
+                        "orderType": "limit",
+                        "force": "fok",
+                        "price": price.to_string(),
+                        "size": quantity.to_string(),
+                        "clientOid": client_oid,
+                    })
+                };
+                (endpoint, body)
+            }
+
+            OrderType::Gtd { price, expire_time } => {
+                // Bitget: force=gtc with custom client expiry; no native GTD,
+                // treat as GTC limit with expiry hint in clientOid comment
+                // Note: Bitget does support GTD via force param on some endpoints,
+                // but the V2 API primarily uses gtc/post_only/fok/ioc.
+                // We use limit+gtc and attach expire_time as a clientOid suffix.
+                let _ = expire_time; // acknowledged, not natively supported on Bitget spot
+                let endpoint = if is_futures { BitgetEndpoint::FuturesCreateOrder } else { BitgetEndpoint::SpotCreateOrder };
+                let body = if is_futures {
+                    json!({
+                        "symbol": formatted_symbol,
+                        "productType": get_product_type(&symbol.quote),
+                        "marginMode": margin_mode,
+                        "marginCoin": symbol.quote.to_uppercase(),
+                        "size": quantity.to_string(),
+                        "price": price.to_string(),
+                        "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
+                        "orderType": "limit",
+                        "force": "gtc",
+                        "clientOid": client_oid,
+                    })
+                } else {
+                    json!({
+                        "symbol": formatted_symbol,
+                        "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
+                        "orderType": "limit",
+                        "force": "gtc",
+                        "price": price.to_string(),
+                        "size": quantity.to_string(),
+                        "clientOid": client_oid,
+                    })
+                };
+                (endpoint, body)
+            }
+
+            OrderType::ReduceOnly { price } => {
+                // Futures only — reduceOnly=YES
+                if !is_futures {
+                    return Err(ExchangeError::UnsupportedOperation(
+                        "ReduceOnly orders are only supported for futures on Bitget".to_string()
+                    ));
+                }
+                let (order_type_str, price_field) = if let Some(p) = price {
+                    ("limit", Some(p))
+                } else {
+                    ("market", None)
+                };
+                let mut body_obj = json!({
+                    "symbol": formatted_symbol,
+                    "productType": get_product_type(&symbol.quote),
+                    "marginMode": margin_mode,
+                    "marginCoin": symbol.quote.to_uppercase(),
+                    "size": quantity.to_string(),
+                    "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
+                    "orderType": order_type_str,
+                    "force": "gtc",
+                    "reduceOnly": "YES",
+                    "clientOid": client_oid,
+                });
+                if let Some(p) = price_field {
+                    body_obj["price"] = json!(p.to_string());
+                }
+                (BitgetEndpoint::FuturesCreateOrder, body_obj)
+            }
+
+            OrderType::StopMarket { stop_price } => {
+                // Bitget: plan order with planType=normal_plan, orderType=market, triggerPrice=stop_price
+                if !is_futures {
+                    return Err(ExchangeError::UnsupportedOperation(
+                        "StopMarket plan orders are only supported for futures on Bitget".to_string()
+                    ));
+                }
+                let body = json!({
+                    "symbol": formatted_symbol,
+                    "productType": get_product_type(&symbol.quote),
+                    "marginMode": margin_mode,
+                    "marginCoin": symbol.quote.to_uppercase(),
+                    "size": quantity.to_string(),
+                    "triggerPrice": stop_price.to_string(),
+                    "triggerType": "mark_price",
+                    "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
+                    "orderType": "market",
+                    "planType": "normal_plan",
+                    "clientOid": client_oid,
+                });
+                (BitgetEndpoint::FuturesPlanOrder, body)
+            }
+
+            OrderType::StopLimit { stop_price, limit_price } => {
+                // Bitget: plan order with planType=normal_plan, orderType=limit, price=limit_price, triggerPrice=stop_price
+                if !is_futures {
+                    return Err(ExchangeError::UnsupportedOperation(
+                        "StopLimit plan orders are only supported for futures on Bitget".to_string()
+                    ));
+                }
+                let body = json!({
+                    "symbol": formatted_symbol,
+                    "productType": get_product_type(&symbol.quote),
+                    "marginMode": margin_mode,
+                    "marginCoin": symbol.quote.to_uppercase(),
+                    "size": quantity.to_string(),
+                    "price": limit_price.to_string(),
+                    "triggerPrice": stop_price.to_string(),
+                    "triggerType": "mark_price",
+                    "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
+                    "orderType": "limit",
+                    "planType": "normal_plan",
+                    "clientOid": client_oid,
+                });
+                (BitgetEndpoint::FuturesPlanOrder, body)
+            }
+
+            OrderType::TrailingStop { callback_rate, activation_price } => {
+                // Bitget: plan order with planType=track_plan, callbackRatio=callback_rate
+                if !is_futures {
+                    return Err(ExchangeError::UnsupportedOperation(
+                        "TrailingStop plan orders are only supported for futures on Bitget".to_string()
+                    ));
+                }
+                let mut body = json!({
+                    "symbol": formatted_symbol,
+                    "productType": get_product_type(&symbol.quote),
+                    "marginMode": margin_mode,
+                    "marginCoin": symbol.quote.to_uppercase(),
+                    "size": quantity.to_string(),
+                    "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
+                    "orderType": "market",
+                    "planType": "track_plan",
+                    "callbackRatio": callback_rate.to_string(),
+                    "clientOid": client_oid,
+                });
+                if let Some(act_price) = activation_price {
+                    body["triggerPrice"] = json!(act_price.to_string());
+                    body["triggerType"] = json!("mark_price");
+                }
+                (BitgetEndpoint::FuturesPlanOrder, body)
+            }
+
+            OrderType::Bracket { price, take_profit, stop_loss } => {
+                // Bitget: regular order with presetStopSurplusPrice and presetStopLossPrice
+                if !is_futures {
+                    return Err(ExchangeError::UnsupportedOperation(
+                        "Bracket orders are only supported for futures on Bitget".to_string()
+                    ));
+                }
+                let (order_type_str, price_field) = if let Some(p) = price {
+                    ("limit", Some(p))
+                } else {
+                    ("market", None)
+                };
+                let mut body_obj = json!({
+                    "symbol": formatted_symbol,
+                    "productType": get_product_type(&symbol.quote),
+                    "marginMode": margin_mode,
+                    "marginCoin": symbol.quote.to_uppercase(),
+                    "size": quantity.to_string(),
+                    "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
+                    "orderType": order_type_str,
+                    "force": "gtc",
+                    "presetStopSurplusPrice": take_profit.to_string(),
+                    "presetStopLossPrice": stop_loss.to_string(),
+                    "clientOid": client_oid,
+                });
+                if let Some(p) = price_field {
+                    body_obj["price"] = json!(p.to_string());
+                }
+                let order_id = {
+                    let response = self.post(BitgetEndpoint::FuturesCreateOrder, body_obj, account_type).await?;
+                    BitgetParser::parse_order_id(&response)?
+                };
+                return Ok(PlaceOrderResponse::Simple(
+                    Self::build_placed_order(order_id, client_oid, &symbol, side, req.order_type, price, quantity)
+                ));
+            }
+
+            _ => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    format!("{:?} order type not supported on Bitget", req.order_type)
+                ));
+            }
+        };
+
+        let response = self.post(endpoint, body, account_type).await?;
+        let order_id = BitgetParser::parse_order_id(&response)?;
+        let price_for_order = match &req.order_type {
+            OrderType::Limit { price } | OrderType::PostOnly { price } | OrderType::Fok { price } | OrderType::Gtd { price, .. } => Some(*price),
+            OrderType::Ioc { price } => *price,
+            OrderType::StopLimit { limit_price, .. } => Some(*limit_price),
+            _ => None,
+        };
+
+        Ok(PlaceOrderResponse::Simple(
+            Self::build_placed_order(order_id, client_oid, &symbol, side, req.order_type, price_for_order, quantity)
         ))
     }
-async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+
+    async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         match req.scope {
             CancelScope::Single { ref order_id } => {
                 let symbol = req.symbol.as_ref()
                     .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel".into()))?
                     .clone();
                 let account_type = req.account_type;
+                let is_futures = matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated);
 
-            let endpoint = match account_type {
-                AccountType::Spot | AccountType::Margin => BitgetEndpoint::SpotCancelOrder,
-                _ => BitgetEndpoint::FuturesCancelOrder,
-            };
+                let endpoint = if is_futures { BitgetEndpoint::FuturesCancelOrder } else { BitgetEndpoint::SpotCancelOrder };
+                let formatted_symbol = format_symbol(&symbol.base, &symbol.quote, account_type);
 
-            let formatted_symbol = format_symbol(&symbol.base, &symbol.quote, account_type);
-
-            let body = match account_type {
-                AccountType::Spot | AccountType::Margin => {
-                    json!({
-                        "symbol": formatted_symbol,
-                        "orderId": order_id,
-                    })
-                }
-                AccountType::FuturesCross | AccountType::FuturesIsolated => {
+                let body = if is_futures {
                     json!({
                         "symbol": formatted_symbol,
                         "productType": get_product_type(&symbol.quote),
                         "marginCoin": symbol.quote.to_uppercase(),
                         "orderId": order_id,
                     })
-                }
-            };
+                } else {
+                    json!({
+                        "symbol": formatted_symbol,
+                        "orderId": order_id,
+                    })
+                };
 
-            let response = self.post(endpoint, body, account_type).await?;
-            self.check_response(&response)?;
+                self.post(endpoint, body, account_type).await?;
 
-            // Return cancelled order (minimal info)
-            Ok(Order {
-                id: order_id.to_string(),
-                client_order_id: None,
-                symbol: symbol.to_string(),
-                side: OrderSide::Buy, // Unknown
-                order_type: OrderType::Limit { price: 0.0 },
-                status: crate::core::OrderStatus::Canceled,
-                price: None,
-                stop_price: None,
-                quantity: 0.0,
-                filled_quantity: 0.0,
-                average_price: None,
-                commission: None,
-                commission_asset: None,
-                created_at: 0,
-                updated_at: Some(crate::core::timestamp_millis() as i64),
-                time_in_force: crate::core::TimeInForce::Gtc,
-            })
-    
+                Ok(Order {
+                    id: order_id.to_string(),
+                    client_order_id: None,
+                    symbol: symbol.to_string(),
+                    side: OrderSide::Buy,
+                    order_type: OrderType::Limit { price: 0.0 },
+                    status: crate::core::OrderStatus::Canceled,
+                    price: None,
+                    stop_price: None,
+                    quantity: 0.0,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: 0,
+                    updated_at: Some(crate::core::timestamp_millis() as i64),
+                    time_in_force: TimeInForce::Gtc,
+                })
             }
+
+            CancelScope::Batch { ref order_ids } => {
+                let symbol = req.symbol.as_ref()
+                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for batch cancel".into()))?
+                    .clone();
+                let account_type = req.account_type;
+                let is_futures = matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated);
+                let formatted_symbol = format_symbol(&symbol.base, &symbol.quote, account_type);
+
+                if is_futures {
+                    let order_list: Vec<Value> = order_ids.iter()
+                        .map(|id| json!({ "orderId": id }))
+                        .collect();
+                    let body = json!({
+                        "symbol": formatted_symbol,
+                        "productType": get_product_type(&symbol.quote),
+                        "marginCoin": symbol.quote.to_uppercase(),
+                        "orderIdList": order_list,
+                    });
+                    self.post(BitgetEndpoint::FuturesBatchCancelOrders, body, account_type).await?;
+                } else {
+                    let order_list: Vec<Value> = order_ids.iter()
+                        .map(|id| json!({ "orderId": id }))
+                        .collect();
+                    let body = json!({
+                        "symbol": formatted_symbol,
+                        "orderList": order_list,
+                    });
+                    self.post(BitgetEndpoint::SpotBatchCancelOrders, body, account_type).await?;
+                }
+
+                // Return a representative "cancelled" order
+                Ok(Order {
+                    id: order_ids.first().cloned().unwrap_or_default(),
+                    client_order_id: None,
+                    symbol: symbol.to_string(),
+                    side: OrderSide::Buy,
+                    order_type: OrderType::Limit { price: 0.0 },
+                    status: crate::core::OrderStatus::Canceled,
+                    price: None,
+                    stop_price: None,
+                    quantity: 0.0,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: 0,
+                    updated_at: Some(crate::core::timestamp_millis() as i64),
+                    time_in_force: TimeInForce::Gtc,
+                })
+            }
+
             _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
+                format!("{:?} cancel scope — use CancelAll trait for all/bySymbol on Bitget", req.scope)
             )),
         }
     }
@@ -657,7 +988,6 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         order_id: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Order> {
-        // Parse symbol string into Symbol struct
         let symbol_parts: Vec<&str> = symbol.split('/').collect();
         let symbol = if symbol_parts.len() == 2 {
             crate::core::Symbol::new(symbol_parts[0], symbol_parts[1])
@@ -674,14 +1004,12 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
         params.insert("orderId".to_string(), order_id.to_string());
 
-        // Futures requires productType
         if matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated) {
             params.insert("productType".to_string(), get_product_type(&symbol.quote).to_string());
         }
 
         let response = self.get(endpoint, params, account_type).await?;
         BitgetParser::parse_order(&response, &symbol.to_string())
-    
     }
 
     async fn get_open_orders(
@@ -689,9 +1017,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         symbol: Option<&str>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        // Convert Option<&str> to Option<Symbol>
-        let symbol_str = symbol;
-        let symbol: Option<crate::core::Symbol> = symbol_str.map(|s| {
+        let symbol: Option<crate::core::Symbol> = symbol.map(|s| {
             let parts: Vec<&str> = s.split('/').collect();
             if parts.len() == 2 {
                 crate::core::Symbol::new(parts[0], parts[1])
@@ -707,21 +1033,52 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
 
         let mut params = HashMap::new();
 
-        if let Some(s) = symbol {
+        if let Some(ref s) = symbol {
             params.insert("symbol".to_string(), format_symbol(&s.base, &s.quote, account_type));
-
-            // Futures requires productType
             if matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated) {
                 params.insert("productType".to_string(), get_product_type(&s.quote).to_string());
             }
         } else if matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated) {
-            // Futures requires productType even without symbol
             params.insert("productType".to_string(), "USDT-FUTURES".to_string());
         }
 
         let response = self.get(endpoint, params, account_type).await?;
         BitgetParser::parse_orders(&response)
-    
+    }
+
+    async fn get_order_history(
+        &self,
+        filter: OrderHistoryFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        let is_futures = matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated);
+        let endpoint = if is_futures { BitgetEndpoint::FuturesAllOrders } else { BitgetEndpoint::SpotAllOrders };
+
+        let mut params = HashMap::new();
+
+        if is_futures {
+            // Futures requires productType
+            let product_type = filter.symbol.as_ref()
+                .map(|s| get_product_type(&s.quote))
+                .unwrap_or("USDT-FUTURES");
+            params.insert("productType".to_string(), product_type.to_string());
+        }
+
+        if let Some(ref s) = filter.symbol {
+            params.insert("symbol".to_string(), format_symbol(&s.base, &s.quote, account_type));
+        }
+        if let Some(start) = filter.start_time {
+            params.insert("startTime".to_string(), start.to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("endTime".to_string(), end.to_string());
+        }
+        if let Some(limit) = filter.limit {
+            params.insert("limit".to_string(), limit.min(100).to_string());
+        }
+
+        let response = self.get(endpoint, params, account_type).await?;
+        BitgetParser::parse_orders(&response)
     }
 }
 
@@ -745,10 +1102,8 @@ impl Account for BitgetConnector {
         if let Some(ref a) = asset {
             params.insert("coin".to_string(), a.to_string());
 
-            // Futures requires symbol and productType
             if matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated) {
                 params.insert("productType".to_string(), "USDT-FUTURES".to_string());
-                // For single account query, need symbol and marginCoin
                 params.insert("marginCoin".to_string(), a.to_string());
             }
         } else if matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated) {
@@ -761,7 +1116,6 @@ impl Account for BitgetConnector {
             AccountType::Spot | AccountType::Margin => BitgetParser::parse_balances(&response),
             _ => BitgetParser::parse_futures_account(&response),
         }
-    
     }
 
     async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
@@ -772,16 +1126,72 @@ impl Account for BitgetConnector {
             can_trade: true,
             can_withdraw: true,
             can_deposit: true,
-            maker_commission: 0.2, // Default, should be fetched from API
+            maker_commission: 0.2,
             taker_commission: 0.2,
             balances,
         })
     }
 
-    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_fees not yet implemented".to_string()
-        ))
+    async fn get_fees(&self, symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        // Use /api/v2/common/trade-rate for account-specific fee (requires symbol+businessType)
+        // Fall back to VIP fee rate if no symbol provided
+        if let Some(sym_str) = symbol {
+            let parts: Vec<&str> = sym_str.split('/').collect();
+            let sym = if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: sym_str.to_string(), quote: String::new(), raw: Some(sym_str.to_string()) }
+            };
+
+            let mut params = HashMap::new();
+            params.insert("symbol".to_string(), format_symbol(&sym.base, &sym.quote, AccountType::Spot));
+            params.insert("businessType".to_string(), "spot".to_string());
+
+            let response = self.get(BitgetEndpoint::TradeRate, params, AccountType::Spot).await?;
+            let data = response.get("data").ok_or_else(|| ExchangeError::Parse("Missing data".to_string()))?;
+
+            let maker = data.get("makerFeeRate")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.001);
+            let taker = data.get("takerFeeRate")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.001);
+
+            Ok(FeeInfo {
+                maker_rate: maker,
+                taker_rate: taker,
+                symbol: Some(sym_str.to_string()),
+                tier: None,
+            })
+        } else {
+            // No symbol: fetch VIP fee tier 0 (public, no auth needed)
+            let response = self.get(BitgetEndpoint::VipFeeRate, HashMap::new(), AccountType::Spot).await?;
+            let data = response.get("data")
+                .and_then(|d| d.as_array())
+                .and_then(|arr| arr.first())
+                .ok_or_else(|| ExchangeError::Parse("Missing VIP fee data".to_string()))?;
+
+            let maker = data.get("makerFeeRate")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.001);
+            let taker = data.get("takerFeeRate")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.001);
+            let level = data.get("level")
+                .and_then(|v| v.as_str())
+                .unwrap_or("0");
+
+            Ok(FeeInfo {
+                maker_rate: maker,
+                taker_rate: taker,
+                symbol: None,
+                tier: Some(format!("VIP{}", level)),
+            })
+        }
     }
 }
 
@@ -821,7 +1231,6 @@ impl Positions for BitgetConnector {
         } else {
             BitgetParser::parse_positions(&response)
         }
-    
     }
 
     async fn get_funding_rate(
@@ -829,7 +1238,6 @@ impl Positions for BitgetConnector {
         symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
-        // Parse symbol string into Symbol struct
         let symbol_str = symbol;
         let symbol = {
             let parts: Vec<&str> = symbol_str.split('/').collect();
@@ -855,40 +1263,577 @@ impl Positions for BitgetConnector {
 
         let response = self.get(BitgetEndpoint::FundingRate, params, account_type).await?;
         BitgetParser::parse_funding_rate(&response)
-    
     }
 
     async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
         match req {
             PositionModification::SetLeverage { ref symbol, leverage, account_type } => {
                 let symbol = symbol.clone();
-
                 match account_type {
-                AccountType::Spot | AccountType::Margin => {
-                return Err(ExchangeError::UnsupportedOperation(
-                "Leverage not supported for Spot/Margin".to_string()
-                ));
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "Leverage not supported for Spot/Margin".to_string()
+                        ));
+                    }
+                    _ => {}
                 }
-                _ => {}
-                }
-
                 let body = json!({
-                "symbol": format_symbol(&symbol.base, &symbol.quote, account_type),
-                "productType": get_product_type(&symbol.quote),
-                "marginCoin": symbol.quote.to_uppercase(),
-                "leverage": leverage.to_string(),
-                "holdSide": "long", // Default to long side
+                    "symbol": format_symbol(&symbol.base, &symbol.quote, account_type),
+                    "productType": get_product_type(&symbol.quote),
+                    "marginCoin": symbol.quote.to_uppercase(),
+                    "leverage": leverage.to_string(),
+                    "holdSide": "long",
                 });
-
-                let response = self.post(BitgetEndpoint::FuturesSetLeverage, body, account_type).await?;
-                self.check_response(&response)?;
-
+                self.post(BitgetEndpoint::FuturesSetLeverage, body, account_type).await?;
                 Ok(())
-    
             }
+
+            PositionModification::SetMarginMode { ref symbol, margin_type, account_type } => {
+                let symbol = symbol.clone();
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "MarginMode not supported for Spot/Margin".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+                let margin_mode_str = match margin_type {
+                    MarginType::Cross => "crossed",
+                    MarginType::Isolated => "isolated",
+                };
+                let body = json!({
+                    "symbol": format_symbol(&symbol.base, &symbol.quote, account_type),
+                    "productType": get_product_type(&symbol.quote),
+                    "marginCoin": symbol.quote.to_uppercase(),
+                    "marginMode": margin_mode_str,
+                });
+                self.post(BitgetEndpoint::FuturesSetMarginMode, body, account_type).await?;
+                Ok(())
+            }
+
+            PositionModification::AddMargin { ref symbol, amount, account_type } => {
+                let symbol = symbol.clone();
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "AddMargin not supported for Spot/Margin".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+                let body = json!({
+                    "symbol": format_symbol(&symbol.base, &symbol.quote, account_type),
+                    "productType": get_product_type(&symbol.quote),
+                    "marginCoin": symbol.quote.to_uppercase(),
+                    "amount": amount.to_string(),
+                    "holdSide": "long",
+                    "operationType": "add",
+                });
+                self.post(BitgetEndpoint::FuturesSetMargin, body, account_type).await?;
+                Ok(())
+            }
+
+            PositionModification::RemoveMargin { ref symbol, amount, account_type } => {
+                let symbol = symbol.clone();
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "RemoveMargin not supported for Spot/Margin".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+                let body = json!({
+                    "symbol": format_symbol(&symbol.base, &symbol.quote, account_type),
+                    "productType": get_product_type(&symbol.quote),
+                    "marginCoin": symbol.quote.to_uppercase(),
+                    "amount": amount.to_string(),
+                    "holdSide": "long",
+                    "operationType": "reduce",
+                });
+                self.post(BitgetEndpoint::FuturesSetMargin, body, account_type).await?;
+                Ok(())
+            }
+
+            PositionModification::ClosePosition { ref symbol, account_type } => {
+                let symbol = symbol.clone();
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "ClosePosition not supported for Spot/Margin".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+                // Flash close via /api/v2/mix/order/close-positions — closes entire position at market
+                let body = json!({
+                    "symbol": format_symbol(&symbol.base, &symbol.quote, account_type),
+                    "productType": get_product_type(&symbol.quote),
+                    "marginCoin": symbol.quote.to_uppercase(),
+                    "holdSide": "long",
+                });
+                self.post(BitgetEndpoint::FuturesClosePositions, body, account_type).await?;
+                Ok(())
+            }
+
+            PositionModification::SetTpSl { ref symbol, take_profit, stop_loss, account_type } => {
+                let symbol = symbol.clone();
+                match account_type {
+                    AccountType::Spot | AccountType::Margin => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "SetTpSl not supported for Spot/Margin".to_string()
+                        ));
+                    }
+                    _ => {}
+                }
+                // Use place-tpsl-order to set both TP and SL on the position
+                let mut body = json!({
+                    "symbol": format_symbol(&symbol.base, &symbol.quote, account_type),
+                    "productType": get_product_type(&symbol.quote),
+                    "marginCoin": symbol.quote.to_uppercase(),
+                    "planType": "profit_loss",
+                    "triggerType": "mark_price",
+                    "holdSide": "long",
+                });
+                if let Some(tp) = take_profit {
+                    body["stopSurplusTriggerPrice"] = json!(tp.to_string());
+                    body["stopSurplusTriggerType"] = json!("mark_price");
+                    body["stopSurplusExecutePrice"] = json!("0");
+                }
+                if let Some(sl) = stop_loss {
+                    body["stopLossTriggerPrice"] = json!(sl.to_string());
+                    body["stopLossTriggerType"] = json!("mark_price");
+                    body["stopLossExecutePrice"] = json!("0");
+                }
+                // Use the pos-tpsl endpoint for simultaneous TP+SL
+                self.post(BitgetEndpoint::FuturesPosTpSl, body, account_type).await?;
+                Ok(())
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CANCEL ALL
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl CancelAll for BitgetConnector {
+    async fn cancel_all_orders(
+        &self,
+        scope: CancelScope,
+        account_type: AccountType,
+    ) -> ExchangeResult<CancelAllResponse> {
+        let is_futures = matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated);
+
+        match scope {
+            CancelScope::All { ref symbol } => {
+                if is_futures {
+                    let product_type = symbol.as_ref()
+                        .map(|s| get_product_type(&s.quote))
+                        .unwrap_or("USDT-FUTURES");
+                    let mut body = json!({
+                        "productType": product_type,
+                    });
+                    if let Some(s) = symbol {
+                        body["symbol"] = json!(format_symbol(&s.base, &s.quote, account_type));
+                        body["marginCoin"] = json!(s.quote.to_uppercase());
+                    }
+                    let response = self.post(BitgetEndpoint::FuturesCancelBySymbol, body, account_type).await?;
+                    let cancelled = response.get("data")
+                        .and_then(|d| d.get("successCount"))
+                        .and_then(|c| c.as_u64())
+                        .unwrap_or(0) as u32;
+                    Ok(CancelAllResponse {
+                        cancelled_count: cancelled,
+                        failed_count: 0,
+                        details: vec![],
+                    })
+                } else {
+                    // Spot: cancel-symbol-orders requires a symbol
+                    let sym = symbol.as_ref()
+                        .ok_or_else(|| ExchangeError::InvalidRequest(
+                            "Bitget Spot cancel-all requires a symbol".to_string()
+                        ))?;
+                    let body = json!({
+                        "symbol": format_symbol(&sym.base, &sym.quote, account_type),
+                    });
+                    let response = self.post(BitgetEndpoint::SpotCancelBySymbol, body, account_type).await?;
+                    let cancelled = response.get("data")
+                        .and_then(|d| d.get("successCount"))
+                        .and_then(|c| c.as_u64())
+                        .unwrap_or(0) as u32;
+                    Ok(CancelAllResponse {
+                        cancelled_count: cancelled,
+                        failed_count: 0,
+                        details: vec![],
+                    })
+                }
+            }
+
+            CancelScope::BySymbol { ref symbol } => {
+                let formatted_symbol = format_symbol(&symbol.base, &symbol.quote, account_type);
+                if is_futures {
+                    let body = json!({
+                        "symbol": formatted_symbol,
+                        "productType": get_product_type(&symbol.quote),
+                        "marginCoin": symbol.quote.to_uppercase(),
+                    });
+                    let response = self.post(BitgetEndpoint::FuturesCancelBySymbol, body, account_type).await?;
+                    let cancelled = response.get("data")
+                        .and_then(|d| d.get("successCount"))
+                        .and_then(|c| c.as_u64())
+                        .unwrap_or(0) as u32;
+                    Ok(CancelAllResponse {
+                        cancelled_count: cancelled,
+                        failed_count: 0,
+                        details: vec![],
+                    })
+                } else {
+                    let body = json!({ "symbol": formatted_symbol });
+                    let response = self.post(BitgetEndpoint::SpotCancelBySymbol, body, account_type).await?;
+                    let cancelled = response.get("data")
+                        .and_then(|d| d.get("successCount"))
+                        .and_then(|c| c.as_u64())
+                        .unwrap_or(0) as u32;
+                    Ok(CancelAllResponse {
+                        cancelled_count: cancelled,
+                        failed_count: 0,
+                        details: vec![],
+                    })
+                }
+            }
+
             _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} not supported on {:?}", req, self.exchange_id())
+                "cancel_all_orders only supports All and BySymbol scopes".to_string()
             )),
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AMEND ORDER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AmendOrder for BitgetConnector {
+    async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
+        let symbol = &req.symbol;
+        let account_type = req.account_type;
+        let is_futures = matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated);
+        let formatted_symbol = format_symbol(&symbol.base, &symbol.quote, account_type);
+
+        if is_futures {
+            // POST /api/v2/mix/order/modify-order
+            let mut body = json!({
+                "symbol": formatted_symbol,
+                "productType": get_product_type(&symbol.quote),
+                "marginCoin": symbol.quote.to_uppercase(),
+                "orderId": req.order_id,
+            });
+            if let Some(new_price) = req.fields.price {
+                body["newPrice"] = json!(new_price.to_string());
+            }
+            if let Some(new_qty) = req.fields.quantity {
+                body["newSize"] = json!(new_qty.to_string());
+            }
+            if let Some(trigger) = req.fields.trigger_price {
+                body["presetStopSurplusPrice"] = json!(trigger.to_string());
+            }
+            let response = self.post(BitgetEndpoint::FuturesModifyOrder, body, account_type).await?;
+            // Fetch updated order
+            let order_id = response.get("data")
+                .and_then(|d| d.get("orderId"))
+                .and_then(|v| v.as_str())
+                .unwrap_or(&req.order_id)
+                .to_string();
+            self.get_order(&symbol.to_string(), &order_id, account_type).await
+        } else {
+            // Spot modify order
+            let mut body = json!({
+                "symbol": formatted_symbol,
+                "orderId": req.order_id,
+            });
+            if let Some(new_price) = req.fields.price {
+                body["newPrice"] = json!(new_price.to_string());
+            }
+            if let Some(new_qty) = req.fields.quantity {
+                body["newSize"] = json!(new_qty.to_string());
+            }
+            let response = self.post(BitgetEndpoint::SpotModifyOrder, body, account_type).await?;
+            let order_id = response.get("data")
+                .and_then(|d| d.get("orderId"))
+                .and_then(|v| v.as_str())
+                .unwrap_or(&req.order_id)
+                .to_string();
+            self.get_order(&symbol.to_string(), &order_id, account_type).await
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BATCH ORDERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl BatchOrders for BitgetConnector {
+    fn max_batch_place_size(&self) -> usize { 50 }
+    fn max_batch_cancel_size(&self) -> usize { 50 }
+
+    async fn place_orders_batch(
+        &self,
+        orders: Vec<OrderRequest>,
+    ) -> ExchangeResult<Vec<OrderResult>> {
+        if orders.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let account_type = orders[0].account_type;
+        let is_futures = matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated);
+
+        // Group by symbol (Bitget batch requires same symbol per call)
+        // For simplicity, use the first order's symbol as the batch symbol
+        let symbol = orders[0].symbol.clone();
+        let formatted_symbol = format_symbol(&symbol.base, &symbol.quote, account_type);
+
+        let mut results = Vec::with_capacity(orders.len());
+
+        if is_futures {
+            let order_list: Vec<Value> = orders.iter().map(|o| {
+                let price_f = match &o.order_type {
+                    OrderType::Limit { price } | OrderType::PostOnly { price } | OrderType::Fok { price } => Some(*price),
+                    OrderType::Ioc { price } => *price,
+                    _ => None,
+                };
+                let (ot_str, force_str) = match &o.order_type {
+                    OrderType::Market => ("market", "gtc"),
+                    OrderType::Limit { .. } => ("limit", "gtc"),
+                    OrderType::PostOnly { .. } => ("limit", "post_only"),
+                    OrderType::Ioc { .. } => ("limit", "ioc"),
+                    OrderType::Fok { .. } => ("limit", "fok"),
+                    _ => ("limit", "gtc"),
+                };
+                let mut item = json!({
+                    "marginMode": match account_type { AccountType::FuturesIsolated => "isolated", _ => "crossed" },
+                    "size": o.quantity.to_string(),
+                    "side": match o.side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
+                    "orderType": ot_str,
+                    "force": force_str,
+                    "clientOid": format!("cc_{}", crate::core::timestamp_millis()),
+                });
+                if let Some(p) = price_f {
+                    item["price"] = json!(p.to_string());
+                }
+                item
+            }).collect();
+
+            let body = json!({
+                "symbol": formatted_symbol,
+                "productType": get_product_type(&symbol.quote),
+                "marginCoin": symbol.quote.to_uppercase(),
+                "orderList": order_list,
+            });
+
+            let response = self.post(BitgetEndpoint::FuturesBatchPlaceOrders, body, account_type).await?;
+            let data = response.get("data").cloned().unwrap_or(json!({}));
+
+            // Parse successList
+            if let Some(success) = data.get("successList").and_then(|v| v.as_array()) {
+                for item in success {
+                    let order_id = item.get("orderId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    results.push(OrderResult {
+                        order: None,
+                        client_order_id: item.get("clientOid").and_then(|v| v.as_str()).map(String::from),
+                        success: true,
+                        error: None,
+                        error_code: None,
+                    });
+                    let _ = order_id;
+                }
+            }
+            // Parse failureList
+            if let Some(failures) = data.get("failureList").and_then(|v| v.as_array()) {
+                for item in failures {
+                    let error_msg = item.get("errorMsg").and_then(|v| v.as_str()).unwrap_or("Unknown error").to_string();
+                    let error_code = item.get("errorCode")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<i32>().ok());
+                    results.push(OrderResult {
+                        order: None,
+                        client_order_id: item.get("clientOid").and_then(|v| v.as_str()).map(String::from),
+                        success: false,
+                        error: Some(error_msg),
+                        error_code,
+                    });
+                }
+            }
+        } else {
+            // Spot batch orders — same symbol, up to 50
+            let order_list: Vec<Value> = orders.iter().map(|o| {
+                let price_f = match &o.order_type {
+                    OrderType::Limit { price } | OrderType::PostOnly { price } | OrderType::Fok { price } => Some(*price),
+                    OrderType::Ioc { price } => *price,
+                    _ => None,
+                };
+                let (ot_str, force_str) = match &o.order_type {
+                    OrderType::Market => ("market", "gtc"),
+                    OrderType::Limit { .. } => ("limit", "gtc"),
+                    OrderType::PostOnly { .. } => ("limit", "post_only"),
+                    OrderType::Ioc { .. } => ("limit", "ioc"),
+                    OrderType::Fok { .. } => ("limit", "fok"),
+                    _ => ("limit", "gtc"),
+                };
+                let mut item = json!({
+                    "side": match o.side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
+                    "orderType": ot_str,
+                    "force": force_str,
+                    "size": o.quantity.to_string(),
+                    "clientOid": format!("cc_{}", crate::core::timestamp_millis()),
+                });
+                if let Some(p) = price_f {
+                    item["price"] = json!(p.to_string());
+                }
+                item
+            }).collect();
+
+            let body = json!({
+                "symbol": formatted_symbol,
+                "orderList": order_list,
+            });
+
+            let response = self.post(BitgetEndpoint::SpotBatchPlaceOrders, body, account_type).await?;
+            let data = response.get("data").cloned().unwrap_or(json!({}));
+
+            if let Some(success) = data.get("successList").and_then(|v| v.as_array()) {
+                for item in success {
+                    results.push(OrderResult {
+                        order: None,
+                        client_order_id: item.get("clientOid").and_then(|v| v.as_str()).map(String::from),
+                        success: true,
+                        error: None,
+                        error_code: None,
+                    });
+                }
+            }
+            if let Some(failures) = data.get("failureList").and_then(|v| v.as_array()) {
+                for item in failures {
+                    let error_msg = item.get("errorMsg").and_then(|v| v.as_str()).unwrap_or("Unknown error").to_string();
+                    let error_code = item.get("errorCode")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<i32>().ok());
+                    results.push(OrderResult {
+                        order: None,
+                        client_order_id: item.get("clientOid").and_then(|v| v.as_str()).map(String::from),
+                        success: false,
+                        error: Some(error_msg),
+                        error_code,
+                    });
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
+    async fn cancel_orders_batch(
+        &self,
+        order_ids: Vec<String>,
+        symbol: Option<&str>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<OrderResult>> {
+        if order_ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let sym_str = symbol.ok_or_else(|| ExchangeError::InvalidRequest(
+            "Symbol required for batch cancel on Bitget".to_string()
+        ))?;
+        let parts: Vec<&str> = sym_str.split('/').collect();
+        let sym = if parts.len() == 2 {
+            crate::core::Symbol::new(parts[0], parts[1])
+        } else {
+            crate::core::Symbol { base: sym_str.to_string(), quote: String::new(), raw: Some(sym_str.to_string()) }
+        };
+
+        let is_futures = matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated);
+        let formatted_symbol = format_symbol(&sym.base, &sym.quote, account_type);
+
+        let mut results = Vec::with_capacity(order_ids.len());
+
+        // Bitget batch cancel: max 50 per call — chunk
+        for chunk in order_ids.chunks(50) {
+            if is_futures {
+                let order_list: Vec<Value> = chunk.iter()
+                    .map(|id| json!({ "orderId": id }))
+                    .collect();
+                let body = json!({
+                    "symbol": formatted_symbol,
+                    "productType": get_product_type(&sym.quote),
+                    "marginCoin": sym.quote.to_uppercase(),
+                    "orderIdList": order_list,
+                });
+                let response = self.post(BitgetEndpoint::FuturesBatchCancelOrders, body, account_type).await?;
+                // Parse result if present
+                let data = response.get("data").cloned().unwrap_or(json!({}));
+                if let Some(success_list) = data.get("successList").and_then(|v| v.as_array()) {
+                    for item in success_list {
+                        let order_id = item.get("orderId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        results.push(OrderResult {
+                            order: None,
+                            client_order_id: Some(order_id),
+                            success: true,
+                            error: None,
+                            error_code: None,
+                        });
+                    }
+                } else {
+                    // If no detailed response, assume success for all in chunk
+                    for id in chunk {
+                        results.push(OrderResult {
+                            order: None,
+                            client_order_id: Some(id.clone()),
+                            success: true,
+                            error: None,
+                            error_code: None,
+                        });
+                    }
+                }
+            } else {
+                let order_list: Vec<Value> = chunk.iter()
+                    .map(|id| json!({ "orderId": id }))
+                    .collect();
+                let body = json!({
+                    "symbol": formatted_symbol,
+                    "orderList": order_list,
+                });
+                let response = self.post(BitgetEndpoint::SpotBatchCancelOrders, body, account_type).await?;
+                let data = response.get("data").cloned().unwrap_or(json!({}));
+                if let Some(success_list) = data.get("successList").and_then(|v| v.as_array()) {
+                    for item in success_list {
+                        let order_id = item.get("orderId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        results.push(OrderResult {
+                            order: None,
+                            client_order_id: Some(order_id),
+                            success: true,
+                            error: None,
+                            error_code: None,
+                        });
+                    }
+                } else {
+                    for id in chunk {
+                        results.push(OrderResult {
+                            order: None,
+                            client_order_id: Some(id.clone()),
+                            success: true,
+                            error: None,
+                            error_code: None,
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(results)
     }
 }

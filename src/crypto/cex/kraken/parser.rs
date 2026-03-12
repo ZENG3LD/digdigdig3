@@ -366,6 +366,79 @@ impl KrakenParser {
             .collect()
     }
 
+    /// Parse closed orders (order history) from ClosedOrders response
+    pub fn parse_closed_orders(response: &Value) -> ExchangeResult<Vec<Order>> {
+        let result = Self::extract_result(response)?;
+
+        let closed = result.get("closed")
+            .and_then(|o| o.as_object())
+            .ok_or_else(|| ExchangeError::Parse("Expected 'closed' object".to_string()))?;
+
+        closed.iter()
+            .map(|(order_id, data)| Self::parse_order_data(data, order_id))
+            .collect()
+    }
+
+    /// Parse futures fills (trade history) from Futures fills response
+    pub fn parse_futures_fills(response: &Value) -> ExchangeResult<Vec<Order>> {
+        // Kraken Futures fills: {"result": "success", "fills": [...]}
+        let fills = response.get("fills")
+            .and_then(|f| f.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Expected 'fills' array".to_string()))?;
+
+        fills.iter().map(|fill| {
+            let order_id = fill.get("order_id")
+                .or_else(|| fill.get("fill_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let side = match fill.get("side").and_then(|s| s.as_str()).unwrap_or("buy") {
+                "sell" => OrderSide::Sell,
+                _ => OrderSide::Buy,
+            };
+
+            let price = fill.get("price")
+                .and_then(|p| p.as_f64())
+                .or_else(|| fill.get("price").and_then(|p| p.as_str()).and_then(|s| s.parse().ok()));
+
+            let quantity = fill.get("size")
+                .and_then(|s| s.as_f64())
+                .unwrap_or(0.0);
+
+            let symbol = fill.get("symbol")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let ts_ms = fill.get("fillTime")
+                .or_else(|| fill.get("time"))
+                .and_then(|t| t.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .map(|t| (t * 1000.0) as i64)
+                .unwrap_or(0);
+
+            Ok(Order {
+                id: order_id,
+                client_order_id: None,
+                symbol,
+                side,
+                order_type: OrderType::Market,
+                status: crate::core::OrderStatus::Filled,
+                price,
+                stop_price: None,
+                quantity,
+                filled_quantity: quantity,
+                average_price: price,
+                commission: fill.get("fee").and_then(|f| f.as_f64()),
+                commission_asset: None,
+                created_at: ts_ms,
+                updated_at: Some(ts_ms),
+                time_in_force: crate::core::TimeInForce::Gtc,
+            })
+        }).collect()
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // ACCOUNT
     // ═══════════════════════════════════════════════════════════════════════════

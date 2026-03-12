@@ -25,7 +25,12 @@ use crate::core::{
     Price, Kline, Ticker, OrderBook,
 };
 use crate::core::traits::{
-    ExchangeIdentity, MarketData,
+    ExchangeIdentity, MarketData, Trading, Account, Positions,
+};
+use crate::core::types::{
+    OrderRequest, CancelRequest, Order, OrderHistoryFilter, PlaceOrderResponse,
+    BalanceQuery, Balance, AccountInfo, FeeInfo,
+    PositionQuery, Position, FundingRate, PositionModification,
 };
 use crate::core::utils::SimpleRateLimiter;
 use crate::core::types::{ConnectorStats, SymbolInfo};
@@ -349,18 +354,147 @@ impl MarketData for GmxConnector {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// TRADING (NOT IMPLEMENTED - Requires blockchain integration)
+// TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // GMX trading requires:
-// 1. Web3/Ethers library for smart contract interaction
-// 2. Wallet private key for transaction signing
-// 3. ERC20 token approvals
-// 4. Multi-call transactions (transfer + createOrder)
-// 5. Blockchain event monitoring
+// 1. Web3/Ethers library for smart contract interaction (ethers-rs or alloy)
+// 2. Wallet private key for EIP-712 transaction signing
+// 3. ERC20 token approvals (approve ExchangeRouter contract)
+// 4. Multi-call transactions (transfer + createOrder in one tx)
+// 5. Blockchain event monitoring for execution callbacks
+// 6. Keeper network executes orders asynchronously (not synchronous)
 //
-// This is beyond the scope of the basic V5 connector.
-// Future implementation should use ethers-rs or alloy.
+// REST API is read-only — no trading endpoints exist.
+
+#[async_trait]
+impl Trading for GmxConnector {
+    async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
+        let _ = req;
+        Err(ExchangeError::UnsupportedOperation(
+            "GMX trading requires blockchain wallet integration (ethers-rs/alloy). \
+             REST API is read-only. Use GMX SDK or ExchangeRouter contract directly."
+                .to_string(),
+        ))
+    }
+
+    async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+        let _ = req;
+        Err(ExchangeError::UnsupportedOperation(
+            "GMX order cancellation requires smart contract transaction. \
+             REST API is read-only."
+                .to_string(),
+        ))
+    }
+
+    async fn get_order(
+        &self,
+        _symbol: &str,
+        _order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        Err(ExchangeError::UnsupportedOperation(
+            "GMX does not provide a REST endpoint to query individual orders by ID. \
+             Use blockchain indexer (e.g. The Graph) or contract event logs."
+                .to_string(),
+        ))
+    }
+
+    async fn get_open_orders(
+        &self,
+        _symbol: Option<&str>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "GMX open orders require account address and smart contract queries. \
+             REST API does not expose per-account open orders."
+                .to_string(),
+        ))
+    }
+
+    async fn get_order_history(
+        &self,
+        _filter: OrderHistoryFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "GMX order history requires The Graph subgraph or contract event logs. \
+             REST API is read-only and does not expose order history."
+                .to_string(),
+        ))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl Account for GmxConnector {
+    async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "GMX balances require ERC-20 token contract queries or The Graph. \
+             REST API does not expose wallet balances."
+                .to_string(),
+        ))
+    }
+
+    async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "GMX has no account concept in its REST API. \
+             Account data requires on-chain queries."
+                .to_string(),
+        ))
+    }
+
+    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        // GMX uses a protocol fee model, not maker/taker.
+        // Fees: 0.05% open + 0.05% close for market orders (position fee),
+        // plus price impact and funding rates.
+        // Not translatable to a maker/taker FeeInfo struct.
+        Err(ExchangeError::UnsupportedOperation(
+            "GMX uses protocol fees (position fee, price impact, funding) not maker/taker rates. \
+             See GMX docs for fee details."
+                .to_string(),
+        ))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// POSITIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl Positions for GmxConnector {
+    async fn get_positions(&self, _query: PositionQuery) -> ExchangeResult<Vec<Position>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "GMX positions require smart contract queries (PositionStore contract) \
+             or The Graph subgraph. REST API does not expose per-account positions."
+                .to_string(),
+        ))
+    }
+
+    async fn get_funding_rate(
+        &self,
+        _symbol: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<FundingRate> {
+        Err(ExchangeError::UnsupportedOperation(
+            "GMX uses borrowing fees (not funding rates). \
+             Borrow rates are available in /markets REST endpoint as annualized rates."
+                .to_string(),
+        ))
+    }
+
+    async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
+        let _ = req;
+        Err(ExchangeError::UnsupportedOperation(
+            "GMX position modification requires smart contract transactions. \
+             REST API is read-only."
+                .to_string(),
+        ))
+    }
+}
 
 #[cfg(test)]
 mod tests {

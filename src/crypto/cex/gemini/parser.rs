@@ -11,7 +11,7 @@ use crate::core::types::{
     Kline, OrderBook, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, PublicTrade, StreamEvent, TradeSide,
-    OrderUpdateEvent, SymbolInfo,
+    OrderUpdateEvent, SymbolInfo, FeeInfo,
 };
 
 /// Парсер ответов Gemini API
@@ -720,6 +720,91 @@ impl GeminiParser {
         })
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ORDER HISTORY / FEES (REST)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse past trades response from /v1/mytrades.
+    ///
+    /// Each entry format:
+    /// ```json
+    /// {"price":"50000.00","amount":"0.5","timestamp":1234567,"timestampms":1234567890,
+    ///  "type":"Buy","aggressor":true,"fee_currency":"USD","fee_amount":"1.25",
+    ///  "tid":12345,"order_id":"98765","exchange":"gemini","is_auction_fill":false}
+    /// ```
+    pub fn parse_past_trades(response: &Value) -> ExchangeResult<Vec<Order>> {
+        Self::check_error(response)?;
+
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array of past trades".to_string()))?;
+
+        let mut orders = Vec::with_capacity(arr.len());
+
+        for item in arr {
+            let side = match Self::get_str(item, "type").unwrap_or("Buy").to_lowercase().as_str() {
+                "sell" => OrderSide::Sell,
+                _ => OrderSide::Buy,
+            };
+
+            let price = Self::get_f64(item, "price");
+            let quantity = Self::get_f64(item, "amount").unwrap_or(0.0);
+            let commission = Self::get_f64(item, "fee_amount");
+            let commission_asset = Self::get_str(item, "fee_currency").map(String::from);
+
+            orders.push(Order {
+                id: Self::get_str(item, "order_id")
+                    .unwrap_or_else(|| Self::get_str(item, "tid").unwrap_or(""))
+                    .to_string(),
+                client_order_id: None,
+                symbol: Self::get_str(item, "symbol").unwrap_or("").to_string(),
+                side,
+                order_type: OrderType::Limit { price: price.unwrap_or(0.0) },
+                status: OrderStatus::Filled,
+                price,
+                stop_price: None,
+                quantity,
+                filled_quantity: quantity,
+                average_price: price,
+                commission,
+                commission_asset,
+                created_at: Self::get_i64(item, "timestampms").unwrap_or(0),
+                updated_at: None,
+                time_in_force: crate::core::TimeInForce::Gtc,
+            });
+        }
+
+        Ok(orders)
+    }
+
+    /// Parse notional volume response from /v1/notionalvolume for fee rates.
+    ///
+    /// Response format:
+    /// ```json
+    /// {"web_maker_fee_bps":25,"web_taker_fee_bps":35,"web_auction_fee_bps":25,
+    ///  "api_maker_fee_bps":10,"api_taker_fee_bps":35,"api_auction_fee_bps":20,
+    ///  "fix_maker_fee_bps":10,"fix_taker_fee_bps":35,"fix_auction_fee_bps":20,
+    ///  "block_maker_fee_bps":0,"block_taker_fee_bps":0,
+    ///  "notional_30d_volume":1234567.89,"last_updated_ms":1234567890000}
+    /// ```
+    /// API fees are in basis points; divide by 10000 to get decimal rate.
+    pub fn parse_notional_volume_fees(response: &Value, symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        Self::check_error(response)?;
+
+        // API maker/taker fees are in basis points (1 bps = 0.01%)
+        let maker_bps = response.get("api_maker_fee_bps")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(10.0); // default 10 bps = 0.10%
+        let taker_bps = response.get("api_taker_fee_bps")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(35.0); // default 35 bps = 0.35%
+
+        Ok(FeeInfo {
+            maker_rate: maker_bps / 10_000.0,
+            taker_rate: taker_bps / 10_000.0,
+            symbol: symbol.map(String::from),
+            tier: None,
+        })
+    }
 }
 
 #[cfg(test)]

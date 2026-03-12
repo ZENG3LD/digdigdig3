@@ -506,10 +506,48 @@ impl Account for LighterConnector {
         Err(ExchangeError::NotSupported("Account data not yet implemented (Phase 2)".to_string()))
     }
 
-    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_fees not yet implemented".to_string()
-        ))
+    async fn get_fees(&self, symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        // Fetch fee schedule from the OrderBooks metadata endpoint.
+        // The endpoint returns maker_fee and taker_fee per market.
+        let mut params = HashMap::new();
+
+        // If a symbol is given, resolve it to a market_id for a targeted request.
+        if let Some(sym) = symbol {
+            if let Ok(market_id) = self.get_market_id(sym, AccountType::FuturesCross).await {
+                params.insert("market_id".to_string(), market_id.to_string());
+            }
+        }
+
+        let response = self.get(LighterEndpoint::OrderBooks, params, 300).await?;
+
+        // Parse first order book entry for fees (or global defaults).
+        let order_books = response
+            .get("order_books")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .cloned();
+
+        let (maker_rate, taker_rate) = if let Some(book) = order_books {
+            let maker = book.get("maker_fee")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let taker = book.get("taker_fee")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0001); // Lighter default taker: 0.01%
+            (maker, taker)
+        } else {
+            // Lighter published defaults: maker 0%, taker 0.01%
+            (0.0, 0.0001)
+        };
+
+        Ok(FeeInfo {
+            maker_rate,
+            taker_rate,
+            symbol: symbol.map(|s| s.to_string()),
+            tier: None,
+        })
     }
 }
 

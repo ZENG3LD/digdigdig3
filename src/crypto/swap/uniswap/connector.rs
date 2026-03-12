@@ -25,9 +25,13 @@ use crate::core::{
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
 };
-use crate::core::traits::{ExchangeIdentity, MarketData};
+use crate::core::traits::{ExchangeIdentity, MarketData, Trading, Account};
 use crate::core::utils::WeightRateLimiter;
-use crate::core::types::{ConnectorStats, SymbolInfo};
+use crate::core::types::{
+    ConnectorStats, SymbolInfo,
+    OrderRequest, CancelRequest, Order, OrderHistoryFilter, PlaceOrderResponse,
+    BalanceQuery, Balance, AccountInfo, FeeInfo,
+};
 
 use super::endpoints::{UniswapUrls, UniswapEndpoint, format_token_address, find_pool_metadata, PoolMetadata};
 use super::auth::UniswapAuth;
@@ -550,6 +554,113 @@ impl MarketData for UniswapConnector {
         }).collect();
 
         Ok(infos)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRADING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Uniswap swap execution requires:
+// 1. Ethereum wallet / signer (ethers-rs or alloy)
+// 2. Wallet private key for EIP-712 typed-data signing
+// 3. ERC-20 token approvals (Permit2 or direct approve)
+// 4. Submit signed transaction to Ethereum mempool
+// 5. Wait for on-chain confirmation
+//
+// The Trading API provides unsigned transaction calldata only.
+// Signing and broadcasting are out of scope for a REST connector.
+
+#[async_trait]
+impl Trading for UniswapConnector {
+    async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
+        let _ = req;
+        Err(ExchangeError::UnsupportedOperation(
+            "Uniswap swap execution requires Ethereum wallet integration (ethers-rs/alloy). \
+             Use get_quote() to obtain calldata, then sign and broadcast via Ethereum RPC."
+                .to_string(),
+        ))
+    }
+
+    async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+        let _ = req;
+        Err(ExchangeError::UnsupportedOperation(
+            "Uniswap swaps are atomic on-chain transactions — they cannot be cancelled. \
+             Transactions either succeed or revert."
+                .to_string(),
+        ))
+    }
+
+    async fn get_order(
+        &self,
+        _symbol: &str,
+        _order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Uniswap has no order tracking. \
+             Use Ethereum transaction hash to check swap status via eth_getTransactionReceipt."
+                .to_string(),
+        ))
+    }
+
+    async fn get_open_orders(
+        &self,
+        _symbol: Option<&str>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Uniswap AMM swaps are atomic — there are no open/pending orders. \
+             Limit orders require separate protocol integration (e.g., Uniswap X)."
+                .to_string(),
+        ))
+    }
+
+    async fn get_order_history(
+        &self,
+        _filter: OrderHistoryFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Uniswap does not provide order history via REST API. \
+             Query swap history via The Graph subgraph with wallet address."
+                .to_string(),
+        ))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl Account for UniswapConnector {
+    async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Uniswap has no account system. \
+             Query ERC-20 token balances via eth_call (balanceOf) or ETH balance via eth_getBalance."
+                .to_string(),
+        ))
+    }
+
+    async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Uniswap is a permissionless AMM — there is no account concept or registration. \
+             Use wallet address to query on-chain data."
+                .to_string(),
+        ))
+    }
+
+    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        // Uniswap uses a fixed pool fee tier model (not maker/taker):
+        // - V3 pools: 0.01%, 0.05%, 0.30%, or 1.00% per swap
+        // - Fee goes 100% to LPs; protocol fee is 0% (can be enabled by governance)
+        // Not translatable to FeeInfo maker/taker structure.
+        Err(ExchangeError::UnsupportedOperation(
+            "Uniswap uses pool fee tiers (0.01%/0.05%/0.30%/1.00%) paid to LPs, not maker/taker rates. \
+             Fee tier is per pool — query pool's feeTier via The Graph subgraph."
+                .to_string(),
+        ))
     }
 }
 

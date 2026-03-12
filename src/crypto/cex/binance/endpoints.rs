@@ -106,6 +106,7 @@ pub enum BinanceEndpoint {
     FuturesSetLeverage,
     FuturesSetMarginType,
     FuturesPositionMargin,
+    FuturesCommissionRate,
 
     // === WEBSOCKET ===
     SpotListenKey,
@@ -164,6 +165,7 @@ impl BinanceEndpoint {
             Self::FuturesSetLeverage => "/fapi/v1/leverage",
             Self::FuturesSetMarginType => "/fapi/v1/marginType",
             Self::FuturesPositionMargin => "/fapi/v1/positionMargin",
+            Self::FuturesCommissionRate => "/fapi/v1/commissionRate",
 
             // WebSocket
             Self::SpotListenKey => "/api/v3/userDataStream",

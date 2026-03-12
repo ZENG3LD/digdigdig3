@@ -456,6 +456,199 @@ impl HyperliquidParser {
         })
     }
 
+    /// Parse a single order from `orderStatus` response
+    pub fn parse_order_status(response: &Value) -> ExchangeResult<Order> {
+        // Response: { "order": {...}, "status": "open", "statusTimestamp": ... }
+        let order_data = response.get("order")
+            .ok_or_else(|| ExchangeError::Parse("Missing 'order' field in orderStatus".to_string()))?;
+
+        let status_str = Self::get_str(response, "status").unwrap_or("open");
+        let order_status = match status_str {
+            "open" => OrderStatus::Open,
+            "filled" => OrderStatus::Filled,
+            "canceled" | "marginCanceled" => OrderStatus::Canceled,
+            "rejected" => OrderStatus::Rejected,
+            "triggered" => OrderStatus::Filled, // trigger fired
+            "partiallyFilled" => OrderStatus::PartiallyFilled,
+            "expired" => OrderStatus::Expired,
+            _ => OrderStatus::Open,
+        };
+
+        let side = match Self::get_str(order_data, "side").unwrap_or("B") {
+            "A" => OrderSide::Sell,
+            _ => OrderSide::Buy,
+        };
+
+        let orig_sz = Self::get_f64(order_data, "origSz").unwrap_or(0.0);
+        let sz = Self::get_f64(order_data, "sz").unwrap_or(0.0);
+        let filled_quantity = (orig_sz - sz).max(0.0);
+
+        Ok(Order {
+            id: Self::get_i64(order_data, "oid")
+                .map(|id| id.to_string())
+                .unwrap_or_default(),
+            client_order_id: Self::get_str(order_data, "cloid").map(String::from),
+            symbol: Self::get_str(order_data, "coin").unwrap_or("").to_string(),
+            side,
+            order_type: OrderType::Limit {
+                price: Self::get_f64(order_data, "limitPx").unwrap_or(0.0),
+            },
+            status: order_status,
+            price: Self::get_f64(order_data, "limitPx"),
+            stop_price: None,
+            quantity: orig_sz,
+            filled_quantity,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: Self::get_i64(order_data, "timestamp").unwrap_or(0),
+            updated_at: Self::get_i64(response, "statusTimestamp"),
+            time_in_force: crate::core::TimeInForce::Gtc,
+        })
+    }
+
+    /// Parse historical orders from `historicalOrders` response.
+    ///
+    /// Response is an array of `{order: {...}, status: "filled"|"canceled", statusTimestamp: ...}`
+    pub fn parse_historical_orders(response: &Value) -> ExchangeResult<Vec<Order>> {
+        // historicalOrders returns array of order-status pairs
+        if let Some(arr) = response.as_array() {
+            return arr.iter().map(|item| {
+                // Each item is { order: {...}, status: "...", statusTimestamp: ... }
+                if let Some(order_data) = item.get("order") {
+                    let status_str = item.get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("filled");
+                    let status = match status_str {
+                        "filled" => OrderStatus::Filled,
+                        "canceled" | "marginCanceled" => OrderStatus::Canceled,
+                        "rejected" => OrderStatus::Rejected,
+                        "triggered" => OrderStatus::Filled,
+                        "partiallyFilled" => OrderStatus::PartiallyFilled,
+                        "expired" => OrderStatus::Expired,
+                        _ => OrderStatus::Filled,
+                    };
+                    let side = match Self::get_str(order_data, "side").unwrap_or("B") {
+                        "A" => OrderSide::Sell,
+                        _ => OrderSide::Buy,
+                    };
+                    let orig_sz = Self::get_f64(order_data, "origSz").unwrap_or(0.0);
+                    let sz = Self::get_f64(order_data, "sz").unwrap_or(0.0);
+                    let filled_quantity = (orig_sz - sz).max(0.0);
+
+                    Ok(Order {
+                        id: Self::get_i64(order_data, "oid")
+                            .map(|id| id.to_string())
+                            .unwrap_or_default(),
+                        client_order_id: Self::get_str(order_data, "cloid").map(String::from),
+                        symbol: Self::get_str(order_data, "coin").unwrap_or("").to_string(),
+                        side,
+                        order_type: OrderType::Limit {
+                            price: Self::get_f64(order_data, "limitPx").unwrap_or(0.0),
+                        },
+                        status,
+                        price: Self::get_f64(order_data, "limitPx"),
+                        stop_price: None,
+                        quantity: orig_sz,
+                        filled_quantity,
+                        average_price: None,
+                        commission: None,
+                        commission_asset: None,
+                        created_at: Self::get_i64(order_data, "timestamp").unwrap_or(0),
+                        updated_at: item.get("statusTimestamp").and_then(|v| v.as_i64()),
+                        time_in_force: crate::core::TimeInForce::Gtc,
+                    })
+                } else {
+                    // Try treating the item itself as an order (userFills format)
+                    Self::parse_fill_as_order(item)
+                }
+            }).collect();
+        }
+
+        Ok(Vec::new())
+    }
+
+    /// Parse a userFill as an Order (for order history queries using userFills endpoint)
+    fn parse_fill_as_order(fill: &Value) -> ExchangeResult<Order> {
+        let side = match Self::get_str(fill, "side").unwrap_or("B") {
+            "A" => OrderSide::Sell,
+            _ => OrderSide::Buy,
+        };
+
+        Ok(Order {
+            id: Self::get_i64(fill, "oid")
+                .map(|id| id.to_string())
+                .unwrap_or_default(),
+            client_order_id: Self::get_str(fill, "cloid").map(String::from),
+            symbol: Self::get_str(fill, "coin").unwrap_or("").to_string(),
+            side,
+            order_type: OrderType::Limit { price: Self::get_f64(fill, "px").unwrap_or(0.0) },
+            status: OrderStatus::Filled,
+            price: Self::get_f64(fill, "px"),
+            stop_price: None,
+            quantity: Self::get_f64(fill, "sz").unwrap_or(0.0),
+            filled_quantity: Self::get_f64(fill, "sz").unwrap_or(0.0),
+            average_price: Self::get_f64(fill, "px"),
+            commission: Self::get_f64(fill, "fee"),
+            commission_asset: Self::get_str(fill, "feeToken").map(String::from),
+            created_at: Self::get_i64(fill, "time").unwrap_or(0),
+            updated_at: None,
+            time_in_force: crate::core::TimeInForce::Gtc,
+        })
+    }
+
+    /// Parse funding rate for a specific symbol from metaAndAssetCtxs response.
+    ///
+    /// metaAndAssetCtxs returns [meta_obj, [ctx_obj, ctx_obj, ...]]
+    /// where the index of ctx corresponds to the universe index.
+    pub fn parse_funding_rate_for_symbol(response: &Value, symbol: &str) -> ExchangeResult<FundingRate> {
+        // Response is [{"universe": [...]}, [{"funding": "..."}, ...]]
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array from metaAndAssetCtxs".to_string()))?;
+
+        if arr.len() < 2 {
+            return Err(ExchangeError::Parse("metaAndAssetCtxs response too short".to_string()));
+        }
+
+        let meta = &arr[0];
+        let ctxs = arr[1].as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected ctxs array at index 1".to_string()))?;
+
+        let universe = meta.get("universe")
+            .and_then(|u| u.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing universe in meta".to_string()))?;
+
+        // Find symbol index
+        let idx = universe.iter().position(|item| {
+            item.get("name")
+                .and_then(|v| v.as_str())
+                .map(|n| n.eq_ignore_ascii_case(symbol))
+                .unwrap_or(false)
+        }).ok_or_else(|| ExchangeError::Parse(
+            format!("Symbol '{}' not found in universe", symbol)
+        ))?;
+
+        if idx >= ctxs.len() {
+            return Err(ExchangeError::Parse(
+                format!("Asset context index {} out of bounds (len={})", idx, ctxs.len())
+            ));
+        }
+
+        let ctx = &ctxs[idx];
+        let funding_str = ctx.get("funding")
+            .and_then(|v| v.as_str())
+            .unwrap_or("0");
+        let rate = funding_str.parse::<f64>()
+            .map_err(|_| ExchangeError::Parse(format!("Invalid funding rate: {}", funding_str)))?;
+
+        Ok(FundingRate {
+            symbol: symbol.to_uppercase(),
+            rate,
+            next_funding_time: None, // Funding occurs every hour
+            timestamp: 0,
+        })
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // EXCHANGE INFO
     // ═══════════════════════════════════════════════════════════════════════════

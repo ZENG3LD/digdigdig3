@@ -1114,25 +1114,49 @@ impl Account for BinanceConnector {
     }
 
     async fn get_fees(&self, symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        // Try the trade fee endpoint first (sapi — requires higher tier API key)
-        // Fall back to account endpoint (commissionRates)
-        let mut params = HashMap::new();
-        if let Some(sym) = symbol {
-            params.insert("symbol".to_string(), sym.replace('/', "").to_uppercase());
+        // Priority order:
+        // 1. GET /sapi/v1/asset/tradeFee  — spot per-symbol rates (best accuracy)
+        // 2. GET /fapi/v1/commissionRate  — futures per-symbol rates (when symbol given)
+        // 3. GET /api/v3/account          — spot account-wide commissionRates fallback
+        // 4. GET /fapi/v2/account         — futures feeTier fallback (tier → estimated rates)
+
+        let formatted_symbol = symbol.map(|s| s.replace('/', "").to_uppercase());
+
+        // Attempt 1: Spot /sapi trade fee (per-symbol or account-wide)
+        let mut spot_params = HashMap::new();
+        if let Some(ref sym) = formatted_symbol {
+            spot_params.insert("symbol".to_string(), sym.clone());
+        }
+        match self.get(BinanceEndpoint::SpotTradeFee, spot_params, AccountType::Spot).await {
+            Ok(response) => return BinanceParser::parse_fee_info(&response, symbol),
+            Err(_) => {}
         }
 
-        // Use /sapi/v1/asset/tradeFee which returns per-symbol fee data
-        // This requires a Spot API key with the sapi permission
-        match self.get(BinanceEndpoint::SpotTradeFee, params.clone(), AccountType::Spot).await {
-            Ok(response) => BinanceParser::parse_fee_info(&response, symbol),
-            Err(_) => {
-                // Fallback to account commissionRates
-                let mut account_params = HashMap::new();
-                account_params.insert("omitZeroBalances".to_string(), "true".to_string());
-                let response = self.get(BinanceEndpoint::SpotAccount, account_params, AccountType::Spot).await?;
-                BinanceParser::parse_fee_info(&response, symbol)
+        // Attempt 2: Futures /fapi/v1/commissionRate (requires symbol)
+        if let Some(ref sym) = formatted_symbol {
+            let mut futures_params = HashMap::new();
+            futures_params.insert("symbol".to_string(), sym.clone());
+            match self.get(
+                BinanceEndpoint::FuturesCommissionRate,
+                futures_params,
+                AccountType::FuturesCross,
+            ).await {
+                Ok(response) => return BinanceParser::parse_fee_info(&response, symbol),
+                Err(_) => {}
             }
         }
+
+        // Attempt 3: Spot account commissionRates
+        let mut account_params = HashMap::new();
+        account_params.insert("omitZeroBalances".to_string(), "true".to_string());
+        match self.get(BinanceEndpoint::SpotAccount, account_params, AccountType::Spot).await {
+            Ok(response) => return BinanceParser::parse_fee_info(&response, symbol),
+            Err(_) => {}
+        }
+
+        // Attempt 4: Futures account feeTier
+        let response = self.get(BinanceEndpoint::FuturesAccount, HashMap::new(), AccountType::FuturesCross).await?;
+        BinanceParser::parse_fee_info(&response, symbol)
     }
 }
 

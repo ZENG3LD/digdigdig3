@@ -25,8 +25,7 @@ use crate::core::{
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook, Balance, AccountInfo,
     Position, FundingRate,
-    Order, OrderSide, OrderStatus, OrderType, TimeInForce,
-    OrderRequest, CancelRequest, CancelScope,
+    Order, OrderRequest, CancelRequest,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };
@@ -301,49 +300,189 @@ impl MarketData for DydxConnector {
 
 #[async_trait]
 impl Account for DydxConnector {
-    async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
-        // Note: Requires address parameter
-        // Placeholder implementation - требует address
-        Err(ExchangeError::NotSupported(
-            "get_balance requires address parameter in dYdX. Use get_subaccount_balances instead.".to_string()
-        ))
+    async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        // dYdX balances are per-subaccount; address is stored in credentials.
+        // If credentials contain an address, use subaccount 0 by default.
+        let address = self.auth.address()
+            .ok_or_else(|| ExchangeError::Auth(
+                "dYdX get_balance requires a dYdX address. Provide it via Credentials::new(address, \"\").".to_string()
+            ))?;
+
+        let mut params = HashMap::new();
+        params.insert("address".to_string(), address.to_string());
+        params.insert("subaccount_number".to_string(), "0".to_string());
+
+        let response = self.get(DydxEndpoint::SpecificSubaccount, params).await?;
+        let mut balances = DydxParser::parse_balances(&response)?;
+
+        // Filter by asset if requested
+        if let Some(asset_filter) = &query.asset {
+            balances.retain(|b| b.asset.eq_ignore_ascii_case(asset_filter));
+        }
+
+        Ok(balances)
     }
 
     async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
-        // Requires address - placeholder
-        Err(ExchangeError::NotSupported(
-            "get_account_info requires address parameter in dYdX".to_string()
-        ))
+        let address = self.auth.address()
+            .ok_or_else(|| ExchangeError::Auth(
+                "dYdX get_account_info requires a dYdX address.".to_string()
+            ))?;
+
+        let mut params = HashMap::new();
+        params.insert("address".to_string(), address.to_string());
+        params.insert("subaccount_number".to_string(), "0".to_string());
+
+        let response = self.get(DydxEndpoint::SpecificSubaccount, params).await?;
+        let balances = DydxParser::parse_balances(&response)?;
+
+        Ok(AccountInfo {
+            account_type: _account_type,
+            can_trade: true,
+            can_withdraw: true,
+            can_deposit: true,
+            maker_commission: 0.0,   // dYdX fees vary; fills endpoint needed
+            taker_commission: 0.0005, // dYdX default taker: 0.05%
+            balances,
+        })
     }
 
-    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_fees not yet implemented".to_string()
-        ))
+    async fn get_fees(&self, symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        // dYdX does not expose a dedicated fee-schedule endpoint.
+        // We approximate fees from fills: compute effective rate as fee/size.
+        // Without an address we return the published default schedule.
+        let (maker_rate, taker_rate) = if let Some(address) = self.auth.address() {
+            let mut params = HashMap::new();
+            params.insert("address".to_string(), address.to_string());
+            params.insert("subaccountNumber".to_string(), "0".to_string());
+            params.insert("limit".to_string(), "10".to_string());
+            if let Some(sym) = symbol {
+                params.insert("ticker".to_string(), sym.to_string());
+            }
+
+            match self.get(DydxEndpoint::Fills, params).await {
+                Ok(response) => {
+                    let fills = response.get("fills")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+
+                    if fills.is_empty() {
+                        // No fills — use published defaults
+                        (0.0, 0.0005)
+                    } else {
+                        // Compute effective fee rate from recent fills
+                        let mut total_fee = 0.0f64;
+                        let mut total_value = 0.0f64;
+                        let mut maker_count = 0usize;
+                        let mut taker_count = 0usize;
+
+                        for fill in &fills {
+                            let size: f64 = fill.get("size")
+                                .and_then(|v| v.as_str())
+                                .and_then(|s| s.parse().ok())
+                                .unwrap_or(0.0);
+                            let price: f64 = fill.get("price")
+                                .and_then(|v| v.as_str())
+                                .and_then(|s| s.parse().ok())
+                                .unwrap_or(0.0);
+                            let fee: f64 = fill.get("fee")
+                                .and_then(|v| v.as_str())
+                                .and_then(|s| s.parse().ok())
+                                .unwrap_or(0.0);
+                            let liquidity = fill.get("liquidity")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("TAKER");
+
+                            total_fee += fee.abs();
+                            total_value += size * price;
+                            if liquidity == "MAKER" { maker_count += 1; } else { taker_count += 1; }
+                        }
+
+                        let effective_rate = if total_value > 0.0 { total_fee / total_value } else { 0.0005 };
+
+                        // Estimate maker/taker split from liquidity counts
+                        let total = (maker_count + taker_count) as f64;
+                        if total == 0.0 {
+                            (0.0, effective_rate)
+                        } else {
+                            let maker_share = maker_count as f64 / total;
+                            let taker_share = taker_count as f64 / total;
+                            // Maker rate is typically negative (rebate) or zero on dYdX
+                            let implied_taker = if taker_share > 0.0 { effective_rate / taker_share } else { 0.0005 };
+                            let implied_maker = if maker_share > 0.0 { -(effective_rate * 0.1) } else { 0.0 };
+                            (implied_maker, implied_taker)
+                        }
+                    }
+                }
+                Err(_) => (0.0, 0.0005), // Fallback to published defaults
+            }
+        } else {
+            // No credentials — published default fee schedule
+            // dYdX v4: maker rebate ~ -0.011%, taker fee ~ 0.050%
+            (-0.00011, 0.0005)
+        };
+
+        Ok(FeeInfo {
+            maker_rate,
+            taker_rate,
+            symbol: symbol.map(|s| s.to_string()),
+            tier: None,
+        })
     }
 }
 
 #[async_trait]
 impl Positions for DydxConnector {
-    async fn get_positions(&self, _query: PositionQuery) -> ExchangeResult<Vec<Position>> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_positions requires address and subaccountNumber parameters in dYdX. Use get_subaccount_positions instead.".to_string()
-        ))
+    async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
+        let address = self.auth.address()
+            .ok_or_else(|| ExchangeError::Auth(
+                "dYdX get_positions requires a dYdX address in credentials.".to_string()
+            ))?;
+
+        let mut params = HashMap::new();
+        params.insert("address".to_string(), address.to_string());
+        params.insert("subaccountNumber".to_string(), "0".to_string());
+        params.insert("status".to_string(), "OPEN".to_string());
+
+        if let Some(sym) = &query.symbol {
+            // dYdX symbol format: BTC-USD
+            let market = format!("{}-USD", sym.base.to_uppercase());
+            params.insert("market".to_string(), market);
+        }
+
+        let response = self.get(DydxEndpoint::PerpetualPositions, params).await?;
+        DydxParser::parse_positions(&response)
     }
 
     async fn get_funding_rate(
         &self,
-        _symbol: &str,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_positions requires address and subaccountNumber parameters in dYdX. Use get_subaccount_positions instead.".to_string()
-        ))
+        // Normalize symbol: "BTC" → "BTC-USD", "BTC-USD" → "BTC-USD"
+        let market = if symbol.contains('-') {
+            symbol.to_uppercase()
+        } else {
+            format!("{}-USD", symbol.to_uppercase())
+        };
+
+        let mut params = HashMap::new();
+        params.insert("market".to_string(), market.clone());
+        params.insert("limit".to_string(), "1".to_string());
+
+        let response = self.get(DydxEndpoint::HistoricalFunding, params).await?;
+        let mut funding = DydxParser::parse_funding_rate(&response)?;
+
+        // Override symbol with the normalized market ticker
+        funding.symbol = market;
+        Ok(funding)
     }
 
     async fn modify_position(&self, _req: PositionModification) -> ExchangeResult<()> {
         Err(ExchangeError::UnsupportedOperation(
-            "get_positions requires address and subaccountNumber parameters in dYdX. Use get_subaccount_positions instead.".to_string()
+            "dYdX v4 position modification (leverage, margin mode) requires Cosmos gRPC (Node API). \
+             The Indexer REST API is read-only.".to_string()
         ))
     }
 }
@@ -393,25 +532,67 @@ impl Trading for DydxConnector {
         symbol: Option<&str>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        // Requires address + subaccountNumber — not available in the generic trait call.
-        // Return UnsupportedOperation with a helpful message.
-        let _ = symbol;
-        Err(ExchangeError::UnsupportedOperation(
-            "dYdX open orders require address and subaccountNumber. \
-             Use get_orders_for_subaccount() instead.".to_string()
-        ))
+        let address = self.auth.address()
+            .ok_or_else(|| ExchangeError::Auth(
+                "dYdX get_open_orders requires a dYdX address in credentials.".to_string()
+            ))?;
+
+        let mut params = HashMap::new();
+        params.insert("address".to_string(), address.to_string());
+        params.insert("subaccountNumber".to_string(), "0".to_string());
+        params.insert("status".to_string(), "OPEN".to_string());
+
+        if let Some(sym) = symbol {
+            // Normalize to dYdX format
+            let market = if sym.contains('-') {
+                sym.to_uppercase()
+            } else {
+                format!("{}-USD", sym.to_uppercase())
+            };
+            params.insert("ticker".to_string(), market);
+        }
+
+        let response = self.get(DydxEndpoint::Orders, params).await?;
+        // Orders endpoint returns an array directly
+        DydxParser::parse_orders(&response)
     }
 
     async fn get_order_history(
         &self,
-        _filter: OrderHistoryFilter,
+        filter: OrderHistoryFilter,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        // Also requires address + subaccountNumber.
-        Err(ExchangeError::UnsupportedOperation(
-            "dYdX order history requires address and subaccountNumber. \
-             Use get_orders_for_subaccount() instead.".to_string()
-        ))
+        let address = self.auth.address()
+            .ok_or_else(|| ExchangeError::Auth(
+                "dYdX get_order_history requires a dYdX address in credentials.".to_string()
+            ))?;
+
+        let mut params = HashMap::new();
+        params.insert("address".to_string(), address.to_string());
+        params.insert("subaccountNumber".to_string(), "0".to_string());
+
+        if let Some(sym) = &filter.symbol {
+            let market = format!("{}-USD", sym.base.to_uppercase());
+            params.insert("ticker".to_string(), market);
+        }
+        if let Some(limit) = filter.limit {
+            params.insert("limit".to_string(), limit.min(100).to_string());
+        }
+        // Filter to non-open orders (filled, canceled)
+        params.insert("returnLatestOrders".to_string(), "true".to_string());
+
+        let response = self.get(DydxEndpoint::Orders, params).await?;
+        let mut orders = DydxParser::parse_orders(&response)?;
+
+        // Apply time filters if provided
+        if let Some(start) = filter.start_time {
+            orders.retain(|o| o.created_at >= start);
+        }
+        if let Some(end) = filter.end_time {
+            orders.retain(|o| o.created_at <= end);
+        }
+
+        Ok(orders)
     }
 }
 

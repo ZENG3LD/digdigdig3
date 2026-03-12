@@ -322,17 +322,189 @@ impl LighterParser {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // ACCOUNT DATA (Placeholders for Phase 2)
+    // ACCOUNT DATA
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// Parse account balance (placeholder)
-    pub fn parse_balance(_response: &Value) -> ExchangeResult<Vec<crate::core::types::Balance>> {
-        Err(ExchangeError::Parse("Balance parsing not yet implemented".to_string()))
+    /// Parse account balances from `/api/v1/account` response.
+    ///
+    /// Extracts the `assets` array from the first account entry.
+    pub fn parse_balance(response: &Value) -> ExchangeResult<Vec<crate::core::types::Balance>> {
+        Self::check_success(response)?;
+
+        let accounts = response.get("accounts")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'accounts' array".to_string()))?;
+
+        let account = accounts.first()
+            .ok_or_else(|| ExchangeError::Parse("Empty accounts array".to_string()))?;
+
+        let assets = account.get("assets")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'assets' in account".to_string()))?;
+
+        let balances = assets.iter().map(|asset| {
+            let symbol = Self::get_str(asset, "symbol").unwrap_or("USDC").to_string();
+            // Lighter returns balances as integer strings (scaled by precision)
+            // For USDC they appear to be already in human-readable form based on research docs
+            let total: f64 = asset.get("balance")
+                .and_then(Self::parse_f64)
+                .unwrap_or(0.0);
+            let locked: f64 = asset.get("locked_balance")
+                .and_then(Self::parse_f64)
+                .unwrap_or(0.0);
+            let free = total - locked;
+
+            crate::core::types::Balance {
+                asset: symbol,
+                free: free.max(0.0),
+                locked,
+                total,
+            }
+        }).collect();
+
+        Ok(balances)
     }
 
-    /// Parse positions (placeholder)
-    pub fn parse_positions(_response: &Value) -> ExchangeResult<Vec<crate::core::types::Position>> {
-        Err(ExchangeError::Parse("Position parsing not yet implemented".to_string()))
+    /// Parse perpetual positions from `/api/v1/account` response.
+    ///
+    /// Extracts the `positions` array from the first account entry.
+    /// Skips positions with zero size.
+    pub fn parse_positions(response: &Value) -> ExchangeResult<Vec<crate::core::types::Position>> {
+        Self::check_success(response)?;
+
+        let accounts = response.get("accounts")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'accounts' array".to_string()))?;
+
+        let account = accounts.first()
+            .ok_or_else(|| ExchangeError::Parse("Empty accounts array".to_string()))?;
+
+        let positions_raw = account.get("positions")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut positions = Vec::new();
+
+        for pos in &positions_raw {
+            let size: f64 = pos.get("position")
+                .and_then(Self::parse_f64)
+                .unwrap_or(0.0);
+
+            // Skip closed positions
+            if size.abs() < f64::EPSILON {
+                continue;
+            }
+
+            // sign: 1 = Long, -1 = Short
+            let sign: i64 = pos.get("sign")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(1);
+
+            let side = if sign >= 0 {
+                crate::core::types::PositionSide::Long
+            } else {
+                crate::core::types::PositionSide::Short
+            };
+
+            let symbol_raw = Self::get_str(pos, "symbol").unwrap_or("").to_string();
+            let entry_price = pos.get("avg_entry_price")
+                .and_then(Self::parse_f64)
+                .unwrap_or(0.0);
+            let unrealized_pnl = pos.get("unrealized_pnl")
+                .and_then(Self::parse_f64)
+                .unwrap_or(0.0);
+            let realized_pnl = pos.get("realized_pnl")
+                .and_then(Self::parse_f64);
+
+            positions.push(crate::core::types::Position {
+                symbol: symbol_raw,
+                side,
+                quantity: size,
+                entry_price,
+                mark_price: None,
+                unrealized_pnl,
+                realized_pnl,
+                leverage: 1,
+                liquidation_price: None,
+                margin: None,
+                margin_type: crate::core::types::MarginType::Cross,
+                take_profit: None,
+                stop_loss: None,
+            });
+        }
+
+        Ok(positions)
+    }
+
+    /// Parse orders from `/api/v1/accountInactiveOrders` response.
+    pub fn parse_orders(response: &Value) -> ExchangeResult<Vec<crate::core::types::Order>> {
+        Self::check_success(response)?;
+
+        let orders_raw = response.get("orders")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'orders' array".to_string()))?;
+
+        let orders = orders_raw.iter().map(|order| {
+            let order_index = order.get("order_index")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let client_order_index = order.get("client_order_index")
+                .and_then(|v| v.as_i64());
+            let market_id = order.get("market_id")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let side_str = Self::get_str(order, "side").unwrap_or("buy");
+            let side = if side_str.eq_ignore_ascii_case("sell") {
+                crate::core::types::OrderSide::Sell
+            } else {
+                crate::core::types::OrderSide::Buy
+            };
+            let price = order.get("price").and_then(Self::parse_f64);
+            let quantity = order.get("base_amount")
+                .and_then(Self::parse_f64)
+                .unwrap_or(0.0);
+            let status_str = Self::get_str(order, "status").unwrap_or("filled");
+            let status = match status_str {
+                "filled" => crate::core::types::OrderStatus::Filled,
+                "cancelled" | "canceled" => crate::core::types::OrderStatus::Canceled,
+                "expired" => crate::core::types::OrderStatus::Expired,
+                _ => crate::core::types::OrderStatus::Filled,
+            };
+            let created_at = Self::get_i64(order, "created_at")
+                .map(|t| t * 1000) // seconds to ms
+                .unwrap_or(0);
+            let updated_at = Self::get_i64(order, "updated_at")
+                .map(|t| t * 1000);
+
+            let order_type_str = Self::get_str(order, "order_type").unwrap_or("limit");
+            let order_type = if order_type_str.eq_ignore_ascii_case("market") {
+                crate::core::types::OrderType::Market
+            } else {
+                crate::core::types::OrderType::Limit { price: price.unwrap_or(0.0) }
+            };
+
+            crate::core::types::Order {
+                id: order_index.to_string(),
+                client_order_id: client_order_index.map(|i| i.to_string()),
+                symbol: market_id.to_string(), // market_id; caller can resolve
+                side,
+                order_type,
+                status,
+                price,
+                stop_price: None,
+                quantity,
+                filled_quantity: if matches!(status, crate::core::types::OrderStatus::Filled) { quantity } else { 0.0 },
+                average_price: price,
+                commission: None,
+                commission_asset: None,
+                created_at,
+                updated_at,
+                time_in_force: crate::core::types::TimeInForce::Gtc,
+            }
+        }).collect();
+
+        Ok(orders)
     }
 }
 

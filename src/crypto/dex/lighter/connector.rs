@@ -25,10 +25,10 @@ use crate::core::{
     HttpClient, Credentials,
     ExchangeId, AccountType, Symbol,
     ExchangeError, ExchangeResult,
-    Price, Quantity, Kline, Ticker, OrderBook,
-    Order, OrderSide, OrderType,Balance, AccountInfo,
+    Price, Kline, Ticker, OrderBook,
+    Order, Balance, AccountInfo,
     Position, FundingRate, PublicTrade,
-    OrderRequest, CancelRequest, CancelScope,
+    OrderRequest, CancelRequest,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };
@@ -403,107 +403,206 @@ impl MarketData for LighterConnector {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// TRADING (Stubs for Phase 3)
+// TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[async_trait]
 impl Trading for LighterConnector {
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
-        let _symbol = req.symbol.clone();
-        let _side = req.side;
-        let _quantity = req.quantity;
-        let _account_type = req.account_type;
-
-        match req.order_type {
-            OrderType::Market => {
-                Err(ExchangeError::UnsupportedOperation("Trading not yet implemented (Phase 3)".to_string()))
-            }
-            OrderType::Limit { price: _price } => {
-                Err(ExchangeError::UnsupportedOperation("Trading not yet implemented (Phase 3)".to_string()))
-            }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
-            )),
-        }
-    }
-
-    async fn get_order_history(
-        &self,
-        _filter: OrderHistoryFilter,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Order>> {
+        // Lighter order placement requires ECDSA transaction signing:
+        //   1. Fetch next nonce via GET /api/v1/nextNonce
+        //   2. Build L2CreateOrder transaction
+        //   3. Sign with API key private key (ECDSA / secp256k1)
+        //   4. POST to /api/v1/sendTx with {tx_type: 14, tx_info: {..., signature}}
+        //
+        // ECDSA signing of the specific Lighter transaction format is not yet
+        // implemented in this connector (requires secp256k1 or k256 crate).
+        let _ = req;
         Err(ExchangeError::UnsupportedOperation(
-            "get_order_history not yet implemented".to_string()
+            "Lighter order placement requires ECDSA transaction signing (tx_type=14 L2CreateOrder). \
+             Implement sign_transaction() in LighterAuth using secp256k1 or k256 crate.".to_string()
         ))
     }
-async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
-        match req.scope {
-            CancelScope::Single { order_id: ref _order_id } => {
-                let _symbol = req.symbol.as_ref()
-                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel".into()))?
-                    .clone();
-                let _account_type = req.account_type;
 
-            Err(ExchangeError::UnsupportedOperation("Trading not yet implemented (Phase 3)".to_string()))
-
-            }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
-            )),
-        }
+    async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+        // Lighter order cancellation also requires signed transactions (tx_type=15 L2CancelOrder).
+        let _ = req;
+        Err(ExchangeError::UnsupportedOperation(
+            "Lighter order cancellation requires ECDSA transaction signing (tx_type=15 L2CancelOrder). \
+             Implement sign_transaction() in LighterAuth using secp256k1 or k256 crate.".to_string()
+        ))
     }
 
     async fn get_order(
         &self,
         _symbol: &str,
-        _order_id: &str,
+        order_id: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Order> {
-        // Parse symbol string into Symbol struct
-        let _symbol_parts: Vec<&str> = _symbol.split('/').collect();
-        let _symbol = if _symbol_parts.len() == 2 {
-            crate::core::Symbol::new(_symbol_parts[0], _symbol_parts[1])
-        } else {
-            crate::core::Symbol { base: _symbol.to_string(), quote: String::new(), raw: Some(_symbol.to_string()) }
-        };
+        // Lighter does not have a GET-by-order-id endpoint for active orders.
+        // Inactive (filled/cancelled) orders can be queried via accountInactiveOrders,
+        // but that endpoint requires account_index and returns a list, not a single order.
+        // For now, query all inactive orders and find by id.
+        let account_index = self._auth.as_ref()
+            .and_then(|a| a.account_index())
+            .ok_or_else(|| ExchangeError::Auth(
+                "Lighter get_order requires account_index in credentials passphrase JSON.".to_string()
+            ))?;
 
-        Err(ExchangeError::UnsupportedOperation("Trading not yet implemented (Phase 3)".to_string()))
-    
+        let mut params = HashMap::new();
+        params.insert("account_index".to_string(), account_index.to_string());
+        params.insert("limit".to_string(), "100".to_string());
+
+        let response = self.get(LighterEndpoint::AccountInactiveOrders, params, 100).await?;
+        let orders = LighterParser::parse_orders(&response)?;
+
+        orders.into_iter()
+            .find(|o| o.id == order_id)
+            .ok_or_else(|| ExchangeError::NotFound(format!("Order {} not found", order_id)))
     }
 
     async fn get_open_orders(
         &self,
-        _symbol: Option<&str>,
-        _account_type: AccountType,
+        symbol: Option<&str>,
+        account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        // Convert Option<&str> to Option<Symbol>
-        let _symbol_str = _symbol;
-        let _symbol: Option<crate::core::Symbol> = _symbol_str.map(|s| {
-            let parts: Vec<&str> = s.split('/').collect();
-            if parts.len() == 2 {
-                crate::core::Symbol::new(parts[0], parts[1])
-            } else {
-                crate::core::Symbol { base: s.to_string(), quote: String::new(), raw: Some(s.to_string()) }
-            }
-        });
+        // Lighter's account endpoint embeds pending_order_count but not the order list directly.
+        // The accountInactiveOrders endpoint only covers inactive orders.
+        // Open/active orders are not exposed via a dedicated REST list endpoint (only via WS).
+        // Return empty with explanation if no auth, or the inactive orders (best-effort).
+        let account_index = self._auth.as_ref()
+            .and_then(|a| a.account_index())
+            .ok_or_else(|| ExchangeError::Auth(
+                "Lighter get_open_orders requires account_index in credentials passphrase JSON.".to_string()
+            ))?;
 
-        Err(ExchangeError::UnsupportedOperation("Trading not yet implemented (Phase 3)".to_string()))
-    
+        // Resolve optional market_id filter
+        let market_id_opt = if let Some(sym) = symbol {
+            self.get_market_id(sym, account_type).await.ok()
+        } else {
+            None
+        };
+
+        // Note: Lighter has no REST endpoint for listing open orders.
+        // Return UnsupportedOperation with a helpful note.
+        let _ = (account_index, market_id_opt);
+        Err(ExchangeError::UnsupportedOperation(
+            "Lighter does not provide a REST endpoint for listing open orders. \
+             Use the WebSocket account channel to receive real-time order updates.".to_string()
+        ))
+    }
+
+    async fn get_order_history(
+        &self,
+        filter: OrderHistoryFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        let account_index = self._auth.as_ref()
+            .and_then(|a| a.account_index())
+            .ok_or_else(|| ExchangeError::Auth(
+                "Lighter get_order_history requires account_index in credentials passphrase JSON.".to_string()
+            ))?;
+
+        let mut params = HashMap::new();
+        params.insert("account_index".to_string(), account_index.to_string());
+
+        if let Some(limit) = filter.limit {
+            params.insert("limit".to_string(), limit.min(100).to_string());
+        }
+
+        // Resolve market_id from symbol filter
+        if let Some(sym) = &filter.symbol {
+            let symbol_str = sym.base.as_str();
+            if let Ok(market_id) = self.get_market_id(symbol_str, account_type).await {
+                params.insert("market_id".to_string(), market_id.to_string());
+            }
+        }
+
+        let response = self.get(LighterEndpoint::AccountInactiveOrders, params, 100).await?;
+        let mut orders = LighterParser::parse_orders(&response)?;
+
+        // Apply time filters
+        if let Some(start) = filter.start_time {
+            orders.retain(|o| o.created_at >= start);
+        }
+        if let Some(end) = filter.end_time {
+            orders.retain(|o| o.created_at <= end);
+        }
+
+        Ok(orders)
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ACCOUNT (Stubs for Phase 2)
+// ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[async_trait]
 impl Account for LighterConnector {
-    async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
-        Err(ExchangeError::NotSupported("Account data not yet implemented (Phase 2)".to_string()))
+    async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        // Lighter account data is available via GET /api/v1/account
+        // Query by account_index (from credentials) or l1_address.
+        let (by_field, value) = self.resolve_account_query()?;
+
+        let mut params = HashMap::new();
+        params.insert("by".to_string(), by_field);
+        params.insert("value".to_string(), value);
+
+        let response = self.get(LighterEndpoint::Account, params, 3000).await?;
+        let mut balances = LighterParser::parse_balance(&response)?;
+
+        // Filter by asset if requested
+        if let Some(asset_filter) = &query.asset {
+            balances.retain(|b| b.asset.eq_ignore_ascii_case(asset_filter));
+        }
+
+        Ok(balances)
     }
 
-    async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
-        Err(ExchangeError::NotSupported("Account data not yet implemented (Phase 2)".to_string()))
+    async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
+        let (by_field, value) = self.resolve_account_query()?;
+
+        let mut params = HashMap::new();
+        params.insert("by".to_string(), by_field);
+        params.insert("value".to_string(), value);
+
+        let response = self.get(LighterEndpoint::Account, params, 3000).await?;
+
+        let balances = LighterParser::parse_balance(&response)?;
+
+        // Extract fees from the first available order_book
+        let fees_response = self.get(LighterEndpoint::OrderBooks, HashMap::new(), 300).await;
+        let (maker_commission, taker_commission) = if let Ok(fee_resp) = fees_response {
+            let book = fee_resp.get("order_books")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.first())
+                .cloned();
+            if let Some(b) = book {
+                let maker = b.get("maker_fee")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                let taker = b.get("taker_fee")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .unwrap_or(0.0001);
+                (maker, taker)
+            } else {
+                (0.0, 0.0001)
+            }
+        } else {
+            (0.0, 0.0001)
+        };
+
+        Ok(AccountInfo {
+            account_type,
+            can_trade: true,
+            can_withdraw: true,
+            can_deposit: true,
+            maker_commission,
+            taker_commission,
+            balances,
+        })
     }
 
     async fn get_fees(&self, symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
@@ -552,17 +651,28 @@ impl Account for LighterConnector {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// POSITIONS (Stubs for Phase 2)
+// POSITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[async_trait]
 impl Positions for LighterConnector {
     async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
-        let _symbol = query.symbol.clone();
-        let _account_type = query.account_type;
+        let (by_field, value) = self.resolve_account_query()?;
 
-        Err(ExchangeError::NotSupported("Positions not yet implemented (Phase 2)".to_string()))
-    
+        let mut params = HashMap::new();
+        params.insert("by".to_string(), by_field);
+        params.insert("value".to_string(), value);
+
+        let response = self.get(LighterEndpoint::Account, params, 3000).await?;
+        let mut positions = LighterParser::parse_positions(&response)?;
+
+        // Filter by symbol if requested
+        if let Some(sym) = &query.symbol {
+            let base = sym.base.to_uppercase();
+            positions.retain(|p| p.symbol.to_uppercase() == base);
+        }
+
+        Ok(positions)
     }
 
     async fn get_funding_rate(
@@ -600,14 +710,16 @@ impl Positions for LighterConnector {
 
     async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
         match req {
-            PositionModification::SetLeverage { symbol: ref _symbol, leverage: _leverage, account_type: _account_type } => {
-                let _symbol = _symbol.clone();
-
-                Err(ExchangeError::NotSupported("Leverage not yet implemented (Phase 2)".to_string()))
-    
+            PositionModification::SetLeverage { .. } => {
+                // Lighter uses margin fractions set per-market at the protocol level.
+                // There is no REST endpoint to change per-account leverage.
+                Err(ExchangeError::UnsupportedOperation(
+                    "Lighter does not support per-account leverage changes via REST. \
+                     Leverage is controlled by initial margin fraction set at the market level.".to_string()
+                ))
             }
             _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} not supported on {:?}", req, self.exchange_id())
+                format!("{:?} is not supported on Lighter", req)
             )),
         }
     }
@@ -616,6 +728,35 @@ impl Positions for LighterConnector {
 // ═══════════════════════════════════════════════════════════════════════════════
 // EXTENDED METHODS (Lighter-specific)
 // ═══════════════════════════════════════════════════════════════════════════════
+
+impl LighterConnector {
+    /// Resolve the `by`/`value` query params for the `/api/v1/account` endpoint.
+    ///
+    /// Lighter supports lookup by:
+    /// - `"index"` + numeric account_index
+    /// - `"l1_address"` + Ethereum address
+    ///
+    /// This picks whichever credential field is available.
+    fn resolve_account_query(&self) -> ExchangeResult<(String, String)> {
+        let auth = self._auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth(
+                "Lighter account queries require credentials (account_index or l1_address).".to_string()
+            ))?;
+
+        if let Some(idx) = auth.account_index() {
+            return Ok(("index".to_string(), idx.to_string()));
+        }
+
+        if let Some(addr) = auth.l1_address() {
+            return Ok(("l1_address".to_string(), addr.to_string()));
+        }
+
+        Err(ExchangeError::Auth(
+            "Lighter account queries require either account_index or l1_address in credentials. \
+             Pass them via Credentials::new(\"\", \"\").with_passphrase(r#\"{\"account_index\": 1}\"#).".to_string()
+        ))
+    }
+}
 
 impl LighterConnector {
     /// Get recent trades for a market

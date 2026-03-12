@@ -564,11 +564,14 @@ impl BinanceParser {
         }).collect())
     }
 
-    /// Парсить fee info из /api/v3/account или /sapi/v1/asset/tradeFee
+    /// Парсить fee info из:
+    /// - `/sapi/v1/asset/tradeFee` — array of `{symbol, makerCommission, takerCommission}`
+    /// - `/api/v3/account` — object with `commissionRates.{maker, taker}`
+    /// - `/fapi/v1/commissionRate` — object with `{makerCommissionRate, takerCommissionRate}`
     pub fn parse_fee_info(response: &Value, symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
         Self::check_error(response)?;
 
-        // Trade fee endpoint returns array of {symbol, makerCommission, takerCommission}
+        // Spot trade fee endpoint: array of {symbol, makerCommission, takerCommission}
         if let Some(arr) = response.as_array() {
             if let Some(first) = arr.first() {
                 let maker_rate = Self::get_f64(first, "makerCommission").unwrap_or(0.001);
@@ -583,7 +586,22 @@ impl BinanceParser {
             return Err(ExchangeError::Parse("Empty fee array".to_string()));
         }
 
-        // Account endpoint: commissionRates object
+        // Futures commissionRate endpoint: {symbol, makerCommissionRate, takerCommissionRate}
+        if let (Some(maker_rate), Some(taker_rate)) = (
+            Self::get_f64(response, "makerCommissionRate"),
+            Self::get_f64(response, "takerCommissionRate"),
+        ) {
+            return Ok(FeeInfo {
+                maker_rate,
+                taker_rate,
+                symbol: Self::get_str(response, "symbol")
+                    .map(String::from)
+                    .or_else(|| symbol.map(String::from)),
+                tier: None,
+            });
+        }
+
+        // Spot account endpoint: commissionRates object
         if let Some(rates) = response.get("commissionRates") {
             let maker_rate = rates.get("maker")
                 .and_then(Self::parse_f64)
@@ -596,6 +614,31 @@ impl BinanceParser {
                 taker_rate,
                 symbol: symbol.map(String::from),
                 tier: None,
+            });
+        }
+
+        // Futures account endpoint: feeTier (int) with no explicit rates in base response
+        // feeTier 0 = Regular (0.02%/0.04%), each tier reduces rates by ~10%
+        if let Some(fee_tier) = response.get("feeTier").and_then(|v| v.as_u64()) {
+            // Standard Binance USDT-M fee schedule (VIP 0 baseline)
+            let (maker_rate, taker_rate) = match fee_tier {
+                0 => (0.0002, 0.0004),
+                1 => (0.00016, 0.0004),
+                2 => (0.00014, 0.00035),
+                3 => (0.00012, 0.00032),
+                4 => (0.0001, 0.0003),
+                5 => (0.00008, 0.00027),
+                6 => (0.00006, 0.00025),
+                7 => (0.00005, 0.00022),
+                8 => (0.00003, 0.0002),
+                9 => (0.0, 0.00017),
+                _ => (0.0002, 0.0004),
+            };
+            return Ok(FeeInfo {
+                maker_rate,
+                taker_rate,
+                symbol: symbol.map(String::from),
+                tier: Some(format!("VIP{}", fee_tier)),
             });
         }
 

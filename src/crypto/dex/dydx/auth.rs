@@ -30,6 +30,11 @@ use crate::core::{Credentials, ExchangeResult};
 ///
 /// Текущая реализация: только Indexer API (read-only, без аутентификации)
 /// Будущее: Node API (gRPC) с Cosmos wallet signing
+///
+/// ## Address usage
+/// For read-only Indexer endpoints that require an address (e.g. `/v4/orders`,
+/// `/v4/perpetualPositions`), store the dYdX chain address as the `api_key`
+/// field of `Credentials`. The secret field is unused for Indexer calls.
 #[derive(Clone)]
 pub struct DydxAuth {
     /// Optional credentials for future gRPC implementation
@@ -71,6 +76,15 @@ impl DydxAuth {
     /// Проверить, установлены ли credentials (для будущего использования)
     pub fn has_credentials(&self) -> bool {
         self._credentials.is_some()
+    }
+
+    /// Получить dYdX chain address из credentials (api_key поле).
+    ///
+    /// dYdX v4 не использует API ключи — адрес хранится в поле `api_key`
+    /// объекта `Credentials` для доступа к account-specific Indexer endpoints.
+    pub fn address(&self) -> Option<&str> {
+        self._credentials.as_ref().map(|c| c.api_key.as_str())
+            .filter(|s| !s.is_empty())
     }
 }
 

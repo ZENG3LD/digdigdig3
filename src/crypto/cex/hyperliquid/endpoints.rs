@@ -102,22 +102,25 @@ impl HyperliquidEndpoint {
 #[allow(dead_code)]
 pub enum InfoType {
     // Market Data
-    MetaAndAssetCtxs,     // Get all asset metadata and contexts (ticker data)
-    Meta,                 // Get perpetuals metadata
-    SpotMeta,             // Get spot metadata
-    AllMids,              // Get all mid prices
-    L2Book,               // Get order book
-    RecentTrades,         // Get recent trades
-    CandleSnapshot,       // Get klines/candles
+    MetaAndAssetCtxs,       // Get all asset metadata and contexts (ticker data)
+    Meta,                   // Get perpetuals metadata
+    SpotMeta,               // Get spot metadata
+    AllMids,                // Get all mid prices
+    L2Book,                 // Get order book
+    RecentTrades,           // Get recent trades
+    CandleSnapshot,         // Get klines/candles
+    FundingHistory,         // Get historical funding rates
 
-    // Account Data (requires user address)
-    ClearinghouseState,   // Get perpetuals account state
+    // Account Data (requires user address — NO signature needed, just the address)
+    ClearinghouseState,     // Get perpetuals account state (balances + positions)
     SpotClearinghouseState, // Get spot account state
-    OpenOrders,           // Get open orders
-    UserFills,            // Get trade history
-    UserFillsByTime,      // Get trade history with time range
-    UserFees,             // Get user fee tier
-    UserRateLimit,        // Get rate limit status
+    OpenOrders,             // Get open orders
+    OrderStatus,            // Get single order status by oid
+    UserFills,              // Get trade history (fills)
+    UserFillsByTime,        // Get trade history with time range
+    UserFees,               // Get user fee tier
+    UserRateLimit,          // Get rate limit status
+    HistoricalOrders,       // Get historical orders
 }
 
 impl InfoType {
@@ -131,13 +134,16 @@ impl InfoType {
             Self::L2Book => "l2Book",
             Self::RecentTrades => "recentTrades",
             Self::CandleSnapshot => "candleSnapshot",
+            Self::FundingHistory => "fundingHistory",
             Self::ClearinghouseState => "clearinghouseState",
             Self::SpotClearinghouseState => "spotClearinghouseState",
             Self::OpenOrders => "openOrders",
+            Self::OrderStatus => "orderStatus",
             Self::UserFills => "userFills",
             Self::UserFillsByTime => "userFillsByTime",
             Self::UserFees => "userFees",
             Self::UserRateLimit => "userRateLimit",
+            Self::HistoricalOrders => "historicalOrders",
         }
     }
 }
@@ -218,7 +224,8 @@ impl ActionType {
 /// // Spot (if input already has @ prefix)
 /// assert_eq!(_format_symbol("@107", AccountType::Spot), "@107");
 /// ```
-pub fn _format_symbol(symbol: &str, account_type: AccountType) -> String {
+#[allow(dead_code)]
+pub fn format_symbol(symbol: &str, account_type: AccountType) -> String {
     match account_type {
         AccountType::Spot => {
             // Spot symbols use @index format

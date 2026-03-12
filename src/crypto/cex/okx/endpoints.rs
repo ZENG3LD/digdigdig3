@@ -75,6 +75,7 @@ pub enum OkxEndpoint {
     PlaceBatchOrders,
     CancelOrder,
     CancelBatchOrders,
+    CancelAllAfter,
     AmendOrder,
     GetOrder,
     OpenOrders,
@@ -120,6 +121,7 @@ impl OkxEndpoint {
             Self::PlaceBatchOrders => "/api/v5/trade/batch-orders",
             Self::CancelOrder => "/api/v5/trade/cancel-order",
             Self::CancelBatchOrders => "/api/v5/trade/cancel-batch-orders",
+            Self::CancelAllAfter => "/api/v5/trade/cancel-all-after",
             Self::AmendOrder => "/api/v5/trade/amend-order",
             Self::GetOrder => "/api/v5/trade/order",
             Self::OpenOrders => "/api/v5/trade/orders-pending",
@@ -172,6 +174,7 @@ impl OkxEndpoint {
             | Self::PlaceBatchOrders
             | Self::CancelOrder
             | Self::CancelBatchOrders
+            | Self::CancelAllAfter
             | Self::AmendOrder
             | Self::SetLeverage
             | Self::SetPositionMode => "POST",

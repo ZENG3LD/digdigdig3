@@ -315,6 +315,23 @@ pub fn msgpack_cancel_action(cancels: &[(u32, u64)]) -> Vec<u8> {
     enc.finish()
 }
 
+/// Encode a "modify" action. Keys sorted: oid, order, type
+pub fn msgpack_modify_action(oid: u64, order: &HlOrder) -> Vec<u8> {
+    let mut enc = MsgpackEncoder::new();
+    enc.begin_map(3);
+
+    enc.write_str("oid");
+    enc.write_uint(oid);
+
+    enc.write_str("order");
+    msgpack_order(&mut enc, order);
+
+    enc.write_str("type");
+    enc.write_str("modify");
+
+    enc.finish()
+}
+
 /// Encode an "updateLeverage" action. Keys sorted: asset, isCross, leverage, type
 pub fn msgpack_update_leverage_action(asset: u32, is_cross: bool, leverage: u32) -> Vec<u8> {
     let mut enc = MsgpackEncoder::new();
@@ -589,6 +606,48 @@ impl HyperliquidAuth {
         let action_bytes = msgpack_cancel_action(cancels);
         let sig = self.sign_l1_action(&action_bytes, nonce, vault_address)?;
         let action = build_cancel_action_json(cancels);
+        Ok(build_exchange_request(action, nonce, sig, vault_address))
+    }
+
+    /// Sign and build exchange request for modifying an existing order
+    pub fn sign_modify_action(
+        &self,
+        oid: u64,
+        order: &HlOrder,
+        vault_address: Option<&[u8; 20]>,
+    ) -> ExchangeResult<serde_json::Value> {
+        let nonce = self.get_next_nonce();
+        let action_bytes = msgpack_modify_action(oid, order);
+        let sig = self.sign_l1_action(&action_bytes, nonce, vault_address)?;
+        let order_type_json = match &order.t {
+            HlOrderType::Limit { tif } => serde_json::json!({
+                "limit": { "tif": tif.as_str() }
+            }),
+            HlOrderType::Trigger { trigger_px, is_market, tpsl } => serde_json::json!({
+                "trigger": {
+                    "triggerPx": trigger_px,
+                    "isMarket": is_market,
+                    "tpsl": tpsl,
+                }
+            }),
+        };
+        let cloid_json = match &order.c {
+            Some(c) => serde_json::Value::String(c.clone()),
+            None => serde_json::Value::Null,
+        };
+        let action = serde_json::json!({
+            "type": "modify",
+            "oid": oid,
+            "order": {
+                "a": order.a,
+                "b": order.b,
+                "p": order.p,
+                "s": order.s,
+                "r": order.r,
+                "t": order_type_json,
+                "c": cloid_json,
+            }
+        });
         Ok(build_exchange_request(action, nonce, sig, vault_address))
     }
 

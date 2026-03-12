@@ -11,6 +11,7 @@ use crate::core::types::{
     FundingRate, PublicTrade, StreamEvent, TradeSide,
     OrderUpdateEvent, BalanceUpdateEvent, PositionUpdateEvent,
     BalanceChangeReason, PositionChangeReason,
+    CancelAllResponse,
 };
 
 /// Парсер ответов KuCoin API
@@ -803,6 +804,40 @@ impl KuCoinParser {
                 .map(|t| if t > 1_000_000_000_000_000 { t / 1_000_000 } else { t })
                 .unwrap_or(0),
         })
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // CANCEL ALL
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse response from DELETE /api/v1/orders (cancel all).
+    ///
+    /// KuCoin returns `{"code":"200000","data":{"cancelledOrderIds":["id1","id2"]}}`.
+    pub fn parse_cancel_all_response(response: &Value) -> ExchangeResult<CancelAllResponse> {
+        let data = Self::extract_data(response)?;
+
+        let cancelled_ids = data.get("cancelledOrderIds")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.len() as u32)
+            .unwrap_or(0);
+
+        Ok(CancelAllResponse {
+            cancelled_count: cancelled_ids,
+            failed_count: 0,
+            details: vec![],
+        })
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // AMEND ORDER (Futures only)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse response from POST /api/v1/orders/{orderId} amend.
+    ///
+    /// KuCoin Futures returns the amended order object under `data`.
+    pub fn parse_amend_order(response: &Value, symbol: &str) -> ExchangeResult<Order> {
+        let data = Self::extract_data(response)?;
+        Self::parse_order_data(data, symbol)
     }
 }
 

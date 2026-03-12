@@ -30,8 +30,9 @@ use crate::core::{
     Balance, AccountInfo, Position, FundingRate, MarginType,
     PlaceOrderResponse, BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, FeeInfo,
+    AmendRequest, OrderResult,
 };
-use crate::core::traits::{Trading, Account, Positions};
+use crate::core::traits::{Trading, Account, Positions, AmendOrder, BatchOrders};
 use crate::core::types::{ConnectorStats, SymbolInfo};
 use crate::core::utils::WeightRateLimiter;
 
@@ -1088,5 +1089,304 @@ impl Positions for HyperliquidConnector {
                 ))
             }
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// OPTIONAL TRAITS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AmendOrder for HyperliquidConnector {
+    /// Modify a live order using the native `modify` action on `/exchange`.
+    ///
+    /// Hyperliquid's modify action requires the full order spec (asset, side, price, size,
+    /// reduce_only, order type) alongside the order ID to amend.
+    async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
+        let auth = self.require_auth()?;
+
+        // Parse the numeric order ID
+        let oid = req.order_id.parse::<u64>()
+            .map_err(|_| ExchangeError::Parse(
+                format!("Invalid Hyperliquid order ID '{}': must be numeric", req.order_id)
+            ))?;
+
+        // Resolve asset index from symbol
+        let asset_index = self.symbol_to_asset_index(&req.symbol.base).await?;
+
+        // Fetch current order to get its existing fields (we need a complete spec for modify)
+        let current_order = self.get_order(&req.symbol.base, &req.order_id, req.account_type).await?;
+
+        // Determine the new price and size (use amended fields if provided, else keep current)
+        let new_price = req.fields.price.unwrap_or_else(|| {
+            current_order.price.unwrap_or(0.0)
+        });
+        let new_size = req.fields.quantity.unwrap_or(current_order.quantity);
+
+        // Determine TIF from current order's order_type
+        let (price_str, order_type) = match &current_order.order_type {
+            OrderType::PostOnly { .. } => (
+                normalize_price(new_price),
+                HlOrderType::Limit { tif: HlTif::Alo },
+            ),
+            OrderType::Ioc { .. } => (
+                normalize_price(new_price),
+                HlOrderType::Limit { tif: HlTif::Ioc },
+            ),
+            OrderType::Fok { .. } => (
+                normalize_price(new_price),
+                HlOrderType::Limit { tif: HlTif::Fok },
+            ),
+            _ => (
+                normalize_price(new_price),
+                HlOrderType::Limit { tif: HlTif::Gtc },
+            ),
+        };
+
+        let is_buy = matches!(current_order.side, OrderSide::Buy);
+
+        let hl_order = HlOrder {
+            a: asset_index,
+            b: is_buy,
+            p: price_str,
+            s: normalize_price(new_size),
+            r: false,
+            t: order_type,
+            c: None,
+        };
+
+        let body = auth.sign_modify_action(oid, &hl_order, None)?;
+        let response = self.exchange_request(&body).await?;
+
+        // Parse the response — modify returns statuses similar to order placement
+        let data = HyperliquidParser::extract_exchange_data(&response)?;
+        let statuses = data.get("statuses")
+            .and_then(|s| s.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing statuses in modify response".to_string()))?;
+
+        if let Some(first) = statuses.first() {
+            if let Some(err) = first.get("error").and_then(|e| e.as_str()) {
+                return Err(ExchangeError::Api { code: -1, message: err.to_string() });
+            }
+        }
+
+        // Return the order with updated fields
+        Ok(Order {
+            id: req.order_id,
+            client_order_id: current_order.client_order_id,
+            symbol: req.symbol.base.clone(),
+            side: current_order.side,
+            order_type: current_order.order_type,
+            status: OrderStatus::Open,
+            price: Some(new_price),
+            stop_price: current_order.stop_price,
+            quantity: new_size,
+            filled_quantity: current_order.filled_quantity,
+            average_price: current_order.average_price,
+            commission: None,
+            commission_asset: None,
+            created_at: current_order.created_at,
+            updated_at: Some(crate::core::timestamp_millis() as i64),
+            time_in_force: current_order.time_in_force,
+        })
+    }
+}
+
+#[async_trait]
+impl BatchOrders for HyperliquidConnector {
+    /// Place multiple orders in a single native batch request.
+    ///
+    /// Hyperliquid's `order` action natively accepts an array of orders — this IS the batch
+    /// endpoint. Uses `grouping="na"` (no bracket/TP-SL grouping).
+    async fn place_orders_batch(
+        &self,
+        orders: Vec<OrderRequest>,
+    ) -> ExchangeResult<Vec<OrderResult>> {
+        let auth = self.require_auth()?;
+
+        // Build HlOrder structs for each request
+        let mut hl_orders = Vec::with_capacity(orders.len());
+        for req in &orders {
+            let asset_index = self.symbol_to_asset_index(&req.symbol.base).await?;
+            hl_orders.push(build_hl_order(req, asset_index)?);
+        }
+
+        // Sign and submit the batch
+        let body = auth.sign_order_action(&hl_orders, "na", None)?;
+        let response = self.exchange_request(&body).await?;
+
+        // Parse per-order statuses
+        let data = HyperliquidParser::extract_exchange_data(&response)?;
+        let statuses = data.get("statuses")
+            .and_then(|s| s.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing statuses in batch order response".to_string()))?;
+
+        let results: Vec<OrderResult> = statuses.iter().zip(orders.iter()).map(|(status, req)| {
+            if let Some(err) = status.get("error").and_then(|e| e.as_str()) {
+                return OrderResult {
+                    order: None,
+                    client_order_id: req.client_order_id.clone(),
+                    success: false,
+                    error: Some(err.to_string()),
+                    error_code: None,
+                };
+            }
+
+            // Extract order ID from resting or filled
+            let (order_id, filled_qty, avg_price, order_status) = if let Some(resting) = status.get("resting") {
+                let oid = resting.get("oid")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v.to_string())
+                    .unwrap_or_default();
+                (oid, 0.0f64, None::<f64>, OrderStatus::Open)
+            } else if let Some(filled) = status.get("filled") {
+                let oid = filled.get("oid")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v.to_string())
+                    .unwrap_or_default();
+                let total_sz = filled.get("totalSz")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                let avg_px = filled.get("avgPx")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<f64>().ok());
+                (oid, total_sz, avg_px, OrderStatus::Filled)
+            } else {
+                return OrderResult {
+                    order: None,
+                    client_order_id: req.client_order_id.clone(),
+                    success: false,
+                    error: Some("Unknown status in batch response".to_string()),
+                    error_code: None,
+                };
+            };
+
+            let price = match &req.order_type {
+                OrderType::Limit { price } | OrderType::PostOnly { price } |
+                OrderType::Fok { price } => Some(*price),
+                OrderType::Ioc { price } => *price,
+                OrderType::ReduceOnly { price } => *price,
+                _ => None,
+            };
+
+            let order = Order {
+                id: order_id,
+                client_order_id: req.client_order_id.clone(),
+                symbol: req.symbol.base.clone(),
+                side: req.side,
+                order_type: req.order_type.clone(),
+                status: order_status,
+                price,
+                stop_price: None,
+                quantity: req.quantity,
+                filled_quantity: filled_qty,
+                average_price: avg_price,
+                commission: None,
+                commission_asset: None,
+                created_at: crate::core::timestamp_millis() as i64,
+                updated_at: None,
+                time_in_force: req.time_in_force,
+            };
+
+            OrderResult {
+                order: Some(order),
+                client_order_id: req.client_order_id.clone(),
+                success: true,
+                error: None,
+                error_code: None,
+            }
+        }).collect();
+
+        Ok(results)
+    }
+
+    /// Cancel multiple orders in a single native batch request.
+    ///
+    /// Hyperliquid's `cancel` action natively accepts an array of `{a, o}` pairs.
+    /// `symbol` hint is used to look up the asset index; all order IDs are assumed
+    /// to belong to the same asset if a symbol is provided.
+    async fn cancel_orders_batch(
+        &self,
+        order_ids: Vec<String>,
+        symbol: Option<&str>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<OrderResult>> {
+        let auth = self.require_auth()?;
+
+        // Determine asset index (use symbol hint if provided, default to 0)
+        let asset = if let Some(sym) = symbol {
+            let coin = sym.split('/').next().unwrap_or(sym);
+            self.symbol_to_asset_index(coin).await.unwrap_or(0)
+        } else {
+            0
+        };
+
+        // Parse order IDs to (asset, oid) pairs
+        let mut cancels: Vec<(u32, u64)> = Vec::with_capacity(order_ids.len());
+        for id_str in &order_ids {
+            let oid = id_str.parse::<u64>()
+                .map_err(|_| ExchangeError::Parse(
+                    format!("Invalid Hyperliquid order ID '{}': must be numeric", id_str)
+                ))?;
+            cancels.push((asset, oid));
+        }
+
+        let body = auth.sign_cancel_action(&cancels, None)?;
+        let response = self.exchange_request(&body).await?;
+
+        // Parse per-cancel statuses
+        let data = HyperliquidParser::extract_exchange_data(&response)?;
+        let statuses = data.get("statuses")
+            .and_then(|s| s.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing statuses in batch cancel response".to_string()))?;
+
+        let results: Vec<OrderResult> = statuses.iter().zip(order_ids.iter()).map(|(status, oid_str)| {
+            if let Some(err) = status.get("error").and_then(|e| e.as_str()) {
+                return OrderResult {
+                    order: None,
+                    client_order_id: None,
+                    success: false,
+                    error: Some(err.to_string()),
+                    error_code: None,
+                };
+            }
+
+            // Success — "success" string in status
+            OrderResult {
+                order: Some(Order {
+                    id: oid_str.clone(),
+                    client_order_id: None,
+                    symbol: symbol.unwrap_or("").to_string(),
+                    side: OrderSide::Buy, // Unknown from cancel response
+                    order_type: OrderType::Limit { price: 0.0 },
+                    status: OrderStatus::Canceled,
+                    price: None,
+                    stop_price: None,
+                    quantity: 0.0,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: 0,
+                    updated_at: Some(crate::core::timestamp_millis() as i64),
+                    time_in_force: TimeInForce::Gtc,
+                }),
+                client_order_id: None,
+                success: true,
+                error: None,
+                error_code: None,
+            }
+        }).collect();
+
+        Ok(results)
+    }
+
+    fn max_batch_place_size(&self) -> usize {
+        10 // Hyperliquid rate limit: 10 orders per batch recommended
+    }
+
+    fn max_batch_cancel_size(&self) -> usize {
+        10 // Same limit for cancel batches
     }
 }

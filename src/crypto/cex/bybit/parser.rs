@@ -24,7 +24,7 @@
 
 use serde_json::Value;
 use crate::core::types::*;
-use crate::core::types::{ExchangeResult, ExchangeError};
+use crate::core::types::{ExchangeResult, ExchangeError, CancelAllResponse, OrderResult};
 
 pub struct BybitParser;
 
@@ -455,6 +455,111 @@ impl BybitParser {
             .collect();
 
         Ok(symbols)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // OPTIONAL TRAIT PARSERS
+    // ═══════════════════════════════════════════════════════════════════════════════
+
+    /// Parse cancel-all response.
+    ///
+    /// Bybit returns: `result.list = [{ orderId, orderLinkId }, ...]`
+    /// Each item is a successfully cancelled order.
+    pub fn parse_cancel_all_response(json: &Value) -> ExchangeResult<CancelAllResponse> {
+        let result = Self::extract_result(json)?;
+
+        let list = result["list"].as_array()
+            .cloned()
+            .unwrap_or_default();
+
+        let details: Vec<OrderResult> = list.iter()
+            .map(|item| OrderResult {
+                order: None,
+                client_order_id: item["orderLinkId"].as_str().map(String::from),
+                success: true,
+                error: None,
+                error_code: None,
+            })
+            .collect();
+
+        let cancelled_count = details.len() as u32;
+
+        Ok(CancelAllResponse {
+            cancelled_count,
+            failed_count: 0,
+            details,
+        })
+    }
+
+    /// Parse amend order response.
+    ///
+    /// Bybit returns: `result = { orderId, orderLinkId }`
+    /// The full updated order is not returned — re-use `parse_order` to wrap it.
+    pub fn parse_amend_order_response(json: &Value) -> ExchangeResult<Order> {
+        let result = Self::extract_result(json)?;
+
+        // Bybit amend returns minimal info: orderId + orderLinkId
+        // Build a minimal Order object from the available data.
+        let id = result["orderId"].as_str()
+            .ok_or_else(|| ExchangeError::Parse("Missing orderId in amend response".to_string()))?
+            .to_string();
+
+        Ok(Order {
+            id,
+            client_order_id: result["orderLinkId"].as_str().map(String::from),
+            symbol: String::new(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Limit { price: 0.0 },
+            status: OrderStatus::Open,
+            price: None,
+            stop_price: None,
+            quantity: 0.0,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: 0,
+            updated_at: None,
+            time_in_force: TimeInForce::Gtc,
+        })
+    }
+
+    /// Parse batch orders response.
+    ///
+    /// Bybit batch response: `result.list = [{ orderId, orderLinkId, code, msg }, ...]`
+    /// `code == "0"` indicates success for each item.
+    pub fn parse_batch_orders_response(json: &Value) -> ExchangeResult<Vec<OrderResult>> {
+        let result = Self::extract_result(json)?;
+
+        let list = result["list"].as_array()
+            .ok_or_else(|| ExchangeError::Parse("Missing result.list in batch response".to_string()))?;
+
+        let results = list.iter()
+            .map(|item| {
+                let code = item["code"].as_str().unwrap_or("0");
+                let success = code == "0";
+                if success {
+                    OrderResult {
+                        order: None,
+                        client_order_id: item["orderLinkId"].as_str().map(String::from),
+                        success: true,
+                        error: None,
+                        error_code: None,
+                    }
+                } else {
+                    let msg = item["msg"].as_str().unwrap_or("Unknown error").to_string();
+                    OrderResult {
+                        order: None,
+                        client_order_id: item["orderLinkId"].as_str().map(String::from),
+                        success: false,
+                        error: Some(msg),
+                        error_code: code.parse().ok(),
+                    }
+                }
+            })
+            .collect();
+
+        Ok(results)
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════

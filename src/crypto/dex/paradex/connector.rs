@@ -32,8 +32,10 @@ use crate::core::{
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };
+use crate::core::{AmendRequest, CancelAllResponse, OrderResult};
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
+    CancelAll, AmendOrder, BatchOrders,
 };
 use crate::core::utils::GroupRateLimiter;
 use crate::core::types::{ConnectorStats, SymbolInfo};
@@ -957,6 +959,298 @@ impl Positions for ParadexConnector {
                 ))
             }
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// OPTIONAL TRAITS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl CancelAll for ParadexConnector {
+    /// Cancel all open orders, optionally filtered to a single market.
+    ///
+    /// Uses `DELETE /v1/orders` — a native Paradex endpoint.
+    /// Returns aggregate counts; Paradex does not return per-order detail on this endpoint.
+    async fn cancel_all_orders(
+        &self,
+        scope: CancelScope,
+        _account_type: AccountType,
+    ) -> ExchangeResult<CancelAllResponse> {
+        match scope {
+            CancelScope::All { .. } => {
+                // DELETE /orders — cancel all open orders across all markets
+                self.delete(ParadexEndpoint::CancelAllOrders, &[]).await?;
+                Ok(CancelAllResponse {
+                    cancelled_count: 0, // Paradex does not return count in this response
+                    failed_count: 0,
+                    details: Vec::new(),
+                })
+            }
+            CancelScope::BySymbol { ref symbol } => {
+                // DELETE /orders?market=BTC-USD-PERP — cancel all for one market
+                // Paradex accepts an optional `market` query param on the cancel-all endpoint.
+                // We need to pass it as a query string on the DELETE request.
+                // The existing `delete()` helper builds the path only; for the market filter
+                // we append it directly to the URL by using a custom request.
+                self.rate_limit_wait("orders", 1).await;
+
+                let base_url = self.urls.rest_url();
+                let market_str = format_symbol(&symbol.base, &symbol.quote, AccountType::FuturesCross);
+                let path = format!("{}?market={}", ParadexEndpoint::CancelAllOrders.path(), market_str);
+                let url = format!("{}{}", base_url, path);
+                let headers = self.auth.sign_request("DELETE", &path, "").await?;
+
+                let (response, resp_headers) = self.http
+                    .delete_with_response_headers(&url, &std::collections::HashMap::new(), &headers)
+                    .await?;
+                self.update_rate_from_headers(&resp_headers, "orders");
+                self.check_response(&response)?;
+
+                Ok(CancelAllResponse {
+                    cancelled_count: 0,
+                    failed_count: 0,
+                    details: Vec::new(),
+                })
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                "CancelAll only accepts CancelScope::All or CancelScope::BySymbol".to_string(),
+            )),
+        }
+    }
+}
+
+#[async_trait]
+impl AmendOrder for ParadexConnector {
+    /// Modify a live order's price and/or size in-place.
+    ///
+    /// Uses `PUT /v1/orders/{order_id}` — native Paradex modify endpoint.
+    async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
+        let mut body = json!({});
+
+        if let Some(price) = req.fields.price {
+            body["price"] = json!(price.to_string());
+        }
+        if let Some(qty) = req.fields.quantity {
+            body["size"] = json!(qty.to_string());
+        }
+        if let Some(trigger) = req.fields.trigger_price {
+            body["trigger_price"] = json!(trigger.to_string());
+        }
+
+        let response = self._put(
+            ParadexEndpoint::ModifyOrder,
+            &[("order_id", &req.order_id)],
+            body,
+        )
+        .await?;
+
+        ParadexParser::parse_order(&response)
+    }
+}
+
+#[async_trait]
+impl BatchOrders for ParadexConnector {
+    /// Place multiple orders in a single `POST /v1/orders/batch` request.
+    ///
+    /// Paradex batch endpoint accepts up to 10 orders per call.
+    async fn place_orders_batch(
+        &self,
+        orders: Vec<OrderRequest>,
+    ) -> ExchangeResult<Vec<OrderResult>> {
+        let order_jsons: Vec<serde_json::Value> = orders.iter().map(|req| {
+            let symbol_str = format_symbol(&req.symbol.base, &req.symbol.quote, req.account_type);
+            let side_str = match req.side {
+                OrderSide::Buy => "BUY",
+                OrderSide::Sell => "SELL",
+            };
+            match &req.order_type {
+                OrderType::Market => json!({
+                    "market": symbol_str,
+                    "side": side_str,
+                    "type": "MARKET",
+                    "size": req.quantity.to_string(),
+                    "instruction": "IOC",
+                }),
+                OrderType::Limit { price } => json!({
+                    "market": symbol_str,
+                    "side": side_str,
+                    "type": "LIMIT",
+                    "price": price.to_string(),
+                    "size": req.quantity.to_string(),
+                    "instruction": "GTC",
+                }),
+                OrderType::PostOnly { price } => json!({
+                    "market": symbol_str,
+                    "side": side_str,
+                    "type": "LIMIT",
+                    "price": price.to_string(),
+                    "size": req.quantity.to_string(),
+                    "instruction": "POST_ONLY",
+                }),
+                OrderType::Ioc { price } => {
+                    let mut o = json!({
+                        "market": symbol_str,
+                        "side": side_str,
+                        "type": "MARKET",
+                        "size": req.quantity.to_string(),
+                        "instruction": "IOC",
+                    });
+                    if let Some(p) = price {
+                        o["type"] = json!("LIMIT");
+                        o["price"] = json!(p.to_string());
+                    }
+                    o
+                }
+                OrderType::Fok { price } => json!({
+                    "market": symbol_str,
+                    "side": side_str,
+                    "type": "LIMIT",
+                    "price": price.to_string(),
+                    "size": req.quantity.to_string(),
+                    "instruction": "FOK",
+                }),
+                _ => json!({
+                    "market": symbol_str,
+                    "side": side_str,
+                    "type": "MARKET",
+                    "size": req.quantity.to_string(),
+                    "instruction": "IOC",
+                }),
+            }
+        }).collect();
+
+        let body = json!({ "orders": order_jsons });
+        let response = self.post(ParadexEndpoint::CreateOrderBatch, body).await?;
+
+        // Paradex batch response: { "results": [ { "id": "...", "status": "OPEN|REJECTED", ... } ] }
+        let results_val = response.get("results")
+            .and_then(|r| r.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'results' in batch place response".to_string()))?;
+
+        let results: Vec<OrderResult> = results_val.iter().zip(orders.iter()).map(|(item, req)| {
+            if let Some(err_msg) = item.get("error").and_then(|e| e.as_str()) {
+                OrderResult {
+                    order: None,
+                    client_order_id: req.client_order_id.clone(),
+                    success: false,
+                    error: Some(err_msg.to_string()),
+                    error_code: item.get("error_code").and_then(|c| c.as_i64()).map(|c| c as i32),
+                }
+            } else {
+                match ParadexParser::parse_order(item) {
+                    Ok(order) => OrderResult {
+                        order: Some(order),
+                        client_order_id: req.client_order_id.clone(),
+                        success: true,
+                        error: None,
+                        error_code: None,
+                    },
+                    Err(e) => OrderResult {
+                        order: None,
+                        client_order_id: req.client_order_id.clone(),
+                        success: false,
+                        error: Some(e.to_string()),
+                        error_code: None,
+                    },
+                }
+            }
+        }).collect();
+
+        Ok(results)
+    }
+
+    /// Cancel multiple orders by ID in a single `DELETE /v1/orders/batch` request.
+    async fn cancel_orders_batch(
+        &self,
+        order_ids: Vec<String>,
+        _symbol: Option<&str>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<OrderResult>> {
+        self.rate_limit_wait("orders", 1).await;
+
+        let base_url = self.urls.rest_url();
+        let path = ParadexEndpoint::CancelOrderBatch.path();
+        let url = format!("{}{}", base_url, path);
+        let body = json!({ "ids": order_ids });
+        let body_str = body.to_string();
+        let headers = self.auth.sign_request("DELETE", path, &body_str).await?;
+
+        let response = self.http
+            .delete_with_body(&url, &body, &headers)
+            .await?;
+        self.check_response(&response)?;
+
+        // Paradex batch cancel returns: { "cancelled": ["id1", "id2"], "failed": [...] }
+        let cancelled: Vec<String> = response.get("cancelled")
+            .and_then(|c| c.as_array())
+            .map(|arr| arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect())
+            .unwrap_or_default();
+
+        let failed: Vec<String> = response.get("failed")
+            .and_then(|f| f.as_array())
+            .map(|arr| arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect())
+            .unwrap_or_default();
+
+        let results: Vec<OrderResult> = order_ids.iter().map(|oid| {
+            if cancelled.contains(oid) {
+                OrderResult {
+                    order: Some(Order {
+                        id: oid.clone(),
+                        client_order_id: None,
+                        symbol: String::new(),
+                        side: OrderSide::Buy,
+                        order_type: OrderType::Limit { price: 0.0 },
+                        status: OrderStatus::Canceled,
+                        price: None,
+                        stop_price: None,
+                        quantity: 0.0,
+                        filled_quantity: 0.0,
+                        average_price: None,
+                        commission: None,
+                        commission_asset: None,
+                        created_at: 0,
+                        updated_at: Some(crate::core::timestamp_millis() as i64),
+                        time_in_force: TimeInForce::Gtc,
+                    }),
+                    client_order_id: None,
+                    success: true,
+                    error: None,
+                    error_code: None,
+                }
+            } else if failed.contains(oid) {
+                OrderResult {
+                    order: None,
+                    client_order_id: None,
+                    success: false,
+                    error: Some(format!("Failed to cancel order {}", oid)),
+                    error_code: None,
+                }
+            } else {
+                // Not mentioned — treat as failed
+                OrderResult {
+                    order: None,
+                    client_order_id: None,
+                    success: false,
+                    error: Some(format!("Order {} not in cancel response", oid)),
+                    error_code: None,
+                }
+            }
+        }).collect();
+
+        Ok(results)
+    }
+
+    fn max_batch_place_size(&self) -> usize {
+        10 // Paradex batch endpoint limit per call
+    }
+
+    fn max_batch_cancel_size(&self) -> usize {
+        100 // Paradex batch cancel accepts up to 100 IDs
     }
 }
 

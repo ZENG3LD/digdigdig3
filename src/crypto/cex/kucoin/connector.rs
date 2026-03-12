@@ -30,9 +30,11 @@ use crate::core::{
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
+    AmendRequest, CancelAllResponse,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
+    CancelAll, AmendOrder,
 };
 use crate::core::types::ConnectorStats;
 use crate::core::utils::WeightRateLimiter;
@@ -1288,5 +1290,123 @@ impl Positions for KuCoinConnector {
                 Ok(())
             }
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CANCEL ALL
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Cancel all open orders — optionally filtered to a symbol.
+///
+/// - Spot:    `DELETE /api/v1/orders?symbol=BTC-USDT`
+/// - Futures: `DELETE /api/v1/orders?symbol=XBTUSDTM`
+#[async_trait]
+impl CancelAll for KuCoinConnector {
+    async fn cancel_all_orders(
+        &self,
+        scope: CancelScope,
+        account_type: AccountType,
+    ) -> ExchangeResult<CancelAllResponse> {
+        let symbol = match &scope {
+            CancelScope::All { symbol } => symbol.clone(),
+            CancelScope::BySymbol { symbol } => Some(symbol.clone()),
+            _ => {
+                return Err(ExchangeError::InvalidRequest(
+                    "cancel_all_orders only accepts All or BySymbol scope".to_string()
+                ));
+            }
+        };
+
+        let endpoint = match account_type {
+            AccountType::Spot | AccountType::Margin => KuCoinEndpoint::SpotCancelAllOrders,
+            _ => KuCoinEndpoint::FuturesCancelAllOrders,
+        };
+
+        let mut params = HashMap::new();
+        if let Some(s) = symbol {
+            params.insert(
+                "symbol".to_string(),
+                format_symbol(&s.base, &s.quote, account_type),
+            );
+        }
+
+        // Build DELETE request with query params
+        let base_url = self.urls.rest_url(account_type);
+        let path = endpoint.path();
+        let query = if params.is_empty() {
+            String::new()
+        } else {
+            let qs: Vec<String> = params.iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect();
+            format!("?{}", qs.join("&"))
+        };
+
+        let url = format!("{}{}{}", base_url, path, query);
+        let full_path = format!("{}{}", path, query);
+
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+        let headers = auth.sign_request("DELETE", &full_path, "");
+
+        let response = self.http.delete(&url, &HashMap::new(), &headers).await?;
+        self.check_response(&response)?;
+        KuCoinParser::parse_cancel_all_response(&response)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AMEND ORDER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Amend a live futures order in-place.
+///
+/// KuCoin Futures: `POST /api/v1/orders/{orderId}` with amended fields.
+/// Spot does NOT support amend — returns `UnsupportedOperation`.
+#[async_trait]
+impl AmendOrder for KuCoinConnector {
+    async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
+        match req.account_type {
+            AccountType::Spot | AccountType::Margin => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Amend order is not supported for Spot/Margin on KuCoin (futures only)".to_string()
+                ));
+            }
+            _ => {}
+        }
+
+        if req.fields.price.is_none() && req.fields.quantity.is_none() {
+            return Err(ExchangeError::InvalidRequest(
+                "At least one of price or quantity must be provided for amend".to_string()
+            ));
+        }
+
+        let account_type = req.account_type;
+        let base_url = self.urls.rest_url(account_type);
+        // Substitute orderId in the path
+        let path = KuCoinEndpoint::FuturesAmendOrder.path()
+            .replace("{orderId}", &req.order_id);
+        let url = format!("{}{}", base_url, path);
+
+        let mut body = json!({});
+        if let Some(price) = req.fields.price {
+            body["price"] = json!(price.to_string());
+        }
+        if let Some(qty) = req.fields.quantity {
+            body["size"] = json!(qty as i64);
+        }
+
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+        let body_str = body.to_string();
+        let headers = auth.sign_request("POST", &path, &body_str);
+
+        let (response, resp_headers) = self.http.post_with_response_headers(&url, &body, &headers).await?;
+        self.update_rate_from_headers(&resp_headers);
+        self.check_response(&response)?;
+
+        let symbol_str = format_symbol(&req.symbol.base, &req.symbol.quote, account_type);
+        KuCoinParser::parse_amend_order(&response, &symbol_str)
     }
 }

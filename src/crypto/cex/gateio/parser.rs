@@ -18,6 +18,7 @@ use crate::core::types::{
     FundingRate, PublicTrade, TradeSide,
     OrderUpdateEvent, BalanceUpdateEvent, PositionUpdateEvent,
     BalanceChangeReason, PositionChangeReason,
+    CancelAllResponse, OrderResult,
 };
 
 /// Parser for Gate.io API responses
@@ -624,6 +625,116 @@ impl GateioParser {
                 .and_then(|t| t.as_i64())
                 .unwrap_or(0),
         })
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // CANCEL ALL
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse response from DELETE /spot/orders or DELETE /futures/{settle}/orders.
+    ///
+    /// Gate.io returns an array of cancelled order objects.
+    pub fn parse_cancel_all_response(response: &Value) -> ExchangeResult<CancelAllResponse> {
+        Self::check_error(response)?;
+
+        let arr = match response.as_array() {
+            Some(a) => a,
+            None => {
+                // Some Gate.io endpoints return an empty object on success
+                return Ok(CancelAllResponse {
+                    cancelled_count: 0,
+                    failed_count: 0,
+                    details: vec![],
+                });
+            }
+        };
+
+        let details: Vec<OrderResult> = arr.iter().map(|item| {
+            match Self::parse_order_data(item, "") {
+                Ok(order) => OrderResult {
+                    order: Some(order),
+                    client_order_id: None,
+                    success: true,
+                    error: None,
+                    error_code: None,
+                },
+                Err(e) => OrderResult {
+                    order: None,
+                    client_order_id: None,
+                    success: false,
+                    error: Some(e.to_string()),
+                    error_code: None,
+                },
+            }
+        }).collect();
+
+        let cancelled_count = details.iter().filter(|d| d.success).count() as u32;
+        let failed_count = details.iter().filter(|d| !d.success).count() as u32;
+
+        Ok(CancelAllResponse {
+            cancelled_count,
+            failed_count,
+            details,
+        })
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // AMEND ORDER
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse response from PATCH /futures/{settle}/orders/{order_id}.
+    ///
+    /// Gate.io returns a single amended order object.
+    pub fn parse_amend_order(response: &Value, symbol: &str) -> ExchangeResult<Order> {
+        Self::check_error(response)?;
+        Self::parse_order_data(response, symbol)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // BATCH ORDERS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse response from POST /spot/batch_orders or POST /futures/{settle}/batch_orders.
+    ///
+    /// Gate.io returns an array of order creation results; each element may
+    /// contain a `succeeded` field or an error label.
+    pub fn parse_batch_orders_response(response: &Value) -> ExchangeResult<Vec<OrderResult>> {
+        Self::check_error(response)?;
+
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array in batch orders response".to_string()))?;
+
+        Ok(arr.iter().map(|item| {
+            // Gate.io marks individual failures with a non-empty "label" field
+            if item.get("label").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false) {
+                let label = item.get("label").and_then(|v| v.as_str()).unwrap_or("UNKNOWN");
+                let message = item.get("message").and_then(|v| v.as_str()).unwrap_or("batch order failed");
+                return OrderResult {
+                    order: None,
+                    client_order_id: item.get("text").and_then(|v| v.as_str()).map(String::from),
+                    success: false,
+                    error: Some(format!("{}: {}", label, message)),
+                    error_code: None,
+                };
+            }
+
+            match Self::parse_order_data(item, "") {
+                Ok(order) => OrderResult {
+                    client_order_id: order.client_order_id.clone(),
+                    order: Some(order),
+                    success: true,
+                    error: None,
+                    error_code: None,
+                },
+                Err(e) => OrderResult {
+                    order: None,
+                    client_order_id: None,
+                    success: false,
+                    error: Some(e.to_string()),
+                    error_code: None,
+                },
+            }
+        }).collect())
     }
 }
 

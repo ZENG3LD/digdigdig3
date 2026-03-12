@@ -27,6 +27,7 @@ use crate::core::types::{
     Kline, OrderBook, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, SymbolInfo,
+    CancelAllResponse, OrderResult,
 };
 
 /// Parser for Kraken API responses
@@ -633,6 +634,178 @@ impl KrakenParser {
         }
 
         Ok(symbols)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // CANCEL ALL
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse response from POST /0/private/CancelAll.
+    ///
+    /// Kraken returns `{"error":[],"result":{"count":5}}` — count of cancelled orders.
+    pub fn parse_cancel_all_response(response: &Value) -> ExchangeResult<CancelAllResponse> {
+        let result = Self::extract_result(response)?;
+
+        let count = result.get("count")
+            .and_then(|c| c.as_u64())
+            .unwrap_or(0) as u32;
+
+        Ok(CancelAllResponse {
+            cancelled_count: count,
+            failed_count: 0,
+            details: vec![],
+        })
+    }
+
+    /// Parse response from Kraken Futures cancel-all endpoint.
+    ///
+    /// Futures returns `{"result":"success","cancelAllStatus":[...]}`.
+    pub fn parse_futures_cancel_all_response(response: &Value) -> ExchangeResult<CancelAllResponse> {
+        if response.get("result").and_then(|r| r.as_str()) == Some("error") {
+            let error_msg = response.get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("Unknown error");
+            return Err(ExchangeError::Api {
+                code: -1,
+                message: error_msg.to_string(),
+            });
+        }
+
+        let cancelled = response.get("cancelAllStatus")
+            .and_then(|arr| arr.as_array())
+            .map(|arr| arr.iter().filter(|item| {
+                item.get("status").and_then(|s| s.as_str()) == Some("cancelled")
+            }).count() as u32)
+            .unwrap_or(0);
+
+        Ok(CancelAllResponse {
+            cancelled_count: cancelled,
+            failed_count: 0,
+            details: vec![],
+        })
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // AMEND ORDER
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse response from POST /0/private/EditOrder (Spot).
+    ///
+    /// Kraken returns `{"error":[],"result":{"descr":{...},"txid":"NEW_ORDER_ID"}}`.
+    pub fn parse_amend_spot_order(response: &Value, symbol: &str) -> ExchangeResult<Order> {
+        let result = Self::extract_result(response)?;
+
+        let txid = result.get("txid")
+            .and_then(|t| t.as_str())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'txid' in EditOrder response".to_string()))?;
+
+        Ok(Order {
+            id: txid.to_string(),
+            client_order_id: None,
+            symbol: symbol.to_string(),
+            side: OrderSide::Buy, // Kraken EditOrder doesn't return full order; side unknown
+            order_type: OrderType::Limit { price: 0.0 },
+            status: crate::core::OrderStatus::Open,
+            price: None,
+            stop_price: None,
+            quantity: 0.0,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: 0,
+            updated_at: Some(crate::core::timestamp_millis() as i64),
+            time_in_force: crate::core::TimeInForce::Gtc,
+        })
+    }
+
+    /// Parse response from POST /derivatives/api/v3/editorder (Futures).
+    ///
+    /// Futures returns `{"result":"success","editStatus":{"orderId":"NEW_ID",...}}`.
+    pub fn parse_amend_futures_order(response: &Value, symbol: &str) -> ExchangeResult<Order> {
+        Self::extract_futures_data(response)?;
+
+        let order_id = response.get("editStatus")
+            .and_then(|s| s.get("orderId"))
+            .and_then(|id| id.as_str())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'editStatus.orderId' in editorder response".to_string()))?;
+
+        Ok(Order {
+            id: order_id.to_string(),
+            client_order_id: None,
+            symbol: symbol.to_string(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Limit { price: 0.0 },
+            status: crate::core::OrderStatus::Open,
+            price: None,
+            stop_price: None,
+            quantity: 0.0,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: 0,
+            updated_at: Some(crate::core::timestamp_millis() as i64),
+            time_in_force: crate::core::TimeInForce::Gtc,
+        })
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // BATCH ORDERS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse response from POST /derivatives/api/v3/batchorder (Futures).
+    ///
+    /// Kraken Futures batch returns `{"result":"success","batchStatus":[...]}`.
+    /// Each item has `order_id` (success) or `error` (failure).
+    pub fn parse_batch_orders_response(response: &Value) -> ExchangeResult<Vec<OrderResult>> {
+        Self::extract_futures_data(response)?;
+
+        let items = response.get("batchStatus")
+            .and_then(|arr| arr.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'batchStatus' array in batchorder response".to_string()))?;
+
+        Ok(items.iter().map(|item| {
+            if let Some(error) = item.get("error").and_then(|e| e.as_str()) {
+                return OrderResult {
+                    order: None,
+                    client_order_id: item.get("cl_ord_id").and_then(|v| v.as_str()).map(String::from),
+                    success: false,
+                    error: Some(error.to_string()),
+                    error_code: None,
+                };
+            }
+
+            let order_id = item.get("order_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+
+            OrderResult {
+                order: Some(Order {
+                    id: order_id,
+                    client_order_id: item.get("cl_ord_id").and_then(|v| v.as_str()).map(String::from),
+                    symbol: String::new(),
+                    side: OrderSide::Buy,
+                    order_type: OrderType::Market,
+                    status: crate::core::OrderStatus::New,
+                    price: None,
+                    stop_price: None,
+                    quantity: 0.0,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: crate::core::timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                }),
+                client_order_id: None,
+                success: true,
+                error: None,
+                error_code: None,
+            }
+        }).collect())
     }
 }
 

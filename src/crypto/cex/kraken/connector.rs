@@ -26,10 +26,12 @@ use crate::core::{
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
+    AmendRequest, CancelAllResponse, OrderResult,
 };
 use crate::core::types::SymbolInfo;
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
+    CancelAll, AmendOrder, BatchOrders,
 };
 use crate::core::types::ConnectorStats;
 use crate::core::utils::DecayingRateLimiter;
@@ -950,6 +952,228 @@ impl Positions for KrakenConnector {
                 ))
             }
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CANCEL ALL
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Cancel all open orders across all symbols.
+///
+/// - Spot:    `POST /0/private/CancelAll`
+/// - Futures: `POST /derivatives/api/v3/cancelallorders` (optionally filtered by symbol)
+#[async_trait]
+impl CancelAll for KrakenConnector {
+    async fn cancel_all_orders(
+        &self,
+        scope: CancelScope,
+        account_type: AccountType,
+    ) -> ExchangeResult<CancelAllResponse> {
+        let symbol = match &scope {
+            CancelScope::All { symbol } => symbol.clone(),
+            CancelScope::BySymbol { symbol } => Some(symbol.clone()),
+            _ => {
+                return Err(ExchangeError::InvalidRequest(
+                    "cancel_all_orders only accepts All or BySymbol scope".to_string()
+                ));
+            }
+        };
+
+        match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                // Spot CancelAll does not support per-symbol filtering
+                let response = self.post(KrakenEndpoint::SpotCancelAll, HashMap::new(), account_type).await?;
+                KrakenParser::parse_cancel_all_response(&response)
+            }
+            _ => {
+                // Futures: optional symbol filter
+                let mut params = HashMap::new();
+                if let Some(sym) = symbol {
+                    params.insert(
+                        "symbol".to_string(),
+                        format_symbol(&sym.base, &sym.quote, account_type),
+                    );
+                }
+                let response = self.post(KrakenEndpoint::FuturesCancelOrder, params, account_type).await?;
+                KrakenParser::parse_futures_cancel_all_response(&response)
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AMEND ORDER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Amend a live order in-place.
+///
+/// - Spot:    `POST /0/private/EditOrder`
+/// - Futures: `POST /derivatives/api/v3/editorder`
+#[async_trait]
+impl AmendOrder for KrakenConnector {
+    async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
+        if req.fields.price.is_none() && req.fields.quantity.is_none() {
+            return Err(ExchangeError::InvalidRequest(
+                "At least one of price or quantity must be provided for amend".to_string()
+            ));
+        }
+
+        let account_type = req.account_type;
+        let formatted = format_symbol(&req.symbol.base, &req.symbol.quote, account_type);
+        let symbol_str = req.symbol.to_string();
+
+        match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                // Kraken Spot EditOrder: POST /0/private/EditOrder
+                let mut params = HashMap::new();
+                params.insert("txid".to_string(), req.order_id.clone());
+                params.insert("pair".to_string(), formatted);
+
+                if let Some(price) = req.fields.price {
+                    params.insert("price".to_string(), price.to_string());
+                }
+                if let Some(qty) = req.fields.quantity {
+                    params.insert("volume".to_string(), qty.to_string());
+                }
+
+                let response = self.post(KrakenEndpoint::SpotEditOrder, params, account_type).await?;
+                KrakenParser::parse_amend_spot_order(&response, &symbol_str)
+            }
+            _ => {
+                // Kraken Futures editorder
+                let mut params = HashMap::new();
+                params.insert("orderId".to_string(), req.order_id.clone());
+                params.insert("symbol".to_string(), formatted);
+
+                if let Some(price) = req.fields.price {
+                    params.insert("limitPrice".to_string(), price.to_string());
+                }
+                if let Some(qty) = req.fields.quantity {
+                    params.insert("size".to_string(), qty.to_string());
+                }
+
+                let response = self.post(KrakenEndpoint::FuturesEditOrder, params, account_type).await?;
+                KrakenParser::parse_amend_futures_order(&response, &symbol_str)
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BATCH ORDERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Native batch order placement (Futures only).
+///
+/// Kraken Futures: `POST /derivatives/api/v3/batchorder` — max 10 orders per batch.
+/// Spot does NOT have a native batch placement endpoint.
+#[async_trait]
+impl BatchOrders for KrakenConnector {
+    async fn place_orders_batch(
+        &self,
+        orders: Vec<OrderRequest>,
+    ) -> ExchangeResult<Vec<OrderResult>> {
+        if orders.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let account_type = orders[0].account_type;
+
+        match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Batch orders not supported on Kraken Spot (futures only)".to_string()
+                ));
+            }
+            _ => {}
+        }
+
+        if orders.len() > self.max_batch_place_size() {
+            return Err(ExchangeError::InvalidRequest(
+                format!("Batch size {} exceeds Kraken Futures limit of {}", orders.len(), self.max_batch_place_size())
+            ));
+        }
+
+        // Kraken Futures batchorder: POST with JSON body containing orders array
+        let batch_json: Vec<serde_json::Value> = orders.iter().map(|req| {
+            let formatted = format_symbol(&req.symbol.base, &req.symbol.quote, account_type);
+            let side_str = match req.side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" };
+
+            let mut obj = json!({
+                "order": "send",
+                "symbol": formatted,
+                "side": side_str,
+                "size": req.quantity as i64,
+            });
+            match req.order_type {
+                OrderType::Market => {
+                    obj["orderType"] = json!("mkt");
+                }
+                OrderType::Limit { price } => {
+                    obj["orderType"] = json!("lmt");
+                    obj["limitPrice"] = json!(price);
+                }
+                _ => {
+                    obj["orderType"] = json!("mkt");
+                }
+            }
+            if req.reduce_only {
+                obj["reduceOnly"] = json!(true);
+            }
+            if let Some(ref cid) = req.client_order_id {
+                obj["cl_ord_id"] = json!(cid);
+            }
+            obj
+        }).collect();
+
+        let mut params = HashMap::new();
+        let batch_str = serde_json::to_string(&batch_json)
+            .map_err(|e| ExchangeError::Parse(format!("Failed to serialize batch orders: {}", e)))?;
+        params.insert("json".to_string(), batch_str);
+
+        let response = self.post(KrakenEndpoint::FuturesBatchOrder, params, account_type).await?;
+        KrakenParser::parse_batch_orders_response(&response)
+    }
+
+    async fn cancel_orders_batch(
+        &self,
+        order_ids: Vec<String>,
+        _symbol: Option<&str>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<OrderResult>> {
+        match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Batch cancel not supported on Kraken Spot".to_string()
+                ));
+            }
+            _ => {}
+        }
+
+        // Futures batchorder with cancel operations
+        let cancel_json: Vec<serde_json::Value> = order_ids.iter().map(|id| {
+            json!({
+                "order": "cancel",
+                "order_id": id,
+            })
+        }).collect();
+
+        let mut params = HashMap::new();
+        let batch_str = serde_json::to_string(&cancel_json)
+            .map_err(|e| ExchangeError::Parse(format!("Failed to serialize cancel batch: {}", e)))?;
+        params.insert("json".to_string(), batch_str);
+
+        let response = self.post(KrakenEndpoint::FuturesBatchOrder, params, account_type).await?;
+        KrakenParser::parse_batch_orders_response(&response)
+    }
+
+    fn max_batch_place_size(&self) -> usize {
+        10 // Kraken Futures batchorder limit
+    }
+
+    fn max_batch_cancel_size(&self) -> usize {
+        10 // Kraken Futures batchorder limit
     }
 }
 

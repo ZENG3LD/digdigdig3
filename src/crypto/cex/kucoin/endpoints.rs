@@ -98,6 +98,9 @@ pub enum KuCoinEndpoint {
     FuturesAllOrders,
     FuturesCancelAllOrders,
 
+    // === FUTURES AMEND ORDER ===
+    FuturesAmendOrder,
+
     // === FUTURES ACCOUNT ===
     FuturesAccount,
     FuturesPositions,
@@ -153,6 +156,9 @@ impl KuCoinEndpoint {
             Self::FuturesAllOrders => "/api/v1/orders",
             Self::FuturesCancelAllOrders => "/api/v1/orders",
 
+            // Futures Amend Order
+            Self::FuturesAmendOrder => "/api/v1/orders/{orderId}",
+
             // Futures Account
             Self::FuturesAccount => "/api/v1/account-overview",
             Self::FuturesPositions => "/api/v1/positions",
@@ -195,6 +201,7 @@ impl KuCoinEndpoint {
         match self {
             Self::SpotCreateOrder
             | Self::FuturesCreateOrder
+            | Self::FuturesAmendOrder
             | Self::WsPublicToken
             | Self::WsPrivateToken => "POST",
 

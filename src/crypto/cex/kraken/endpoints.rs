@@ -70,6 +70,8 @@ pub enum KrakenEndpoint {
     // === SPOT TRADING ===
     SpotAddOrder,
     SpotCancelOrder,
+    SpotCancelAll,
+    SpotEditOrder,
     SpotGetOrder,
     SpotOpenOrders,
     SpotClosedOrders,
@@ -118,6 +120,8 @@ impl KrakenEndpoint {
             // Spot Trading
             Self::SpotAddOrder => "/0/private/AddOrder",
             Self::SpotCancelOrder => "/0/private/CancelOrder",
+            Self::SpotCancelAll => "/0/private/CancelAll",
+            Self::SpotEditOrder => "/0/private/EditOrder",
             Self::SpotGetOrder => "/0/private/QueryOrders",
             Self::SpotOpenOrders => "/0/private/OpenOrders",
             Self::SpotClosedOrders => "/0/private/ClosedOrders",
@@ -176,6 +180,8 @@ impl KrakenEndpoint {
             // POST endpoints
             Self::SpotAddOrder
             | Self::SpotCancelOrder
+            | Self::SpotCancelAll
+            | Self::SpotEditOrder
             | Self::SpotGetOrder
             | Self::SpotOpenOrders
             | Self::SpotClosedOrders

@@ -92,6 +92,11 @@ pub enum BybitEndpoint {
     TpSlMode,         // POST /v5/position/set-tpsl
     FundingRate,      // GET /v5/market/funding/history
 
+    // === OPTIONAL TRAITS ===
+    AmendOrder,       // POST /v5/order/amend
+    BatchPlaceOrders, // POST /v5/order/create-batch
+    BatchCancelOrders,// POST /v5/order/cancel-batch
+
     // === FEES ===
     FeeRate,          // GET /v5/account/fee-rate
 }
@@ -128,6 +133,11 @@ impl BybitEndpoint {
             Self::TpSlMode => "/v5/position/trading-stop",
             Self::FundingRate => "/v5/market/funding/history",
 
+            // Optional traits
+            Self::AmendOrder => "/v5/order/amend",
+            Self::BatchPlaceOrders => "/v5/order/create-batch",
+            Self::BatchCancelOrders => "/v5/order/cancel-batch",
+
             // Fees
             Self::FeeRate => "/v5/account/fee-rate",
         }
@@ -140,6 +150,9 @@ impl BybitEndpoint {
             Self::PlaceOrder
             | Self::CancelOrder
             | Self::CancelAllOrders
+            | Self::AmendOrder
+            | Self::BatchPlaceOrders
+            | Self::BatchCancelOrders
             | Self::SetLeverage
             | Self::SetMarginMode
             | Self::AddMargin

@@ -25,7 +25,7 @@ use crate::core::types::{
     OrderSide, OrderType, OrderStatus, PositionSide, TimeInForce, MarginType,
     FundingRate, PublicTrade, TradeSide,
     OrderUpdateEvent, BalanceUpdateEvent, PositionUpdateEvent,
-    SymbolInfo,
+    SymbolInfo, CancelAllResponse, OrderResult,
 };
 
 /// Order book level pairs (price, quantity)
@@ -551,6 +551,104 @@ impl OkxParser {
         // TODO: Implement proper PositionUpdateEvent parsing
         let _ = data;
         Err(ExchangeError::Parse("WebSocket position updates not yet implemented".to_string()))
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // OPTIONAL TRAIT PARSERS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse cancel-all-after response.
+    ///
+    /// OKX `cancel-all-after` returns: `data[0] = { triggerTime, ts }`
+    /// When `timeOut = "0"` is sent, it cancels immediately and disables the DMS timer.
+    /// The response does not list cancelled orders individually.
+    pub fn parse_cancel_all_response(response: &Value) -> ExchangeResult<CancelAllResponse> {
+        // Just verify the response code is success ("0")
+        Self::extract_data(response)?;
+
+        Ok(CancelAllResponse {
+            cancelled_count: 0, // OKX does not return individual cancelled order count
+            failed_count: 0,
+            details: vec![],
+        })
+    }
+
+    /// Parse amend order response.
+    ///
+    /// OKX returns: `data[0] = { ordId, clOrdId, sCode, sMsg }`
+    /// On success `sCode == "0"`.
+    pub fn parse_amend_order_response(response: &Value) -> ExchangeResult<Order> {
+        let data = Self::extract_first_data(response)?;
+
+        let s_code = Self::get_str(data, "sCode").unwrap_or("0");
+        if s_code != "0" {
+            let s_msg = Self::get_str(data, "sMsg").unwrap_or("Unknown error");
+            return Err(ExchangeError::Api {
+                code: s_code.parse().unwrap_or(-1),
+                message: format!("Amend order error {}: {}", s_code, s_msg),
+            });
+        }
+
+        let id = Self::get_str(data, "ordId")
+            .ok_or_else(|| ExchangeError::Parse("Missing 'ordId' in amend response".to_string()))?
+            .to_string();
+
+        // OKX amend returns minimal info — build a placeholder Order.
+        Ok(Order {
+            id,
+            client_order_id: Self::get_str(data, "clOrdId").map(String::from),
+            symbol: String::new(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Limit { price: 0.0 },
+            status: OrderStatus::Open,
+            price: None,
+            stop_price: None,
+            quantity: 0.0,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: 0,
+            updated_at: None,
+            time_in_force: TimeInForce::Gtc,
+        })
+    }
+
+    /// Parse batch orders response (place or cancel).
+    ///
+    /// OKX batch response: `data = [{ ordId, clOrdId, sCode, sMsg }, ...]`
+    /// Each element has `sCode == "0"` for success.
+    pub fn parse_batch_orders_response(response: &Value) -> ExchangeResult<Vec<OrderResult>> {
+        let data = Self::extract_data(response)?;
+        let arr = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("'data' is not an array in batch response".to_string()))?;
+
+        let results = arr.iter()
+            .map(|item| {
+                let s_code = Self::get_str(item, "sCode").unwrap_or("0");
+                let success = s_code == "0";
+                if success {
+                    OrderResult {
+                        order: None,
+                        client_order_id: Self::get_str(item, "clOrdId").map(String::from),
+                        success: true,
+                        error: None,
+                        error_code: None,
+                    }
+                } else {
+                    let s_msg = Self::get_str(item, "sMsg").unwrap_or("Unknown error").to_string();
+                    OrderResult {
+                        order: None,
+                        client_order_id: Self::get_str(item, "clOrdId").map(String::from),
+                        success: false,
+                        error: Some(s_msg),
+                        error_code: s_code.parse().ok(),
+                    }
+                }
+            })
+            .collect();
+
+        Ok(results)
     }
 }
 

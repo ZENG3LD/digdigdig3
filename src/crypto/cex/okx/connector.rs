@@ -26,10 +26,12 @@ use crate::core::{
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
+    AmendRequest, CancelAllResponse, OrderResult,
 };
 use crate::core::types::SymbolInfo;
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
+    CancelAll, AmendOrder, BatchOrders,
 };
 use crate::core::types::ConnectorStats;
 use crate::core::utils::SimpleRateLimiter;
@@ -1030,5 +1032,194 @@ impl Positions for OkxConnector {
                 Ok(())
             }
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CANCEL ALL
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Cancel all open orders via OKX Dead Man's Switch endpoint.
+///
+/// OKX: `POST /api/v5/trade/cancel-all-after`
+///
+/// Sending `timeOut = "0"` immediately cancels all open orders and disables
+/// the DMS timer. This is the only OKX native cancel-all mechanism.
+///
+/// Note: The `scope` symbol filter is not supported — OKX `cancel-all-after`
+/// always cancels across all instruments. `CancelScope::BySymbol` will return
+/// `UnsupportedOperation`.
+#[async_trait]
+impl CancelAll for OkxConnector {
+    async fn cancel_all_orders(
+        &self,
+        scope: CancelScope,
+        _account_type: AccountType,
+    ) -> ExchangeResult<CancelAllResponse> {
+        match &scope {
+            CancelScope::All { .. } => {
+                // Proceed — cancel-all-after cancels across all instruments
+            }
+            CancelScope::BySymbol { .. } => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "OKX cancel-all-after does not support per-symbol scope. \
+                     Use CancelScope::All to cancel all open orders.".to_string()
+                ));
+            }
+            _ => {
+                return Err(ExchangeError::InvalidRequest(
+                    "cancel_all_orders only accepts All or BySymbol scope".to_string()
+                ));
+            }
+        }
+
+        let body = json!({
+            "timeOut": "0",
+        });
+
+        let response = self.post(OkxEndpoint::CancelAllAfter, body).await?;
+        OkxParser::parse_cancel_all_response(&response)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AMEND ORDER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Modify a live order in-place via OKX native amend endpoint.
+///
+/// OKX: `POST /api/v5/trade/amend-order`
+/// At least one of `newPx`, `newSz`, or `newStopPx` must be provided.
+#[async_trait]
+impl AmendOrder for OkxConnector {
+    async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
+        if req.fields.price.is_none() && req.fields.quantity.is_none() && req.fields.trigger_price.is_none() {
+            return Err(ExchangeError::InvalidRequest(
+                "At least one of price, quantity, or trigger_price must be provided for amend".to_string()
+            ));
+        }
+
+        let account_type = req.account_type;
+        let mut body = json!({
+            "instId": format_symbol(&req.symbol.base, &req.symbol.quote, account_type),
+            "ordId": req.order_id,
+        });
+
+        if let Some(price) = req.fields.price {
+            body["newPx"] = json!(price.to_string());
+        }
+        if let Some(qty) = req.fields.quantity {
+            body["newSz"] = json!(qty.to_string());
+        }
+        if let Some(trigger_price) = req.fields.trigger_price {
+            body["newStopPx"] = json!(trigger_price.to_string());
+        }
+
+        let response = self.post(OkxEndpoint::AmendOrder, body).await?;
+        OkxParser::parse_amend_order_response(&response)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BATCH ORDERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Native batch order placement and cancellation via OKX batch endpoints.
+///
+/// OKX: `POST /api/v5/trade/batch-orders` (max 20), `POST /api/v5/trade/cancel-batch-orders` (max 20)
+#[async_trait]
+impl BatchOrders for OkxConnector {
+    async fn place_orders_batch(
+        &self,
+        orders: Vec<OrderRequest>,
+    ) -> ExchangeResult<Vec<OrderResult>> {
+        if orders.is_empty() {
+            return Ok(vec![]);
+        }
+
+        if orders.len() > self.max_batch_place_size() {
+            return Err(ExchangeError::InvalidRequest(
+                format!("Batch size {} exceeds OKX limit of {}", orders.len(), self.max_batch_place_size())
+            ));
+        }
+
+        let order_list: Vec<serde_json::Value> = orders.iter().map(|req| {
+            let account_type = req.account_type;
+            let mut obj = serde_json::Map::new();
+            obj.insert("instId".to_string(), json!(format_symbol(&req.symbol.base, &req.symbol.quote, account_type)));
+            obj.insert("tdMode".to_string(), json!(get_trade_mode(account_type)));
+            obj.insert("side".to_string(), json!(match req.side {
+                OrderSide::Buy => "buy",
+                OrderSide::Sell => "sell",
+            }));
+
+            match &req.order_type {
+                OrderType::Market => {
+                    obj.insert("ordType".to_string(), json!("market"));
+                    obj.insert("sz".to_string(), json!(req.quantity.to_string()));
+                }
+                OrderType::Limit { price } => {
+                    obj.insert("ordType".to_string(), json!("limit"));
+                    obj.insert("sz".to_string(), json!(req.quantity.to_string()));
+                    obj.insert("px".to_string(), json!(price.to_string()));
+                }
+                _ => {
+                    obj.insert("ordType".to_string(), json!("market"));
+                    obj.insert("sz".to_string(), json!(req.quantity.to_string()));
+                }
+            }
+
+            if req.reduce_only {
+                obj.insert("reduceOnly".to_string(), json!(true));
+            }
+            if let Some(ref cid) = req.client_order_id {
+                obj.insert("clOrdId".to_string(), json!(cid));
+            }
+
+            serde_json::Value::Object(obj)
+        }).collect();
+
+        let response = self.post(OkxEndpoint::PlaceBatchOrders, serde_json::Value::Array(order_list)).await?;
+        OkxParser::parse_batch_orders_response(&response)
+    }
+
+    async fn cancel_orders_batch(
+        &self,
+        order_ids: Vec<String>,
+        symbol: Option<&str>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<OrderResult>> {
+        if order_ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        if order_ids.len() > self.max_batch_cancel_size() {
+            return Err(ExchangeError::InvalidRequest(
+                format!("Batch cancel size {} exceeds OKX limit of {}", order_ids.len(), self.max_batch_cancel_size())
+            ));
+        }
+
+        let sym = symbol.ok_or_else(|| ExchangeError::InvalidRequest(
+            "instId (symbol) is required for batch cancel on OKX".to_string()
+        ))?;
+
+        // OKX requires instId per item — re-use the raw symbol string as-is
+        let cancel_list: Vec<serde_json::Value> = order_ids.iter().map(|id| {
+            json!({
+                "instId": sym,
+                "ordId": id,
+            })
+        }).collect();
+
+        let response = self.post(OkxEndpoint::CancelBatchOrders, serde_json::Value::Array(cancel_list)).await?;
+        OkxParser::parse_batch_orders_response(&response)
+    }
+
+    fn max_batch_place_size(&self) -> usize {
+        20 // OKX limit
+    }
+
+    fn max_batch_cancel_size(&self) -> usize {
+        20 // OKX limit
     }
 }

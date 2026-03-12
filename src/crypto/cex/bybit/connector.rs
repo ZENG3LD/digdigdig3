@@ -31,9 +31,11 @@ use crate::core::{
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     MarginType,
+    AmendRequest, CancelAllResponse, OrderResult,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
+    CancelAll, AmendOrder, BatchOrders,
 };
 use crate::core::types::ConnectorStats;
 use crate::core::utils::WeightRateLimiter;
@@ -1558,5 +1560,201 @@ impl Positions for BybitConnector {
                 Ok(())
             }
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CANCEL ALL
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Cancel all open orders via Bybit native endpoint.
+///
+/// Bybit: `POST /v5/order/cancel-all`
+/// Supports both spot and linear (futures).
+/// `CancelScope::All { symbol: None }` cancels across the entire category.
+#[async_trait]
+impl CancelAll for BybitConnector {
+    async fn cancel_all_orders(
+        &self,
+        scope: CancelScope,
+        account_type: AccountType,
+    ) -> ExchangeResult<CancelAllResponse> {
+        let symbol = match &scope {
+            CancelScope::All { symbol } => symbol.clone(),
+            CancelScope::BySymbol { symbol } => Some(symbol.clone()),
+            _ => {
+                return Err(ExchangeError::InvalidRequest(
+                    "cancel_all_orders only accepts All or BySymbol scope".to_string()
+                ));
+            }
+        };
+
+        let mut body = json!({
+            "category": account_type_to_category(account_type),
+        });
+
+        if let Some(sym) = symbol {
+            body["symbol"] = json!(format_symbol(&sym, account_type));
+        }
+
+        let response = self.post(BybitEndpoint::CancelAllOrders, body).await?;
+        BybitParser::parse_cancel_all_response(&response)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AMEND ORDER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Modify a live order in-place via Bybit native amend endpoint.
+///
+/// Bybit: `POST /v5/order/amend`
+/// Supports spot and linear. At least one of price/quantity must be provided.
+#[async_trait]
+impl AmendOrder for BybitConnector {
+    async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
+        if req.fields.price.is_none() && req.fields.quantity.is_none() && req.fields.trigger_price.is_none() {
+            return Err(ExchangeError::InvalidRequest(
+                "At least one of price, quantity, or trigger_price must be provided for amend".to_string()
+            ));
+        }
+
+        let account_type = req.account_type;
+        let mut body = json!({
+            "category": account_type_to_category(account_type),
+            "symbol": format_symbol(&req.symbol, account_type),
+            "orderId": req.order_id,
+        });
+
+        if let Some(price) = req.fields.price {
+            body["price"] = json!(price.to_string());
+        }
+        if let Some(qty) = req.fields.quantity {
+            body["qty"] = json!(qty.to_string());
+        }
+        if let Some(trigger_price) = req.fields.trigger_price {
+            body["triggerPrice"] = json!(trigger_price.to_string());
+        }
+
+        let response = self.post(BybitEndpoint::AmendOrder, body).await?;
+        BybitParser::parse_amend_order_response(&response)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BATCH ORDERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Native batch order placement and cancellation via Bybit batch endpoints.
+///
+/// Bybit: `POST /v5/order/create-batch` (max 10), `POST /v5/order/cancel-batch` (max 10)
+/// Both spot and linear categories are supported.
+#[async_trait]
+impl BatchOrders for BybitConnector {
+    async fn place_orders_batch(
+        &self,
+        orders: Vec<OrderRequest>,
+    ) -> ExchangeResult<Vec<OrderResult>> {
+        if orders.is_empty() {
+            return Ok(vec![]);
+        }
+
+        if orders.len() > self.max_batch_place_size() {
+            return Err(ExchangeError::InvalidRequest(
+                format!("Batch size {} exceeds Bybit limit of {}", orders.len(), self.max_batch_place_size())
+            ));
+        }
+
+        let account_type = orders[0].account_type;
+        let category = account_type_to_category(account_type);
+
+        let order_list: Vec<serde_json::Value> = orders.iter().map(|req| {
+            let mut obj = serde_json::Map::new();
+            obj.insert("category".to_string(), json!(category));
+            obj.insert("symbol".to_string(), json!(format_symbol(&req.symbol, req.account_type)));
+            obj.insert("side".to_string(), json!(match req.side {
+                OrderSide::Buy => "Buy",
+                OrderSide::Sell => "Sell",
+            }));
+
+            match &req.order_type {
+                OrderType::Market => {
+                    obj.insert("orderType".to_string(), json!("Market"));
+                    obj.insert("qty".to_string(), json!(req.quantity.to_string()));
+                }
+                OrderType::Limit { price } => {
+                    obj.insert("orderType".to_string(), json!("Limit"));
+                    obj.insert("qty".to_string(), json!(req.quantity.to_string()));
+                    obj.insert("price".to_string(), json!(price.to_string()));
+                    obj.insert("timeInForce".to_string(), json!("GTC"));
+                }
+                _ => {
+                    obj.insert("orderType".to_string(), json!("Market"));
+                    obj.insert("qty".to_string(), json!(req.quantity.to_string()));
+                }
+            }
+
+            if req.reduce_only {
+                obj.insert("reduceOnly".to_string(), json!(true));
+            }
+            if let Some(ref cid) = req.client_order_id {
+                obj.insert("orderLinkId".to_string(), json!(cid));
+            }
+
+            serde_json::Value::Object(obj)
+        }).collect();
+
+        let body = json!({
+            "category": category,
+            "request": order_list,
+        });
+
+        let response = self.post(BybitEndpoint::BatchPlaceOrders, body).await?;
+        BybitParser::parse_batch_orders_response(&response)
+    }
+
+    async fn cancel_orders_batch(
+        &self,
+        order_ids: Vec<String>,
+        symbol: Option<&str>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<OrderResult>> {
+        if order_ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        if order_ids.len() > self.max_batch_cancel_size() {
+            return Err(ExchangeError::InvalidRequest(
+                format!("Batch cancel size {} exceeds Bybit limit of {}", order_ids.len(), self.max_batch_cancel_size())
+            ));
+        }
+
+        let category = account_type_to_category(account_type);
+        let sym = symbol.ok_or_else(|| ExchangeError::InvalidRequest(
+            "Symbol is required for batch cancel on Bybit".to_string()
+        ))?;
+
+        let cancel_list: Vec<serde_json::Value> = order_ids.iter().map(|id| {
+            json!({
+                "symbol": sym.replace('/', "").to_uppercase(),
+                "orderId": id,
+            })
+        }).collect();
+
+        let body = json!({
+            "category": category,
+            "request": cancel_list,
+        });
+
+        let response = self.post(BybitEndpoint::BatchCancelOrders, body).await?;
+        BybitParser::parse_batch_orders_response(&response)
+    }
+
+    fn max_batch_place_size(&self) -> usize {
+        10 // Bybit limit
+    }
+
+    fn max_batch_cancel_size(&self) -> usize {
+        10 // Bybit limit
     }
 }

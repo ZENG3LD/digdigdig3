@@ -65,6 +65,7 @@ pub enum BingxEndpoint {
     SwapOpenOrders,
     SwapAllOrders,
     SwapCancelAllOrders,
+    SwapBatchOrders,
     SwapBatchCancelOrders,
     SwapCloseAllPositions,
     SwapAmend,
@@ -116,6 +117,7 @@ impl BingxEndpoint {
             Self::SwapOpenOrders => "/openApi/swap/v2/trade/openOrders",
             Self::SwapAllOrders => "/openApi/swap/v2/trade/allOrders",
             Self::SwapCancelAllOrders => "/openApi/swap/v2/trade/allOpenOrders",
+            Self::SwapBatchOrders => "/openApi/swap/v2/trade/batchOrders",
             Self::SwapBatchCancelOrders => "/openApi/swap/v2/trade/batchOrders",
             Self::SwapCloseAllPositions => "/openApi/swap/v2/trade/closeAllPositions",
             Self::SwapAmend => "/openApi/swap/v1/trade/amend",
@@ -160,6 +162,7 @@ impl BingxEndpoint {
         match self {
             Self::SpotOrder
             | Self::SwapOrder
+            | Self::SwapBatchOrders
             | Self::SwapCloseAllPositions
             | Self::SwapLeverage
             | Self::SwapMarginType

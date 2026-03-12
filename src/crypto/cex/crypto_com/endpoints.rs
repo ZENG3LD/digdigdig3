@@ -64,6 +64,8 @@ pub enum CryptoComEndpoint {
 
     // === TRADING ===
     CreateOrder,
+    CreateOrderList,
+    CancelOrderList,
     AmendOrder,
     CancelOrder,
     CancelAllOrders,
@@ -104,6 +106,8 @@ impl CryptoComEndpoint {
 
             // Trading
             Self::CreateOrder => "private/create-order",
+            Self::CreateOrderList => "private/create-order-list",
+            Self::CancelOrderList => "private/cancel-order-list",
             Self::AmendOrder => "private/amend-order",
             Self::CancelOrder => "private/cancel-order",
             Self::CancelAllOrders => "private/cancel-all-orders",

@@ -28,9 +28,9 @@ use crate::core::{
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     CancelAllResponse, AmendRequest, MarginType,
     ExchangeIdentity, MarketData, Trading, Account, Positions,
-    CancelAll, AmendOrder,
+    CancelAll, AmendOrder, BatchOrders,
 };
-use crate::core::types::SymbolInfo;
+use crate::core::types::{SymbolInfo, OrderResult};
 use crate::core::types::ConnectorStats;
 use crate::core::utils::SimpleRateLimiter;
 
@@ -1069,5 +1069,214 @@ impl Positions for CryptoComConnector {
                 ))
             }
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BATCH ORDERS (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl BatchOrders for CryptoComConnector {
+    /// Place multiple orders in a single batch request.
+    ///
+    /// Endpoint: private/create-order-list
+    /// Params: `contingency_type` = "LIST", `order_list` = array of order params
+    /// Max 10 orders per batch.
+    async fn place_orders_batch(
+        &self,
+        orders: Vec<OrderRequest>,
+    ) -> ExchangeResult<Vec<OrderResult>> {
+        if orders.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let account_type = orders.first().map(|o| o.account_type).unwrap_or(AccountType::Spot);
+        let instrument_type = super::endpoints::account_type_to_instrument(account_type);
+
+        let order_list: Vec<Value> = orders.iter().map(|req| {
+            let instrument_name = super::endpoints::format_symbol(&req.symbol.base, &req.symbol.quote, instrument_type);
+            let side_str = match req.side { OrderSide::Buy => "BUY", OrderSide::Sell => "SELL" };
+
+            match &req.order_type {
+                OrderType::Market => json!({
+                    "instrument_name": instrument_name,
+                    "side": side_str,
+                    "type": "MARKET",
+                    "quantity": req.quantity.to_string(),
+                }),
+                OrderType::Limit { price } => json!({
+                    "instrument_name": instrument_name,
+                    "side": side_str,
+                    "type": "LIMIT",
+                    "quantity": req.quantity.to_string(),
+                    "price": price.to_string(),
+                    "time_in_force": "GOOD_TILL_CANCEL",
+                }),
+                OrderType::PostOnly { price } => json!({
+                    "instrument_name": instrument_name,
+                    "side": side_str,
+                    "type": "LIMIT",
+                    "quantity": req.quantity.to_string(),
+                    "price": price.to_string(),
+                    "exec_inst": "POST_ONLY",
+                    "time_in_force": "GOOD_TILL_CANCEL",
+                }),
+                OrderType::StopMarket { stop_price } => json!({
+                    "instrument_name": instrument_name,
+                    "side": side_str,
+                    "type": "STOP_LOSS",
+                    "quantity": req.quantity.to_string(),
+                    "ref_price": stop_price.to_string(),
+                }),
+                _ => json!({
+                    "instrument_name": instrument_name,
+                    "side": side_str,
+                    "type": "MARKET",
+                    "quantity": req.quantity.to_string(),
+                }),
+            }
+        }).collect();
+
+        let params = json!({
+            "contingency_type": "LIST",
+            "order_list": order_list,
+        });
+
+        let response = self.request(CryptoComEndpoint::CreateOrderList, params).await?;
+        CryptoComParser::check_response(&response)?;
+
+        // Parse response — result.data.result_list contains per-order results
+        let result_list = response
+            .get("result")
+            .and_then(|r| r.get("data"))
+            .and_then(|d| d.get("result_list"))
+            .and_then(|v| v.as_array());
+
+        let results = if let Some(list) = result_list {
+            list.iter().enumerate().map(|(i, item)| {
+                let code = item.get("code").and_then(|v| v.as_i64()).unwrap_or(0);
+                let success = code == 0;
+                let order_id = item.get("order_id")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let req = orders.get(i);
+
+                OrderResult {
+                    order: if success { order_id.map(|id| Order {
+                        id,
+                        client_order_id: None,
+                        symbol: req.map(|o| o.symbol.to_string()).unwrap_or_default(),
+                        side: req.map(|o| o.side).unwrap_or(OrderSide::Buy),
+                        order_type: req.map(|o| o.order_type.clone()).unwrap_or(OrderType::Market),
+                        status: crate::core::OrderStatus::New,
+                        price: None,
+                        stop_price: None,
+                        quantity: req.map(|o| o.quantity).unwrap_or(0.0),
+                        filled_quantity: 0.0,
+                        average_price: None,
+                        commission: None,
+                        commission_asset: None,
+                        created_at: crate::core::timestamp_millis() as i64,
+                        updated_at: None,
+                        time_in_force: crate::core::TimeInForce::Gtc,
+                    })} else { None },
+                    client_order_id: None,
+                    success,
+                    error: if success { None } else {
+                        item.get("message").and_then(|v| v.as_str()).map(String::from)
+                    },
+                    error_code: if success { None } else { Some(code as i32) },
+                }
+            }).collect()
+        } else {
+            orders.iter().map(|_| OrderResult {
+                order: None,
+                client_order_id: None,
+                success: false,
+                error: Some("No result list in response".to_string()),
+                error_code: None,
+            }).collect()
+        };
+
+        Ok(results)
+    }
+
+    /// Cancel multiple orders by IDs.
+    ///
+    /// Endpoint: private/cancel-order-list
+    /// Params: `order_list` = array of `{"instrument_name": ..., "order_id": ...}`
+    async fn cancel_orders_batch(
+        &self,
+        order_ids: Vec<String>,
+        symbol: Option<&str>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<OrderResult>> {
+        if order_ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let instrument_type = super::endpoints::account_type_to_instrument(account_type);
+
+        // Build order list — Crypto.com requires instrument_name for each cancel
+        let order_list: Vec<Value> = order_ids.iter().map(|order_id| {
+            let mut obj = json!({ "order_id": order_id });
+            if let Some(sym) = symbol {
+                let parts: Vec<&str> = sym.split('/').collect();
+                let instrument_name = if parts.len() == 2 {
+                    super::endpoints::format_symbol(parts[0], parts[1], instrument_type)
+                } else {
+                    sym.to_string()
+                };
+                obj["instrument_name"] = json!(instrument_name);
+            }
+            obj
+        }).collect();
+
+        let params = json!({ "order_list": order_list });
+        let response = self.request(CryptoComEndpoint::CancelOrderList, params).await?;
+        CryptoComParser::check_response(&response)?;
+
+        let result_list = response
+            .get("result")
+            .and_then(|r| r.get("data"))
+            .and_then(|d| d.get("result_list"))
+            .and_then(|v| v.as_array());
+
+        let results = if let Some(list) = result_list {
+            list.iter().map(|item| {
+                let code = item.get("code").and_then(|v| v.as_i64()).unwrap_or(0);
+                let success = code == 0;
+                OrderResult {
+                    order: None,
+                    client_order_id: None,
+                    success,
+                    error: if success { None } else {
+                        item.get("message").and_then(|v| v.as_str()).map(String::from)
+                    },
+                    error_code: if success { None } else { Some(code as i32) },
+                }
+            }).collect()
+        } else {
+            order_ids.iter().map(|_| OrderResult {
+                order: None,
+                client_order_id: None,
+                success: true,
+                error: None,
+                error_code: None,
+            }).collect()
+        };
+
+        Ok(results)
+    }
+
+    /// Maximum batch place size (Crypto.com limit: 10 orders per batch).
+    fn max_batch_place_size(&self) -> usize {
+        10
+    }
+
+    /// Maximum batch cancel size (Crypto.com limit: 10 orders per batch).
+    fn max_batch_cancel_size(&self) -> usize {
+        10
     }
 }

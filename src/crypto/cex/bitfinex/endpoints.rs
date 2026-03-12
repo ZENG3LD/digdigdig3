@@ -55,6 +55,7 @@ pub enum BitfinexEndpoint {
     CancelOrder,
     CancelMultipleOrders,
     UpdateOrder,
+    OrderMulti,
 
     // === ACCOUNT ===
     Wallets,
@@ -91,6 +92,7 @@ impl BitfinexEndpoint {
             Self::CancelOrder => "/auth/w/order/cancel",
             Self::CancelMultipleOrders => "/auth/w/order/cancel/multi",
             Self::UpdateOrder => "/auth/w/order/update",
+            Self::OrderMulti => "/auth/w/order/multi",
 
             // Account
             Self::Wallets => "/auth/r/wallets",
@@ -133,6 +135,7 @@ impl BitfinexEndpoint {
             | Self::CancelOrder
             | Self::CancelMultipleOrders
             | Self::UpdateOrder
+            | Self::OrderMulti
             | Self::Wallets
             | Self::ActiveOrders
             | Self::ActiveOrdersBySymbol

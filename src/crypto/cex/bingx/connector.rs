@@ -36,8 +36,8 @@ use crate::core::types::SymbolInfo;
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
 };
-use crate::core::{CancelAll, AmendOrder};
-use crate::core::types::{ConnectorStats, CancelAllResponse};
+use crate::core::{CancelAll, AmendOrder, BatchOrders};
+use crate::core::types::{ConnectorStats, CancelAllResponse, OrderResult};
 use crate::core::utils::SimpleRateLimiter;
 
 use super::endpoints::{BingxUrls, BingxEndpoint, format_symbol, map_kline_interval};
@@ -1036,6 +1036,218 @@ impl CancelAll for BingxConnector {
                 "cancel_all_orders only supports All and BySymbol scopes".to_string()
             )),
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BATCH ORDERS (Swap only)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl BatchOrders for BingxConnector {
+    /// Place multiple orders in a single batch request (Swap/Futures only).
+    ///
+    /// Endpoint: POST /openApi/swap/v2/trade/batchOrders
+    /// Body: `{"batchOrders": "[{...}, ...]"}` — JSON-encoded string
+    /// Max 5 orders per batch for BingX Swap.
+    async fn place_orders_batch(
+        &self,
+        orders: Vec<OrderRequest>,
+    ) -> ExchangeResult<Vec<OrderResult>> {
+        if orders.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // BingX batch orders are swap-only
+        let account_type = orders.first().map(|o| o.account_type).unwrap_or(AccountType::FuturesCross);
+        let is_futures = matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated);
+
+        if !is_futures {
+            return Err(ExchangeError::UnsupportedOperation(
+                "BingX batch orders only supported for Swap (futures)".to_string()
+            ));
+        }
+
+        // Build batch order objects
+        let batch_orders: Vec<Value> = orders.iter().map(|req| {
+            let side_str = match req.side { OrderSide::Buy => "BUY", OrderSide::Sell => "SELL" };
+            let formatted_symbol = format_symbol(&req.symbol.base, &req.symbol.quote, req.account_type);
+
+            let mut obj = json!({
+                "symbol": formatted_symbol,
+                "side": side_str,
+                "quantity": req.quantity.to_string(),
+            });
+
+            match &req.order_type {
+                OrderType::Market => {
+                    obj["type"] = json!("MARKET");
+                }
+                OrderType::Limit { price } => {
+                    obj["type"] = json!("LIMIT");
+                    obj["price"] = json!(price.to_string());
+                    obj["timeInForce"] = json!("GTC");
+                }
+                OrderType::PostOnly { price } => {
+                    obj["type"] = json!("LIMIT");
+                    obj["price"] = json!(price.to_string());
+                    obj["timeInForce"] = json!("PostOnly");
+                }
+                _ => {
+                    obj["type"] = json!("MARKET");
+                }
+            }
+
+            obj
+        }).collect();
+
+        // BingX encodes batchOrders as a JSON string
+        let batch_orders_str = serde_json::to_string(&batch_orders)
+            .map_err(|e| ExchangeError::Parse(format!("Failed to serialize batch orders: {}", e)))?;
+
+        let mut params = HashMap::new();
+        params.insert("batchOrders".to_string(), batch_orders_str);
+
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+        let headers = auth.sign_request(&mut params);
+
+        let base_url = self.urls.rest_url(account_type);
+        let path = BingxEndpoint::SwapBatchOrders.path();
+
+        // Build query string with signed params
+        let query = params.iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join("&");
+
+        let url = format!("{}{}?{}", base_url, path, query);
+
+        self.rate_limit_wait().await;
+        let response = self.http.post(&url, &json!({}), &headers).await?;
+        self.check_response(&response)?;
+
+        // Parse response — array of order results
+        let data = response.get("data").cloned().unwrap_or(json!([]));
+        let results = if let Some(arr) = data.as_array() {
+            arr.iter().enumerate().map(|(i, item)| {
+                let order_id = item.get("orderId")
+                    .and_then(|v| v.as_str().map(String::from)
+                        .or_else(|| v.as_i64().map(|n| n.to_string())));
+                let code = item.get("code").and_then(|v| v.as_i64()).unwrap_or(0);
+                let success = code == 0 && order_id.is_some();
+
+                let req = orders.get(i);
+                OrderResult {
+                    order: order_id.map(|id| Order {
+                        id,
+                        client_order_id: None,
+                        symbol: req.map(|o| o.symbol.to_string()).unwrap_or_default(),
+                        side: req.map(|o| o.side).unwrap_or(OrderSide::Buy),
+                        order_type: req.map(|o| o.order_type.clone()).unwrap_or(OrderType::Market),
+                        status: crate::core::OrderStatus::New,
+                        price: None,
+                        stop_price: None,
+                        quantity: req.map(|o| o.quantity).unwrap_or(0.0),
+                        filled_quantity: 0.0,
+                        average_price: None,
+                        commission: None,
+                        commission_asset: None,
+                        created_at: crate::core::timestamp_millis() as i64,
+                        updated_at: None,
+                        time_in_force: TimeInForce::Gtc,
+                    }),
+                    client_order_id: None,
+                    success,
+                    error: if success { None } else {
+                        item.get("msg").and_then(|v| v.as_str()).map(String::from)
+                    },
+                    error_code: if success { None } else { Some(code as i32) },
+                }
+            }).collect()
+        } else {
+            orders.iter().map(|_| OrderResult {
+                order: None,
+                client_order_id: None,
+                success: false,
+                error: Some("Unexpected response format".to_string()),
+                error_code: None,
+            }).collect()
+        };
+
+        Ok(results)
+    }
+
+    /// Cancel multiple orders by IDs (Swap only).
+    ///
+    /// Endpoint: DELETE /openApi/swap/v2/trade/batchOrders
+    /// Param: `orderIdList` — JSON array of order IDs as a string
+    async fn cancel_orders_batch(
+        &self,
+        order_ids: Vec<String>,
+        symbol: Option<&str>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<OrderResult>> {
+        if order_ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let is_futures = matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated);
+        if !is_futures {
+            return Err(ExchangeError::UnsupportedOperation(
+                "BingX batch cancel only supported for Swap (futures)".to_string()
+            ));
+        }
+
+        let sym = symbol.ok_or_else(|| ExchangeError::InvalidRequest(
+            "Symbol required for BingX batch cancel".to_string()
+        ))?;
+
+        let ids_str = serde_json::to_string(&order_ids)
+            .map_err(|e| ExchangeError::Parse(format!("Failed to serialize order IDs: {}", e)))?;
+
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), sym.to_string());
+        params.insert("orderIdList".to_string(), ids_str);
+
+        let response = self.delete(BingxEndpoint::SwapBatchCancelOrders, params, account_type).await?;
+        self.check_response(&response)?;
+
+        let data = response.get("data").cloned().unwrap_or(json!([]));
+        let results = if let Some(arr) = data.as_array() {
+            arr.iter().map(|item| {
+                let success = item.get("code").and_then(|v| v.as_i64()).unwrap_or(0) == 0;
+                OrderResult {
+                    order: None,
+                    client_order_id: None,
+                    success,
+                    error: if success { None } else {
+                        item.get("msg").and_then(|v| v.as_str()).map(String::from)
+                    },
+                    error_code: None,
+                }
+            }).collect()
+        } else {
+            order_ids.iter().map(|_| OrderResult {
+                order: None,
+                client_order_id: None,
+                success: true,
+                error: None,
+                error_code: None,
+            }).collect()
+        };
+
+        Ok(results)
+    }
+
+    /// Maximum batch place size (BingX Swap limit: 5 orders per batch).
+    fn max_batch_place_size(&self) -> usize {
+        5
+    }
+
+    /// Maximum batch cancel size (BingX Swap: no documented hard limit, use 20).
+    fn max_batch_cancel_size(&self) -> usize {
+        20
     }
 }
 

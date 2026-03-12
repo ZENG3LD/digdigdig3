@@ -33,7 +33,7 @@ use crate::core::{
     AmendRequest, OrderResult,
 };
 use crate::core::traits::{Trading, Account, Positions, AmendOrder, BatchOrders};
-use crate::core::types::{ConnectorStats, SymbolInfo};
+use crate::core::types::{ConnectorStats, SymbolInfo, AlgoOrderResponse};
 use crate::core::utils::WeightRateLimiter;
 
 use super::{HyperliquidUrls, HyperliquidAuth, HyperliquidParser, HyperliquidEndpoint};
@@ -570,7 +570,36 @@ impl Trading for HyperliquidConnector {
         // Resolve asset index from symbol
         let asset_index = self.symbol_to_asset_index(&req.symbol.base).await?;
 
-        // Build the HlOrder
+        // TWAP is a separate action type — handle before build_hl_order.
+        if let OrderType::Twap { duration_seconds, .. } = req.order_type {
+            let is_buy = matches!(req.side, OrderSide::Buy);
+            let size_str = normalize_price(req.quantity);
+            let body = auth.sign_twap_action(
+                asset_index,
+                is_buy,
+                &size_str,
+                req.reduce_only,
+                duration_seconds,
+                None,
+            )?;
+            let response = self.exchange_request(&body).await?;
+            // Hyperliquid TWAP response: { "status": "ok", "response": { "type": "twapOrder",
+            // "data": { "running": { "twapId": 123, ... } } } }
+            let algo_id = response
+                .pointer("/response/data/running/twapId")
+                .or_else(|| response.pointer("/response/data/twapId"))
+                .and_then(|v| v.as_u64())
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "0".to_string());
+            return Ok(PlaceOrderResponse::Algo(AlgoOrderResponse {
+                algo_id,
+                status: "Running".to_string(),
+                executed_count: None,
+                total_count: None,
+            }));
+        }
+
+        // Build the HlOrder for standard order types
         let hl_order = build_hl_order(&req, asset_index)?;
 
         // Sign and build request body

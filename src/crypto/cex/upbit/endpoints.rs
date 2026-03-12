@@ -88,6 +88,7 @@ pub enum UpbitEndpoint {
     ListOrders,
     CancelOrder,
     BatchCancelOrders,
+    ReplaceOrder,
 
     // === ACCOUNT (PRIVATE) ===
     Balances,
@@ -128,6 +129,7 @@ impl UpbitEndpoint {
             Self::ListOrders => "/v1/orders",
             Self::CancelOrder => "/v1/order",
             Self::BatchCancelOrders => "/v1/orders",
+            Self::ReplaceOrder => "/v1/orders/cancel_and_new",
 
             // Account (Private)
             Self::Balances => "/v1/accounts",
@@ -169,6 +171,7 @@ impl UpbitEndpoint {
         match self {
             Self::CreateOrder
             | Self::TestOrder
+            | Self::ReplaceOrder
             | Self::CreateDepositAddress
             | Self::InitiateWithdrawal => "POST",
 

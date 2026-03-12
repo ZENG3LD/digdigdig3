@@ -83,6 +83,12 @@ pub enum ParadexEndpoint {
     CancelAllOrders,
     ModifyOrder,
 
+    // === ALGO ORDERS (Private) ===
+    /// POST /v1/algo/orders — place an algorithmic order (TWAP, etc.)
+    CreateAlgoOrder,
+    /// DELETE /v1/algo/orders/{algo_id} — cancel an algo order
+    CancelAlgoOrder,
+
     // === TRADE HISTORY (Private) ===
     Fills,
     FundingPayments,
@@ -133,6 +139,10 @@ impl ParadexEndpoint {
             Self::CancelAllOrders => "/orders",
             Self::ModifyOrder => "/orders/{order_id}",
 
+            // Algo Orders
+            Self::CreateAlgoOrder => "/algo/orders",
+            Self::CancelAlgoOrder => "/algo/orders/{algo_id}",
+
             // Trade History
             Self::Fills => "/fills",
             Self::FundingPayments => "/funding/payments",
@@ -169,12 +179,14 @@ impl ParadexEndpoint {
             // POST methods
             Self::Auth
             | Self::CreateOrder
-            | Self::CreateOrderBatch => "POST",
+            | Self::CreateOrderBatch
+            | Self::CreateAlgoOrder => "POST",
 
             // DELETE methods
             Self::CancelOrder
             | Self::CancelOrderBatch
-            | Self::CancelAllOrders => "DELETE",
+            | Self::CancelAllOrders
+            | Self::CancelAlgoOrder => "DELETE",
 
             // PUT methods
             Self::ModifyOrder => "PUT",

@@ -33,6 +33,7 @@ use crate::core::{
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };
 use crate::core::{AmendRequest, CancelAllResponse, OrderResult};
+use crate::core::types::AlgoOrderResponse;
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
     CancelAll, AmendOrder, BatchOrders,
@@ -653,6 +654,41 @@ impl Trading for ParadexConnector {
 
                 let response = self.post(ParadexEndpoint::CreateOrder, body).await?;
                 ParadexParser::parse_order(&response).map(PlaceOrderResponse::Simple)
+            }
+
+            // TWAP algo order via POST /v1/algo/orders.
+            // Paradex TWAP: sub-orders every 30 seconds, market sub-order type only.
+            // Duration must be 30–86400 seconds.
+            OrderType::Twap { duration_seconds, .. } => {
+                let body = json!({
+                    "market": symbol_str,
+                    "side": side_str,
+                    "size": quantity.to_string(),
+                    "algo_type": "TWAP",
+                    // Duration in seconds; clamp to [30, 86400] per Paradex spec.
+                    "duration": duration_seconds.clamp(30, 86400),
+                });
+
+                let response = self.post(ParadexEndpoint::CreateAlgoOrder, body).await?;
+
+                // Paradex returns { "id": "<algo_id>", "status": "...", ... }
+                let algo_id = response
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let status = response
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("RUNNING")
+                    .to_string();
+
+                Ok(PlaceOrderResponse::Algo(AlgoOrderResponse {
+                    algo_id,
+                    status,
+                    executed_count: None,
+                    total_count: None,
+                }))
             }
 
             _ => Err(ExchangeError::UnsupportedOperation(

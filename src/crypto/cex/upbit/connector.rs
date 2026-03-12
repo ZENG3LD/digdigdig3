@@ -30,7 +30,8 @@ use crate::core::{
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     CancelAllResponse,
     ExchangeIdentity, MarketData, Trading, Account,
-    CancelAll,
+    CancelAll, AmendOrder,
+    AmendRequest,
 };
 use crate::core::types::SymbolInfo;
 use crate::core::types::ConnectorStats;
@@ -677,5 +678,55 @@ impl CancelAll for UpbitConnector {
             failed_count: 0,
             details: vec![],
         })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AMEND ORDER (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AmendOrder for UpbitConnector {
+    async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
+        // Upbit implements amend as an atomic cancel-and-replace via
+        // POST /v1/orders/cancel_and_new
+        let symbol = &req.symbol;
+        let account_type = AccountType::Spot; // Upbit is Spot-only
+
+        let upbit_symbol = if let Some(raw) = symbol.raw() {
+            raw.to_string()
+        } else {
+            format_symbol(&symbol.base, &symbol.quote, account_type)
+        };
+
+        let mut body = serde_json::json!({
+            "cancel_uuid": req.order_id,
+            "market": upbit_symbol,
+        });
+
+        // At least one of price or quantity must be provided.
+        if req.fields.price.is_none() && req.fields.quantity.is_none() {
+            return Err(ExchangeError::InvalidRequest(
+                "AmendOrder requires at least one of: price, quantity".to_string(),
+            ));
+        }
+
+        if let Some(new_price) = req.fields.price {
+            body["price"] = serde_json::json!(new_price.to_string());
+        }
+        if let Some(new_qty) = req.fields.quantity {
+            body["volume"] = serde_json::json!(new_qty.to_string());
+        }
+
+        // Upbit cancel_and_new requires ord_type; default to "limit" since amend
+        // is only meaningful for resting limit orders.
+        if body.get("price").is_some() {
+            body["ord_type"] = serde_json::json!("limit");
+        }
+
+        let response = self.post(UpbitEndpoint::ReplaceOrder, body, account_type).await?;
+        // Response contains the newly created order under the "new_order" key.
+        let new_order = response.get("new_order").unwrap_or(&response);
+        UpbitParser::parse_order(new_order, &upbit_symbol)
     }
 }

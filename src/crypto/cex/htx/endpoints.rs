@@ -103,6 +103,10 @@ pub enum HtxEndpoint {
     FuturesOrderbook, // GET /linear-swap-ex/market/depth
     FuturesKlines,    // GET /linear-swap-ex/market/history/kline
     FuturesTrades,    // GET /linear-swap-ex/market/trade
+
+    // === ALGO ORDERS ===
+    /// POST /v2/algo-orders — place trailing stop or other algo orders
+    AlgoOrders,
 }
 
 impl HtxEndpoint {
@@ -151,6 +155,9 @@ impl HtxEndpoint {
             Self::FuturesOrderbook => "/linear-swap-ex/market/depth",
             Self::FuturesKlines => "/linear-swap-ex/market/history/kline",
             Self::FuturesTrades => "/linear-swap-ex/market/trade",
+
+            // Algo Orders
+            Self::AlgoOrders => "/v2/algo-orders",
         }
     }
 
@@ -163,7 +170,8 @@ impl HtxEndpoint {
             | Self::CancelAllOrders
             | Self::CancelOpenOrders
             | Self::Withdraw
-            | Self::WithdrawCancel => "POST",
+            | Self::WithdrawCancel
+            | Self::AlgoOrders => "POST",
 
             // GET requests
             _ => "GET",

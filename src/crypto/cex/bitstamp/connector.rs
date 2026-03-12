@@ -29,7 +29,8 @@ use crate::core::{
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     CancelAllResponse,
     ExchangeIdentity, MarketData, Trading, Account,
-    CancelAll,
+    CancelAll, AmendOrder,
+    AmendRequest,
 };
 use crate::core::types::SymbolInfo;
 use crate::core::types::ConnectorStats;
@@ -557,6 +558,37 @@ impl CancelAll for BitstampConnector {
             failed_count: 0,
             details: vec![],
         })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AMEND ORDER (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AmendOrder for BitstampConnector {
+    async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
+        // Bitstamp implements amend as an atomic cancel-and-replace via
+        // POST /api/v2/replace_order/
+        // Accepts: id (or orig_client_order_id), amount, price
+        if req.fields.price.is_none() && req.fields.quantity.is_none() {
+            return Err(ExchangeError::InvalidRequest(
+                "AmendOrder requires at least one of: price, quantity".to_string(),
+            ));
+        }
+
+        let mut params = HashMap::new();
+        params.insert("id".to_string(), req.order_id.clone());
+
+        if let Some(new_price) = req.fields.price {
+            params.insert("price".to_string(), new_price.to_string());
+        }
+        if let Some(new_qty) = req.fields.quantity {
+            params.insert("amount".to_string(), new_qty.to_string());
+        }
+
+        let response = self.post(BitstampEndpoint::ReplaceOrder, None, params).await?;
+        BitstampParser::parse_order(&response)
     }
 }
 

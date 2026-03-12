@@ -733,6 +733,55 @@ impl Trading for HtxConnector {
                 }))
             }
 
+            // Trailing stop via POST /v2/algo-orders (API-only feature).
+            // orderType: "trailing-stop-order"
+            // trailingRate: callback rate (0 < rate <= 5%)
+            // activationPrice: optional price at which trailing begins
+            OrderType::TrailingStop { callback_rate, activation_price } => {
+                let body = json!({
+                    "accountId": account_id.to_string(),
+                    "symbol": htx_symbol,
+                    "orderSide": side_str,
+                    "orderSize": quantity.to_string(),
+                    "orderType": "trailing-stop-order",
+                    // trailingRate must be > 0 and <= 5 (as percentage string)
+                    "trailingRate": format!("{:.4}", callback_rate.clamp(0.0001, 5.0)),
+                    // activationPrice is optional
+                    "activationPrice": activation_price
+                        .map(|p| p.to_string())
+                        .unwrap_or_default(),
+                });
+
+                let response = self.post(HtxEndpoint::AlgoOrders, body).await?;
+
+                // Algo orders return: { "code": 200, "data": { "clientOrderId": "...", "orderId": "..." } }
+                let order_id_str = response
+                    .pointer("/data/orderId")
+                    .or_else(|| response.pointer("/data/clientOrderId"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id_str,
+                    client_order_id: Some(client_order_id),
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::TrailingStop { callback_rate, activation_price },
+                    status: crate::core::OrderStatus::New,
+                    price: activation_price,
+                    stop_price: None,
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: crate::core::timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                }))
+            }
+
             _ => Err(ExchangeError::UnsupportedOperation(
                 format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
             )),

@@ -51,6 +51,7 @@ pub enum BitstampEndpoint {
     SellMarket,       // POST /api/v2/sell/market/{pair}/
     CancelOrder,      // POST /api/v2/cancel_order/
     CancelAllOrders,  // POST /api/v2/cancel_all_orders/
+    ReplaceOrder,     // POST /api/v2/replace_order/
     OrderStatus,      // POST /api/v2/order_status/
     OpenOrders,       // POST /api/v2/open_orders/all/
 
@@ -83,6 +84,7 @@ impl BitstampEndpoint {
             Self::SellMarket => "/api/v2/sell/market",
             Self::CancelOrder => "/api/v2/cancel_order/",
             Self::CancelAllOrders => "/api/v2/cancel_all_orders/",
+            Self::ReplaceOrder => "/api/v2/replace_order/",
             Self::OrderStatus => "/api/v2/order_status/",
             Self::OpenOrders => "/api/v2/open_orders/all/",
 

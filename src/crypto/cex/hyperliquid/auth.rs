@@ -372,6 +372,41 @@ pub fn msgpack_update_isolated_margin_action(asset: u32, is_buy: bool, ntli: i64
     enc.finish()
 }
 
+/// Encode a "twapOrder" action into msgpack.
+///
+/// Outer dict keys sorted: twap, type
+/// Inner twap dict keys sorted: a, b, m, r, s
+pub fn msgpack_twap_action(
+    asset: u32,
+    is_buy: bool,
+    size: &str,
+    reduce_only: bool,
+    duration_minutes: u64,
+) -> Vec<u8> {
+    let mut enc = MsgpackEncoder::new();
+    // Outer map: { twap: {...}, type: "twapOrder" }
+    enc.begin_map(2);
+
+    enc.write_str("twap");
+    // Inner map: { a, b, m, r, s } — 5 keys, sorted alphabetically
+    enc.begin_map(5);
+    enc.write_str("a");
+    enc.write_uint(asset as u64);
+    enc.write_str("b");
+    enc.write_bool(is_buy);
+    enc.write_str("m");
+    enc.write_uint(duration_minutes);
+    enc.write_str("r");
+    enc.write_bool(reduce_only);
+    enc.write_str("s");
+    enc.write_str(size);
+
+    enc.write_str("type");
+    enc.write_str("twapOrder");
+
+    enc.finish()
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // EIP-712 DOMAIN AND HASHING
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -687,6 +722,45 @@ impl HyperliquidAuth {
             "asset": asset,
             "isBuy": is_buy,
             "ntli": ntli,
+        });
+        Ok(build_exchange_request(action, nonce, sig, vault_address))
+    }
+
+    /// Sign and build exchange request for a TWAP order.
+    ///
+    /// Hyperliquid TWAP uses the `twapOrder` action type, which is separate from
+    /// the regular `order` action. The TWAP action includes:
+    /// - `a`: asset index (u32)
+    /// - `b`: is_buy (bool)
+    /// - `s`: size as normalized string
+    /// - `r`: reduce_only (bool)
+    /// - `m`: duration in minutes (u64, converted from seconds)
+    ///
+    /// Signing follows the same L1 action mechanism — msgpack-encode the action
+    /// dict and sign with EIP-712 phantom agent scheme.
+    pub fn sign_twap_action(
+        &self,
+        asset: u32,
+        is_buy: bool,
+        size: &str,
+        reduce_only: bool,
+        duration_seconds: u64,
+        vault_address: Option<&[u8; 20]>,
+    ) -> ExchangeResult<serde_json::Value> {
+        let nonce = self.get_next_nonce();
+        // Duration in minutes (Hyperliquid TWAP takes minutes, minimum 5 minutes)
+        let duration_minutes = (duration_seconds / 60).max(5);
+        let action_bytes = msgpack_twap_action(asset, is_buy, size, reduce_only, duration_minutes);
+        let sig = self.sign_l1_action(&action_bytes, nonce, vault_address)?;
+        let action = serde_json::json!({
+            "type": "twapOrder",
+            "twap": {
+                "a": asset,
+                "b": is_buy,
+                "s": size,
+                "r": reduce_only,
+                "m": duration_minutes,
+            },
         });
         Ok(build_exchange_request(action, nonce, sig, vault_address))
     }

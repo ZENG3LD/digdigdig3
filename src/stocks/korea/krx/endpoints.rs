@@ -66,7 +66,7 @@ impl KrxEndpoint {
 /// For stock data, we use short code format (6 digits).
 /// The Symbol struct from core types is crypto-centric (base/quote),
 /// so for stocks we only use the base field.
-pub fn _format_symbol(symbol: &crate::core::types::Symbol) -> String {
+pub fn format_symbol(symbol: &crate::core::types::Symbol) -> String {
     // For KRX stocks, use only the base (ticker code)
     // Quote is not applicable to stocks
     symbol.base.to_uppercase()
@@ -79,7 +79,7 @@ pub fn _format_symbol(symbol: &crate::core::types::Symbol) -> String {
 ///
 /// Note: This is a simplified conversion. For production use,
 /// proper ISIN validation and check digit calculation may be needed.
-pub fn _format_isin(short_code: &str) -> String {
+pub fn format_isin(short_code: &str) -> String {
     if short_code.starts_with("KR") {
         // Already an ISIN
         short_code.to_string()

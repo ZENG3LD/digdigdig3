@@ -492,167 +492,19 @@ impl MarketData for AlpacaConnector {
 // TRAIT: Trading
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
-impl Trading for AlpacaConnector {
-    async fn market_order(
-        &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let symbol_str = format_symbol(&symbol);
 
-        let body = json!({
-            "symbol": symbol_str,
-            "qty": quantity.to_string(),
-            "side": side.as_str().to_lowercase(),
-            "type": "market",
-            "time_in_force": "day",
-        });
-
-        let response = self.post_trading(AlpacaEndpoint::Orders, body).await?;
-        AlpacaParser::parse_order(&response)
-    }
-
-    async fn limit_order(
-        &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        price: Price,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let symbol_str = format_symbol(&symbol);
-
-        let body = json!({
-            "symbol": symbol_str,
-            "qty": quantity.to_string(),
-            "side": side.as_str().to_lowercase(),
-            "type": "limit",
-            "time_in_force": "gtc",
-            "limit_price": price.to_string(),
-        });
-
-        let response = self.post_trading(AlpacaEndpoint::Orders, body).await?;
-        AlpacaParser::parse_order(&response)
-    }
-
-    async fn cancel_order(
-        &self,
-        _symbol: Symbol,
-        order_id: &str,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let endpoint = AlpacaEndpoint::OrderById(order_id.to_string());
-        let response = self.delete_trading(endpoint, HashMap::new()).await?;
-        AlpacaParser::parse_order(&response)
-    }
-
-    async fn get_order(
-        &self,
-        _symbol: Symbol,
-        order_id: &str,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let endpoint = AlpacaEndpoint::OrderById(order_id.to_string());
-        let response = self.get_trading(endpoint, HashMap::new()).await?;
-        AlpacaParser::parse_order(&response)
-    }
-
-    async fn get_open_orders(
-        &self,
-        symbol: Option<Symbol>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Order>> {
-        let mut params = HashMap::new();
-        params.insert("status".to_string(), "open".to_string());
-
-        if let Some(sym) = symbol {
-            params.insert("symbols".to_string(), format_symbol(&sym));
-        }
-
-        let response = self.get_trading(AlpacaEndpoint::Orders, params).await?;
-        AlpacaParser::parse_orders(&response)
-    }
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TRAIT: Account
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
-impl Account for AlpacaConnector {
-    async fn get_balance(
-        &self,
-        asset: Option<Asset>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Balance>> {
-        let response = self.get_trading(AlpacaEndpoint::Account, HashMap::new()).await?;
-        let balances = AlpacaParser::parse_balance(&response)?;
 
-        // Filter by asset if specified
-        if let Some(a) = asset {
-            Ok(balances.into_iter().filter(|b| b.asset == a).collect())
-        } else {
-            Ok(balances)
-        }
-    }
-
-    async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
-        let response = self.get_trading(AlpacaEndpoint::Account, HashMap::new()).await?;
-        AlpacaParser::parse_account_info(&response, account_type)
-    }
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TRAIT: Positions
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
-impl Positions for AlpacaConnector {
-    async fn get_positions(
-        &self,
-        symbol: Option<Symbol>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Position>> {
-        if let Some(sym) = symbol {
-            // Get specific position
-            let symbol_str = format_symbol(&sym);
-            let endpoint = AlpacaEndpoint::PositionBySymbol(symbol_str);
-            let response = self.get_trading(endpoint, HashMap::new()).await?;
-            let position = AlpacaParser::parse_position(&response)?;
-            Ok(vec![position])
-        } else {
-            // Get all positions
-            let response = self.get_trading(AlpacaEndpoint::Positions, HashMap::new()).await?;
-            AlpacaParser::parse_positions(&response)
-        }
-    }
 
-    async fn get_funding_rate(
-        &self,
-        _symbol: Symbol,
-        _account_type: AccountType,
-    ) -> ExchangeResult<FundingRate> {
-        // Alpaca doesn't support funding rates (stocks broker, not futures)
-        Err(ExchangeError::UnsupportedOperation(
-            "Funding rate not available - Alpaca is a stock broker, not a futures exchange".to_string()
-        ))
-    }
-
-    async fn set_leverage(
-        &self,
-        _symbol: Symbol,
-        _leverage: u32,
-        _account_type: AccountType,
-    ) -> ExchangeResult<()> {
-        // Alpaca doesn't support leverage settings (stocks broker, not futures)
-        Err(ExchangeError::UnsupportedOperation(
-            "Leverage not available - Alpaca is a stock broker, not a futures exchange".to_string()
-        ))
-    }
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // EXTENDED METHODS (Alpaca-specific)

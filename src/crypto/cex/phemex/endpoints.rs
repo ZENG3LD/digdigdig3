@@ -312,12 +312,12 @@ pub fn scale_value(value: f64, value_scale: u8) -> i64 {
 }
 
 /// Unscale ratio from Er format
-pub fn _unscale_ratio(ratio_er: i64, ratio_scale: u8) -> f64 {
+pub fn unscale_ratio(ratio_er: i64, ratio_scale: u8) -> f64 {
     ratio_er as f64 / 10_f64.powi(ratio_scale as i32)
 }
 
 /// Scale ratio to Er format
-pub fn _scale_ratio(ratio: f64, ratio_scale: u8) -> i64 {
+pub fn scale_ratio(ratio: f64, ratio_scale: u8) -> i64 {
     (ratio * 10_f64.powi(ratio_scale as i32)).round() as i64
 }
 

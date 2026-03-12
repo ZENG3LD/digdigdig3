@@ -290,7 +290,7 @@ impl DeribitConnector {
     }
 
     /// Currency from symbol for Deribit
-    fn _currency_from_symbol(symbol: &Symbol) -> String {
+    fn currency_from_symbol(symbol: &Symbol) -> String {
         // For Deribit, use base currency (BTC, ETH, SOL, etc.)
         symbol.base.to_uppercase()
     }
@@ -468,187 +468,26 @@ impl MarketData for DeribitConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
-impl Trading for DeribitConnector {
-    async fn market_order(
-        &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let instrument_name = Self::instrument_from_symbol(&symbol, account_type);
 
-        let method = match side {
-            OrderSide::Buy => DeribitMethod::Buy,
-            OrderSide::Sell => DeribitMethod::Sell,
-        };
-
-        let mut params = HashMap::new();
-        params.insert("instrument_name".to_string(), json!(instrument_name));
-        params.insert("amount".to_string(), json!(quantity));
-        params.insert("type".to_string(), json!("market"));
-
-        let response = self.rpc_call(method, params).await?;
-        DeribitParser::parse_order(&response, &instrument_name)
-    }
-
-    async fn limit_order(
-        &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        price: Price,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let instrument_name = Self::instrument_from_symbol(&symbol, account_type);
-
-        let method = match side {
-            OrderSide::Buy => DeribitMethod::Buy,
-            OrderSide::Sell => DeribitMethod::Sell,
-        };
-
-        let mut params = HashMap::new();
-        params.insert("instrument_name".to_string(), json!(instrument_name));
-        params.insert("amount".to_string(), json!(quantity));
-        params.insert("type".to_string(), json!("limit"));
-        params.insert("price".to_string(), json!(price));
-
-        let response = self.rpc_call(method, params).await?;
-        DeribitParser::parse_order(&response, &instrument_name)
-    }
-
-    async fn cancel_order(
-        &self,
-        symbol: Symbol,
-        order_id: &str,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let _ = (symbol, account_type); // Not needed for Deribit
-        let mut params = HashMap::new();
-        params.insert("order_id".to_string(), json!(order_id));
-
-        let response = self.rpc_call(DeribitMethod::Cancel, params).await?;
-        DeribitParser::parse_order(&response, "")
-    }
-
-    async fn get_order(
-        &self,
-        symbol: Symbol,
-        order_id: &str,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let _ = (symbol, account_type); // Not needed for Deribit
-        let mut params = HashMap::new();
-        params.insert("order_id".to_string(), json!(order_id));
-
-        let response = self.rpc_call(DeribitMethod::GetOrderState, params).await?;
-        DeribitParser::parse_order(&response, "")
-    }
-
-    async fn get_open_orders(
-        &self,
-        symbol: Option<Symbol>,
-        account_type: AccountType,
-    ) -> ExchangeResult<Vec<Order>> {
-        let mut params = HashMap::new();
-
-        if let Some(sym) = symbol {
-            let instrument_name = Self::instrument_from_symbol(&sym, account_type);
-            params.insert("instrument_name".to_string(), json!(instrument_name));
-            let response = self.rpc_call(DeribitMethod::GetOpenOrdersByInstrument, params).await?;
-            DeribitParser::parse_orders(&response)
-        } else {
-            // Get all open orders (no specific instrument)
-            let response = self.rpc_call(DeribitMethod::GetOpenOrders, params).await?;
-            DeribitParser::parse_orders(&response)
-        }
-    }
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
-impl Account for DeribitConnector {
-    async fn get_balance(&self, asset: Option<Asset>, _account_type: AccountType) -> ExchangeResult<Vec<Balance>> {
-        // Determine currency
-        let currency = asset.map(|a| a.to_uppercase()).unwrap_or_else(|| "BTC".to_string());
 
-        let mut params = HashMap::new();
-        params.insert("currency".to_string(), json!(currency));
-        params.insert("extended".to_string(), json!(false));
-
-        let response = self.rpc_call(DeribitMethod::GetAccountSummary, params).await?;
-        DeribitParser::parse_balances(&response)
-    }
-
-    async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
-        // Get account summary for BTC (main currency on Deribit)
-        let balances = self.get_balance(Some("BTC".to_string()), account_type).await?;
-
-        Ok(AccountInfo {
-            account_type,
-            can_trade: true,
-            can_withdraw: true,
-            can_deposit: true,
-            maker_commission: 0.0, // Deribit has dynamic fees
-            taker_commission: 0.0,
-            balances,
-        })
-    }
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // POSITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
-impl Positions for DeribitConnector {
-    async fn get_positions(&self, symbol: Option<Symbol>, account_type: AccountType) -> ExchangeResult<Vec<Position>> {
-        let mut params = HashMap::new();
 
-        if let Some(sym) = symbol {
-            // Get specific position
-            let instrument_name = Self::instrument_from_symbol(&sym, account_type);
-            params.insert("instrument_name".to_string(), json!(instrument_name));
-            let response = self.rpc_call(DeribitMethod::GetPosition, params).await?;
-            let position = DeribitParser::parse_position(&response)?;
-            Ok(vec![position])
-        } else {
-            // Get all positions for a currency (default BTC)
-            let currency = "BTC"; // Could be parameterized
-            params.insert("currency".to_string(), json!(currency));
-
-            let response = self.rpc_call(DeribitMethod::GetPositions, params).await?;
-            DeribitParser::parse_positions(&response)
-        }
-    }
-
-    async fn get_funding_rate(&self, symbol: Symbol, account_type: AccountType) -> ExchangeResult<FundingRate> {
-        let instrument_name = Self::instrument_from_symbol(&symbol, account_type);
-
-        let mut params = HashMap::new();
-        params.insert("instrument_name".to_string(), json!(instrument_name));
-
-        let response = self.rpc_call(DeribitMethod::Ticker, params).await?;
-        DeribitParser::parse_funding_rate(&response)
-    }
-
-    async fn set_leverage(&self, _symbol: Symbol, _leverage: u32, _account_type: AccountType) -> ExchangeResult<()> {
-        // Deribit uses dynamic leverage based on position size and margin mode
-        // No explicit set_leverage endpoint
-        Err(ExchangeError::UnsupportedOperation("Deribit uses dynamic leverage".to_string()))
-    }
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_currency_from_symbol() {
+    fn testcurrency_from_symbol() {
         let symbol = Symbol::new("BTC", "PERPETUAL");
         assert_eq!(DeribitConnector::currency_from_symbol(&symbol), "BTC");
 

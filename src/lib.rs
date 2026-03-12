@@ -54,13 +54,17 @@ pub use core::{
     ExchangeIdentity, MarketData, Trading, Positions, Account,
     CoreConnector,
     WebSocketConnector, WebSocketExt,
+    Authenticated, CredentialKind,
     Credentials, AuthRequest, SignatureLocation, ExchangeAuth,
+    CancelAll, AmendOrder, BatchOrders,
+    AccountTransfers, CustodialFunds, SubAccounts,
 
     // Types
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
     Price, Quantity, Asset, Timestamp,
     OrderSide, OrderType, OrderStatus, Order, Position, Balance,
+    ExchangeCredentials,
     SymbolInfo,
     // WebSocket types
     ConnectionStatus, StreamType, SubscriptionRequest, StreamEvent,

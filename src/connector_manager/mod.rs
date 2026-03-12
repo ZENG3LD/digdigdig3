@@ -23,7 +23,7 @@
 //!
 //! // Use core trait methods
 //! let price = connector.get_price(symbol, AccountType::Spot).await?;
-//! let balance = connector.get_balance(None, AccountType::Spot).await?;
+//! let balance = connector.get_balance(crate::core::types::BalanceQuery { asset: None, account_type: AccountType::Spot }).await?;
 //!
 //! // Get connector metadata
 //! let id = connector.id();

@@ -45,6 +45,7 @@ fn btc_perp() -> Symbol {
         base: "BTC".to_string(),
         quote: "PERP".to_string(),
     }
+        raw: None,
 }
 
 fn eth_perp() -> Symbol {
@@ -52,6 +53,7 @@ fn eth_perp() -> Symbol {
         base: "ETH".to_string(),
         quote: "PERP".to_string(),
     }
+        raw: None,
 }
 
 /// Load credentials from environment
@@ -355,6 +357,7 @@ async fn test_invalid_symbol() {
     let invalid_symbol = Symbol {
         base: "INVALID".to_string(),
         quote: "NOTEXIST".to_string(),
+        raw: None,
     };
 
     match connector.get_price(invalid_symbol, AccountType::FuturesCross).await {

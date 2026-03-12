@@ -41,6 +41,7 @@ fn btc_usdt() -> Symbol {
         base: "BTC".to_string(),
         quote: "USDT".to_string(),
     }
+        raw: None,
 }
 
 /// Load credentials from environment
@@ -282,7 +283,7 @@ async fn test_get_balance_with_auth() {
     let connector = BithumbConnector::new(Some(credentials), false).await.unwrap();
     rate_limit_delay().await;
 
-    let balances = connector.get_balance(None, AccountType::Spot).await;
+    let balances = connector.get_balance(crate::core::types::BalanceQuery { asset: None, account_type: AccountType::Spot }).await;
 
     match balances {
         Ok(balances) => {
@@ -316,6 +317,7 @@ async fn test_invalid_symbol() {
     let invalid_symbol = Symbol {
         base: "INVALID".to_string(),
         quote: "NOTEXIST".to_string(),
+        raw: None,
     };
 
     let result = connector.get_price(invalid_symbol, AccountType::Spot).await;

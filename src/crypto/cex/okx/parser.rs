@@ -295,7 +295,7 @@ impl OkxParser {
 
         let order_type = match Self::get_str(data, "ordType").unwrap_or("limit").to_lowercase().as_str() {
             "market" => OrderType::Market,
-            _ => OrderType::Limit,
+            _ => OrderType::Limit { price: 0.0 },
         };
 
         let status = Self::parse_order_status(data);
@@ -316,7 +316,7 @@ impl OkxParser {
             commission_asset: None,
             created_at: Self::get_i64(data, "cTime").unwrap_or(0),
             updated_at: Self::get_i64(data, "uTime"),
-            time_in_force: TimeInForce::GTC, // Default
+            time_in_force: TimeInForce::Gtc, // Default
         })
     }
 

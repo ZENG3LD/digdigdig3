@@ -79,8 +79,15 @@ pub use types::{
     // Trading
     Price, Quantity, Asset, Timestamp,
     OrderSide, OrderType, OrderStatus, TimeInForce, Order,
-    PositionMode, PositionSide, Position, UserTrade,
-    Balance, AccountInfo, MarginType, SymbolInfo,
+    OrderRequest, CancelRequest, CancelScope,
+    AmendRequest, AmendFields, OrderHistoryFilter, OrdersQuery,
+    PositionMode, PositionSide, Position, PositionModification, PositionQuery,
+    UserTrade,
+    Balance, AccountInfo, BalanceQuery, MarginType, SymbolInfo,
+    ExchangeCredentials,
+    // Responses
+    PlaceOrderResponse, OrderResult, CancelAllResponse,
+    FeeInfo, TransferResponse, DepositAddress, WithdrawResponse, FundsRecord,
     // WebSocket
     ConnectionStatus, StreamType, SubscriptionRequest, StreamEvent,
     OrderUpdateEvent, BalanceUpdateEvent, PositionUpdateEvent,
@@ -92,7 +99,12 @@ pub use traits::{
     ExchangeIdentity, MarketData, Trading, Positions, Account,
     CoreConnector,
     WebSocketConnector, WebSocketExt,
+    Authenticated, CredentialKind,
+    // Backward compat for connector constructors/auth
     Credentials, AuthRequest, SignatureLocation, ExchangeAuth,
+    // Optional operation traits
+    CancelAll, AmendOrder, BatchOrders,
+    AccountTransfers, CustodialFunds, SubAccounts,
 };
 
 // Re-exports utils

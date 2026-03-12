@@ -1,11 +1,11 @@
-//! # OperationsV2 — Optional operation traits (V2 architecture)
+//! # Operations — Optional operation traits
 //!
 //! These traits represent capabilities that are near-universal but not
 //! available on every exchange. Each is implemented only by exchanges
 //! that support the operation natively.
 //!
 //! ## NO DEFAULT IMPLEMENTATIONS
-//! Unlike the V1 extension traits, these traits have NO default implementations.
+//! These traits have NO default implementations.
 //! Connectors either implement the trait (native support) or do not.
 //! There is no silent sequential fallback that masks missing capability.
 //!
@@ -13,12 +13,12 @@
 //!
 //! | Trait | Coverage | Supertraits |
 //! |-------|----------|-------------|
-//! | `CancelAllV2` | 22/24 | `TradingV2` |
-//! | `AmendOrderV2` | 18/24 | `TradingV2` |
-//! | `BatchOrdersV2` | 17/24 | `TradingV2` |
-//! | `AccountTransfersV2` | 17/20 applicable | `AccountV2` |
-//! | `CustodialFundsV2` | 18/20 custodial | `AccountV2` |
-//! | `SubAccountsV2` | ~12/24 | `AccountV2` |
+//! | `CancelAll` | 22/24 | `Trading` |
+//! | `AmendOrder` | 18/24 | `Trading` |
+//! | `BatchOrders` | 17/24 | `Trading` |
+//! | `AccountTransfers` | 17/20 applicable | `Account` |
+//! | `CustodialFunds` | 18/20 custodial | `Account` |
+//! | `SubAccounts` | ~12/24 | `Account` |
 
 use async_trait::async_trait;
 
@@ -30,10 +30,10 @@ use crate::core::types::{
     FundsHistoryFilter, SubAccountOperation, SubAccountResult,
 };
 
-use super::{TradingV2, AccountV2};
+use super::{Trading, Account};
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// CANCEL ALL V2
+// CANCEL ALL
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Cancel all open orders — optionally scoped to a symbol.
@@ -44,11 +44,11 @@ use super::{TradingV2, AccountV2};
 /// Connectors implement this trait ONLY if the exchange has a native
 /// cancel-all endpoint. No looping over `cancel_order` is permitted.
 #[async_trait]
-pub trait CancelAllV2: TradingV2 {
+pub trait CancelAll: Trading {
     /// Cancel orders matching the given scope.
     ///
     /// `scope` must be `CancelScope::All` or `CancelScope::BySymbol`.
-    /// Other scopes are handled by `TradingV2::cancel_order`.
+    /// Other scopes are handled by `Trading::cancel_order`.
     async fn cancel_all_orders(
         &self,
         scope: CancelScope,
@@ -57,7 +57,7 @@ pub trait CancelAllV2: TradingV2 {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// AMEND ORDER V2
+// AMEND ORDER
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Amend (modify) a live order in-place without cancel+replace.
@@ -70,7 +70,7 @@ pub trait CancelAllV2: TradingV2 {
 /// Connectors that DON'T implement this trait simply do not have the trait —
 /// callers must cancel+replace manually at the application layer if needed.
 #[async_trait]
-pub trait AmendOrderV2: TradingV2 {
+pub trait AmendOrder: Trading {
     /// Modify a live order's price, quantity, and/or trigger price.
     ///
     /// At least one field in `req.fields` must be `Some`.
@@ -79,7 +79,7 @@ pub trait AmendOrderV2: TradingV2 {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// BATCH ORDERS V2
+// BATCH ORDERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Native batch order placement and cancellation.
@@ -91,7 +91,7 @@ pub trait AmendOrderV2: TradingV2 {
 /// batch endpoint (one HTTP request for multiple orders).
 /// NO sequential loops are permitted even as a fallback.
 #[async_trait]
-pub trait BatchOrdersV2: TradingV2 {
+pub trait BatchOrders: Trading {
     /// Place multiple orders in a single native batch request.
     ///
     /// Returns one `OrderResult` per input order, in the same order.
@@ -105,9 +105,6 @@ pub trait BatchOrdersV2: TradingV2 {
 
     /// Cancel multiple orders in a single native batch request.
     ///
-    /// `cancels` is a vec of `OrderRequest`s where each must identify a
-    /// single order (i.e. `order_type` is not used; only `client_order_id`
-    /// or symbol+side are used as identifiers by some exchanges).
     /// Use `CancelRequest` with `CancelScope::Batch` to pass order IDs.
     async fn cancel_orders_batch(
         &self,
@@ -126,7 +123,7 @@ pub trait BatchOrdersV2: TradingV2 {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ACCOUNT TRANSFERS V2
+// ACCOUNT TRANSFERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Internal transfers between account types (Spot ↔ Futures ↔ Margin).
@@ -135,7 +132,7 @@ pub trait BatchOrdersV2: TradingV2 {
 /// Binance, Bybit, OKX, KuCoin, GateIO, Bitfinex, Gemini, MEXC, HTX,
 /// Bitget, BingX, Phemex, CryptoCom, Upbit, Deribit, HyperLiquid, Kraken.
 #[async_trait]
-pub trait AccountTransfersV2: AccountV2 {
+pub trait AccountTransfers: Account {
     /// Transfer an asset between two account types.
     async fn transfer(&self, req: TransferRequest) -> ExchangeResult<TransferResponse>;
 
@@ -147,7 +144,7 @@ pub trait AccountTransfersV2: AccountV2 {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// CUSTODIAL FUNDS V2
+// CUSTODIAL FUNDS
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Deposit and withdrawal management for custodial exchanges.
@@ -157,7 +154,7 @@ pub trait AccountTransfersV2: AccountV2 {
 /// Bitstamp, Gemini, MEXC, HTX, Bitget, BingX, Phemex, CryptoCom,
 /// Upbit, Deribit.
 #[async_trait]
-pub trait CustodialFundsV2: AccountV2 {
+pub trait CustodialFunds: Account {
     /// Get the deposit address for an asset on a given network.
     ///
     /// `network = None` returns the default / primary network address.
@@ -178,7 +175,7 @@ pub trait CustodialFundsV2: AccountV2 {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// SUB ACCOUNTS V2
+// SUB ACCOUNTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Sub-account management — create, list, transfer, get balances.
@@ -188,7 +185,7 @@ pub trait CustodialFundsV2: AccountV2 {
 ///
 /// Sub-accounts are a CEX-only concept. DEX connectors never implement this.
 #[async_trait]
-pub trait SubAccountsV2: AccountV2 {
+pub trait SubAccounts: Account {
     /// Perform a sub-account operation (create, list, transfer, get balance).
     ///
     /// All operations are unified through `SubAccountOperation` to minimize

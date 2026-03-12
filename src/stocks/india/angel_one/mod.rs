@@ -80,7 +80,7 @@
 //! // Trading
 //! let order = connector.market_order(symbol, OrderSide::Buy, 1.0, AccountType::Spot).await?;
 //! let positions = connector.get_positions(AccountType::Spot).await?;
-//! let balance = connector.get_balance(None, AccountType::Spot).await?;
+//! let balance = connector.get_balance(crate::core::types::BalanceQuery { asset: None, account_type: AccountType::Spot }).await?;
 //! ```
 
 mod endpoints;

@@ -145,7 +145,7 @@ impl TransactionStream {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Parse streaming message
-fn _parse_message(line: &str) -> ExchangeResult<StreamMessage> {
+fn parse_message(line: &str) -> ExchangeResult<StreamMessage> {
     let value: Value = serde_json::from_str(line)
         .map_err(|e| ExchangeError::Parse(format!("Failed to parse JSON: {}", e)))?;
 

@@ -221,6 +221,7 @@ mod tests {
         let symbol = Symbol {
             base: "btc".to_string(),
             quote: "usdt".to_string(),
+            raw: None,
         };
 
         let (fsym, tsym) = format_symbol(&symbol);

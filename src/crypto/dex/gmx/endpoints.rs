@@ -144,7 +144,7 @@ pub fn format_symbol(base: &str, quote: &str, _account_type: AccountType) -> Str
 /// # Formats
 /// - Simple: "ETH/USD" -> (ETH, USD, None, None)
 /// - Full: "ETH/USD [ETH-USDC]" -> (ETH, USD, Some(ETH), Some(USDC))
-pub fn _parse_symbol(symbol: &str) -> (String, String, Option<String>, Option<String>) {
+pub fn parse_symbol(symbol: &str) -> (String, String, Option<String>, Option<String>) {
     if let Some(bracket_pos) = symbol.find('[') {
         // Full format: "ETH/USD [ETH-USDC]"
         let pair_part = &symbol[..bracket_pos].trim();
@@ -204,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_symbol() {
+    fn testparse_symbol() {
         // Simple format
         let (index, quote, long, short) = parse_symbol("ETH/USD");
         assert_eq!(index, "ETH");

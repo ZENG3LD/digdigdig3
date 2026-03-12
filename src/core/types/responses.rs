@@ -1,7 +1,6 @@
-//! # Responses V2 — Response types for the V2 thin-trait surface
+//! # Responses — Response types for the trading trait surface
 //!
-//! These types are returned by the V2 traits. They are separate from the
-//! original response types to allow coexistence with the V1 connector layer.
+//! These types are returned by the trading and account traits.
 
 use serde::{Deserialize, Serialize};
 use super::{Quantity, Asset, Timestamp, Order};
@@ -12,7 +11,7 @@ use super::{Quantity, Asset, Timestamp, Order};
 
 /// Result for a single order within a batch operation.
 ///
-/// Used in `BatchOrdersV2::place_orders_batch` and `cancel_orders_batch`
+/// Used in `BatchOrders::place_orders_batch` and `cancel_orders_batch`
 /// to represent individual success/failure within the batch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrderResult {
@@ -36,7 +35,7 @@ pub struct OrderResult {
 // CANCEL ALL RESPONSE
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Response from `CancelAllV2::cancel_all_orders`.
+/// Response from `CancelAll::cancel_all_orders`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CancelAllResponse {
     /// Number of orders successfully cancelled.
@@ -54,7 +53,7 @@ pub struct CancelAllResponse {
 // COMPOSITE ORDER RESPONSES
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Response from placing a Bracket order (`OrderTypeV2::Bracket`).
+/// Response from placing a Bracket order (`OrderType::Bracket`).
 ///
 /// 9/24: Bybit, OKX, Phemex, Bitget, BingX, Deribit, HyperLiquid, Paradex, dYdX.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,7 +68,7 @@ pub struct BracketResponse {
     pub sl_order: Order,
 }
 
-/// Response from placing an OCO order (`OrderTypeV2::Oco`).
+/// Response from placing an OCO order (`OrderType::Oco`).
 ///
 /// 7/24: Binance Spot, Gemini, Kraken, KuCoin Spot, GateIO, OKX, HTX.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,7 +83,7 @@ pub struct OcoResponse {
     pub list_id: Option<String>,
 }
 
-/// Response from placing a TWAP or other algo order (`OrderTypeV2::Twap`).
+/// Response from placing a TWAP or other algo order (`OrderType::Twap`).
 ///
 /// 7/24: Binance (algo), Bybit (algo), OKX (algo), KuCoin (algo),
 /// Bitget (algo), BingX (algo), HyperLiquid.
@@ -107,7 +106,7 @@ pub struct AlgoOrderResponse {
 // TRANSFER RESPONSE
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Response from `AccountTransfersV2::transfer`.
+/// Response from `AccountTransfers::transfer`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransferResponse {
     /// Exchange-assigned transfer / transaction ID.
@@ -130,7 +129,7 @@ pub struct TransferResponse {
 // CUSTODIAL FUNDS RESPONSES
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Deposit address for `CustodialFundsV2::get_deposit_address`.
+/// Deposit address for `CustodialFunds::get_deposit_address`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DepositAddress {
     /// On-chain address string (EVM 0x, Solana base58, etc.).
@@ -149,7 +148,7 @@ pub struct DepositAddress {
     pub created_at: Option<Timestamp>,
 }
 
-/// Response from `CustodialFundsV2::withdraw`.
+/// Response from `CustodialFunds::withdraw`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WithdrawResponse {
     /// Exchange-assigned withdrawal ID.
@@ -162,7 +161,7 @@ pub struct WithdrawResponse {
     pub tx_hash: Option<String>,
 }
 
-/// A single deposit or withdrawal record from `CustodialFundsV2::get_funds_history`.
+/// A single deposit or withdrawal record from `CustodialFunds::get_funds_history`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FundsRecord {
     /// An inbound deposit record.
@@ -212,7 +211,7 @@ pub enum FundsRecord {
 // FEE INFO
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Fee schedule returned by `AccountV2::get_fees`.
+/// Fee schedule returned by `Account::get_fees`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeeInfo {
     /// Maker fee rate as a fraction (e.g. 0.001 = 0.1%).
@@ -232,7 +231,7 @@ pub struct FeeInfo {
 // UNIFIED ORDER PLACEMENT RESPONSE
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Unified response from `TradingV2::place_order` — wraps all order variants.
+/// Unified response from `Trading::place_order` — wraps all order variants.
 ///
 /// Most orders return `Simple(Order)`. Composite order types (Bracket, OCO, Algo)
 /// use their dedicated variants to carry all constituent orders.

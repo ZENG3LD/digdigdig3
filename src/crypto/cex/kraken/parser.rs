@@ -308,7 +308,7 @@ impl KrakenParser {
 
         let order_type = match Self::get_str(descr, "ordertype").unwrap_or("limit") {
             "market" => OrderType::Market,
-            _ => OrderType::Limit,
+            _ => OrderType::Limit { price: 0.0 },
         };
 
         let status = match Self::get_str(data, "status").unwrap_or("pending") {
@@ -349,7 +349,7 @@ impl KrakenParser {
             commission_asset: None,
             created_at: (Self::get_f64(data, "opentm").unwrap_or(0.0) * 1000.0) as i64,
             updated_at: Self::get_f64(data, "closetm").map(|t| (t * 1000.0) as i64),
-            time_in_force: crate::core::TimeInForce::GTC,
+            time_in_force: crate::core::TimeInForce::Gtc,
         })
     }
 

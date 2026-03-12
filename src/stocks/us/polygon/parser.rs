@@ -66,7 +66,7 @@ impl PolygonParser {
     // ═══════════════════════════════════════════════════════════════════════════
 
     /// Parse price from snapshot or last trade
-    pub fn _parse_price(response: &Value) -> ExchangeResult<f64> {
+    pub fn parse_price(response: &Value) -> ExchangeResult<f64> {
         // Try snapshot format first
         if let Some(ticker) = response.get("ticker") {
             if let Some(last_trade) = ticker.get("lastTrade") {
@@ -350,7 +350,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_parse_price() {
+    fn testparse_price() {
         let response = json!({
             "ticker": {
                 "ticker": "AAPL",

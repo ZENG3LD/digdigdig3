@@ -424,145 +424,30 @@ impl TinkoffConnector {
 
 #[async_trait]
 impl Trading for TinkoffConnector {
-    async fn market_order(
-        &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let account_id = self.account_id.as_ref()
-            .ok_or_else(|| ExchangeError::InvalidRequest("Account ID not set. Call initialize_account() first".to_string()))?;
-
-        let ticker = format_ticker(&symbol);
-        let figi = self.get_figi_by_ticker(&ticker).await?;
-
-        // Generate unique order ID
-        let order_id = uuid::Uuid::new_v4().to_string();
-
-        let direction_str = match side {
-            OrderSide::Buy => "ORDER_DIRECTION_BUY",
-            OrderSide::Sell => "ORDER_DIRECTION_SELL",
-        };
-
-        let body = serde_json::json!({
-            "figi": figi,
-            "quantity": quantity as i64,
-            "direction": direction_str,
-            "accountId": account_id,
-            "orderType": "ORDER_TYPE_MARKET",
-            "orderId": order_id,
-        });
-
-        let response = self.post(TinkoffEndpoint::PostOrder, body).await?;
-        let mut result = TinkoffParser::parse_order_result(&response)?;
-        result.symbol = ticker;
-        Ok(result)
+    async fn place_order(&self, _req: crate::core::types::OrderRequest) -> crate::core::types::ExchangeResult<crate::core::types::PlaceOrderResponse> {
+        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+            "place_order not yet implemented for Tinkoff connector".to_string()
+        ))
     }
-
-    async fn limit_order(
-        &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        price: Price,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let account_id = self.account_id.as_ref()
-            .ok_or_else(|| ExchangeError::InvalidRequest("Account ID not set. Call initialize_account() first".to_string()))?;
-
-        let ticker = format_ticker(&symbol);
-        let figi = self.get_figi_by_ticker(&ticker).await?;
-
-        // Generate unique order ID
-        let order_id = uuid::Uuid::new_v4().to_string();
-
-        let direction_str = match side {
-            OrderSide::Buy => "ORDER_DIRECTION_BUY",
-            OrderSide::Sell => "ORDER_DIRECTION_SELL",
-        };
-
-        // Convert price to Quotation format
-        let units = price.floor() as i64;
-        let nano = ((price - units as f64) * 1_000_000_000.0) as i32;
-
-        let body = serde_json::json!({
-            "figi": figi,
-            "quantity": quantity as i64,
-            "direction": direction_str,
-            "accountId": account_id,
-            "orderType": "ORDER_TYPE_LIMIT",
-            "orderId": order_id,
-            "price": {
-                "units": units,
-                "nano": nano,
-            },
-        });
-
-        let response = self.post(TinkoffEndpoint::PostOrder, body).await?;
-        let mut result = TinkoffParser::parse_order_result(&response)?;
-        result.symbol = ticker;
-        Ok(result)
+    async fn cancel_order(&self, _req: crate::core::types::CancelRequest) -> crate::core::types::ExchangeResult<crate::core::types::Order> {
+        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+            "cancel_order not yet implemented for Tinkoff connector".to_string()
+        ))
     }
-
-    async fn cancel_order(
-        &self,
-        _symbol: Symbol,
-        order_id: &str,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let account_id = self.account_id.as_ref()
-            .ok_or_else(|| ExchangeError::InvalidRequest("Account ID not set".to_string()))?;
-
-        let body = serde_json::json!({
-            "accountId": account_id,
-            "orderId": order_id,
-        });
-
-        let response = self.post(TinkoffEndpoint::CancelOrder, body).await?;
-        TinkoffParser::parse_order_result(&response)
+    async fn get_order(&self, _symbol: &str, _order_id: &str, _account_type: crate::core::types::AccountType) -> crate::core::types::ExchangeResult<crate::core::types::Order> {
+        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+            "get_order not yet implemented for Tinkoff connector".to_string()
+        ))
     }
-
-    async fn get_order(
-        &self,
-        _symbol: Symbol,
-        order_id: &str,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let account_id = self.account_id.as_ref()
-            .ok_or_else(|| ExchangeError::InvalidRequest("Account ID not set".to_string()))?;
-
-        let body = serde_json::json!({
-            "accountId": account_id,
-            "orderId": order_id,
-        });
-
-        let response = self.post(TinkoffEndpoint::GetOrderState, body).await?;
-        TinkoffParser::parse_order_result(&response)
+    async fn get_open_orders(&self, _symbol: Option<&str>, _account_type: crate::core::types::AccountType) -> crate::core::types::ExchangeResult<Vec<crate::core::types::Order>> {
+        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+            "get_open_orders not yet implemented for Tinkoff connector".to_string()
+        ))
     }
-
-    async fn get_open_orders(
-        &self,
-        _symbol: Option<Symbol>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Order>> {
-        let account_id = self.account_id.as_ref()
-            .ok_or_else(|| ExchangeError::InvalidRequest("Account ID not set".to_string()))?;
-
-        let body = serde_json::json!({
-            "accountId": account_id,
-        });
-
-        let response = self.post(TinkoffEndpoint::GetOrders, body).await?;
-
-        let orders = response
-            .get("orders")
-            .and_then(|o| o.as_array())
-            .ok_or_else(|| ExchangeError::Parse("Missing 'orders' array".to_string()))?;
-
-        orders.iter()
-            .map(TinkoffParser::parse_order_result)
-            .collect()
+    async fn get_order_history(&self, _filter: crate::core::types::OrderHistoryFilter, _account_type: crate::core::types::AccountType) -> crate::core::types::ExchangeResult<Vec<crate::core::types::Order>> {
+        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+            "get_order_history not yet implemented for Tinkoff connector".to_string()
+        ))
     }
 }
 
@@ -572,39 +457,20 @@ impl Trading for TinkoffConnector {
 
 #[async_trait]
 impl Account for TinkoffConnector {
-    async fn get_balance(
-        &self,
-        asset: Option<Asset>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Balance>> {
-        let account_id = self.account_id.as_ref()
-            .ok_or_else(|| ExchangeError::InvalidRequest("Account ID not set".to_string()))?;
-
-        let body = serde_json::json!({
-            "accountId": account_id,
-        });
-
-        let response = self.post(TinkoffEndpoint::GetPositions, body).await?;
-        let mut balances = TinkoffParser::parse_balance(&response)?;
-
-        // Filter by asset if provided
-        if let Some(asset_filter) = asset {
-            balances.retain(|b| b.asset == asset_filter);
-        }
-
-        Ok(balances)
+    async fn get_balance(&self, _query: crate::core::types::BalanceQuery) -> crate::core::types::ExchangeResult<Vec<crate::core::types::Balance>> {
+        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+            "get_balance not yet implemented for Tinkoff connector".to_string()
+        ))
     }
-
-    async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
-        Ok(AccountInfo {
-            account_type,
-            can_trade: true,
-            can_withdraw: true,
-            can_deposit: true,
-            maker_commission: 0.0, // Tinkoff doesn't use maker/taker model
-            taker_commission: 0.05, // Approximate commission rate (0.05%)
-            balances: self.get_balance(None, account_type).await?,
-        })
+    async fn get_account_info(&self, _account_type: crate::core::types::AccountType) -> crate::core::types::ExchangeResult<crate::core::types::AccountInfo> {
+        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+            "get_account_info not yet implemented for Tinkoff connector".to_string()
+        ))
+    }
+    async fn get_fees(&self, _symbol: Option<&str>) -> crate::core::types::ExchangeResult<crate::core::types::FeeInfo> {
+        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+            "get_fees not yet implemented for Tinkoff connector".to_string()
+        ))
     }
 }
 
@@ -614,50 +480,21 @@ impl Account for TinkoffConnector {
 
 #[async_trait]
 impl Positions for TinkoffConnector {
-    async fn get_positions(
-        &self,
-        symbol: Option<Symbol>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Position>> {
-        let account_id = self.account_id.as_ref()
-            .ok_or_else(|| ExchangeError::InvalidRequest("Account ID not set".to_string()))?;
-
-        let body = serde_json::json!({
-            "accountId": account_id,
-        });
-
-        let response = self.post(TinkoffEndpoint::GetPortfolio, body).await?;
-        let mut positions = TinkoffParser::parse_positions(&response)?;
-
-        // Filter by symbol if provided
-        if let Some(sym) = symbol {
-            let ticker = format_ticker(&sym);
-            positions.retain(|p| p.symbol == ticker);
-        }
-
-        Ok(positions)
-    }
-
-    async fn get_funding_rate(
-        &self,
-        _symbol: Symbol,
-        _account_type: AccountType,
-    ) -> ExchangeResult<FundingRate> {
-        // Funding rate is not applicable for stock trading
-        Err(ExchangeError::UnsupportedOperation(
-            "Funding rate not available - not applicable for stock market".to_string()
+    async fn get_positions(&self, _query: crate::core::types::PositionQuery) -> crate::core::types::ExchangeResult<Vec<crate::core::types::Position>> {
+        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+            "get_positions not yet implemented for Tinkoff connector".to_string()
         ))
     }
-
-    async fn set_leverage(
-        &self,
-        _symbol: Symbol,
-        _leverage: u32,
-        _account_type: AccountType,
-    ) -> ExchangeResult<()> {
-        // Leverage setting is not applicable for stock trading
-        Err(ExchangeError::UnsupportedOperation(
-            "Leverage setting not available - not applicable for stock market".to_string()
+    async fn get_funding_rate(&self, _symbol: &str, _account_type: crate::core::types::AccountType) -> crate::core::types::ExchangeResult<crate::core::types::FundingRate> {
+        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+            "get_funding_rate not supported for Tinkoff connector (stocks)".to_string()
+        ))
+    }
+    async fn modify_position(&self, _req: crate::core::types::PositionModification) -> crate::core::types::ExchangeResult<()> {
+        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+            "modify_position not yet implemented for Tinkoff connector".to_string()
         ))
     }
 }
+
+

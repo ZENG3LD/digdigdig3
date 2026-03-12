@@ -198,7 +198,7 @@ impl BithumbParser {
 
         let order_type = match Self::get_str(data, "type").unwrap_or("limit").to_lowercase().as_str() {
             "market" => OrderType::Market,
-            _ => OrderType::Limit,
+            _ => OrderType::Limit { price: 0.0 },
         };
 
         let status = Self::parse_order_status(data);
@@ -219,7 +219,7 @@ impl BithumbParser {
             commission_asset: None,
             created_at: data.get("createTime").and_then(|t| t.as_i64()).unwrap_or(0),
             updated_at: data.get("updateTime").and_then(|t| t.as_i64()),
-            time_in_force: crate::core::TimeInForce::GTC,
+            time_in_force: crate::core::TimeInForce::Gtc,
         })
     }
 
@@ -420,7 +420,7 @@ impl BithumbParser {
 
         let order_type = match Self::get_str(data, "type").unwrap_or("limit") {
             "market" => OrderType::Market,
-            _ => OrderType::Limit,
+            _ => OrderType::Limit { price: 0.0 },
         };
 
         let status = match Self::get_str(data, "status").unwrap_or("pending") {

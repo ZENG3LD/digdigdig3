@@ -237,7 +237,7 @@ impl DhanExchangeSegment {
     }
 
     /// Convert to integer for WebSocket
-    pub fn _as_int(&self) -> u8 {
+    pub fn as_int(&self) -> u8 {
         *self as u8
     }
 

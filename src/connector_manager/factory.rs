@@ -493,7 +493,7 @@ impl ConnectorFactory {
     ///     credentials
     /// ).await?;
     ///
-    /// let balance = connector.get_balance(None, AccountType::Spot).await?;
+    /// let balance = connector.get_balance(crate::core::types::BalanceQuery { asset: None, account_type: AccountType::Spot }).await?;
     /// ```
     pub async fn create_authenticated(
         id: ExchangeId,

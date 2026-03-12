@@ -247,7 +247,7 @@ impl BingxParser {
 
         let order_type = match Self::get_str(data, "type").unwrap_or("LIMIT").to_uppercase().as_str() {
             "MARKET" => OrderType::Market,
-            _ => OrderType::Limit,
+            _ => OrderType::Limit { price: 0.0 },
         };
 
         let status = Self::parse_order_status(data);
@@ -281,7 +281,7 @@ impl BingxParser {
                 .and_then(|t| t.as_i64())
                 .unwrap_or(0),
             updated_at: data.get("updateTime").and_then(|t| t.as_i64()),
-            time_in_force: crate::core::TimeInForce::GTC,
+            time_in_force: crate::core::TimeInForce::Gtc,
         })
     }
 
@@ -601,8 +601,8 @@ impl BingxParser {
         let order_type_str = Self::require_str(data, "o")?;
         let order_type = match order_type_str.to_uppercase().as_str() {
             "MARKET" => OrderType::Market,
-            "LIMIT" => OrderType::Limit,
-            _ => OrderType::Limit,
+            "LIMIT" => OrderType::Limit { price: 0.0 },
+            _ => OrderType::Limit { price: 0.0 },
         };
 
         let status_str = Self::require_str(data, "X")?;

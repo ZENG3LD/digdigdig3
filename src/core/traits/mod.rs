@@ -1,41 +1,39 @@
-//! # V5 Core Traits - Минимальный набор
+//! # V5 Core Traits
 //!
-//! ## Архитектура V6
+//! ## Architecture
 //!
 //! ```text
-//! CoreConnector<C>           - минимальные универсальные методы (15 методов)
+//! CoreConnector<C>           - universal methods (Identity + MarketData + Trading + Account + Positions)
 //!      │
-//!      └── KuCoinConnector   - core + все KuCoin-специфичное напрямую
-//!      └── BinanceConnector  - core + все Binance-специфичное напрямую
+//!      └── BinanceConnector  - core + all Binance-specific directly
+//!      └── KuCoinConnector   - core + all KuCoin-specific directly
 //! ```
 //!
-//! ## Принципы
+//! ## Principles
 //!
-//! 1. **Core трейты минимальны** - только то, что есть на 100% бирж
-//! 2. **Нет UnsupportedOperation** - все core методы работают везде
-//! 3. **Расширения в биржевых коннекторах** - напрямую как методы структуры
+//! 1. **Core traits are minimal** — only what 100% of exchanges support
+//! 2. **No UnsupportedOperation in core** — all core methods work everywhere
+//! 3. **Extensions in exchange connectors** — directly as struct methods
 //!
-//! ## Core трейты
+//! ## Core traits
 //!
-//! | Трейт | Методов | Описание |
-//! |-------|---------|----------|
-//! | `ExchangeIdentity` | 5 | Базовая идентификация |
-//! | `MarketData` | 5 | Публичные данные (price, orderbook, klines, ticker, ping) |
-//! | `Trading` | 5 | Торговля (market, limit, cancel, get_order, open_orders) |
-//! | `Account` | 2 | Аккаунт (balance, account_info) |
-//! | `Positions` | 3 | Futures (positions, funding_rate, set_leverage) |
+//! | Trait | Methods | Description |
+//! |-------|---------|-------------|
+//! | `ExchangeIdentity` | 5 | Basic identification |
+//! | `MarketData` | 5 | Public data (price, orderbook, klines, ticker, ping) |
+//! | `Trading` | 5 | Trading (place_order, cancel_order, get_order, get_open_orders, get_order_history) |
+//! | `Account` | 3 | Account (balance, account_info, fees) |
+//! | `Positions` | 3 | Futures (positions, funding_rate, modify_position) |
 //!
-//! **Итого: ~20 методов** (вместо ~50+ в старой версии)
+//! ## Optional operation traits (not universally implemented)
 //!
-//! ## Расширенные методы (в биржевых коннекторах)
-//!
-//! - `get_tickers()`, `get_recent_trades()`, `get_exchange_info()`, `get_open_interest()`
-//! - `modify_order()`, `cancel_all_orders()`, `get_order_history()`, `get_trades()`
-//! - `create_stop_loss()`, `create_take_profit()`, `create_order_with_tpsl()`
-//! - `get_my_trades()`, `get_deposit_address()`, transfers
-//! - `close_position_market()`, margin mode, position mode, add margin
-//! - WebSocket subscriptions
-//! - Биржево-специфичные (sub-accounts, internal transfers, etc.)
+//! - `CancelAll` - native cancel-all endpoint
+//! - `AmendOrder` - native amend/modify order
+//! - `BatchOrders` - native batch placement/cancellation
+//! - `AccountTransfers` - internal account transfers
+//! - `CustodialFunds` - deposits and withdrawals
+//! - `SubAccounts` - sub-account management
+//! - `Authenticated` - credential-aware connectors
 
 mod identity;
 mod market_data;
@@ -44,13 +42,7 @@ mod account;
 mod positions;
 mod websocket;
 mod auth;
-
-// V2 traits — coexist with V1 traits
-pub mod trading_v2;
-pub mod account_v2;
-pub mod positions_v2;
-pub mod operations_v2;
-pub mod auth_v2;
+mod operations;
 
 pub use identity::ExchangeIdentity;
 pub use market_data::MarketData;
@@ -58,31 +50,29 @@ pub use trading::Trading;
 pub use account::Account;
 pub use positions::Positions;
 pub use websocket::{WebSocketConnector, WebSocketExt};
-pub use auth::{Credentials, AuthRequest, SignatureLocation, ExchangeAuth};
-
-// V2 trait re-exports
-pub use trading_v2::TradingV2;
-pub use account_v2::AccountV2;
-pub use positions_v2::PositionsV2;
-pub use operations_v2::{
-    CancelAllV2, AmendOrderV2, BatchOrdersV2,
-    AccountTransfersV2, CustodialFundsV2, SubAccountsV2,
+pub use auth::{
+    Authenticated, CredentialKind,
+    // Backward compat — used by connector constructors and auth implementations
+    Credentials, AuthRequest, SignatureLocation, ExchangeAuth,
 };
-pub use auth_v2::{Authenticated, CredentialKind};
+pub use operations::{
+    CancelAll, AmendOrder, BatchOrders,
+    AccountTransfers, CustodialFunds, SubAccounts,
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // COMPOSITE TRAIT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Полный core коннектор
+/// Full core connector
 ///
-/// Комбинирует все core трейты.
-/// Используется для generic кода, работающего с любой биржей.
+/// Combines all core traits.
+/// Used for generic code that works with any exchange.
 ///
-/// # Пример
+/// # Example
 /// ```ignore
 /// async fn check_balance<C: CoreConnector>(conn: &C) -> Result<()> {
-///     let balance = conn.get_balance(None, AccountType::Spot).await?;
+///     let balance = conn.get_balance(BalanceQuery { asset: None, account_type: AccountType::Spot }).await?;
 ///     let price = conn.get_price(Symbol::new("BTC", "USDT"), AccountType::Spot).await?;
 ///     Ok(())
 /// }
@@ -94,32 +84,5 @@ pub trait CoreConnector:
 
 impl<T> CoreConnector for T where
     T: ExchangeIdentity + MarketData + Trading + Account + Positions + Send + Sync
-{
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// V2 COMPOSITE TRAIT
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/// Full V2 core connector — combines all V2 thin traits.
-///
-/// Used for generic code that works with any exchange using the V2 architecture.
-/// Optional operation traits (`CancelAllV2`, `AmendOrderV2`, etc.) are NOT
-/// included here because they are not universally implemented.
-///
-/// # Example
-/// ```ignore
-/// async fn check_portfolio<C: CoreConnectorV2>(conn: &C) {
-///     let balance = conn.get_balance(BalanceQuery { asset: None, account_type: AccountType::Spot }).await?;
-///     let orders = conn.get_open_orders(None, AccountType::Spot).await?;
-/// }
-/// ```
-pub trait CoreConnectorV2:
-    ExchangeIdentity + MarketData + TradingV2 + AccountV2 + Send + Sync
-{
-}
-
-impl<T> CoreConnectorV2 for T where
-    T: ExchangeIdentity + MarketData + TradingV2 + AccountV2 + Send + Sync
 {
 }

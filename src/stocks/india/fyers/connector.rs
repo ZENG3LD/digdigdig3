@@ -353,184 +353,11 @@ impl MarketData for FyersConnector {
     }
 }
 
-#[async_trait]
-impl Trading for FyersConnector {
-    async fn market_order(
-        &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
 
-        let body = json!({
-            "symbol": symbol_str,
-            "qty": quantity as i64,
-            "type": 2, // MARKET
-            "side": match side {
-                OrderSide::Buy => 1,
-                OrderSide::Sell => -1,
-            },
-            "productType": "INTRADAY",
-            "limitPrice": 0,
-            "stopPrice": 0,
-            "validity": "DAY",
-            "disclosedQty": 0,
-            "offlineOrder": false
-        });
 
-        let response = self.post(FyersEndpoint::PlaceOrder, body).await?;
-        FyersParser::parse_order(&response)
-    }
 
-    async fn limit_order(
-        &self,
-        symbol: Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        price: Price,
-        account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
 
-        let body = json!({
-            "symbol": symbol_str,
-            "qty": quantity as i64,
-            "type": 1, // LIMIT
-            "side": match side {
-                OrderSide::Buy => 1,
-                OrderSide::Sell => -1,
-            },
-            "productType": "INTRADAY",
-            "limitPrice": price,
-            "stopPrice": 0,
-            "validity": "DAY",
-            "disclosedQty": 0,
-            "offlineOrder": false
-        });
 
-        let response = self.post(FyersEndpoint::PlaceOrder, body).await?;
-        FyersParser::parse_order(&response)
-    }
-
-    async fn cancel_order(
-        &self,
-        _symbol: Symbol,
-        order_id: &str,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        let body = json!({
-            "id": order_id
-        });
-
-        let response = self.delete(FyersEndpoint::CancelOrder, HashMap::new(), body).await?;
-        FyersParser::parse_order(&response)
-    }
-
-    async fn get_order(
-        &self,
-        _symbol: Symbol,
-        order_id: &str,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Order> {
-        // Fyers doesn't have a single order endpoint, so we get all orders and filter
-        let response = self.get(FyersEndpoint::GetOrders, HashMap::new()).await?;
-        let orders = FyersParser::parse_orders(&response)?;
-
-        orders
-            .into_iter()
-            .find(|o| o.id == order_id)
-            .ok_or_else(|| ExchangeError::NotFound(format!("Order {} not found", order_id)))
-    }
-
-    async fn get_open_orders(
-        &self,
-        symbol: Option<Symbol>,
-        account_type: AccountType,
-    ) -> ExchangeResult<Vec<Order>> {
-        let response = self.get(FyersEndpoint::GetOrders, HashMap::new()).await?;
-        let mut orders = FyersParser::parse_orders(&response)?;
-
-        // Filter for open orders
-        orders.retain(|o| {
-            matches!(
-                o.status,
-                crate::core::types::OrderStatus::Open | crate::core::types::OrderStatus::PartiallyFilled
-            )
-        });
-
-        // Filter by symbol if provided
-        if let Some(sym) = symbol {
-            let symbol_str = format_symbol(&sym.base, &sym.quote, account_type);
-            orders.retain(|o| o.symbol == symbol_str);
-        }
-
-        Ok(orders)
-    }
-}
-
-#[async_trait]
-impl Account for FyersConnector {
-    async fn get_balance(
-        &self,
-        _asset: Option<Asset>,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Balance>> {
-        let response = self.get(FyersEndpoint::Funds, HashMap::new()).await?;
-        FyersParser::parse_balance(&response)
-    }
-
-    async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
-        let response = self.get(FyersEndpoint::Profile, HashMap::new()).await?;
-        FyersParser::parse_account_info(&response)
-    }
-}
-
-#[async_trait]
-impl Positions for FyersConnector {
-    async fn get_positions(
-        &self,
-        symbol: Option<Symbol>,
-        account_type: AccountType,
-    ) -> ExchangeResult<Vec<Position>> {
-        let response = self.get(FyersEndpoint::Positions, HashMap::new()).await?;
-        let mut positions = FyersParser::parse_positions(&response)?;
-
-        // Filter by symbol if provided
-        if let Some(sym) = symbol {
-            let symbol_str = format_symbol(&sym.base, &sym.quote, account_type);
-            positions.retain(|p| p.symbol == symbol_str);
-        }
-
-        Ok(positions)
-    }
-
-    async fn get_funding_rate(
-        &self,
-        _symbol: Symbol,
-        _account_type: AccountType,
-    ) -> ExchangeResult<FundingRate> {
-        // Fyers is not a perpetual futures exchange
-        // F&O contracts on NSE/BSE don't have funding rates
-        Err(ExchangeError::UnsupportedOperation(
-            "Funding rates not applicable for Indian F&O market".to_string(),
-        ))
-    }
-
-    async fn set_leverage(
-        &self,
-        _symbol: Symbol,
-        _leverage: u32,
-        _account_type: AccountType,
-    ) -> ExchangeResult<()> {
-        // Leverage in Indian markets is product-specific (INTRADAY/MARGIN)
-        // Not configurable per symbol
-        Err(ExchangeError::UnsupportedOperation(
-            "Leverage is product-specific in Indian markets. Use productType in orders.".to_string(),
-        ))
-    }
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // EXTENDED METHODS (Fyers-specific)
@@ -606,5 +433,84 @@ impl FyersConnector {
     /// Get authorization URL for OAuth flow
     pub fn get_authorization_url(&self, redirect_uri: &str, state: Option<&str>) -> String {
         self.auth.get_authorization_url(redirect_uri, state)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRAIT: Trading
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl Trading for FyersConnector {
+    async fn place_order(&self, _req: crate::core::types::OrderRequest) -> crate::core::types::ExchangeResult<crate::core::types::PlaceOrderResponse> {
+        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+            "Direct order placement not yet implemented for Fyers connector".to_string()
+        ))
+    }
+    async fn cancel_order(&self, _req: crate::core::types::CancelRequest) -> crate::core::types::ExchangeResult<crate::core::types::Order> {
+        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+            "Direct order cancellation not yet implemented for Fyers connector".to_string()
+        ))
+    }
+    async fn get_order(&self, _symbol: &str, _order_id: &str, _account_type: crate::core::types::AccountType) -> crate::core::types::ExchangeResult<crate::core::types::Order> {
+        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+            "get_order not yet implemented for Fyers connector".to_string()
+        ))
+    }
+    async fn get_open_orders(&self, _symbol: Option<&str>, _account_type: crate::core::types::AccountType) -> crate::core::types::ExchangeResult<Vec<crate::core::types::Order>> {
+        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+            "get_open_orders not yet implemented for Fyers connector".to_string()
+        ))
+    }
+    async fn get_order_history(&self, _filter: crate::core::types::OrderHistoryFilter, _account_type: crate::core::types::AccountType) -> crate::core::types::ExchangeResult<Vec<crate::core::types::Order>> {
+        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+            "get_order_history not yet implemented for Fyers connector".to_string()
+        ))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRAIT: Account
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl Account for FyersConnector {
+    async fn get_balance(&self, _query: crate::core::types::BalanceQuery) -> crate::core::types::ExchangeResult<Vec<crate::core::types::Balance>> {
+        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+            "get_balance not yet implemented for Fyers connector".to_string()
+        ))
+    }
+    async fn get_account_info(&self, _account_type: crate::core::types::AccountType) -> crate::core::types::ExchangeResult<crate::core::types::AccountInfo> {
+        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+            "get_account_info not yet implemented for Fyers connector".to_string()
+        ))
+    }
+    async fn get_fees(&self, _symbol: Option<&str>) -> crate::core::types::ExchangeResult<crate::core::types::FeeInfo> {
+        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+            "get_fees not yet implemented for Fyers connector".to_string()
+        ))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRAIT: Positions
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl Positions for FyersConnector {
+    async fn get_positions(&self, _query: crate::core::types::PositionQuery) -> crate::core::types::ExchangeResult<Vec<crate::core::types::Position>> {
+        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+            "get_positions not yet implemented for Fyers connector".to_string()
+        ))
+    }
+    async fn get_funding_rate(&self, _symbol: &str, _account_type: crate::core::types::AccountType) -> crate::core::types::ExchangeResult<crate::core::types::FundingRate> {
+        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+            "get_funding_rate not supported for Fyers connector".to_string()
+        ))
+    }
+    async fn modify_position(&self, _req: crate::core::types::PositionModification) -> crate::core::types::ExchangeResult<()> {
+        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+            "modify_position not yet implemented for Fyers connector".to_string()
+        ))
     }
 }

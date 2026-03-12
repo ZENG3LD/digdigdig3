@@ -27,7 +27,7 @@ use crate::core::{
 };
 
 /// Bitquery OAuth authentication
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BitqueryAuth {
     /// OAuth 2.0 access token (format: ory_at_...)
     access_token: String,

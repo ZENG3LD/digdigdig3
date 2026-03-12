@@ -255,7 +255,7 @@ pub fn normalize_symbol(symbol: &str) -> String {
 }
 
 /// Check if symbol is a perpetual
-pub fn _is_perpetual(symbol: &str) -> bool {
+pub fn is_perpetual(symbol: &str) -> bool {
     symbol.to_lowercase().ends_with("perp")
 }
 
@@ -315,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_perpetual() {
+    fn testis_perpetual() {
         assert!(is_perpetual("btcgusdperp"));
         assert!(is_perpetual("BTCGUSDPERP"));
         assert!(!is_perpetual("btcusd"));

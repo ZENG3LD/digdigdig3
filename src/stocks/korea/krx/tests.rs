@@ -102,7 +102,7 @@ mod tests {
         let symbol = samsung_symbol();
 
         let result = connector
-            .get_klines(symbol.clone(), "1d", Some(10), AccountType::Spot)
+            .get_klines(symbol.clone(), "1d", Some(10), AccountType::Spot, None)
             .await;
 
         println!("Get klines result for {}: {:?}", symbol.base, result);
@@ -135,7 +135,7 @@ mod tests {
 
         // KRX only supports daily data
         let result = connector
-            .get_klines(symbol.clone(), "1h", Some(10), AccountType::Spot)
+            .get_klines(symbol.clone(), "1h", Some(10), AccountType::Spot, None)
             .await;
 
         assert!(result.is_err(), "Should reject non-daily intervals");
@@ -187,7 +187,7 @@ mod tests {
         let symbol = samsung_symbol();
 
         // Get data for past 5 days
-        use chrono::{Duration, Local};
+        use chrono::{Duration, Local, Datelike};
         let end = Local::now();
         let start = end - Duration::days(5);
 
@@ -222,19 +222,26 @@ mod tests {
     #[ignore] // Requires API credentials
     async fn test_trading_operations_unsupported() {
         use crate::core::traits::Trading;
-        use crate::core::types::{OrderSide, Quantity};
+        use crate::core::types::{OrderSide, OrderRequest, OrderType, TimeInForce};
 
         let connector = create_connector();
         let symbol = samsung_symbol();
 
         // All trading operations should return UnsupportedOperation error
-        let result = connector
-            .market_order(symbol.clone(), OrderSide::Buy, Quantity::Base(1.0), AccountType::Spot)
-            .await;
+        let result = connector.place_order(OrderRequest {
+            symbol,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 1.0,
+            account_type: AccountType::Spot,
+            client_order_id: None,
+            time_in_force: TimeInForce::Gtc,
+            reduce_only: false,
+        }).await;
 
         assert!(result.is_err());
         if let Err(e) = result {
-            println!("Expected error for market_order: {}", e);
+            println!("Expected error for place_order: {}", e);
         }
     }
 
@@ -242,10 +249,11 @@ mod tests {
     #[ignore] // Requires API credentials
     async fn test_account_operations_unsupported() {
         use crate::core::traits::Account;
+        use crate::core::types::BalanceQuery;
 
         let connector = create_connector();
 
-        let result = connector.get_balance(AccountType::Spot).await;
+        let result = connector.get_balance(BalanceQuery { asset: None, account_type: AccountType::Spot }).await;
 
         assert!(result.is_err());
         if let Err(e) = result {
@@ -257,17 +265,17 @@ mod tests {
     #[ignore] // Requires API credentials
     async fn test_positions_operations_unsupported() {
         use crate::core::traits::Positions;
+        use crate::core::types::PositionQuery;
 
         let connector = create_connector();
-        let symbol = samsung_symbol();
 
         let result = connector
-            .get_funding_rate(symbol.clone(), AccountType::Spot)
+            .get_positions(PositionQuery { symbol: None, account_type: AccountType::Spot })
             .await;
 
         assert!(result.is_err());
         if let Err(e) = result {
-            println!("Expected error for get_funding_rate: {}", e);
+            println!("Expected error for get_positions: {}", e);
         }
     }
 

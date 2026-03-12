@@ -659,7 +659,7 @@ impl PhemexWebSocket {
             .unwrap_or("Limit")
         {
             "Market" => crate::core::OrderType::Market,
-            _ => crate::core::OrderType::Limit,
+            _ => crate::core::OrderType::Limit { price: 0.0 },
         };
 
         let status = match data.get("ordStatus").and_then(|v| v.as_str()).unwrap_or("New") {
@@ -893,7 +893,7 @@ impl PhemexWebSocket {
     }
 
     /// Check if stream type requires private channel
-    fn _is_private(stream_type: &StreamType) -> bool {
+    fn is_private(stream_type: &StreamType) -> bool {
         matches!(
             stream_type,
             StreamType::OrderUpdate | StreamType::BalanceUpdate | StreamType::PositionUpdate
@@ -1153,7 +1153,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_private() {
+    fn testis_private() {
         assert!(!PhemexWebSocket::is_private(&StreamType::Ticker));
         assert!(!PhemexWebSocket::is_private(&StreamType::Trade));
         assert!(!PhemexWebSocket::is_private(&StreamType::Orderbook));

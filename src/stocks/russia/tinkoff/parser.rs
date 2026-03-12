@@ -265,7 +265,7 @@ impl TinkoffParser {
         let order_type_str = Self::get_str(response, "orderType")
             .unwrap_or("ORDER_TYPE_MARKET");
         let order_type = if order_type_str.contains("LIMIT") {
-            OrderType::Limit
+            OrderType::Limit { price: 0.0 }
         } else {
             OrderType::Market
         };
@@ -288,7 +288,7 @@ impl TinkoffParser {
             commission_asset: None,
             created_at: timestamp,
             updated_at: Some(timestamp),
-            time_in_force: TimeInForce::GTC,
+            time_in_force: TimeInForce::Gtc,
         })
     }
 

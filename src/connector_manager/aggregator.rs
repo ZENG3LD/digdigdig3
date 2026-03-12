@@ -750,6 +750,7 @@ mod tests {
                 "1h",
                 AccountType::Spot,
                 Some(100),
+                None,
             )
             .await;
 

@@ -1,35 +1,41 @@
-//! # AccountCore - минимальная информация об аккаунте
+//! # Account — Core account operations
 //!
-//! Только методы, которые есть на 100% бирж.
+//! Core account operations universal to 24/24 exchanges.
 
 use async_trait::async_trait;
 
-use crate::core::types::{AccountInfo, AccountType, Asset, Balance, ExchangeResult};
+use crate::core::types::{
+    AccountInfo, AccountType, Balance, ExchangeResult,
+    BalanceQuery, FeeInfo,
+};
 
 use super::ExchangeIdentity;
 
-/// Минимальная информация об аккаунте
+/// Core account — 24/24 exchanges.
 ///
-/// **2 метода** - есть на всех биржах без исключений.
+/// All account-level read operations. Write operations (transfers, withdrawals,
+/// sub-accounts) are in their own optional traits in `operations`.
 ///
-/// # Авторизация
-/// **ТРЕБУЕТСЯ** - все методы приватные
-///
-/// # Расширенные методы
-/// Следующие методы НЕ в этом трейте (реализуются в биржевых коннекторах):
-/// - `get_my_trades()` - история fills
-/// - `get_deposit_address()` - адрес депозита
-/// - `get_deposit_history()` - история депозитов
-/// - `get_withdrawal_history()` - история выводов
+/// Authentication is **required** for all methods in this trait.
 #[async_trait]
 pub trait Account: ExchangeIdentity {
-    /// Получить баланс
-    async fn get_balance(
-        &self,
-        asset: Option<Asset>,
-        account_type: AccountType,
-    ) -> ExchangeResult<Vec<Balance>>;
+    /// Get asset balances, optionally filtered to a single asset and/or account type.
+    ///
+    /// `query.asset = None` returns all assets with non-zero balance.
+    /// `query.asset = Some("BTC")` returns only the BTC balance entry (as a 1-element vec
+    /// or an empty vec if no BTC is held).
+    async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>>;
 
-    /// Получить информацию об аккаунте
+    /// Get account metadata — permissions, commission rates, balance summary.
     async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo>;
+
+    /// Get the fee schedule (maker/taker rates) for this account.
+    ///
+    /// `symbol = None` returns the account-wide default fee tier.
+    /// `symbol = Some("BTC/USDT")` returns symbol-specific fees (some exchanges
+    /// allow per-symbol fee negotiation).
+    ///
+    /// 22/24: GMX and Uniswap/Raydium (AMMs) use protocol fee models not
+    /// translatable to maker/taker — they return `UnsupportedOperation`.
+    async fn get_fees(&self, symbol: Option<&str>) -> ExchangeResult<FeeInfo>;
 }

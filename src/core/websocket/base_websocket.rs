@@ -486,7 +486,6 @@ enum LoopExitReason {
 // WebSocketConnector Implementation
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
 impl<C: WebSocketConfig + IdentityConfig + 'static> WebSocketConnector for BaseWebSocket<C> {
     async fn connect(&mut self) -> WebSocketResult<()> {
         // Проверяем текущий статус
@@ -622,7 +621,6 @@ impl<C: WebSocketConfig + IdentityConfig + 'static> WebSocketConnector for BaseW
 // SubscriptionManager Implementation
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
 impl<C: WebSocketConfig + IdentityConfig + 'static> SubscriptionManager for BaseWebSocket<C> {
     fn active_subscriptions(&self) -> Vec<SubscriptionRequest> {
         // Используем try_read чтобы не блокировать

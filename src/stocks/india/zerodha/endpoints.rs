@@ -166,18 +166,21 @@ mod tests {
         let symbol = crate::core::types::Symbol {
             base: "INFY".to_string(),
             quote: "NSE".to_string(),
+            raw: None,
         };
         assert_eq!(format_symbol(&symbol), "NSE:INFY");
 
         let symbol2 = crate::core::types::Symbol {
             base: "reliance".to_string(),
             quote: "BSE".to_string(),
+            raw: None,
         };
         assert_eq!(format_symbol(&symbol2), "BSE:RELIANCE");
 
         let symbol3 = crate::core::types::Symbol {
             base: "INFY".to_string(),
             quote: "INR".to_string(),
+            raw: None,
         };
         assert_eq!(format_symbol(&symbol3), "NSE:INFY");
     }

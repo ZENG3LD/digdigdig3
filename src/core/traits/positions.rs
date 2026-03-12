@@ -1,56 +1,48 @@
-//! # PositionsCore - минимальное управление позициями (Futures)
+//! # Positions — Futures / perpetual position management
 //!
-//! Только методы, которые есть на 100% futures бирж.
-//! Расширенные методы (margin mode, add margin, etc.) - в биржевых коннекторах.
+//! All position mutations go through `modify_position` via `PositionModification` enum.
 
 use async_trait::async_trait;
 
-use crate::core::types::{AccountType, ExchangeResult, FundingRate, Position, Symbol};
+use crate::core::types::{
+    AccountType, ExchangeResult, FundingRate, Position,
+    PositionModification, PositionQuery,
+};
 
 use super::ExchangeIdentity;
 
-/// Минимальное управление позициями
+/// Positions — 22/24 exchanges.
 ///
-/// **3 метода** - есть на всех futures биржах без исключений.
+/// Spot-only exchanges (Bitstamp, Gemini) do not implement this trait.
+/// For all others, positions represent open perpetual/futures exposures.
 ///
-/// # Авторизация
-/// **ТРЕБУЕТСЯ** - все методы приватные
+/// All position mutations are handled through `modify_position` using the
+/// `PositionModification` fat enum. Connectors match only the variants
+/// they support natively.
 ///
-/// # Применимость
-/// Только для `AccountType::FuturesCross` и `AccountType::FuturesIsolated`.
-/// Для Spot вернет ошибку `UnsupportedOperation`.
-///
-/// # Расширенные методы
-/// Следующие методы НЕ в этом трейте (реализуются в биржевых коннекторах):
-/// - `close_position_market()` - закрыть позицию (можно через market_order)
-/// - `set_leverage()` - установить leverage
-/// - `get_leverage()` - получить leverage
-/// - `modify_position_tpsl()` - TP/SL позиции
-/// - `get_position_mode()` / `set_position_mode()` - OneWay/Hedge
-/// - `get_margin_mode()` / `set_margin_mode()` - Cross/Isolated
-/// - `add_margin()` - добавить маржу (Isolated)
-/// - `get_funding_rate_history()` - история funding
+/// Authentication is **required** for all methods in this trait.
 #[async_trait]
 pub trait Positions: ExchangeIdentity {
-    /// Получить позиции
-    async fn get_positions(
-        &self,
-        symbol: Option<Symbol>,
-        account_type: AccountType,
-    ) -> ExchangeResult<Vec<Position>>;
+    /// Get open positions, optionally filtered to a single symbol.
+    ///
+    /// `query.symbol = None` returns all open positions across all symbols.
+    async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>>;
 
-    /// Получить текущий funding rate
+    /// Get the current funding rate for a perpetual contract symbol.
+    ///
+    /// Returns the current rate, the next funding timestamp, and the
+    /// predicted rate if the exchange provides it.
     async fn get_funding_rate(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<FundingRate>;
 
-    /// Установить leverage
-    async fn set_leverage(
-        &self,
-        symbol: Symbol,
-        leverage: u32,
-        account_type: AccountType,
-    ) -> ExchangeResult<()>;
+    /// Modify a position — leverage, margin mode, add/remove margin,
+    /// TP/SL, or close.
+    ///
+    /// The connector matches the `PositionModification` variant it supports.
+    /// Unsupported variants MUST return `ExchangeError::UnsupportedOperation`.
+    /// Connectors MUST NOT simulate missing features by composing other methods.
+    async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()>;
 }

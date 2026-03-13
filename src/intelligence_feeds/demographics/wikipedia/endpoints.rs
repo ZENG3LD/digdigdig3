@@ -47,6 +47,75 @@ impl WikipediaEndpoint {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// C7 ADDITIONS — Wikimedia Analytics REST API (different base URL)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Wikimedia Analytics API base URL
+pub const WIKIMEDIA_ANALYTICS_BASE: &str = "https://wikimedia.org/api/rest_v1/metrics";
+
+/// Build URL for unique devices endpoint
+pub fn build_unique_devices_url(
+    base: &str,
+    project: &str,
+    access_site: &str,
+    granularity: &str,
+    start: &str,
+    end: &str,
+) -> String {
+    format!(
+        "{}/unique-devices/{}/{}/{}/{}/{}",
+        base, project, access_site, granularity, start, end
+    )
+}
+
+/// Build URL for edits endpoint
+pub fn build_edits_url(
+    base: &str,
+    project: &str,
+    editor_type: &str,
+    page_type: &str,
+    granularity: &str,
+    start: &str,
+    end: &str,
+) -> String {
+    format!(
+        "{}/edits/aggregate/{}/{}/{}/{}/{}/{}",
+        base, project, editor_type, page_type, granularity, start, end
+    )
+}
+
+/// Build URL for editors endpoint
+pub fn build_editors_url(
+    base: &str,
+    project: &str,
+    editor_type: &str,
+    page_type: &str,
+    activity_level: &str,
+    granularity: &str,
+    start: &str,
+    end: &str,
+) -> String {
+    format!(
+        "{}/editors/aggregate/{}/{}/{}/{}/{}/{}/{}",
+        base, project, editor_type, page_type, activity_level, granularity, start, end
+    )
+}
+
+/// Build URL for registered users endpoint
+pub fn build_registered_users_url(
+    base: &str,
+    project: &str,
+    granularity: &str,
+    start: &str,
+    end: &str,
+) -> String {
+    format!(
+        "{}/registered-users/new/{}/{}/{}/{}",
+        base, project, granularity, start, end
+    )
+}
+
 /// Build full URL for per-article endpoint
 #[allow(clippy::too_many_arguments)]
 pub fn build_per_article_url(

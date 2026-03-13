@@ -101,7 +101,7 @@ impl UnPopConnector {
         UnPopParser::parse_indicators(&response)
     }
 
-    /// Get indicator data for a specific location
+    /// Get indicator data for a specific location (legacy metadata endpoint)
     ///
     /// # Arguments
     /// - `location_id` - Location ID (e.g., 900 for World, 840 for USA)
@@ -123,6 +123,93 @@ impl UnPopConnector {
         let response = self.get(endpoint, params).await?;
         let parsed = UnPopParser::parse_data_points(&response)?;
         Ok(parsed.data)
+    }
+
+    /// Get actual time-series data values for an indicator and location
+    ///
+    /// This is the core data endpoint that returns the actual demographic values.
+    /// Prefer this over `get_indicator_data` for fetching real data series.
+    ///
+    /// API: `GET /dataportalapi/api/v1/data/indicators/{indicatorCode}/locations/{locationCode}`
+    ///
+    /// # Arguments
+    /// - `indicator_code` - Indicator code as string (e.g., "49" for PopTotal, "19" for FertilityRate)
+    /// - `location_code` - Location code as string (e.g., "900" for World, "840" for USA)
+    /// - `start_year` - Optional start year filter
+    /// - `end_year` - Optional end year filter
+    /// - `page_size` - Optional page size (default: 100)
+    /// - `page_number` - Optional page number for pagination (default: 1)
+    ///
+    /// # Returns
+    /// Paginated response containing data points with year and value
+    pub async fn get_data(
+        &self,
+        indicator_code: &str,
+        location_code: &str,
+        start_year: Option<u32>,
+        end_year: Option<u32>,
+        page_size: Option<u32>,
+        page_number: Option<u32>,
+    ) -> ExchangeResult<Vec<UnPopDataPoint>> {
+        let params = format_params(start_year, end_year, page_size, page_number);
+        let endpoint = UnPopEndpoint::DataByIndicatorLocation {
+            indicator_code: indicator_code.to_string(),
+            location_code: location_code.to_string(),
+        };
+        let response = self.get(endpoint, params).await?;
+        let parsed = UnPopParser::parse_data_points(&response)?;
+        Ok(parsed.data)
+    }
+
+    /// Get all pages of data for an indicator and location
+    ///
+    /// Automatically paginates through all available pages to return the complete dataset.
+    ///
+    /// # Arguments
+    /// - `indicator_code` - Indicator code as string
+    /// - `location_code` - Location code as string
+    /// - `start_year` - Optional start year filter
+    /// - `end_year` - Optional end year filter
+    ///
+    /// # Returns
+    /// All data points across all pages
+    pub async fn get_data_all_pages(
+        &self,
+        indicator_code: &str,
+        location_code: &str,
+        start_year: Option<u32>,
+        end_year: Option<u32>,
+    ) -> ExchangeResult<Vec<UnPopDataPoint>> {
+        const PAGE_SIZE: u32 = 100;
+        let mut all_data = Vec::new();
+        let mut page = 1u32;
+
+        loop {
+            let params = format_params(start_year, end_year, Some(PAGE_SIZE), Some(page));
+            let endpoint = UnPopEndpoint::DataByIndicatorLocation {
+                indicator_code: indicator_code.to_string(),
+                location_code: location_code.to_string(),
+            };
+            let response = self.get(endpoint, params).await?;
+            let parsed = UnPopParser::parse_data_points(&response)?;
+
+            let fetched = parsed.data.len();
+            all_data.extend(parsed.data);
+
+            // Stop if we got fewer items than the page size (last page)
+            if fetched < PAGE_SIZE as usize {
+                break;
+            }
+
+            page += 1;
+
+            // Safety guard: stop after 100 pages (~10,000 rows)
+            if page > 100 {
+                break;
+            }
+        }
+
+        Ok(all_data)
     }
 
     // ═══════════════════════════════════════════════════════════════════════

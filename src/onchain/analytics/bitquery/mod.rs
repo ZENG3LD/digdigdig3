@@ -108,4 +108,4 @@ pub use parser::{
     SmartContractEvent,
 };
 pub use connector::BitqueryConnector;
-pub use websocket::BitqueryWebSocket;
+pub use websocket::{BitqueryWebSocket, SubscriptionMessage};

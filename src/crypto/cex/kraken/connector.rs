@@ -206,6 +206,38 @@ impl KrakenConnector {
             .map(String::from)
             .ok_or_else(|| ExchangeError::Parse("Missing WebSocket token".to_string()))
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FILL / TRADE HISTORY
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Get personal trade history (fills) for spot account.
+    ///
+    /// `trade_type`: optional filter — `"all"`, `"any position"`, `"closed position"`,
+    /// `"closing position"`, `"no position"`.
+    /// `start` and `end` are Unix timestamps (seconds).
+    pub async fn get_trades_history(
+        &self,
+        trade_type: Option<&str>,
+        start: Option<i64>,
+        end: Option<i64>,
+        offset: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(t) = trade_type {
+            params.insert("type".to_string(), t.to_string());
+        }
+        if let Some(s) = start {
+            params.insert("start".to_string(), s.to_string());
+        }
+        if let Some(e) = end {
+            params.insert("end".to_string(), e.to_string());
+        }
+        if let Some(o) = offset {
+            params.insert("ofs".to_string(), o.to_string());
+        }
+        self.post(KrakenEndpoint::TradesHistory, params, AccountType::Spot).await
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

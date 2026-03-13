@@ -1240,6 +1240,165 @@ impl CustodialFunds for DeribitConnector {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// EXTENDED METHODS — Derivatives data & order/trade history additions
+// ═══════════════════════════════════════════════════════════════════════════════
+
+impl DeribitConnector {
+    /// Funding rate history — `public/get_funding_rate_history` (public)
+    ///
+    /// Required: `instrument_name`, `start_timestamp` (ms), `end_timestamp` (ms).
+    pub async fn get_funding_rate_history(
+        &self,
+        instrument_name: &str,
+        start_timestamp: i64,
+        end_timestamp: i64,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("instrument_name".to_string(), serde_json::json!(instrument_name));
+        params.insert("start_timestamp".to_string(), serde_json::json!(start_timestamp));
+        params.insert("end_timestamp".to_string(), serde_json::json!(end_timestamp));
+        self.rpc_call(DeribitMethod::GetFundingRateHistory, params).await
+    }
+
+    /// Funding rate value — `public/get_funding_rate_value` (public)
+    ///
+    /// Required: `instrument_name`, `start_timestamp` (ms), `end_timestamp` (ms).
+    pub async fn get_funding_rate_value(
+        &self,
+        instrument_name: &str,
+        start_timestamp: i64,
+        end_timestamp: i64,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("instrument_name".to_string(), serde_json::json!(instrument_name));
+        params.insert("start_timestamp".to_string(), serde_json::json!(start_timestamp));
+        params.insert("end_timestamp".to_string(), serde_json::json!(end_timestamp));
+        self.rpc_call(DeribitMethod::GetFundingRateValue, params).await
+    }
+
+    /// Index price — `public/get_index_price` (public)
+    ///
+    /// Required: `index_name` (e.g. `btc_usd`, `eth_usd`).
+    pub async fn get_index_price(&self, index_name: &str) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("index_name".to_string(), serde_json::json!(index_name));
+        self.rpc_call(DeribitMethod::GetIndexPrice, params).await
+    }
+
+    /// Historical volatility — `public/get_historical_volatility` (public)
+    ///
+    /// Required: `currency` (e.g. `BTC`, `ETH`).
+    pub async fn get_historical_volatility(&self, currency: &str) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("currency".to_string(), serde_json::json!(currency.to_uppercase()));
+        self.rpc_call(DeribitMethod::GetHistoricalVolatility, params).await
+    }
+
+    /// Mark price history — `public/get_mark_price_history` (public)
+    ///
+    /// Required: `instrument_name`, `start_timestamp` (ms), `end_timestamp` (ms),
+    /// `resolution` (seconds).
+    pub async fn get_mark_price_history(
+        &self,
+        instrument_name: &str,
+        start_timestamp: i64,
+        end_timestamp: i64,
+        resolution: u32,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("instrument_name".to_string(), serde_json::json!(instrument_name));
+        params.insert("start_timestamp".to_string(), serde_json::json!(start_timestamp));
+        params.insert("end_timestamp".to_string(), serde_json::json!(end_timestamp));
+        params.insert("resolution".to_string(), serde_json::json!(resolution));
+        self.rpc_call(DeribitMethod::GetMarkPriceHistory, params).await
+    }
+
+    /// Order history by currency — `private/get_order_history_by_currency` (signed)
+    ///
+    /// Required: `currency`. Optional: `kind`, `count`, `offset`, `include_old`,
+    /// `include_unfilled`.
+    pub async fn get_order_history_by_currency(
+        &self,
+        currency: &str,
+        kind: Option<&str>,
+        count: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("currency".to_string(), serde_json::json!(currency.to_uppercase()));
+        if let Some(k) = kind {
+            params.insert("kind".to_string(), serde_json::json!(k));
+        }
+        if let Some(c) = count {
+            params.insert("count".to_string(), serde_json::json!(c.min(10000)));
+        }
+        self.rpc_call(DeribitMethod::GetOrderHistoryByCurrency, params).await
+    }
+
+    /// Order history by instrument — `private/get_order_history_by_instrument` (signed)
+    ///
+    /// Required: `instrument_name`. Optional: `count`, `offset`, `include_old`,
+    /// `include_unfilled`.
+    pub async fn get_order_history_by_instrument(
+        &self,
+        instrument_name: &str,
+        count: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("instrument_name".to_string(), serde_json::json!(instrument_name));
+        if let Some(c) = count {
+            params.insert("count".to_string(), serde_json::json!(c.min(10000)));
+        }
+        self.rpc_call(DeribitMethod::GetOrderHistoryByInstrument, params).await
+    }
+
+    /// User trades by currency and time — `private/get_user_trades_by_currency_and_time`
+    /// (signed)
+    ///
+    /// Required: `currency`, `start_timestamp` (ms), `end_timestamp` (ms).
+    /// Optional: `kind`, `count`, `sorting`.
+    pub async fn get_user_trades_by_currency_time(
+        &self,
+        currency: &str,
+        start_timestamp: i64,
+        end_timestamp: i64,
+        kind: Option<&str>,
+        count: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("currency".to_string(), serde_json::json!(currency.to_uppercase()));
+        params.insert("start_timestamp".to_string(), serde_json::json!(start_timestamp));
+        params.insert("end_timestamp".to_string(), serde_json::json!(end_timestamp));
+        if let Some(k) = kind {
+            params.insert("kind".to_string(), serde_json::json!(k));
+        }
+        if let Some(c) = count {
+            params.insert("count".to_string(), serde_json::json!(c.min(10000)));
+        }
+        self.rpc_call(DeribitMethod::GetUserTradesByCurrencyTime, params).await
+    }
+
+    /// Trigger order history — `private/get_trigger_order_history` (signed)
+    ///
+    /// Required: `currency`. Optional: `instrument_name`, `count`, `continuation`.
+    pub async fn get_trigger_order_history(
+        &self,
+        currency: &str,
+        instrument_name: Option<&str>,
+        count: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("currency".to_string(), serde_json::json!(currency.to_uppercase()));
+        if let Some(inst) = instrument_name {
+            params.insert("instrument_name".to_string(), serde_json::json!(inst));
+        }
+        if let Some(c) = count {
+            params.insert("count".to_string(), serde_json::json!(c.min(10000)));
+        }
+        self.rpc_call(DeribitMethod::GetTriggerOrderHistory, params).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

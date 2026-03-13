@@ -295,6 +295,62 @@ impl UpstoxConnector {
 
         self.delete(UpstoxEndpoint::MultiOrderCancel, params).await
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EXTENDED METHODS — Multi-Instrument Quotes
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Get LTP quotes for multiple instruments — `GET /v2/market-quote/ltp`
+    ///
+    /// `instrument_keys` — list of Upstox instrument keys (e.g. `["NSE_EQ|INE669E01016"]`).
+    /// Returns a map of instrument_key → LTP data.
+    pub async fn get_market_quotes_multi(
+        &self,
+        instrument_keys: &[&str],
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("instrument_key".to_string(), instrument_keys.join(","));
+        self.get(UpstoxEndpoint::MarketQuotesMulti, params, false).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EXTENDED METHODS — V3 Historical Data
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Get V3 historical candle data — `GET /v3/historical-candle/{instrument_key}/{unit}/{interval}/{to_date}/{from_date}`
+    ///
+    /// `instrument_key` — Upstox instrument key (e.g. `"NSE_EQ|INE669E01016"`).
+    /// `unit` — candle unit: `"minutes"`, `"hours"`, `"days"`, `"weeks"`, `"months"`.
+    /// `interval` — numeric interval within the unit (e.g. `"1"`, `"5"`, `"15"`).
+    /// `to_date` — end date in `YYYY-MM-DD` format.
+    /// `from_date` — start date in `YYYY-MM-DD` format.
+    pub async fn get_historical_data_v3(
+        &self,
+        instrument_key: &str,
+        unit: &str,
+        interval: &str,
+        to_date: &str,
+        from_date: &str,
+    ) -> ExchangeResult<Value> {
+        let base_url = self.urls.rest_v3_url();
+        let path = format!(
+            "/historical-candle/{}/{}/{}/{}/{}",
+            urlencoding::encode(instrument_key),
+            unit,
+            interval,
+            to_date,
+            from_date,
+        );
+        let url = format!("{}{}", base_url, path);
+
+        let mut headers = HashMap::new();
+        if let Some(ref auth) = self.auth {
+            auth.sign_headers(&mut headers)?;
+        }
+
+        let response = self.http.get_with_headers(&url, &HashMap::new(), &headers).await?;
+        Ok(response)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

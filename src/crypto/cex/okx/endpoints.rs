@@ -77,6 +77,8 @@ pub enum OkxEndpoint {
     CancelBatchOrders,
     CancelAllAfter,
     AmendOrder,
+    /// Batch amend multiple orders: POST /api/v5/trade/amend-batch-orders
+    AmendBatchOrders,
     GetOrder,
     OpenOrders,
     OrderHistory,
@@ -103,6 +105,18 @@ pub enum OkxEndpoint {
     SetLeverage,
     GetLeverage,
     SetPositionMode,
+
+    // === MARKET DATA EXTENSIONS ===
+    /// GET /api/v5/public/open-interest
+    OpenInterest,
+    /// GET /api/v5/rubik/stat/contracts/long-short-account-ratio
+    LongShortRatio,
+
+    // === FILL/TRADE HISTORY ===
+    /// GET /api/v5/trade/fills — recent fills (signed)
+    FillsHistory,
+    /// GET /api/v5/trade/fills-history — archived fills (signed)
+    FillsArchive,
 
     // === FUNDING ===
     FundingRate,
@@ -162,6 +176,7 @@ impl OkxEndpoint {
             Self::CancelBatchOrders => "/api/v5/trade/cancel-batch-orders",
             Self::CancelAllAfter => "/api/v5/trade/cancel-all-after",
             Self::AmendOrder => "/api/v5/trade/amend-order",
+            Self::AmendBatchOrders => "/api/v5/trade/amend-batch-orders",
             Self::GetOrder => "/api/v5/trade/order",
             Self::OpenOrders => "/api/v5/trade/orders-pending",
             Self::OrderHistory => "/api/v5/trade/orders-history",
@@ -177,6 +192,14 @@ impl OkxEndpoint {
             Self::SetLeverage => "/api/v5/account/set-leverage",
             Self::GetLeverage => "/api/v5/account/leverage-info",
             Self::SetPositionMode => "/api/v5/account/set-position-mode",
+
+            // Market Data Extensions
+            Self::OpenInterest => "/api/v5/public/open-interest",
+            Self::LongShortRatio => "/api/v5/rubik/stat/contracts/long-short-account-ratio",
+
+            // Fill/Trade History
+            Self::FillsHistory => "/api/v5/trade/fills",
+            Self::FillsArchive => "/api/v5/trade/fills-history",
 
             // Funding
             Self::FundingRate => "/api/v5/public/funding-rate",
@@ -221,7 +244,9 @@ impl OkxEndpoint {
             | Self::HistoryTrades
             | Self::Instruments
             | Self::FundingRate
-            | Self::FundingRateHistory => false,
+            | Self::FundingRateHistory
+            | Self::OpenInterest
+            | Self::LongShortRatio => false,
 
             // Private endpoints
             _ => true,
@@ -237,6 +262,7 @@ impl OkxEndpoint {
             | Self::CancelBatchOrders
             | Self::CancelAllAfter
             | Self::AmendOrder
+            | Self::AmendBatchOrders
             | Self::SetLeverage
             | Self::SetPositionMode
             | Self::AlgoOrder

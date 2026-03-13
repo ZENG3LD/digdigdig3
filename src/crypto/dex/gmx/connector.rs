@@ -202,6 +202,94 @@ impl GmxConnector {
     pub async fn get_tokens(&self) -> ExchangeResult<Value> {
         self.get(GmxEndpoint::Tokens, HashMap::new()).await
     }
+
+    /// Get GLV (GMX Liquidity Vault) APY data
+    ///
+    /// Returns annualised yield estimates for each GLV vault.
+    pub async fn get_glv_apy(&self) -> ExchangeResult<Value> {
+        self.get(GmxEndpoint::GlvApy, HashMap::new()).await
+    }
+
+    /// Get UI fee revenue statistics
+    ///
+    /// Returns historical fee revenue collected by front-end integrators.
+    pub async fn get_ui_fees(
+        &self,
+        from_timestamp: Option<i64>,
+        to_timestamp: Option<i64>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(from) = from_timestamp {
+            params.insert("from".to_string(), from.to_string());
+        }
+        if let Some(to) = to_timestamp {
+            params.insert("to".to_string(), to.to_string());
+        }
+        self.get(GmxEndpoint::UiFees, params).await
+    }
+
+    /// Get position statistics
+    ///
+    /// Returns aggregate open-interest, position count, and related stats.
+    pub async fn get_position_stats(
+        &self,
+        from_timestamp: Option<i64>,
+        to_timestamp: Option<i64>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(from) = from_timestamp {
+            params.insert("from".to_string(), from.to_string());
+        }
+        if let Some(to) = to_timestamp {
+            params.insert("to".to_string(), to.to_string());
+        }
+        self.get(GmxEndpoint::PositionStats, params).await
+    }
+
+    /// Get protocol fee metrics
+    ///
+    /// Returns breakdown of fees collected (position, borrow, swap).
+    pub async fn get_fee_metrics(
+        &self,
+        from_timestamp: Option<i64>,
+        to_timestamp: Option<i64>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(from) = from_timestamp {
+            params.insert("from".to_string(), from.to_string());
+        }
+        if let Some(to) = to_timestamp {
+            params.insert("to".to_string(), to.to_string());
+        }
+        self.get(GmxEndpoint::FeeMetrics, params).await
+    }
+
+    /// Get trading volume statistics
+    ///
+    /// Returns daily/weekly/monthly volume broken down by market.
+    pub async fn get_volumes(
+        &self,
+        from_timestamp: Option<i64>,
+        to_timestamp: Option<i64>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(from) = from_timestamp {
+            params.insert("from".to_string(), from.to_string());
+        }
+        if let Some(to) = to_timestamp {
+            params.insert("to".to_string(), to.to_string());
+        }
+        self.get(GmxEndpoint::Volumes, params).await
+    }
+
+    /// Get per-account statistics
+    ///
+    /// Returns trading statistics for a specific account address.
+    pub async fn get_account_stats(&self, account: &str) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("account".to_string(), account.to_string());
+        self.get(GmxEndpoint::AccountStats, params).await
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

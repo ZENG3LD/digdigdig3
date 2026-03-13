@@ -32,6 +32,16 @@ pub enum AisEndpoint {
     PortInfo,
     /// Get live fleet positions in area
     FleetLiveMap,
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+    /// Get all vessels within a given radius of a point (premium)
+    VesselInradius,
+    /// Get bulk vessel data for a list of MMSIs
+    VesselBulk,
+    /// Get vessel estimated arrival (ETA) and destination (premium)
+    VesselProEstimated,
 }
 
 impl AisEndpoint {
@@ -45,6 +55,11 @@ impl AisEndpoint {
             Self::PortFind => "/port_find",
             Self::PortInfo => "/port_info",
             Self::FleetLiveMap => "/fleet_live_map",
+
+            // C7 additions
+            Self::VesselInradius => "/vessel_inradius",
+            Self::VesselBulk => "/vessel_bulk",
+            Self::VesselProEstimated => "/vessel_pro_estimated",
         }
     }
 }

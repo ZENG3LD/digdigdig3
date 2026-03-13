@@ -96,6 +96,20 @@ pub enum BingxEndpoint {
     SubAccountList,
     SubAccountTransfer,
     SubAccountAssets,
+
+    // === SPOT TRADE HISTORY ===
+    /// GET /openApi/spot/v1/trade/myTrades (signed)
+    SpotMyTrades,
+
+    // === SWAP TRADE HISTORY & DERIVATIVES ===
+    /// GET /openApi/swap/v2/trade/allFillOrders (signed)
+    SwapAllFillOrders,
+    /// GET /openApi/swap/v2/quote/openInterest
+    SwapOpenInterest,
+    /// GET /openApi/swap/v2/quote/fundingRateHistory
+    SwapFundingRateHistory,
+    /// GET /openApi/swap/v2/quote/premiumIndex
+    SwapPremiumIndex,
 }
 
 impl BingxEndpoint {
@@ -164,6 +178,15 @@ impl BingxEndpoint {
             Self::SubAccountList => "/openApi/subAccount/v1/list",
             Self::SubAccountTransfer => "/openApi/subAccount/v1/transfer",
             Self::SubAccountAssets => "/openApi/subAccount/v1/assets",
+
+            // Spot Trade History
+            Self::SpotMyTrades => "/openApi/spot/v1/trade/myTrades",
+
+            // Swap Trade History & Derivatives
+            Self::SwapAllFillOrders => "/openApi/swap/v2/trade/allFillOrders",
+            Self::SwapOpenInterest => "/openApi/swap/v2/quote/openInterest",
+            Self::SwapFundingRateHistory => "/openApi/swap/v2/quote/fundingRateHistory",
+            Self::SwapPremiumIndex => "/openApi/swap/v2/quote/premiumIndex",
         }
     }
 
@@ -182,7 +205,10 @@ impl BingxEndpoint {
             | Self::SwapDepth
             | Self::SwapTrades
             | Self::SwapKlines
-            | Self::SwapTicker => false,
+            | Self::SwapTicker
+            | Self::SwapOpenInterest
+            | Self::SwapFundingRateHistory
+            | Self::SwapPremiumIndex => false,
 
             // Private endpoints
             _ => true,

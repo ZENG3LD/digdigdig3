@@ -93,6 +93,18 @@ pub enum TwelvedataEndpoint {
     Profile,
     /// Key statistics (varies)
     Statistics,
+
+    // === REAL-TIME & COMPLEX DATA ===
+    /// Real-time price (1 credit) — simpler than Quote, returns only price
+    RealTimePrice,
+    /// Complex data endpoint — batch multiple instruments/indicators in one call
+    ComplexData,
+
+    // === FUND REFERENCE DATA ===
+    /// Mutual funds list (1 credit, public)
+    MutualFundsList,
+    /// Bonds list (1 credit, public)
+    BondsList,
 }
 
 impl TwelvedataEndpoint {
@@ -133,6 +145,14 @@ impl TwelvedataEndpoint {
             Self::Logo => "/logo",
             Self::Profile => "/profile",
             Self::Statistics => "/statistics",
+
+            // Real-time & Complex Data
+            Self::RealTimePrice => "/price",
+            Self::ComplexData => "/complex_data",
+
+            // Fund Reference Data
+            Self::MutualFundsList => "/mutual_funds/list",
+            Self::BondsList => "/bonds/list",
         }
     }
 
@@ -146,7 +166,9 @@ impl TwelvedataEndpoint {
             | Self::Etf
             | Self::Commodities
             | Self::Indices
-            | Self::Exchanges => false,
+            | Self::Exchanges
+            | Self::MutualFundsList
+            | Self::BondsList => false,
 
             // All other endpoints require API key
             _ => true,
@@ -188,6 +210,13 @@ impl TwelvedataEndpoint {
             // Fundamentals - higher cost
             Self::Profile => 10,
             Self::Statistics => 5,
+
+            // Real-time & Complex Data
+            Self::RealTimePrice => 1,
+            Self::ComplexData => 1, // cost varies by included instruments/indicators
+
+            // Fund Reference Data
+            Self::MutualFundsList | Self::BondsList => 1,
         }
     }
 }

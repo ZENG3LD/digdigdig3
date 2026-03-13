@@ -31,6 +31,18 @@ pub enum ImfEndpoint {
     CodeList { code_list_id: String, database_id: String },
     /// Get generic data format
     GenericData { database_id: String, dimensions: String },
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C6 ADDITIONS — WEO (World Economic Outlook) endpoints
+    // ═══════════════════════════════════════════════════════════════════════
+    /// List all WEO indicators (series codes)
+    WeoIndicators,
+    /// List all WEO country codes
+    WeoCountries,
+    /// List all WEO regional aggregates
+    WeoRegions,
+    /// Fetch WEO forecast data: requires database_id="WEO"
+    WeoData { dimensions: String },
 }
 
 impl ImfEndpoint {
@@ -49,6 +61,14 @@ impl ImfEndpoint {
             }
             Self::GenericData { database_id, dimensions } => {
                 format!("/GenericData/{}/{}", database_id, dimensions)
+            }
+
+            // C6 additions
+            Self::WeoIndicators => "/CodeList/CONCEPT_WEO".to_string(),
+            Self::WeoCountries => "/CodeList/ISO_WEO".to_string(),
+            Self::WeoRegions => "/CodeList/REGIONGROUP_WEO".to_string(),
+            Self::WeoData { dimensions } => {
+                format!("/CompactData/WEO/{}", dimensions)
             }
         }
     }

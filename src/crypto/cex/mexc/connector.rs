@@ -1450,6 +1450,78 @@ impl SubAccounts for MexcConnector {
 // HELPERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// EXTENDED METHODS (not part of core traits)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+impl MexcConnector {
+    /// Get recent public spot trades.
+    ///
+    /// `GET /api/v3/trades`
+    ///
+    /// # Parameters
+    /// - `symbol`: Spot symbol e.g. `BTCUSDT`
+    /// - `limit`: Number of trades to return (optional, default 500, max 1000)
+    pub async fn get_recent_trades(
+        &self,
+        symbol: &str,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(MexcEndpoint::RecentTrades, params).await
+    }
+
+    /// Get personal spot trade history (requires auth).
+    ///
+    /// `GET /api/v3/myTrades`
+    ///
+    /// # Parameters
+    /// - `symbol`: Spot symbol e.g. `BTCUSDT`
+    /// - `limit`: Max number of trades (optional, default 500, max 1000)
+    /// - `start_time`: Start timestamp in ms (optional)
+    /// - `end_time`: End timestamp in ms (optional)
+    pub async fn get_my_trades(
+        &self,
+        symbol: &str,
+        limit: Option<u32>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        if let Some(st) = start_time {
+            params.insert("startTime".to_string(), st.to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("endTime".to_string(), et.to_string());
+        }
+        self.get(MexcEndpoint::MyTrades, params).await
+    }
+
+    /// Get futures mark price and index price for a contract.
+    ///
+    /// `GET /api/v1/contract/index_price/{symbol}`
+    ///
+    /// Returns the current mark price and index price for the given futures contract.
+    pub async fn get_futures_mark_price(&self, symbol: &str) -> ExchangeResult<Value> {
+        // MEXC futures endpoints use path-based symbol: /api/v1/contract/index_price/{symbol}
+        let base_url = MexcUrls::futures_base_url();
+        let path = format!("{}/{}", MexcEndpoint::FuturesMarkPrice.path(), symbol);
+        let url = format!("{}{}", base_url, path);
+        self.rate_limit_wait().await;
+        let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
+        self.update_weight_from_headers(&resp_headers);
+        Ok(response)
+    }
+}
+
 /// Map internal AccountType to MEXC's transfer account type string.
 fn account_type_to_mexc_str(account_type: AccountType) -> &'static str {
     match account_type {

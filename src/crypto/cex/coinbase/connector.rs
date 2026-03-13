@@ -1314,6 +1314,44 @@ impl CustodialFunds for CoinbaseConnector {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// EXTENDED METHODS (not part of core traits)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+impl CoinbaseConnector {
+    /// Get fill history — paginated list of all fills for completed orders.
+    ///
+    /// `GET /api/v3/brokerage/orders/historical/fills`
+    ///
+    /// # Parameters
+    /// - `order_id`: Filter by order ID (optional)
+    /// - `product_id`: Filter by product/symbol (optional)
+    /// - `limit`: Max number of fills to return (optional, max 100)
+    /// - `cursor`: Pagination cursor from a previous response (optional)
+    pub async fn get_fill_history(
+        &self,
+        order_id: Option<&str>,
+        product_id: Option<&str>,
+        limit: Option<u32>,
+        cursor: Option<&str>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(oid) = order_id {
+            params.insert("order_id".to_string(), oid.to_string());
+        }
+        if let Some(pid) = product_id {
+            params.insert("product_id".to_string(), pid.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        if let Some(c) = cursor {
+            params.insert("cursor".to_string(), c.to_string());
+        }
+        self.get(CoinbaseEndpoint::FillHistory, params).await
+    }
+}
+
 fn interval_to_secs(interval: &str) -> u64 {
     match interval {
         "1m" => 60,

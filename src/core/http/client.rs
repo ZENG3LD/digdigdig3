@@ -181,6 +181,16 @@ impl HttpClient {
         self.request_with_retry(Method::PUT, url, &HashMap::new(), headers, Some(body)).await
     }
 
+    /// PATCH запрос с retry
+    pub async fn patch(
+        &self,
+        url: &str,
+        body: &Value,
+        headers: &HashMap<String, String>,
+    ) -> ExchangeResult<Value> {
+        self.request_with_retry(Method::PATCH, url, &HashMap::new(), headers, Some(body)).await
+    }
+
     /// GET запрос с заголовками, возвращает тело и заголовки ответа
     ///
     /// Используется когда нужен доступ к response headers (например, X-MBX-USED-WEIGHT-1M у Binance).

@@ -66,6 +66,16 @@ pub enum BitstampEndpoint {
     DepositAddress,   // POST /api/v2/{currency}_address/
     Withdrawal,       // POST /api/v2/{currency}_withdrawal/
     WithdrawalRequests, // POST /api/v2/withdrawal-requests/
+
+    // === C3 ADDITIONS ===
+    /// POST /api/v2/order_history/{pair}/ — order history for a specific pair
+    OrderHistoryPair,
+    /// POST /api/v2/buy/instant/{pair}/ — instant (market) buy order
+    InstantBuy,
+    /// POST /api/v2/sell/instant/{pair}/ — instant (market) sell order
+    InstantSell,
+    /// POST /api/v2/sub-account/transfer/ — transfer between sub-accounts
+    SubAccountTransfer,
 }
 
 impl BitstampEndpoint {
@@ -110,6 +120,12 @@ impl BitstampEndpoint {
             Self::DepositAddress => "/api/v2/deposit-address/",
             Self::Withdrawal => "/api/v2/withdrawal/",
             Self::WithdrawalRequests => "/api/v2/withdrawal-requests/",
+
+            // C3 Additions (dynamic paths — use path_with_pair() for pair-based endpoints)
+            Self::OrderHistoryPair => "/api/v2/order_history",
+            Self::InstantBuy => "/api/v2/buy/instant",
+            Self::InstantSell => "/api/v2/sell/instant",
+            Self::SubAccountTransfer => "/api/v2/sub-account/transfer/",
         }
     }
 
@@ -134,6 +150,16 @@ impl BitstampEndpoint {
             }
             Self::Withdrawal => {
                 format!("/api/v2/{}_withdrawal/", pair)
+            }
+            // C3 pair-parameterized endpoints
+            Self::OrderHistoryPair => {
+                format!("/api/v2/order_history/{}/", pair)
+            }
+            Self::InstantBuy => {
+                format!("/api/v2/buy/instant/{}/", pair)
+            }
+            Self::InstantSell => {
+                format!("/api/v2/sell/instant/{}/", pair)
             }
             _ => self.path().to_string(),
         }

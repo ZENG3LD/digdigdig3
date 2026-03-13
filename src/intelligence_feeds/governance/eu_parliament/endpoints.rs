@@ -37,6 +37,18 @@ pub enum EuParliamentEndpoint {
     // Committee endpoints
     /// Get list of committees
     Committees,
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+    /// Get vote results for plenary sessions
+    VoteResults,
+    /// Get parliamentary questions (written questions to the Commission/Council)
+    ParliamentaryQuestions,
+    /// Get MEP activities (speeches, questions, reports)
+    Activities,
+    /// Get adopted texts (legislative resolutions passed by EP)
+    AdoptedTexts,
 }
 
 impl EuParliamentEndpoint {
@@ -49,6 +61,12 @@ impl EuParliamentEndpoint {
             Self::DocumentById => "/plenary-documents", // ID appended in connector
             Self::Meetings => "/meetings",
             Self::Committees => "/committees",
+
+            // C7 additions
+            Self::VoteResults => "/voting-lists",
+            Self::ParliamentaryQuestions => "/parliamentary-questions",
+            Self::Activities => "/activities",
+            Self::AdoptedTexts => "/adopted-texts",
         }
     }
 }

@@ -99,6 +99,10 @@ pub enum MexcEndpoint {
     FuturesKlines,        // GET /api/v1/contract/kline/{symbol}
     FuturesRecentTrades,  // GET /api/v1/contract/deals/{symbol}
     FuturesContractInfo,  // GET /api/v1/contract/detail
+
+    // === EXTENDED ENDPOINTS ===
+    /// GET /api/v1/contract/index_price/{symbol} — index and mark price
+    FuturesMarkPrice,
 }
 
 impl MexcEndpoint {
@@ -156,6 +160,9 @@ impl MexcEndpoint {
             Self::FuturesKlines => "/api/v1/contract/kline",     // Symbol added as path param
             Self::FuturesRecentTrades => "/api/v1/contract/deals", // Symbol added as path param
             Self::FuturesContractInfo => "/api/v1/contract/detail",
+
+            // Extended endpoints
+            Self::FuturesMarkPrice => "/api/v1/contract/index_price", // Append /{symbol}
         }
     }
 
@@ -201,7 +208,8 @@ impl MexcEndpoint {
             | Self::FuturesOrderbook
             | Self::FuturesKlines
             | Self::FuturesRecentTrades
-            | Self::FuturesContractInfo => false,
+            | Self::FuturesContractInfo
+            | Self::FuturesMarkPrice => false,
 
             // Private endpoints
             _ => true,
@@ -218,6 +226,7 @@ impl MexcEndpoint {
             | Self::FuturesKlines
             | Self::FuturesRecentTrades
             | Self::FuturesContractInfo
+            | Self::FuturesMarkPrice
         )
     }
 

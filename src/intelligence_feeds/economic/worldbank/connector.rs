@@ -470,6 +470,100 @@ impl WorldBankConnector {
         WorldBankParser::parse_lending_types(&response)
     }
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // C6 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Fetch an indicator for multiple countries in a single request
+    ///
+    /// The World Bank API supports semicolon-separated country codes, allowing
+    /// batch retrieval of indicator data for many countries at once.
+    ///
+    /// # Arguments
+    /// - `countries` - Semicolon-separated ISO country codes (e.g., "US;GB;DE;JP")
+    ///   or use "all" to get all countries at once
+    /// - `indicator` - Indicator code (e.g., "NY.GDP.MKTP.CD")
+    /// - `start_year` - Optional start year (e.g., "2020")
+    /// - `end_year` - Optional end year (e.g., "2023")
+    ///
+    /// # Returns
+    /// Vector of observations across all requested countries
+    pub async fn get_multi_country_batch(
+        &self,
+        countries: &str,
+        indicator: &str,
+        start_year: Option<&str>,
+        end_year: Option<&str>,
+    ) -> ExchangeResult<Vec<IndicatorObservation>> {
+        let mut params = HashMap::new();
+
+        if let (Some(start), Some(end)) = (start_year, end_year) {
+            params.insert("date".to_string(), format!("{}:{}", start, end));
+        } else if let Some(start) = start_year {
+            params.insert("date".to_string(), format!("{}:9999", start));
+        } else if let Some(end) = end_year {
+            params.insert("date".to_string(), format!("1900:{}", end));
+        }
+
+        params.insert("per_page".to_string(), "1000".to_string());
+
+        let response = self
+            .get(
+                WorldBankEndpoint::MultiCountryBatch {
+                    countries: countries.to_string(),
+                    indicator: indicator.to_string(),
+                },
+                params,
+            )
+            .await?;
+
+        WorldBankParser::parse_indicator_data(&response)
+    }
+
+    /// Fetch sub-national / regional data for a country
+    ///
+    /// The World Bank API provides data at the subnational level for some countries
+    /// using admin region codes (e.g., "KEN" for Kenya gives county-level data).
+    /// Pass `include_subnational=y` to include subnational rows.
+    ///
+    /// # Arguments
+    /// - `country` - Country code (ISO 3166-1 alpha-2 or alpha-3)
+    /// - `indicator` - Indicator code
+    /// - `start_year` - Optional start year
+    /// - `end_year` - Optional end year
+    ///
+    /// # Returns
+    /// Vector of observations including subnational breakdowns where available
+    pub async fn get_sub_national_data(
+        &self,
+        country: &str,
+        indicator: &str,
+        start_year: Option<&str>,
+        end_year: Option<&str>,
+    ) -> ExchangeResult<Vec<IndicatorObservation>> {
+        let mut params = HashMap::new();
+
+        if let (Some(start), Some(end)) = (start_year, end_year) {
+            params.insert("date".to_string(), format!("{}:{}", start, end));
+        }
+
+        params.insert("per_page".to_string(), "1000".to_string());
+        // Signal to the API that subnational rows should be included
+        params.insert("includesubnationals".to_string(), "y".to_string());
+
+        let response = self
+            .get(
+                WorldBankEndpoint::SubNationalData {
+                    country: country.to_string(),
+                    indicator: indicator.to_string(),
+                },
+                params,
+            )
+            .await?;
+
+        WorldBankParser::parse_indicator_data(&response)
+    }
+
     /// Ping (check connection)
     pub async fn ping(&self) -> ExchangeResult<()> {
         // Simple ping - try to get topics (lightweight endpoint)

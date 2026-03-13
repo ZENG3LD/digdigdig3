@@ -30,12 +30,23 @@ impl Default for UnPopEndpoints {
 pub enum UnPopEndpoint {
     /// Get all locations (countries and regions)
     Locations,
-    /// Get indicator data for a specific location
+    /// Get indicator data for a specific location (legacy metadata endpoint)
     LocationIndicatorData { location_id: u32, indicator_id: u32 },
     /// Get all available indicators
     Indicators,
     /// Get details for a specific indicator
     IndicatorDetails { id: u32 },
+    /// Core data endpoint: fetch actual time-series values for an indicator and location
+    ///
+    /// Path: `/data/indicators/{indicator_code}/locations/{location_code}`
+    ///
+    /// This is the primary endpoint for retrieving demographic data values.
+    /// Use indicator codes (e.g., "49" for total population, "19" for fertility rate)
+    /// and location codes (e.g., "900" for World, "840" for USA).
+    DataByIndicatorLocation {
+        indicator_code: String,
+        location_code: String,
+    },
 }
 
 impl UnPopEndpoint {
@@ -48,6 +59,9 @@ impl UnPopEndpoint {
             }
             Self::Indicators => "/indicators".to_string(),
             Self::IndicatorDetails { id } => format!("/indicators/{}", id),
+            Self::DataByIndicatorLocation { indicator_code, location_code } => {
+                format!("/data/indicators/{}/locations/{}", indicator_code, location_code)
+            }
         }
     }
 }

@@ -28,6 +28,22 @@ pub enum CensysEndpoint {
     HostsDiff,
     /// Search certificates (POST)
     CertificatesSearch,
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+    /// Get historical observations for a host (events over time)
+    HostEvents { ip: String },
+    /// Get hostnames for a host (reverse DNS and SANs)
+    HostNames { ip: String },
+    /// View a specific certificate by SHA-256 fingerprint
+    ViewCertificate { fingerprint: String },
+    /// Get hosts that present a specific certificate
+    HostsByCert { fingerprint: String },
+    /// Aggregate certificate data by field
+    AggregateCerts,
+    /// Get current account info (quota usage, rate limits)
+    AccountInfo,
 }
 
 impl CensysEndpoint {
@@ -39,6 +55,14 @@ impl CensysEndpoint {
             Self::HostsAggregate => "/hosts/aggregate".to_string(),
             Self::HostsDiff => "/hosts/diff".to_string(),
             Self::CertificatesSearch => "/certificates/search".to_string(),
+
+            // C7 additions
+            Self::HostEvents { ip } => format!("/hosts/{}/observations", ip),
+            Self::HostNames { ip } => format!("/hosts/{}/names", ip),
+            Self::ViewCertificate { fingerprint } => format!("/certificates/{}", fingerprint),
+            Self::HostsByCert { fingerprint } => format!("/certificates/{}/hosts", fingerprint),
+            Self::AggregateCerts => "/certificates/aggregate".to_string(),
+            Self::AccountInfo => "/account".to_string(),
         }
     }
 }

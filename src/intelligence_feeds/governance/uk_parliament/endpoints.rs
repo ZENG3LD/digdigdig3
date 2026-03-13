@@ -43,6 +43,18 @@ pub enum UkParliamentEndpoint {
     // ═══════════════════════════════════════════════════════════════════════
     /// Search constituencies
     ConstituencySearch,
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+    /// Get registered financial interests for a member
+    RegisteredInterests,
+    /// Track bill amendments
+    AmendmentTracking { bill_id: u32 },
+    /// Get composition of parties in each house
+    PartiesComposition,
+    /// Get government posts / ministerial appointments
+    Posts,
 }
 
 impl UkParliamentEndpoint {
@@ -63,6 +75,12 @@ impl UkParliamentEndpoint {
 
             // Constituency endpoints (members_base)
             Self::ConstituencySearch => ("members", "/Location/Constituency/Search"),
+
+            // C7 additions
+            Self::RegisteredInterests => ("members", "/Members"),
+            Self::AmendmentTracking { .. } => ("bills", "/Bills"),
+            Self::PartiesComposition => ("members", "/Parties/GetActive"),
+            Self::Posts => ("members", "/Posts"),
         }
     }
 
@@ -73,6 +91,9 @@ impl UkParliamentEndpoint {
             Self::MemberVoting => format!("/Members/{}/Voting", id),
             Self::Bill => format!("/Bills/{}", id),
             Self::BillStages => format!("/Bills/{}/Stages", id),
+            // C7 additions
+            Self::RegisteredInterests => format!("/Members/{}/RegisteredInterests", id),
+            Self::AmendmentTracking { bill_id } => format!("/Bills/{}/Amendments", bill_id),
             _ => self.endpoint().1.to_string(),
         }
     }

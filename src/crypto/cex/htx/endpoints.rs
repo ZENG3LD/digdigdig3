@@ -104,6 +104,18 @@ pub enum HtxEndpoint {
     FuturesKlines,    // GET /linear-swap-ex/market/history/kline
     FuturesTrades,    // GET /linear-swap-ex/market/trade
 
+    // === EXTENDED ENDPOINTS ===
+    /// GET /v1/order/orders/{order-id}/matchresults — fills for a specific order (signed)
+    OrderMatchResults,
+    /// GET /linear-swap-api/v1/swap-open-interest — USDT-margined open interest
+    OpenInterest,
+    /// GET /linear-swap-api/v3/swap-funding-rate-history — historical funding rates
+    FundingRateHistory,
+    /// GET /linear-swap-ex/market/index — mark price + index price
+    MarkPrice,
+    /// GET /linear-swap-ex/market/history/mark_price_kline — mark price kline
+    MarkPriceKline,
+
     // === ALGO ORDERS ===
     /// POST /v2/algo-orders — place trailing stop or other algo orders
     AlgoOrders,
@@ -166,6 +178,13 @@ impl HtxEndpoint {
             Self::FuturesKlines => "/linear-swap-ex/market/history/kline",
             Self::FuturesTrades => "/linear-swap-ex/market/trade",
 
+            // Extended endpoints
+            Self::OrderMatchResults => "/v1/order/orders/{order-id}/matchresults",
+            Self::OpenInterest => "/linear-swap-api/v1/swap-open-interest",
+            Self::FundingRateHistory => "/linear-swap-api/v3/swap-funding-rate-history",
+            Self::MarkPrice => "/linear-swap-ex/market/index",
+            Self::MarkPriceKline => "/linear-swap-ex/market/history/mark_price_kline",
+
             // Algo Orders
             Self::AlgoOrders => "/v2/algo-orders",
 
@@ -217,7 +236,11 @@ impl HtxEndpoint {
             | Self::FuturesTicker
             | Self::FuturesOrderbook
             | Self::FuturesKlines
-            | Self::FuturesTrades => false,
+            | Self::FuturesTrades
+            | Self::OpenInterest
+            | Self::FundingRateHistory
+            | Self::MarkPrice
+            | Self::MarkPriceKline => false,
 
             // Private endpoints
             _ => true,

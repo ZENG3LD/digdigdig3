@@ -2302,6 +2302,164 @@ impl SubAccounts for BitgetConnector {
 // HELPERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// EXTENDED METHODS (not part of core traits)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+impl BitgetConnector {
+    /// Get recent public spot fills (market trades).
+    ///
+    /// `GET /api/v2/spot/market/fills`
+    ///
+    /// # Parameters
+    /// - `symbol`: Spot symbol e.g. `BTCUSDT`
+    /// - `limit`: Number of fills (optional, max 500)
+    pub async fn get_spot_recent_fills(
+        &self,
+        symbol: &str,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(BitgetEndpoint::SpotRecentFills, params, AccountType::Spot).await
+    }
+
+    /// Get historical spot candles beyond the standard window.
+    ///
+    /// `GET /api/v2/spot/market/history-candles`
+    ///
+    /// # Parameters
+    /// - `symbol`: Spot symbol e.g. `BTCUSDT`
+    /// - `granularity`: Candle interval e.g. `1min`, `1h`, `1day`
+    /// - `end_time`: End timestamp in ms (optional)
+    /// - `limit`: Number of candles (optional, max 200)
+    pub async fn get_spot_history_candles(
+        &self,
+        symbol: &str,
+        granularity: &str,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("granularity".to_string(), granularity.to_string());
+        if let Some(et) = end_time {
+            params.insert("endTime".to_string(), et.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(BitgetEndpoint::SpotHistoryCandles, params, AccountType::Spot).await
+    }
+
+    /// Get futures fill/trade history (requires auth).
+    ///
+    /// `GET /api/v2/mix/order/fill-history`
+    ///
+    /// # Parameters
+    /// - `product_type`: e.g. `USDT-FUTURES`, `COIN-FUTURES`
+    /// - `symbol`: Futures symbol (optional)
+    /// - `start_time`: Start timestamp in ms (optional)
+    /// - `end_time`: End timestamp in ms (optional)
+    /// - `id_less_than`: Pagination — return records with ID less than this (optional)
+    /// - `limit`: Number of records (optional, max 100)
+    pub async fn get_futures_fill_history(
+        &self,
+        product_type: &str,
+        symbol: Option<&str>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        id_less_than: Option<&str>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("productType".to_string(), product_type.to_string());
+        if let Some(s) = symbol {
+            params.insert("symbol".to_string(), s.to_string());
+        }
+        if let Some(st) = start_time {
+            params.insert("startTime".to_string(), st.to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("endTime".to_string(), et.to_string());
+        }
+        if let Some(ilt) = id_less_than {
+            params.insert("idLessThan".to_string(), ilt.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(BitgetEndpoint::FuturesFillHistory, params, AccountType::FuturesCross).await
+    }
+
+    /// Get futures open interest.
+    ///
+    /// `GET /api/v2/mix/market/open-interest`
+    ///
+    /// # Parameters
+    /// - `symbol`: Futures symbol e.g. `BTCUSDT`
+    /// - `product_type`: e.g. `USDT-FUTURES`
+    pub async fn get_futures_open_interest(
+        &self,
+        symbol: &str,
+        product_type: &str,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("productType".to_string(), product_type.to_string());
+        self.get(BitgetEndpoint::FuturesOpenInterest, params, AccountType::FuturesCross).await
+    }
+
+    /// Get futures historical funding rates.
+    ///
+    /// `GET /api/v2/mix/market/history-fund-rate`
+    ///
+    /// # Parameters
+    /// - `symbol`: Futures symbol e.g. `BTCUSDT`
+    /// - `product_type`: e.g. `USDT-FUTURES`
+    /// - `page_size`: Number of records per page (optional, max 100)
+    /// - `page_no`: Page number (optional)
+    pub async fn get_futures_funding_rate_history(
+        &self,
+        symbol: &str,
+        product_type: &str,
+        page_size: Option<u32>,
+        page_no: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("productType".to_string(), product_type.to_string());
+        if let Some(ps) = page_size {
+            params.insert("pageSize".to_string(), ps.to_string());
+        }
+        if let Some(pn) = page_no {
+            params.insert("pageNo".to_string(), pn.to_string());
+        }
+        self.get(BitgetEndpoint::FuturesFundingRateHistory, params, AccountType::FuturesCross).await
+    }
+
+    /// Get futures mark price and index price.
+    ///
+    /// `GET /api/v2/mix/market/symbol-price`
+    ///
+    /// # Parameters
+    /// - `symbol`: Futures symbol e.g. `BTCUSDT`
+    /// - `product_type`: e.g. `USDT-FUTURES`
+    pub async fn get_futures_symbol_price(
+        &self,
+        symbol: &str,
+        product_type: &str,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("productType".to_string(), product_type.to_string());
+        self.get(BitgetEndpoint::FuturesSymbolPrice, params, AccountType::FuturesCross).await
+    }
+}
+
 /// Map internal AccountType to Bitget transfer type string.
 fn bitget_account_type_str(account_type: AccountType) -> &'static str {
     match account_type {

@@ -178,6 +178,138 @@ impl PolygonConnector {
 
         Ok(response)
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EXTENDED METHODS — Options
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Options contracts reference data — `GET /v3/reference/options/contracts`
+    ///
+    /// Optional params: `underlying_ticker`, `contract_type` ("call"/"put"),
+    /// `expiration_date`, `strike_price`, `order`, `limit`, `sort`.
+    pub async fn get_options_contracts(
+        &self,
+        params: HashMap<String, String>,
+    ) -> ExchangeResult<Value> {
+        self.get(PolygonEndpoint::OptionsContracts, params).await
+    }
+
+    /// Options chain snapshot — `GET /v3/snapshot/options/{underlyingAsset}`
+    ///
+    /// `underlying_asset` — ticker of the underlying (e.g. `"AAPL"`).
+    /// Optional params: `contract_type`, `expiration_date`, `strike_price`, `limit`.
+    pub async fn get_options_chain(
+        &self,
+        underlying_asset: &str,
+        params: HashMap<String, String>,
+    ) -> ExchangeResult<Value> {
+        let path_params = {
+            let mut m = HashMap::new();
+            m.insert("underlyingAsset", underlying_asset.to_uppercase());
+            m
+        };
+        self.get_with_path(PolygonEndpoint::OptionsChain, path_params, params).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EXTENDED METHODS — Indices
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Indices snapshot — `GET /v3/snapshot/indices`
+    ///
+    /// Optional params: `ticker` (comma-separated), `order`, `limit`, `sort`.
+    pub async fn get_indices_snapshot(
+        &self,
+        params: HashMap<String, String>,
+    ) -> ExchangeResult<Value> {
+        self.get(PolygonEndpoint::IndicesSnapshot, params).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EXTENDED METHODS — Forex
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Forex last quote — `GET /v1/last_quote/currencies/{from}/{to}`
+    ///
+    /// `from_currency` / `to_currency` — ISO currency codes (e.g. `"USD"`, `"EUR"`).
+    pub async fn get_forex_quote(
+        &self,
+        from_currency: &str,
+        to_currency: &str,
+    ) -> ExchangeResult<Value> {
+        let path_params = {
+            let mut m = HashMap::new();
+            m.insert("from", from_currency.to_uppercase());
+            m.insert("to", to_currency.to_uppercase());
+            m
+        };
+        self.get_with_path(PolygonEndpoint::ForexQuote, path_params, HashMap::new()).await
+    }
+
+    /// Forex OHLCV aggregates — `GET /v2/aggs/ticker/{ticker}/range/{mul}/{res}/{from}/{to}`
+    ///
+    /// `ticker` — Forex ticker (e.g. `"C:EURUSD"`).
+    /// `multiplier` — size of the aggregate (e.g. 1, 5, 15).
+    /// `timespan` — "minute", "hour", "day", "week", "month", "quarter", "year".
+    /// `from` / `to` — dates in `YYYY-MM-DD` or millisecond epoch format.
+    pub async fn get_forex_aggregates(
+        &self,
+        ticker: &str,
+        multiplier: u32,
+        timespan: &str,
+        from: &str,
+        to: &str,
+        params: HashMap<String, String>,
+    ) -> ExchangeResult<Value> {
+        let path_params = {
+            let mut m = HashMap::new();
+            m.insert("ticker", ticker.to_uppercase());
+            m.insert("multiplier", multiplier.to_string());
+            m.insert("timespan", timespan.to_string());
+            m.insert("from", from.to_string());
+            m.insert("to", to.to_string());
+            m
+        };
+        self.get_with_path(PolygonEndpoint::ForexAggregates, path_params, params).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EXTENDED METHODS — Crypto Snapshot
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Crypto snapshot (all tickers) — `GET /v2/snapshot/locale/global/markets/crypto/tickers`
+    ///
+    /// Optional params: `tickers` (comma-separated list to filter).
+    pub async fn get_crypto_snapshot(
+        &self,
+        params: HashMap<String, String>,
+    ) -> ExchangeResult<Value> {
+        self.get(PolygonEndpoint::CryptoSnapshot, params).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EXTENDED METHODS — Reference Data
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Trade conditions reference — `GET /v3/reference/conditions`
+    ///
+    /// Optional params: `asset_class`, `data_type`, `id`, `sip`, `order`, `limit`, `sort`.
+    pub async fn get_reference_conditions(
+        &self,
+        params: HashMap<String, String>,
+    ) -> ExchangeResult<Value> {
+        self.get(PolygonEndpoint::ReferenceConditions, params).await
+    }
+
+    /// Exchanges reference — `GET /v3/reference/exchanges`
+    ///
+    /// Optional params: `asset_class`, `locale`, `order`, `limit`, `sort`.
+    pub async fn get_reference_exchanges(
+        &self,
+        params: HashMap<String, String>,
+    ) -> ExchangeResult<Value> {
+        self.get(PolygonEndpoint::ReferenceExchanges, params).await
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

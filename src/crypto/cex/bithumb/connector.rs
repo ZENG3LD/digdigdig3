@@ -206,6 +206,32 @@ impl BithumbConnector {
         data.as_i64()
             .ok_or_else(|| ExchangeError::Parse("Invalid server time".to_string()))
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // C3 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Query a single order by order ID.
+    ///
+    /// `POST /spot/singleOrder`
+    /// Required parameter: `ordId` (order ID string).
+    pub async fn get_single_order(&self, order_id: &str) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("ordId".to_string(), order_id.to_string());
+        self.post(BithumbEndpoint::SingleOrder, params, AccountType::Spot).await
+    }
+
+    /// List all available assets with their trading/deposit/withdrawal status.
+    ///
+    /// `POST /spot/assetList`
+    /// Optional parameter: `assetType` ("spot" or "futures").
+    pub async fn get_asset_list(&self, asset_type: Option<&str>) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(t) = asset_type {
+            params.insert("assetType".to_string(), t.to_string());
+        }
+        self.post(BithumbEndpoint::AssetList, params, AccountType::Spot).await
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

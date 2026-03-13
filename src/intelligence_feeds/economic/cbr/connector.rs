@@ -303,6 +303,69 @@ impl CbrConnector {
         let response = self.get_xml(CbrEndpoint::InterbankRates, params).await?;
         CbrParser::parse_value_records(&response, "stavka")
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C6 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Get RUONIA overnight index average rate
+    ///
+    /// RUONIA (Ruble Overnight Index Average) is a benchmark rate based on
+    /// actual overnight deposit transactions between Russian banks.
+    ///
+    /// # Arguments
+    /// - `start_date` - Start date in DD/MM/YYYY or YYYY-MM-DD format
+    /// - `end_date` - End date in DD/MM/YYYY or YYYY-MM-DD format
+    ///
+    /// Returns historical RUONIA rate data as XML string.
+    pub async fn get_ruonia_rate(
+        &self,
+        start_date: &str,
+        end_date: &str,
+    ) -> ExchangeResult<String> {
+        let mut params = HashMap::new();
+        params.insert("date_req1".to_string(), format_date_cbr(start_date));
+        params.insert("date_req2".to_string(), format_date_cbr(end_date));
+
+        self.get_xml(CbrEndpoint::RuoniaRate, params).await
+    }
+
+    /// Get CBR deposit rates (depozit operations)
+    ///
+    /// Returns CBR deposit auction and overnight deposit rates.
+    ///
+    /// # Arguments
+    /// - `start_date` - Start date in DD/MM/YYYY or YYYY-MM-DD format
+    /// - `end_date` - End date in DD/MM/YYYY or YYYY-MM-DD format
+    ///
+    /// Returns deposit rate data as XML string.
+    pub async fn get_deposit_rates(
+        &self,
+        start_date: &str,
+        end_date: &str,
+    ) -> ExchangeResult<String> {
+        let mut params = HashMap::new();
+        params.insert("date_req1".to_string(), format_date_cbr(start_date));
+        params.insert("date_req2".to_string(), format_date_cbr(end_date));
+
+        self.get_xml(CbrEndpoint::DepositRates, params).await
+    }
+
+    /// Get refinancing rate (key rate) historical series
+    ///
+    /// The refinancing rate (now the key rate) is the main monetary policy
+    /// instrument of the Central Bank of Russia.
+    ///
+    /// Returns the same data as `get_key_rate` but intended for historical
+    /// analysis. Uses JSON API endpoint.
+    ///
+    /// # Returns
+    /// Vector of key rate records with effective dates and rate values.
+    pub async fn get_refinancing_rate_history(&self) -> ExchangeResult<Vec<super::parser::KeyRate>> {
+        let params = HashMap::new();
+        let response = self.get_json(CbrEndpoint::RefinancingRateHistory, params).await?;
+        super::parser::CbrParser::parse_key_rate(&response)
+    }
 }
 
 impl Default for CbrConnector {

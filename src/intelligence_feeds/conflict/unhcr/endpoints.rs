@@ -38,6 +38,12 @@ pub enum UnhcrEndpoint {
     AsylumDecisions,
     /// Get country list
     Countries,
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+    /// Get asylum applications (distinct from decisions — tracks submissions)
+    AsylumApplications,
 }
 
 impl UnhcrEndpoint {
@@ -49,6 +55,9 @@ impl UnhcrEndpoint {
             Self::Solutions => "/solutions/".to_string(),
             Self::AsylumDecisions => "/asylum-decisions/".to_string(),
             Self::Countries => "/countries/".to_string(),
+
+            // C7 addition
+            Self::AsylumApplications => "/asylum-applications/".to_string(),
         }
     }
 }

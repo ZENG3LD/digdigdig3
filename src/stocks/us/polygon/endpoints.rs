@@ -85,6 +85,32 @@ pub enum PolygonEndpoint {
 
     // === NEWS ===
     News,                 // News articles
+
+    // === OPTIONS ===
+    /// GET /v3/reference/options/contracts — options contracts reference data
+    OptionsContracts,
+    /// GET /v3/snapshot/options/{underlyingAsset} — options chain snapshot
+    OptionsChain,
+
+    // === INDICES ===
+    /// GET /v3/snapshot/indices — indices snapshot
+    IndicesSnapshot,
+
+    // === FOREX ===
+    /// GET /v1/last_quote/currencies/{from}/{to} — forex last quote
+    ForexQuote,
+    /// GET /v2/aggs/ticker/{ticker}/range/{mul}/{res}/{from}/{to} — forex OHLCV bars
+    ForexAggregates,
+
+    // === CRYPTO SNAPSHOT ===
+    /// GET /v2/snapshot/locale/global/markets/crypto/tickers — crypto snapshot
+    CryptoSnapshot,
+
+    // === REFERENCE DATA ===
+    /// GET /v3/reference/conditions — trade conditions
+    ReferenceConditions,
+    /// GET /v3/reference/exchanges — exchanges list
+    ReferenceExchanges,
 }
 
 impl PolygonEndpoint {
@@ -119,9 +145,9 @@ impl PolygonEndpoint {
             Self::RSI => "/v1/indicators/rsi/{ticker}",
 
             // Fundamentals
-            Self::Dividends => "/stocks/v1/dividends",
-            Self::Splits => "/stocks/v1/splits",
-            Self::FinancialRatios => "/stocks/financials/v1/ratios",
+            Self::Dividends => "/vX/reference/dividends",
+            Self::Splits => "/vX/reference/splits",
+            Self::FinancialRatios => "/vX/reference/financials",
 
             // Market Status
             Self::MarketStatus => "/v1/marketstatus/now",
@@ -129,6 +155,24 @@ impl PolygonEndpoint {
 
             // News
             Self::News => "/v2/reference/news",
+
+            // Options
+            Self::OptionsContracts => "/v3/reference/options/contracts",
+            Self::OptionsChain => "/v3/snapshot/options/{underlyingAsset}",
+
+            // Indices
+            Self::IndicesSnapshot => "/v3/snapshot/indices",
+
+            // Forex
+            Self::ForexQuote => "/v1/last_quote/currencies/{from}/{to}",
+            Self::ForexAggregates => "/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{from}/{to}",
+
+            // Crypto Snapshot
+            Self::CryptoSnapshot => "/v2/snapshot/locale/global/markets/crypto/tickers",
+
+            // Reference Data
+            Self::ReferenceConditions => "/v3/reference/conditions",
+            Self::ReferenceExchanges => "/v3/reference/exchanges",
         }
     }
 

@@ -312,4 +312,129 @@ impl WikipediaConnector {
     ) -> ExchangeResult<Vec<PageviewsEntry>> {
         self.get_article_views_daily(topic, start, end).await
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Get unique device counts for a project
+    ///
+    /// Counts the number of unique devices (browser sessions) accessing a
+    /// Wikipedia project, which is a proxy for total unique users.
+    ///
+    /// # Arguments
+    /// - `project` - Project name (e.g., "en.wikipedia")
+    /// - `start` - Start date (YYYYMMDD)
+    /// - `end` - End date (YYYYMMDD)
+    /// - `granularity` - "daily" or "monthly"
+    ///
+    /// # Returns
+    /// Unique device counts as raw JSON
+    pub async fn get_unique_devices(
+        &self,
+        project: &str,
+        start: &str,
+        end: &str,
+        granularity: &str,
+    ) -> ExchangeResult<serde_json::Value> {
+        let url = build_unique_devices_url(
+            WIKIMEDIA_ANALYTICS_BASE,
+            project,
+            "all-sites",
+            granularity,
+            start,
+            end,
+        );
+        self.get(url).await
+    }
+
+    /// Get edit counts for a project
+    ///
+    /// Returns aggregate edit statistics for a Wikipedia project.
+    ///
+    /// # Arguments
+    /// - `project` - Project name (e.g., "en.wikipedia")
+    /// - `start` - Start date (YYYYMMDD)
+    /// - `end` - End date (YYYYMMDD)
+    /// - `granularity` - "daily", "monthly", or "yearly"
+    ///
+    /// # Returns
+    /// Edit counts as raw JSON
+    pub async fn get_edits(
+        &self,
+        project: &str,
+        start: &str,
+        end: &str,
+        granularity: &str,
+    ) -> ExchangeResult<serde_json::Value> {
+        let url = build_edits_url(
+            WIKIMEDIA_ANALYTICS_BASE,
+            project,
+            "all-editor-types",
+            "all-page-types",
+            granularity,
+            start,
+            end,
+        );
+        self.get(url).await
+    }
+
+    /// Get editor counts for a project
+    ///
+    /// Returns the number of active editors on a Wikipedia project.
+    ///
+    /// # Arguments
+    /// - `project` - Project name (e.g., "en.wikipedia")
+    /// - `start` - Start date (YYYYMMDD)
+    /// - `end` - End date (YYYYMMDD)
+    /// - `granularity` - "daily" or "monthly"
+    ///
+    /// # Returns
+    /// Editor counts as raw JSON
+    pub async fn get_editors(
+        &self,
+        project: &str,
+        start: &str,
+        end: &str,
+        granularity: &str,
+    ) -> ExchangeResult<serde_json::Value> {
+        let url = build_editors_url(
+            WIKIMEDIA_ANALYTICS_BASE,
+            project,
+            "all-editor-types",
+            "all-page-types",
+            "all-activity-levels",
+            granularity,
+            start,
+            end,
+        );
+        self.get(url).await
+    }
+
+    /// Get newly registered user counts for a project
+    ///
+    /// # Arguments
+    /// - `project` - Project name (e.g., "en.wikipedia")
+    /// - `start` - Start date (YYYYMMDD)
+    /// - `end` - End date (YYYYMMDD)
+    /// - `granularity` - "daily" or "monthly"
+    ///
+    /// # Returns
+    /// Registered user counts as raw JSON
+    pub async fn get_registered_users(
+        &self,
+        project: &str,
+        start: &str,
+        end: &str,
+        granularity: &str,
+    ) -> ExchangeResult<serde_json::Value> {
+        let url = build_registered_users_url(
+            WIKIMEDIA_ANALYTICS_BASE,
+            project,
+            granularity,
+            start,
+            end,
+        );
+        self.get(url).await
+    }
 }

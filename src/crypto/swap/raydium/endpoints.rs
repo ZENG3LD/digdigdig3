@@ -69,6 +69,30 @@ pub enum RaydiumEndpoint {
     SwapQuoteBaseOut,
     SwapTransactionBaseIn,
     SwapTransactionBaseOut,
+
+    // === MAIN (Extended) ===
+    /// GET /main/chain-time — current Solana cluster time
+    ChainTime,
+    /// GET /main/info — platform summary (TVL, 24h volume, fee revenue)
+    PlatformInfo,
+
+    // === POOLS (Extended) ===
+    /// GET /pools/line/price — pool token price history (OHLCV line data)
+    PoolPriceHistory,
+    /// GET /pools/line/liquidity — pool liquidity history over time
+    PoolLiquidityHistory,
+    /// GET /pools/info/stats — aggregate TVL and volume stats across all pools
+    PoolStats,
+
+    // === POOL CONFIGS ===
+    /// GET /clmm/configs — CLMM (concentrated liquidity) pool configuration tiers
+    ClmmConfigs,
+    /// GET /cpmm/configs — CPMM (constant product) pool configuration tiers
+    CpmmConfigs,
+
+    // === FARMS (Extended) ===
+    /// GET /farms/info/mine — farms owned/staked by a wallet address
+    FarmOwnership,
 }
 
 impl RaydiumEndpoint {
@@ -103,6 +127,22 @@ impl RaydiumEndpoint {
             Self::SwapQuoteBaseOut => "/compute/swap-base-out",
             Self::SwapTransactionBaseIn => "/transaction/swap-base-in",
             Self::SwapTransactionBaseOut => "/transaction/swap-base-out",
+
+            // Main (Extended)
+            Self::ChainTime => "/main/chain-time",
+            Self::PlatformInfo => "/main/info",
+
+            // Pools (Extended)
+            Self::PoolPriceHistory => "/pools/line/price",
+            Self::PoolLiquidityHistory => "/pools/line/liquidity",
+            Self::PoolStats => "/pools/info/stats",
+
+            // Pool Configs
+            Self::ClmmConfigs => "/clmm/configs",
+            Self::CpmmConfigs => "/cpmm/configs",
+
+            // Farms (Extended)
+            Self::FarmOwnership => "/farms/info/mine",
         }
     }
 

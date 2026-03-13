@@ -113,6 +113,8 @@ pub enum GateioEndpoint {
 
     // === FUTURES AMEND ORDER ===
     FuturesAmendOrder,
+    /// Batch amend multiple futures orders: POST /api/v4/futures/usdt/batch_amend_orders
+    FuturesBatchAmend,
 
     // === FUTURES ACCOUNT ===
     FuturesAccounts,
@@ -145,6 +147,20 @@ pub enum GateioEndpoint {
     SubAccountTransfer,
     /// GET /sub_accounts/{user_id}/balances — get sub-account balances
     SubAccountBalance,
+
+    // === EXTENDED MARKET DATA ===
+    /// GET /spot/trades — recent public trades for a spot pair
+    SpotTrades,
+    /// GET /spot/my_trades — personal spot trade history (signed)
+    SpotMyTrades,
+    /// GET /futures/{settle}/trades — recent public futures trades
+    FuturesTrades,
+    /// GET /futures/{settle}/my_trades — personal futures trade history (signed)
+    FuturesMyTrades,
+    /// GET /futures/{settle}/contract_stats — open interest stats
+    FuturesOpenInterest,
+    /// GET /futures/{settle}/funding_rate — funding rate history
+    FuturesFundingRateHistory,
 }
 
 impl GateioEndpoint {
@@ -198,6 +214,7 @@ impl GateioEndpoint {
 
             // Futures Amend Order
             Self::FuturesAmendOrder => format!("/futures/{}/orders/{{order_id}}", settle.unwrap_or("usdt")),
+            Self::FuturesBatchAmend => format!("/futures/{}/batch_amend_orders", settle.unwrap_or("usdt")),
 
             // Futures Account
             Self::FuturesAccounts => format!("/futures/{}/accounts", settle.unwrap_or("usdt")),
@@ -220,6 +237,14 @@ impl GateioEndpoint {
             Self::SubAccountList => "/sub_accounts".to_string(),
             Self::SubAccountTransfer => "/sub_accounts/transfers".to_string(),
             Self::SubAccountBalance => "/sub_accounts/{user_id}/balances".to_string(),
+
+            // Extended Market Data
+            Self::SpotTrades => "/spot/trades".to_string(),
+            Self::SpotMyTrades => "/spot/my_trades".to_string(),
+            Self::FuturesTrades => format!("/futures/{}/trades", settle.unwrap_or("usdt")),
+            Self::FuturesMyTrades => format!("/futures/{}/my_trades", settle.unwrap_or("usdt")),
+            Self::FuturesOpenInterest => format!("/futures/{}/contract_stats", settle.unwrap_or("usdt")),
+            Self::FuturesFundingRateHistory => format!("/futures/{}/funding_rate", settle.unwrap_or("usdt")),
         }
     }
 
@@ -236,7 +261,11 @@ impl GateioEndpoint {
             | Self::FuturesOrderbook
             | Self::FuturesKlines
             | Self::FuturesContracts
-            | Self::FundingRate => false,
+            | Self::FundingRate
+            | Self::SpotTrades
+            | Self::FuturesTrades
+            | Self::FuturesOpenInterest
+            | Self::FuturesFundingRateHistory => false,
 
             // Private endpoints
             _ => true,
@@ -251,6 +280,7 @@ impl GateioEndpoint {
             | Self::SpotPriceOrders
             | Self::SpotBatchOrders
             | Self::FuturesBatchOrders
+            | Self::FuturesBatchAmend
             | Self::FuturesSetLeverage
             | Self::WalletTransfer
             | Self::Withdraw

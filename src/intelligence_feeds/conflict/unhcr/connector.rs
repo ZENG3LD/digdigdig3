@@ -172,4 +172,33 @@ impl UnhcrConnector {
         let response = self.get(UnhcrEndpoint::Solutions, params).await?;
         UnhcrParser::parse_json_array(&response)
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Get asylum application data
+    ///
+    /// Asylum applications track submissions (not decisions). This is distinct
+    /// from `get_asylum_decisions` which tracks case outcomes.
+    ///
+    /// # Arguments
+    /// - `year` - Optional year filter
+    /// - `country_origin` - Optional country of origin filter
+    /// - `country_asylum` - Optional country of asylum (where application was filed)
+    /// - `limit` - Optional page size
+    ///
+    /// # Returns
+    /// Vector of asylum application records as JSON values
+    pub async fn get_asylum_applications(
+        &self,
+        year: Option<u32>,
+        country_origin: Option<&str>,
+        country_asylum: Option<&str>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Vec<Value>> {
+        let params = format_params(year, country_origin, country_asylum, None, limit);
+        let response = self.get(UnhcrEndpoint::AsylumApplications, params).await?;
+        UnhcrParser::parse_json_array(&response)
+    }
 }

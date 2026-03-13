@@ -9,7 +9,7 @@ pub struct LaunchLibraryEndpoints {
 impl Default for LaunchLibraryEndpoints {
     fn default() -> Self {
         Self {
-            rest_base: "https://ll.thespacedevs.com/2.2.0",
+            rest_base: "https://ll.thespacedevs.com/2.3.0",
             ws_base: None, // Launch Library 2 does not support WebSocket
         }
     }
@@ -65,6 +65,22 @@ pub enum LaunchLibraryEndpoint {
     // ═══════════════════════════════════════════════════════════════════════
     /// Get spacecraft data
     Spacecraft,
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+    /// Get launcher (specific rocket serial/vehicle) instances
+    Launcher,
+    /// Get launch pad details
+    Pad,
+    /// Get launch location details
+    Location,
+    /// Get ISS expedition data
+    Expedition,
+    /// Get docking events (ISS, Mir, etc.)
+    Docking,
+    /// Get payload information (spacecraft missions)
+    Payload,
 }
 
 impl LaunchLibraryEndpoint {
@@ -84,16 +100,24 @@ impl LaunchLibraryEndpoint {
             Self::Astronaut => "/astronaut/",
 
             // Space station endpoint
-            Self::SpaceStation => "/space_station/",
+            Self::SpaceStation => "/spacestation/",
 
             // Agency endpoint
-            Self::Agency => "/agency/",
+            Self::Agency => "/agencies/",
 
             // Rocket endpoint
             Self::Rocket => "/config/launcher/",
 
             // Spacecraft endpoint
             Self::Spacecraft => "/config/spacecraft/",
+
+            // C7 additions
+            Self::Launcher => "/launcher/",
+            Self::Pad => "/pad/",
+            Self::Location => "/location/",
+            Self::Expedition => "/expedition/",
+            Self::Docking => "/docking_event/",
+            Self::Payload => "/spacecraft/",
         }
     }
 

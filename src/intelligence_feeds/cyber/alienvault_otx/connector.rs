@@ -243,6 +243,150 @@ impl OtxConnector {
     pub fn is_authenticated(&self) -> bool {
         self.auth.is_authenticated()
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Get a specific pulse by its ID
+    ///
+    /// # Arguments
+    /// - `pulse_id` - The OTX pulse ID (hexadecimal string)
+    ///
+    /// # Returns
+    /// Pulse details as raw JSON
+    pub async fn get_pulse_by_id(&self, pulse_id: &str) -> ExchangeResult<serde_json::Value> {
+        let params = HashMap::new();
+        self.get(OtxEndpoint::PulseById { pulse_id: pulse_id.to_string() }, params).await
+    }
+
+    /// Get pulses created by a specific user
+    ///
+    /// # Arguments
+    /// - `username` - OTX username
+    /// - `limit` - Optional limit (default: 10)
+    ///
+    /// # Returns
+    /// Paginated pulse list as raw JSON
+    pub async fn get_user_pulses(
+        &self,
+        username: &str,
+        limit: Option<u32>,
+    ) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(OtxEndpoint::UserPulses { username: username.to_string() }, params).await
+    }
+
+    /// Search OTX pulses by keyword
+    ///
+    /// # Arguments
+    /// - `query` - Search query string
+    /// - `limit` - Optional result limit (default: 10)
+    ///
+    /// # Returns
+    /// Search results as raw JSON with matching pulses
+    pub async fn search_pulses(
+        &self,
+        query: &str,
+        limit: Option<u32>,
+    ) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        params.insert("q".to_string(), query.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(OtxEndpoint::PulseSearch, params).await
+    }
+
+    /// Get all pulses created by the authenticated user
+    ///
+    /// # Arguments
+    /// - `limit` - Optional limit (default: 10)
+    ///
+    /// # Returns
+    /// Paginated list of own pulses as raw JSON
+    pub async fn get_my_pulses(&self, limit: Option<u32>) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(OtxEndpoint::MyPulses, params).await
+    }
+
+    /// Get detailed indicator data for an IPv4 address
+    ///
+    /// # Arguments
+    /// - `ip` - IPv4 address (e.g., "8.8.8.8")
+    /// - `section` - Data section: "general", "reputation", "geo", "malware",
+    ///   "url_list", "passive_dns", "http_scans"
+    ///
+    /// # Returns
+    /// Indicator data for the specified section as raw JSON
+    pub async fn get_ipv4_indicators(
+        &self,
+        ip: &str,
+        section: &str,
+    ) -> ExchangeResult<serde_json::Value> {
+        let params = HashMap::new();
+        self.get(
+            OtxEndpoint::Ipv4Indicators {
+                ip: ip.to_string(),
+                section: section.to_string(),
+            },
+            params,
+        ).await
+    }
+
+    /// Get detailed indicator data for a domain
+    ///
+    /// # Arguments
+    /// - `domain` - Domain name (e.g., "example.com")
+    /// - `section` - Data section: "general", "geo", "malware", "url_list",
+    ///   "passive_dns", "whois", "http_scans"
+    ///
+    /// # Returns
+    /// Indicator data for the specified section as raw JSON
+    pub async fn get_domain_indicators(
+        &self,
+        domain: &str,
+        section: &str,
+    ) -> ExchangeResult<serde_json::Value> {
+        let params = HashMap::new();
+        self.get(
+            OtxEndpoint::DomainIndicators {
+                domain: domain.to_string(),
+                section: section.to_string(),
+            },
+            params,
+        ).await
+    }
+
+    /// Get detailed indicator data for a hostname
+    ///
+    /// # Arguments
+    /// - `hostname` - Hostname (e.g., "mail.example.com")
+    /// - `section` - Data section: "general", "geo", "malware", "url_list",
+    ///   "passive_dns", "http_scans"
+    ///
+    /// # Returns
+    /// Indicator data for the specified section as raw JSON
+    pub async fn get_hostname_indicators(
+        &self,
+        hostname: &str,
+        section: &str,
+    ) -> ExchangeResult<serde_json::Value> {
+        let params = HashMap::new();
+        self.get(
+            OtxEndpoint::HostnameIndicators {
+                hostname: hostname.to_string(),
+                section: section.to_string(),
+            },
+            params,
+        ).await
+    }
 }
 
 impl Default for OtxConnector {

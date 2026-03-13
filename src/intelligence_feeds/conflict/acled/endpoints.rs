@@ -22,6 +22,16 @@ impl Default for AcledEndpoints {
 pub enum AcledEndpoint {
     /// Get events (core endpoint - all filtering done via query params)
     Events,
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+    /// ACLED CAST predictive forecasts
+    /// GET /cast/ — returns predicted future conflict events
+    CastForecasts,
+    /// Records deleted from ACLED (corrections/removals)
+    /// GET /deleted/ — returns event IDs that have been removed
+    DeletedRecords,
 }
 
 impl AcledEndpoint {
@@ -29,6 +39,8 @@ impl AcledEndpoint {
     pub fn path(&self) -> &'static str {
         match self {
             Self::Events => "",
+            Self::CastForecasts => "https://api.acleddata.com/cast/read",
+            Self::DeletedRecords => "https://api.acleddata.com/deleted/read",
         }
     }
 }

@@ -354,6 +354,158 @@ impl AlpacaConnector {
         response.json().await
             .map_err(|e| ExchangeError::Parse(format!("JSON parse error: {}", e)))
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // EXTENDED METHODS — Watchlists
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// List all watchlists — `GET /v2/watchlists`
+    pub async fn get_watchlists(&self) -> ExchangeResult<Value> {
+        self.get_trading(AlpacaEndpoint::Watchlists, HashMap::new()).await
+    }
+
+    /// Create watchlist — `POST /v2/watchlists`
+    ///
+    /// `name` is the unique watchlist name; `symbols` is an optional list of tickers.
+    pub async fn create_watchlist(&self, name: &str, symbols: Vec<&str>) -> ExchangeResult<Value> {
+        let body = json!({
+            "name": name,
+            "symbols": symbols,
+        });
+        self.post_trading(AlpacaEndpoint::Watchlists, body).await
+    }
+
+    /// Get watchlist by ID — `GET /v2/watchlists/{id}`
+    pub async fn get_watchlist(&self, id: &str) -> ExchangeResult<Value> {
+        self.get_trading(AlpacaEndpoint::WatchlistById(id.to_string()), HashMap::new()).await
+    }
+
+    /// Update watchlist — `PUT /v2/watchlists/{id}`
+    ///
+    /// Replaces the name and/or symbols list of an existing watchlist.
+    pub async fn update_watchlist(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        symbols: Option<Vec<&str>>,
+    ) -> ExchangeResult<Value> {
+        let mut body = json!({});
+        if let Some(n) = name {
+            body["name"] = json!(n);
+        }
+        if let Some(s) = symbols {
+            body["symbols"] = json!(s);
+        }
+        let (path, _) = AlpacaEndpoint::WatchlistById(id.to_string()).path();
+        let url = format!("{}{}", self.endpoints.trading_base, path);
+        let mut headers = HashMap::new();
+        self.auth.sign_headers(&mut headers);
+        let mut request = self.client.put(&url);
+        for (key, value) in headers {
+            request = request.header(key, value);
+        }
+        request = request.json(&body);
+        let response = request.send().await
+            .map_err(|e| ExchangeError::Network(format!("Request failed: {}", e)))?;
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(ExchangeError::Api { code: status.as_u16() as i32, message: error_text });
+        }
+        response.json().await
+            .map_err(|e| ExchangeError::Parse(format!("JSON parse error: {}", e)))
+    }
+
+    /// Delete watchlist — `DELETE /v2/watchlists/{id}`
+    pub async fn delete_watchlist(&self, id: &str) -> ExchangeResult<Value> {
+        self.delete_trading(AlpacaEndpoint::WatchlistById(id.to_string()), HashMap::new()).await
+    }
+
+    /// Add symbol to watchlist — `POST /v2/watchlists/{id}`
+    pub async fn add_symbol_to_watchlist(&self, id: &str, symbol: &str) -> ExchangeResult<Value> {
+        let body = json!({ "symbol": symbol });
+        self.post_trading(AlpacaEndpoint::WatchlistAddSymbol(id.to_string()), body).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // EXTENDED METHODS — Positions
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// Close all open positions — `DELETE /v2/positions`
+    ///
+    /// Pass `cancel_orders: true` to cancel open orders before liquidating.
+    pub async fn close_all_positions(&self, cancel_orders: bool) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("cancel_orders".to_string(), cancel_orders.to_string());
+        self.delete_trading_multi(AlpacaEndpoint::Positions, params).await
+    }
+
+    /// Close a single position — `DELETE /v2/positions/{symbol_or_asset_id}`
+    ///
+    /// Optionally pass `qty` or `percentage` to partially close.
+    pub async fn close_position(
+        &self,
+        symbol_or_asset_id: &str,
+        qty: Option<f64>,
+        percentage: Option<f64>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(q) = qty {
+            params.insert("qty".to_string(), q.to_string());
+        }
+        if let Some(p) = percentage {
+            params.insert("percentage".to_string(), p.to_string());
+        }
+        self.delete_trading(
+            AlpacaEndpoint::PositionBySymbol(symbol_or_asset_id.to_string()),
+            params,
+        ).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // EXTENDED METHODS — Account Configurations
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// Get account configurations — `GET /v2/account/configurations`
+    pub async fn get_account_configurations(&self) -> ExchangeResult<Value> {
+        self.get_trading(AlpacaEndpoint::AccountConfigurations, HashMap::new()).await
+    }
+
+    /// Update account configurations — `PATCH /v2/account/configurations`
+    ///
+    /// Pass a JSON object with only the configuration fields to update.
+    pub async fn patch_account_configurations(&self, config: Value) -> ExchangeResult<Value> {
+        self.patch_trading(AlpacaEndpoint::AccountConfigurations, config).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // EXTENDED METHODS — Options Chain
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// Get options chain for a symbol — `GET /v1beta1/options/chain`
+    ///
+    /// `underlying_symbol` is required (e.g. `"AAPL"`).
+    /// Optional `params`: `expiration_date`, `strike_price_gte`, `strike_price_lte`, `type`.
+    pub async fn get_options_chain(
+        &self,
+        underlying_symbol: &str,
+        params: HashMap<String, String>,
+    ) -> ExchangeResult<Value> {
+        let mut full_params = params;
+        full_params.insert("underlying_symbol".to_string(), underlying_symbol.to_string());
+        self.get_market_data(AlpacaEndpoint::OptionsChain, full_params).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // EXTENDED METHODS — Screener
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// Most active stocks screener — `GET /v1beta1/screener/most-actives`
+    ///
+    /// Optional `params`: `by` ("trades" or "volume"), `top` (count, default 10).
+    pub async fn get_most_actives(&self, params: HashMap<String, String>) -> ExchangeResult<Value> {
+        self.get_market_data(AlpacaEndpoint::MostActives, params).await
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1039,20 +1191,6 @@ impl AlpacaConnector {
         }
 
         self.get_trading(AlpacaEndpoint::Calendar, params).await
-    }
-
-    /// Close a position by symbol
-    pub async fn close_position(&self, symbol: Symbol) -> ExchangeResult<Order> {
-        let symbol_str = format_symbol(&symbol);
-        let endpoint = AlpacaEndpoint::PositionBySymbol(symbol_str);
-        let response = self.delete_trading(endpoint, HashMap::new()).await?;
-        AlpacaParser::parse_order(&response)
-    }
-
-    /// Close all positions
-    pub async fn close_all_positions(&self) -> ExchangeResult<Vec<Order>> {
-        let response = self.delete_trading(AlpacaEndpoint::Positions, HashMap::new()).await?;
-        AlpacaParser::parse_orders(&response)
     }
 
     /// Cancel all orders

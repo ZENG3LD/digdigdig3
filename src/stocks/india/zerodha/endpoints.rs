@@ -64,6 +64,9 @@ pub enum ZerodhaEndpoint {
     AuthorizeHoldings,      // POST /portfolio/holdings/authorise
     Positions,              // GET /portfolio/positions
     ConvertPosition,        // PUT /portfolio/positions
+
+    // Basket Orders
+    BasketOrders,           // POST /orders/baskets — place multiple orders atomically
 }
 
 impl ZerodhaEndpoint {
@@ -115,6 +118,9 @@ impl ZerodhaEndpoint {
             Self::AuthorizeHoldings => "/portfolio/holdings/authorise".to_string(),
             Self::Positions => "/portfolio/positions".to_string(),
             Self::ConvertPosition => "/portfolio/positions".to_string(),
+
+            // Basket Orders
+            Self::BasketOrders => "/orders/baskets".to_string(),
         }
     }
 }

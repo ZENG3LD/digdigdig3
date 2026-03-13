@@ -312,4 +312,140 @@ impl NasaConnector {
         let response = self.get(NasaEndpoint::EpicNatural, params).await?;
         NasaParser::parse_earth_imagery(&response)
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Get DONKI CME Analysis — detailed analysis records for CME events
+    ///
+    /// Unlike the raw CME list, CME Analysis provides speed estimates,
+    /// half-angle measurements, and predicted impact times.
+    ///
+    /// # Arguments
+    /// - `start_date` - Start date (YYYY-MM-DD)
+    /// - `end_date` - End date (YYYY-MM-DD)
+    ///
+    /// # Returns
+    /// CME analysis records as raw JSON array
+    pub async fn get_donki_cme_analysis(
+        &self,
+        start_date: &str,
+        end_date: &str,
+    ) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        params.insert("startDate".to_string(), start_date.to_string());
+        params.insert("endDate".to_string(), end_date.to_string());
+
+        self.get(NasaEndpoint::DonkiCmeAnalysis, params).await
+    }
+
+    /// Get DONKI space weather notifications / alerts
+    ///
+    /// # Arguments
+    /// - `start_date` - Start date (YYYY-MM-DD)
+    /// - `end_date` - End date (YYYY-MM-DD)
+    /// - `notification_type` - Optional type filter: "all", "FLR", "SEP", "CME",
+    ///   "IPS", "MPC", "GST", "RBE", "report"
+    ///
+    /// # Returns
+    /// Space weather notifications as raw JSON array
+    pub async fn get_donki_notifications(
+        &self,
+        start_date: &str,
+        end_date: &str,
+        notification_type: Option<&str>,
+    ) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        params.insert("startDate".to_string(), start_date.to_string());
+        params.insert("endDate".to_string(), end_date.to_string());
+        if let Some(nt) = notification_type {
+            params.insert("type".to_string(), nt.to_string());
+        }
+
+        self.get(NasaEndpoint::DonkiNotifications, params).await
+    }
+
+    /// Get Mars Rover photos
+    ///
+    /// # Arguments
+    /// - `rover` - Rover name: "curiosity", "opportunity", "spirit", "perseverance"
+    /// - `sol` - Optional Martian sol (day on Mars) number
+    /// - `earth_date` - Optional Earth date (YYYY-MM-DD), alternative to sol
+    /// - `camera` - Optional camera abbreviation (e.g., "FHAZ", "NAVCAM", "MAST")
+    ///
+    /// # Returns
+    /// Mars rover photos as raw JSON
+    pub async fn get_mars_rover_photos(
+        &self,
+        rover: &str,
+        sol: Option<u32>,
+        earth_date: Option<&str>,
+        camera: Option<&str>,
+    ) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+
+        if let Some(s) = sol {
+            params.insert("sol".to_string(), s.to_string());
+        } else if let Some(d) = earth_date {
+            params.insert("earth_date".to_string(), d.to_string());
+        } else {
+            // Default to sol 1000 if nothing specified
+            params.insert("sol".to_string(), "1000".to_string());
+        }
+
+        if let Some(cam) = camera {
+            params.insert("camera".to_string(), cam.to_string());
+        }
+
+        self.get(NasaEndpoint::MarsRoverPhotos { rover: rover.to_string() }, params).await
+    }
+
+    /// Get Earth satellite imagery metadata
+    ///
+    /// Returns Landsat 8 imagery metadata for a given location and date.
+    ///
+    /// # Arguments
+    /// - `lat` - Latitude
+    /// - `lon` - Longitude
+    /// - `date` - Date (YYYY-MM-DD)
+    /// - `dim` - Optional image dimension in degrees (default: 0.025)
+    ///
+    /// # Returns
+    /// Earth imagery metadata as raw JSON
+    pub async fn get_earth_satellite_imagery(
+        &self,
+        lat: f64,
+        lon: f64,
+        date: &str,
+        dim: Option<f64>,
+    ) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        params.insert("lat".to_string(), lat.to_string());
+        params.insert("lon".to_string(), lon.to_string());
+        params.insert("date".to_string(), date.to_string());
+        if let Some(d) = dim {
+            params.insert("dim".to_string(), d.to_string());
+        }
+
+        self.get(NasaEndpoint::EarthImagery, params).await
+    }
+
+    /// Browse the full NEO (Near Earth Object) asteroid catalog
+    ///
+    /// No date filter required — returns paginated catalog data.
+    ///
+    /// # Arguments
+    /// - `page` - Optional page number (0-indexed, default: 0)
+    ///
+    /// # Returns
+    /// Paginated asteroid catalog as raw JSON
+    pub async fn browse_neo_catalog(&self, page: Option<u32>) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        if let Some(p) = page {
+            params.insert("page".to_string(), p.to_string());
+        }
+
+        self.get(NasaEndpoint::NeoBrowse, params).await
+    }
 }

@@ -678,4 +678,100 @@ impl DydxConnector {
 
         Ok(markets.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
     }
+
+    /// Get transfers between two subaccounts
+    ///
+    /// Returns transfers from `source_subaccount_number` to `recipient_subaccount_number`
+    /// for the given `address`.
+    pub async fn get_transfers_between(
+        &self,
+        address: &str,
+        source_subaccount_number: u32,
+        recipient_subaccount_number: u32,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("address".to_string(), address.to_string());
+        params.insert("sourceSubaccountNumber".to_string(), source_subaccount_number.to_string());
+        params.insert("recipientSubaccountNumber".to_string(), recipient_subaccount_number.to_string());
+        self.get(DydxEndpoint::TransfersBetween, params).await
+    }
+
+    /// Get asset positions for a parent subaccount number
+    ///
+    /// Returns asset positions across all child subaccounts under the given parent.
+    pub async fn get_parent_asset_positions(
+        &self,
+        address: &str,
+        parent_subaccount_number: u32,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("address".to_string(), address.to_string());
+        params.insert("parentSubaccountNumber".to_string(), parent_subaccount_number.to_string());
+        self.get(DydxEndpoint::ParentAssetPositions, params).await
+    }
+
+    /// Get transfers for a parent subaccount number
+    pub async fn get_parent_transfers(
+        &self,
+        address: &str,
+        parent_subaccount_number: u32,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("address".to_string(), address.to_string());
+        params.insert("parentSubaccountNumber".to_string(), parent_subaccount_number.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(DydxEndpoint::ParentTransfers, params).await
+    }
+
+    /// Get MegaVault historical PnL
+    ///
+    /// Returns historical profit and loss data for the dYdX MegaVault.
+    pub async fn get_megavault_pnl(
+        &self,
+        resolution: Option<&str>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(r) = resolution {
+            params.insert("resolution".to_string(), r.to_string());
+        }
+        self.get(DydxEndpoint::MegaVaultPnl, params).await
+    }
+
+    /// Get MegaVault positions
+    ///
+    /// Returns current positions held in the dYdX MegaVault.
+    pub async fn get_megavault_positions(&self) -> ExchangeResult<Value> {
+        self.get(DydxEndpoint::MegaVaultPositions, HashMap::new()).await
+    }
+
+    /// Get historical PnL for all individual vaults
+    ///
+    /// Returns historical PnL data for all vaults (not just the MegaVault).
+    pub async fn get_all_vaults_pnl(
+        &self,
+        resolution: Option<&str>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(r) = resolution {
+            params.insert("resolution".to_string(), r.to_string());
+        }
+        self.get(DydxEndpoint::AllVaultsPnl, params).await
+    }
+
+    /// Get affiliate program metadata for an address
+    pub async fn get_affiliate_metadata(&self, address: &str) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("address".to_string(), address.to_string());
+        self.get(DydxEndpoint::AffiliateMetadata, params).await
+    }
+
+    /// Get affiliate address info for a referral code
+    pub async fn get_affiliate_address(&self, referral_code: &str) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("referralCode".to_string(), referral_code.to_string());
+        self.get(DydxEndpoint::AffiliateAddress, params).await
+    }
 }

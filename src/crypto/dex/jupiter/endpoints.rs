@@ -64,6 +64,20 @@ pub enum JupiterEndpoint {
     TokenCategory,
     /// GET /tokens/v2/recent - recently created tokens
     TokenRecent,
+    /// GET /tokens/v2 - full token list with metadata
+    TokensV2,
+
+    // === ULTRA SWAP API ===
+    /// POST /ultra/v1/order — create a new Ultra swap order
+    UltraSwapOrder,
+    /// GET /ultra/v1/status — get swap status by transaction ID
+    UltraSwapStatus,
+    /// POST /ultra/v1/create — create unsigned swap transaction
+    UltraSwapCreate,
+    /// POST /ultra/v1/execute — execute (broadcast) a signed swap transaction
+    UltraSwapExecute,
+    /// GET /ultra/v1/balances — get token balances for a wallet
+    UltraSwapBalances,
 }
 
 impl JupiterEndpoint {
@@ -78,6 +92,14 @@ impl JupiterEndpoint {
             Self::TokenTag => format!("{}/tag", urls.tokens_rest),
             Self::TokenCategory => urls.tokens_rest.to_string(), // path appended dynamically
             Self::TokenRecent => format!("{}/recent", urls.tokens_rest),
+            Self::TokensV2 => urls.tokens_rest.to_string(),
+
+            // Ultra Swap API
+            Self::UltraSwapOrder => format!("{}/ultra/v1/order", urls.base_url()),
+            Self::UltraSwapStatus => format!("{}/ultra/v1/status", urls.base_url()),
+            Self::UltraSwapCreate => format!("{}/ultra/v1/create", urls.base_url()),
+            Self::UltraSwapExecute => format!("{}/ultra/v1/execute", urls.base_url()),
+            Self::UltraSwapBalances => format!("{}/ultra/v1/balances", urls.base_url()),
         }
     }
 
@@ -90,7 +112,11 @@ impl JupiterEndpoint {
     /// HTTP метод для endpoint'а
     pub fn method(&self) -> &'static str {
         match self {
-            Self::Swap | Self::SwapInstructions => "POST",
+            Self::Swap
+            | Self::SwapInstructions
+            | Self::UltraSwapOrder
+            | Self::UltraSwapCreate
+            | Self::UltraSwapExecute => "POST",
             _ => "GET",
         }
     }

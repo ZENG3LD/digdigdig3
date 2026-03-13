@@ -77,7 +77,10 @@ impl OpenskyConnector {
         let url = format!("{}{}", self.endpoints.rest_base, endpoint.path());
 
         let mut headers = reqwest::header::HeaderMap::new();
-        self.auth.sign_headers(&mut headers);
+        self.auth
+            .apply_auth_headers(&mut headers, &self.client)
+            .await
+            .map_err(|e| ExchangeError::Auth(format!("OAuth2 token error: {}", e)))?;
 
         let response = self
             .client

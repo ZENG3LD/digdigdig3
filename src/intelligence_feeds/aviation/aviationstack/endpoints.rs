@@ -9,7 +9,7 @@ pub struct AviationStackEndpoints {
 impl Default for AviationStackEndpoints {
     fn default() -> Self {
         Self {
-            rest_base: "http://api.aviationstack.com/v1",
+            rest_base: "https://api.aviationstack.com/v1",
             ws_base: None, // AviationStack does not support WebSocket
         }
     }

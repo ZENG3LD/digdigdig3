@@ -136,6 +136,30 @@ pub enum AlpacaEndpoint {
     // MARKET DATA API - Screener
     // ═══════════════════════════════════════════════════════════════════════
     Movers,
+    /// GET /v1beta1/screener/most-actives
+    MostActives,
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // TRADING API - Watchlists
+    // ═══════════════════════════════════════════════════════════════════════
+    /// GET /v2/watchlists — list all watchlists
+    Watchlists,
+    /// GET/PUT/DELETE /v2/watchlists/{id}
+    WatchlistById(String),
+    /// POST /v2/watchlists/{id} — add symbol to watchlist
+    WatchlistAddSymbol(String),
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // TRADING API - Account Configurations
+    // ═══════════════════════════════════════════════════════════════════════
+    /// GET/PATCH /v2/account/configurations
+    AccountConfigurations,
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // MARKET DATA API - Options Chain
+    // ═══════════════════════════════════════════════════════════════════════
+    /// GET /v1beta1/options/chain — options chain for a symbol
+    OptionsChain,
 }
 
 impl AlpacaEndpoint {
@@ -194,6 +218,18 @@ impl AlpacaEndpoint {
 
             // Market Data API - Screener
             Self::Movers => ("/v1beta1/screener/stocks/movers".to_string(), EndpointBase::MarketData),
+            Self::MostActives => ("/v1beta1/screener/most-actives".to_string(), EndpointBase::MarketData),
+
+            // Trading API - Watchlists
+            Self::Watchlists => ("/v2/watchlists".to_string(), EndpointBase::Trading),
+            Self::WatchlistById(id) => (format!("/v2/watchlists/{}", id), EndpointBase::Trading),
+            Self::WatchlistAddSymbol(id) => (format!("/v2/watchlists/{}", id), EndpointBase::Trading),
+
+            // Trading API - Account Configurations
+            Self::AccountConfigurations => ("/v2/account/configurations".to_string(), EndpointBase::Trading),
+
+            // Market Data API - Options Chain
+            Self::OptionsChain => ("/v1beta1/options/chain".to_string(), EndpointBase::MarketData),
         }
     }
 }

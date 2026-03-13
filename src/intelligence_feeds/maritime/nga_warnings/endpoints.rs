@@ -24,6 +24,16 @@ pub enum NgaWarningsEndpoint {
     NavigationalWarnings,
     /// Get specific warning by ID
     WarningById { id: String },
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+    /// ASAM anti-piracy / maritime security incident reports
+    AsamPiracyReports,
+    /// MODU (Mobile Offshore Drilling Unit) positions
+    ModuPositions,
+    /// World Port Index (WPI) — global port database
+    WorldPortIndex,
 }
 
 impl NgaWarningsEndpoint {
@@ -33,6 +43,11 @@ impl NgaWarningsEndpoint {
             Self::BroadcastWarnings => "/broadcast-warn".to_string(),
             Self::NavigationalWarnings => "/navwarn".to_string(),
             Self::WarningById { id } => format!("/warn/{}", id),
+
+            // C7 additions
+            Self::AsamPiracyReports => "/asam".to_string(),
+            Self::ModuPositions => "/modu".to_string(),
+            Self::WorldPortIndex => "/wpi".to_string(),
         }
     }
 }

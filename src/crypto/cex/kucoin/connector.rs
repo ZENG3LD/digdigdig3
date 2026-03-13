@@ -421,6 +421,163 @@ impl KuCoinConnector {
 
         Ok(ids)
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MARKET DATA EXTENSIONS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Get recent spot trades for a symbol.
+    pub async fn get_spot_recent_trades(
+        &self,
+        symbol: &str,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        self.get(KuCoinEndpoint::SpotRecentTrades, params, AccountType::Spot).await
+    }
+
+    /// Get full order book (level 2) for a symbol.
+    pub async fn get_full_orderbook(&self, symbol: &str) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        self.get(KuCoinEndpoint::FullOrderbook, params, AccountType::Spot).await
+    }
+
+    /// Get futures recent trade history for a symbol.
+    pub async fn get_futures_trade_history(
+        &self,
+        symbol: &str,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        self.get(KuCoinEndpoint::FuturesTradeHistory, params, AccountType::FuturesCross).await
+    }
+
+    /// Get futures funding rate history for a contract.
+    pub async fn get_futures_funding_rates(
+        &self,
+        symbol: &str,
+        from: Option<i64>,
+        to: Option<i64>,
+        offset: Option<i64>,
+        max_count: Option<u32>,
+        reverse: Option<bool>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        if let Some(f) = from {
+            params.insert("from".to_string(), f.to_string());
+        }
+        if let Some(t) = to {
+            params.insert("to".to_string(), t.to_string());
+        }
+        if let Some(o) = offset {
+            params.insert("offset".to_string(), o.to_string());
+        }
+        if let Some(m) = max_count {
+            params.insert("maxCount".to_string(), m.to_string());
+        }
+        if let Some(r) = reverse {
+            params.insert("reverse".to_string(), r.to_string());
+        }
+        self.get(KuCoinEndpoint::FuturesFundingRates, params, AccountType::FuturesCross).await
+    }
+
+    /// Get current mark price for a futures symbol.
+    pub async fn get_futures_mark_price(&self, symbol: &str) -> ExchangeResult<Value> {
+        self.rate_limit_wait(weights::DEFAULT).await;
+        let base_url = self.urls.rest_url(AccountType::FuturesCross);
+        let path = format!("/api/v1/mark-price/{}/current", symbol);
+        let url = format!("{}{}", base_url, path);
+        let (response, _) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
+        self.check_response(&response)?;
+        Ok(response)
+    }
+
+    /// Get current index price for a futures symbol.
+    pub async fn get_futures_index_price(&self, symbol: &str) -> ExchangeResult<Value> {
+        self.rate_limit_wait(weights::DEFAULT).await;
+        let base_url = self.urls.rest_url(AccountType::FuturesCross);
+        let path = format!("/api/v1/index-price/{}/current", symbol);
+        let url = format!("{}{}", base_url, path);
+        let (response, _) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
+        self.check_response(&response)?;
+        Ok(response)
+    }
+
+    /// Get current premium index for a futures symbol.
+    pub async fn get_futures_premium_index(&self, symbol: &str) -> ExchangeResult<Value> {
+        self.rate_limit_wait(weights::DEFAULT).await;
+        let base_url = self.urls.rest_url(AccountType::FuturesCross);
+        let path = format!("/api/v1/premium-index/{}/current", symbol);
+        let url = format!("{}{}", base_url, path);
+        let (response, _) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
+        self.check_response(&response)?;
+        Ok(response)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FILL / TRADE HISTORY
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Get spot trade fills (paginated, signed).
+    ///
+    /// `order_id`: filter by order ID.
+    /// `trade_type`: `"TRADE"` (default) or `"MARGIN_TRADE"`.
+    pub async fn get_spot_fills(
+        &self,
+        symbol: Option<&str>,
+        order_id: Option<&str>,
+        start_at: Option<i64>,
+        end_at: Option<i64>,
+        page_size: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(s) = symbol {
+            params.insert("symbol".to_string(), s.to_string());
+        }
+        if let Some(oid) = order_id {
+            params.insert("orderId".to_string(), oid.to_string());
+        }
+        if let Some(st) = start_at {
+            params.insert("startAt".to_string(), st.to_string());
+        }
+        if let Some(et) = end_at {
+            params.insert("endAt".to_string(), et.to_string());
+        }
+        if let Some(ps) = page_size {
+            params.insert("pageSize".to_string(), ps.to_string());
+        }
+        self.get(KuCoinEndpoint::SpotFills, params, AccountType::Spot).await
+    }
+
+    /// Get futures trade fills (paginated, signed).
+    pub async fn get_futures_fills(
+        &self,
+        symbol: Option<&str>,
+        order_id: Option<&str>,
+        start_at: Option<i64>,
+        end_at: Option<i64>,
+        page_size: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(s) = symbol {
+            params.insert("symbol".to_string(), s.to_string());
+        }
+        if let Some(oid) = order_id {
+            params.insert("orderId".to_string(), oid.to_string());
+        }
+        if let Some(st) = start_at {
+            params.insert("startAt".to_string(), st.to_string());
+        }
+        if let Some(et) = end_at {
+            params.insert("endAt".to_string(), et.to_string());
+        }
+        if let Some(ps) = page_size {
+            params.insert("pageSize".to_string(), ps.to_string());
+        }
+        self.get(KuCoinEndpoint::FuturesFills, params, AccountType::FuturesCross).await
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2176,5 +2333,55 @@ impl SubAccounts for KuCoinConnector {
                 })
             }
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// C3 ADDITIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+impl KuCoinConnector {
+    /// Query the transferable quota for a specific asset and account type.
+    ///
+    /// `GET /api/v1/accounts/transferable`
+    /// Required parameters: `currency`, `type` (MAIN, TRADE, MARGIN, etc.).
+    pub async fn get_transfer_quotas(
+        &self,
+        currency: &str,
+        kucoin_account_type: &str,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("currency".to_string(), currency.to_string());
+        params.insert("type".to_string(), kucoin_account_type.to_string());
+        self.get(KuCoinEndpoint::TransferQuotas, params, AccountType::Spot).await
+    }
+
+    /// Cancel a pending withdrawal by withdrawal ID.
+    ///
+    /// `DELETE /api/v1/withdrawals/{withdrawalId}`
+    pub async fn cancel_withdrawal(&self, withdrawal_id: &str) -> ExchangeResult<Value> {
+        self.delete(
+            KuCoinEndpoint::WithdrawalCancel,
+            &[("withdrawalId", withdrawal_id)],
+            AccountType::Spot,
+        ).await
+    }
+
+    /// Query withdrawal quota for a specific asset and network.
+    ///
+    /// `GET /api/v1/withdrawals/quotas`
+    /// Required parameter: `currency`.
+    /// Optional parameter: `chain` (network identifier, e.g. "ERC20").
+    pub async fn get_withdrawal_quotas(
+        &self,
+        currency: &str,
+        chain: Option<&str>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("currency".to_string(), currency.to_string());
+        if let Some(c) = chain {
+            params.insert("chain".to_string(), c.to_string());
+        }
+        self.get(KuCoinEndpoint::WithdrawalQuotas, params, AccountType::Spot).await
     }
 }

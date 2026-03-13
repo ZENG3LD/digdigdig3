@@ -158,6 +158,75 @@ impl ZerodhaConnector {
         let response = self.http.delete(&url, &HashMap::new(), &headers).await?;
         Ok(response)
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EXTENDED METHODS — GTT (Good Till Triggered)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// List all GTT triggers — `GET /gtt/triggers`
+    pub async fn gtt_list(&self) -> ExchangeResult<Value> {
+        self.get(ZerodhaEndpoint::GetGtts, HashMap::new()).await
+    }
+
+    /// Delete a GTT trigger — `DELETE /gtt/triggers/{trigger_id}`
+    pub async fn gtt_delete(&self, trigger_id: u64) -> ExchangeResult<Value> {
+        self.delete(ZerodhaEndpoint::DeleteGtt(trigger_id)).await
+    }
+
+    /// Modify a GTT trigger — `PUT /gtt/triggers/{trigger_id}`
+    ///
+    /// `body` — form parameters for the updated GTT trigger.
+    pub async fn gtt_modify(
+        &self,
+        trigger_id: u64,
+        body: HashMap<String, String>,
+    ) -> ExchangeResult<Value> {
+        self.put(ZerodhaEndpoint::ModifyGtt(trigger_id), body).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EXTENDED METHODS — Instruments Master
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Download instruments master CSV — `GET /instruments`
+    ///
+    /// Returns all tradeable instruments as a raw CSV string.
+    /// Optionally filter by exchange (e.g. `"NSE"`, `"BSE"`, `"NFO"`).
+    pub async fn get_instruments_master(&self, exchange: Option<&str>) -> ExchangeResult<Value> {
+        let endpoint = match exchange {
+            Some(ex) => ZerodhaEndpoint::InstrumentsExchange(ex.to_uppercase()),
+            None => ZerodhaEndpoint::Instruments,
+        };
+        self.get(endpoint, HashMap::new()).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EXTENDED METHODS — Basket Orders
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Place basket orders — `POST /orders/baskets`
+    ///
+    /// `orders` — list of order parameter maps (same fields as individual order placement).
+    /// All orders in the basket are validated together; none execute if any fail validation.
+    pub async fn place_basket_orders(
+        &self,
+        orders: Vec<HashMap<String, String>>,
+    ) -> ExchangeResult<Value> {
+        // Kite Connect basket API accepts JSON array
+        let base_url = self.endpoints.rest_base;
+        let path = ZerodhaEndpoint::BasketOrders.path();
+        let url = format!("{}{}", base_url, path);
+
+        let mut headers = HashMap::new();
+        self.auth.sign_headers(&mut headers);
+        headers.insert("Content-Type".to_string(), "application/json".to_string());
+
+        let body = serde_json::Value::Array(
+            orders.into_iter().map(|o| json!(o)).collect()
+        );
+        let response = self.http.post(&url, &body, &headers).await?;
+        Ok(response)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

@@ -275,4 +275,156 @@ impl UkCompaniesHouseConnector {
         let response = self.get(endpoint, None).await?;
         UkCompaniesHouseParser::parse_officer_appointments(&response)
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Search across all entity types (companies, officers, disqualified directors)
+    ///
+    /// # Arguments
+    /// * `query` - Search query
+    /// * `items_per_page` - Optional items per page (default: 20)
+    /// * `start_index` - Optional pagination offset
+    ///
+    /// # Returns
+    /// Mixed search results as raw JSON
+    pub async fn search_all(
+        &self,
+        query: &str,
+        items_per_page: Option<u32>,
+        start_index: Option<u32>,
+    ) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        params.insert("q".to_string(), query.to_string());
+        if let Some(items) = items_per_page {
+            params.insert("items_per_page".to_string(), items.to_string());
+        }
+        if let Some(start) = start_index {
+            params.insert("start_index".to_string(), start.to_string());
+        }
+
+        self.get(UkCompaniesHouseEndpoint::SearchAll, Some(params)).await
+    }
+
+    /// Search for officers (directors, secretaries) by name
+    ///
+    /// # Arguments
+    /// * `query` - Officer name to search
+    /// * `items_per_page` - Optional items per page (default: 20)
+    ///
+    /// # Returns
+    /// Officer search results as raw JSON
+    pub async fn search_officers(
+        &self,
+        query: &str,
+        items_per_page: Option<u32>,
+    ) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        params.insert("q".to_string(), query.to_string());
+        if let Some(items) = items_per_page {
+            params.insert("items_per_page".to_string(), items.to_string());
+        }
+
+        self.get(UkCompaniesHouseEndpoint::SearchOfficers, Some(params)).await
+    }
+
+    /// Search for disqualified directors by name
+    ///
+    /// # Arguments
+    /// * `query` - Name to search for
+    ///
+    /// # Returns
+    /// Disqualified officer search results as raw JSON
+    pub async fn search_disqualified_officers(
+        &self,
+        query: &str,
+    ) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        params.insert("q".to_string(), query.to_string());
+
+        self.get(UkCompaniesHouseEndpoint::SearchDisqualified, Some(params)).await
+    }
+
+    /// Get disqualification details for an officer
+    ///
+    /// Returns details about a director's disqualification order including
+    /// the reason, period, and undertaking terms.
+    ///
+    /// # Arguments
+    /// * `officer_id` - Officer ID from Companies House
+    ///
+    /// # Returns
+    /// Disqualification details as raw JSON
+    pub async fn get_disqualifications(
+        &self,
+        officer_id: &str,
+    ) -> ExchangeResult<serde_json::Value> {
+        let endpoint = UkCompaniesHouseEndpoint::Disqualifications {
+            officer_id: officer_id.to_string(),
+        };
+        self.get(endpoint, None).await
+    }
+
+    /// Get details for a specific charge on a company
+    ///
+    /// # Arguments
+    /// * `company_number` - UK company registration number
+    /// * `charge_id` - Charge ID from the charges list
+    ///
+    /// # Returns
+    /// Charge details as raw JSON
+    pub async fn get_charge_detail(
+        &self,
+        company_number: &str,
+        charge_id: &str,
+    ) -> ExchangeResult<serde_json::Value> {
+        let endpoint = UkCompaniesHouseEndpoint::ChargeDetail {
+            company_number: company_number.to_string(),
+            charge_id: charge_id.to_string(),
+        };
+        self.get(endpoint, None).await
+    }
+
+    /// Get metadata for a specific filing document
+    ///
+    /// # Arguments
+    /// * `company_number` - UK company registration number
+    /// * `transaction_id` - Transaction ID from the filing history
+    ///
+    /// # Returns
+    /// Filing document metadata as raw JSON (includes download links)
+    pub async fn get_filing_detail(
+        &self,
+        company_number: &str,
+        transaction_id: &str,
+    ) -> ExchangeResult<serde_json::Value> {
+        let endpoint = UkCompaniesHouseEndpoint::FilingDetail {
+            company_number: company_number.to_string(),
+            transaction_id: transaction_id.to_string(),
+        };
+        self.get(endpoint, None).await
+    }
+
+    /// Get details for a specific PSC statement
+    ///
+    /// PSC statements are filed when a company cannot identify a beneficial owner.
+    ///
+    /// # Arguments
+    /// * `company_number` - UK company registration number
+    /// * `statement_id` - PSC statement ID
+    ///
+    /// # Returns
+    /// PSC statement details as raw JSON
+    pub async fn get_psc_detail(
+        &self,
+        company_number: &str,
+        statement_id: &str,
+    ) -> ExchangeResult<serde_json::Value> {
+        let endpoint = UkCompaniesHouseEndpoint::PscDetail {
+            company_number: company_number.to_string(),
+            statement_id: statement_id.to_string(),
+        };
+        self.get(endpoint, None).await
+    }
 }

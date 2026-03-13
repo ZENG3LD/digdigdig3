@@ -28,6 +28,18 @@ pub enum InterpolEndpoint {
     RedNoticeDetail { notice_id: String },
     /// Get images for a red notice
     RedNoticeImages { notice_id: String },
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+    /// Get individual yellow notice details by ID
+    YellowNoticeDetail { notice_id: String },
+    /// Get images for a yellow notice
+    YellowNoticeImages { notice_id: String },
+    /// Get individual UN notice persons (individuals) by entity ID
+    UnPersons,
+    /// Get individual UN notice entities (organizations) by entity ID
+    UnEntities,
 }
 
 impl InterpolEndpoint {
@@ -39,6 +51,12 @@ impl InterpolEndpoint {
             Self::UnNotices => "/un".to_string(),
             Self::RedNoticeDetail { notice_id } => format!("/red/{}", notice_id),
             Self::RedNoticeImages { notice_id } => format!("/red/{}/images", notice_id),
+
+            // C7 additions
+            Self::YellowNoticeDetail { notice_id } => format!("/yellow/{}", notice_id),
+            Self::YellowNoticeImages { notice_id } => format!("/yellow/{}/images", notice_id),
+            Self::UnPersons => "/un/persons".to_string(),
+            Self::UnEntities => "/un/entities".to_string(),
         }
     }
 }

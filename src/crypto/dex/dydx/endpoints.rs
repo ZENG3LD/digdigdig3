@@ -84,6 +84,28 @@ pub enum DydxEndpoint {
 
     // === COMPLIANCE ===
     ComplianceScreen,
+
+    // === TRANSFERS (Extended) ===
+    /// GET /v4/transfers/between — transfers between two subaccounts
+    TransfersBetween,
+    /// GET /v4/assetPositions/parentSubaccountNumber — asset positions for parent subaccount
+    ParentAssetPositions,
+    /// GET /v4/transfers/parentSubaccountNumber — transfers for parent subaccount
+    ParentTransfers,
+
+    // === VAULT ===
+    /// GET /v4/vault/megavault/historicalPnl — MegaVault historical PnL
+    MegaVaultPnl,
+    /// GET /v4/vault/megavault/positions — MegaVault positions
+    MegaVaultPositions,
+    /// GET /v4/vault/vaults/historicalPnl — all vaults historical PnL
+    AllVaultsPnl,
+
+    // === AFFILIATES ===
+    /// GET /v4/affiliates/metadata — affiliate program metadata
+    AffiliateMetadata,
+    /// GET /v4/affiliates/address — affiliate address info
+    AffiliateAddress,
 }
 
 impl DydxEndpoint {
@@ -128,6 +150,20 @@ impl DydxEndpoint {
 
             // Compliance
             Self::ComplianceScreen => "/compliance/screen/{address}",
+
+            // Transfers (Extended)
+            Self::TransfersBetween => "/transfers/between",
+            Self::ParentAssetPositions => "/assetPositions/parentSubaccountNumber",
+            Self::ParentTransfers => "/transfers/parentSubaccountNumber",
+
+            // Vault
+            Self::MegaVaultPnl => "/vault/megavault/historicalPnl",
+            Self::MegaVaultPositions => "/vault/megavault/positions",
+            Self::AllVaultsPnl => "/vault/vaults/historicalPnl",
+
+            // Affiliates
+            Self::AffiliateMetadata => "/affiliates/metadata",
+            Self::AffiliateAddress => "/affiliates/address",
         }
     }
 

@@ -82,6 +82,12 @@ pub enum FyersEndpoint {
     EdisTransactions,
     SubmitHoldings,
     InquireTransaction,
+
+    // === ADDITIONAL ENDPOINTS ===
+    /// Net positions (alias for Positions — GET /api/v3/positions)
+    NetPosition,
+    /// Basket orders (alias for PlaceOrderMulti — POST /api/v3/orders/multi)
+    BasketOrders,
 }
 
 impl FyersEndpoint {
@@ -123,6 +129,10 @@ impl FyersEndpoint {
             Self::EdisTransactions => "/api/v3/edis/transactions",
             Self::SubmitHoldings => "/api/v3/edis/submit-holdings",
             Self::InquireTransaction => "/api/v3/edis/inquire-transaction",
+
+            // Additional Endpoints
+            Self::NetPosition => "/api/v3/positions",
+            Self::BasketOrders => "/api/v3/orders/multi",
         }
     }
 
@@ -135,7 +145,7 @@ impl FyersEndpoint {
             | Self::GenerateToken
             | Self::MarketStatus => false,
 
-            // All other endpoints require auth
+            // All other endpoints (including new ones) require auth
             _ => true,
         }
     }
@@ -149,6 +159,7 @@ impl FyersEndpoint {
             | Self::GenerateToken
             | Self::PlaceOrder
             | Self::PlaceOrderMulti
+            | Self::BasketOrders
             | Self::GenerateTpin
             | Self::SubmitHoldings
             | Self::InquireTransaction => "POST",

@@ -30,8 +30,6 @@ pub enum AbuseIpdbEndpoint {
     BulkReport,
     /// Clear own IP address from reports
     ClearAddress,
-    /// Get list of abuse categories
-    Categories,
 }
 
 impl AbuseIpdbEndpoint {
@@ -44,7 +42,6 @@ impl AbuseIpdbEndpoint {
             Self::CheckBlock => "/check-block",
             Self::BulkReport => "/bulk-report",
             Self::ClearAddress => "/clear-address",
-            Self::Categories => "/categories",
         }
     }
 }

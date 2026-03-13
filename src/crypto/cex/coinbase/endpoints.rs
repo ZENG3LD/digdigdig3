@@ -77,6 +77,7 @@ pub enum CoinbaseEndpoint {
     OrderDetails,     // GET /orders/historical/{order_id}
     ListOrders,       // GET /orders/historical/batch
     ListFills,        // GET /orders/historical/fills
+    FillHistory,      // GET /orders/historical/fills (alias — paginated fill history)
     PreviewOrder,     // POST /orders/preview
 
     // === CUSTODIAL FUNDS (v2 API) ===
@@ -113,6 +114,7 @@ impl CoinbaseEndpoint {
             Self::OrderDetails => "/orders/historical", // Need to append /{order_id}
             Self::ListOrders => "/orders/historical/batch",
             Self::ListFills => "/orders/historical/fills",
+            Self::FillHistory => "/orders/historical/fills",
             Self::PreviewOrder => "/orders/preview",
 
             // v2 paths — caller must substitute {account_id} in the path

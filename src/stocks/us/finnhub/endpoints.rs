@@ -107,6 +107,22 @@ pub enum FinnhubEndpoint {
 
     // === SEC FILINGS ===
     SecFilings,               // SEC documents
+
+    // === ETF DATA ===
+    EtfHoldings,              // GET /api/v1/etf/holdings
+    EtfProfile,               // GET /api/v1/etf/profile
+    EtfCountryExposure,       // GET /api/v1/etf/country
+    EtfSectorExposure,        // GET /api/v1/etf/sector
+
+    // === IPO & EARNINGS ===
+    IpoCalendar,              // GET /api/v1/calendar/ipo
+    EarningsSurprise,         // GET /api/v1/stock/earnings
+
+    // === SOCIAL SENTIMENT ===
+    SocialSentiment,          // GET /api/v1/stock/social-sentiment
+
+    // === CRYPTO PROFILE ===
+    CryptoProfile,            // GET /api/v1/crypto/profile
 }
 
 impl FinnhubEndpoint {
@@ -180,6 +196,22 @@ impl FinnhubEndpoint {
 
             // SEC Filings
             Self::SecFilings => "/stock/filings",
+
+            // ETF Data
+            Self::EtfHoldings => "/etf/holdings",
+            Self::EtfProfile => "/etf/profile",
+            Self::EtfCountryExposure => "/etf/country",
+            Self::EtfSectorExposure => "/etf/sector",
+
+            // IPO & Earnings
+            Self::IpoCalendar => "/calendar/ipo",
+            Self::EarningsSurprise => "/stock/earnings",
+
+            // Social Sentiment
+            Self::SocialSentiment => "/stock/social-sentiment",
+
+            // Crypto Profile
+            Self::CryptoProfile => "/crypto/profile",
         }
     }
 

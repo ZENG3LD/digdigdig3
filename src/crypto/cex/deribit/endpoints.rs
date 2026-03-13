@@ -101,6 +101,28 @@ pub enum DeribitMethod {
     SubscribePrivate,
     UnsubscribePrivate,
     Test,
+
+    // === PUBLIC DERIVATIVES DATA ===
+    /// public/get_funding_rate_history
+    GetFundingRateHistory,
+    /// public/get_funding_rate_value
+    GetFundingRateValue,
+    /// public/get_index_price
+    GetIndexPrice,
+    /// public/get_historical_volatility
+    GetHistoricalVolatility,
+    /// public/get_mark_price_history
+    GetMarkPriceHistory,
+
+    // === PRIVATE ORDER & TRADE HISTORY ===
+    /// private/get_order_history_by_currency (signed)
+    GetOrderHistoryByCurrency,
+    /// private/get_order_history_by_instrument (signed)
+    GetOrderHistoryByInstrument,
+    /// private/get_user_trades_by_currency_and_time (signed)
+    GetUserTradesByCurrencyTime,
+    /// private/get_trigger_order_history (signed)
+    GetTriggerOrderHistory,
 }
 
 impl DeribitMethod {
@@ -156,6 +178,19 @@ impl DeribitMethod {
             Self::SubscribePrivate => "private/subscribe",
             Self::UnsubscribePrivate => "private/unsubscribe",
             Self::Test => "public/test",
+
+            // Public Derivatives Data
+            Self::GetFundingRateHistory => "public/get_funding_rate_history",
+            Self::GetFundingRateValue => "public/get_funding_rate_value",
+            Self::GetIndexPrice => "public/get_index_price",
+            Self::GetHistoricalVolatility => "public/get_historical_volatility",
+            Self::GetMarkPriceHistory => "public/get_mark_price_history",
+
+            // Private Order & Trade History
+            Self::GetOrderHistoryByCurrency => "private/get_order_history_by_currency",
+            Self::GetOrderHistoryByInstrument => "private/get_order_history_by_instrument",
+            Self::GetUserTradesByCurrencyTime => "private/get_user_trades_by_currency_and_time",
+            Self::GetTriggerOrderHistory => "private/get_trigger_order_history",
         }
     }
 

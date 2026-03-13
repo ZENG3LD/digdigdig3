@@ -34,11 +34,11 @@ impl UcdpEndpoint {
     /// Get endpoint path
     pub fn path(&self) -> &'static str {
         match self {
-            Self::GeoEvents => "/gedevents/24.1",
-            Self::BattleDeaths => "/battledeaths/24.1",
-            Self::NonState => "/nonstate/24.1",
-            Self::OneSided => "/onesided/24.1",
-            Self::StateConflict => "/stateconflict/24.1",
+            Self::GeoEvents => "/gedevents/26.0.1",
+            Self::BattleDeaths => "/battledeaths/25.1",
+            Self::NonState => "/nonstate/25.1",
+            Self::OneSided => "/onesided/25.1",
+            Self::StateConflict => "/ucdpprioconflict/25.1",
         }
     }
 }

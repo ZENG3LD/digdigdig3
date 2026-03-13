@@ -374,6 +374,39 @@ impl BinanceConnector {
         Ok(response)
     }
 
+    /// PATCH запрос (for batch amend)
+    async fn patch(
+        &self,
+        endpoint: BinanceEndpoint,
+        mut params: HashMap<String, String>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Value> {
+        self.rate_limit_wait(weights::DEFAULT).await;
+
+        let base_url = self.urls.rest_url(account_type);
+        let path = endpoint.path();
+
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+
+        let headers = auth.sign_request(&mut params);
+
+        let query = if params.is_empty() {
+            String::new()
+        } else {
+            let qs: Vec<String> = params.iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect();
+            format!("?{}", qs.join("&"))
+        };
+
+        let url = format!("{}{}{}", base_url, path, query);
+
+        let response = self.http.patch(&url, &json!({}), &headers).await?;
+        BinanceParser::check_error(&response)?;
+        Ok(response)
+    }
+
     /// DELETE запрос
     async fn delete(
         &self,
@@ -413,6 +446,146 @@ impl BinanceConnector {
         self.update_weight_from_headers(&resp_headers);
         BinanceParser::check_error(&response)?;
         Ok(response)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MARKET DATA EXTENSIONS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Get recent trades for a symbol.
+    ///
+    /// Returns up to `limit` recent trades (max 1000).
+    pub async fn get_recent_trades(
+        &self,
+        symbol: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Value> {
+        let endpoint = match account_type {
+            AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotRecentTrades,
+            _ => BinanceEndpoint::FuturesRecentTrades,
+        };
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(endpoint, params, account_type).await
+    }
+
+    /// Get current average price for a symbol (spot only).
+    pub async fn get_avg_price(&self, symbol: &str) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        self.get(BinanceEndpoint::SpotAvgPrice, params, AccountType::Spot).await
+    }
+
+    /// Get best bid/ask price for a symbol (or all symbols if `symbol` is None).
+    pub async fn get_book_ticker(&self, symbol: Option<&str>) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(s) = symbol {
+            params.insert("symbol".to_string(), s.to_string());
+        }
+        self.get(BinanceEndpoint::SpotBookTicker, params, AccountType::Spot).await
+    }
+
+    /// Get open interest for a futures symbol.
+    pub async fn get_open_interest(&self, symbol: &str) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        self.get(BinanceEndpoint::FuturesOpenInterest, params, AccountType::FuturesCross).await
+    }
+
+    /// Get mark price and funding rate for a futures symbol.
+    pub async fn get_premium_index(&self, symbol: Option<&str>) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(s) = symbol {
+            params.insert("symbol".to_string(), s.to_string());
+        }
+        self.get(BinanceEndpoint::FuturesPremiumIndex, params, AccountType::FuturesCross).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FILL / TRADE HISTORY
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Get personal trade fills for a symbol.
+    ///
+    /// `account_type` selects spot vs futures endpoint.
+    /// `start_time` and `end_time` are Unix milliseconds.
+    pub async fn get_my_trades(
+        &self,
+        symbol: &str,
+        account_type: AccountType,
+        limit: Option<u32>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Value> {
+        let endpoint = match account_type {
+            AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotMyTrades,
+            _ => BinanceEndpoint::FuturesMyTrades,
+        };
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        if let Some(st) = start_time {
+            params.insert("startTime".to_string(), st.to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("endTime".to_string(), et.to_string());
+        }
+        self.get(endpoint, params, account_type).await
+    }
+
+    /// Get futures income history (PnL, funding fees, etc.).
+    ///
+    /// `income_type`: e.g. `"REALIZED_PNL"`, `"FUNDING_FEE"`, `"COMMISSION"`.
+    pub async fn get_income_history(
+        &self,
+        symbol: Option<&str>,
+        income_type: Option<&str>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(s) = symbol {
+            params.insert("symbol".to_string(), s.to_string());
+        }
+        if let Some(t) = income_type {
+            params.insert("incomeType".to_string(), t.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(BinanceEndpoint::FuturesIncomeHistory, params, AccountType::FuturesCross).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // LISTEN KEY MANAGEMENT
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Keepalive a spot user data stream listen key (extend 60-min TTL).
+    pub async fn keepalive_listen_key(&self, listen_key: &str) -> ExchangeResult<Value> {
+        self.rate_limit_wait(weights::DEFAULT).await;
+        let base_url = self.urls.rest_url(AccountType::Spot);
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+        let mut params = HashMap::new();
+        params.insert("listenKey".to_string(), listen_key.to_string());
+        let headers = auth.sign_request(&mut params);
+        let query = format!("?listenKey={}", listen_key);
+        let url = format!("{}{}{}", base_url, BinanceEndpoint::ListenKeyKeepAlive.path(), query);
+        let response = self.http.put(&url, &json!({}), &headers).await?;
+        BinanceParser::check_error(&response)?;
+        Ok(response)
+    }
+
+    /// Close a spot user data stream listen key.
+    pub async fn close_listen_key(&self, listen_key: &str) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("listenKey".to_string(), listen_key.to_string());
+        self.delete(BinanceEndpoint::ListenKeyClose, params, AccountType::Spot).await
     }
 }
 
@@ -1684,6 +1857,43 @@ impl BatchOrders for BinanceConnector {
 
     fn max_batch_cancel_size(&self) -> usize {
         10 // Binance Futures limit
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BATCH AMEND
+// ═══════════════════════════════════════════════════════════════════════════════
+
+impl BinanceConnector {
+    /// Batch amend multiple futures orders via `PATCH /fapi/v1/batchOrders`.
+    ///
+    /// Each entry in `amends` is a JSON object with required fields:
+    /// `symbol`, `orderId` (or `origClientOrderId`), plus at least one of:
+    /// `price`, `quantity`, `stopPrice`.
+    ///
+    /// Max 5 orders per batch (Binance Futures limit).
+    ///
+    /// Returns the raw JSON response from Binance.
+    pub async fn batch_amend_orders(
+        &self,
+        amends: Vec<serde_json::Value>,
+    ) -> ExchangeResult<Value> {
+        if amends.is_empty() {
+            return Ok(serde_json::Value::Array(vec![]));
+        }
+        if amends.len() > 5 {
+            return Err(ExchangeError::InvalidRequest(
+                format!("Batch amend size {} exceeds Binance Futures limit of 5", amends.len())
+            ));
+        }
+
+        let batch_json_str = serde_json::to_string(&amends)
+            .map_err(|e| ExchangeError::Parse(format!("Failed to serialize batch amend orders: {}", e)))?;
+
+        let mut params = HashMap::new();
+        params.insert("batchOrders".to_string(), batch_json_str);
+
+        self.patch(BinanceEndpoint::FuturesBatchAmend, params, AccountType::FuturesCross).await
     }
 }
 

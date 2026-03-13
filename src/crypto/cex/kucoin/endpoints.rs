@@ -142,9 +142,43 @@ pub enum KuCoinEndpoint {
     /// GET /api/v1/sub-accounts/{subUserId} — get sub-account balance
     SubAccountBalance,
 
+    // === SPOT MARKET DATA EXTENSIONS ===
+    /// GET /api/v1/market/histories — recent spot trades (public)
+    SpotRecentTrades,
+    /// GET /api/v1/market/orderbook/level2 — full order book (public)
+    FullOrderbook,
+
+    // === SPOT FILL HISTORY ===
+    /// GET /api/v1/fills — spot trade fills (signed)
+    SpotFills,
+
+    // === FUTURES MARKET DATA EXTENSIONS ===
+    /// GET /api/v1/trade/history — futures recent trades (public)
+    FuturesTradeHistory,
+    /// GET /api/v1/contract/funding-rates — futures funding rate history (public)
+    FuturesFundingRates,
+    /// GET /api/v1/mark-price/{symbol}/current — futures mark price (public)
+    FuturesMarkPrice,
+    /// GET /api/v1/index-price/{symbol}/current — futures index price (public)
+    FuturesIndexPrice,
+    /// GET /api/v1/premium-index/{symbol}/current — futures premium index (public)
+    FuturesPremiumIndex,
+
+    // === FUTURES FILL HISTORY ===
+    /// GET /api/v1/fills — futures trade fills (signed, futures base URL)
+    FuturesFills,
+
     // === WEBSOCKET ===
     WsPublicToken,
     WsPrivateToken,
+
+    // === C3 ADDITIONS ===
+    /// GET /api/v1/accounts/transferable — query transferable quota for an asset
+    TransferQuotas,
+    /// DELETE /api/v1/withdrawals/{withdrawalId} — cancel a pending withdrawal by ID
+    WithdrawalCancel,
+    /// GET /api/v1/withdrawals/quotas — query withdrawal quota for an asset/chain
+    WithdrawalQuotas,
 }
 
 impl KuCoinEndpoint {
@@ -225,9 +259,31 @@ impl KuCoinEndpoint {
             Self::SubAccountTransfer => "/api/v2/accounts/sub-transfer",
             Self::SubAccountBalance => "/api/v1/sub-accounts/{subUserId}",
 
+            // Spot Market Data Extensions
+            Self::SpotRecentTrades => "/api/v1/market/histories",
+            Self::FullOrderbook => "/api/v1/market/orderbook/level2",
+
+            // Spot Fill History
+            Self::SpotFills => "/api/v1/fills",
+
+            // Futures Market Data Extensions
+            Self::FuturesTradeHistory => "/api/v1/trade/history",
+            Self::FuturesFundingRates => "/api/v1/contract/funding-rates",
+            Self::FuturesMarkPrice => "/api/v1/mark-price/{symbol}/current",
+            Self::FuturesIndexPrice => "/api/v1/index-price/{symbol}/current",
+            Self::FuturesPremiumIndex => "/api/v1/premium-index/{symbol}/current",
+
+            // Futures Fill History
+            Self::FuturesFills => "/api/v1/fills",
+
             // WebSocket
             Self::WsPublicToken => "/api/v1/bullet-public",
             Self::WsPrivateToken => "/api/v1/bullet-private",
+
+            // C3 Additions
+            Self::TransferQuotas => "/api/v1/accounts/transferable",
+            Self::WithdrawalCancel => "/api/v1/withdrawals/{withdrawalId}",
+            Self::WithdrawalQuotas => "/api/v1/withdrawals/quotas",
         }
     }
 
@@ -242,6 +298,8 @@ impl KuCoinEndpoint {
             | Self::SpotTicker
             | Self::SpotAllTickers
             | Self::SpotSymbols
+            | Self::SpotRecentTrades
+            | Self::FullOrderbook
             | Self::FuturesPrice
             | Self::FuturesOrderbook
             | Self::FuturesKlines
@@ -249,6 +307,11 @@ impl KuCoinEndpoint {
             | Self::FuturesAllTickers
             | Self::FuturesContracts
             | Self::FundingRate
+            | Self::FuturesTradeHistory
+            | Self::FuturesFundingRates
+            | Self::FuturesMarkPrice
+            | Self::FuturesIndexPrice
+            | Self::FuturesPremiumIndex
             | Self::WsPublicToken => false,
 
             // Private endpoints
@@ -275,7 +338,8 @@ impl KuCoinEndpoint {
             Self::SpotCancelOrder
             | Self::SpotCancelAllOrders
             | Self::FuturesCancelOrder
-            | Self::FuturesCancelAllOrders => "DELETE",
+            | Self::FuturesCancelAllOrders
+            | Self::WithdrawalCancel => "DELETE",
 
             _ => "GET",
         }

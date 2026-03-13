@@ -89,6 +89,8 @@ pub enum DhanEndpoint {
     // === TRADING - TRADE HISTORY ===
     GetTradesByOrder,
     GetTradeHistory,
+    /// GET /v2/trades (signed) — recent trade history without date range params
+    GetRecentTrades,
 
     // === PORTFOLIO ===
     GetHoldings,
@@ -103,6 +105,10 @@ pub enum DhanEndpoint {
     GenerateTPIN,
     GetEDISForm,
     CheckEDISStatus,
+
+    // === KILL SWITCH ===
+    /// POST /v2/killswitch — activate/deactivate kill switch for all trading
+    KillSwitch,
 }
 
 impl DhanEndpoint {
@@ -146,6 +152,7 @@ impl DhanEndpoint {
             // Trading - Trade History
             Self::GetTradesByOrder => "/v2/trades/{orderId}",
             Self::GetTradeHistory => "/v2/trades/{fromDate}/{toDate}/{page}",
+            Self::GetRecentTrades => "/v2/trades",
 
             // Portfolio
             Self::GetHoldings => "/v2/holdings",
@@ -160,6 +167,9 @@ impl DhanEndpoint {
             Self::GenerateTPIN => "/v2/edis/tpin",
             Self::GetEDISForm => "/v2/edis/form",
             Self::CheckEDISStatus => "/v2/edis/inquiry",
+
+            // Kill Switch
+            Self::KillSwitch => "/v2/killswitch",
         }
     }
 
@@ -193,7 +203,8 @@ impl DhanEndpoint {
             | Self::ConvertPosition
             | Self::GenerateTPIN
             | Self::GetEDISForm
-            | Self::CheckEDISStatus => "POST",
+            | Self::CheckEDISStatus
+            | Self::KillSwitch => "POST",
 
             // PUT endpoints
             Self::ModifyOrder | Self::ModifySuperOrder | Self::ModifyForeverOrder => "PUT",

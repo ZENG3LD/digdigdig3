@@ -355,6 +355,103 @@ impl LaunchLibraryConnector {
         let response = self.get(LaunchLibraryEndpoint::LaunchUpcoming, params).await?;
         LaunchLibraryParser::parse_launches(&response)
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Get launcher vehicle instances (specific serial numbers / flight hardware)
+    ///
+    /// # Arguments
+    /// - `limit` - Optional limit
+    ///
+    /// # Returns
+    /// Paginated launcher instance data as raw JSON
+    pub async fn get_launchers(&self, limit: Option<u32>) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        if let Some(lim) = limit {
+            params.insert("limit".to_string(), lim.to_string());
+        }
+        self.get(LaunchLibraryEndpoint::Launcher, params).await
+    }
+
+    /// Get launch pad details
+    ///
+    /// # Arguments
+    /// - `limit` - Optional limit
+    ///
+    /// # Returns
+    /// Paginated pad data as raw JSON
+    pub async fn get_pads(&self, limit: Option<u32>) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        if let Some(lim) = limit {
+            params.insert("limit".to_string(), lim.to_string());
+        }
+        self.get(LaunchLibraryEndpoint::Pad, params).await
+    }
+
+    /// Get launch location details
+    ///
+    /// # Arguments
+    /// - `limit` - Optional limit
+    ///
+    /// # Returns
+    /// Paginated location data as raw JSON
+    pub async fn get_locations(&self, limit: Option<u32>) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        if let Some(lim) = limit {
+            params.insert("limit".to_string(), lim.to_string());
+        }
+        self.get(LaunchLibraryEndpoint::Location, params).await
+    }
+
+    /// Get ISS / space station expedition data
+    ///
+    /// # Arguments
+    /// - `limit` - Optional limit
+    ///
+    /// # Returns
+    /// Paginated expedition data as raw JSON
+    pub async fn get_expeditions(&self, limit: Option<u32>) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        if let Some(lim) = limit {
+            params.insert("limit".to_string(), lim.to_string());
+        }
+        self.get(LaunchLibraryEndpoint::Expedition, params).await
+    }
+
+    /// Get docking events (ISS, Mir, etc.)
+    ///
+    /// # Arguments
+    /// - `limit` - Optional limit
+    ///
+    /// # Returns
+    /// Paginated docking event data as raw JSON
+    pub async fn get_docking_events(
+        &self,
+        limit: Option<u32>,
+    ) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        if let Some(lim) = limit {
+            params.insert("limit".to_string(), lim.to_string());
+        }
+        self.get(LaunchLibraryEndpoint::Docking, params).await
+    }
+
+    /// Get payload (spacecraft flight vehicle) information
+    ///
+    /// # Arguments
+    /// - `limit` - Optional limit
+    ///
+    /// # Returns
+    /// Paginated payload data as raw JSON
+    pub async fn get_payloads(&self, limit: Option<u32>) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        if let Some(lim) = limit {
+            params.insert("limit".to_string(), lim.to_string());
+        }
+        self.get(LaunchLibraryEndpoint::Payload, params).await
+    }
 }
 
 impl Default for LaunchLibraryConnector {

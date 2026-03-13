@@ -161,6 +161,8 @@ pub enum ActionType {
     Cancel,             // Cancel order(s) by ID
     CancelByCloid,      // Cancel order(s) by client order ID
     Modify,             // Modify existing order
+    /// Batch modify multiple orders: batchModify action on /exchange
+    BatchModify,        // Batch modify multiple orders in one request
 
     // Position Management
     UpdateLeverage,     // Set leverage for asset
@@ -182,6 +184,7 @@ impl ActionType {
             Self::Cancel => "cancel",
             Self::CancelByCloid => "cancelByCloid",
             Self::Modify => "modify",
+            Self::BatchModify => "batchModify",
             Self::UpdateLeverage => "updateLeverage",
             Self::UpdateIsolatedMargin => "updateIsolatedMargin",
             Self::UsdClassTransfer => "usdClassTransfer",
@@ -199,6 +202,7 @@ impl ActionType {
             | Self::Cancel
             | Self::CancelByCloid
             | Self::Modify
+            | Self::BatchModify
             | Self::UpdateLeverage
             | Self::UpdateIsolatedMargin
             | Self::UsdClassTransfer

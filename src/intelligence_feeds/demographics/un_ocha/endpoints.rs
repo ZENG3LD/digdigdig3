@@ -9,7 +9,7 @@ pub struct UnOchaEndpoints {
 impl Default for UnOchaEndpoints {
     fn default() -> Self {
         Self {
-            rest_base: "https://hapi.humdata.org/api/v1",
+            rest_base: "https://hapi.humdata.org/api/v2",
             ws_base: None, // HAPI does not support WebSocket
         }
     }
@@ -34,6 +34,16 @@ pub enum UnOchaEndpoint {
     Idps,
     /// Returnees data
     Returnees,
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+    /// Conflict events data (via HAPI)
+    ConflictEvents,
+    /// National risk assessments
+    NationalRisk,
+    /// Food prices (WFP VAM / HungerMap data via HAPI)
+    FoodPrices,
 }
 
 impl UnOchaEndpoint {
@@ -48,6 +58,11 @@ impl UnOchaEndpoint {
             Self::Refugees => "/refugees",
             Self::Idps => "/idps",
             Self::Returnees => "/returnees",
+
+            // C7 additions
+            Self::ConflictEvents => "/conflict-event",
+            Self::NationalRisk => "/national-risk",
+            Self::FoodPrices => "/food-prices-market",
         }
     }
 }

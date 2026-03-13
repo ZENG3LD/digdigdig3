@@ -45,6 +45,16 @@ pub enum CbrEndpoint {
     MonetaryBase,
     /// Get interbank rates (MKR)
     InterbankRates,
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // NEW ENDPOINTS (C6 additions)
+    // ═══════════════════════════════════════════════════════════════════════
+    /// Get RUONIA overnight rate (Ruble Overnight Index Average)
+    RuoniaRate,
+    /// Get CBR deposit rates
+    DepositRates,
+    /// Get historical refinancing rate series
+    RefinancingRateHistory,
 }
 
 impl CbrEndpoint {
@@ -64,6 +74,11 @@ impl CbrEndpoint {
             Self::InternationalReserves => "/scripts/XML_ostat.asp",
             Self::MonetaryBase => "/scripts/XML_bic.asp",
             Self::InterbankRates => "/scripts/XML_mkr.asp",
+
+            // C6 additions
+            Self::RuoniaRate => "/scripts/XML_RuoniaRate.asp",
+            Self::DepositRates => "/scripts/XML_DP.asp",
+            Self::RefinancingRateHistory => "/api/v1/press/keyrate",
         }
     }
 }

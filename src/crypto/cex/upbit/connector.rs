@@ -299,6 +299,44 @@ impl UpbitConnector {
             Ok(vec![])
         }
     }
+
+    /// Closed order history — `GET /v1/orders/closed` (signed)
+    ///
+    /// Returns filled and cancelled orders using cursor-based pagination.
+    /// Optional params: `market`, `state` (`done`/`cancel`), `start_time`, `end_time`,
+    /// `limit` (1–1000, default 100), `order_by` (`asc`/`desc`), `cursor`.
+    pub async fn get_closed_orders(
+        &self,
+        market: Option<&str>,
+        state: Option<&str>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        cursor: Option<&str>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(m) = market {
+            params.insert("market".to_string(), m.to_string());
+        }
+        // state: "done" (filled) or "cancel" (cancelled). Default "done".
+        params.insert(
+            "state".to_string(),
+            state.unwrap_or("done").to_string(),
+        );
+        if let Some(st) = start_time {
+            params.insert("start_time".to_string(), st.to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("end_time".to_string(), et.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.clamp(1, 1000).to_string());
+        }
+        if let Some(c) = cursor {
+            params.insert("cursor".to_string(), c.to_string());
+        }
+        self.get(UpbitEndpoint::ClosedOrders, params, AccountType::Spot).await
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -978,5 +1016,83 @@ impl AmendOrder for UpbitConnector {
         // Response contains the newly created order under the "new_order" key.
         let new_order = response.get("new_order").unwrap_or(&response);
         UpbitParser::parse_order(new_order, &upbit_symbol)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// C3 ADDITIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+impl UpbitConnector {
+    /// Get order chance (market restrictions and trading fees) for a market.
+    ///
+    /// `GET /v1/orders/chance`
+    /// Required parameter: `market` (e.g. `"KRW-BTC"`).
+    pub async fn get_order_chance(&self, market: &str) -> ExchangeResult<Value> {
+        let mut params = std::collections::HashMap::new();
+        params.insert("market".to_string(), market.to_string());
+        self.get(UpbitEndpoint::OrderChance, params, AccountType::Spot).await
+    }
+
+    /// List open (unfilled) orders with pagination, optionally filtered by market.
+    ///
+    /// `GET /v1/orders/open`
+    /// This is the v2 paginated endpoint, distinct from the trait's `get_open_orders`.
+    /// Optional parameters: `market`, `page`, `limit`, `order_by`.
+    pub async fn list_open_orders_paginated(
+        &self,
+        market: Option<&str>,
+        page: Option<u32>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = std::collections::HashMap::new();
+        if let Some(m) = market {
+            params.insert("market".to_string(), m.to_string());
+        }
+        if let Some(p) = page {
+            params.insert("page".to_string(), p.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(UpbitEndpoint::OpenOrders, params, AccountType::Spot).await
+    }
+
+    /// Get wallet status for all assets or a specific currency.
+    ///
+    /// `GET /v1/status/wallet`
+    /// Optional parameter: `currency` (e.g. `"BTC"`).
+    pub async fn get_wallet_status(&self, currency: Option<&str>) -> ExchangeResult<Value> {
+        let mut params = std::collections::HashMap::new();
+        if let Some(c) = currency {
+            params.insert("currency".to_string(), c.to_string());
+        }
+        self.get(UpbitEndpoint::WalletStatus, params, AccountType::Spot).await
+    }
+
+    /// Withdraw Korean Won (KRW) to a bank account.
+    ///
+    /// `POST /v1/withdraws/krw`
+    /// Required parameters: `amount`, `two_factor_type`.
+    pub async fn withdraw_krw(
+        &self,
+        amount: f64,
+        two_factor_type: &str,
+    ) -> ExchangeResult<Value> {
+        let body = json!({
+            "amount": amount.to_string(),
+            "two_factor_type": two_factor_type,
+        });
+        self.post(UpbitEndpoint::WithdrawKrw, body, AccountType::Spot).await
+    }
+
+    /// Cancel a pending withdrawal by UUID.
+    ///
+    /// `DELETE /v1/withdraws/uuid`
+    /// Required parameter: `uuid`.
+    pub async fn cancel_withdraw(&self, uuid: &str) -> ExchangeResult<Value> {
+        let mut params = std::collections::HashMap::new();
+        params.insert("uuid".to_string(), uuid.to_string());
+        self.delete(UpbitEndpoint::CancelWithdraw, params, AccountType::Spot).await
     }
 }

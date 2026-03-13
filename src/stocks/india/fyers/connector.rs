@@ -176,6 +176,41 @@ impl FyersConnector {
         let response = self.http.delete(&url, &HashMap::new(), &headers).await?;
         Ok(response)
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EXTENDED METHODS — Position Conversion
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Convert a position (e.g. MIS → CNC) — `PUT /api/v3/positions`
+    ///
+    /// `body` — JSON object with conversion parameters:
+    /// `symbol`, `side` (1=buy / -1=sell), `qty`, `type` (1=intraday / 2=overnight),
+    /// `validity`, `order_type`, `limit_price`, `stop_price`.
+    pub async fn position_conversion(&self, body: Value) -> ExchangeResult<Value> {
+        self.put(FyersEndpoint::ConvertPosition, body).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EXTENDED METHODS — Basket Orders
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Place basket (multi) orders — `POST /api/v3/orders/multi`
+    ///
+    /// `orders` — JSON array of order objects; validated together atomically.
+    pub async fn place_basket_orders(&self, orders: Value) -> ExchangeResult<Value> {
+        self.post(FyersEndpoint::BasketOrders, orders).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EXTENDED METHODS — Net Position
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Get net positions — `GET /api/v3/positions`
+    ///
+    /// Returns intraday and overnight open positions.
+    pub async fn get_net_position(&self) -> ExchangeResult<Value> {
+        self.get(FyersEndpoint::NetPosition, HashMap::new()).await
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

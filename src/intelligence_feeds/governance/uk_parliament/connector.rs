@@ -283,6 +283,67 @@ impl UkParliamentConnector {
         let _ = self.get(UkParliamentEndpoint::MembersSearch, params, None).await?;
         Ok(())
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Get registered financial interests for a member
+    ///
+    /// # Arguments
+    /// - `member_id` - Member ID
+    ///
+    /// # Returns
+    /// Registered interests as raw JSON value
+    pub async fn get_registered_interests(
+        &self,
+        member_id: u32,
+    ) -> ExchangeResult<serde_json::Value> {
+        let params = HashMap::new();
+        self.get(UkParliamentEndpoint::RegisteredInterests, params, Some(member_id)).await
+    }
+
+    /// Get amendments to a specific bill
+    ///
+    /// # Arguments
+    /// - `bill_id` - Bill ID
+    ///
+    /// # Returns
+    /// Bill amendments as raw JSON value
+    pub async fn get_bill_amendments(&self, bill_id: u32) -> ExchangeResult<serde_json::Value> {
+        let params = HashMap::new();
+        self.get(UkParliamentEndpoint::AmendmentTracking { bill_id }, params, None).await
+    }
+
+    /// Get party composition for each house
+    ///
+    /// Returns the breakdown of party membership in the House of Commons
+    /// and House of Lords.
+    ///
+    /// # Arguments
+    /// - `house` - Optional house filter (1=Commons, 2=Lords)
+    ///
+    /// # Returns
+    /// Party composition data as raw JSON value
+    pub async fn get_parties_composition(
+        &self,
+        house: Option<u8>,
+    ) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        if let Some(h) = house {
+            params.insert("House".to_string(), h.to_string());
+        }
+        self.get(UkParliamentEndpoint::PartiesComposition, params, None).await
+    }
+
+    /// Get government posts and ministerial appointments
+    ///
+    /// # Returns
+    /// Government posts as raw JSON value
+    pub async fn get_posts(&self) -> ExchangeResult<serde_json::Value> {
+        let params = HashMap::new();
+        self.get(UkParliamentEndpoint::Posts, params, None).await
+    }
 }
 
 impl Default for UkParliamentConnector {

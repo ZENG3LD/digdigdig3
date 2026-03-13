@@ -79,6 +79,22 @@ pub enum GmxEndpoint {
     Performance,
     GlvTokens,
     GlvInfo,
+
+    // === GLV / VAULT ===
+    /// GET /glvs/apy — GLV (GMX Liquidity Vault) APY data
+    GlvApy,
+
+    // === STATS / ANALYTICS ===
+    /// GET /stats/ui-fees — UI fee revenue stats
+    UiFees,
+    /// GET /stats/position — position statistics
+    PositionStats,
+    /// GET /stats/fee-metrics — protocol fee metrics
+    FeeMetrics,
+    /// GET /stats/volume — trading volume statistics
+    Volumes,
+    /// GET /stats/account — per-account statistics
+    AccountStats,
 }
 
 impl GmxEndpoint {
@@ -99,6 +115,16 @@ impl GmxEndpoint {
             Self::Performance => "/performance/annualized",
             Self::GlvTokens => "/glvs",
             Self::GlvInfo => "/glvs/info",
+
+            // GLV / Vault
+            Self::GlvApy => "/glvs/apy",
+
+            // Stats / Analytics
+            Self::UiFees => "/stats/ui-fees",
+            Self::PositionStats => "/stats/position",
+            Self::FeeMetrics => "/stats/fee-metrics",
+            Self::Volumes => "/stats/volume",
+            Self::AccountStats => "/stats/account",
         }
     }
 

@@ -41,6 +41,19 @@ pub enum GleifEndpoint {
     /// Search by country
     /// GET /lei-records?filter[entity.legalAddress.country]={iso2}
     SearchByCountry,
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+    /// Get relationship records (ownership/control hierarchy links)
+    /// GET /relationship-records?filter[startNode.id]={lei}
+    RelationshipRecords,
+    /// Map a BIC (Bank Identifier Code) to an LEI
+    /// GET /lei-records?filter[bic]={bic}
+    BicMaps,
+    /// Get reporting exceptions for a specific LEI
+    /// GET /reporting-exceptions?filter[LEI]={lei}
+    ReportingExceptions { lei: String },
 }
 
 impl GleifEndpoint {
@@ -53,6 +66,11 @@ impl GleifEndpoint {
             Self::UltimateParent { lei } => format!("/lei-records/{}/ultimate-parent", lei),
             Self::DirectChildren { lei } => format!("/lei-records/{}/direct-children", lei),
             Self::SearchByCountry => "/lei-records".to_string(),
+
+            // C7 additions
+            Self::RelationshipRecords => "/relationship-records".to_string(),
+            Self::BicMaps => "/lei-records".to_string(),
+            Self::ReportingExceptions { .. } => "/reporting-exceptions".to_string(),
         }
     }
 }

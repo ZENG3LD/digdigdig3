@@ -32,6 +32,26 @@ pub enum OtxEndpoint {
     FileReputation { hash: String },
     /// Get URL reputation
     UrlReputation { url: String },
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+    /// Get a specific pulse by ID
+    PulseById { pulse_id: String },
+    /// Create a new pulse (POST endpoint)
+    PulseCreate,
+    /// Get pulses created by a specific user
+    UserPulses { username: String },
+    /// Full-text search across OTX pulses
+    PulseSearch,
+    /// Get pulses created by the authenticated user
+    MyPulses,
+    /// Get all indicators for an IPv4 address (all sections)
+    Ipv4Indicators { ip: String, section: String },
+    /// Get all indicators for a domain (all sections)
+    DomainIndicators { domain: String, section: String },
+    /// Get all indicators for a hostname (all sections)
+    HostnameIndicators { hostname: String, section: String },
 }
 
 impl OtxEndpoint {
@@ -45,6 +65,16 @@ impl OtxEndpoint {
             Self::HostnameReputation { hostname } => format!("/indicators/hostname/{}/general", hostname),
             Self::FileReputation { hash } => format!("/indicators/file/{}/general", hash),
             Self::UrlReputation { url } => format!("/indicators/url/{}/general", url),
+
+            // C7 additions
+            Self::PulseById { pulse_id } => format!("/pulses/{}", pulse_id),
+            Self::PulseCreate => "/pulses/create".to_string(),
+            Self::UserPulses { username } => format!("/users/{}/pulses", username),
+            Self::PulseSearch => "/search/pulses".to_string(),
+            Self::MyPulses => "/pulses/my".to_string(),
+            Self::Ipv4Indicators { ip, section } => format!("/indicators/IPv4/{}/{}", ip, section),
+            Self::DomainIndicators { domain, section } => format!("/indicators/domain/{}/{}", domain, section),
+            Self::HostnameIndicators { hostname, section } => format!("/indicators/hostname/{}/{}", hostname, section),
         }
     }
 }

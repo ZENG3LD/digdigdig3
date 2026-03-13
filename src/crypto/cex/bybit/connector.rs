@@ -329,6 +329,164 @@ impl BybitConnector {
 
         Ok(ids)
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MARKET DATA EXTENSIONS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Get open interest for a symbol.
+    ///
+    /// `interval_time`: e.g. `"5min"`, `"15min"`, `"30min"`, `"1h"`, `"4h"`, `"1d"`.
+    pub async fn get_open_interest(
+        &self,
+        symbol: &str,
+        interval_time: &str,
+        account_type: AccountType,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("category".to_string(), account_type_to_category(account_type).to_string());
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("intervalTime".to_string(), interval_time.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(BybitEndpoint::OpenInterest, params).await
+    }
+
+    /// Get long/short ratio for a symbol.
+    ///
+    /// `period`: e.g. `"5min"`, `"15min"`, `"30min"`, `"1h"`, `"4h"`, `"1d"`.
+    pub async fn get_long_short_ratio(
+        &self,
+        symbol: &str,
+        period: &str,
+        account_type: AccountType,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("category".to_string(), account_type_to_category(account_type).to_string());
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("period".to_string(), period.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(BybitEndpoint::LongShortRatio, params).await
+    }
+
+    /// Get mark price kline data.
+    pub async fn get_mark_price_kline(
+        &self,
+        symbol: &str,
+        interval: &str,
+        account_type: AccountType,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("category".to_string(), account_type_to_category(account_type).to_string());
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("interval".to_string(), map_kline_interval(interval).to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(BybitEndpoint::MarkPriceKline, params).await
+    }
+
+    /// Get index price kline data.
+    pub async fn get_index_price_kline(
+        &self,
+        symbol: &str,
+        interval: &str,
+        account_type: AccountType,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("category".to_string(), account_type_to_category(account_type).to_string());
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("interval".to_string(), map_kline_interval(interval).to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(BybitEndpoint::IndexPriceKline, params).await
+    }
+
+    /// Get premium index price kline data.
+    pub async fn get_premium_index_kline(
+        &self,
+        symbol: &str,
+        interval: &str,
+        account_type: AccountType,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("category".to_string(), account_type_to_category(account_type).to_string());
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("interval".to_string(), map_kline_interval(interval).to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(BybitEndpoint::PremiumIndexKline, params).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FILL / TRADE HISTORY
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Get personal trade fills (executions).
+    ///
+    /// `start_time` and `end_time` are Unix milliseconds.
+    pub async fn get_my_trades(
+        &self,
+        symbol: Option<&str>,
+        account_type: AccountType,
+        limit: Option<u32>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("category".to_string(), account_type_to_category(account_type).to_string());
+        if let Some(s) = symbol {
+            params.insert("symbol".to_string(), s.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        if let Some(st) = start_time {
+            params.insert("startTime".to_string(), st.to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("endTime".to_string(), et.to_string());
+        }
+        self.get(BybitEndpoint::MyTrades, params).await
+    }
+
+    /// Get closed PnL history for futures positions.
+    ///
+    /// `start_time` and `end_time` are Unix milliseconds.
+    pub async fn get_closed_pnl(
+        &self,
+        symbol: Option<&str>,
+        account_type: AccountType,
+        limit: Option<u32>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("category".to_string(), account_type_to_category(account_type).to_string());
+        if let Some(s) = symbol {
+            params.insert("symbol".to_string(), s.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        if let Some(st) = start_time {
+            params.insert("startTime".to_string(), st.to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("endTime".to_string(), et.to_string());
+        }
+        self.get(BybitEndpoint::ClosedPnl, params).await
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1811,6 +1969,44 @@ impl BatchOrders for BybitConnector {
 
     fn max_batch_cancel_size(&self) -> usize {
         10 // Bybit limit
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BATCH AMEND
+// ═══════════════════════════════════════════════════════════════════════════════
+
+impl BybitConnector {
+    /// Batch amend multiple orders via `POST /v5/order/amend-batch`.
+    ///
+    /// Each entry in `amends` should be a JSON object containing:
+    /// `category`, `symbol`, `orderId` (or `orderLinkId`), plus at least one of
+    /// `price` or `qty`.
+    ///
+    /// Max 10 orders per batch (Bybit limit).
+    ///
+    /// Returns the raw JSON response from Bybit.
+    pub async fn batch_amend_orders(
+        &self,
+        amends: Vec<serde_json::Value>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Value> {
+        if amends.is_empty() {
+            return Ok(serde_json::Value::Array(vec![]));
+        }
+        if amends.len() > 10 {
+            return Err(ExchangeError::InvalidRequest(
+                format!("Batch amend size {} exceeds Bybit limit of 10", amends.len())
+            ));
+        }
+
+        let category = account_type_to_category(account_type);
+        let body = json!({
+            "category": category,
+            "request": amends,
+        });
+
+        self.post(BybitEndpoint::BatchAmendOrders, body).await
     }
 }
 

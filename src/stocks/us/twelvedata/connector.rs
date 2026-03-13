@@ -121,6 +121,52 @@ impl TwelvedataConnector {
             .await
             .map_err(|e| ExchangeError::Parse(e.to_string()))
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EXTENDED METHODS — Real-time & Complex Data
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Real-time price — `GET /price`
+    ///
+    /// Simpler than `Quote` — returns only the current price for one or more symbols.
+    /// `symbol` can be a comma-separated list (e.g. `"AAPL,MSFT,GOOGL"`).
+    pub async fn get_realtime_price(&self, symbol: &str) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        self.get(TwelvedataEndpoint::RealTimePrice, params).await
+    }
+
+    /// Complex data — `GET /complex_data`
+    ///
+    /// Batch multiple instruments and/or technical indicators in a single API call.
+    /// `params` should include at minimum `symbols` and optionally `intervals`, indicators, etc.
+    pub async fn get_complex_data(&self, params: HashMap<String, String>) -> ExchangeResult<Value> {
+        self.get(TwelvedataEndpoint::ComplexData, params).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EXTENDED METHODS — Fund Reference Data
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Mutual funds list — `GET /mutual_funds/list`
+    ///
+    /// Optional params: `symbol`, `exchange`, `country`, `fund_type`, `show_plan`, `country_fund`.
+    pub async fn get_mutual_funds_list(
+        &self,
+        params: HashMap<String, String>,
+    ) -> ExchangeResult<Value> {
+        self.get(TwelvedataEndpoint::MutualFundsList, params).await
+    }
+
+    /// Bonds list — `GET /bonds/list`
+    ///
+    /// Optional params: `symbol`, `exchange`, `country`, `type`, `bond_type`.
+    pub async fn get_bonds_list(
+        &self,
+        params: HashMap<String, String>,
+    ) -> ExchangeResult<Value> {
+        self.get(TwelvedataEndpoint::BondsList, params).await
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

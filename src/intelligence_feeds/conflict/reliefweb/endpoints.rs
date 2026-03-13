@@ -9,7 +9,7 @@ pub struct ReliefWebEndpoints {
 impl Default for ReliefWebEndpoints {
     fn default() -> Self {
         Self {
-            rest_base: "https://api.reliefweb.int/v1",
+            rest_base: "https://api.reliefweb.int/v2",
             ws_base: None, // ReliefWeb does not support WebSocket
         }
     }

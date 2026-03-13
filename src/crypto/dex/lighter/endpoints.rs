@@ -93,6 +93,26 @@ pub enum LighterEndpoint {
     // === MISC ===
     PublicPools,
     TransferFeeInfo,
+
+    // === MARKET DATA (Extended) ===
+    /// GET /api/v1/funding-rates — latest funding rates per market
+    FundingRates,
+    /// GET /api/v1/exchangeMetrics — aggregate exchange metrics
+    ExchangeMetrics,
+
+    // === ACCOUNT (Extended) ===
+    /// GET /api/v1/accountLimits — account-level trading limits
+    AccountLimits,
+    /// GET /api/v1/accountMetadata — account metadata (tier, settings)
+    AccountMetadata,
+    /// GET /api/v1/positionFunding — per-position funding payments
+    PositionFunding,
+    /// GET /api/v1/liquidations — account liquidation history
+    Liquidations,
+
+    // === CUSTODIAL ===
+    /// GET /api/v1/withdrawalDelays — pending withdrawal delay info
+    WithdrawalDelays,
 }
 
 impl LighterEndpoint {
@@ -143,6 +163,19 @@ impl LighterEndpoint {
             // Misc
             Self::PublicPools => "/api/v1/publicPools",
             Self::TransferFeeInfo => "/api/v1/transferFeeInfo",
+
+            // Market Data (Extended)
+            Self::FundingRates => "/api/v1/funding-rates",
+            Self::ExchangeMetrics => "/api/v1/exchangeMetrics",
+
+            // Account (Extended)
+            Self::AccountLimits => "/api/v1/accountLimits",
+            Self::AccountMetadata => "/api/v1/accountMetadata",
+            Self::PositionFunding => "/api/v1/positionFunding",
+            Self::Liquidations => "/api/v1/liquidations",
+
+            // Custodial
+            Self::WithdrawalDelays => "/api/v1/withdrawalDelays",
         }
     }
 
@@ -168,7 +201,9 @@ impl LighterEndpoint {
             | Self::BlockTxs
             | Self::TxFromL1TxHash
             | Self::PublicPools
-            | Self::TransferFeeInfo => false,
+            | Self::TransferFeeInfo
+            | Self::FundingRates
+            | Self::ExchangeMetrics => false,
 
             // Private endpoints
             _ => true,

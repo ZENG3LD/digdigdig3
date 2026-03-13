@@ -1422,6 +1422,59 @@ impl BatchOrders for HyperliquidConnector {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// BATCH MODIFY (AMEND)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+impl HyperliquidConnector {
+    /// Batch modify (amend) multiple existing orders via the `batchModify` action on `/exchange`.
+    ///
+    /// Each entry in `modifies` is `(order_id_str, new_price, new_size, asset_symbol)`.
+    /// All four fields are required per Hyperliquid's batchModify spec.
+    ///
+    /// Max 10 modifies per batch.
+    ///
+    /// Returns the raw JSON exchange response.
+    pub async fn batch_amend_orders(
+        &self,
+        modifies: Vec<(String, f64, f64, String)>,
+    ) -> ExchangeResult<serde_json::Value> {
+        if modifies.is_empty() {
+            return Ok(serde_json::json!({"status": "ok", "response": {}}));
+        }
+        if modifies.len() > 10 {
+            return Err(ExchangeError::InvalidRequest(
+                format!("Batch modify size {} exceeds Hyperliquid limit of 10", modifies.len())
+            ));
+        }
+
+        let auth = self.require_auth()?;
+
+        // Build (oid, HlOrder) pairs
+        let mut hl_modifies: Vec<(u64, HlOrder)> = Vec::with_capacity(modifies.len());
+        for (oid_str, price, size, symbol) in &modifies {
+            let oid = oid_str.parse::<u64>()
+                .map_err(|_| ExchangeError::InvalidRequest(
+                    format!("Invalid Hyperliquid order ID '{}': must be numeric", oid_str)
+                ))?;
+            let asset_index = self.symbol_to_asset_index(symbol).await?;
+            hl_modifies.push((oid, HlOrder {
+                a: asset_index,
+                b: true, // Direction will be taken from existing order; placeholder
+                p: normalize_price(*price),
+                s: normalize_price(*size),
+                r: false,
+                t: HlOrderType::Limit { tif: HlTif::Gtc },
+                c: None,
+            }));
+        }
+
+        let pairs: Vec<(u64, &HlOrder)> = hl_modifies.iter().map(|(oid, order)| (*oid, order)).collect();
+        let body = auth.sign_batch_modify_action(&pairs, None)?;
+        self.exchange_request(&body).await
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // CANCEL ALL TRAIT
 // ═══════════════════════════════════════════════════════════════════════════════
 

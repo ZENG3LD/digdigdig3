@@ -93,9 +93,22 @@ pub enum BybitEndpoint {
     FundingRate,      // GET /v5/market/funding/history
 
     // === OPTIONAL TRAITS ===
-    AmendOrder,       // POST /v5/order/amend
-    BatchPlaceOrders, // POST /v5/order/create-batch
-    BatchCancelOrders,// POST /v5/order/cancel-batch
+    AmendOrder,        // POST /v5/order/amend
+    BatchPlaceOrders,  // POST /v5/order/create-batch
+    BatchCancelOrders, // POST /v5/order/cancel-batch
+    /// Batch amend multiple orders: POST /v5/order/amend-batch
+    BatchAmendOrders,  // POST /v5/order/amend-batch
+
+    // === MARKET DATA EXTENSIONS ===
+    OpenInterest,       // GET /v5/market/open-interest
+    LongShortRatio,     // GET /v5/market/account-ratio
+    MarkPriceKline,     // GET /v5/market/mark-price-kline
+    IndexPriceKline,    // GET /v5/market/index-price-kline
+    PremiumIndexKline,  // GET /v5/market/premium-index-price-kline
+
+    // === FILL/TRADE HISTORY ===
+    MyTrades,           // GET /v5/execution/list (signed)
+    ClosedPnl,          // GET /v5/position/closed-pnl (signed)
 
     // === FEES ===
     FeeRate,          // GET /v5/account/fee-rate
@@ -153,6 +166,18 @@ impl BybitEndpoint {
             Self::AmendOrder => "/v5/order/amend",
             Self::BatchPlaceOrders => "/v5/order/create-batch",
             Self::BatchCancelOrders => "/v5/order/cancel-batch",
+            Self::BatchAmendOrders => "/v5/order/amend-batch",
+
+            // Market Data Extensions
+            Self::OpenInterest => "/v5/market/open-interest",
+            Self::LongShortRatio => "/v5/market/account-ratio",
+            Self::MarkPriceKline => "/v5/market/mark-price-kline",
+            Self::IndexPriceKline => "/v5/market/index-price-kline",
+            Self::PremiumIndexKline => "/v5/market/premium-index-price-kline",
+
+            // Fill/Trade History
+            Self::MyTrades => "/v5/execution/list",
+            Self::ClosedPnl => "/v5/position/closed-pnl",
 
             // Fees
             Self::FeeRate => "/v5/account/fee-rate",
@@ -185,6 +210,7 @@ impl BybitEndpoint {
             | Self::AmendOrder
             | Self::BatchPlaceOrders
             | Self::BatchCancelOrders
+            | Self::BatchAmendOrders
             | Self::SetLeverage
             | Self::SetMarginMode
             | Self::AddMargin
@@ -209,7 +235,12 @@ impl BybitEndpoint {
             | Self::Symbols
             | Self::RecentTrades
             | Self::ServerTime
-            | Self::FundingRate => false,
+            | Self::FundingRate
+            | Self::OpenInterest
+            | Self::LongShortRatio
+            | Self::MarkPriceKline
+            | Self::IndexPriceKline
+            | Self::PremiumIndexKline => false,
 
             // Private endpoints
             _ => true,

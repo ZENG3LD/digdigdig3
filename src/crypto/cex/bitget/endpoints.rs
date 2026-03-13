@@ -144,6 +144,20 @@ pub enum BitgetEndpoint {
     SubAccountList,              // GET  /api/v2/user/virtual-subaccount-list
     SubAccountTransfer,          // POST /api/v2/user/virtual-subaccount-transfer
     SubAccountAssets,            // GET  /api/v2/user/virtual-subaccount-assets
+
+    // === EXTENDED ENDPOINTS ===
+    /// GET /api/v2/spot/market/fills — recent public spot fills
+    SpotRecentFills,
+    /// GET /api/v2/spot/market/history-candles — historical candles beyond the standard window
+    SpotHistoryCandles,
+    /// GET /api/v2/mix/order/fill-history — futures fill/trade history (signed)
+    FuturesFillHistory,
+    /// GET /api/v2/mix/market/open-interest — futures open interest
+    FuturesOpenInterest,
+    /// GET /api/v2/mix/market/history-fund-rate — futures historical funding rates
+    FuturesFundingRateHistory,
+    /// GET /api/v2/mix/market/symbol-price — futures mark/index price
+    FuturesSymbolPrice,
 }
 
 impl BitgetEndpoint {
@@ -233,6 +247,14 @@ impl BitgetEndpoint {
             Self::SubAccountList => "/api/v2/user/virtual-subaccount-list",
             Self::SubAccountTransfer => "/api/v2/user/virtual-subaccount-transfer",
             Self::SubAccountAssets => "/api/v2/user/virtual-subaccount-assets",
+
+            // Extended endpoints
+            Self::SpotRecentFills => "/api/v2/spot/market/fills",
+            Self::SpotHistoryCandles => "/api/v2/spot/market/history-candles",
+            Self::FuturesFillHistory => "/api/v2/mix/order/fill-history",
+            Self::FuturesOpenInterest => "/api/v2/mix/market/open-interest",
+            Self::FuturesFundingRateHistory => "/api/v2/mix/market/history-fund-rate",
+            Self::FuturesSymbolPrice => "/api/v2/mix/market/symbol-price",
         }
     }
 
@@ -253,7 +275,12 @@ impl BitgetEndpoint {
             | Self::FuturesTicker
             | Self::FuturesAllTickers
             | Self::FuturesContracts
-            | Self::FundingRate => false,
+            | Self::FundingRate
+            | Self::SpotRecentFills
+            | Self::SpotHistoryCandles
+            | Self::FuturesOpenInterest
+            | Self::FuturesFundingRateHistory
+            | Self::FuturesSymbolPrice => false,
 
             // Private endpoints
             _ => true,

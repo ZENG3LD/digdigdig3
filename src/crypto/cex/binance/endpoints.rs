@@ -105,6 +105,8 @@ pub enum BinanceEndpoint {
     FuturesAllOrders,
     FuturesAmendOrder,
     FuturesBatchOrders,
+    /// Batch amend multiple futures orders: PATCH /fapi/v1/batchOrders
+    FuturesBatchAmend,
     /// Futures conditional/algo orders (post-2025-12-09 migration endpoint)
     /// STOP, STOP_MARKET, TAKE_PROFIT, TAKE_PROFIT_MARKET, TRAILING_STOP_MARKET
     FuturesAlgoOrder,
@@ -124,6 +126,40 @@ pub enum BinanceEndpoint {
     // === WEBSOCKET ===
     SpotListenKey,
     FuturesListenKey,
+
+    // === MARKET DATA EXTENSIONS ===
+    /// GET /api/v3/trades — recent spot trades
+    SpotRecentTrades,
+    /// GET /api/v3/historicalTrades — historical spot trades (signed)
+    SpotHistoricalTrades,
+    /// GET /api/v3/avgPrice — current average price
+    SpotAvgPrice,
+    /// GET /api/v3/ticker/bookTicker — best bid/ask
+    SpotBookTicker,
+    /// GET /fapi/v1/trades — recent futures trades
+    FuturesRecentTrades,
+    /// GET /fapi/v1/openInterest — open interest
+    FuturesOpenInterest,
+    /// GET /futures/data/openInterestHist — open interest history
+    FuturesOpenInterestHist,
+    /// GET /fapi/v1/premiumIndex — mark price and funding rate
+    FuturesPremiumIndex,
+    /// GET /futures/data/topLongShortAccountRatio — long/short ratio
+    FuturesLongShortRatio,
+
+    // === FILL/TRADE HISTORY ===
+    /// GET /api/v3/myTrades — spot trade fills (signed)
+    SpotMyTrades,
+    /// GET /fapi/v1/userTrades — futures trade fills (signed)
+    FuturesMyTrades,
+    /// GET /fapi/v1/income — futures income history (signed)
+    FuturesIncomeHistory,
+
+    // === LISTEN KEY MANAGEMENT ===
+    /// PUT /api/v3/userDataStream — keepalive spot listen key
+    ListenKeyKeepAlive,
+    /// DELETE /api/v3/userDataStream — close spot listen key
+    ListenKeyClose,
 
     // === ACCOUNT TRANSFERS ===
     /// Universal transfer: POST /sapi/v1/asset/transfer
@@ -201,13 +237,14 @@ impl BinanceEndpoint {
             Self::FuturesAllOrders => "/fapi/v1/allOrders",
             Self::FuturesAmendOrder => "/fapi/v1/order",
             Self::FuturesBatchOrders => "/fapi/v1/batchOrders",
+            Self::FuturesBatchAmend => "/fapi/v1/batchOrders",
             Self::FuturesAlgoOrder => "/fapi/v1/order/algo",
 
             // Futures Algo
             Self::FuturesAlgoTwap => "/sapi/v1/algo/futures/newOrderTwap",
 
             // Futures Account
-            Self::FuturesAccount => "/fapi/v2/account",
+            Self::FuturesAccount => "/fapi/v3/account",
             Self::FuturesPositions => "/fapi/v2/positionRisk",
             Self::FuturesSetLeverage => "/fapi/v1/leverage",
             Self::FuturesSetMarginType => "/fapi/v1/marginType",
@@ -217,6 +254,26 @@ impl BinanceEndpoint {
             // WebSocket
             Self::SpotListenKey => "/api/v3/userDataStream",
             Self::FuturesListenKey => "/fapi/v1/listenKey",
+
+            // Market Data Extensions
+            Self::SpotRecentTrades => "/api/v3/trades",
+            Self::SpotHistoricalTrades => "/api/v3/historicalTrades",
+            Self::SpotAvgPrice => "/api/v3/avgPrice",
+            Self::SpotBookTicker => "/api/v3/ticker/bookTicker",
+            Self::FuturesRecentTrades => "/fapi/v1/trades",
+            Self::FuturesOpenInterest => "/fapi/v1/openInterest",
+            Self::FuturesOpenInterestHist => "/futures/data/openInterestHist",
+            Self::FuturesPremiumIndex => "/fapi/v1/premiumIndex",
+            Self::FuturesLongShortRatio => "/futures/data/topLongShortAccountRatio",
+
+            // Fill/Trade History
+            Self::SpotMyTrades => "/api/v3/myTrades",
+            Self::FuturesMyTrades => "/fapi/v1/userTrades",
+            Self::FuturesIncomeHistory => "/fapi/v1/income",
+
+            // Listen Key Management
+            Self::ListenKeyKeepAlive => "/api/v3/userDataStream",
+            Self::ListenKeyClose => "/api/v3/userDataStream",
 
             // Account Transfers
             Self::AssetTransfer => "/sapi/v1/asset/transfer",
@@ -252,7 +309,15 @@ impl BinanceEndpoint {
             | Self::FuturesKlines
             | Self::FuturesTicker
             | Self::FuturesExchangeInfo
-            | Self::FundingRate => false,
+            | Self::FundingRate
+            | Self::SpotRecentTrades
+            | Self::SpotAvgPrice
+            | Self::SpotBookTicker
+            | Self::FuturesRecentTrades
+            | Self::FuturesOpenInterest
+            | Self::FuturesOpenInterestHist
+            | Self::FuturesPremiumIndex
+            | Self::FuturesLongShortRatio => false,
 
             // Private endpoints
             _ => true,
@@ -283,9 +348,12 @@ impl BinanceEndpoint {
             Self::SpotCancelOrder
             | Self::SpotCancelAllOrders
             | Self::FuturesCancelOrder
-            | Self::FuturesCancelAllOrders => "DELETE",
+            | Self::FuturesCancelAllOrders
+            | Self::ListenKeyClose => "DELETE",
 
-            Self::FuturesAmendOrder => "PUT",
+            Self::FuturesAmendOrder | Self::ListenKeyKeepAlive => "PUT",
+
+            Self::FuturesBatchAmend => "PATCH",
 
             _ => "GET",
         }

@@ -129,6 +129,120 @@ impl FinnhubConnector {
 
         Ok(response)
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EXTENDED METHODS — ETF Data
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// ETF holdings — `GET /api/v1/etf/holdings`
+    ///
+    /// `symbol` — ETF ticker (e.g. `"SPY"`); optional `date` in `YYYY-MM-DD` format.
+    pub async fn get_etf_holdings(
+        &self,
+        symbol: &str,
+        date: Option<&str>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_uppercase());
+        if let Some(d) = date {
+            params.insert("date".to_string(), d.to_string());
+        }
+        self.get(FinnhubEndpoint::EtfHoldings, params).await
+    }
+
+    /// ETF profile — `GET /api/v1/etf/profile`
+    ///
+    /// `symbol` — ETF ticker.
+    pub async fn get_etf_profile(&self, symbol: &str) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_uppercase());
+        self.get(FinnhubEndpoint::EtfProfile, params).await
+    }
+
+    /// ETF country exposure — `GET /api/v1/etf/country`
+    ///
+    /// `symbol` — ETF ticker.
+    pub async fn get_etf_country_exposure(&self, symbol: &str) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_uppercase());
+        self.get(FinnhubEndpoint::EtfCountryExposure, params).await
+    }
+
+    /// ETF sector exposure — `GET /api/v1/etf/sector`
+    ///
+    /// `symbol` — ETF ticker.
+    pub async fn get_etf_sector_exposure(&self, symbol: &str) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_uppercase());
+        self.get(FinnhubEndpoint::EtfSectorExposure, params).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EXTENDED METHODS — IPO & Earnings
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// IPO calendar — `GET /api/v1/calendar/ipo`
+    ///
+    /// `from` / `to` — date range in `YYYY-MM-DD` format.
+    pub async fn get_ipo_calendar(&self, from: &str, to: &str) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("from".to_string(), from.to_string());
+        params.insert("to".to_string(), to.to_string());
+        self.get(FinnhubEndpoint::IpoCalendar, params).await
+    }
+
+    /// Earnings surprise — `GET /api/v1/stock/earnings`
+    ///
+    /// `symbol` — stock ticker; optional `limit` (number of quarters, default 4).
+    pub async fn get_earnings_surprise(
+        &self,
+        symbol: &str,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_uppercase());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(FinnhubEndpoint::EarningsSurprise, params).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EXTENDED METHODS — Social Sentiment
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Social sentiment — `GET /api/v1/stock/social-sentiment`
+    ///
+    /// `symbol` — stock ticker; optional `from` / `to` in `YYYY-MM-DD` format.
+    pub async fn get_social_sentiment(
+        &self,
+        symbol: &str,
+        from: Option<&str>,
+        to: Option<&str>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_uppercase());
+        if let Some(f) = from {
+            params.insert("from".to_string(), f.to_string());
+        }
+        if let Some(t) = to {
+            params.insert("to".to_string(), t.to_string());
+        }
+        self.get(FinnhubEndpoint::SocialSentiment, params).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EXTENDED METHODS — Crypto Profile
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Crypto profile — `GET /api/v1/crypto/profile`
+    ///
+    /// `symbol` — crypto symbol (e.g. `"BINANCE:BTCUSDT"`).
+    pub async fn get_crypto_profile(&self, symbol: &str) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        self.get(FinnhubEndpoint::CryptoProfile, params).await
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

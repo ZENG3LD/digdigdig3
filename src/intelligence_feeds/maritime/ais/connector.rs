@@ -290,4 +290,75 @@ impl AisConnector {
             })
             .collect())
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Get all vessels within a radius of a point (premium endpoint)
+    ///
+    /// # Arguments
+    /// - `lat` - Center latitude
+    /// - `lon` - Center longitude
+    /// - `radius` - Search radius in nautical miles (max: 100)
+    ///
+    /// # Returns
+    /// Vector of vessels within the radius
+    pub async fn get_vessels_in_radius(
+        &self,
+        lat: f64,
+        lon: f64,
+        radius: f64,
+    ) -> ExchangeResult<Vec<AisVessel>> {
+        let mut params = HashMap::new();
+        params.insert("lat".to_string(), lat.to_string());
+        params.insert("lon".to_string(), lon.to_string());
+        params.insert("radius".to_string(), radius.to_string());
+
+        let response = self.get(AisEndpoint::VesselInradius, params).await?;
+        AisParser::parse_vessels(&response)
+    }
+
+    /// Get bulk vessel data for a list of MMSI numbers
+    ///
+    /// More efficient than multiple individual lookups when you need data
+    /// for a known fleet of vessels.
+    ///
+    /// # Arguments
+    /// - `mmsi_list` - List of MMSI numbers (max ~50 per request)
+    ///
+    /// # Returns
+    /// Vector of vessels matching the provided MMSIs
+    pub async fn get_vessels_bulk(
+        &self,
+        mmsi_list: &[u64],
+    ) -> ExchangeResult<Vec<AisVessel>> {
+        let mmsi_str: Vec<String> = mmsi_list.iter().map(|m| m.to_string()).collect();
+        let mmsi_joined = mmsi_str.join(",");
+
+        let mut params = HashMap::new();
+        params.insert("mmsi".to_string(), mmsi_joined);
+
+        let response = self.get(AisEndpoint::VesselBulk, params).await?;
+        AisParser::parse_vessels(&response)
+    }
+
+    /// Get vessel estimated arrival time and destination (premium endpoint)
+    ///
+    /// Uses AIS voyage data and ML-based predictions to estimate ETA.
+    ///
+    /// # Arguments
+    /// - `uuid` - Vessel UUID from search results
+    ///
+    /// # Returns
+    /// Extended vessel info with ETA and destination estimates as raw JSON
+    pub async fn get_vessel_estimated_arrival(
+        &self,
+        uuid: &str,
+    ) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        params.insert("uuid".to_string(), uuid.to_string());
+
+        self.get(AisEndpoint::VesselProEstimated, params).await
+    }
 }

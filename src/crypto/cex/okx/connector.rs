@@ -301,6 +301,107 @@ impl OkxConnector {
         let response = self.post(OkxEndpoint::AlgoOrderCancel, body).await?;
         OkxParser::parse_algo_cancel_response(&response)
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MARKET DATA EXTENSIONS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Get open interest for a futures instrument.
+    pub async fn get_open_interest(&self, inst_id: &str) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("instId".to_string(), inst_id.to_string());
+        self.get(OkxEndpoint::OpenInterest, params).await
+    }
+
+    /// Get long/short account ratio for a futures contract.
+    ///
+    /// `period`: e.g. `"5m"`, `"1H"`, `"4H"`, `"1D"`.
+    pub async fn get_long_short_ratio(
+        &self,
+        inst_id: &str,
+        period: &str,
+        begin: Option<i64>,
+        end: Option<i64>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("instId".to_string(), inst_id.to_string());
+        params.insert("period".to_string(), period.to_string());
+        if let Some(b) = begin {
+            params.insert("begin".to_string(), b.to_string());
+        }
+        if let Some(e) = end {
+            params.insert("end".to_string(), e.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(OkxEndpoint::LongShortRatio, params).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FILL / TRADE HISTORY
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Get recent trade fills (last 3 months, up to 100 records).
+    ///
+    /// `inst_type`: e.g. `"SPOT"`, `"SWAP"`.
+    pub async fn get_fills_history(
+        &self,
+        inst_id: Option<&str>,
+        inst_type: Option<&str>,
+        begin: Option<i64>,
+        end: Option<i64>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(id) = inst_id {
+            params.insert("instId".to_string(), id.to_string());
+        }
+        if let Some(t) = inst_type {
+            params.insert("instType".to_string(), t.to_string());
+        }
+        if let Some(b) = begin {
+            params.insert("begin".to_string(), b.to_string());
+        }
+        if let Some(e) = end {
+            params.insert("end".to_string(), e.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(OkxEndpoint::FillsHistory, params).await
+    }
+
+    /// Get archived trade fills (up to 3 months ago, up to 100 records per page).
+    ///
+    /// `inst_type`: e.g. `"SPOT"`, `"SWAP"`.
+    pub async fn get_fills_archive(
+        &self,
+        inst_id: Option<&str>,
+        inst_type: Option<&str>,
+        begin: Option<i64>,
+        end: Option<i64>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(id) = inst_id {
+            params.insert("instId".to_string(), id.to_string());
+        }
+        if let Some(t) = inst_type {
+            params.insert("instType".to_string(), t.to_string());
+        }
+        if let Some(b) = begin {
+            params.insert("begin".to_string(), b.to_string());
+        }
+        if let Some(e) = end {
+            params.insert("end".to_string(), e.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(OkxEndpoint::FillsArchive, params).await
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1350,6 +1451,37 @@ impl BatchOrders for OkxConnector {
 
     fn max_batch_cancel_size(&self) -> usize {
         20 // OKX limit
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BATCH AMEND
+// ═══════════════════════════════════════════════════════════════════════════════
+
+impl OkxConnector {
+    /// Batch amend multiple orders via `POST /api/v5/trade/amend-batch-orders`.
+    ///
+    /// Each entry in `amends` must be a JSON object with `instId` and `ordId`
+    /// (or `clOrdId`), plus at least one of `newSz`, `newPx`, `newTpTriggerPx`,
+    /// `newTpOrdPx`, `newSlTriggerPx`, or `newSlOrdPx`.
+    ///
+    /// Max 20 orders per batch (OKX limit).
+    ///
+    /// Returns the raw JSON response from OKX.
+    pub async fn batch_amend_orders(
+        &self,
+        amends: Vec<serde_json::Value>,
+    ) -> ExchangeResult<Value> {
+        if amends.is_empty() {
+            return Ok(serde_json::Value::Array(vec![]));
+        }
+        if amends.len() > 20 {
+            return Err(ExchangeError::InvalidRequest(
+                format!("Batch amend size {} exceeds OKX limit of 20", amends.len())
+            ));
+        }
+
+        self.post(OkxEndpoint::AmendBatchOrders, json!(amends)).await
     }
 }
 

@@ -297,6 +297,73 @@ impl GleifConnector {
     pub async fn quick_search(&self, name: &str) -> ExchangeResult<Vec<GleifEntity>> {
         self.search_by_name(name, Some(1), Some(10)).await
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Get relationship records for a given LEI
+    ///
+    /// Relationship records describe ownership and control links between legal
+    /// entities (parent, ultimate parent, direct child relationships).
+    ///
+    /// # Arguments
+    /// - `lei` - Legal Entity Identifier of the start node
+    /// - `relationship_type` - Optional: "IS_DIRECTLY_CONSOLIDATED_BY",
+    ///   "IS_ULTIMATELY_CONSOLIDATED_BY", "IS_INTERNATIONAL_BRANCH_OF"
+    ///
+    /// # Returns
+    /// Raw JSON with relationship records
+    pub async fn get_relationship_records(
+        &self,
+        lei: &str,
+        relationship_type: Option<&str>,
+    ) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        params.insert("filter[startNode.id]".to_string(), lei.to_string());
+        if let Some(rt) = relationship_type {
+            params.insert("filter[relationshipType]".to_string(), rt.to_string());
+        }
+
+        let response = self.get(GleifEndpoint::RelationshipRecords, Some(params)).await?;
+        Ok(response)
+    }
+
+    /// Map a BIC (Bank Identifier Code) to an LEI
+    ///
+    /// # Arguments
+    /// - `bic` - SWIFT BIC code (8 or 11 characters)
+    ///
+    /// # Returns
+    /// Vector of entities matching this BIC code
+    pub async fn get_bic_map(&self, bic: &str) -> ExchangeResult<Vec<GleifEntity>> {
+        let mut params = HashMap::new();
+        params.insert("filter[bic]".to_string(), bic.to_string());
+
+        let response = self.get(GleifEndpoint::BicMaps, Some(params)).await?;
+        GleifParser::parse_lei_records(&response)
+    }
+
+    /// Get reporting exceptions for a legal entity
+    ///
+    /// When an entity cannot provide parent information (privacy, no parent,
+    /// regulatory exemption), they file a reporting exception.
+    ///
+    /// # Arguments
+    /// - `lei` - Legal Entity Identifier
+    ///
+    /// # Returns
+    /// Raw JSON with reporting exception data
+    pub async fn get_reporting_exceptions(
+        &self,
+        lei: &str,
+    ) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        params.insert("filter[LEI]".to_string(), lei.to_string());
+
+        let response = self.get(GleifEndpoint::ReportingExceptions { lei: lei.to_string() }, Some(params)).await?;
+        Ok(response)
+    }
 }
 
 impl Default for GleifConnector {

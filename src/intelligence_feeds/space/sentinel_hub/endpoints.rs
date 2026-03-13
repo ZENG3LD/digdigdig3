@@ -40,7 +40,7 @@ impl SentinelHubEndpoint {
     pub fn path(&self) -> String {
         match self {
             Self::Token => "/oauth/token".to_string(),
-            Self::CatalogSearch => "/api/v1/catalog/search".to_string(),
+            Self::CatalogSearch => "/api/v1/catalog/1.0.0/".to_string(),
             Self::Process => "/api/v1/process".to_string(),
             Self::Statistical => "/api/v1/statistical".to_string(),
         }

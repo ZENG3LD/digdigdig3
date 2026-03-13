@@ -288,6 +288,117 @@ impl EuParliamentConnector {
         let _ = self.get(EuParliamentEndpoint::Committees, params).await?;
         Ok(())
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Get vote results for plenary sessions
+    ///
+    /// Returns voting lists showing how MEPs voted on motions and resolutions.
+    ///
+    /// # Arguments
+    /// - `year` - Optional year filter
+    /// - `limit` - Optional result limit
+    ///
+    /// # Returns
+    /// Vote result data as raw JSON
+    pub async fn get_vote_results(
+        &self,
+        year: Option<u32>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        if let Some(y) = year {
+            params.insert("year".to_string(), y.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+
+        let response = self.get(EuParliamentEndpoint::VoteResults, params).await?;
+        Ok(response)
+    }
+
+    /// Get parliamentary questions
+    ///
+    /// Returns written questions submitted by MEPs to the European Commission or Council.
+    ///
+    /// # Arguments
+    /// - `year` - Optional year filter
+    /// - `mep_id` - Optional MEP ID to filter by author
+    /// - `limit` - Optional result limit
+    ///
+    /// # Returns
+    /// Parliamentary questions as raw JSON
+    pub async fn get_parliamentary_questions(
+        &self,
+        year: Option<u32>,
+        mep_id: Option<&str>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        if let Some(y) = year {
+            params.insert("year".to_string(), y.to_string());
+        }
+        if let Some(id) = mep_id {
+            params.insert("mepId".to_string(), id.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+
+        let response = self.get(EuParliamentEndpoint::ParliamentaryQuestions, params).await?;
+        Ok(response)
+    }
+
+    /// Get MEP activities (speeches, reports, questions)
+    ///
+    /// # Arguments
+    /// - `mep_id` - MEP identifier
+    /// - `year` - Optional year filter
+    ///
+    /// # Returns
+    /// MEP activity data as raw JSON
+    pub async fn get_activities(
+        &self,
+        mep_id: &str,
+        year: Option<u32>,
+    ) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        params.insert("mepId".to_string(), mep_id.to_string());
+        if let Some(y) = year {
+            params.insert("year".to_string(), y.to_string());
+        }
+
+        let response = self.get(EuParliamentEndpoint::Activities, params).await?;
+        Ok(response)
+    }
+
+    /// Get adopted texts (legislative resolutions passed by the European Parliament)
+    ///
+    /// # Arguments
+    /// - `year` - Optional year filter
+    /// - `limit` - Optional result limit
+    ///
+    /// # Returns
+    /// Adopted texts as raw JSON
+    pub async fn get_adopted_texts(
+        &self,
+        year: Option<u32>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        if let Some(y) = year {
+            params.insert("year".to_string(), y.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+
+        let response = self.get(EuParliamentEndpoint::AdoptedTexts, params).await?;
+        Ok(response)
+    }
 }
 
 impl Default for EuParliamentConnector {

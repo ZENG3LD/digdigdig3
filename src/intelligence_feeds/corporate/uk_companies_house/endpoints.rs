@@ -43,6 +43,24 @@ pub enum UkCompaniesHouseEndpoint {
     // ═══════════════════════════════════════════════════════════════════════
     /// Get all appointments for an officer (cross-company)
     OfficerAppointments { officer_id: String },
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+    /// Search across all entity types (companies, officers, disqualified directors)
+    SearchAll,
+    /// Search for officers (directors, secretaries) by name
+    SearchOfficers,
+    /// Search disqualified directors
+    SearchDisqualified,
+    /// Get disqualification details for a company or officer
+    Disqualifications { officer_id: String },
+    /// Get charges/mortgages detail for a specific charge
+    ChargeDetail { company_number: String, charge_id: String },
+    /// Get a specific filing document metadata
+    FilingDetail { company_number: String, transaction_id: String },
+    /// Get details for a specific PSC (Person with Significant Control) statement
+    PscDetail { company_number: String, statement_id: String },
 }
 
 impl UkCompaniesHouseEndpoint {
@@ -75,6 +93,26 @@ impl UkCompaniesHouseEndpoint {
             // Officers
             Self::OfficerAppointments { officer_id } => {
                 format!("/officers/{}/appointments", officer_id)
+            }
+
+            // C7 additions
+            Self::SearchAll => "/search".to_string(),
+            Self::SearchOfficers => "/search/officers".to_string(),
+            Self::SearchDisqualified => "/search/disqualified-officers".to_string(),
+            Self::Disqualifications { officer_id } => {
+                format!("/disqualified-officers/natural/{}", officer_id)
+            }
+            Self::ChargeDetail { company_number, charge_id } => {
+                format!("/company/{}/charges/{}", company_number, charge_id)
+            }
+            Self::FilingDetail { company_number, transaction_id } => {
+                format!("/company/{}/filing-history/{}", company_number, transaction_id)
+            }
+            Self::PscDetail { company_number, statement_id } => {
+                format!(
+                    "/company/{}/persons-with-significant-control-statements/{}",
+                    company_number, statement_id
+                )
             }
         }
     }

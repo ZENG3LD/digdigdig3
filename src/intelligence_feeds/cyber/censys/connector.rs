@@ -289,6 +289,87 @@ impl CensysConnector {
     pub fn is_authenticated(&self) -> bool {
         self.auth.is_authenticated()
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Get historical observations for a host (events over time)
+    ///
+    /// # Arguments
+    /// - `ip` - IPv4 or IPv6 address
+    ///
+    /// # Returns
+    /// Raw JSON list of observation events for this host
+    pub async fn get_host_events(&self, ip: &str) -> ExchangeResult<serde_json::Value> {
+        self.get(CensysEndpoint::HostEvents { ip: ip.to_string() }).await
+    }
+
+    /// Get all hostnames associated with a host (via PTR records and cert SANs)
+    ///
+    /// # Arguments
+    /// - `ip` - IPv4 or IPv6 address
+    ///
+    /// # Returns
+    /// Raw JSON with hostname list
+    pub async fn get_host_names(&self, ip: &str) -> ExchangeResult<serde_json::Value> {
+        self.get(CensysEndpoint::HostNames { ip: ip.to_string() }).await
+    }
+
+    /// View a specific TLS/SSL certificate by SHA-256 fingerprint
+    ///
+    /// # Arguments
+    /// - `fingerprint` - SHA-256 hex fingerprint of the certificate
+    ///
+    /// # Returns
+    /// Parsed certificate details as raw JSON
+    pub async fn view_certificate(&self, fingerprint: &str) -> ExchangeResult<serde_json::Value> {
+        self.get(CensysEndpoint::ViewCertificate { fingerprint: fingerprint.to_string() }).await
+    }
+
+    /// Get hosts presenting a specific certificate
+    ///
+    /// Useful for tracking certificate usage and potential phishing infrastructure.
+    ///
+    /// # Arguments
+    /// - `fingerprint` - SHA-256 hex fingerprint of the certificate
+    ///
+    /// # Returns
+    /// Raw JSON list of hosts presenting this certificate
+    pub async fn get_hosts_by_cert(&self, fingerprint: &str) -> ExchangeResult<serde_json::Value> {
+        self.get(CensysEndpoint::HostsByCert { fingerprint: fingerprint.to_string() }).await
+    }
+
+    /// Aggregate certificate data by field
+    ///
+    /// # Arguments
+    /// - `query` - Search query
+    /// - `field` - Field to aggregate by (e.g., "parsed.subject.organization")
+    /// - `num_buckets` - Number of top buckets to return (max 100)
+    ///
+    /// # Returns
+    /// Aggregation buckets as raw JSON
+    pub async fn aggregate_certs(
+        &self,
+        query: &str,
+        field: &str,
+        num_buckets: Option<u32>,
+    ) -> ExchangeResult<serde_json::Value> {
+        let body = json!({
+            "q": query,
+            "field": field,
+            "num_buckets": num_buckets.unwrap_or(50),
+        });
+        self.post(CensysEndpoint::AggregateCerts, body).await
+    }
+
+    /// Get current account info including quota usage and rate limits
+    ///
+    /// # Returns
+    /// Account details including used quota and plan limits as raw JSON
+    pub async fn get_account_info(&self) -> ExchangeResult<serde_json::Value> {
+        self.get(CensysEndpoint::AccountInfo).await
+    }
 }
 
 impl Default for CensysConnector {

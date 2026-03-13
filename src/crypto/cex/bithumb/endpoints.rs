@@ -86,6 +86,12 @@ pub enum BithumbEndpoint {
     FuturesContracts,
     FuturesMarketData,
     FuturesFundingRates,
+
+    // === C3 ADDITIONS ===
+    /// POST /spot/singleOrder — query a single order by order ID
+    SingleOrder,
+    /// POST /spot/assetList — list all available assets with status
+    AssetList,
 }
 
 impl BithumbEndpoint {
@@ -124,6 +130,10 @@ impl BithumbEndpoint {
             Self::FuturesContracts => "/futures/contracts",
             Self::FuturesMarketData => "/futures/market-data",
             Self::FuturesFundingRates => "/futures/funding-rates",
+
+            // C3 Additions
+            Self::SingleOrder => "/spot/singleOrder",
+            Self::AssetList => "/spot/assetList",
         }
     }
 
@@ -163,7 +173,9 @@ impl BithumbEndpoint {
             | Self::SpotDepositAddress
             | Self::SpotWithdraw
             | Self::SpotDepositHistory
-            | Self::SpotWithdrawHistory => "POST",
+            | Self::SpotWithdrawHistory
+            | Self::SingleOrder
+            | Self::AssetList => "POST",
 
             // GET endpoints
             _ => "GET",

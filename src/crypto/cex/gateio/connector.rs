@@ -1666,6 +1666,37 @@ impl BatchOrders for GateioConnector {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// BATCH AMEND
+// ═══════════════════════════════════════════════════════════════════════════════
+
+impl GateioConnector {
+    /// Batch amend multiple futures orders via `POST /api/v4/futures/{settle}/batch_amend_orders`.
+    ///
+    /// Each entry in `amends` must be a JSON object with `order_id` and at least
+    /// one of `price` or `size`.
+    ///
+    /// Max 20 orders per batch (Gate.io Futures limit).
+    ///
+    /// Returns the raw JSON response from Gate.io.
+    pub async fn batch_amend_orders(
+        &self,
+        amends: Vec<serde_json::Value>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Value> {
+        if amends.is_empty() {
+            return Ok(serde_json::Value::Array(vec![]));
+        }
+        if amends.len() > 20 {
+            return Err(ExchangeError::InvalidRequest(
+                format!("Batch amend size {} exceeds Gate.io Futures limit of 20", amends.len())
+            ));
+        }
+
+        self.post(GateioEndpoint::FuturesBatchAmend, json!(amends), account_type).await
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // ACCOUNT TRANSFERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -2155,5 +2186,153 @@ impl SubAccounts for GateioConnector {
                 })
             }
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EXTENDED METHODS (not part of core traits)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+impl GateioConnector {
+    /// Get recent public spot trades.
+    ///
+    /// `GET /api/v4/spot/trades`
+    ///
+    /// # Parameters
+    /// - `currency_pair`: Spot symbol e.g. `BTC_USDT`
+    /// - `limit`: Max number of trades (optional, max 1000)
+    pub async fn get_spot_trades(
+        &self,
+        currency_pair: &str,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("currency_pair".to_string(), currency_pair.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(GateioEndpoint::SpotTrades, params, AccountType::Spot).await
+    }
+
+    /// Get personal spot trade history (requires auth).
+    ///
+    /// `GET /api/v4/spot/my_trades`
+    ///
+    /// # Parameters
+    /// - `currency_pair`: Spot symbol e.g. `BTC_USDT`
+    /// - `limit`: Max number of trades (optional)
+    /// - `page`: Page number (optional)
+    pub async fn get_spot_my_trades(
+        &self,
+        currency_pair: &str,
+        limit: Option<u32>,
+        page: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("currency_pair".to_string(), currency_pair.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        if let Some(p) = page {
+            params.insert("page".to_string(), p.to_string());
+        }
+        self.get(GateioEndpoint::SpotMyTrades, params, AccountType::Spot).await
+    }
+
+    /// Get recent public futures trades.
+    ///
+    /// `GET /api/v4/futures/usdt/trades`
+    ///
+    /// # Parameters
+    /// - `contract`: Futures contract e.g. `BTC_USDT`
+    /// - `limit`: Max number of trades (optional, max 1000)
+    pub async fn get_futures_trades(
+        &self,
+        contract: &str,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("contract".to_string(), contract.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(GateioEndpoint::FuturesTrades, params, AccountType::FuturesCross).await
+    }
+
+    /// Get personal futures trade history (requires auth).
+    ///
+    /// `GET /api/v4/futures/usdt/my_trades`
+    ///
+    /// # Parameters
+    /// - `contract`: Futures contract e.g. `BTC_USDT` (optional)
+    /// - `limit`: Max number of trades (optional)
+    /// - `offset`: Offset for pagination (optional)
+    pub async fn get_futures_my_trades(
+        &self,
+        contract: Option<&str>,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(c) = contract {
+            params.insert("contract".to_string(), c.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        if let Some(o) = offset {
+            params.insert("offset".to_string(), o.to_string());
+        }
+        self.get(GateioEndpoint::FuturesMyTrades, params, AccountType::FuturesCross).await
+    }
+
+    /// Get futures open interest statistics.
+    ///
+    /// `GET /api/v4/futures/usdt/contract_stats`
+    ///
+    /// # Parameters
+    /// - `contract`: Futures contract e.g. `BTC_USDT`
+    /// - `from`: Start timestamp in seconds (optional)
+    /// - `interval`: Stat interval: `5m`, `15m`, `30m`, `1h`, `4h`, `1d` (optional)
+    /// - `limit`: Number of entries (optional, max 100)
+    pub async fn get_futures_open_interest(
+        &self,
+        contract: &str,
+        from: Option<i64>,
+        interval: Option<&str>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("contract".to_string(), contract.to_string());
+        if let Some(f) = from {
+            params.insert("from".to_string(), f.to_string());
+        }
+        if let Some(i) = interval {
+            params.insert("interval".to_string(), i.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(GateioEndpoint::FuturesOpenInterest, params, AccountType::FuturesCross).await
+    }
+
+    /// Get futures funding rate history.
+    ///
+    /// `GET /api/v4/futures/usdt/funding_rate`
+    ///
+    /// # Parameters
+    /// - `contract`: Futures contract e.g. `BTC_USDT`
+    /// - `limit`: Number of entries (optional, max 1000)
+    pub async fn get_futures_funding_rate_history(
+        &self,
+        contract: &str,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("contract".to_string(), contract.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(GateioEndpoint::FuturesFundingRateHistory, params, AccountType::FuturesCross).await
     }
 }

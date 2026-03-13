@@ -306,4 +306,116 @@ impl AcledConnector {
 
         Ok(hotspots)
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Get ACLED CAST predictive conflict forecasts
+    ///
+    /// CAST (Conflict Alert System Tool) provides probabilistic forecasts
+    /// of future conflict events based on historical patterns.
+    ///
+    /// # Arguments
+    /// - `country` - Optional country filter
+    /// - `limit` - Optional limit (default: 100)
+    ///
+    /// # Returns
+    /// Vector of CAST forecast entries as raw JSON values
+    pub async fn get_cast_forecasts(
+        &self,
+        country: Option<&str>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Vec<serde_json::Value>> {
+        let mut params = HashMap::new();
+
+        // ACLED CAST endpoint has its own full URL
+        self.auth.sign_query(&mut params);
+
+        if let Some(c) = country {
+            params.insert("country".to_string(), c.to_string());
+        }
+
+        params.insert(
+            "limit".to_string(),
+            limit.unwrap_or(100).to_string(),
+        );
+
+        let url = AcledEndpoint::CastForecasts.path().to_string();
+
+        let response = self
+            .client
+            .get(&url)
+            .query(&params)
+            .send()
+            .await
+            .map_err(|e| ExchangeError::Network(format!("Request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(ExchangeError::Api {
+                code: response.status().as_u16() as i32,
+                message: format!("HTTP {}", response.status()),
+            });
+        }
+
+        let json: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| ExchangeError::Parse(format!("JSON parse error: {}", e)))?;
+
+        json.get("data")
+            .and_then(|d| d.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'data' array in CAST response".to_string()))
+            .cloned()
+    }
+
+    /// Get deleted ACLED records
+    ///
+    /// Returns event IDs that have been removed from the ACLED dataset
+    /// (corrections, duplicates, or quality-flagged entries).
+    ///
+    /// # Arguments
+    /// - `since_date` - Optional date filter (only records deleted after this date)
+    ///
+    /// # Returns
+    /// Vector of deleted event records as raw JSON values
+    pub async fn get_deleted_records(
+        &self,
+        since_date: Option<&str>,
+    ) -> ExchangeResult<Vec<serde_json::Value>> {
+        let mut params = HashMap::new();
+
+        self.auth.sign_query(&mut params);
+
+        if let Some(date) = since_date {
+            params.insert("timestamp".to_string(), date.to_string());
+        }
+
+        let url = AcledEndpoint::DeletedRecords.path().to_string();
+
+        let response = self
+            .client
+            .get(&url)
+            .query(&params)
+            .send()
+            .await
+            .map_err(|e| ExchangeError::Network(format!("Request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(ExchangeError::Api {
+                code: response.status().as_u16() as i32,
+                message: format!("HTTP {}", response.status()),
+            });
+        }
+
+        let json: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| ExchangeError::Parse(format!("JSON parse error: {}", e)))?;
+
+        json.get("data")
+            .and_then(|d| d.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'data' array in deleted records response".to_string()))
+            .cloned()
+    }
 }

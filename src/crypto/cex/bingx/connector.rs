@@ -1696,3 +1696,126 @@ impl SubAccounts for BingxConnector {
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EXTENDED METHODS — Market data & trade history additions
+// ═══════════════════════════════════════════════════════════════════════════════
+
+impl BingxConnector {
+    /// Spot fill/trade history — `GET /openApi/spot/v1/trade/myTrades` (signed)
+    ///
+    /// Returns the authenticated user's spot trade fills.
+    /// Optional params: `symbol`, `orderId`, `startTime`, `endTime`, `fromId`, `limit`.
+    pub async fn spot_my_trades(
+        &self,
+        symbol: Option<&str>,
+        order_id: Option<&str>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(s) = symbol {
+            params.insert("symbol".to_string(), s.to_string());
+        }
+        if let Some(oid) = order_id {
+            params.insert("orderId".to_string(), oid.to_string());
+        }
+        if let Some(st) = start_time {
+            params.insert("startTime".to_string(), st.to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("endTime".to_string(), et.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.min(500).to_string());
+        }
+        let response = self.get(BingxEndpoint::SpotMyTrades, params, AccountType::Spot).await?;
+        self.check_response(&response)?;
+        Ok(response)
+    }
+
+    /// Swap all fill orders — `GET /openApi/swap/v2/trade/allFillOrders` (signed)
+    ///
+    /// Returns the authenticated user's perpetual swap fill history.
+    /// Optional params: `symbol`, `orderId`, `startTime`, `endTime`, `lastFillId`, `pageIndex`.
+    pub async fn swap_all_fill_orders(
+        &self,
+        symbol: Option<&str>,
+        order_id: Option<&str>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(s) = symbol {
+            params.insert("symbol".to_string(), s.to_string());
+        }
+        if let Some(oid) = order_id {
+            params.insert("orderId".to_string(), oid.to_string());
+        }
+        if let Some(st) = start_time {
+            params.insert("startTime".to_string(), st.to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("endTime".to_string(), et.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("pageSize".to_string(), l.min(500).to_string());
+        }
+        let response = self.get(BingxEndpoint::SwapAllFillOrders, params, AccountType::FuturesCross).await?;
+        self.check_response(&response)?;
+        Ok(response)
+    }
+
+    /// Swap open interest — `GET /openApi/swap/v2/quote/openInterest` (public)
+    ///
+    /// Required param: `symbol` (e.g. `BTC-USDT`).
+    pub async fn swap_open_interest(&self, symbol: &str) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        let response = self.get(BingxEndpoint::SwapOpenInterest, params, AccountType::FuturesCross).await?;
+        self.check_response(&response)?;
+        Ok(response)
+    }
+
+    /// Swap funding rate history — `GET /openApi/swap/v2/quote/fundingRateHistory` (public)
+    ///
+    /// Required param: `symbol`. Optional: `startTime`, `endTime`, `limit`.
+    pub async fn swap_funding_rate_history(
+        &self,
+        symbol: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        if let Some(st) = start_time {
+            params.insert("startTime".to_string(), st.to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("endTime".to_string(), et.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.min(1000).to_string());
+        }
+        let response = self.get(BingxEndpoint::SwapFundingRateHistory, params, AccountType::FuturesCross).await?;
+        self.check_response(&response)?;
+        Ok(response)
+    }
+
+    /// Swap premium index (mark price + index price + funding rate) —
+    /// `GET /openApi/swap/v2/quote/premiumIndex` (public)
+    ///
+    /// Optional param: `symbol`. Without symbol returns all contracts.
+    pub async fn swap_premium_index(&self, symbol: Option<&str>) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(s) = symbol {
+            params.insert("symbol".to_string(), s.to_string());
+        }
+        let response = self.get(BingxEndpoint::SwapPremiumIndex, params, AccountType::FuturesCross).await?;
+        self.check_response(&response)?;
+        Ok(response)
+    }
+}

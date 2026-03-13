@@ -807,6 +807,108 @@ impl LighterConnector {
         let response = self.get(LighterEndpoint::OrderBookDetails, params, 300).await?;
         LighterParser::parse_trading_pairs(&response)
     }
+
+    /// Get latest funding rates for all markets (or a specific market)
+    ///
+    /// Returns the current funding rate per market. Corresponds to
+    /// `GET /api/v1/funding-rates`.
+    pub async fn get_funding_rates(
+        &self,
+        market_id: Option<u16>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(id) = market_id {
+            params.insert("market_id".to_string(), id.to_string());
+        }
+        self.get(LighterEndpoint::FundingRates, params, 300).await
+    }
+
+    /// Get exchange-level aggregate metrics
+    ///
+    /// Returns global statistics such as total volume, open interest, and
+    /// number of active accounts. Corresponds to `GET /api/v1/exchangeMetrics`.
+    pub async fn get_exchange_metrics(&self) -> ExchangeResult<Value> {
+        self.get(LighterEndpoint::ExchangeMetrics, HashMap::new(), 300).await
+    }
+
+    /// Get account-level trading limits
+    ///
+    /// Returns order size limits, position limits, and other account caps.
+    /// Corresponds to `GET /api/v1/accountLimits`.
+    pub async fn get_account_limits(&self) -> ExchangeResult<Value> {
+        let (by_field, value) = self.resolve_account_query()?;
+        let mut params = HashMap::new();
+        params.insert("by".to_string(), by_field);
+        params.insert("value".to_string(), value);
+        self.get(LighterEndpoint::AccountLimits, params, 300).await
+    }
+
+    /// Get account metadata (tier, settings, referral info)
+    ///
+    /// Corresponds to `GET /api/v1/accountMetadata`.
+    pub async fn get_account_metadata(&self) -> ExchangeResult<Value> {
+        let (by_field, value) = self.resolve_account_query()?;
+        let mut params = HashMap::new();
+        params.insert("by".to_string(), by_field);
+        params.insert("value".to_string(), value);
+        self.get(LighterEndpoint::AccountMetadata, params, 300).await
+    }
+
+    /// Get per-position funding payment history
+    ///
+    /// Returns historical funding payments for each open or recently closed
+    /// position. Corresponds to `GET /api/v1/positionFunding`.
+    pub async fn get_position_funding(
+        &self,
+        market_id: Option<u16>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let (by_field, value) = self.resolve_account_query()?;
+        let mut params = HashMap::new();
+        params.insert("by".to_string(), by_field);
+        params.insert("value".to_string(), value);
+        if let Some(id) = market_id {
+            params.insert("market_id".to_string(), id.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(LighterEndpoint::PositionFunding, params, 300).await
+    }
+
+    /// Get liquidation history for the account
+    ///
+    /// Returns a list of past liquidation events. Corresponds to
+    /// `GET /api/v1/liquidations`.
+    pub async fn get_liquidations(
+        &self,
+        market_id: Option<u16>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let (by_field, value) = self.resolve_account_query()?;
+        let mut params = HashMap::new();
+        params.insert("by".to_string(), by_field);
+        params.insert("value".to_string(), value);
+        if let Some(id) = market_id {
+            params.insert("market_id".to_string(), id.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(LighterEndpoint::Liquidations, params, 300).await
+    }
+
+    /// Get pending withdrawal delay information
+    ///
+    /// Returns the remaining delay period before queued withdrawals can be
+    /// finalised on-chain. Corresponds to `GET /api/v1/withdrawalDelays`.
+    pub async fn get_withdrawal_delays(&self) -> ExchangeResult<Value> {
+        let (by_field, value) = self.resolve_account_query()?;
+        let mut params = HashMap::new();
+        params.insert("by".to_string(), by_field);
+        params.insert("value".to_string(), value);
+        self.get(LighterEndpoint::WithdrawalDelays, params, 300).await
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

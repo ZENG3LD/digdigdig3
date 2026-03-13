@@ -330,6 +330,123 @@ impl ImfConnector {
         let dimensions = format!("M.{}.ENDA_XDC_USD_RATE", country.to_uppercase());
         self.get_data("IFS", &dimensions, start, end).await
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C6 ADDITIONS — WEO (World Economic Outlook) endpoints
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Get all WEO indicator codes (concepts)
+    ///
+    /// Returns the full list of World Economic Outlook series codes such as
+    /// NGDP_RPCH (real GDP growth), PCPI (CPI), LUR (unemployment), etc.
+    ///
+    /// # Returns
+    /// Code list as raw JSON — parse keys for indicator codes and descriptions.
+    pub async fn get_weo_indicators(&self) -> ExchangeResult<serde_json::Value> {
+        let url = format!("{}{}", self.endpoints.rest_base, ImfEndpoint::WeoIndicators.path());
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| ExchangeError::Network(format!("Request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(ExchangeError::Api {
+                code: response.status().as_u16() as i32,
+                message: format!("HTTP {}", response.status()),
+            });
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| ExchangeError::Parse(format!("JSON parse error: {}", e)))
+    }
+
+    /// Get all WEO country codes (ISO codes used by the WEO database)
+    ///
+    /// Returns country codes and names as used in the WEO dataset.
+    ///
+    /// # Returns
+    /// Code list as raw JSON.
+    pub async fn get_weo_countries(&self) -> ExchangeResult<serde_json::Value> {
+        let url = format!("{}{}", self.endpoints.rest_base, ImfEndpoint::WeoCountries.path());
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| ExchangeError::Network(format!("Request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(ExchangeError::Api {
+                code: response.status().as_u16() as i32,
+                message: format!("HTTP {}", response.status()),
+            });
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| ExchangeError::Parse(format!("JSON parse error: {}", e)))
+    }
+
+    /// Get all WEO regional aggregates
+    ///
+    /// Returns region group codes such as Emerging Market Economies,
+    /// Advanced Economies, etc.
+    ///
+    /// # Returns
+    /// Code list as raw JSON.
+    pub async fn get_weo_regions(&self) -> ExchangeResult<serde_json::Value> {
+        let url = format!("{}{}", self.endpoints.rest_base, ImfEndpoint::WeoRegions.path());
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| ExchangeError::Network(format!("Request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(ExchangeError::Api {
+                code: response.status().as_u16() as i32,
+                message: format!("HTTP {}", response.status()),
+            });
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| ExchangeError::Parse(format!("JSON parse error: {}", e)))
+    }
+
+    /// Fetch WEO forecast data
+    ///
+    /// Uses the WEO database (World Economic Outlook) to retrieve IMF forecasts.
+    ///
+    /// # Arguments
+    /// - `country` - Country code (e.g., "US", "DE") or empty string for all
+    /// - `indicator` - WEO indicator code (e.g., "NGDP_RPCH", "PCPI", "LUR")
+    /// - `start` - Optional start year (e.g., "2020")
+    /// - `end` - Optional end year (e.g., "2026")
+    ///
+    /// # Returns
+    /// Vector of IMF series data points with forecast values
+    pub async fn get_weo_data(
+        &self,
+        country: &str,
+        indicator: &str,
+        start: Option<&str>,
+        end: Option<&str>,
+    ) -> ExchangeResult<Vec<ImfSeries>> {
+        // WEO uses annual frequency "A"
+        let dimensions = format!("A.{}.{}", country.to_uppercase(), indicator.to_uppercase());
+        self.get_data("WEO", &dimensions, start, end).await
+    }
 }
 
 impl Default for ImfConnector {

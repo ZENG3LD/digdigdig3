@@ -252,6 +252,70 @@ impl NgaWarningsConnector {
 
         NgaWarningsParser::parse_broadcast_warnings(&json)
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Get ASAM anti-piracy and maritime security incident reports
+    ///
+    /// ASAM (Anti-Shipping Activity Messages) are incident reports for
+    /// piracy, robbery, and suspicious activity at sea.
+    ///
+    /// # Arguments
+    /// - `limit` - Optional limit on number of results
+    ///
+    /// # Returns
+    /// ASAM incident reports as raw JSON string
+    pub async fn get_asam_piracy_reports(
+        &self,
+        limit: Option<u32>,
+    ) -> ExchangeResult<String> {
+        let mut params = HashMap::new();
+        params.insert("output".to_string(), "json".to_string());
+        if let Some(l) = limit {
+            params.insert("maxRecords".to_string(), l.to_string());
+        }
+
+        self.get(NgaWarningsEndpoint::AsamPiracyReports, params).await
+    }
+
+    /// Get MODU (Mobile Offshore Drilling Unit) positions
+    ///
+    /// Returns current positions of offshore drilling platforms registered
+    /// in the NGA MODU database.
+    ///
+    /// # Returns
+    /// MODU position data as raw JSON string
+    pub async fn get_modu_positions(&self) -> ExchangeResult<String> {
+        let mut params = HashMap::new();
+        params.insert("output".to_string(), "json".to_string());
+
+        self.get(NgaWarningsEndpoint::ModuPositions, params).await
+    }
+
+    /// Get World Port Index (WPI) data
+    ///
+    /// The WPI contains information on approximately 3,700 ports, terminals,
+    /// and offshore oil terminals worldwide.
+    ///
+    /// # Arguments
+    /// - `country_code` - Optional 2-letter country code filter (e.g., "US", "GB")
+    ///
+    /// # Returns
+    /// World Port Index entries as raw JSON string
+    pub async fn get_world_port_index(
+        &self,
+        country_code: Option<&str>,
+    ) -> ExchangeResult<String> {
+        let mut params = HashMap::new();
+        params.insert("output".to_string(), "json".to_string());
+        if let Some(cc) = country_code {
+            params.insert("countryCode".to_string(), cc.to_string());
+        }
+
+        self.get(NgaWarningsEndpoint::WorldPortIndex, params).await
+    }
 }
 
 impl Default for NgaWarningsConnector {

@@ -266,6 +266,39 @@ impl DhanConnector {
         // In production, this should be configurable or derived from symbol
         DhanExchangeSegment::NseEq
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EXTENDED METHODS — Options Chain
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Get options chain — `GET /v2/optionchain`
+    ///
+    /// `underlying_scrip_id` — security ID of the underlying instrument.
+    /// `expiry_date` — option expiry date in `YYYY-MM-DD` format.
+    pub async fn get_options_chain(
+        &self,
+        underlying_scrip_id: &str,
+        expiry_date: &str,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("UnderlyingScripId".to_string(), underlying_scrip_id.to_string());
+        params.insert("ExpiryDate".to_string(), expiry_date.to_string());
+        self.get(DhanEndpoint::OptionChain, params).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EXTENDED METHODS — Kill Switch
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Activate or deactivate kill switch — `POST /v2/killswitch`
+    ///
+    /// `kill_switch_status` — `"ACTIVATE"` to halt all trading, `"DEACTIVATE"` to resume.
+    pub async fn kill_switch(&self, kill_switch_status: &str) -> ExchangeResult<Value> {
+        let body = json!({
+            "killSwitchStatus": kill_switch_status,
+        });
+        self.post(DhanEndpoint::KillSwitch, body).await
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -819,6 +852,45 @@ impl AmendOrder for DhanConnector {
 
         let response = self.put(DhanEndpoint::ModifyOrder, &[("orderId", &order_id)], body).await?;
         DhanParser::parse_order_placement(&response)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EXTENDED METHODS — Trade history addition
+// ═══════════════════════════════════════════════════════════════════════════════
+
+impl DhanConnector {
+    /// Recent trade history — `GET /v2/trades` (signed)
+    ///
+    /// Returns the latest trades executed on the account without requiring a date
+    /// range. Use `get_trade_history_paginated` for date-filtered paginated results.
+    pub async fn get_trade_history(&self) -> ExchangeResult<Value> {
+        self.get(DhanEndpoint::GetRecentTrades, HashMap::new()).await
+    }
+
+    /// Paginated trade history — `GET /v2/trades/{fromDate}/{toDate}/{page}` (signed)
+    ///
+    /// Parameters:
+    /// - `from_date`: start date in `YYYY-MM-DD` format
+    /// - `to_date`: end date in `YYYY-MM-DD` format
+    /// - `page`: page number (0-indexed)
+    pub async fn get_trade_history_paginated(
+        &self,
+        from_date: &str,
+        to_date: &str,
+        page: u32,
+    ) -> ExchangeResult<Value> {
+        let base_url = self.urls.rest_url();
+        let path = format!("/v2/trades/{}/{}/{}", from_date, to_date, page);
+        let url = format!("{}{}", base_url, path);
+
+        let base_url_owned = base_url.to_string();
+        let mut auth = self.auth.lock().await;
+        let headers = auth.build_headers(&base_url_owned, &self.http).await?;
+        drop(auth);
+
+        let response = self.http.get_with_headers(&url, &HashMap::new(), &headers).await?;
+        Ok(response)
     }
 }
 

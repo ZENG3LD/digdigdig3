@@ -175,7 +175,11 @@ impl HtxConnector {
             HtxEndpoint::FuturesTicker
             | HtxEndpoint::FuturesOrderbook
             | HtxEndpoint::FuturesKlines
-            | HtxEndpoint::FuturesTrades => HtxUrls::futures_base_url(self.testnet),
+            | HtxEndpoint::FuturesTrades
+            | HtxEndpoint::OpenInterest
+            | HtxEndpoint::FundingRateHistory
+            | HtxEndpoint::MarkPrice
+            | HtxEndpoint::MarkPriceKline => HtxUrls::futures_base_url(self.testnet),
             _ => HtxUrls::base_url(self.testnet),
         };
         let path = endpoint.path();
@@ -1657,5 +1661,102 @@ impl SubAccounts for HtxConnector {
                 })
             }
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EXTENDED METHODS (not part of core traits)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+impl HtxConnector {
+    /// Get fills (match results) for a specific order.
+    ///
+    /// `GET /v1/order/orders/{order-id}/matchresults`
+    ///
+    /// Returns a list of trade records that filled the given order.
+    pub async fn get_order_match_results(&self, order_id: &str) -> ExchangeResult<Value> {
+        let path = HtxEndpoint::OrderMatchResults.path_with_vars(&[("order-id", order_id)]);
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+        let query = auth.build_signed_query("GET", "api.huobi.pro", &path, &HashMap::new());
+        let base_url = HtxUrls::base_url(self.testnet);
+        let url = format!("{}{}?{}", base_url, path, query);
+        self.rate_limit_wait(1).await;
+        let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
+        self.update_rate_from_headers(&resp_headers);
+        Ok(response)
+    }
+
+    /// Get USDT-margined open interest for a contract.
+    ///
+    /// `GET /linear-swap-api/v1/swap-open-interest?contract_code={symbol}`
+    ///
+    /// # Parameters
+    /// - `contract_code`: Contract code e.g. `BTC-USDT` (optional — omit for all)
+    pub async fn get_open_interest(&self, contract_code: Option<&str>) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(code) = contract_code {
+            params.insert("contract_code".to_string(), code.to_string());
+        }
+        self.get(HtxEndpoint::OpenInterest, params).await
+    }
+
+    /// Get historical funding rates for a USDT-margined contract.
+    ///
+    /// `GET /linear-swap-api/v3/swap-funding-rate-history`
+    ///
+    /// # Parameters
+    /// - `contract_code`: Contract code e.g. `BTC-USDT`
+    /// - `page_index`: Page index (optional, default 1)
+    /// - `page_size`: Page size (optional, default 20, max 50)
+    pub async fn get_funding_rate_history(
+        &self,
+        contract_code: &str,
+        page_index: Option<u32>,
+        page_size: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("contract_code".to_string(), contract_code.to_string());
+        if let Some(idx) = page_index {
+            params.insert("page_index".to_string(), idx.to_string());
+        }
+        if let Some(size) = page_size {
+            params.insert("page_size".to_string(), size.to_string());
+        }
+        self.get(HtxEndpoint::FundingRateHistory, params).await
+    }
+
+    /// Get mark price and index price for a USDT-margined contract.
+    ///
+    /// `GET /linear-swap-ex/market/index?contract_code={symbol}`
+    ///
+    /// Returns both the mark price and index price for the given contract.
+    pub async fn get_mark_price(&self, contract_code: &str) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("contract_code".to_string(), contract_code.to_string());
+        self.get(HtxEndpoint::MarkPrice, params).await
+    }
+
+    /// Get mark price kline (candlestick) data for a USDT-margined contract.
+    ///
+    /// `GET /linear-swap-ex/market/history/mark_price_kline`
+    ///
+    /// # Parameters
+    /// - `contract_code`: Contract code e.g. `BTC-USDT`
+    /// - `period`: Kline period e.g. `1min`, `5min`, `60min`, `1day`
+    /// - `size`: Number of bars (optional, default 150, max 2000)
+    pub async fn get_mark_price_kline(
+        &self,
+        contract_code: &str,
+        period: &str,
+        size: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("contract_code".to_string(), contract_code.to_string());
+        params.insert("period".to_string(), period.to_string());
+        if let Some(s) = size {
+            params.insert("size".to_string(), s.to_string());
+        }
+        self.get(HtxEndpoint::MarkPriceKline, params).await
     }
 }

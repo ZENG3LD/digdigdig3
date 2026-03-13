@@ -58,8 +58,12 @@ pub enum UpstoxEndpoint {
     MarketQuoteLtp,
     MarketQuoteQuotes,
     MarketQuoteOhlc,
+    /// GET /v2/market-quote/ltp — multi-instrument LTP quotes (comma-separated instrument_key)
+    MarketQuotesMulti,
     HistoricalCandleV2,
     HistoricalCandleV3,
+    /// GET /v3/historical-candle/{instrument_key}/{unit}/{interval}/{to_date}/{from_date}
+    HistoricalDataV3,
     IntradayCandleV2,
     IntradayCandleV3,
     OptionChain,
@@ -116,8 +120,10 @@ impl UpstoxEndpoint {
             Self::MarketQuoteLtp => "/market-quote/ltp".to_string(),
             Self::MarketQuoteQuotes => "/market-quote/quotes".to_string(),
             Self::MarketQuoteOhlc => "/market-quote/ohlc".to_string(),
+            Self::MarketQuotesMulti => "/market-quote/ltp".to_string(),
             Self::HistoricalCandleV2 => "/historical-candle".to_string(),
             Self::HistoricalCandleV3 => "/historical-candle".to_string(),
+            Self::HistoricalDataV3 => "/historical-candle".to_string(),
             Self::IntradayCandleV2 => "/historical-candle/intraday".to_string(),
             Self::IntradayCandleV3 => "/historical-candle/intraday".to_string(),
             Self::OptionChain => "/option/chain".to_string(),
@@ -169,6 +175,7 @@ impl UpstoxEndpoint {
             self,
             Self::HistoricalCandleV3
                 | Self::IntradayCandleV3
+                | Self::HistoricalDataV3
                 | Self::OrderPlaceV3
                 | Self::GttPlace
                 | Self::GttModify

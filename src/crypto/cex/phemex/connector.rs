@@ -1574,6 +1574,92 @@ impl SubAccounts for PhemexConnector {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// EXTENDED METHODS — Trade history & derivatives additions
+// ═══════════════════════════════════════════════════════════════════════════════
+
+impl PhemexConnector {
+    /// Trade history (fills) — `GET /exchange/order/v2/tradingList` (signed)
+    ///
+    /// Returns the authenticated user's trade execution history.
+    /// Optional params: `symbol`, `start`, `end`, `offset`, `limit`, `withCount`.
+    pub async fn get_trade_history(
+        &self,
+        symbol: Option<&str>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(s) = symbol {
+            params.insert("symbol".to_string(), s.to_string());
+        }
+        if let Some(st) = start_time {
+            params.insert("start".to_string(), st.to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("end".to_string(), et.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.min(200).to_string());
+        }
+        let response = self.get(PhemexEndpoint::TradeHistory, params, account_type).await?;
+        Ok(response)
+    }
+
+    /// Open interest — `GET /api-data/public/data/open-interest` (public)
+    ///
+    /// Required param: `symbol` (contract symbol, e.g. `BTCUSD`).
+    /// Optional params: `start`, `end`, `limit`.
+    pub async fn get_open_interest(
+        &self,
+        symbol: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        if let Some(st) = start_time {
+            params.insert("start".to_string(), st.to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("end".to_string(), et.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.min(200).to_string());
+        }
+        let response = self.get(PhemexEndpoint::OpenInterest, params, AccountType::FuturesCross).await?;
+        Ok(response)
+    }
+
+    /// Funding rate history — `GET /api-data/public/data/funding-rate-history` (public)
+    ///
+    /// Required param: `symbol`. Optional: `start`, `end`, `limit`.
+    pub async fn get_funding_rate_history(
+        &self,
+        symbol: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        if let Some(st) = start_time {
+            params.insert("start".to_string(), st.to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("end".to_string(), et.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.min(200).to_string());
+        }
+        let response = self.get(PhemexEndpoint::FundingRateHistory, params, AccountType::FuturesCross).await?;
+        Ok(response)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -47,6 +47,20 @@ pub enum NasaEndpoint {
     Apod,
     /// Get Earth Polychromatic Imaging Camera (EPIC) natural color images
     EpicNatural,
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+    /// DONKI CME Analysis (analysis details for CME events)
+    DonkiCmeAnalysis,
+    /// DONKI Notifications (space weather alerts)
+    DonkiNotifications,
+    /// Mars Rover Photos (Curiosity, Opportunity, Spirit, Perseverance)
+    MarsRoverPhotos { rover: String },
+    /// Earth Satellite Imagery (Landsat 8 via EPIC/Earth endpoint)
+    EarthImagery,
+    /// NEO Browse — browse the entire asteroid catalog (no date required)
+    NeoBrowse,
 }
 
 impl NasaEndpoint {
@@ -67,6 +81,13 @@ impl NasaEndpoint {
             // Other
             Self::Apod => "/planetary/apod".to_string(),
             Self::EpicNatural => "/EPIC/api/natural".to_string(),
+
+            // C7 additions
+            Self::DonkiCmeAnalysis => "/DONKI/CMEAnalysis".to_string(),
+            Self::DonkiNotifications => "/DONKI/notifications".to_string(),
+            Self::MarsRoverPhotos { rover } => format!("/mars-photos/api/v1/rovers/{}/photos", rover),
+            Self::EarthImagery => "/planetary/earth/imagery".to_string(),
+            Self::NeoBrowse => "/neo/rest/v1/neo/browse".to_string(),
         }
     }
 }

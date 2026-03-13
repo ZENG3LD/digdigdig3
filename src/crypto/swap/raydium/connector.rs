@@ -118,6 +118,110 @@ impl RaydiumConnector {
 
         self.get_request(RaydiumEndpoint::PoolByMint, &params).await
     }
+
+    /// Get current Solana cluster time
+    ///
+    /// Returns the on-chain Unix timestamp reported by the Solana cluster.
+    /// Corresponds to `GET /main/chain-time`.
+    pub async fn get_chain_time(&self) -> ExchangeResult<serde_json::Value> {
+        let params = HashMap::new();
+        self.get_request(RaydiumEndpoint::ChainTime, &params).await
+    }
+
+    /// Get Raydium platform summary
+    ///
+    /// Returns aggregate platform stats: TVL, 24h trading volume, and fee revenue.
+    /// Corresponds to `GET /main/info`.
+    pub async fn get_platform_info(&self) -> ExchangeResult<serde_json::Value> {
+        let params = HashMap::new();
+        self.get_request(RaydiumEndpoint::PlatformInfo, &params).await
+    }
+
+    /// Get pool token price history (OHLCV line data)
+    ///
+    /// Returns historical price data for a specific pool.
+    /// `pool_id` is the Solana public key (Base58) of the pool.
+    /// `resolution` can be `"15m"`, `"1h"`, `"4h"`, `"1d"`, etc.
+    /// Corresponds to `GET /pools/line/price`.
+    pub async fn get_pool_price_history(
+        &self,
+        pool_id: &str,
+        resolution: &str,
+        time_before: Option<i64>,
+        time_after: Option<i64>,
+    ) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        params.insert("id".to_string(), pool_id.to_string());
+        params.insert("type".to_string(), resolution.to_string());
+        if let Some(before) = time_before {
+            params.insert("before".to_string(), before.to_string());
+        }
+        if let Some(after) = time_after {
+            params.insert("after".to_string(), after.to_string());
+        }
+        self.get_request(RaydiumEndpoint::PoolPriceHistory, &params).await
+    }
+
+    /// Get pool liquidity history over time
+    ///
+    /// Returns historical liquidity (TVL) data for a specific pool.
+    /// `pool_id` is the Solana public key (Base58) of the pool.
+    /// `resolution` can be `"15m"`, `"1h"`, `"4h"`, `"1d"`, etc.
+    /// Corresponds to `GET /pools/line/liquidity`.
+    pub async fn get_pool_liquidity_history(
+        &self,
+        pool_id: &str,
+        resolution: &str,
+        time_before: Option<i64>,
+        time_after: Option<i64>,
+    ) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        params.insert("id".to_string(), pool_id.to_string());
+        params.insert("type".to_string(), resolution.to_string());
+        if let Some(before) = time_before {
+            params.insert("before".to_string(), before.to_string());
+        }
+        if let Some(after) = time_after {
+            params.insert("after".to_string(), after.to_string());
+        }
+        self.get_request(RaydiumEndpoint::PoolLiquidityHistory, &params).await
+    }
+
+    /// Get aggregate pool statistics (TVL and volume across all pools)
+    ///
+    /// Corresponds to `GET /pools/info/stats`.
+    pub async fn get_pool_stats(&self) -> ExchangeResult<serde_json::Value> {
+        let params = HashMap::new();
+        self.get_request(RaydiumEndpoint::PoolStats, &params).await
+    }
+
+    /// Get CLMM (concentrated liquidity) pool configuration tiers
+    ///
+    /// Returns available fee tiers and tick-spacing configurations for CLMM pools.
+    /// Corresponds to `GET /clmm/configs`.
+    pub async fn get_clmm_configs(&self) -> ExchangeResult<serde_json::Value> {
+        let params = HashMap::new();
+        self.get_request(RaydiumEndpoint::ClmmConfigs, &params).await
+    }
+
+    /// Get CPMM (constant product) pool configuration tiers
+    ///
+    /// Returns available fee tiers for CPMM pools.
+    /// Corresponds to `GET /cpmm/configs`.
+    pub async fn get_cpmm_configs(&self) -> ExchangeResult<serde_json::Value> {
+        let params = HashMap::new();
+        self.get_request(RaydiumEndpoint::CpmmConfigs, &params).await
+    }
+
+    /// Get farms owned or staked by a wallet address
+    ///
+    /// `wallet` is the Base58-encoded Solana wallet public key.
+    /// Corresponds to `GET /farms/info/mine`.
+    pub async fn get_farm_ownership(&self, wallet: &str) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        params.insert("owner".to_string(), wallet.to_string());
+        self.get_request(RaydiumEndpoint::FarmOwnership, &params).await
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

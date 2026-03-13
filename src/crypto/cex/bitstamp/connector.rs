@@ -849,6 +849,65 @@ impl CustodialFunds for BitstampConnector {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// C3 ADDITIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+impl BitstampConnector {
+    /// Get order history for a specific trading pair.
+    ///
+    /// `POST /api/v2/order_history/{pair}/`
+    /// Optional parameter: `offset` (default 0).
+    pub async fn get_order_history_pair(
+        &self,
+        pair: &str,
+        offset: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(o) = offset {
+            params.insert("offset".to_string(), o.to_string());
+        }
+        self.post(BitstampEndpoint::OrderHistoryPair, Some(pair), params).await
+    }
+
+    /// Place an instant buy order (market order) for a trading pair.
+    ///
+    /// `POST /api/v2/buy/instant/{pair}/`
+    /// Required parameter: `amount` (amount to buy in quote currency).
+    pub async fn instant_buy(&self, pair: &str, amount: f64) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("amount".to_string(), amount.to_string());
+        self.post(BitstampEndpoint::InstantBuy, Some(pair), params).await
+    }
+
+    /// Place an instant sell order (market order) for a trading pair.
+    ///
+    /// `POST /api/v2/sell/instant/{pair}/`
+    /// Required parameter: `amount` (amount to sell in base currency).
+    pub async fn instant_sell(&self, pair: &str, amount: f64) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("amount".to_string(), amount.to_string());
+        self.post(BitstampEndpoint::InstantSell, Some(pair), params).await
+    }
+
+    /// Transfer funds between sub-accounts.
+    ///
+    /// `POST /api/v2/sub-account/transfer/`
+    /// Required parameters: `amount`, `currency`, `subAccount`.
+    pub async fn sub_account_transfer(
+        &self,
+        amount: f64,
+        currency: &str,
+        sub_account: &str,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("amount".to_string(), amount.to_string());
+        params.insert("currency".to_string(), currency.to_string());
+        params.insert("subAccount".to_string(), sub_account.to_string());
+        self.post(BitstampEndpoint::SubAccountTransfer, None, params).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

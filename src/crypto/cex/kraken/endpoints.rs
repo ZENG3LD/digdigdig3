@@ -83,6 +83,10 @@ pub enum KrakenEndpoint {
     // === SPOT WEBSOCKET ===
     SpotWebSocketToken,
 
+    // === FILL/TRADE HISTORY ===
+    /// POST /0/private/TradesHistory — personal trade fills (signed)
+    TradesHistory,
+
     // === FUTURES MARKET DATA ===
     FuturesTickers,
     FuturesOrderbook,
@@ -143,6 +147,9 @@ impl KrakenEndpoint {
 
             // Spot WebSocket
             Self::SpotWebSocketToken => "/0/private/GetWebSocketsToken",
+
+            // Fill/Trade History
+            Self::TradesHistory => "/0/private/TradesHistory",
 
             // Futures Market Data
             Self::FuturesTickers => "/derivatives/api/v3/tickers",
@@ -221,7 +228,8 @@ impl KrakenEndpoint {
             | Self::SpotWithdrawStatus
             | Self::SpotListSubaccounts
             | Self::SpotTransferToSubaccount
-            | Self::SpotTransferFromSubaccount => "POST",
+            | Self::SpotTransferFromSubaccount
+            | Self::TradesHistory => "POST",
 
             // GET endpoints
             _ => "GET",

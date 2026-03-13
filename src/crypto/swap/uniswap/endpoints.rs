@@ -123,10 +123,10 @@ impl UniswapEndpoint {
             // Trading API
             Self::Quote => "/quote",
             Self::Swap => "/swap",
-            Self::CheckApproval => "/check_approval",
+            Self::CheckApproval => "/approval",
             Self::OrderStatus => "/orders",
             Self::SwapStatus => "/swaps",
-            Self::SwappableTokens => "/swappable_tokens",
+            Self::SwappableTokens => "/tokens",
 
             // Subgraph - all use same GraphQL endpoint
             Self::PoolsQuery

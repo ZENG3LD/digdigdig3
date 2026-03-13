@@ -346,4 +346,131 @@ impl OpenSanctionsConnector {
     ) -> ExchangeResult<SanctionSearchResult> {
         self.search(name, schema, None, Some(10), None).await
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Get entities adjacent (related) to a given entity
+    ///
+    /// Returns entities that share properties with the given entity —
+    /// e.g. directors of a sanctioned company, or companies controlled by
+    /// a sanctioned individual.
+    ///
+    /// # Arguments
+    /// - `entity_id` - OpenSanctions entity ID (e.g., "NK-12345")
+    ///
+    /// # Returns
+    /// Related entities as raw JSON value
+    pub async fn get_entity_adjacency(
+        &self,
+        entity_id: &str,
+    ) -> ExchangeResult<serde_json::Value> {
+        let params: HashMap<String, String> = HashMap::new();
+        let endpoint = OpenSanctionsEndpoint::EntityAdjacency { entity_id: entity_id.to_string() };
+        let url = format!("{}{}", self.endpoints.rest_base, endpoint.path());
+
+        let response = self
+            .client
+            .get(&url)
+            .query(&params)
+            .send()
+            .await
+            .map_err(|e| ExchangeError::Network(format!("Request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(ExchangeError::Api {
+                code: response.status().as_u16() as i32,
+                message: format!("HTTP {}", response.status()),
+            });
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| ExchangeError::Parse(format!("JSON parse error: {}", e)))
+    }
+
+    /// Get individual statements (raw facts) for an entity
+    ///
+    /// Each entity in OpenSanctions is assembled from multiple source statements.
+    /// This endpoint returns the raw statements that comprise an entity's data.
+    ///
+    /// # Arguments
+    /// - `entity_id` - OpenSanctions entity ID
+    /// - `limit` - Optional result limit (default: 100)
+    ///
+    /// # Returns
+    /// Statements as raw JSON value
+    pub async fn get_statements(
+        &self,
+        entity_id: &str,
+        limit: Option<u32>,
+    ) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        params.insert("entity_id".to_string(), entity_id.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+
+        let url = format!("{}{}", self.endpoints.rest_base, OpenSanctionsEndpoint::Statements.path());
+
+        let response = self
+            .client
+            .get(&url)
+            .query(&params)
+            .send()
+            .await
+            .map_err(|e| ExchangeError::Network(format!("Request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(ExchangeError::Api {
+                code: response.status().as_u16() as i32,
+                message: format!("HTTP {}", response.status()),
+            });
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| ExchangeError::Parse(format!("JSON parse error: {}", e)))
+    }
+
+    /// Use the OpenRefine-compatible Reconciliation API
+    ///
+    /// The Reconcile API supports entity deduplication and linking against
+    /// the OpenSanctions dataset using a standard OpenRefine reconciliation
+    /// service protocol.
+    ///
+    /// # Arguments
+    /// - `query` - Query JSON body compatible with OpenRefine reconcile format
+    ///
+    /// # Returns
+    /// Reconciliation results as raw JSON value
+    pub async fn reconcile(
+        &self,
+        queries: serde_json::Value,
+    ) -> ExchangeResult<serde_json::Value> {
+        let url = format!("{}{}", self.endpoints.rest_base, OpenSanctionsEndpoint::ReconcileApi.path());
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&queries)
+            .send()
+            .await
+            .map_err(|e| ExchangeError::Network(format!("Request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(ExchangeError::Api {
+                code: response.status().as_u16() as i32,
+                message: format!("HTTP {}", response.status()),
+            });
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| ExchangeError::Parse(format!("JSON parse error: {}", e)))
+    }
 }

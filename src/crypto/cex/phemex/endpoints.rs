@@ -117,6 +117,12 @@ pub enum PhemexEndpoint {
     SubAccountCreate,
     SubAccountList,
     SubAccountTransfer,
+
+    // === TRADE HISTORY & DERIVATIVES ===
+    /// GET /exchange/order/v2/tradingList (signed) — trade/fill history
+    TradeHistory,
+    /// GET /api-data/public/data/open-interest — open interest
+    OpenInterest,
 }
 
 impl PhemexEndpoint {
@@ -186,6 +192,10 @@ impl PhemexEndpoint {
             Self::SubAccountCreate => "/phemex-user/users/children",
             Self::SubAccountList => "/phemex-user/users/children",
             Self::SubAccountTransfer => "/assets/universal-transfer",
+
+            // Trade History & Derivatives
+            Self::TradeHistory => "/exchange/order/v2/tradingList",
+            Self::OpenInterest => "/api-data/public/data/open-interest",
         }
     }
 
@@ -203,7 +213,8 @@ impl PhemexEndpoint {
             | Self::ContractTrades
             | Self::ContractTicker24h
             | Self::ContractKlines
-            | Self::FundingRateHistory => false,
+            | Self::FundingRateHistory
+            | Self::OpenInterest => false,
 
             // Private endpoints
             _ => true,

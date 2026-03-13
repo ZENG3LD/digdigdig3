@@ -400,4 +400,91 @@ impl InterpolConnector {
         )
         .await
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Get yellow notice details by notice ID
+    ///
+    /// Yellow notices are issued for missing persons.
+    ///
+    /// # Arguments
+    /// - `notice_id` - Notice ID in the format "YYYY/NNNNN" (e.g., "2024/12345")
+    ///
+    /// # Returns
+    /// Detailed yellow notice information
+    pub async fn get_yellow_notice_detail(
+        &self,
+        notice_id: &str,
+    ) -> ExchangeResult<InterpolNotice> {
+        let params = HashMap::new();
+        let response = self.get(
+            InterpolEndpoint::YellowNoticeDetail { notice_id: notice_id.to_string() },
+            params,
+        ).await?;
+        InterpolParser::parse_notice(&response)
+    }
+
+    /// Get images for a yellow notice
+    ///
+    /// # Arguments
+    /// - `notice_id` - Notice ID in the format "YYYY/NNNNN"
+    ///
+    /// # Returns
+    /// Vector of image metadata for this notice
+    pub async fn get_yellow_notice_images(
+        &self,
+        notice_id: &str,
+    ) -> ExchangeResult<Vec<InterpolImage>> {
+        let params = HashMap::new();
+        let response = self.get(
+            InterpolEndpoint::YellowNoticeImages { notice_id: notice_id.to_string() },
+            params,
+        ).await?;
+        InterpolParser::parse_images(&response)
+    }
+
+    /// Get UN Security Council individual persons under sanctions
+    ///
+    /// Returns a list of individuals designated by the UN Security Council,
+    /// typically for terrorism financing or arms embargo violations.
+    ///
+    /// # Arguments
+    /// - `limit` - Optional result limit
+    ///
+    /// # Returns
+    /// Search result containing individual UN-sanctioned persons
+    pub async fn get_un_persons(
+        &self,
+        limit: Option<u32>,
+    ) -> ExchangeResult<InterpolSearchResult> {
+        let mut params = HashMap::new();
+        if let Some(l) = limit {
+            params.insert("resultPerPage".to_string(), l.to_string());
+        }
+        let response = self.get(InterpolEndpoint::UnPersons, params).await?;
+        InterpolParser::parse_search_result(&response)
+    }
+
+    /// Get UN Security Council sanctioned entities (organizations/groups)
+    ///
+    /// Returns legal entities (companies, organizations, groups) under UN sanctions.
+    ///
+    /// # Arguments
+    /// - `limit` - Optional result limit
+    ///
+    /// # Returns
+    /// Search result containing sanctioned entities
+    pub async fn get_un_entities(
+        &self,
+        limit: Option<u32>,
+    ) -> ExchangeResult<InterpolSearchResult> {
+        let mut params = HashMap::new();
+        if let Some(l) = limit {
+            params.insert("resultPerPage".to_string(), l.to_string());
+        }
+        let response = self.get(InterpolEndpoint::UnEntities, params).await?;
+        InterpolParser::parse_search_result(&response)
+    }
 }

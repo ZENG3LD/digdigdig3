@@ -342,6 +342,76 @@ impl UnOchaConnector {
 
         Ok((refugees_out, refugees_in, idps, returnees))
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Get conflict events data for a location
+    ///
+    /// Returns conflict event records (battles, explosions, etc.) via HAPI.
+    /// Powered by ACLED data integrated into OCHA's Humanitarian API.
+    ///
+    /// # Arguments
+    /// - `location` - ISO-3 country code (e.g., "SYR", "SDN")
+    /// - `year` - Optional year filter
+    ///
+    /// # Returns
+    /// Conflict event records as raw JSON
+    pub async fn get_conflict_events(
+        &self,
+        location: &str,
+        year: Option<u32>,
+    ) -> ExchangeResult<String> {
+        let mut params = HashMap::new();
+        params.insert("location_code".to_string(), location.to_string());
+        if let Some(y) = year {
+            params.insert("year".to_string(), y.to_string());
+        }
+
+        self.get(UnOchaEndpoint::ConflictEvents, params).await
+    }
+
+    /// Get national risk data for a country
+    ///
+    /// Returns the INFORM risk index and component scores for a country.
+    ///
+    /// # Arguments
+    /// - `location` - ISO-3 country code
+    ///
+    /// # Returns
+    /// National risk assessment as raw JSON
+    pub async fn get_national_risk(&self, location: &str) -> ExchangeResult<String> {
+        let mut params = HashMap::new();
+        params.insert("location_code".to_string(), location.to_string());
+
+        self.get(UnOchaEndpoint::NationalRisk, params).await
+    }
+
+    /// Get food prices data for a country (WFP VAM market monitoring)
+    ///
+    /// Returns food commodity prices from local markets collected as part
+    /// of WFP's food security monitoring.
+    ///
+    /// # Arguments
+    /// - `location` - ISO-3 country code
+    /// - `commodity` - Optional commodity name filter
+    ///
+    /// # Returns
+    /// Food price records as raw JSON
+    pub async fn get_food_prices(
+        &self,
+        location: &str,
+        commodity: Option<&str>,
+    ) -> ExchangeResult<String> {
+        let mut params = HashMap::new();
+        params.insert("location_code".to_string(), location.to_string());
+        if let Some(c) = commodity {
+            params.insert("commodity_name".to_string(), c.to_string());
+        }
+
+        self.get(UnOchaEndpoint::FoodPrices, params).await
+    }
 }
 
 impl Default for UnOchaConnector {

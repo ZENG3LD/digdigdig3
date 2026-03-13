@@ -189,6 +189,117 @@ impl JupiterConnector {
 
         self.get(JupiterEndpoint::Quote, params).await
     }
+
+    /// POST request (for Ultra Swap API and other POST endpoints)
+    async fn post(
+        &self,
+        endpoint: JupiterEndpoint,
+        body: Value,
+    ) -> ExchangeResult<Value> {
+        self.rate_limit_wait().await;
+
+        let url = endpoint.url(&self.urls);
+        let headers = self.auth.auth_headers();
+
+        let response = self.http.post(&url, &body, &headers).await?;
+        JupiterParser::check_error(&response)?;
+        Ok(response)
+    }
+
+    /// Get full token list with metadata (TokensV2)
+    ///
+    /// Returns all tokens indexed by Jupiter, including tags, extensions, and
+    /// logo URIs. Corresponds to `GET /tokens/v2`.
+    pub async fn get_tokens_v2(
+        &self,
+        tags: Option<&[&str]>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(tag_list) = tags {
+            params.insert("tags".to_string(), tag_list.join(","));
+        }
+        self.get(JupiterEndpoint::TokensV2, params).await
+    }
+
+    /// Create a new Ultra Swap order
+    ///
+    /// The Ultra Swap API provides an improved routing experience with guaranteed
+    /// execution. Returns an order object including the transaction to sign.
+    ///
+    /// `input_mint` and `output_mint` are Solana mint addresses.
+    /// `amount` is the raw input amount (in lamports / smallest unit).
+    /// `slippage_bps` is the maximum acceptable slippage in basis points (e.g. 50 = 0.5%).
+    pub async fn create_ultra_swap_order(
+        &self,
+        input_mint: &str,
+        output_mint: &str,
+        amount: u64,
+        slippage_bps: u16,
+        user_public_key: &str,
+    ) -> ExchangeResult<Value> {
+        let body = serde_json::json!({
+            "inputMint": input_mint,
+            "outputMint": output_mint,
+            "amount": amount.to_string(),
+            "slippageBps": slippage_bps,
+            "userPublicKey": user_public_key,
+        });
+        self.post(JupiterEndpoint::UltraSwapOrder, body).await
+    }
+
+    /// Get the status of an Ultra Swap by transaction ID
+    ///
+    /// Poll this endpoint after submitting an Ultra Swap transaction to check
+    /// whether it has been confirmed on-chain.
+    pub async fn get_ultra_swap_status(&self, transaction_id: &str) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("transactionId".to_string(), transaction_id.to_string());
+        self.get(JupiterEndpoint::UltraSwapStatus, params).await
+    }
+
+    /// Create an unsigned Ultra Swap transaction
+    ///
+    /// Returns a serialised unsigned transaction that the caller must sign
+    /// before submitting via `execute_ultra_swap`.
+    pub async fn create_ultra_swap(
+        &self,
+        input_mint: &str,
+        output_mint: &str,
+        amount: u64,
+        slippage_bps: u16,
+        user_public_key: &str,
+    ) -> ExchangeResult<Value> {
+        let body = serde_json::json!({
+            "inputMint": input_mint,
+            "outputMint": output_mint,
+            "amount": amount.to_string(),
+            "slippageBps": slippage_bps,
+            "userPublicKey": user_public_key,
+        });
+        self.post(JupiterEndpoint::UltraSwapCreate, body).await
+    }
+
+    /// Execute (broadcast) a signed Ultra Swap transaction
+    ///
+    /// `signed_transaction` is the Base64-encoded signed Solana transaction.
+    /// Returns the transaction signature and confirmation status.
+    pub async fn execute_ultra_swap(&self, signed_transaction: &str) -> ExchangeResult<Value> {
+        let body = serde_json::json!({
+            "signedTransaction": signed_transaction,
+        });
+        self.post(JupiterEndpoint::UltraSwapExecute, body).await
+    }
+
+    /// Get token balances for a wallet address
+    ///
+    /// Returns all SPL token balances for the given Solana wallet public key
+    /// as seen by the Jupiter Ultra API.
+    /// Corresponds to `GET /ultra/v1/balances`.
+    pub async fn get_ultra_balances(&self, wallet: &str) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("userPublicKey".to_string(), wallet.to_string());
+        self.get(JupiterEndpoint::UltraSwapBalances, params).await
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

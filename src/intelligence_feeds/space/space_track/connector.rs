@@ -6,7 +6,7 @@ use crate::ExchangeError;
 
 pub type ExchangeResult<T> = Result<T, ExchangeError>;
 
-use super::endpoints::*;
+use super::endpoints::{SpaceTrackEndpoint, SpaceTrackEndpoints, SpaceTrackQuery, SpaceTrackClass, SortOrder};
 use super::auth::*;
 use super::parser::{SpaceTrackParser, Satellite, DecayPrediction, TleData};
 
@@ -172,10 +172,8 @@ impl SpaceTrackConnector {
     /// # Returns
     /// List of recently launched satellites
     pub async fn get_recent_launches(&self, limit: Option<u32>) -> ExchangeResult<Vec<Satellite>> {
-        // Note: The endpoint has a built-in limit of 25
-        // To support custom limits, we would need to modify the endpoint path
-        let _ = limit; // Suppress unused warning
-        let response = self.get(SpaceTrackEndpoint::SatelliteCatalog).await?;
+        let endpoint = SpaceTrackEndpoint::SatelliteCatalog { limit: limit.unwrap_or(25) };
+        let response = self.get(endpoint).await?;
         SpaceTrackParser::parse_satellites(&response)
     }
 
@@ -187,8 +185,8 @@ impl SpaceTrackConnector {
     /// # Returns
     /// List of decay predictions
     pub async fn get_decay_predictions(&self, limit: Option<u32>) -> ExchangeResult<Vec<DecayPrediction>> {
-        let _ = limit; // Suppress unused warning
-        let response = self.get(SpaceTrackEndpoint::Decay).await?;
+        let endpoint = SpaceTrackEndpoint::Decay { limit: limit.unwrap_or(25) };
+        let response = self.get(endpoint).await?;
         SpaceTrackParser::parse_decay_predictions(&response)
     }
 
@@ -200,8 +198,8 @@ impl SpaceTrackConnector {
     /// # Returns
     /// List of tracked debris objects
     pub async fn get_debris(&self, limit: Option<u32>) -> ExchangeResult<Vec<Satellite>> {
-        let _ = limit; // Suppress unused warning
-        let response = self.get(SpaceTrackEndpoint::Debris).await?;
+        let endpoint = SpaceTrackEndpoint::Debris { limit: limit.unwrap_or(50) };
+        let response = self.get(endpoint).await?;
         SpaceTrackParser::parse_satellites(&response)
     }
 
@@ -220,14 +218,192 @@ impl SpaceTrackConnector {
 
     /// Get Tracking & Impact Predictions (TIP)
     ///
+    /// # Arguments
+    /// - `limit` - Optional limit (default: 25)
+    ///
     /// # Returns
     /// List of TIP entries (raw JSON values)
-    pub async fn get_tip(&self) -> ExchangeResult<Vec<serde_json::Value>> {
-        let response = self.get(SpaceTrackEndpoint::Tip).await?;
+    pub async fn get_tip(&self, limit: Option<u32>) -> ExchangeResult<Vec<serde_json::Value>> {
+        let endpoint = SpaceTrackEndpoint::Tip { limit: limit.unwrap_or(25) };
+        let response = self.get(endpoint).await?;
 
         response
             .as_array()
             .ok_or_else(|| ExchangeError::Parse("Expected array response".to_string()))
             .cloned()
+    }
+
+    /// Execute a custom query built with `SpaceTrackQuery`
+    ///
+    /// Allows full flexibility to construct queries with arbitrary predicates,
+    /// filters, ordering, and limits.
+    ///
+    /// # Example
+    /// ```ignore
+    /// use space_track::endpoints::{SpaceTrackQuery, SpaceTrackClass, SortOrder};
+    ///
+    /// // Get debris objects launched after 2020, sorted by epoch, limit 100
+    /// let query = SpaceTrackQuery::new(SpaceTrackClass::Gp)
+    ///     .filter("OBJECT_TYPE", "DEBRIS")
+    ///     .filter_range("EPOCH", "2020-01-01", "")
+    ///     .order_by("EPOCH", SortOrder::Desc)
+    ///     .limit(100);
+    ///
+    /// let results = connector.query(query).await?;
+    /// ```
+    pub async fn query(
+        &self,
+        query: SpaceTrackQuery,
+    ) -> ExchangeResult<Vec<serde_json::Value>> {
+        let response = self.get(SpaceTrackEndpoint::Custom(query)).await?;
+
+        response
+            .as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array response".to_string()))
+            .cloned()
+    }
+
+    /// Get satellites by object type with configurable filters
+    ///
+    /// # Arguments
+    /// - `object_type` - Object type: "PAYLOAD", "ROCKET BODY", "DEBRIS", "UNKNOWN", "TBA"
+    /// - `order_by` - Field to order by (default: "LAUNCH")
+    /// - `limit` - Result limit (default: 100)
+    ///
+    /// # Returns
+    /// List of satellites matching the filter
+    pub async fn get_objects_by_type(
+        &self,
+        object_type: &str,
+        order_by: Option<&str>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Vec<Satellite>> {
+        let query = SpaceTrackQuery::new(SpaceTrackClass::Gp)
+            .filter("OBJECT_TYPE", object_type)
+            .order_by(order_by.unwrap_or("LAUNCH"), SortOrder::Desc)
+            .limit(limit.unwrap_or(100));
+
+        let response = self.get(SpaceTrackEndpoint::Custom(query)).await?;
+        SpaceTrackParser::parse_satellites(&response)
+    }
+
+    /// Get satellites launched in a date range
+    ///
+    /// # Arguments
+    /// - `launch_start` - Start date (ISO format: "YYYY-MM-DD")
+    /// - `launch_end` - End date (ISO format: "YYYY-MM-DD", or empty for open range)
+    /// - `limit` - Result limit (default: 100)
+    ///
+    /// # Returns
+    /// List of satellites launched in the date range
+    pub async fn get_launches_in_range(
+        &self,
+        launch_start: &str,
+        launch_end: &str,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Vec<Satellite>> {
+        let query = SpaceTrackQuery::new(SpaceTrackClass::SatCat)
+            .filter_range("LAUNCH", launch_start, launch_end)
+            .order_by("LAUNCH", SortOrder::Desc)
+            .limit(limit.unwrap_or(100));
+
+        let response = self.get(SpaceTrackEndpoint::Custom(query)).await?;
+        SpaceTrackParser::parse_satellites(&response)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C7 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Get Conjunction Data Messages (CDM) — collision warning data
+    ///
+    /// CDMs are published when two tracked objects are predicted to come within
+    /// close proximity. The public subset includes low-risk events.
+    ///
+    /// # Arguments
+    /// - `limit` - Optional result limit (default: 25)
+    ///
+    /// # Returns
+    /// List of CDM entries as raw JSON values
+    pub async fn get_cdm_public(
+        &self,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Vec<serde_json::Value>> {
+        let endpoint = SpaceTrackEndpoint::CdmPublic { limit: limit.unwrap_or(25) };
+        let response = self.get(endpoint).await?;
+
+        response
+            .as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array response".to_string()))
+            .cloned()
+    }
+
+    /// Get historical GP (orbital element) records for a satellite
+    ///
+    /// # Arguments
+    /// - `norad_id` - NORAD Catalog ID
+    ///
+    /// # Returns
+    /// Historical TLE data records
+    pub async fn get_gp_history(
+        &self,
+        norad_id: u32,
+    ) -> ExchangeResult<Vec<TleData>> {
+        let endpoint = SpaceTrackEndpoint::GpHistory { norad_id };
+        let response = self.get(endpoint).await?;
+        SpaceTrackParser::parse_tle_data(&response)
+    }
+
+    /// Get Boxscore — aggregate conjunction statistics by country/owner
+    ///
+    /// Returns the total number of tracked objects by owner country.
+    ///
+    /// # Returns
+    /// Boxscore entries as raw JSON values
+    pub async fn get_boxscore(&self) -> ExchangeResult<Vec<serde_json::Value>> {
+        let response = self.get(SpaceTrackEndpoint::Boxscore).await?;
+
+        response
+            .as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array response".to_string()))
+            .cloned()
+    }
+
+    /// Get SATCAT entries that have changed recently
+    ///
+    /// Useful for tracking catalog updates, re-entries, and status changes.
+    ///
+    /// # Arguments
+    /// - `days_back` - Number of days back to look for changes (default: 7)
+    ///
+    /// # Returns
+    /// List of recently changed satellites
+    pub async fn get_satcat_changes(
+        &self,
+        days_back: Option<u32>,
+    ) -> ExchangeResult<Vec<Satellite>> {
+        let endpoint = SpaceTrackEndpoint::SatcatChange { days_back: days_back.unwrap_or(7) };
+        let response = self.get(endpoint).await?;
+        SpaceTrackParser::parse_satellites(&response)
+    }
+
+    /// Get OMM (Orbital Mean-Elements Message) for a specific satellite
+    ///
+    /// OMM is the CCSDS standard format for orbital elements — a superset of TLE.
+    ///
+    /// # Arguments
+    /// - `norad_id` - NORAD Catalog ID (e.g., 25544 for ISS)
+    ///
+    /// # Returns
+    /// OMM data as TleData (same structure, OMM-sourced values)
+    pub async fn get_omm(&self, norad_id: u32) -> ExchangeResult<TleData> {
+        let endpoint = SpaceTrackEndpoint::Omm { norad_id };
+        let response = self.get(endpoint).await?;
+
+        let tle_list = SpaceTrackParser::parse_tle_data(&response)?;
+        tle_list
+            .into_iter()
+            .next()
+            .ok_or_else(|| ExchangeError::Parse(format!("No OMM data found for NORAD ID {}", norad_id)))
     }
 }

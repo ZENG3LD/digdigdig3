@@ -100,6 +100,22 @@ pub enum UpbitEndpoint {
     ListWithdrawalAddresses,
     InitiateWithdrawal,
     ListWithdrawals,
+
+    // === ORDER HISTORY ===
+    /// GET /v1/orders/closed (signed) — closed/filled order history with cursor pagination
+    ClosedOrders,
+
+    // === C3 ADDITIONS ===
+    /// GET /v1/orders/chance — market/account order restrictions and fees
+    OrderChance,
+    /// GET /v1/orders/open — list open orders (paginated)
+    OpenOrders,
+    /// GET /v1/status/wallet — wallet status for assets
+    WalletStatus,
+    /// POST /v1/withdraws/krw — withdraw Korean Won (KRW)
+    WithdrawKrw,
+    /// DELETE /v1/withdraws/uuid — cancel a pending withdrawal by UUID
+    CancelWithdraw,
 }
 
 impl UpbitEndpoint {
@@ -141,6 +157,16 @@ impl UpbitEndpoint {
             Self::ListWithdrawalAddresses => "/v1/withdraws/coin_addresses",
             Self::InitiateWithdrawal => "/v1/withdraws/coin",
             Self::ListWithdrawals => "/v1/withdraws",
+
+            // Order History
+            Self::ClosedOrders => "/v1/orders/closed",
+
+            // C3 Additions
+            Self::OrderChance => "/v1/orders/chance",
+            Self::OpenOrders => "/v1/orders/open",
+            Self::WalletStatus => "/v1/status/wallet",
+            Self::WithdrawKrw => "/v1/withdraws/krw",
+            Self::CancelWithdraw => "/v1/withdraws/uuid",
         }
     }
 
@@ -173,10 +199,12 @@ impl UpbitEndpoint {
             | Self::TestOrder
             | Self::ReplaceOrder
             | Self::CreateDepositAddress
-            | Self::InitiateWithdrawal => "POST",
+            | Self::InitiateWithdrawal
+            | Self::WithdrawKrw => "POST",
 
             Self::CancelOrder
-            | Self::BatchCancelOrders => "DELETE",
+            | Self::BatchCancelOrders
+            | Self::CancelWithdraw => "DELETE",
 
             _ => "GET",
         }

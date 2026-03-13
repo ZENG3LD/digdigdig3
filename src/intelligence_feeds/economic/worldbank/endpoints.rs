@@ -61,6 +61,16 @@ pub enum WorldBankEndpoint {
     IncomeLevels,
     /// Get lending types
     LendingTypes,
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // C6 ADDITIONS
+    // ═══════════════════════════════════════════════════════════════════════
+    /// Fetch an indicator for multiple countries in one request using
+    /// semicolon-separated country codes: e.g. "US;GB;DE"
+    MultiCountryBatch { countries: String, indicator: String },
+    /// Fetch sub-national / regional data for a country
+    /// Uses the same indicator endpoint but with admin region codes
+    SubNationalData { country: String, indicator: String },
 }
 
 impl WorldBankEndpoint {
@@ -92,6 +102,14 @@ impl WorldBankEndpoint {
             Self::Sources => "/source".to_string(),
             Self::IncomeLevels => "/incomelevel".to_string(),
             Self::LendingTypes => "/lendingtype".to_string(),
+
+            // C6 additions
+            Self::MultiCountryBatch { countries, indicator } => {
+                format!("/country/{}/indicator/{}", countries, indicator)
+            }
+            Self::SubNationalData { country, indicator } => {
+                format!("/country/{}/indicator/{}", country, indicator)
+            }
         }
     }
 }

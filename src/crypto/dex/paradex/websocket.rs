@@ -10,6 +10,21 @@
 //! - Message parsing to StreamEvent
 //! - Broadcast channel for multiple consumers
 //!
+//! ## Channels (Public)
+//! - `bbo.{market}` — best bid/offer for a market
+//! - `trades.{market}` — public trades
+//! - `order_book.{market}.snapshot@{depth}@{interval}` — full orderbook snapshot (polling)
+//! - `order_book.{market}.delta@{depth}@{interval}` — incremental orderbook deltas
+//! - `funding_data.{market}` — funding rate data
+//! - `markets_summary` — all markets summary (global)
+//! - `markets_summary.{market}` — per-market summary
+//!
+//! ## Channels (Private — require JWT auth)
+//! - `orders.{market}` — private order updates
+//! - `positions` — position updates
+//! - `fills.{market}` — fill (trade execution) updates
+//! - `account` — account balance/margin updates
+//!
 //! ## Usage
 //!
 //! ```ignore
@@ -458,20 +473,53 @@ impl WebSocketConnector for ParadexWebSocket {
     }
 
     async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
-        // Build channel name based on request
+        // Build channel name based on request.
+        //
+        // Paradex channel naming:
+        //   Ticker        → markets_summary (global) or markets_summary.{market} (per-market)
+        //   Orderbook     → order_book.{market} (default depth/interval applied server-side)
+        //   OrderbookDelta→ order_book.{market}.delta@20@100ms
+        //   Trade         → trades.{market}
+        //   FundingRate   → funding_data.{market}
+        //   OrderUpdate   → orders.{market} (private)
+        //   BalanceUpdate → account (private)
+        //   PositionUpdate→ positions (private)
         let channel = match &request.stream_type {
             StreamType::Ticker => {
-                "markets_summary".to_string() // Global ticker channel
+                // Per-market ticker via markets_summary.{market} when a symbol is set;
+                // fall back to the global markets_summary channel.
+                if !request.symbol.base.is_empty() && !request.symbol.quote.is_empty() {
+                    let symbol_str = format_symbol(&request.symbol.base, &request.symbol.quote, AccountType::FuturesCross);
+                    format!("markets_summary.{}", symbol_str)
+                } else {
+                    "markets_summary".to_string()
+                }
             }
             StreamType::Orderbook => {
                 let symbol_str = format_symbol(&request.symbol.base, &request.symbol.quote, AccountType::FuturesCross);
-                format!("order_book.{}", symbol_str)
+                format!("order_book.{}.snapshot@20@100ms", symbol_str)
+            }
+            StreamType::OrderbookDelta => {
+                let symbol_str = format_symbol(&request.symbol.base, &request.symbol.quote, AccountType::FuturesCross);
+                format!("order_book.{}.delta@20@100ms", symbol_str)
             }
             StreamType::Trade => {
                 let symbol_str = format_symbol(&request.symbol.base, &request.symbol.quote, AccountType::FuturesCross);
                 format!("trades.{}", symbol_str)
             }
-            StreamType::OrderUpdate => "orders".to_string(),
+            StreamType::FundingRate => {
+                let symbol_str = format_symbol(&request.symbol.base, &request.symbol.quote, AccountType::FuturesCross);
+                format!("funding_data.{}", symbol_str)
+            }
+            StreamType::OrderUpdate => {
+                // Per-market order stream when a symbol is provided.
+                if !request.symbol.base.is_empty() && !request.symbol.quote.is_empty() {
+                    let symbol_str = format_symbol(&request.symbol.base, &request.symbol.quote, AccountType::FuturesCross);
+                    format!("orders.{}", symbol_str)
+                } else {
+                    "orders".to_string()
+                }
+            }
             StreamType::BalanceUpdate => "account".to_string(),
             StreamType::PositionUpdate => "positions".to_string(),
             _ => return Err(WebSocketError::UnsupportedOperation(format!("Stream type {:?} not supported", request.stream_type))),
@@ -490,18 +538,40 @@ impl WebSocketConnector for ParadexWebSocket {
     }
 
     async fn unsubscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
-        // Build channel name (same logic as subscribe)
+        // Build channel name — mirrors subscribe() logic exactly.
         let channel = match &request.stream_type {
-            StreamType::Ticker => "markets_summary".to_string(),
+            StreamType::Ticker => {
+                if !request.symbol.base.is_empty() && !request.symbol.quote.is_empty() {
+                    let symbol_str = format_symbol(&request.symbol.base, &request.symbol.quote, AccountType::FuturesCross);
+                    format!("markets_summary.{}", symbol_str)
+                } else {
+                    "markets_summary".to_string()
+                }
+            }
             StreamType::Orderbook => {
                 let symbol_str = format_symbol(&request.symbol.base, &request.symbol.quote, AccountType::FuturesCross);
-                format!("order_book.{}", symbol_str)
+                format!("order_book.{}.snapshot@20@100ms", symbol_str)
+            }
+            StreamType::OrderbookDelta => {
+                let symbol_str = format_symbol(&request.symbol.base, &request.symbol.quote, AccountType::FuturesCross);
+                format!("order_book.{}.delta@20@100ms", symbol_str)
             }
             StreamType::Trade => {
                 let symbol_str = format_symbol(&request.symbol.base, &request.symbol.quote, AccountType::FuturesCross);
                 format!("trades.{}", symbol_str)
             }
-            StreamType::OrderUpdate => "orders".to_string(),
+            StreamType::FundingRate => {
+                let symbol_str = format_symbol(&request.symbol.base, &request.symbol.quote, AccountType::FuturesCross);
+                format!("funding_data.{}", symbol_str)
+            }
+            StreamType::OrderUpdate => {
+                if !request.symbol.base.is_empty() && !request.symbol.quote.is_empty() {
+                    let symbol_str = format_symbol(&request.symbol.base, &request.symbol.quote, AccountType::FuturesCross);
+                    format!("orders.{}", symbol_str)
+                } else {
+                    "orders".to_string()
+                }
+            }
             StreamType::BalanceUpdate => "account".to_string(),
             StreamType::PositionUpdate => "positions".to_string(),
             _ => return Err(WebSocketError::UnsupportedOperation(format!("Stream type {:?} not supported", request.stream_type))),
@@ -551,6 +621,165 @@ impl WebSocketConnector for ParadexWebSocket {
 
     fn ping_rtt_handle(&self) -> Option<Arc<Mutex<u64>>> {
         Some(self.ws_ping_rtt_ms.clone())
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EXTENDED METHODS (Paradex-specific channel subscriptions)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+impl ParadexWebSocket {
+    // ── Public channels ──────────────────────────────────────────────────────
+
+    /// Subscribe to `bbo.{market}` — best bid/offer updates for a market.
+    ///
+    /// Delivers the current best bid and ask prices at high frequency without
+    /// the full orderbook depth.
+    pub async fn subscribe_bbo(&self, market: &str) -> WebSocketResult<()> {
+        let channel = format!("bbo.{}", market);
+        self.subscribe_channel(&channel).await
+    }
+
+    /// Unsubscribe from `bbo.{market}`.
+    pub async fn unsubscribe_bbo(&self, market: &str) -> WebSocketResult<()> {
+        let channel = format!("bbo.{}", market);
+        self.unsubscribe_channel(&channel).await
+    }
+
+    /// Subscribe to `order_book.{market}.snapshot@{depth}@{interval}` — full
+    /// orderbook snapshots delivered at the specified polling interval.
+    ///
+    /// `depth` — number of levels per side (e.g. `"20"`, `"50"`).
+    /// `interval` — update interval in ms (e.g. `"100ms"`, `"1000ms"`).
+    pub async fn subscribe_orderbook_snapshot(
+        &self,
+        market: &str,
+        depth: &str,
+        interval: &str,
+    ) -> WebSocketResult<()> {
+        let channel = format!("order_book.{}.snapshot@{}@{}", market, depth, interval);
+        self.subscribe_channel(&channel).await
+    }
+
+    /// Unsubscribe from `order_book.{market}.snapshot@{depth}@{interval}`.
+    pub async fn unsubscribe_orderbook_snapshot(
+        &self,
+        market: &str,
+        depth: &str,
+        interval: &str,
+    ) -> WebSocketResult<()> {
+        let channel = format!("order_book.{}.snapshot@{}@{}", market, depth, interval);
+        self.unsubscribe_channel(&channel).await
+    }
+
+    /// Subscribe to `order_book.{market}.delta@{depth}@{interval}` — incremental
+    /// orderbook delta updates.
+    ///
+    /// `depth` — number of levels per side (e.g. `"20"`, `"50"`).
+    /// `interval` — update interval in ms (e.g. `"100ms"`, `"1000ms"`).
+    pub async fn subscribe_orderbook_delta(
+        &self,
+        market: &str,
+        depth: &str,
+        interval: &str,
+    ) -> WebSocketResult<()> {
+        let channel = format!("order_book.{}.delta@{}@{}", market, depth, interval);
+        self.subscribe_channel(&channel).await
+    }
+
+    /// Unsubscribe from `order_book.{market}.delta@{depth}@{interval}`.
+    pub async fn unsubscribe_orderbook_delta(
+        &self,
+        market: &str,
+        depth: &str,
+        interval: &str,
+    ) -> WebSocketResult<()> {
+        let channel = format!("order_book.{}.delta@{}@{}", market, depth, interval);
+        self.unsubscribe_channel(&channel).await
+    }
+
+    /// Subscribe to `funding_data.{market}` — real-time funding rate data.
+    pub async fn subscribe_funding_data(&self, market: &str) -> WebSocketResult<()> {
+        let channel = format!("funding_data.{}", market);
+        self.subscribe_channel(&channel).await
+    }
+
+    /// Unsubscribe from `funding_data.{market}`.
+    pub async fn unsubscribe_funding_data(&self, market: &str) -> WebSocketResult<()> {
+        let channel = format!("funding_data.{}", market);
+        self.unsubscribe_channel(&channel).await
+    }
+
+    /// Subscribe to the global `markets_summary` channel (all markets).
+    pub async fn subscribe_markets_summary(&self) -> WebSocketResult<()> {
+        self.subscribe_channel("markets_summary").await
+    }
+
+    /// Unsubscribe from `markets_summary`.
+    pub async fn unsubscribe_markets_summary(&self) -> WebSocketResult<()> {
+        self.unsubscribe_channel("markets_summary").await
+    }
+
+    /// Subscribe to `markets_summary.{market}` — per-market summary stream.
+    pub async fn subscribe_markets_summary_for(&self, market: &str) -> WebSocketResult<()> {
+        let channel = format!("markets_summary.{}", market);
+        self.subscribe_channel(&channel).await
+    }
+
+    /// Unsubscribe from `markets_summary.{market}`.
+    pub async fn unsubscribe_markets_summary_for(&self, market: &str) -> WebSocketResult<()> {
+        let channel = format!("markets_summary.{}", market);
+        self.unsubscribe_channel(&channel).await
+    }
+
+    // ── Private channels (require JWT authentication) ────────────────────────
+
+    /// Subscribe to `fills.{market}` — private fill (trade execution) updates
+    /// for the authenticated account on the given market.
+    pub async fn subscribe_fills(&self, market: &str) -> WebSocketResult<()> {
+        let channel = format!("fills.{}", market);
+        self.subscribe_channel(&channel).await
+    }
+
+    /// Unsubscribe from `fills.{market}`.
+    pub async fn unsubscribe_fills(&self, market: &str) -> WebSocketResult<()> {
+        let channel = format!("fills.{}", market);
+        self.unsubscribe_channel(&channel).await
+    }
+
+    /// Subscribe to `orders.{market}` — private order lifecycle updates for
+    /// the authenticated account on the given market.
+    pub async fn subscribe_orders(&self, market: &str) -> WebSocketResult<()> {
+        let channel = format!("orders.{}", market);
+        self.subscribe_channel(&channel).await
+    }
+
+    /// Unsubscribe from `orders.{market}`.
+    pub async fn unsubscribe_orders(&self, market: &str) -> WebSocketResult<()> {
+        let channel = format!("orders.{}", market);
+        self.unsubscribe_channel(&channel).await
+    }
+
+    /// Subscribe to `positions` — all open position updates for the authenticated
+    /// account (global, not per-market).
+    pub async fn subscribe_positions(&self) -> WebSocketResult<()> {
+        self.subscribe_channel("positions").await
+    }
+
+    /// Unsubscribe from `positions`.
+    pub async fn unsubscribe_positions(&self) -> WebSocketResult<()> {
+        self.unsubscribe_channel("positions").await
+    }
+
+    /// Subscribe to `account` — balance, margin, and account-level updates for
+    /// the authenticated account.
+    pub async fn subscribe_account(&self) -> WebSocketResult<()> {
+        self.subscribe_channel("account").await
+    }
+
+    /// Unsubscribe from `account`.
+    pub async fn unsubscribe_account(&self) -> WebSocketResult<()> {
+        self.unsubscribe_channel("account").await
     }
 }
 

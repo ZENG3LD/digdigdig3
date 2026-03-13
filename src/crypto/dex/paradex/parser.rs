@@ -408,7 +408,14 @@ impl ParadexParser {
             .ok_or_else(|| ExchangeError::Parse("Missing 'data' in subscription".to_string()))?;
 
         // Parse by channel
+        //
+        // Global markets_summary (all markets) — filter by target symbol.
         if channel == "markets_summary" {
+            return Self::parse_ws_ticker(data, target_symbol);
+        }
+
+        // Per-market markets_summary.{market} — pass target_symbol for consistency.
+        if channel.starts_with("markets_summary.") {
             return Self::parse_ws_ticker(data, target_symbol);
         }
 
@@ -424,8 +431,15 @@ impl ParadexParser {
             return Self::parse_ws_trades(data);
         }
 
+        // Funding rate data
+        if channel.starts_with("funding_data.") {
+            return Self::parse_ws_funding_data(data);
+        }
+
         // Private channels
-        if channel == "orders" {
+        //
+        // orders (global or per-market: "orders" or "orders.{market}")
+        if channel == "orders" || channel.starts_with("orders.") {
             return Self::parse_ws_order_update(data);
         }
 
@@ -435,6 +449,11 @@ impl ParadexParser {
 
         if channel == "account" || channel == "balance_events" {
             return Self::parse_ws_balance_update(data);
+        }
+
+        // fills.{market} — trade fill events for the authenticated account
+        if channel.starts_with("fills.") {
+            return Self::parse_ws_fill(data);
         }
 
         // Unknown channel - ignore
@@ -629,6 +648,77 @@ impl ParadexParser {
         };
 
         Ok(StreamEvent::BalanceUpdate(event))
+    }
+
+    /// Parse a `funding_data.{market}` WebSocket message into `StreamEvent::FundingRate`.
+    ///
+    /// Expected payload fields (best-effort):
+    /// - `market` — market identifier (e.g. `"BTC-USD-PERP"`)
+    /// - `funding_rate` — current funding rate (e.g. `"0.0000125"`)
+    /// - `funding_index` — cumulative funding index
+    /// - `next_funding_at` — Unix ms timestamp of the next funding settlement
+    fn parse_ws_funding_data(data: &Value) -> ExchangeResult<StreamEvent> {
+        let symbol = Self::get_str(data, "market")
+            .unwrap_or("")
+            .to_string();
+        let rate = Self::get_f64(data, "funding_rate")
+            .or_else(|| Self::get_f64(data, "funding_index"))
+            .unwrap_or(0.0);
+        let next_funding_time = Self::get_i64(data, "next_funding_at")
+            .or_else(|| Self::get_i64(data, "next_funding_time"));
+        let timestamp = Self::get_i64(data, "timestamp")
+            .or_else(|| Self::get_i64(data, "created_at"))
+            .unwrap_or(0);
+
+        Ok(StreamEvent::FundingRate {
+            symbol,
+            rate,
+            next_funding_time,
+            timestamp,
+        })
+    }
+
+    /// Parse a `fills.{market}` WebSocket message into `StreamEvent::OrderUpdate`.
+    ///
+    /// A fill represents a trade execution for the authenticated account.
+    /// Fields:
+    /// - `id` — fill id
+    /// - `order_id` — the order that was filled
+    /// - `market` — market identifier
+    /// - `side` — `"BUY"` | `"SELL"`
+    /// - `price` — execution price
+    /// - `size` — executed quantity
+    /// - `fee` — commission paid
+    /// - `fee_currency` — asset used for fee
+    /// - `created_at` — Unix ms timestamp
+    fn parse_ws_fill(data: &Value) -> ExchangeResult<StreamEvent> {
+        let side_str = Self::get_str(data, "side").unwrap_or("BUY");
+        let side = Self::parse_order_side(side_str);
+
+        let size = Self::get_f64(data, "size").unwrap_or(0.0);
+        let fill_price = Self::get_f64(data, "price");
+        let fee = Self::get_f64(data, "fee");
+
+        let event = OrderUpdateEvent {
+            order_id: Self::get_str(data, "order_id").unwrap_or("").to_string(),
+            client_order_id: Self::get_str(data, "client_id").map(String::from),
+            symbol: Self::get_str(data, "market").unwrap_or("").to_string(),
+            side,
+            order_type: crate::core::types::OrderType::Market, // fills don't carry order type
+            status: crate::core::types::OrderStatus::Filled,
+            price: fill_price,
+            quantity: size,
+            filled_quantity: size,
+            average_price: fill_price,
+            last_fill_price: fill_price,
+            last_fill_quantity: Some(size),
+            last_fill_commission: fee,
+            commission_asset: Self::get_str(data, "fee_currency").map(String::from),
+            trade_id: Self::get_str(data, "id").map(String::from),
+            timestamp: Self::get_i64(data, "created_at").unwrap_or(0),
+        };
+
+        Ok(StreamEvent::OrderUpdate(event))
     }
 }
 

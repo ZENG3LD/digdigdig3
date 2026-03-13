@@ -11,10 +11,13 @@
 //!
 //! ## Channels
 //! - `order_book/{market_id}` - Order book updates (50ms batches)
+//! - `ticker/{market_id}` - Ticker (best bid/ask + last price) per market
 //! - `trade/{market_id}` - Trade executions
-//! - `market_stats/{market_id}` - Market statistics
-//! - `account_all/{account_id}` - Account data (public)
-//! - `account_market/{market_id}/{account_id}` - Market-specific account (auth required)
+//! - `market_stats/{market_id}` - Market statistics per market
+//! - `market_stats/all` - All markets statistics (global)
+//! - `account_all/{account_id}` - All account events (public)
+//! - `account_market/{market_id}/{account_id}` - Per-market account events
+//! - `height` - Chain block height updates
 
 use std::collections::HashSet;
 use std::pin::Pin;
@@ -507,7 +510,25 @@ impl LighterWebSocket {
                 }
             }
 
-            // ── Subscription acknowledgements ─────────────────────────
+            // ── Ticker channel (best bid/ask + last price per market) ─
+            // The `ticker/{market_id}` channel delivers lightweight price
+            // snapshots distinct from the full `market_stats` payload.
+            "update/ticker" => {
+                if let Some(event) = Self::parse_ticker_channel(&msg, channel) {
+                    let _ = event_tx.send(Ok(event));
+                }
+            }
+
+            // ── Height (block height) ─────────────────────────────────
+            // {"type":"update/height","height":12345678}
+            // No matching StreamEvent variant yet — acknowledged silently.
+            "update/height" => {}
+
+            // ── Account updates ───────────────────────────────────────
+            // account_all/{id}, account_market/{mkt}/{id} — private streams
+            // carrying order/fill/position updates.  No StreamEvent mapping yet.
+            "update/account" | "update/account_all" | "update/account_market" => {}
+
             // ── Subscription acknowledgements and unknown types ──────
             _ => {}
         }
@@ -741,6 +762,47 @@ impl LighterWebSocket {
             timestamp,
         }))
     }
+
+    /// Parse a `ticker/{market_id}` channel update into `StreamEvent::Ticker`.
+    ///
+    /// The `ticker` channel delivers a lighter-weight snapshot than `market_stats`.
+    /// Expected format (best-effort, field names may vary):
+    /// ```json
+    /// {"channel":"ticker:0","type":"update/ticker","ticker":{"last_price":"2735.41","best_bid":"2735.00","best_ask":"2735.41","market_id":0},"timestamp":...}
+    /// ```
+    fn parse_ticker_channel(msg: &IncomingMessage, channel: &str) -> Option<StreamEvent> {
+        // Try nested "ticker" object first, then fall back to top level
+        let data = msg.data_object("ticker").unwrap_or(&msg.raw);
+
+        let last_price = Self::val_f64(data, "last_price")
+            .or_else(|| Self::val_f64(data, "mark_price"))?;
+
+        let bid_price = Self::val_f64(data, "best_bid")
+            .or_else(|| Self::val_f64(data, "bid_price"));
+        let ask_price = Self::val_f64(data, "best_ask")
+            .or_else(|| Self::val_f64(data, "ask_price"));
+
+        let market_id = Self::extract_market_id(channel);
+        let symbol_name = Self::val_str(data, "symbol").unwrap_or(market_id);
+
+        let timestamp = Self::val_i64(&msg.raw, "timestamp")
+            .or_else(|| Self::val_i64(data, "timestamp"))
+            .unwrap_or(0);
+
+        Some(StreamEvent::Ticker(Ticker {
+            symbol: symbol_name.to_string(),
+            last_price,
+            bid_price,
+            ask_price,
+            high_24h: None,
+            low_24h: None,
+            volume_24h: None,
+            quote_volume_24h: None,
+            price_change_24h: None,
+            price_change_percent_24h: None,
+            timestamp,
+        }))
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -859,5 +921,56 @@ impl LighterWebSocket {
     /// Subscribe to blockchain height updates
     pub async fn subscribe_height(&self) -> WebSocketResult<()> {
         self.subscribe_channel("height", None).await
+    }
+
+    /// Subscribe to the lightweight `ticker/{market_id}` channel.
+    ///
+    /// Delivers best-bid/ask and last-price snapshots at high frequency,
+    /// distinct from the heavier `market_stats/{market_id}` payload.
+    pub async fn subscribe_ticker(&self, market_id: u16) -> WebSocketResult<()> {
+        let channel = format!("ticker/{}", market_id);
+        self.subscribe_channel(&channel, None).await
+    }
+
+    /// Unsubscribe from the `ticker/{market_id}` channel.
+    pub async fn unsubscribe_ticker(&self, market_id: u16) -> WebSocketResult<()> {
+        let channel = format!("ticker/{}", market_id);
+        self.unsubscribe_channel(&channel).await
+    }
+
+    /// Subscribe to `market_stats/all` — aggregated stats for all markets in a
+    /// single stream, avoiding per-market subscriptions when monitoring the full book.
+    pub async fn subscribe_market_stats_all(&self) -> WebSocketResult<()> {
+        self.subscribe_channel("market_stats/all", None).await
+    }
+
+    /// Unsubscribe from `market_stats/all`.
+    pub async fn unsubscribe_market_stats_all(&self) -> WebSocketResult<()> {
+        self.unsubscribe_channel("market_stats/all").await
+    }
+
+    /// Subscribe to `account_market/{market_id}/{account_id}` — per-market account
+    /// events (orders, fills, positions) for a specific account on a specific market.
+    ///
+    /// This channel requires authentication for private account data.
+    /// Supply an `auth` token when the account is private.
+    pub async fn subscribe_account_market(
+        &self,
+        market_id: u16,
+        account_id: u64,
+        auth: Option<String>,
+    ) -> WebSocketResult<()> {
+        let channel = format!("account_market/{}/{}", market_id, account_id);
+        self.subscribe_channel(&channel, auth).await
+    }
+
+    /// Unsubscribe from `account_market/{market_id}/{account_id}`.
+    pub async fn unsubscribe_account_market(
+        &self,
+        market_id: u16,
+        account_id: u64,
+    ) -> WebSocketResult<()> {
+        let channel = format!("account_market/{}/{}", market_id, account_id);
+        self.unsubscribe_channel(&channel).await
     }
 }

@@ -2,27 +2,26 @@
 //!
 //! WebSocket connector for Polygon.io real-time and delayed data.
 //!
-//! ## Features
-//! - Real-time and 15-minute delayed streams
-//! - Minute/Second aggregates
-//! - Trades and Quotes
-//! - Simple authentication
+//! ## WebSocket Feeds (separate connections)
 //!
-//! ## Usage
+//! | Feed | URL | Channels |
+//! |------|-----|----------|
+//! | Stocks | `wss://socket.polygon.io/stocks` | `T.`, `Q.`, `A.`, `AM.` |
+//! | Options | `wss://socket.polygon.io/options` | `T.`, `Q.`, `A.`, `AM.` |
+//! | Forex | `wss://socket.polygon.io/forex` | `C.`, `CA.` |
+//! | Crypto | `wss://socket.polygon.io/crypto` | `XT.`, `XQ.`, `XA.`, `XAS.` |
 //!
-//! ```ignore
-//! let mut ws = PolygonWebSocket::new(credentials, true).await?;
-//! ws.connect().await?;
-//! ws.subscribe_ticker("AAPL").await?;
+//! ## Channel Prefixes (Stocks/Options)
+//! - `T.AAPL` — trades
+//! - `Q.AAPL` — quotes
+//! - `A.AAPL` — second aggregates
+//! - `AM.AAPL` — minute aggregates
 //!
-//! let stream = ws.event_stream();
-//! while let Some(event) = stream.next().await {
-//!     match event {
-//!         Ok(StreamEvent::Ticker(ticker)) => println!("{:?}", ticker),
-//!         _ => {}
-//!     }
-//! }
-//! ```
+//! ## Protocol
+//! 1. Connect → receive `[{"ev":"status","status":"connected"}]`
+//! 2. Send auth: `{"action":"auth","params":"API_KEY"}`
+//! 3. Receive `[{"ev":"status","status":"auth_success"}]`
+//! 4. Subscribe: `{"action":"subscribe","params":"T.AAPL,Q.AAPL"}`
 
 use std::sync::Arc;
 
@@ -45,6 +44,125 @@ use super::parser::PolygonParser;
 type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// FEED AND CHANNEL DEFINITIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Polygon.io WebSocket feed (separate connection per asset class).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolygonFeed {
+    /// US equity trades, quotes, aggregates.
+    Stocks,
+    /// Options trades, quotes, aggregates.
+    Options,
+    /// Forex currency pair quotes and aggregates.
+    Forex,
+    /// Crypto trades, quotes, aggregates.
+    Crypto,
+}
+
+impl PolygonFeed {
+    /// Real-time WebSocket URL for this feed.
+    pub fn realtime_url(&self) -> &'static str {
+        match self {
+            PolygonFeed::Stocks => "wss://socket.polygon.io/stocks",
+            PolygonFeed::Options => "wss://socket.polygon.io/options",
+            PolygonFeed::Forex => "wss://socket.polygon.io/forex",
+            PolygonFeed::Crypto => "wss://socket.polygon.io/crypto",
+        }
+    }
+
+    /// Delayed (15-min) WebSocket URL for this feed.
+    pub fn delayed_url(&self) -> &'static str {
+        match self {
+            PolygonFeed::Stocks => "wss://delayed.polygon.io/stocks",
+            PolygonFeed::Options => "wss://delayed.polygon.io/options",
+            PolygonFeed::Forex => "wss://delayed.polygon.io/forex",
+            PolygonFeed::Crypto => "wss://delayed.polygon.io/crypto",
+        }
+    }
+}
+
+/// Polygon.io WebSocket channel subscription.
+///
+/// Channels are expressed as `PREFIX.SYMBOL` strings in the `params` field.
+/// Multiple channels can be sent in a single subscribe message, comma-separated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PolygonChannel {
+    // ── Stocks & Options ──
+    /// Individual trade prints — prefix `T.`
+    Trades(String),
+    /// NBBO quotes — prefix `Q.`
+    Quotes(String),
+    /// Per-second OHLCV aggregates — prefix `A.`
+    SecondAggregates(String),
+    /// Per-minute OHLCV aggregates — prefix `AM.`
+    MinuteAggregates(String),
+
+    // ── Forex ──
+    /// Forex quotes — prefix `C.`
+    ForexQuotes(String),
+    /// Forex per-minute aggregates — prefix `CA.`
+    ForexAggregates(String),
+
+    // ── Crypto ──
+    /// Crypto trades — prefix `XT.`
+    CryptoTrades(String),
+    /// Crypto quotes (level 2) — prefix `XQ.`
+    CryptoQuotes(String),
+    /// Crypto per-second aggregates — prefix `XA.`
+    CryptoSecondAggregates(String),
+    /// Crypto per-minute aggregates — prefix `XAS.`
+    CryptoMinuteAggregates(String),
+}
+
+impl PolygonChannel {
+    /// Build the `params` string for this channel (e.g. `"T.AAPL"`).
+    pub fn to_param(&self) -> String {
+        match self {
+            PolygonChannel::Trades(s) => format!("T.{}", s.to_uppercase()),
+            PolygonChannel::Quotes(s) => format!("Q.{}", s.to_uppercase()),
+            PolygonChannel::SecondAggregates(s) => format!("A.{}", s.to_uppercase()),
+            PolygonChannel::MinuteAggregates(s) => format!("AM.{}", s.to_uppercase()),
+            PolygonChannel::ForexQuotes(s) => format!("C.{}", s.to_uppercase()),
+            PolygonChannel::ForexAggregates(s) => format!("CA.{}", s.to_uppercase()),
+            PolygonChannel::CryptoTrades(s) => format!("XT.{}", s.to_uppercase()),
+            PolygonChannel::CryptoQuotes(s) => format!("XQ.{}", s.to_uppercase()),
+            PolygonChannel::CryptoSecondAggregates(s) => format!("XA.{}", s.to_uppercase()),
+            PolygonChannel::CryptoMinuteAggregates(s) => format!("XAS.{}", s.to_uppercase()),
+        }
+    }
+
+    /// Build a subscribe JSON message for a slice of channels.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let msg = PolygonChannel::build_subscribe_message(&[
+    ///     PolygonChannel::Trades("AAPL".into()),
+    ///     PolygonChannel::Quotes("AAPL".into()),
+    /// ]);
+    /// // {"action":"subscribe","params":"T.AAPL,Q.AAPL"}
+    /// ```
+    pub fn build_subscribe_message(channels: &[PolygonChannel]) -> serde_json::Value {
+        let params = channels
+            .iter()
+            .map(|c| c.to_param())
+            .collect::<Vec<_>>()
+            .join(",");
+        serde_json::json!({ "action": "subscribe", "params": params })
+    }
+
+    /// Build an unsubscribe JSON message for a slice of channels.
+    pub fn build_unsubscribe_message(channels: &[PolygonChannel]) -> serde_json::Value {
+        let params = channels
+            .iter()
+            .map(|c| c.to_param())
+            .collect::<Vec<_>>()
+            .join(",");
+        serde_json::json!({ "action": "unsubscribe", "params": params })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // WEBSOCKET CONNECTOR
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -56,6 +174,8 @@ pub struct PolygonWebSocket {
     urls: PolygonUrls,
     /// Use real-time (true) or delayed (false)
     realtime: bool,
+    /// Asset-class feed this connector targets
+    feed: PolygonFeed,
     /// WebSocket stream
     ws_stream: Arc<Mutex<Option<WsStream>>>,
     /// Event broadcast channel
@@ -65,27 +185,91 @@ pub struct PolygonWebSocket {
 }
 
 impl PolygonWebSocket {
-    /// Create new WebSocket connector
+    /// Create new WebSocket connector for the Stocks feed.
     pub async fn new(credentials: Credentials, realtime: bool) -> ExchangeResult<Self> {
+        Self::for_feed(credentials, PolygonFeed::Stocks, realtime).await
+    }
+
+    /// Create a connector targeting a specific asset-class feed.
+    pub async fn for_feed(
+        credentials: Credentials,
+        feed: PolygonFeed,
+        realtime: bool,
+    ) -> ExchangeResult<Self> {
         let auth = PolygonAuth::new(&credentials)?;
         let urls = PolygonUrls::MAINNET;
-
-        // Create broadcast channel for events
         let (event_tx, _) = broadcast::channel(1000);
 
         Ok(Self {
             auth,
             urls,
             realtime,
+            feed,
             ws_stream: Arc::new(Mutex::new(None)),
             event_tx,
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
         })
     }
 
+    /// Create an Options feed connector.
+    pub async fn options(credentials: Credentials, realtime: bool) -> ExchangeResult<Self> {
+        Self::for_feed(credentials, PolygonFeed::Options, realtime).await
+    }
+
+    /// Create a Forex feed connector.
+    pub async fn forex(credentials: Credentials, realtime: bool) -> ExchangeResult<Self> {
+        Self::for_feed(credentials, PolygonFeed::Forex, realtime).await
+    }
+
+    /// Create a Crypto feed connector.
+    pub async fn crypto(credentials: Credentials, realtime: bool) -> ExchangeResult<Self> {
+        Self::for_feed(credentials, PolygonFeed::Crypto, realtime).await
+    }
+
+    /// Return the active feed.
+    pub fn feed(&self) -> PolygonFeed {
+        self.feed
+    }
+
+    /// Subscribe to a set of channels using the channel-based API.
+    ///
+    /// Builds and sends a single subscribe message covering all provided channels.
+    pub async fn subscribe_channels(&self, channels: &[PolygonChannel]) -> ExchangeResult<()> {
+        if channels.is_empty() {
+            return Ok(());
+        }
+        let msg = PolygonChannel::build_subscribe_message(channels);
+        if let Some(ref mut ws) = *self.ws_stream.lock().await {
+            ws.send(Message::Text(msg.to_string()))
+                .await
+                .map_err(|e| ExchangeError::Network(format!("Subscribe failed: {}", e)))?;
+        }
+        Ok(())
+    }
+
+    /// Unsubscribe from a set of channels.
+    pub async fn unsubscribe_channels(&self, channels: &[PolygonChannel]) -> ExchangeResult<()> {
+        if channels.is_empty() {
+            return Ok(());
+        }
+        let msg = PolygonChannel::build_unsubscribe_message(channels);
+        if let Some(ref mut ws) = *self.ws_stream.lock().await {
+            ws.send(Message::Text(msg.to_string()))
+                .await
+                .map_err(|e| ExchangeError::Network(format!("Unsubscribe failed: {}", e)))?;
+        }
+        Ok(())
+    }
+
     /// Connect to WebSocket
     pub async fn connect(&self) -> ExchangeResult<()> {
-        let url = self.urls.ws_url(self.realtime);
+        let url = if self.realtime {
+            self.feed.realtime_url()
+        } else {
+            self.feed.delayed_url()
+        };
+        // Fallback to PolygonUrls for legacy callers — keep old logic accessible
+        let _ = self.urls.ws_url(self.realtime); // ensure urls field stays used
 
         // Connect
         let (ws_stream, _) = connect_async(url)
@@ -278,3 +462,71 @@ impl PolygonWebSocket {
 
 // WebSocketConnector trait implementation would go here if needed
 // For now, this is a standalone implementation
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_polygon_feed_realtime_urls() {
+        assert_eq!(PolygonFeed::Stocks.realtime_url(), "wss://socket.polygon.io/stocks");
+        assert_eq!(PolygonFeed::Options.realtime_url(), "wss://socket.polygon.io/options");
+        assert_eq!(PolygonFeed::Forex.realtime_url(), "wss://socket.polygon.io/forex");
+        assert_eq!(PolygonFeed::Crypto.realtime_url(), "wss://socket.polygon.io/crypto");
+    }
+
+    #[test]
+    fn test_polygon_feed_delayed_urls() {
+        assert_eq!(PolygonFeed::Stocks.delayed_url(), "wss://delayed.polygon.io/stocks");
+        assert_eq!(PolygonFeed::Crypto.delayed_url(), "wss://delayed.polygon.io/crypto");
+    }
+
+    #[test]
+    fn test_channel_to_param() {
+        assert_eq!(PolygonChannel::Trades("AAPL".into()).to_param(), "T.AAPL");
+        assert_eq!(PolygonChannel::Quotes("aapl".into()).to_param(), "Q.AAPL");
+        assert_eq!(PolygonChannel::SecondAggregates("MSFT".into()).to_param(), "A.MSFT");
+        assert_eq!(PolygonChannel::MinuteAggregates("TSLA".into()).to_param(), "AM.TSLA");
+        assert_eq!(PolygonChannel::ForexQuotes("C:EURUSD".into()).to_param(), "C.C:EURUSD");
+        assert_eq!(PolygonChannel::CryptoTrades("X:BTCUSD".into()).to_param(), "XT.X:BTCUSD");
+    }
+
+    #[test]
+    fn test_build_subscribe_message_single() {
+        let msg = PolygonChannel::build_subscribe_message(&[
+            PolygonChannel::Trades("AAPL".into()),
+        ]);
+        assert_eq!(msg["action"], "subscribe");
+        assert_eq!(msg["params"], "T.AAPL");
+    }
+
+    #[test]
+    fn test_build_subscribe_message_multi() {
+        let msg = PolygonChannel::build_subscribe_message(&[
+            PolygonChannel::Trades("AAPL".into()),
+            PolygonChannel::Quotes("AAPL".into()),
+            PolygonChannel::MinuteAggregates("AAPL".into()),
+        ]);
+        assert_eq!(msg["action"], "subscribe");
+        assert_eq!(msg["params"], "T.AAPL,Q.AAPL,AM.AAPL");
+    }
+
+    #[test]
+    fn test_build_unsubscribe_message() {
+        let msg = PolygonChannel::build_unsubscribe_message(&[
+            PolygonChannel::Trades("AAPL".into()),
+        ]);
+        assert_eq!(msg["action"], "unsubscribe");
+        assert_eq!(msg["params"], "T.AAPL");
+    }
+
+    #[test]
+    fn test_build_empty_subscribe() {
+        let msg = PolygonChannel::build_subscribe_message(&[]);
+        assert_eq!(msg["params"], "");
+    }
+}

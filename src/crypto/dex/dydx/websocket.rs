@@ -10,10 +10,13 @@
 //! - Message parsing to StreamEvent
 //!
 //! ## Available Channels
-//! - `v4_orderbook` - Order book updates
-//! - `v4_trades` - Trade executions
-//! - `v4_markets` - Market data updates
-//! - `v4_candles` - OHLC candle data
+//! - `v4_orderbook` - Order book updates (batched L2 updates, requires market id)
+//! - `v4_trades` - Trade executions (requires market id)
+//! - `v4_markets` - Market info updates (global, no id)
+//! - `v4_candles` - OHLC candle data (requires market id)
+//! - `v4_subaccounts` - Private subaccount updates: orders, fills, positions (requires subaccount id)
+//! - `v4_parent_subaccounts` - Parent subaccount updates (requires parent subaccount id)
+//! - `v4_blockheight` - Chain block height updates (global, no id)
 
 use std::collections::HashSet;
 use std::pin::Pin;
@@ -305,6 +308,27 @@ impl DydxWebSocket {
                     Err(_) => None, // Symbol not present in this update — skip silently.
                 }
             }
+            "v4_candles" => {
+                // Candles are per-market; parse as Kline event if the parser supports it.
+                // For now we silently accept the message so subscribers don't get errors.
+                // TODO: add DydxParser::parse_ws_candle when the Kline parser is wired.
+                let _ = &data;
+                None
+            }
+            "v4_subaccounts" | "v4_parent_subaccounts" => {
+                // Private channels: orders, fills, positions for a subaccount.
+                // These carry complex nested objects (fills, perpetualPositions, orders).
+                // Parse as OrderUpdate / PositionUpdate once private-stream types are
+                // added to DydxParser.  Until then acknowledge without emitting.
+                let _ = &data;
+                None
+            }
+            "v4_blockheight" => {
+                // Block height updates: {"height":"12345678","time":"..."}
+                // No matching StreamEvent variant yet — acknowledged silently.
+                let _ = &data;
+                None
+            }
             _ => None,
         }
     }
@@ -420,8 +444,91 @@ impl DydxWebSocket {
 
     /// Check if a channel requires an id parameter
     fn channel_requires_id(channel: &str) -> bool {
-        // v4_markets and v4_block_height do not require an id
-        !matches!(channel, "v4_markets" | "v4_block_height")
+        // v4_markets and v4_blockheight do not require an id
+        !matches!(channel, "v4_markets" | "v4_blockheight")
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EXTENDED METHODS (dYdX-specific channel subscriptions)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+impl DydxWebSocket {
+    /// Subscribe to the global `v4_markets` channel (market info updates, no id required).
+    pub async fn subscribe_markets(&self) -> WebSocketResult<()> {
+        self.send_subscribe_no_id("v4_markets").await
+    }
+
+    /// Unsubscribe from the `v4_markets` channel.
+    pub async fn unsubscribe_markets(&self) -> WebSocketResult<()> {
+        self.send_unsubscribe_no_id("v4_markets").await
+    }
+
+    /// Subscribe to the `v4_orderbook` channel for the given market (e.g. `"BTC-USD"`).
+    pub async fn subscribe_orderbook(&self, market: &str) -> WebSocketResult<()> {
+        self.send_subscribe_with_id("v4_orderbook", &normalize_symbol(market)).await
+    }
+
+    /// Unsubscribe from the `v4_orderbook` channel for the given market.
+    pub async fn unsubscribe_orderbook(&self, market: &str) -> WebSocketResult<()> {
+        self.send_unsubscribe_with_id("v4_orderbook", &normalize_symbol(market)).await
+    }
+
+    /// Subscribe to the `v4_trades` channel for the given market (e.g. `"ETH-USD"`).
+    pub async fn subscribe_trades(&self, market: &str) -> WebSocketResult<()> {
+        self.send_subscribe_with_id("v4_trades", &normalize_symbol(market)).await
+    }
+
+    /// Unsubscribe from the `v4_trades` channel for the given market.
+    pub async fn unsubscribe_trades(&self, market: &str) -> WebSocketResult<()> {
+        self.send_unsubscribe_with_id("v4_trades", &normalize_symbol(market)).await
+    }
+
+    /// Subscribe to the `v4_candles` channel for the given market (e.g. `"BTC-USD"`).
+    pub async fn subscribe_candles(&self, market: &str) -> WebSocketResult<()> {
+        self.send_subscribe_with_id("v4_candles", &normalize_symbol(market)).await
+    }
+
+    /// Unsubscribe from the `v4_candles` channel for the given market.
+    pub async fn unsubscribe_candles(&self, market: &str) -> WebSocketResult<()> {
+        self.send_unsubscribe_with_id("v4_candles", &normalize_symbol(market)).await
+    }
+
+    /// Subscribe to `v4_subaccounts` — private stream for orders, fills, and positions
+    /// belonging to a subaccount.
+    ///
+    /// The `id` is the subaccount identifier string returned by the dYdX Indexer API,
+    /// e.g. `"dydx1abc...xyz/0"` (address + subaccount number separated by `/`).
+    pub async fn subscribe_subaccount(&self, subaccount_id: &str) -> WebSocketResult<()> {
+        self.send_subscribe_with_id("v4_subaccounts", subaccount_id).await
+    }
+
+    /// Unsubscribe from `v4_subaccounts` for the given subaccount id.
+    pub async fn unsubscribe_subaccount(&self, subaccount_id: &str) -> WebSocketResult<()> {
+        self.send_unsubscribe_with_id("v4_subaccounts", subaccount_id).await
+    }
+
+    /// Subscribe to `v4_parent_subaccounts` — parent subaccount updates (aggregates
+    /// child subaccount positions and orders).
+    ///
+    /// The `id` format matches the Indexer convention: `"<address>/<parent_subaccount_number>"`.
+    pub async fn subscribe_parent_subaccount(&self, parent_subaccount_id: &str) -> WebSocketResult<()> {
+        self.send_subscribe_with_id("v4_parent_subaccounts", parent_subaccount_id).await
+    }
+
+    /// Unsubscribe from `v4_parent_subaccounts` for the given parent subaccount id.
+    pub async fn unsubscribe_parent_subaccount(&self, parent_subaccount_id: &str) -> WebSocketResult<()> {
+        self.send_unsubscribe_with_id("v4_parent_subaccounts", parent_subaccount_id).await
+    }
+
+    /// Subscribe to `v4_blockheight` — chain block height updates (global, no id required).
+    pub async fn subscribe_blockheight(&self) -> WebSocketResult<()> {
+        self.send_subscribe_no_id("v4_blockheight").await
+    }
+
+    /// Unsubscribe from `v4_blockheight`.
+    pub async fn unsubscribe_blockheight(&self) -> WebSocketResult<()> {
+        self.send_unsubscribe_no_id("v4_blockheight").await
     }
 }
 

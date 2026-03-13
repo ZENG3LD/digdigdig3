@@ -2,31 +2,24 @@
 //!
 //! WebSocket connector for Finnhub real-time data.
 //!
-//! ## Features
-//! - Real-time trade executions
-//! - Company news streaming
-//! - Press release streaming
-//! - Simple authentication via URL token
+//! ## Endpoint
+//! `wss://ws.finnhub.io?token=API_KEY`
+//!
+//! ## Channels
+//! | Channel | Subscribe type | Description |
+//! |---------|---------------|-------------|
+//! | Trades | `"subscribe"` | Real-time trade executions per symbol |
+//! | News | `"subscribe-news"` | Company news stream |
+//! | Press Releases | `"subscribe-pr"` | Press release stream |
+//!
+//! ## Protocol
+//! Subscribe: `{"type": "subscribe", "symbol": "AAPL"}`
+//! Unsubscribe: `{"type": "unsubscribe", "symbol": "AAPL"}`
+//! Receive: `{"type": "trade", "data": [...], "s": "AAPL"}`
 //!
 //! ## Limitations
 //! - 1 WebSocket connection per API key
 //! - Free tier: 50 WebSocket symbols max
-//!
-//! ## Usage
-//!
-//! ```ignore
-//! let mut ws = FinnhubWebSocket::new(credentials).await?;
-//! ws.connect().await?;
-//! ws.subscribe_ticker("AAPL").await?;
-//!
-//! let stream = ws.event_stream();
-//! while let Some(event) = stream.next().await {
-//!     match event {
-//!         Ok(StreamEvent::Ticker(ticker)) => println!("{:?}", ticker),
-//!         _ => {}
-//!     }
-//! }
-//! ```
 
 use std::sync::Arc;
 
@@ -46,6 +39,69 @@ use super::auth::FinnhubAuth;
 use super::parser::FinnhubParser;
 
 type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CHANNEL DEFINITIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Finnhub WebSocket channel descriptor.
+///
+/// Each variant describes a single subscription action.
+/// Finnhub uses per-symbol granularity (no wildcard).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FinnhubChannel {
+    /// Real-time trade executions (`"subscribe"` / `"unsubscribe"`).
+    Trades(String),
+    /// Company news stream (`"subscribe-news"` / `"unsubscribe-news"`).
+    News(String),
+    /// Press release stream (`"subscribe-pr"` / `"unsubscribe-pr"`).
+    PressReleases(String),
+}
+
+impl FinnhubChannel {
+    /// Return the `type` value used in a subscribe message.
+    pub fn subscribe_type(&self) -> &'static str {
+        match self {
+            FinnhubChannel::Trades(_) => "subscribe",
+            FinnhubChannel::News(_) => "subscribe-news",
+            FinnhubChannel::PressReleases(_) => "subscribe-pr",
+        }
+    }
+
+    /// Return the `type` value used in an unsubscribe message.
+    pub fn unsubscribe_type(&self) -> &'static str {
+        match self {
+            FinnhubChannel::Trades(_) => "unsubscribe",
+            FinnhubChannel::News(_) => "unsubscribe-news",
+            FinnhubChannel::PressReleases(_) => "unsubscribe-pr",
+        }
+    }
+
+    /// Return the symbol associated with this channel.
+    pub fn symbol(&self) -> &str {
+        match self {
+            FinnhubChannel::Trades(s)
+            | FinnhubChannel::News(s)
+            | FinnhubChannel::PressReleases(s) => s.as_str(),
+        }
+    }
+
+    /// Build the subscribe JSON message for this channel.
+    pub fn subscribe_message(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": self.subscribe_type(),
+            "symbol": self.symbol().to_uppercase()
+        })
+    }
+
+    /// Build the unsubscribe JSON message for this channel.
+    pub fn unsubscribe_message(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": self.unsubscribe_type(),
+            "symbol": self.symbol().to_uppercase()
+        })
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // WEBSOCKET CONNECTOR
@@ -179,6 +235,61 @@ impl FinnhubWebSocket {
         Ok(())
     }
 
+    /// Subscribe using a `FinnhubChannel` descriptor.
+    ///
+    /// This is the canonical channel-based subscription API.
+    ///
+    /// # Example
+    /// ```ignore
+    /// ws.subscribe_channel(&FinnhubChannel::Trades("AAPL".into())).await?;
+    /// ws.subscribe_channel(&FinnhubChannel::News("TSLA".into())).await?;
+    /// ```
+    pub async fn subscribe_channel(&self, channel: &FinnhubChannel) -> ExchangeResult<()> {
+        let msg = channel.subscribe_message();
+
+        if let Some(ref mut ws) = *self.ws_stream.lock().await {
+            ws.send(Message::Text(msg.to_string()))
+                .await
+                .map_err(|e| ExchangeError::Network(format!("Subscribe channel failed: {}", e)))?;
+        }
+
+        Ok(())
+    }
+
+    /// Unsubscribe using a `FinnhubChannel` descriptor.
+    pub async fn unsubscribe_channel(&self, channel: &FinnhubChannel) -> ExchangeResult<()> {
+        let msg = channel.unsubscribe_message();
+
+        if let Some(ref mut ws) = *self.ws_stream.lock().await {
+            ws.send(Message::Text(msg.to_string()))
+                .await
+                .map_err(|e| {
+                    ExchangeError::Network(format!("Unsubscribe channel failed: {}", e))
+                })?;
+        }
+
+        Ok(())
+    }
+
+    /// Subscribe to multiple channels in a single batch.
+    ///
+    /// Each channel results in a separate WebSocket message (Finnhub does not
+    /// support batched subscriptions in a single frame).
+    pub async fn subscribe_channels(&self, channels: &[FinnhubChannel]) -> ExchangeResult<()> {
+        for channel in channels {
+            self.subscribe_channel(channel).await?;
+        }
+        Ok(())
+    }
+
+    /// Unsubscribe from multiple channels.
+    pub async fn unsubscribe_channels(&self, channels: &[FinnhubChannel]) -> ExchangeResult<()> {
+        for channel in channels {
+            self.unsubscribe_channel(channel).await?;
+        }
+        Ok(())
+    }
+
     /// Disconnect from WebSocket
     pub async fn disconnect(&self) -> ExchangeResult<()> {
         if let Some(mut ws) = self.ws_stream.lock().await.take() {
@@ -294,5 +405,43 @@ mod tests {
 
         assert_eq!(msg["type"], "unsubscribe");
         assert_eq!(msg["symbol"], "AAPL");
+    }
+
+    #[test]
+    fn test_channel_trades_subscribe() {
+        let ch = FinnhubChannel::Trades("AAPL".into());
+        let msg = ch.subscribe_message();
+        assert_eq!(msg["type"], "subscribe");
+        assert_eq!(msg["symbol"], "AAPL");
+    }
+
+    #[test]
+    fn test_channel_trades_unsubscribe() {
+        let ch = FinnhubChannel::Trades("AAPL".into());
+        let msg = ch.unsubscribe_message();
+        assert_eq!(msg["type"], "unsubscribe");
+        assert_eq!(msg["symbol"], "AAPL");
+    }
+
+    #[test]
+    fn test_channel_news_subscribe() {
+        let ch = FinnhubChannel::News("TSLA".into());
+        let msg = ch.subscribe_message();
+        assert_eq!(msg["type"], "subscribe-news");
+        assert_eq!(msg["symbol"], "TSLA");
+    }
+
+    #[test]
+    fn test_channel_press_releases_subscribe() {
+        let ch = FinnhubChannel::PressReleases("MSFT".into());
+        let msg = ch.subscribe_message();
+        assert_eq!(msg["type"], "subscribe-pr");
+        assert_eq!(msg["symbol"], "MSFT");
+    }
+
+    #[test]
+    fn test_channel_symbol() {
+        assert_eq!(FinnhubChannel::Trades("AAPL".into()).symbol(), "AAPL");
+        assert_eq!(FinnhubChannel::News("TSLA".into()).symbol(), "TSLA");
     }
 }

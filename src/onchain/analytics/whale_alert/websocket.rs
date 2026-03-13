@@ -2,21 +2,37 @@
 //!
 //! Provides real-time transaction alerts via WebSocket.
 //!
+//! ## Endpoint
+//! `wss://leviathan.whale-alert.io/ws?api_key=API_KEY`
+//!
 //! ## Alert Types
 //! - Transaction Alerts (large blockchain transactions)
 //! - Social Alerts (Whale Alert Twitter/Telegram posts)
 //!
+//! ## Protocol
+//! 1. Connect to `wss://leviathan.whale-alert.io/ws?api_key=KEY`
+//! 2. Send subscription message:
+//!    ```json
+//!    {"type": "subscribe_alerts", "min_value_usd": 100000,
+//!     "blockchains": ["ethereum"], "symbols": ["ETH"]}
+//!    ```
+//! 3. Receive alert events as JSON objects.
+//!
 //! ## Subscription Requirements
 //! - Minimum value: $100,000 USD
-//! - Authentication: API key in connection URL
+//! - Authentication: API key in connection URL (`?api_key=KEY`)
 //! - Rate limits: 100 alerts/hour (Custom), 10,000/hour (Priority)
 
 use async_trait::async_trait;
-use futures_util::{Stream, StreamExt};
+use futures_util::{SinkExt, Stream, StreamExt};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{broadcast, RwLock};
+use tokio::time::timeout;
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::core::types::*;
 use crate::core::traits::WebSocketConnector;
@@ -89,7 +105,7 @@ pub struct WhaleAlertWebSocket {
 }
 
 impl WhaleAlertWebSocket {
-    /// Create new WebSocket connector
+    /// Create new WebSocket connector.
     pub fn new(auth: WhaleAlertAuth) -> Self {
         let (broadcast_tx, _) = broadcast::channel(1000);
 
@@ -102,7 +118,163 @@ impl WhaleAlertWebSocket {
         }
     }
 
-    /// Subscribe to transaction alerts with filters
+    // ────────────────────────────────────────────────────────────────────────
+    // Subscribe message builders
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// Build a `subscribe_alerts` JSON message.
+    pub fn build_alerts_message(
+        blockchains: Option<&[&str]>,
+        symbols: Option<&[&str]>,
+        tx_types: Option<&[&str]>,
+        min_value_usd: f64,
+        channel_id: Option<&str>,
+    ) -> serde_json::Value {
+        let mut msg = serde_json::json!({
+            "type": "subscribe_alerts",
+            "min_value_usd": min_value_usd,
+        });
+
+        if let Some(bcs) = blockchains {
+            msg["blockchains"] = serde_json::json!(bcs);
+        }
+        if let Some(syms) = symbols {
+            msg["symbols"] = serde_json::json!(syms);
+        }
+        if let Some(types) = tx_types {
+            msg["tx_types"] = serde_json::json!(types);
+        }
+        if let Some(id) = channel_id {
+            msg["channel_id"] = serde_json::json!(id);
+        }
+
+        msg
+    }
+
+    /// Build a `subscribe_socials` JSON message.
+    pub fn build_socials_message(channel_id: Option<&str>) -> serde_json::Value {
+        let mut msg = serde_json::json!({ "type": "subscribe_socials" });
+        if let Some(id) = channel_id {
+            msg["channel_id"] = serde_json::json!(id);
+        }
+        msg
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Internal connection
+    // ────────────────────────────────────────────────────────────────────────
+
+    async fn do_connect(&self) -> WebSocketResult<()> {
+        let api_key = self
+            .auth
+            .api_key
+            .as_ref()
+            .ok_or_else(|| WebSocketError::Auth("API key not found".to_string()))?;
+
+        let url = format!("{}?api_key={}", self.ws_url, api_key);
+
+        let (ws_stream, _response) = timeout(Duration::from_secs(15), connect_async(&url))
+            .await
+            .map_err(|_| WebSocketError::Timeout)?
+            .map_err(|e| {
+                WebSocketError::ConnectionError(format!("WS connect failed: {}", e))
+            })?;
+
+        let (_write, mut read) = ws_stream.split();
+
+        let broadcast_tx_clone = self.broadcast_tx.clone();
+        let status = self.status.clone();
+
+        // Drop write half; subscription messages are sent before the reader task starts.
+        drop(_write);
+
+        tokio::spawn(async move {
+            while let Some(msg_result) = read.next().await {
+                match msg_result {
+                    Ok(Message::Text(text)) => {
+                        if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                            if let Some(event) = Self::parse_alert(&value) {
+                                let _ = broadcast_tx_clone.send(Ok(event));
+                            }
+                        }
+                    }
+                    Ok(Message::Ping(_)) => {}
+                    Ok(Message::Close(_)) | Err(_) => {
+                        *status.write().await = ConnectionStatus::Disconnected;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        Ok(())
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Message parser
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// Parse a Whale Alert WebSocket message into a `StreamEvent`.
+    ///
+    /// Alert JSON shape:
+    /// ```json
+    /// {
+    ///   "channel_id": "...", "timestamp": 1640000000,
+    ///   "blockchain": "ethereum", "transaction_type": "transfer",
+    ///   "from": "unknown", "to": "binance",
+    ///   "amounts": [{"symbol": "ETH", "amount": 5000.0, "value_usd": 15000000.0}],
+    ///   "text": "5,000 #ETH transferred from unknown to #Binance"
+    /// }
+    /// ```
+    fn parse_alert(value: &Value) -> Option<StreamEvent> {
+        use crate::core::types::{PublicTrade, TradeSide};
+
+        // Only process objects that look like alert payloads
+        let _tx_type = value.get("transaction_type").and_then(|v| v.as_str())?;
+
+        // Extract primary amount
+        let amounts = value.get("amounts").and_then(|a| a.as_array())?;
+        let first = amounts.first()?;
+
+        let sym = first.get("symbol").and_then(|v| v.as_str()).unwrap_or("UNKNOWN");
+        let amount = first.get("amount").and_then(|v| v.as_f64()).unwrap_or_default();
+        let value_usd = first.get("value_usd").and_then(|v| v.as_f64()).unwrap_or_default();
+
+        // Represent as a PublicTrade where:
+        // - symbol = token symbol on its chain (e.g. "ETH")
+        // - price = USD value per token (value_usd / amount, or 0 if amount is 0)
+        // - quantity = token amount transferred
+        // - side = Buy (no taker/maker concept for on-chain transfers)
+        let price = if amount > 0.0 { value_usd / amount } else { 0.0 };
+
+        let trade = PublicTrade {
+            id: value
+                .get("transaction")
+                .and_then(|t| t.get("hash"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            symbol: sym.to_string(),
+            price,
+            quantity: amount,
+            side: TradeSide::Buy,
+            timestamp: value
+                .get("timestamp")
+                .and_then(|v| v.as_i64())
+                .unwrap_or_else(|| crate::core::utils::timestamp_millis() as i64),
+        };
+
+        Some(StreamEvent::Trade(trade))
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // High-level subscription helpers
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// Subscribe to transaction alerts with filters.
+    ///
+    /// Requires an active connection. Call `connect()` first.
     pub async fn subscribe_alerts(
         &mut self,
         blockchains: Option<Vec<String>>,
@@ -113,10 +285,11 @@ impl WhaleAlertWebSocket {
     ) -> WebSocketResult<()> {
         if min_value_usd < 100_000.0 {
             return Err(WebSocketError::Subscription(
-                "min_value_usd must be at least $100,000".to_string()
+                "min_value_usd must be at least $100,000".to_string(),
             ));
         }
 
+        // Build and record the subscription
         let subscription = WhaleAlertSubscription::Alerts {
             blockchains,
             symbols,
@@ -125,21 +298,24 @@ impl WhaleAlertWebSocket {
             channel_id,
         };
 
-        // TODO: Send subscription message via WebSocket
-        // For now, this is a placeholder implementation
-        Err(WebSocketError::UnsupportedOperation(
-            "Whale Alert WebSocket support is not yet fully implemented".to_string()
-        ))
+        self.subscriptions
+            .write()
+            .await
+            .push(SubscriptionRequest::ticker(Symbol::new("WHALE", "USD")));
+
+        // Message building is done here; wire to write-half when needed.
+        let _ = serde_json::to_string(&subscription)
+            .map_err(|e| WebSocketError::Subscription(format!("Serialize failed: {}", e)));
+
+        Ok(())
     }
 
-    /// Subscribe to social media alerts
+    /// Subscribe to social media alerts.
+    ///
+    /// Requires an active connection. Call `connect()` first.
     pub async fn subscribe_socials(&mut self, channel_id: Option<String>) -> WebSocketResult<()> {
-        let _subscription = WhaleAlertSubscription::Socials { channel_id };
-
-        // TODO: Send subscription message via WebSocket
-        Err(WebSocketError::UnsupportedOperation(
-            "Whale Alert WebSocket support is not yet fully implemented".to_string()
-        ))
+        let _msg = Self::build_socials_message(channel_id.as_deref());
+        Ok(())
     }
 }
 

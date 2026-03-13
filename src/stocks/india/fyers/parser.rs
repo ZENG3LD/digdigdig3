@@ -54,14 +54,20 @@ impl FyersParser {
         }
     }
 
-    /// Parse order type from integer
-    fn parse_order_type(order_type: i64) -> OrderType {
+    /// Parse order type from Fyers integer code
+    ///
+    /// Fyers type codes:
+    /// - 1 = Limit
+    /// - 2 = Market
+    /// - 3 = SL (Stop-Limit)
+    /// - 4 = SL-M (Stop-Market)
+    pub fn parse_order_type(order_type: i64) -> OrderType {
         match order_type {
             1 => OrderType::Limit { price: 0.0 },
             2 => OrderType::Market,
-            3 => OrderType::StopMarket { stop_price: 0.0 },
-            4 => OrderType::StopLimit { stop_price: 0.0, limit_price: 0.0 },
-            _ => OrderType::Market, // default
+            3 => OrderType::StopLimit { stop_price: 0.0, limit_price: 0.0 },
+            4 => OrderType::StopMarket { stop_price: 0.0 },
+            _ => OrderType::Market,
         }
     }
 
@@ -456,9 +462,8 @@ mod tests {
 
         let ticker = FyersParser::parse_ticker(&response, "NSE:SBIN-EQ").unwrap();
         assert_eq!(ticker.last_price, 550.50);
-        assert_eq!(ticker.open, 548.00);
-        assert_eq!(ticker.high, 552.00);
-        assert_eq!(ticker.low, 547.50);
+        assert_eq!(ticker.high_24h, Some(552.00));
+        assert_eq!(ticker.low_24h, Some(547.50));
     }
 
     #[test]
@@ -469,10 +474,10 @@ mod tests {
 
     #[test]
     fn test_parse_order_type() {
-        assert_eq!(FyersParser::parse_order_type(1), OrderType::Limit);
-        assert_eq!(FyersParser::parse_order_type(2), OrderType::Market);
-        assert_eq!(FyersParser::parse_order_type(3), OrderType::StopLoss);
-        assert_eq!(FyersParser::parse_order_type(4), OrderType::StopLossLimit);
+        assert!(matches!(FyersParser::parse_order_type(1), OrderType::Limit { .. }));
+        assert!(matches!(FyersParser::parse_order_type(2), OrderType::Market));
+        assert!(matches!(FyersParser::parse_order_type(3), OrderType::StopMarket { .. }));
+        assert!(matches!(FyersParser::parse_order_type(4), OrderType::StopLimit { .. }));
     }
 
     #[test]

@@ -378,6 +378,25 @@ impl DhanParser {
     // ACCOUNT
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /// Parse fund limit / cash balance from /v2/fundlimit
+    ///
+    /// Response: { "availabelBalance": 50000.0, "utilizedAmount": 10000.0, ... }
+    pub fn parse_balance(response: &Value) -> ExchangeResult<Vec<Balance>> {
+        Self::check_error(response)?;
+
+        let available = Self::get_f64(response, "availabelBalance")
+            .or_else(|| Self::get_f64(response, "availableBalance"))
+            .unwrap_or(0.0);
+        let used = Self::get_f64(response, "utilizedAmount").unwrap_or(0.0);
+
+        Ok(vec![Balance {
+            asset: "INR".to_string(),
+            free: available,
+            locked: used,
+            total: available + used,
+        }])
+    }
+
     /// Parse holdings
     pub fn parse_holdings(response: &Value) -> ExchangeResult<Vec<Balance>> {
         Self::check_error(response)?;

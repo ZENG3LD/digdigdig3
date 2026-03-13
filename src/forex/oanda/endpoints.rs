@@ -81,6 +81,8 @@ pub enum OandaEndpoint {
     GetOrder { account_id: String, order_id: String },
     /// Cancel order: PUT /v3/accounts/{accountID}/orders/{orderSpecifier}/cancel
     CancelOrder { account_id: String, order_id: String },
+    /// Amend (replace) order: PUT /v3/accounts/{accountID}/orders/{orderSpecifier}
+    AmendOrder { account_id: String, order_id: String },
 
     // === TRADES ===
     /// List trades: GET /v3/accounts/{accountID}/trades
@@ -132,6 +134,7 @@ impl OandaEndpoint {
             Self::ListPendingOrders(account_id) => format!("/v3/accounts/{}/pendingOrders", account_id),
             Self::GetOrder { account_id, order_id } => format!("/v3/accounts/{}/orders/{}", account_id, order_id),
             Self::CancelOrder { account_id, order_id } => format!("/v3/accounts/{}/orders/{}/cancel", account_id, order_id),
+            Self::AmendOrder { account_id, order_id } => format!("/v3/accounts/{}/orders/{}", account_id, order_id),
 
             // Trades
             Self::ListTrades(account_id) => format!("/v3/accounts/{}/trades", account_id),
@@ -164,6 +167,7 @@ impl OandaEndpoint {
 
             // PUT endpoints
             Self::CancelOrder { .. }
+            | Self::AmendOrder { .. }
             | Self::CloseTrade { .. }
             | Self::ClosePosition { .. } => "PUT",
 

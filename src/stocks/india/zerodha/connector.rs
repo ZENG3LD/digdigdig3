@@ -16,9 +16,10 @@ use crate::core::{
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
+    AmendRequest,
 };
 use crate::core::traits::{
-    ExchangeIdentity, MarketData, Trading, Account, Positions,
+    ExchangeIdentity, MarketData, Trading, Account, Positions, AmendOrder,
 };
 use crate::core::types::SymbolInfo;
 
@@ -297,74 +298,226 @@ impl Trading for ZerodhaConnector {
         let symbol = req.symbol.clone();
         let side = req.side;
         let quantity = req.quantity;
-        let _account_type = req.account_type;
+        let time_in_force = req.time_in_force;
+
+        let symbol_key = format_symbol(&symbol);
+        let parts: Vec<&str> = symbol_key.split(':').collect();
+        if parts.len() != 2 {
+            return Err(ExchangeError::Parse(format!("Invalid symbol format: {}", symbol_key)));
+        }
+        let exchange = parts[0];
+        let tradingsymbol = parts[1];
+
+        // IOC validity string
+        let validity = match time_in_force {
+            TimeInForce::Ioc => "IOC",
+            _ => "DAY",
+        };
 
         match req.order_type {
+            OrderType::Fok { .. } => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "FOK orders not supported by Zerodha Kite Connect".to_string(),
+                ));
+            }
+
             OrderType::Market => {
-                let symbol_key = format_symbol(&symbol);
-                        let parts: Vec<&str> = symbol_key.split(':').collect();
-                
-                        if parts.len() != 2 {
-                            return Err(ExchangeError::Parse(format!("Invalid symbol format: {}", symbol_key)));
-                        }
-                
-                        let exchange = parts[0];
-                        let tradingsymbol = parts[1];
-                
-                        let mut body = HashMap::new();
-                        body.insert("exchange".to_string(), exchange.to_string());
-                        body.insert("tradingsymbol".to_string(), tradingsymbol.to_string());
-                        body.insert("transaction_type".to_string(), match side {
-                            OrderSide::Buy => "BUY",
-                            OrderSide::Sell => "SELL",
-                        }.to_string());
-                        body.insert("quantity".to_string(), quantity.to_string());
-                        body.insert("order_type".to_string(), "MARKET".to_string());
-                        body.insert("product".to_string(), "CNC".to_string()); // Delivery
-                
-                        let response = self.post(ZerodhaEndpoint::PlaceOrder("regular".to_string()), body).await?;
-                        ZerodhaParser::parse_order(&response).map(PlaceOrderResponse::Simple)
+                let mut body = HashMap::new();
+                body.insert("exchange".to_string(), exchange.to_string());
+                body.insert("tradingsymbol".to_string(), tradingsymbol.to_string());
+                body.insert("transaction_type".to_string(), match side {
+                    OrderSide::Buy => "BUY",
+                    OrderSide::Sell => "SELL",
+                }.to_string());
+                body.insert("quantity".to_string(), quantity.to_string());
+                body.insert("order_type".to_string(), "MARKET".to_string());
+                body.insert("product".to_string(), "CNC".to_string());
+                body.insert("validity".to_string(), validity.to_string());
+
+                let response = self.post(ZerodhaEndpoint::PlaceOrder("regular".to_string()), body).await?;
+                ZerodhaParser::parse_order(&response).map(PlaceOrderResponse::Simple)
             }
+
             OrderType::Limit { price } => {
-                let symbol_key = format_symbol(&symbol);
-                        let parts: Vec<&str> = symbol_key.split(':').collect();
-                
-                        if parts.len() != 2 {
-                            return Err(ExchangeError::Parse(format!("Invalid symbol format: {}", symbol_key)));
-                        }
-                
-                        let exchange = parts[0];
-                        let tradingsymbol = parts[1];
-                
-                        let mut body = HashMap::new();
-                        body.insert("exchange".to_string(), exchange.to_string());
-                        body.insert("tradingsymbol".to_string(), tradingsymbol.to_string());
-                        body.insert("transaction_type".to_string(), match side {
-                            OrderSide::Buy => "BUY",
-                            OrderSide::Sell => "SELL",
-                        }.to_string());
-                        body.insert("quantity".to_string(), quantity.to_string());
-                        body.insert("order_type".to_string(), "LIMIT".to_string());
-                        body.insert("price".to_string(), price.to_string());
-                        body.insert("product".to_string(), "CNC".to_string()); // Delivery
-                
-                        let response = self.post(ZerodhaEndpoint::PlaceOrder("regular".to_string()), body).await?;
-                        ZerodhaParser::parse_order(&response).map(PlaceOrderResponse::Simple)
+                let mut body = HashMap::new();
+                body.insert("exchange".to_string(), exchange.to_string());
+                body.insert("tradingsymbol".to_string(), tradingsymbol.to_string());
+                body.insert("transaction_type".to_string(), match side {
+                    OrderSide::Buy => "BUY",
+                    OrderSide::Sell => "SELL",
+                }.to_string());
+                body.insert("quantity".to_string(), quantity.to_string());
+                body.insert("order_type".to_string(), "LIMIT".to_string());
+                body.insert("price".to_string(), price.to_string());
+                body.insert("product".to_string(), "CNC".to_string());
+                body.insert("validity".to_string(), validity.to_string());
+
+                let response = self.post(ZerodhaEndpoint::PlaceOrder("regular".to_string()), body).await?;
+                ZerodhaParser::parse_order(&response).map(PlaceOrderResponse::Simple)
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+
+            OrderType::Ioc { price } => {
+                // IOC: variety=regular, validity=IOC, order_type=MARKET or LIMIT
+                let mut body = HashMap::new();
+                body.insert("exchange".to_string(), exchange.to_string());
+                body.insert("tradingsymbol".to_string(), tradingsymbol.to_string());
+                body.insert("transaction_type".to_string(), match side {
+                    OrderSide::Buy => "BUY",
+                    OrderSide::Sell => "SELL",
+                }.to_string());
+                body.insert("quantity".to_string(), quantity.to_string());
+                body.insert("product".to_string(), "CNC".to_string());
+                body.insert("validity".to_string(), "IOC".to_string());
+
+                if let Some(p) = price {
+                    body.insert("order_type".to_string(), "LIMIT".to_string());
+                    body.insert("price".to_string(), p.to_string());
+                } else {
+                    body.insert("order_type".to_string(), "MARKET".to_string());
+                }
+
+                let response = self.post(ZerodhaEndpoint::PlaceOrder("regular".to_string()), body).await?;
+                ZerodhaParser::parse_order(&response).map(PlaceOrderResponse::Simple)
+            }
+
+            OrderType::StopMarket { stop_price } => {
+                // SL-M order: variety=regular, order_type=SL-M, trigger_price
+                let mut body = HashMap::new();
+                body.insert("exchange".to_string(), exchange.to_string());
+                body.insert("tradingsymbol".to_string(), tradingsymbol.to_string());
+                body.insert("transaction_type".to_string(), match side {
+                    OrderSide::Buy => "BUY",
+                    OrderSide::Sell => "SELL",
+                }.to_string());
+                body.insert("quantity".to_string(), quantity.to_string());
+                body.insert("order_type".to_string(), "SL-M".to_string());
+                body.insert("trigger_price".to_string(), stop_price.to_string());
+                body.insert("product".to_string(), "CNC".to_string());
+                body.insert("validity".to_string(), validity.to_string());
+
+                let response = self.post(ZerodhaEndpoint::PlaceOrder("regular".to_string()), body).await?;
+                ZerodhaParser::parse_order(&response).map(PlaceOrderResponse::Simple)
+            }
+
+            OrderType::StopLimit { stop_price, limit_price } => {
+                // SL order: variety=regular, order_type=SL, price + trigger_price
+                let mut body = HashMap::new();
+                body.insert("exchange".to_string(), exchange.to_string());
+                body.insert("tradingsymbol".to_string(), tradingsymbol.to_string());
+                body.insert("transaction_type".to_string(), match side {
+                    OrderSide::Buy => "BUY",
+                    OrderSide::Sell => "SELL",
+                }.to_string());
+                body.insert("quantity".to_string(), quantity.to_string());
+                body.insert("order_type".to_string(), "SL".to_string());
+                body.insert("price".to_string(), limit_price.to_string());
+                body.insert("trigger_price".to_string(), stop_price.to_string());
+                body.insert("product".to_string(), "CNC".to_string());
+                body.insert("validity".to_string(), validity.to_string());
+
+                let response = self.post(ZerodhaEndpoint::PlaceOrder("regular".to_string()), body).await?;
+                ZerodhaParser::parse_order(&response).map(PlaceOrderResponse::Simple)
+            }
+
+            OrderType::Bracket { price, stop_loss, .. } => {
+                // Cover Order (CO): variety=co, entry price + SL trigger_price
+                // Note: Kite's CO is entry + SL only — no TP leg. take_profit is ignored.
+                let entry_price = price.ok_or_else(|| {
+                    ExchangeError::InvalidRequest(
+                        "Bracket orders on Zerodha (Cover Order) require an entry price".to_string(),
+                    )
+                })?;
+
+                let mut body = HashMap::new();
+                body.insert("exchange".to_string(), exchange.to_string());
+                body.insert("tradingsymbol".to_string(), tradingsymbol.to_string());
+                body.insert("transaction_type".to_string(), match side {
+                    OrderSide::Buy => "BUY",
+                    OrderSide::Sell => "SELL",
+                }.to_string());
+                body.insert("quantity".to_string(), quantity.to_string());
+                body.insert("order_type".to_string(), "LIMIT".to_string());
+                body.insert("price".to_string(), entry_price.to_string());
+                body.insert("trigger_price".to_string(), stop_loss.to_string());
+                body.insert("product".to_string(), "MIS".to_string()); // CO requires MIS
+                body.insert("validity".to_string(), "DAY".to_string());
+
+                let response = self.post(ZerodhaEndpoint::PlaceOrder("co".to_string()), body).await?;
+                ZerodhaParser::parse_order(&response).map(PlaceOrderResponse::Simple)
+            }
+
+            OrderType::Iceberg { price, display_quantity } => {
+                // Iceberg order: variety=iceberg, iceberg_legs + iceberg_quantity
+                let total_qty = quantity as u32;
+                let display_qty = display_quantity as u32;
+                // Zerodha requires iceberg_legs = ceil(total / display)
+                let legs = (total_qty + display_qty - 1) / display_qty;
+                let legs = legs.max(2).min(10); // Zerodha: 2–10 legs
+
+                let mut body = HashMap::new();
+                body.insert("exchange".to_string(), exchange.to_string());
+                body.insert("tradingsymbol".to_string(), tradingsymbol.to_string());
+                body.insert("transaction_type".to_string(), match side {
+                    OrderSide::Buy => "BUY",
+                    OrderSide::Sell => "SELL",
+                }.to_string());
+                body.insert("quantity".to_string(), quantity.to_string());
+                body.insert("order_type".to_string(), "LIMIT".to_string());
+                body.insert("price".to_string(), price.to_string());
+                body.insert("product".to_string(), "CNC".to_string());
+                body.insert("validity".to_string(), "DAY".to_string());
+                body.insert("iceberg_legs".to_string(), legs.to_string());
+                body.insert("iceberg_quantity".to_string(), display_quantity.to_string());
+
+                let response = self.post(ZerodhaEndpoint::PlaceOrder("iceberg".to_string()), body).await?;
+                ZerodhaParser::parse_order(&response).map(PlaceOrderResponse::Simple)
+            }
+
+            other => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} order type not supported on Zerodha Kite Connect", other)
             )),
         }
     }
 
     async fn get_order_history(
         &self,
-        _filter: OrderHistoryFilter,
+        filter: OrderHistoryFilter,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_order_history not yet implemented".to_string()
-        ))
+        // Zerodha returns today's full order log via GET /orders
+        let response = self.get(ZerodhaEndpoint::GetOrders, HashMap::new()).await?;
+        let all_orders = ZerodhaParser::parse_orders(&response)?;
+
+        // Apply client-side filtering (Zerodha returns all of today's orders)
+        let filtered: Vec<Order> = all_orders
+            .into_iter()
+            .filter(|o| {
+                // Exclude open orders from history
+                !matches!(o.status, OrderStatus::Open | OrderStatus::New | OrderStatus::PartiallyFilled)
+            })
+            .filter(|o| {
+                // Apply status filter if provided
+                if let Some(status) = &filter.status {
+                    &o.status == status
+                } else {
+                    true
+                }
+            })
+            .filter(|o| {
+                // Apply symbol filter if provided
+                if let Some(sym) = &filter.symbol {
+                    let sym_str = format_symbol(sym);
+                    let parts: Vec<&str> = sym_str.split(':').collect();
+                    let trading_sym = if parts.len() == 2 { parts[1] } else { sym_str.as_str() };
+                    o.symbol == trading_sym || o.symbol == sym_str
+                } else {
+                    true
+                }
+            })
+            .take(filter.limit.unwrap_or(500) as usize)
+            .collect();
+
+        Ok(filtered)
     }
 async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         match req.scope {
@@ -527,6 +680,61 @@ impl Positions for ZerodhaConnector {
                 format!("{:?} not supported on {:?}", req, self.exchange_id())
             )),
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AMEND ORDER (Zerodha supports PUT /orders/{variety}/{order_id})
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AmendOrder for ZerodhaConnector {
+    /// Modify a live order via PUT /orders/{variety}/{order_id}.
+    ///
+    /// Zerodha's modify endpoint accepts variety (regular/amo/co/iceberg)
+    /// and optional price, quantity, trigger_price fields.
+    async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
+        if req.fields.price.is_none()
+            && req.fields.quantity.is_none()
+            && req.fields.trigger_price.is_none()
+        {
+            return Err(ExchangeError::InvalidRequest(
+                "At least one of price, quantity, or trigger_price must be provided".to_string(),
+            ));
+        }
+
+        let mut body = HashMap::new();
+
+        if let Some(price) = req.fields.price {
+            body.insert("price".to_string(), price.to_string());
+        }
+        if let Some(qty) = req.fields.quantity {
+            body.insert("quantity".to_string(), qty.to_string());
+        }
+        if let Some(trigger) = req.fields.trigger_price {
+            body.insert("trigger_price".to_string(), trigger.to_string());
+        }
+
+        // Default variety to "regular"; callers can pass variety in order_id prefix
+        // convention "regular:{order_id}" for CO/iceberg if needed.
+        let (variety, order_id) = if let Some(sep) = req.order_id.find(':') {
+            let v = req.order_id[..sep].to_string();
+            let id = req.order_id[sep + 1..].to_string();
+            (v, id)
+        } else {
+            ("regular".to_string(), req.order_id.clone())
+        };
+
+        let response = self
+            .put(ZerodhaEndpoint::ModifyOrder(variety, order_id.clone()), body)
+            .await?;
+
+        // Zerodha's modify response just returns the order_id confirmation
+        // Fetch full order details to return a complete Order
+        let updated = self
+            .get(ZerodhaEndpoint::GetOrder(order_id), HashMap::new())
+            .await?;
+        ZerodhaParser::parse_order(&updated)
     }
 }
 

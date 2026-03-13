@@ -12,6 +12,21 @@ use super::endpoints::*;
 use super::auth::*;
 use super::parser::*;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper: map TimeInForce → Alpaca time_in_force string
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn tif_str(tif: TimeInForce) -> &'static str {
+    match tif {
+        TimeInForce::Gtc => "gtc",
+        TimeInForce::Ioc => "ioc",
+        TimeInForce::Fok => "fok",
+        TimeInForce::PostOnly => "gtc", // Alpaca has no post-only TIF — caller should not reach here
+        TimeInForce::Gtd { .. } => "gtc", // Unsupported, caller guards this
+        TimeInForce::GoodTilBlock { .. } => "gtc",
+    }
+}
+
 /// Alpaca connector
 ///
 /// Supports both market data and trading operations for US stocks.
@@ -192,6 +207,85 @@ impl AlpacaConnector {
         if !params.is_empty() {
             request = request.query(&params);
         }
+
+        let response = request.send().await
+            .map_err(|e| ExchangeError::Network(format!("Request failed: {}", e)))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(ExchangeError::Api {
+                code: status.as_u16() as i32,
+                message: error_text,
+            });
+        }
+
+        response.json().await
+            .map_err(|e| ExchangeError::Parse(format!("JSON parse error: {}", e)))
+    }
+
+    /// Internal: DELETE that accepts 207 Multi-Status (cancel-all returns 207)
+    async fn delete_trading_multi(
+        &self,
+        endpoint: AlpacaEndpoint,
+        params: HashMap<String, String>,
+    ) -> ExchangeResult<Value> {
+        let (path, _) = endpoint.path();
+        let url = format!("{}{}", self.endpoints.trading_base, path);
+
+        let mut headers = HashMap::new();
+        self.auth.sign_headers(&mut headers);
+
+        let mut request = self.client.delete(&url);
+        for (key, value) in headers {
+            request = request.header(key, value);
+        }
+        if !params.is_empty() {
+            request = request.query(&params);
+        }
+
+        let response = request.send().await
+            .map_err(|e| ExchangeError::Network(format!("Request failed: {}", e)))?;
+
+        let status = response.status();
+        // 200 OK, 207 Multi-Status are both acceptable for cancel-all
+        if !status.is_success() && status.as_u16() != 207 {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(ExchangeError::Api {
+                code: status.as_u16() as i32,
+                message: error_text,
+            });
+        }
+
+        // Body may be empty on full success
+        let text = response.text().await
+            .map_err(|e| ExchangeError::Network(format!("Response read failed: {}", e)))?;
+
+        if text.is_empty() {
+            Ok(Value::Array(vec![]))
+        } else {
+            serde_json::from_str(&text)
+                .map_err(|e| ExchangeError::Parse(format!("JSON parse error: {}", e)))
+        }
+    }
+
+    /// Internal: PATCH request to Trading API (amend order)
+    async fn patch_trading(
+        &self,
+        endpoint: AlpacaEndpoint,
+        body: Value,
+    ) -> ExchangeResult<Value> {
+        let (path, _) = endpoint.path();
+        let url = format!("{}{}", self.endpoints.trading_base, path);
+
+        let mut headers = HashMap::new();
+        self.auth.sign_headers(&mut headers);
+
+        let mut request = self.client.patch(&url);
+        for (key, value) in headers {
+            request = request.header(key, value);
+        }
+        request = request.json(&body);
 
         let response = request.send().await
             .map_err(|e| ExchangeError::Network(format!("Request failed: {}", e)))?;
@@ -495,71 +589,164 @@ impl MarketData for AlpacaConnector {
 #[async_trait]
 impl Trading for AlpacaConnector {
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
-        let symbol = req.symbol.clone();
-        let side = req.side;
-        let quantity = req.quantity;
-        let _account_type = req.account_type;
+        let symbol_str = format_symbol(&req.symbol);
+        let side_str = req.side.as_str().to_lowercase();
+        let qty_str = req.quantity.to_string();
+        let client_oid = req.client_order_id.clone();
 
-        match req.order_type {
-            OrderType::Market => {
-                let symbol_str = format_symbol(&symbol);
-                
-                        let body = json!({
-                            "symbol": symbol_str,
-                            "qty": quantity.to_string(),
-                            "side": side.as_str().to_lowercase(),
-                            "type": "market",
-                            "time_in_force": "day",
-                        });
-                
-                        let response = self.post_trading(AlpacaEndpoint::Orders, body).await?;
-                        AlpacaParser::parse_order(&response).map(PlaceOrderResponse::Simple)
-            }
-            OrderType::Limit { price } => {
-                let symbol_str = format_symbol(&symbol);
-                
-                        let body = json!({
-                            "symbol": symbol_str,
-                            "qty": quantity.to_string(),
-                            "side": side.as_str().to_lowercase(),
-                            "type": "limit",
-                            "time_in_force": "gtc",
-                            "limit_price": price.to_string(),
-                        });
-                
-                        let response = self.post_trading(AlpacaEndpoint::Orders, body).await?;
-                        AlpacaParser::parse_order(&response).map(PlaceOrderResponse::Simple)
-            }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
-            )),
+        // Build base body fields shared by most order types
+        let mut base = serde_json::Map::new();
+        base.insert("symbol".to_string(), json!(symbol_str));
+        base.insert("qty".to_string(), json!(qty_str));
+        base.insert("side".to_string(), json!(side_str));
+
+        if let Some(coid) = client_oid {
+            base.insert("client_order_id".to_string(), json!(coid));
         }
+
+        let body: Value = match req.order_type {
+            OrderType::Market => {
+                base.insert("type".to_string(), json!("market"));
+                base.insert("time_in_force".to_string(), json!("day"));
+                Value::Object(base)
+            }
+
+            OrderType::Limit { price } => {
+                let tif = tif_str(req.time_in_force);
+                base.insert("type".to_string(), json!("limit"));
+                base.insert("time_in_force".to_string(), json!(tif));
+                base.insert("limit_price".to_string(), json!(price.to_string()));
+                Value::Object(base)
+            }
+
+            OrderType::StopMarket { stop_price } => {
+                let tif = tif_str(req.time_in_force);
+                base.insert("type".to_string(), json!("stop"));
+                base.insert("time_in_force".to_string(), json!(tif));
+                base.insert("stop_price".to_string(), json!(stop_price.to_string()));
+                Value::Object(base)
+            }
+
+            OrderType::StopLimit { stop_price, limit_price } => {
+                let tif = tif_str(req.time_in_force);
+                base.insert("type".to_string(), json!("stop_limit"));
+                base.insert("time_in_force".to_string(), json!(tif));
+                base.insert("stop_price".to_string(), json!(stop_price.to_string()));
+                base.insert("limit_price".to_string(), json!(limit_price.to_string()));
+                Value::Object(base)
+            }
+
+            OrderType::TrailingStop { callback_rate, activation_price: _ } => {
+                // Alpaca accepts trail_percent (percentage offset).
+                // activation_price has no Alpaca equivalent — ignored.
+                base.insert("type".to_string(), json!("trailing_stop"));
+                base.insert("time_in_force".to_string(), json!("gtc"));
+                base.insert("trail_percent".to_string(), json!(callback_rate.to_string()));
+                Value::Object(base)
+            }
+
+            OrderType::Oco { price, stop_price, stop_limit_price } => {
+                // Alpaca OCO: limit take-profit + stop(-limit) stop-loss, linked via order_class=oco
+                // The side refers to the closing leg — entry must already be open.
+                base.insert("type".to_string(), json!("limit"));
+                base.insert("time_in_force".to_string(), json!("gtc"));
+                base.insert("order_class".to_string(), json!("oco"));
+                base.insert("take_profit".to_string(), json!({ "limit_price": price.to_string() }));
+                let sl_obj = if let Some(slp) = stop_limit_price {
+                    json!({ "stop_price": stop_price.to_string(), "limit_price": slp.to_string() })
+                } else {
+                    json!({ "stop_price": stop_price.to_string() })
+                };
+                base.insert("stop_loss".to_string(), sl_obj);
+                Value::Object(base)
+            }
+
+            OrderType::Bracket { price, take_profit, stop_loss } => {
+                // Entry type: market if price is None, limit otherwise
+                if let Some(entry_price) = price {
+                    base.insert("type".to_string(), json!("limit"));
+                    base.insert("limit_price".to_string(), json!(entry_price.to_string()));
+                } else {
+                    base.insert("type".to_string(), json!("market"));
+                }
+                base.insert("time_in_force".to_string(), json!("gtc"));
+                base.insert("order_class".to_string(), json!("bracket"));
+                base.insert("take_profit".to_string(), json!({ "limit_price": take_profit.to_string() }));
+                // Alpaca requires at minimum a stop_price in stop_loss object
+                base.insert("stop_loss".to_string(), json!({ "stop_price": stop_loss.to_string() }));
+                Value::Object(base)
+            }
+
+            OrderType::Ioc { price } => {
+                base.insert("time_in_force".to_string(), json!("ioc"));
+                if let Some(p) = price {
+                    base.insert("type".to_string(), json!("limit"));
+                    base.insert("limit_price".to_string(), json!(p.to_string()));
+                } else {
+                    base.insert("type".to_string(), json!("market"));
+                }
+                Value::Object(base)
+            }
+
+            OrderType::Fok { price } => {
+                base.insert("type".to_string(), json!("limit"));
+                base.insert("time_in_force".to_string(), json!("fok"));
+                base.insert("limit_price".to_string(), json!(price.to_string()));
+                Value::Object(base)
+            }
+
+            // Alpaca has no post-only flag for equities
+            OrderType::PostOnly { .. } => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "PostOnly orders are not supported on Alpaca (US equities broker)".to_string()
+                ));
+            }
+
+            // Alpaca does not support iceberg orders
+            OrderType::Iceberg { .. } => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Iceberg orders are not supported on Alpaca".to_string()
+                ));
+            }
+
+            // Alpaca does not support algorithmic TWAP
+            OrderType::Twap { .. } => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "TWAP orders are not supported on Alpaca".to_string()
+                ));
+            }
+
+            // Alpaca has no GTD — only day / gtc
+            OrderType::Gtd { .. } => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "GTD orders are not supported on Alpaca (use GTC or day instead)".to_string()
+                ));
+            }
+
+            // Alpaca is a stock broker — no futures, no reduce-only
+            OrderType::ReduceOnly { .. } => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "ReduceOnly orders are not supported on Alpaca (stock broker, no futures)".to_string()
+                ));
+            }
+        };
+
+        let response = self.post_trading(AlpacaEndpoint::Orders, body).await?;
+
+        // Bracket and OCO orders return an order that embeds legs.
+        // We parse the primary (outer) order; legs are accessible via nested field.
+        AlpacaParser::parse_order(&response).map(PlaceOrderResponse::Simple)
     }
 
-    async fn get_order_history(
-        &self,
-        _filter: OrderHistoryFilter,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_order_history not yet implemented".to_string()
-        ))
-    }
-async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+    async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         match req.scope {
             CancelScope::Single { ref order_id } => {
-                let _symbol = req.symbol.as_ref()
-                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel".into()))?
-                    .clone();
-                let _account_type = req.account_type;
-
-            let endpoint = AlpacaEndpoint::OrderById(order_id.to_string());
-            let response = self.delete_trading(endpoint, HashMap::new()).await?;
-            AlpacaParser::parse_order(&response)
-    
+                let endpoint = AlpacaEndpoint::OrderById(order_id.clone());
+                let response = self.delete_trading(endpoint, HashMap::new()).await?;
+                AlpacaParser::parse_order(&response)
             }
             _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
+                format!("{:?} cancel scope not supported directly on Trading trait — use CancelAll trait", req.scope)
             )),
         }
     }
@@ -570,18 +757,10 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         order_id: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Order> {
-        // Parse symbol string into Symbol struct
-        let _symbol_parts: Vec<&str> = _symbol.split('/').collect();
-        let _symbol = if _symbol_parts.len() == 2 {
-            crate::core::Symbol::new(_symbol_parts[0], _symbol_parts[1])
-        } else {
-            crate::core::Symbol { base: _symbol.to_string(), quote: String::new(), raw: Some(_symbol.to_string()) }
-        };
-
+        // Alpaca lookup by order ID — symbol not required
         let endpoint = AlpacaEndpoint::OrderById(order_id.to_string());
         let response = self.get_trading(endpoint, HashMap::new()).await?;
         AlpacaParser::parse_order(&response)
-    
     }
 
     async fn get_open_orders(
@@ -589,27 +768,57 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         symbol: Option<&str>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        // Convert Option<&str> to Option<Symbol>
-        let symbol_str = symbol;
-        let symbol: Option<crate::core::Symbol> = symbol_str.map(|s| {
-            let parts: Vec<&str> = s.split('/').collect();
-            if parts.len() == 2 {
-                crate::core::Symbol::new(parts[0], parts[1])
-            } else {
-                crate::core::Symbol { base: s.to_string(), quote: String::new(), raw: Some(s.to_string()) }
-            }
-        });
-
         let mut params = HashMap::new();
         params.insert("status".to_string(), "open".to_string());
+        params.insert("nested".to_string(), "true".to_string());
+        params.insert("limit".to_string(), "500".to_string());
 
         if let Some(sym) = symbol {
-            params.insert("symbols".to_string(), format_symbol(&sym));
+            // Alpaca uses "symbols" query param for filtering by ticker
+            params.insert("symbols".to_string(), sym.to_uppercase());
         }
 
         let response = self.get_trading(AlpacaEndpoint::Orders, params).await?;
         AlpacaParser::parse_orders(&response)
-    
+    }
+
+    async fn get_order_history(
+        &self,
+        filter: OrderHistoryFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        let mut params = HashMap::new();
+        params.insert("status".to_string(), "closed".to_string());
+        params.insert("nested".to_string(), "true".to_string());
+
+        if let Some(limit) = filter.limit {
+            params.insert("limit".to_string(), limit.to_string());
+        } else {
+            params.insert("limit".to_string(), "500".to_string());
+        }
+
+        if let Some(start_ms) = filter.start_time {
+            // Alpaca expects RFC-3339 for "after" param
+            let dt = chrono::DateTime::from_timestamp_millis(start_ms)
+                .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.into());
+            params.insert("after".to_string(), dt.to_rfc3339());
+        }
+
+        if let Some(end_ms) = filter.end_time {
+            let dt = chrono::DateTime::from_timestamp_millis(end_ms)
+                .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.into());
+            params.insert("until".to_string(), dt.to_rfc3339());
+        }
+
+        if let Some(sym) = filter.symbol {
+            params.insert("symbols".to_string(), format_symbol(&sym));
+        }
+
+        // direction=desc gives newest first
+        params.insert("direction".to_string(), "desc".to_string());
+
+        let response = self.get_trading(AlpacaEndpoint::Orders, params).await?;
+        AlpacaParser::parse_orders(&response)
     }
 }
 
@@ -620,19 +829,14 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
 #[async_trait]
 impl Account for AlpacaConnector {
     async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
-        let asset = query.asset.clone();
-        let _account_type = query.account_type;
-
         let response = self.get_trading(AlpacaEndpoint::Account, HashMap::new()).await?;
         let balances = AlpacaParser::parse_balance(&response)?;
 
-        // Filter by asset if specified
-        if let Some(a) = asset {
-            Ok(balances.into_iter().filter(|b| b.asset == a).collect())
+        if let Some(asset_filter) = query.asset {
+            Ok(balances.into_iter().filter(|b| b.asset == asset_filter).collect())
         } else {
             Ok(balances)
         }
-    
     }
 
     async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
@@ -640,10 +844,14 @@ impl Account for AlpacaConnector {
         AlpacaParser::parse_account_info(&response, account_type)
     }
 
-    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_fees not yet implemented".to_string()
-        ))
+    /// Alpaca is commission-free — returns zero rates rather than UnsupportedOperation
+    async fn get_fees(&self, symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        Ok(FeeInfo {
+            maker_rate: 0.0,
+            taker_rate: 0.0,
+            symbol: symbol.map(|s| s.to_string()),
+            tier: Some("commission-free".to_string()),
+        })
     }
 }
 
@@ -654,62 +862,149 @@ impl Account for AlpacaConnector {
 #[async_trait]
 impl Positions for AlpacaConnector {
     async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
-        let symbol = query.symbol.clone();
-        let _account_type = query.account_type;
-
-        if let Some(sym) = symbol {
-            // Get specific position
+        if let Some(sym) = query.symbol {
             let symbol_str = format_symbol(&sym);
             let endpoint = AlpacaEndpoint::PositionBySymbol(symbol_str);
             let response = self.get_trading(endpoint, HashMap::new()).await?;
             let position = AlpacaParser::parse_position(&response)?;
             Ok(vec![position])
         } else {
-            // Get all positions
             let response = self.get_trading(AlpacaEndpoint::Positions, HashMap::new()).await?;
             AlpacaParser::parse_positions(&response)
         }
-    
     }
 
+    /// Alpaca is a stock broker — funding rates are not applicable
     async fn get_funding_rate(
         &self,
         _symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
-        // Parse symbol string into Symbol struct
-        let _symbol_str = _symbol;
-        let _symbol = {
-            let parts: Vec<&str> = _symbol_str.split('/').collect();
-            if parts.len() == 2 {
-                crate::core::Symbol::new(parts[0], parts[1])
-            } else {
-                crate::core::Symbol { base: _symbol_str.to_string(), quote: String::new(), raw: Some(_symbol_str.to_string()) }
-            }
-        };
-
-        // Alpaca doesn't support funding rates (stocks broker, not futures)
         Err(ExchangeError::UnsupportedOperation(
-            "Funding rate not available - Alpaca is a stock broker, not a futures exchange".to_string()
+            "Funding rates are not available on Alpaca (stock broker, no perpetual futures)".to_string()
         ))
-    
     }
 
     async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
         match req {
-            PositionModification::SetLeverage { symbol: ref _symbol, leverage: _leverage, account_type: _account_type } => {
-                let _symbol = _symbol.clone();
-
-                // Alpaca doesn't support leverage settings (stocks broker, not futures)
-                Err(ExchangeError::UnsupportedOperation(
-                "Leverage not available - Alpaca is a stock broker, not a futures exchange".to_string()
-                ))
-    
+            PositionModification::ClosePosition { symbol, .. } => {
+                // Alpaca natively supports closing a single position via DELETE /v2/positions/{symbol}
+                let symbol_str = format_symbol(&symbol);
+                let endpoint = AlpacaEndpoint::PositionBySymbol(symbol_str);
+                // DELETE /v2/positions/{symbol} returns the closing order
+                self.delete_trading(endpoint, HashMap::new()).await?;
+                Ok(())
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} not supported on {:?}", req, self.exchange_id())
-            )),
+
+            PositionModification::SetLeverage { .. } => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "SetLeverage is not supported on Alpaca (stock broker, no leveraged futures positions)".to_string()
+                ))
+            }
+
+            PositionModification::SetMarginMode { .. } => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "SetMarginMode is not supported on Alpaca".to_string()
+                ))
+            }
+
+            PositionModification::AddMargin { .. } => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "AddMargin is not supported on Alpaca".to_string()
+                ))
+            }
+
+            PositionModification::RemoveMargin { .. } => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "RemoveMargin is not supported on Alpaca".to_string()
+                ))
+            }
+
+            PositionModification::SetTpSl { .. } => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "SetTpSl is not supported on Alpaca positions directly — use Bracket orders instead".to_string()
+                ))
+            }
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// OPTIONAL TRAIT: CancelAll
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl CancelAll for AlpacaConnector {
+    /// Cancel all open orders via DELETE /v2/orders
+    ///
+    /// Alpaca returns HTTP 207 Multi-Status with per-order sub-statuses.
+    /// The native endpoint cancels all orders atomically.
+    async fn cancel_all_orders(
+        &self,
+        scope: CancelScope,
+        _account_type: AccountType,
+    ) -> ExchangeResult<CancelAllResponse> {
+        let mut params = HashMap::new();
+
+        // If scoped to a symbol, pass it as query param
+        match &scope {
+            CancelScope::BySymbol { symbol } => {
+                params.insert("symbols".to_string(), format_symbol(symbol));
+            }
+            CancelScope::All { symbol: Some(sym) } => {
+                params.insert("symbols".to_string(), format_symbol(sym));
+            }
+            CancelScope::All { symbol: None } => {
+                // Cancel all — no filter
+            }
+            _ => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "CancelAll only supports CancelScope::All and CancelScope::BySymbol".to_string()
+                ));
+            }
+        }
+
+        // DELETE /v2/orders returns 207 Multi-Status array
+        let response = self.delete_trading_multi(AlpacaEndpoint::Orders, params).await?;
+
+        AlpacaParser::parse_cancel_all(&response)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// OPTIONAL TRAIT: AmendOrder
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AmendOrder for AlpacaConnector {
+    /// Amend an open order via PATCH /v2/orders/{order_id}
+    ///
+    /// Alpaca creates a new order atomically and cancels the original.
+    /// The returned order has a new exchange-assigned ID.
+    async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
+        let mut body = serde_json::Map::new();
+
+        if let Some(qty) = req.fields.quantity {
+            body.insert("qty".to_string(), json!(qty.to_string()));
+        }
+
+        if let Some(price) = req.fields.price {
+            body.insert("limit_price".to_string(), json!(price.to_string()));
+        }
+
+        if let Some(trigger) = req.fields.trigger_price {
+            body.insert("stop_price".to_string(), json!(trigger.to_string()));
+        }
+
+        if body.is_empty() {
+            return Err(ExchangeError::InvalidRequest(
+                "AmendRequest must specify at least one field to change (qty, price, or trigger_price)".to_string()
+            ));
+        }
+
+        let endpoint = AlpacaEndpoint::OrderById(req.order_id);
+        let response = self.patch_trading(endpoint, Value::Object(body)).await?;
+        AlpacaParser::parse_order(&response)
     }
 }
 

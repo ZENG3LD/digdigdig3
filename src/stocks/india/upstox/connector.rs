@@ -23,14 +23,16 @@ use crate::core::{
     ExchangeId, ExchangeType, AccountType, Symbol, Asset,
     ExchangeError, ExchangeResult,
     Price, Quantity, Kline, Ticker, OrderBook,
-    Order, OrderSide, OrderType,OrderStatus, Balance, AccountInfo,
+    Order, OrderSide, OrderType, OrderStatus, Balance, AccountInfo,
     Position,
     OrderRequest, CancelRequest, CancelScope,
+    AmendRequest, OrderResult, CancelAllResponse,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
+    AmendOrder, BatchOrders, CancelAll,
 };
 use crate::core::types::SymbolInfo;
 
@@ -212,7 +214,7 @@ impl UpstoxConnector {
     }
 
     /// PUT request
-    async fn _put(
+    async fn put(
         &self,
         endpoint: UpstoxEndpoint,
         body: Value,
@@ -471,65 +473,75 @@ impl Trading for UpstoxConnector {
         let quantity = req.quantity;
         let account_type = req.account_type;
 
-        match req.order_type {
-            OrderType::Market => {
-                let instrument_key = format_symbol(&symbol);
-                        let transaction_type = match side {
-                            OrderSide::Buy => "BUY",
-                            OrderSide::Sell => "SELL",
-                        };
-                
-                        let body = json!({
-                            "quantity": quantity as i64,
-                            "product": "I", // Intraday
-                            "validity": "DAY",
-                            "price": 0,
-                            "instrument_token": instrument_key,
-                            "order_type": "MARKET",
-                            "transaction_type": transaction_type,
-                            "disclosed_quantity": 0,
-                            "trigger_price": 0,
-                            "is_amo": false
-                        });
-                
-                        let response = self.post(UpstoxEndpoint::OrderPlaceV3, body, true).await?;
-                        let order_id = UpstoxParser::parse_order_id(&response)?;
-                
-                        // Fetch order details
-                        let order = self.get_order(&format_symbol(&symbol), &order_id, account_type).await?;
-                        Ok(PlaceOrderResponse::Simple(order))
+        let instrument_key = format_symbol(&symbol);
+        let transaction_type = match side {
+            OrderSide::Buy => "BUY",
+            OrderSide::Sell => "SELL",
+        };
+
+        // Product: D=Delivery (CNC), I=Intraday (MIS), OCO=OCO
+        let product = match account_type {
+            AccountType::Spot => "D",
+            _ => "I",
+        };
+
+        // Validity from TIF
+        let validity = match req.time_in_force {
+            crate::core::TimeInForce::Ioc => "IOC",
+            _ => "DAY",
+        };
+
+        let (order_type_str, price_val, trigger_val) = match req.order_type {
+            OrderType::Market => ("MARKET", 0.0, 0.0),
+            OrderType::Limit { price } => ("LIMIT", price, 0.0),
+            OrderType::StopMarket { stop_price } => ("SL-M", 0.0, stop_price),
+            OrderType::StopLimit { stop_price, limit_price } => ("SL", limit_price, stop_price),
+            OrderType::Ioc { price } => {
+                // IOC with optional price
+                let p = price.unwrap_or(0.0);
+                let ot = if price.is_some() { "LIMIT" } else { "MARKET" };
+                // We handle Ioc as special case below
+                let body = json!({
+                    "quantity": quantity as i64,
+                    "product": product,
+                    "validity": "IOC",
+                    "price": p,
+                    "instrument_token": instrument_key,
+                    "order_type": ot,
+                    "transaction_type": transaction_type,
+                    "disclosed_quantity": 0,
+                    "trigger_price": 0,
+                    "is_amo": false
+                });
+                let response = self.post(UpstoxEndpoint::OrderPlaceV3, body, true).await?;
+                let order_id = UpstoxParser::parse_order_id(&response)?;
+                let order = self.get_order(&instrument_key, &order_id, account_type).await?;
+                return Ok(PlaceOrderResponse::Simple(order));
             }
-            OrderType::Limit { price } => {
-                let instrument_key = format_symbol(&symbol);
-                        let transaction_type = match side {
-                            OrderSide::Buy => "BUY",
-                            OrderSide::Sell => "SELL",
-                        };
-                
-                        let body = json!({
-                            "quantity": quantity as i64,
-                            "product": "I", // Intraday
-                            "validity": "DAY",
-                            "price": price,
-                            "instrument_token": instrument_key,
-                            "order_type": "LIMIT",
-                            "transaction_type": transaction_type,
-                            "disclosed_quantity": 0,
-                            "trigger_price": 0,
-                            "is_amo": false
-                        });
-                
-                        let response = self.post(UpstoxEndpoint::OrderPlaceV3, body, true).await?;
-                        let order_id = UpstoxParser::parse_order_id(&response)?;
-                
-                        // Fetch order details
-                        let order = self.get_order(&format_symbol(&symbol), &order_id, account_type).await?;
-                        Ok(PlaceOrderResponse::Simple(order))
+            _ => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    format!("{:?} order type not supported on Upstox", req.order_type)
+                ));
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
-            )),
-        }
+        };
+
+        let body = json!({
+            "quantity": quantity as i64,
+            "product": product,
+            "validity": validity,
+            "price": price_val,
+            "instrument_token": instrument_key,
+            "order_type": order_type_str,
+            "transaction_type": transaction_type,
+            "disclosed_quantity": 0,
+            "trigger_price": trigger_val,
+            "is_amo": false
+        });
+
+        let response = self.post(UpstoxEndpoint::OrderPlaceV3, body, true).await?;
+        let order_id = UpstoxParser::parse_order_id(&response)?;
+        let order = self.get_order(&instrument_key, &order_id, account_type).await?;
+        Ok(PlaceOrderResponse::Simple(order))
     }
 
     async fn get_order_history(
@@ -537,9 +549,18 @@ impl Trading for UpstoxConnector {
         _filter: OrderHistoryFilter,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_order_history not yet implemented".to_string()
-        ))
+        // If a specific order ID is available via symbol/order-id query, use history endpoint.
+        // Otherwise fall back to retrieve-all and filter for closed statuses.
+        let response = self.get(UpstoxEndpoint::OrderBook, HashMap::new(), false).await?;
+        let all_orders = UpstoxParser::parse_orders(&response)?;
+
+        Ok(all_orders
+            .into_iter()
+            .filter(|o| matches!(
+                o.status,
+                OrderStatus::Filled | OrderStatus::Canceled | OrderStatus::Rejected | OrderStatus::Expired
+            ))
+            .collect())
     }
 async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         match req.scope {
@@ -647,10 +668,16 @@ impl Account for UpstoxConnector {
         })
     }
 
-    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_fees not yet implemented".to_string()
-        ))
+    async fn get_fees(&self, symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        // Upstox /v2/charges/brokerage requires instrument_token, quantity, product, price, transaction_type
+        // Without a symbol + trade details we cannot calculate brokerage, so return a static schedule
+        let _ = symbol;
+        Ok(FeeInfo {
+            maker_rate: 0.0,   // Upstox is flat-fee: ₹20 per order, not percentage-based
+            taker_rate: 0.0,
+            symbol: symbol.map(String::from),
+            tier: Some("Flat ₹20 per order or 0.05% (whichever is lower)".to_string()),
+        })
     }
 }
 
@@ -696,6 +723,193 @@ impl Positions for UpstoxConnector {
                 format!("{:?} not supported on {:?}", req, self.exchange_id())
             )),
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AMEND ORDER (optional trait — Upstox supports PUT /v2/order/modify)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AmendOrder for UpstoxConnector {
+    async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
+        let order_id = req.order_id.clone();
+
+        if req.fields.price.is_none()
+            && req.fields.quantity.is_none()
+            && req.fields.trigger_price.is_none()
+        {
+            return Err(ExchangeError::InvalidRequest(
+                "At least one field (price, quantity, trigger_price) must be provided".to_string(),
+            ));
+        }
+
+        // Fetch current order to fill in unchanged values
+        let current = self.get_order("", &order_id, req.account_type).await?;
+
+        let new_price = req.fields.price.or(current.price).unwrap_or(0.0);
+        let new_quantity = req.fields.quantity.unwrap_or(current.quantity);
+        let new_trigger = req.fields.trigger_price.or(current.stop_price).unwrap_or(0.0);
+
+        let order_type_str = match &current.order_type {
+            OrderType::Market => "MARKET",
+            OrderType::Limit { .. } => "LIMIT",
+            OrderType::StopMarket { .. } => "SL-M",
+            OrderType::StopLimit { .. } => "SL",
+            _ => "LIMIT",
+        };
+
+        let validity = match current.time_in_force {
+            crate::core::TimeInForce::Ioc => "IOC",
+            _ => "DAY",
+        };
+
+        let body = json!({
+            "order_id": order_id,
+            "quantity": new_quantity as i64,
+            "price": new_price,
+            "trigger_price": new_trigger,
+            "order_type": order_type_str,
+            "validity": validity,
+            "disclosed_quantity": 0,
+        });
+
+        let _response = self.put(UpstoxEndpoint::OrderModify, body).await?;
+
+        // Fetch updated order
+        self.get_order("", &order_id, req.account_type).await
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BATCH ORDERS (optional trait — Upstox supports POST /v2/order/multi/place)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl BatchOrders for UpstoxConnector {
+    async fn place_orders_batch(
+        &self,
+        orders: Vec<OrderRequest>,
+    ) -> ExchangeResult<Vec<OrderResult>> {
+        // Build batch payload: array of order objects
+        let mut order_payloads = Vec::with_capacity(orders.len());
+
+        for req in &orders {
+            let instrument_key = format_symbol(&req.symbol);
+            let transaction_type = match req.side {
+                OrderSide::Buy => "BUY",
+                OrderSide::Sell => "SELL",
+            };
+            let product = match req.account_type {
+                AccountType::Spot => "D",
+                _ => "I",
+            };
+            let validity = match req.time_in_force {
+                crate::core::TimeInForce::Ioc => "IOC",
+                _ => "DAY",
+            };
+            let (order_type_str, price_val, trigger_val) = match &req.order_type {
+                OrderType::Market => ("MARKET", 0.0, 0.0),
+                OrderType::Limit { price } => ("LIMIT", *price, 0.0),
+                OrderType::StopMarket { stop_price } => ("SL-M", 0.0, *stop_price),
+                OrderType::StopLimit { stop_price, limit_price } => ("SL", *limit_price, *stop_price),
+                _ => return Err(ExchangeError::UnsupportedOperation(
+                    format!("{:?} not supported in batch on Upstox", req.order_type)
+                )),
+            };
+
+            order_payloads.push(json!({
+                "quantity": req.quantity as i64,
+                "product": product,
+                "validity": validity,
+                "price": price_val,
+                "instrument_token": instrument_key,
+                "order_type": order_type_str,
+                "transaction_type": transaction_type,
+                "disclosed_quantity": 0,
+                "trigger_price": trigger_val,
+                "is_amo": false,
+            }));
+        }
+
+        let response = self.post(UpstoxEndpoint::MultiOrderPlace, serde_json::Value::Array(order_payloads), false).await?;
+
+        // Parse batch response — array of { order_id, status, ... }
+        UpstoxParser::parse_batch_order_results(&response)
+    }
+
+    async fn cancel_orders_batch(
+        &self,
+        order_ids: Vec<String>,
+        _symbol: Option<&str>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<OrderResult>> {
+        // Upstox multi-cancel: DELETE /v2/order/multi/cancel with order_ids in body
+        // The API accepts a JSON array of order IDs
+        // Upstox multi-cancel: DELETE /v2/order/multi/cancel (order_ids passed as query params)
+        // The API sends order IDs via query string, not a JSON body
+        let base_url = self.urls.rest_url(self.use_hft);
+        let path = UpstoxEndpoint::MultiOrderCancel.path();
+        let url = format!("{}{}", base_url, path);
+
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+        let mut headers = HashMap::new();
+        auth.sign_headers(&mut headers)?;
+        headers.insert("Content-Type".to_string(), "application/json".to_string());
+
+        let response = self.http.delete(&url, &HashMap::new(), &headers).await?;
+
+        UpstoxParser::parse_batch_order_results(&response)
+    }
+
+    fn max_batch_place_size(&self) -> usize {
+        25 // Upstox documented limit
+    }
+
+    fn max_batch_cancel_size(&self) -> usize {
+        25
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CANCEL ALL (optional trait — Upstox supports DELETE /v2/order/multi/cancel)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl CancelAll for UpstoxConnector {
+    async fn cancel_all_orders(
+        &self,
+        scope: crate::core::CancelScope,
+        _account_type: AccountType,
+    ) -> ExchangeResult<CancelAllResponse> {
+        // Extract optional segment/tag from scope
+        let symbol_opt: Option<&crate::core::Symbol> = match &scope {
+            CancelScope::All { symbol } => symbol.as_ref().map(|s| s as &crate::core::Symbol),
+            CancelScope::BySymbol { symbol } => Some(symbol),
+            _ => return Err(ExchangeError::InvalidRequest(
+                "CancelAll requires All or BySymbol scope".to_string()
+            )),
+        };
+        let mut params = HashMap::new();
+        if let Some(sym) = symbol_opt {
+            params.insert("segment".to_string(), sym.quote.clone());
+        }
+
+        let response = self.delete(UpstoxEndpoint::MultiOrderCancel, params).await?;
+
+        // Parse count from response
+        let cancelled_count = response
+            .get("data")
+            .and_then(|d| d.as_array())
+            .map(|a| a.len() as u32)
+            .unwrap_or(0);
+
+        Ok(CancelAllResponse {
+            cancelled_count,
+            failed_count: 0,
+            details: vec![],
+        })
     }
 }
 

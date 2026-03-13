@@ -24,12 +24,14 @@ use crate::core::{
     HttpClient, Credentials,
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
-    Price, Quantity, Kline, Ticker, OrderBook,
+    Price, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, Balance, AccountInfo,
     Position, FundingRate, SymbolInfo,
     OrderRequest, CancelRequest, CancelScope,
+    AmendRequest,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
+    AmendOrder,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
@@ -405,151 +407,286 @@ impl Trading for OandaConnector {
         let symbol = req.symbol.clone();
         let side = req.side;
         let quantity = req.quantity;
-        let account_type = req.account_type;
 
-        match req.order_type {
+        let account_id = self.require_account_id()?;
+        let instrument = format_symbol(&symbol.base, &symbol.quote);
+
+        // OANDA uses signed units: positive = buy, negative = sell
+        let units = match side {
+            OrderSide::Buy => quantity,
+            OrderSide::Sell => -quantity,
+        };
+        let units_str = units.to_string();
+
+        let endpoint = OandaEndpoint::CreateOrder(account_id.to_string());
+
+        let (body, result_order_type, result_price, result_stop_price, result_tif) = match req.order_type {
             OrderType::Market => {
-                let account_id = self.require_account_id()?;
-                        let instrument = format_symbol(&symbol.base, &symbol.quote);
-                
-                        // OANDA uses signed units: positive = buy, negative = sell
-                        let units = match side {
-                            OrderSide::Buy => quantity,
-                            OrderSide::Sell => -quantity,
-                        };
-                
-                        let endpoint = OandaEndpoint::CreateOrder(account_id.to_string());
-                
-                        let body = json!({
-                            "order": {
-                                "type": "MARKET",
-                                "instrument": instrument,
-                                "units": units.to_string(),
-                                "timeInForce": "FOK", // Fill or Kill
-                                "positionFill": "DEFAULT"
-                            }
-                        });
-                
-                        let response = self.post(endpoint, body).await?;
-                        let order_id = OandaParser::parse_order_id(&response)?;
-
-                        Ok(PlaceOrderResponse::Simple(Order {
-                            id: order_id,
-                            client_order_id: None,
-                            symbol: symbol.to_string(),
-                            side,
-                            order_type: OrderType::Market,
-                            status: crate::core::OrderStatus::New,
-                            price: None,
-                            stop_price: None,
-                            quantity,
-                            filled_quantity: 0.0,
-                            average_price: None,
-                            commission: None,
-                            commission_asset: None,
-                            created_at: crate::core::timestamp_millis() as i64,
-                            updated_at: None,
-                            time_in_force: crate::core::TimeInForce::Fok,
-                        }))
+                let b = json!({
+                    "order": {
+                        "type": "MARKET",
+                        "instrument": instrument,
+                        "units": units_str,
+                        "timeInForce": "FOK",
+                        "positionFill": "DEFAULT"
+                    }
+                });
+                (b, OrderType::Market, None::<f64>, None::<f64>, crate::core::TimeInForce::Fok)
             }
+
             OrderType::Limit { price } => {
-                let account_id = self.require_account_id()?;
-                        let instrument = format_symbol(&symbol.base, &symbol.quote);
-                
-                        let units = match side {
-                            OrderSide::Buy => quantity,
-                            OrderSide::Sell => -quantity,
-                        };
-                
-                        let endpoint = OandaEndpoint::CreateOrder(account_id.to_string());
-                
-                        let body = json!({
-                            "order": {
-                                "type": "LIMIT",
-                                "instrument": instrument,
-                                "units": units.to_string(),
-                                "price": price.to_string(),
-                                "timeInForce": "GTC", // Good Till Cancelled
-                                "positionFill": "DEFAULT"
-                            }
-                        });
-                
-                        let response = self.post(endpoint, body).await?;
-                        let order_id = OandaParser::parse_order_id(&response)?;
-
-                        Ok(PlaceOrderResponse::Simple(Order {
-                            id: order_id,
-                            client_order_id: None,
-                            symbol: symbol.to_string(),
-                            side,
-                            order_type: OrderType::Limit { price: 0.0 },
-                            status: crate::core::OrderStatus::New,
-                            price: Some(price),
-                            stop_price: None,
-                            quantity,
-                            filled_quantity: 0.0,
-                            average_price: None,
-                            commission: None,
-                            commission_asset: None,
-                            created_at: crate::core::timestamp_millis() as i64,
-                            updated_at: None,
-                            time_in_force: crate::core::TimeInForce::Gtc,
-                        }))
+                let b = json!({
+                    "order": {
+                        "type": "LIMIT",
+                        "instrument": instrument,
+                        "units": units_str,
+                        "price": price.to_string(),
+                        "timeInForce": "GTC",
+                        "positionFill": "DEFAULT"
+                    }
+                });
+                (b, OrderType::Limit { price }, Some(price), None, crate::core::TimeInForce::Gtc)
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
-            )),
-        }
+
+            OrderType::StopMarket { stop_price } => {
+                // OANDA STOP order: triggers a market order at stop_price
+                let b = json!({
+                    "order": {
+                        "type": "STOP",
+                        "instrument": instrument,
+                        "units": units_str,
+                        "price": stop_price.to_string(),
+                        "timeInForce": "GTC",
+                        "positionFill": "DEFAULT"
+                    }
+                });
+                (b, OrderType::StopMarket { stop_price }, None, Some(stop_price), crate::core::TimeInForce::Gtc)
+            }
+
+            OrderType::StopLimit { stop_price, limit_price } => {
+                // OANDA STOP with priceBound acts as stop-limit
+                let b = json!({
+                    "order": {
+                        "type": "STOP",
+                        "instrument": instrument,
+                        "units": units_str,
+                        "price": stop_price.to_string(),
+                        "priceBound": limit_price.to_string(),
+                        "timeInForce": "GTC",
+                        "positionFill": "DEFAULT"
+                    }
+                });
+                (b, OrderType::StopLimit { stop_price, limit_price }, Some(limit_price), Some(stop_price), crate::core::TimeInForce::Gtc)
+            }
+
+            OrderType::TrailingStop { callback_rate, activation_price: _ } => {
+                // OANDA TRAILING_STOP_LOSS uses distance in price units.
+                // callback_rate is a percentage — pass directly as distance.
+                let b = json!({
+                    "order": {
+                        "type": "TRAILING_STOP_LOSS",
+                        "instrument": instrument,
+                        "units": units_str,
+                        "distance": callback_rate.to_string(),
+                        "timeInForce": "GTC",
+                        "positionFill": "DEFAULT"
+                    }
+                });
+                (b, OrderType::TrailingStop { callback_rate, activation_price: None }, None, None, crate::core::TimeInForce::Gtc)
+            }
+
+            OrderType::Bracket { price, take_profit, stop_loss } => {
+                // OANDA bracket: LIMIT (or MARKET) with takeProfitOnFill + stopLossOnFill
+                let order_type_str = if price.is_some() { "LIMIT" } else { "MARKET" };
+                let mut order_body = serde_json::Map::new();
+                order_body.insert("type".to_string(), json!(order_type_str));
+                order_body.insert("instrument".to_string(), json!(instrument));
+                order_body.insert("units".to_string(), json!(units_str));
+                order_body.insert("timeInForce".to_string(), json!("GTC"));
+                order_body.insert("positionFill".to_string(), json!("DEFAULT"));
+                if let Some(p) = price {
+                    order_body.insert("price".to_string(), json!(p.to_string()));
+                }
+                order_body.insert("takeProfitOnFill".to_string(), json!({ "price": take_profit.to_string() }));
+                order_body.insert("stopLossOnFill".to_string(), json!({ "price": stop_loss.to_string() }));
+
+                let b = json!({ "order": serde_json::Value::Object(order_body) });
+                let entry_price = price;
+                (b, OrderType::Bracket { price, take_profit, stop_loss }, entry_price, None, crate::core::TimeInForce::Gtc)
+            }
+
+            OrderType::Ioc { price } => {
+                // IOC with optional price — if price given use LIMIT IOC, else MARKET
+                let mut order_body = serde_json::Map::new();
+                if let Some(p) = price {
+                    order_body.insert("type".to_string(), json!("LIMIT"));
+                    order_body.insert("price".to_string(), json!(p.to_string()));
+                } else {
+                    order_body.insert("type".to_string(), json!("MARKET"));
+                }
+                order_body.insert("instrument".to_string(), json!(instrument));
+                order_body.insert("units".to_string(), json!(units_str));
+                order_body.insert("timeInForce".to_string(), json!("IOC"));
+                order_body.insert("positionFill".to_string(), json!("DEFAULT"));
+
+                let b = json!({ "order": serde_json::Value::Object(order_body) });
+                (b, OrderType::Ioc { price }, price, None, crate::core::TimeInForce::Ioc)
+            }
+
+            OrderType::Fok { price } => {
+                let b = json!({
+                    "order": {
+                        "type": "LIMIT",
+                        "instrument": instrument,
+                        "units": units_str,
+                        "price": price.to_string(),
+                        "timeInForce": "FOK",
+                        "positionFill": "DEFAULT"
+                    }
+                });
+                (b, OrderType::Fok { price }, Some(price), None, crate::core::TimeInForce::Fok)
+            }
+
+            OrderType::Gtd { price, expire_time } => {
+                // OANDA GTD requires RFC3339 timestamp in gtdTime field
+                let expire_rfc3339 = {
+                    use std::time::{UNIX_EPOCH, Duration};
+                    let secs = (expire_time / 1000) as u64;
+                    let millis = (expire_time % 1000) as u32;
+                    let dt = UNIX_EPOCH + Duration::from_secs(secs) + Duration::from_millis(millis as u64);
+                    // Format as RFC3339 — use chrono
+                    chrono::DateTime::<chrono::Utc>::from(dt).to_rfc3339()
+                };
+
+                let b = json!({
+                    "order": {
+                        "type": "LIMIT",
+                        "instrument": instrument,
+                        "units": units_str,
+                        "price": price.to_string(),
+                        "timeInForce": "GTD",
+                        "gtdTime": expire_rfc3339,
+                        "positionFill": "DEFAULT"
+                    }
+                });
+                (b, OrderType::Gtd { price, expire_time }, Some(price), None, crate::core::TimeInForce::Gtd)
+            }
+
+            OrderType::ReduceOnly { price } => {
+                // OANDA supports reduceOnly flag on market or limit orders
+                let (order_type_str, tif_str) = if price.is_some() {
+                    ("LIMIT", "GTC")
+                } else {
+                    ("MARKET", "FOK")
+                };
+
+                let mut order_body = serde_json::Map::new();
+                order_body.insert("type".to_string(), json!(order_type_str));
+                order_body.insert("instrument".to_string(), json!(instrument));
+                order_body.insert("units".to_string(), json!(units_str));
+                order_body.insert("timeInForce".to_string(), json!(tif_str));
+                order_body.insert("positionFill".to_string(), json!("REDUCE_ONLY"));
+                if let Some(p) = price {
+                    order_body.insert("price".to_string(), json!(p.to_string()));
+                }
+
+                let b = json!({ "order": serde_json::Value::Object(order_body) });
+                let tif = if price.is_some() {
+                    crate::core::TimeInForce::Gtc
+                } else {
+                    crate::core::TimeInForce::Fok
+                };
+                (b, OrderType::ReduceOnly { price }, price, None, tif)
+            }
+
+            // Unsupported order types
+            OrderType::Oco { .. } => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "OANDA does not support native OCO orders".to_string()
+                ));
+            }
+            OrderType::PostOnly { .. } => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "OANDA does not support Post-Only orders".to_string()
+                ));
+            }
+            OrderType::Iceberg { .. } => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "OANDA does not support Iceberg orders".to_string()
+                ));
+            }
+            OrderType::Twap { .. } => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "OANDA does not support TWAP orders".to_string()
+                ));
+            }
+        };
+
+        let response = self.post(endpoint, body).await?;
+        let order_id = OandaParser::parse_order_id(&response)?;
+
+        Ok(PlaceOrderResponse::Simple(Order {
+            id: order_id,
+            client_order_id: req.client_order_id,
+            symbol: symbol.to_string(),
+            side,
+            order_type: result_order_type,
+            status: crate::core::OrderStatus::New,
+            price: result_price,
+            stop_price: result_stop_price,
+            quantity,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: crate::core::timestamp_millis() as i64,
+            updated_at: None,
+            time_in_force: result_tif,
+        }))
     }
 
-    async fn get_order_history(
-        &self,
-        _filter: OrderHistoryFilter,
-        _account_type: AccountType,
-    ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_order_history not yet implemented".to_string()
-        ))
-    }
-async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+    async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         match req.scope {
             CancelScope::Single { ref order_id } => {
-                let _symbol = req.symbol.as_ref()
-                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel".into()))?
-                    .clone();
-                let _account_type = req.account_type;
+                let account_id = self.require_account_id()?;
 
-            let account_id = self.require_account_id()?;
+                let endpoint = OandaEndpoint::CancelOrder {
+                    account_id: account_id.to_string(),
+                    order_id: order_id.to_string(),
+                };
 
-            let endpoint = OandaEndpoint::CancelOrder {
-                account_id: account_id.to_string(),
-                order_id: order_id.to_string(),
-            };
+                // OANDA returns the cancelled order in the response
+                let response = self.put(endpoint, json!({})).await?;
 
-            self.put(endpoint, json!({})).await?;
+                // Try to parse from the cancel response, fall back to minimal stub
+                if let Ok(order) = OandaParser::parse_order(&response, "") {
+                    return Ok(order);
+                }
 
-            Ok(Order {
-                id: order_id.to_string(),
-                client_order_id: None,
-                symbol: String::new(),
-                side: OrderSide::Buy,
-                order_type: OrderType::Limit { price: 0.0 },
-                status: crate::core::OrderStatus::Canceled,
-                price: None,
-                stop_price: None,
-                quantity: 0.0,
-                filled_quantity: 0.0,
-                average_price: None,
-                commission: None,
-                commission_asset: None,
-                created_at: 0,
-                updated_at: Some(crate::core::timestamp_millis() as i64),
-                time_in_force: crate::core::TimeInForce::Gtc,
-            })
-    
+                Ok(Order {
+                    id: order_id.to_string(),
+                    client_order_id: None,
+                    symbol: req.symbol
+                        .as_ref()
+                        .map(|s| s.to_string())
+                        .unwrap_or_default(),
+                    side: OrderSide::Buy,
+                    order_type: OrderType::Limit { price: 0.0 },
+                    status: crate::core::OrderStatus::Canceled,
+                    price: None,
+                    stop_price: None,
+                    quantity: 0.0,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: 0,
+                    updated_at: Some(crate::core::timestamp_millis() as i64),
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                })
             }
             _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} cancel scope not supported on {:?}", req.scope, self.exchange_id())
+                format!("{:?} cancel scope not supported on OANDA — only Single is supported", req.scope)
             )),
         }
     }
@@ -560,14 +697,6 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         order_id: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Order> {
-        // Parse symbol string into Symbol struct
-        let _symbol_parts: Vec<&str> = _symbol.split('/').collect();
-        let _symbol = if _symbol_parts.len() == 2 {
-            crate::core::Symbol::new(_symbol_parts[0], _symbol_parts[1])
-        } else {
-            crate::core::Symbol { base: _symbol.to_string(), quote: String::new(), raw: Some(_symbol.to_string()) }
-        };
-
         let account_id = self.require_account_id()?;
 
         let endpoint = OandaEndpoint::GetOrder {
@@ -576,8 +705,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         };
 
         let response = self.get(endpoint, HashMap::new()).await?;
-        OandaParser::parse_order(&response, "")
-    
+        OandaParser::parse_order(&response, _symbol)
     }
 
     async fn get_open_orders(
@@ -585,29 +713,54 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         symbol: Option<&str>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        // Convert Option<&str> to Option<Symbol>
-        let symbol_str = symbol;
-        let symbol: Option<crate::core::Symbol> = symbol_str.map(|s| {
-            let parts: Vec<&str> = s.split('/').collect();
-            if parts.len() == 2 {
-                crate::core::Symbol::new(parts[0], parts[1])
-            } else {
-                crate::core::Symbol { base: s.to_string(), quote: String::new(), raw: Some(s.to_string()) }
-            }
-        });
-
         let account_id = self.require_account_id()?;
         let endpoint = OandaEndpoint::ListPendingOrders(account_id.to_string());
 
         let mut params = HashMap::new();
         if let Some(s) = symbol {
-            let instrument = format_symbol(&s.base, &s.quote);
+            // Parse "EUR/USD" or "EUR_USD" formats
+            let instrument = if s.contains('/') {
+                let parts: Vec<&str> = s.splitn(2, '/').collect();
+                if parts.len() == 2 {
+                    format_symbol(parts[0], parts[1])
+                } else {
+                    s.to_string()
+                }
+            } else {
+                s.to_string()
+            };
             params.insert("instrument".to_string(), instrument);
         }
 
         let response = self.get(endpoint, params).await?;
         OandaParser::parse_orders(&response)
-    
+    }
+
+    async fn get_order_history(
+        &self,
+        filter: OrderHistoryFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        let account_id = self.require_account_id()?;
+        let endpoint = OandaEndpoint::ListOrders(account_id.to_string());
+
+        let mut params = HashMap::new();
+        // OANDA state parameter: PENDING, FILLED, TRIGGERED, CANCELLED
+        params.insert("state".to_string(), "FILLED".to_string());
+
+        if let Some(limit) = filter.limit {
+            params.insert("count".to_string(), limit.to_string());
+        } else {
+            params.insert("count".to_string(), "50".to_string());
+        }
+
+        if let Some(sym) = filter.symbol {
+            let instrument = format_symbol(&sym.base, &sym.quote);
+            params.insert("instrument".to_string(), instrument);
+        }
+
+        let response = self.get(endpoint, params).await?;
+        OandaParser::parse_orders(&response)
     }
 }
 
@@ -698,18 +851,122 @@ impl Positions for OandaConnector {
 
     async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
         match req {
-            PositionModification::SetLeverage { symbol: ref _symbol, leverage: _leverage, account_type: _account_type } => {
-                let _symbol = _symbol.clone();
+            PositionModification::ClosePosition { symbol, account_type: _ } => {
+                let account_id = self.require_account_id()?;
+                let instrument = format_symbol(&symbol.base, &symbol.quote);
 
-                // OANDA leverage is set at account level via margin rate
-                Err(ExchangeError::UnsupportedOperation(
-                "OANDA leverage is set at account level, not per symbol".to_string()
-                ))
-    
+                let endpoint = OandaEndpoint::ClosePosition {
+                    account_id: account_id.to_string(),
+                    instrument,
+                };
+
+                // Close both long and short sides
+                let body = json!({
+                    "longUnits": "ALL",
+                    "shortUnits": "ALL"
+                });
+
+                self.put(endpoint, body).await?;
+                Ok(())
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} not supported on {:?}", req, self.exchange_id())
-            )),
+
+            PositionModification::SetLeverage { .. } => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "OANDA leverage is set at account level, not per symbol".to_string()
+                ))
+            }
+
+            PositionModification::SetMarginMode { .. } => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "OANDA does not support per-symbol margin mode (uses account-level cross margin)".to_string()
+                ))
+            }
+
+            PositionModification::AddMargin { .. } | PositionModification::RemoveMargin { .. } => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "OANDA does not support manual margin adjustment (auto cross-margin)".to_string()
+                ))
+            }
+
+            PositionModification::SetTpSl { .. } => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "OANDA TP/SL is set on individual trades, not positions — use place_order with Bracket".to_string()
+                ))
+            }
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AMEND ORDER (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// OANDA supports native order amendment — PUT to /v3/accounts/{id}/orders/{specifier}
+/// replaces the entire order in-place (cancel + recreate on the server side, but
+/// atomic and preserves the order ID).
+#[async_trait]
+impl AmendOrder for OandaConnector {
+    async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
+        if req.fields.price.is_none()
+            && req.fields.quantity.is_none()
+            && req.fields.trigger_price.is_none()
+        {
+            return Err(ExchangeError::InvalidRequest(
+                "AmendOrder: at least one field must be specified".to_string()
+            ));
+        }
+
+        let account_id = self.require_account_id()?;
+        let instrument = format_symbol(&req.symbol.base, &req.symbol.quote);
+
+        // First fetch the current order so we can rebuild the full replacement body
+        let current_endpoint = OandaEndpoint::GetOrder {
+            account_id: account_id.to_string(),
+            order_id: req.order_id.clone(),
+        };
+        let current_response = self.get(current_endpoint, HashMap::new()).await?;
+        let current_order = OandaParser::parse_order(&current_response, &instrument)?;
+
+        // Determine effective values after the amendment
+        let new_price = req.fields.price.unwrap_or(current_order.price.unwrap_or(0.0));
+        let new_quantity = req.fields.quantity.unwrap_or(current_order.quantity);
+        let new_stop = req.fields.trigger_price.or(current_order.stop_price);
+
+        let units = match current_order.side {
+            OrderSide::Buy => new_quantity,
+            OrderSide::Sell => -new_quantity,
+        };
+
+        // Rebuild the order body based on order type
+        let order_type_str = match &current_order.order_type {
+            OrderType::Market => "MARKET",
+            OrderType::Limit { .. } => "LIMIT",
+            OrderType::StopMarket { .. } | OrderType::StopLimit { .. } => "STOP",
+            _ => "LIMIT",
+        };
+
+        let mut order_body = serde_json::Map::new();
+        order_body.insert("type".to_string(), json!(order_type_str));
+        order_body.insert("instrument".to_string(), json!(instrument));
+        order_body.insert("units".to_string(), json!(units.to_string()));
+        order_body.insert("timeInForce".to_string(), json!("GTC"));
+        order_body.insert("positionFill".to_string(), json!("DEFAULT"));
+
+        if new_price != 0.0 {
+            order_body.insert("price".to_string(), json!(new_price.to_string()));
+        }
+        if let Some(stop) = new_stop {
+            order_body.insert("priceBound".to_string(), json!(stop.to_string()));
+        }
+
+        let body = json!({ "order": serde_json::Value::Object(order_body) });
+
+        let endpoint = OandaEndpoint::AmendOrder {
+            account_id: account_id.to_string(),
+            order_id: req.order_id.clone(),
+        };
+
+        let response = self.put(endpoint, body).await?;
+        OandaParser::parse_order(&response, &instrument)
     }
 }

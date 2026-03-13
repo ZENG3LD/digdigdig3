@@ -386,6 +386,74 @@ impl AlpacaParser {
         array.iter().map(Self::parse_position).collect()
     }
 
+    /// Parse cancel-all response (HTTP 207 Multi-Status from DELETE /v2/orders)
+    ///
+    /// Alpaca returns an array of per-order objects, each with:
+    /// `{ "id": "...", "status": 200 }` on success or
+    /// `{ "id": "...", "status": 422, "body": { "code": ..., "message": "..." } }` on failure.
+    pub fn parse_cancel_all(response: &Value) -> ExchangeResult<CancelAllResponse> {
+        // Empty response = no open orders, all "cancelled" (count 0)
+        if response.is_null() {
+            return Ok(CancelAllResponse {
+                cancelled_count: 0,
+                failed_count: 0,
+                details: vec![],
+            });
+        }
+
+        let items = match response.as_array() {
+            Some(arr) => arr,
+            None => {
+                // Some Alpaca responses return empty body or a non-array on full success
+                return Ok(CancelAllResponse {
+                    cancelled_count: 0,
+                    failed_count: 0,
+                    details: vec![],
+                });
+            }
+        };
+
+        let mut cancelled_count = 0u32;
+        let mut failed_count = 0u32;
+        let mut details = Vec::new();
+
+        for item in items {
+            let status_code = item.get("status").and_then(|v| v.as_u64()).unwrap_or(0);
+            let order_id = item.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let success = status_code >= 200 && status_code < 300;
+
+            if success {
+                cancelled_count += 1;
+            } else {
+                failed_count += 1;
+            }
+
+            let error_msg = if !success {
+                item.get("body")
+                    .and_then(|b| b.get("message"))
+                    .and_then(|m| m.as_str())
+                    .map(|s| s.to_string())
+                    .or_else(|| Some(format!("HTTP {}", status_code)))
+            } else {
+                None
+            };
+
+            details.push(OrderResult {
+                order: None, // Individual order details not returned in 207 response
+                client_order_id: Some(order_id),
+                success,
+                error: error_msg,
+                error_code: if !success { Some(status_code as i32) } else { None },
+            });
+        }
+
+        Ok(CancelAllResponse {
+            cancelled_count,
+            failed_count,
+            details,
+        })
+    }
+
     // ═══════════════════════════════════════════════════════════════════════
     // HELPER METHODS
     // ═══════════════════════════════════════════════════════════════════════

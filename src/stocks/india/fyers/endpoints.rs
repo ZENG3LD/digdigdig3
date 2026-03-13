@@ -66,6 +66,7 @@ pub enum FyersEndpoint {
 
     // === TRADING ===
     PlaceOrder,
+    PlaceOrderMulti,
     ModifyOrder,
     CancelOrder,
     GetOrders,
@@ -106,6 +107,7 @@ impl FyersEndpoint {
 
             // Trading
             Self::PlaceOrder => "/api/v3/orders",
+            Self::PlaceOrderMulti => "/api/v3/orders/multi",
             Self::ModifyOrder => "/api/v3/orders",
             Self::CancelOrder => "/api/v3/orders",
             Self::GetOrders => "/api/v3/orders",
@@ -146,6 +148,7 @@ impl FyersEndpoint {
             | Self::ValidateAuthCode
             | Self::GenerateToken
             | Self::PlaceOrder
+            | Self::PlaceOrderMulti
             | Self::GenerateTpin
             | Self::SubmitHoldings
             | Self::InquireTransaction => "POST",

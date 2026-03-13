@@ -19,6 +19,7 @@ use crate::core::types::{
     ExchangeError, ExchangeResult,
     Kline, OrderBook, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide, TimeInForce,
+    OrderResult,
 };
 
 /// Парсер ответов Upstox API
@@ -310,6 +311,46 @@ impl UpstoxParser {
         orders.iter()
             .map(Self::parse_order)
             .collect()
+    }
+
+    /// Parse batch order placement/cancellation response
+    ///
+    /// Upstox returns an array of individual results:
+    /// `[{ "order_id": "...", "status": "success"|"error", "message": "..." }, ...]`
+    pub fn parse_batch_order_results(response: &Value) -> ExchangeResult<Vec<OrderResult>> {
+        // Batch response can be top-level array or wrapped in { "data": [...] }
+        let items = if let Some(data) = response.get("data").and_then(|d| d.as_array()) {
+            data
+        } else if let Some(arr) = response.as_array() {
+            arr
+        } else {
+            return Ok(vec![]);
+        };
+
+        let results = items.iter().map(|item| {
+            let success = Self::get_str(item, "status")
+                .map(|s| s == "success")
+                .unwrap_or(false);
+
+            let _order_id = Self::get_str(item, "order_id").map(String::from);
+            let error_msg = if !success {
+                Self::get_str(item, "message")
+                    .or_else(|| Self::get_str(item, "error"))
+                    .map(String::from)
+            } else {
+                None
+            };
+
+            OrderResult {
+                order: None, // Batch responses don't include full order objects
+                client_order_id: None,
+                success,
+                error: error_msg,
+                error_code: None,
+            }
+        }).collect();
+
+        Ok(results)
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

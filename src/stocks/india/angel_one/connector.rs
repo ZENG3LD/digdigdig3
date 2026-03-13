@@ -29,9 +29,10 @@ use crate::core::{
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
+    AmendRequest,
 };
 use crate::core::traits::{
-    ExchangeIdentity, MarketData, Trading, Account, Positions,
+    ExchangeIdentity, MarketData, Trading, Account, Positions, AmendOrder,
 };
 use crate::core::types::SymbolInfo;
 use crate::core::utils::SimpleRateLimiter;
@@ -581,100 +582,346 @@ impl Trading for AngelOneConnector {
         let symbol = req.symbol.clone();
         let side = req.side;
         let quantity = req.quantity;
-        let account_type = req.account_type;
+        let time_in_force = req.time_in_force;
+
+        let trading_symbol = format_symbol(&symbol);
+        let transaction_type = match side {
+            OrderSide::Buy => "BUY",
+            OrderSide::Sell => "SELL",
+        };
+        let duration = match time_in_force {
+            TimeInForce::Ioc => "IOC",
+            _ => "DAY",
+        };
 
         match req.order_type {
             OrderType::Market => {
                 let body = json!({
-                            "variety": "NORMAL",
-                            "tradingsymbol": format_symbol(&symbol),
-                            "symboltoken": format_symbol(&symbol), // Should be actual token
-                            "transactiontype": match side {
-                                OrderSide::Buy => "BUY",
-                                OrderSide::Sell => "SELL",
-                            },
-                            "exchange": "NSE",
-                            "ordertype": "MARKET",
-                            "producttype": "INTRADAY",
-                            "duration": "DAY",
-                            "quantity": quantity.to_string(),
-                        });
-                
-                        let response = self.post(AngelOneEndpoint::PlaceOrder, body).await?;
-                        let order_id = AngelOneParser::parse_order_id(&response)?;
-
-                        Ok(PlaceOrderResponse::Simple(Order {
-                            id: order_id,
-                            client_order_id: None,
-                            symbol: symbol.to_string(),
-                            side,
-                            order_type: OrderType::Market,
-                            status: OrderStatus::New,
-                            price: None,
-                            stop_price: None,
-                            quantity,
-                            filled_quantity: 0.0,
-                            average_price: None,
-                            commission: None,
-                            commission_asset: None,
-                            created_at: timestamp_millis() as i64,
-                            updated_at: None,
-                            time_in_force: TimeInForce::Gtc,
-                        }))
+                    "variety": "NORMAL",
+                    "tradingsymbol": trading_symbol,
+                    "symboltoken": trading_symbol,
+                    "transactiontype": transaction_type,
+                    "exchange": "NSE",
+                    "ordertype": "MARKET",
+                    "producttype": "INTRADAY",
+                    "duration": duration,
+                    "quantity": quantity.to_string(),
+                });
+                let response = self.post(AngelOneEndpoint::PlaceOrder, body).await?;
+                let order_id = AngelOneParser::parse_order_id(&response)?;
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: req.client_order_id,
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::Market,
+                    status: OrderStatus::New,
+                    price: None,
+                    stop_price: None,
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: TimeInForce::Gtc,
+                }))
             }
+
             OrderType::Limit { price } => {
                 let body = json!({
-                            "variety": "NORMAL",
-                            "tradingsymbol": format_symbol(&symbol),
-                            "symboltoken": format_symbol(&symbol),
-                            "transactiontype": match side {
-                                OrderSide::Buy => "BUY",
-                                OrderSide::Sell => "SELL",
-                            },
-                            "exchange": "NSE",
-                            "ordertype": "LIMIT",
-                            "producttype": "INTRADAY",
-                            "duration": "DAY",
-                            "price": price.to_string(),
-                            "quantity": quantity.to_string(),
-                        });
-                
-                        let response = self.post(AngelOneEndpoint::PlaceOrder, body).await?;
-                        let order_id = AngelOneParser::parse_order_id(&response)?;
-
-                        Ok(PlaceOrderResponse::Simple(Order {
-                            id: order_id,
-                            client_order_id: None,
-                            symbol: symbol.to_string(),
-                            side,
-                            order_type: OrderType::Limit { price: 0.0 },
-                            status: OrderStatus::New,
-                            price: Some(price),
-                            stop_price: None,
-                            quantity,
-                            filled_quantity: 0.0,
-                            average_price: None,
-                            commission: None,
-                            commission_asset: None,
-                            created_at: timestamp_millis() as i64,
-                            updated_at: None,
-                            time_in_force: TimeInForce::Gtc,
-                        }))
+                    "variety": "NORMAL",
+                    "tradingsymbol": trading_symbol,
+                    "symboltoken": trading_symbol,
+                    "transactiontype": transaction_type,
+                    "exchange": "NSE",
+                    "ordertype": "LIMIT",
+                    "producttype": "INTRADAY",
+                    "duration": duration,
+                    "price": price.to_string(),
+                    "quantity": quantity.to_string(),
+                });
+                let response = self.post(AngelOneEndpoint::PlaceOrder, body).await?;
+                let order_id = AngelOneParser::parse_order_id(&response)?;
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: req.client_order_id,
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::Limit { price },
+                    status: OrderStatus::New,
+                    price: Some(price),
+                    stop_price: None,
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force,
+                }))
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+
+            OrderType::Ioc { price } => {
+                // IOC: duration=IOC, order_type=MARKET or LIMIT
+                let (ordertype, price_str) = if let Some(p) = price {
+                    ("LIMIT", p.to_string())
+                } else {
+                    ("MARKET", "0".to_string())
+                };
+                let mut body = json!({
+                    "variety": "NORMAL",
+                    "tradingsymbol": trading_symbol,
+                    "symboltoken": trading_symbol,
+                    "transactiontype": transaction_type,
+                    "exchange": "NSE",
+                    "ordertype": ordertype,
+                    "producttype": "INTRADAY",
+                    "duration": "IOC",
+                    "quantity": quantity.to_string(),
+                });
+                if ordertype == "LIMIT" {
+                    body["price"] = json!(price_str);
+                }
+                let response = self.post(AngelOneEndpoint::PlaceOrder, body).await?;
+                let order_id = AngelOneParser::parse_order_id(&response)?;
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: req.client_order_id,
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: req.order_type,
+                    status: OrderStatus::New,
+                    price,
+                    stop_price: None,
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: TimeInForce::Ioc,
+                }))
+            }
+
+            OrderType::StopMarket { stop_price } => {
+                // STOPLOSS_MARKET: variety=STOPLOSS, ordertype=STOPLOSS_MARKET, triggerprice
+                let body = json!({
+                    "variety": "STOPLOSS",
+                    "tradingsymbol": trading_symbol,
+                    "symboltoken": trading_symbol,
+                    "transactiontype": transaction_type,
+                    "exchange": "NSE",
+                    "ordertype": "STOPLOSS_MARKET",
+                    "producttype": "INTRADAY",
+                    "duration": duration,
+                    "triggerprice": stop_price.to_string(),
+                    "quantity": quantity.to_string(),
+                });
+                let response = self.post(AngelOneEndpoint::PlaceOrder, body).await?;
+                let order_id = AngelOneParser::parse_order_id(&response)?;
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: req.client_order_id,
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::StopMarket { stop_price },
+                    status: OrderStatus::New,
+                    price: None,
+                    stop_price: Some(stop_price),
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force,
+                }))
+            }
+
+            OrderType::StopLimit { stop_price, limit_price } => {
+                // STOPLOSS_LIMIT: variety=STOPLOSS, ordertype=STOPLOSS_LIMIT, price + triggerprice
+                let body = json!({
+                    "variety": "STOPLOSS",
+                    "tradingsymbol": trading_symbol,
+                    "symboltoken": trading_symbol,
+                    "transactiontype": transaction_type,
+                    "exchange": "NSE",
+                    "ordertype": "STOPLOSS_LIMIT",
+                    "producttype": "INTRADAY",
+                    "duration": duration,
+                    "price": limit_price.to_string(),
+                    "triggerprice": stop_price.to_string(),
+                    "quantity": quantity.to_string(),
+                });
+                let response = self.post(AngelOneEndpoint::PlaceOrder, body).await?;
+                let order_id = AngelOneParser::parse_order_id(&response)?;
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: req.client_order_id,
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::StopLimit { stop_price, limit_price },
+                    status: OrderStatus::New,
+                    price: Some(limit_price),
+                    stop_price: Some(stop_price),
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force,
+                }))
+            }
+
+            OrderType::Bracket { price, take_profit, stop_loss } => {
+                // ROBO order (Robot Order = bracket with target + stoploss)
+                // variety=ROBO, squareoff=take_profit offset, stoploss=stop_loss offset
+                let entry_price = price.ok_or_else(|| {
+                    ExchangeError::InvalidRequest(
+                        "Bracket (ROBO) orders on Angel One require an entry price".to_string(),
+                    )
+                })?;
+
+                // Angel One ROBO uses absolute offset values from entry price
+                let squareoff = (take_profit - entry_price).abs();
+                let stoploss_offset = (entry_price - stop_loss).abs();
+
+                let body = json!({
+                    "variety": "ROBO",
+                    "tradingsymbol": trading_symbol,
+                    "symboltoken": trading_symbol,
+                    "transactiontype": transaction_type,
+                    "exchange": "NSE",
+                    "ordertype": "LIMIT",
+                    "producttype": "INTRADAY",
+                    "duration": "DAY",
+                    "price": entry_price.to_string(),
+                    "squareoff": squareoff.to_string(),
+                    "stoploss": stoploss_offset.to_string(),
+                    "quantity": quantity.to_string(),
+                });
+                let response = self.post(AngelOneEndpoint::PlaceOrder, body).await?;
+                let order_id = AngelOneParser::parse_order_id(&response)?;
+                Ok(PlaceOrderResponse::Simple(Order {
+                    id: order_id,
+                    client_order_id: req.client_order_id,
+                    symbol: symbol.to_string(),
+                    side,
+                    order_type: OrderType::Bracket { price, take_profit, stop_loss },
+                    status: OrderStatus::New,
+                    price: Some(entry_price),
+                    stop_price: Some(stop_loss),
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: TimeInForce::Gtc,
+                }))
+            }
+
+            other => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} order type not supported on Angel One SmartAPI", other)
             )),
         }
     }
 
     async fn get_order_history(
         &self,
-        _filter: OrderHistoryFilter,
+        filter: OrderHistoryFilter,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_order_history not yet implemented".to_string()
-        ))
+        // Angel One returns all today's orders via GET /getOrderBook
+        let order_book = self.get_order_book().await?;
+
+        let orders: Vec<Order> = order_book
+            .iter()
+            .filter_map(|order| {
+                let status_str = order.get("orderstatus")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("");
+
+                // Keep only non-open (history) orders
+                let is_open = status_str == "OPEN" || status_str == "PENDING";
+                if is_open {
+                    return None;
+                }
+
+                let order_id = order.get("orderid")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let symbol_str = order.get("tradingsymbol")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                // Apply symbol filter
+                if let Some(sym) = &filter.symbol {
+                    if !symbol_str.contains(&sym.base) {
+                        return None;
+                    }
+                }
+
+                let status = match status_str.to_uppercase().as_str() {
+                    "COMPLETE" | "EXECUTED" => OrderStatus::Filled,
+                    "CANCELLED" => OrderStatus::Canceled,
+                    "REJECTED" => OrderStatus::Rejected,
+                    _ => OrderStatus::Expired,
+                };
+
+                // Apply status filter
+                if let Some(expected) = &filter.status {
+                    if &status != expected {
+                        return None;
+                    }
+                }
+
+                let side = match order.get("transactiontype").and_then(|s| s.as_str()) {
+                    Some("BUY") => OrderSide::Buy,
+                    Some("SELL") => OrderSide::Sell,
+                    _ => OrderSide::Buy,
+                };
+                let order_type = match order.get("ordertype").and_then(|s| s.as_str()) {
+                    Some("MARKET") => OrderType::Market,
+                    Some("LIMIT") => OrderType::Limit { price: 0.0 },
+                    Some("STOPLOSS_LIMIT") => OrderType::StopLimit { stop_price: 0.0, limit_price: 0.0 },
+                    Some("STOPLOSS_MARKET") => OrderType::StopMarket { stop_price: 0.0 },
+                    _ => OrderType::Market,
+                };
+
+                Some(Order {
+                    id: order_id,
+                    client_order_id: None,
+                    symbol: symbol_str,
+                    side,
+                    order_type,
+                    status,
+                    price: order.get("price").and_then(|p| p.as_f64()),
+                    stop_price: order.get("triggerprice").and_then(|p| p.as_f64()),
+                    quantity: order.get("quantity").and_then(|q| q.as_f64()).unwrap_or(0.0),
+                    filled_quantity: order.get("filledshares").and_then(|f| f.as_f64()).unwrap_or(0.0),
+                    average_price: order.get("averageprice").and_then(|a| a.as_f64()),
+                    commission: None,
+                    commission_asset: None,
+                    created_at: timestamp_millis() as i64,
+                    updated_at: None,
+                    time_in_force: TimeInForce::Gtc,
+                })
+            })
+            .take(filter.limit.unwrap_or(500) as usize)
+            .collect();
+
+        Ok(orders)
     }
 async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         match req.scope {
@@ -834,6 +1081,70 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
 
         Ok(orders)
     
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AMEND ORDER (Angel One supports POST /modifyOrder)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AmendOrder for AngelOneConnector {
+    /// Modify a live order via POST /rest/secure/angelbroking/order/v1/modifyOrder.
+    async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
+        if req.fields.price.is_none()
+            && req.fields.quantity.is_none()
+            && req.fields.trigger_price.is_none()
+        {
+            return Err(ExchangeError::InvalidRequest(
+                "At least one of price, quantity, or trigger_price must be provided".to_string(),
+            ));
+        }
+
+        let mut body = json!({
+            "orderid": req.order_id,
+            "variety": "NORMAL",
+        });
+
+        if let Some(price) = req.fields.price {
+            body["price"] = json!(price.to_string());
+        }
+        if let Some(qty) = req.fields.quantity {
+            body["quantity"] = json!(qty.to_string());
+        }
+        if let Some(trigger) = req.fields.trigger_price {
+            body["triggerprice"] = json!(trigger.to_string());
+        }
+
+        let response = self.post(AngelOneEndpoint::ModifyOrder, body).await?;
+        self.check_response(&response)?;
+
+        // Fetch updated order details to return a complete Order
+        let mut params = HashMap::new();
+        params.insert("orderid".to_string(), req.order_id.clone());
+        let details_response = self
+            .get(AngelOneEndpoint::GetOrderDetails, params)
+            .await?;
+        let details = AngelOneParser::parse_order_details(&details_response)?;
+
+        Ok(Order {
+            id: details.order_id,
+            client_order_id: None,
+            symbol: details.symbol,
+            side: details.side,
+            order_type: details.order_type,
+            status: details.status,
+            price: details.price,
+            stop_price: None,
+            quantity: details.quantity,
+            filled_quantity: details.filled_quantity.unwrap_or(0.0),
+            average_price: details.average_price,
+            commission: None,
+            commission_asset: None,
+            created_at: timestamp_millis() as i64,
+            updated_at: Some(timestamp_millis() as i64),
+            time_in_force: TimeInForce::Gtc,
+        })
     }
 }
 

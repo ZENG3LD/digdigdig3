@@ -26,14 +26,15 @@ use crate::core::{
     ExchangeId, AccountType, Symbol,
     ExchangeError, ExchangeResult,
     Price, Quantity, Kline, Ticker, OrderBook,
-    Order, OrderSide, OrderType,OrderStatus, Balance, AccountInfo,
+    Order, OrderSide, OrderType, OrderStatus, Balance, AccountInfo,
     Position, FundingRate,
     OrderRequest, CancelRequest, CancelScope,
+    AmendRequest, OrderResult,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };
 use crate::core::traits::{
-    ExchangeIdentity, MarketData, Trading, Account, Positions,
+    ExchangeIdentity, MarketData, Trading, Account, Positions, AmendOrder,
 };
 use crate::core::types::SymbolInfo;
 use crate::core::utils::SimpleRateLimiter;
@@ -203,7 +204,7 @@ impl DhanConnector {
     }
 
     /// PUT request
-    async fn _put(&self, endpoint: DhanEndpoint, path_params: &[(&str, &str)], body: Value) -> ExchangeResult<Value> {
+    async fn put(&self, endpoint: DhanEndpoint, path_params: &[(&str, &str)], body: Value) -> ExchangeResult<Value> {
         self.rate_limit_wait(endpoint).await;
 
         let base_url = self.urls.rest_url();
@@ -440,64 +441,152 @@ impl Trading for DhanConnector {
         let quantity = req.quantity;
         let account_type = req.account_type;
 
+        let transaction_type = match side {
+            OrderSide::Buy => "BUY",
+            OrderSide::Sell => "SELL",
+        };
+
+        let security_id = self.get_security_id(&symbol);
+        let segment = self.get_exchange_segment(account_type);
+        let product_type = map_product_type(account_type);
+        let client_id = {
+            let auth = self.auth.lock().await;
+            auth.client_id().to_string()
+        };
+
+        // Determine validity from time_in_force
+        let validity = match req.time_in_force {
+            crate::core::TimeInForce::Ioc => "IOC",
+            _ => "DAY",
+        };
+
         match req.order_type {
             OrderType::Market => {
-                let security_id = self.get_security_id(&symbol);
-                        let segment = self.get_exchange_segment(account_type);
-                        let client_id = {
-                            let auth = self.auth.lock().await;
-                            auth.client_id().to_string()
-                        };
-                
-                        let body = json!({
-                            "dhanClientId": client_id,
-                            "transactionType": match side {
-                                OrderSide::Buy => "BUY",
-                                OrderSide::Sell => "SELL",
-                            },
-                            "exchangeSegment": segment.as_str(),
-                            "productType": map_product_type(account_type),
-                            "orderType": "MARKET",
-                            "validity": "DAY",
-                            "securityId": security_id,
-                            "quantity": quantity as i64,
-                            "disclosedQuantity": 0,
-                            "afterMarketOrder": false,
-                        });
-                
-                        let response = self.post(DhanEndpoint::PlaceOrder, body).await?;
-                        DhanParser::parse_order_placement(&response).map(PlaceOrderResponse::Simple)
+                let body = json!({
+                    "dhanClientId": client_id,
+                    "transactionType": transaction_type,
+                    "exchangeSegment": segment.as_str(),
+                    "productType": product_type,
+                    "orderType": "MARKET",
+                    "validity": validity,
+                    "securityId": security_id,
+                    "quantity": quantity as i64,
+                    "price": 0,
+                    "disclosedQuantity": 0,
+                    "afterMarketOrder": false,
+                });
+                let response = self.post(DhanEndpoint::PlaceOrder, body).await?;
+                DhanParser::parse_order_placement(&response).map(PlaceOrderResponse::Simple)
             }
+
             OrderType::Limit { price } => {
-                let security_id = self.get_security_id(&symbol);
-                        let segment = self.get_exchange_segment(account_type);
-                        let client_id = {
-                            let auth = self.auth.lock().await;
-                            auth.client_id().to_string()
-                        };
-                
-                        let body = json!({
-                            "dhanClientId": client_id,
-                            "transactionType": match side {
-                                OrderSide::Buy => "BUY",
-                                OrderSide::Sell => "SELL",
-                            },
-                            "exchangeSegment": segment.as_str(),
-                            "productType": map_product_type(account_type),
-                            "orderType": "LIMIT",
-                            "validity": "DAY",
-                            "securityId": security_id,
-                            "quantity": quantity as i64,
-                            "price": price,
-                            "disclosedQuantity": 0,
-                            "afterMarketOrder": false,
-                        });
-                
-                        let response = self.post(DhanEndpoint::PlaceOrder, body).await?;
-                        DhanParser::parse_order_placement(&response).map(PlaceOrderResponse::Simple)
+                let body = json!({
+                    "dhanClientId": client_id,
+                    "transactionType": transaction_type,
+                    "exchangeSegment": segment.as_str(),
+                    "productType": product_type,
+                    "orderType": "LIMIT",
+                    "validity": validity,
+                    "securityId": security_id,
+                    "quantity": quantity as i64,
+                    "price": price,
+                    "disclosedQuantity": 0,
+                    "afterMarketOrder": false,
+                });
+                let response = self.post(DhanEndpoint::PlaceOrder, body).await?;
+                DhanParser::parse_order_placement(&response).map(PlaceOrderResponse::Simple)
             }
+
+            OrderType::StopMarket { stop_price } => {
+                // Dhan STOP_LOSS_MARKET: triggerPrice required, price = 0
+                let body = json!({
+                    "dhanClientId": client_id,
+                    "transactionType": transaction_type,
+                    "exchangeSegment": segment.as_str(),
+                    "productType": product_type,
+                    "orderType": "STOP_LOSS_MARKET",
+                    "validity": validity,
+                    "securityId": security_id,
+                    "quantity": quantity as i64,
+                    "price": 0,
+                    "triggerPrice": stop_price,
+                    "disclosedQuantity": 0,
+                    "afterMarketOrder": false,
+                });
+                let response = self.post(DhanEndpoint::PlaceOrder, body).await?;
+                DhanParser::parse_order_placement(&response).map(PlaceOrderResponse::Simple)
+            }
+
+            OrderType::StopLimit { stop_price, limit_price } => {
+                // Dhan STOP_LOSS: both price and triggerPrice required
+                let body = json!({
+                    "dhanClientId": client_id,
+                    "transactionType": transaction_type,
+                    "exchangeSegment": segment.as_str(),
+                    "productType": product_type,
+                    "orderType": "STOP_LOSS",
+                    "validity": validity,
+                    "securityId": security_id,
+                    "quantity": quantity as i64,
+                    "price": limit_price,
+                    "triggerPrice": stop_price,
+                    "disclosedQuantity": 0,
+                    "afterMarketOrder": false,
+                });
+                let response = self.post(DhanEndpoint::PlaceOrder, body).await?;
+                DhanParser::parse_order_placement(&response).map(PlaceOrderResponse::Simple)
+            }
+
+            OrderType::Bracket { price, take_profit, stop_loss } => {
+                // Dhan Super Order (Bracket) — POST /v2/orders/super
+                // Native bracket: legName, price, targetPrice, stopLossPrice, trailingJump
+                let entry_price = price.unwrap_or(0.0);
+                let order_type_str = if entry_price > 0.0 { "LIMIT" } else { "MARKET" };
+
+                let body = json!({
+                    "dhanClientId": client_id,
+                    "transactionType": transaction_type,
+                    "exchangeSegment": segment.as_str(),
+                    "productType": "BO",
+                    "orderType": order_type_str,
+                    "validity": "DAY",
+                    "securityId": security_id,
+                    "quantity": quantity as i64,
+                    "price": entry_price,
+                    "disclosedQuantity": 0,
+                    "afterMarketOrder": false,
+                    "boProfitValue": take_profit,
+                    "boStopLossValue": stop_loss,
+                });
+                let response = self.post(DhanEndpoint::PlaceSuperOrder, body).await?;
+                DhanParser::parse_order_placement(&response).map(PlaceOrderResponse::Simple)
+            }
+
+            OrderType::Ioc { price } => {
+                // IOC: validity = IOC, LIMIT if price given, MARKET otherwise
+                let (order_type_str, price_val) = match price {
+                    Some(p) => ("LIMIT", p),
+                    None => ("MARKET", 0.0),
+                };
+                let body = json!({
+                    "dhanClientId": client_id,
+                    "transactionType": transaction_type,
+                    "exchangeSegment": segment.as_str(),
+                    "productType": product_type,
+                    "orderType": order_type_str,
+                    "validity": "IOC",
+                    "securityId": security_id,
+                    "quantity": quantity as i64,
+                    "price": price_val,
+                    "disclosedQuantity": 0,
+                    "afterMarketOrder": false,
+                });
+                let response = self.post(DhanEndpoint::PlaceOrder, body).await?;
+                DhanParser::parse_order_placement(&response).map(PlaceOrderResponse::Simple)
+            }
+
             _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+                format!("{:?} order type not supported on Dhan", req.order_type)
             )),
         }
     }
@@ -507,9 +596,18 @@ impl Trading for DhanConnector {
         _filter: OrderHistoryFilter,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_order_history not yet implemented".to_string()
-        ))
+        // Dhan /v2/orders returns all orders (open + closed)
+        let response = self.get(DhanEndpoint::GetOrderBook, HashMap::new()).await?;
+        let all_orders = DhanParser::parse_orders(&response)?;
+
+        // Filter for closed/filled/cancelled orders (history)
+        Ok(all_orders
+            .into_iter()
+            .filter(|o| matches!(
+                o.status,
+                OrderStatus::Filled | OrderStatus::Canceled | OrderStatus::Rejected | OrderStatus::Expired
+            ))
+            .collect())
     }
 async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         match req.scope {
@@ -592,18 +690,21 @@ impl Account for DhanConnector {
     async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         let _asset = query.asset;
         let _account_type = query.account_type;
-        let response = self.get(DhanEndpoint::GetHoldings, HashMap::new()).await?;
-        DhanParser::parse_holdings(&response)
+        // /v2/fundlimit returns available cash/margin balance
+        let response = self.get(DhanEndpoint::GetFunds, HashMap::new()).await?;
+        DhanParser::parse_balance(&response)
     }
 
     async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {
+        // Dhan has no profile endpoint; return info derived from fund limit
         let response = self.get(DhanEndpoint::GetFunds, HashMap::new()).await?;
         DhanParser::parse_funds(&response)
     }
 
     async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        // Dhan does not expose a fee schedule API
         Err(ExchangeError::UnsupportedOperation(
-            "get_fees not yet implemented".to_string()
+            "Fee schedule endpoint not available on Dhan".to_string()
         ))
     }
 }
@@ -657,6 +758,67 @@ impl Positions for DhanConnector {
                 format!("{:?} not supported on {:?}", req, self.exchange_id())
             )),
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AMEND ORDER (optional trait — Dhan supports PUT /v2/orders/{orderId})
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AmendOrder for DhanConnector {
+    async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
+        let order_id = req.order_id.clone();
+
+        // At least one field must be Some
+        if req.fields.price.is_none()
+            && req.fields.quantity.is_none()
+            && req.fields.trigger_price.is_none()
+        {
+            return Err(ExchangeError::InvalidRequest(
+                "At least one field (price, quantity, trigger_price) must be provided".to_string(),
+            ));
+        }
+
+        // Fetch current order to fill in unchanged fields (Dhan PUT requires all fields)
+        let current = self.get_order("", &order_id, req.account_type).await?;
+
+        let new_price = req.fields.price.or(current.price).unwrap_or(0.0);
+        let new_quantity = req.fields.quantity.unwrap_or(current.quantity);
+        let new_trigger = req.fields.trigger_price.or(current.stop_price).unwrap_or(0.0);
+
+        // Determine orderType string from current order
+        let order_type_str = match &current.order_type {
+            OrderType::Market => "MARKET",
+            OrderType::Limit { .. } => "LIMIT",
+            OrderType::StopMarket { .. } => "STOP_LOSS_MARKET",
+            OrderType::StopLimit { .. } => "STOP_LOSS",
+            _ => "LIMIT",
+        };
+
+        let validity = match current.time_in_force {
+            crate::core::TimeInForce::Ioc => "IOC",
+            _ => "DAY",
+        };
+
+        let client_id = {
+            let auth = self.auth.lock().await;
+            auth.client_id().to_string()
+        };
+
+        let body = json!({
+            "dhanClientId": client_id,
+            "orderId": order_id,
+            "orderType": order_type_str,
+            "validity": validity,
+            "quantity": new_quantity as i64,
+            "price": new_price,
+            "disclosedQuantity": 0,
+            "triggerPrice": new_trigger,
+        });
+
+        let response = self.put(DhanEndpoint::ModifyOrder, &[("orderId", &order_id)], body).await?;
+        DhanParser::parse_order_placement(&response)
     }
 }
 

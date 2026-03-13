@@ -197,9 +197,38 @@ impl OkxConnector {
         params.insert("instType".to_string(), get_inst_type(account_type).to_string());
 
         let response = self.get(OkxEndpoint::AllTickers, params).await?;
-        // TODO: implement parse_all_tickers in parser
-        let _ = response;
-        Ok(vec![])
+
+        let arr = response.get("data")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'data' array in all-tickers response".to_string()))?;
+
+        let tickers = arr.iter().map(|data| {
+            let get_f64 = |key: &str| -> Option<f64> {
+                data.get(key)
+                    .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64()))
+            };
+
+            let last_price = get_f64("last").unwrap_or(0.0);
+            let ts = data.get("ts")
+                .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_i64()))
+                .unwrap_or(0);
+
+            Ticker {
+                symbol: data.get("instId").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                last_price,
+                bid_price: get_f64("bidPx"),
+                ask_price: get_f64("askPx"),
+                high_24h: get_f64("high24h"),
+                low_24h: get_f64("low24h"),
+                volume_24h: get_f64("vol24h"),
+                quote_volume_24h: get_f64("volCcy24h"),
+                price_change_24h: None,
+                price_change_percent_24h: None,
+                timestamp: ts,
+            }
+        }).collect();
+
+        Ok(tickers)
     }
 
     /// Получить информацию о инструментах/символах

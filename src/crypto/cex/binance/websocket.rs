@@ -532,8 +532,16 @@ impl BinanceWebSocket {
             }
             // Futures: account update (balance + position)
             "ACCOUNT_UPDATE" => {
-                // TODO: Parse balance and position updates
-                Ok(None)
+                // ACCOUNT_UPDATE format:
+                // {"e":"ACCOUNT_UPDATE","T":1234567890,"a":{"B":[{"a":"USDT","wb":"100.00","cw":"95.00"}],
+                //   "P":[{"s":"BTCUSDT","pa":"0.1","ep":"67000","up":"100"}],"m":"ORDER"}}
+                // Emit first balance from B[] array as BalanceUpdate
+                if let Some(event) = Self::parse_futures_account_update(data)
+                    .map_err(|e| WebSocketError::Parse(e.to_string()))? {
+                    Ok(Some(StreamEvent::BalanceUpdate(event)))
+                } else {
+                    Ok(None)
+                }
             }
             // Futures: order update
             "ORDER_TRADE_UPDATE" => {
@@ -825,6 +833,71 @@ impl BinanceWebSocket {
             reason: None, // Binance doesn't provide reason in this event
             timestamp: data.get("E").and_then(|e| e.as_i64()).unwrap_or(0),
         })
+    }
+
+    fn parse_futures_account_update(data: &Value) -> ExchangeResult<Option<crate::core::BalanceUpdateEvent>> {
+        use crate::core::{BalanceUpdateEvent, BalanceChangeReason};
+
+        // ACCOUNT_UPDATE nests payload under "a"
+        let account = match data.get("a") {
+            Some(a) => a,
+            None => return Ok(None),
+        };
+
+        let balances = match account.get("B").and_then(|b| b.as_array()) {
+            Some(b) => b,
+            None => return Ok(None),
+        };
+
+        // Map Binance event reason string to BalanceChangeReason
+        let reason: Option<BalanceChangeReason> = account
+            .get("m")
+            .and_then(|m| m.as_str())
+            .map(|m| match m {
+                "DEPOSIT" => BalanceChangeReason::Deposit,
+                "WITHDRAW" => BalanceChangeReason::Withdraw,
+                "ORDER" | "TRADE" => BalanceChangeReason::Trade,
+                "FUNDING_FEE" => BalanceChangeReason::Funding,
+                "REALIZED_PNL" => BalanceChangeReason::RealizedPnl,
+                "TRANSFER" => BalanceChangeReason::Transfer,
+                "COMMISSION" => BalanceChangeReason::Commission,
+                _ => BalanceChangeReason::Other,
+            });
+
+        let timestamp = data.get("T").and_then(|t| t.as_i64()).unwrap_or(0);
+
+        // Return first balance entry that has a non-empty asset
+        for balance in balances {
+            let asset = balance.get("a").and_then(|a| a.as_str()).unwrap_or("");
+            if asset.is_empty() {
+                continue;
+            }
+
+            let parse_f64 = |key: &str| -> f64 {
+                balance
+                    .get(key)
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse().ok())
+                    .or_else(|| balance.get(key).and_then(|v| v.as_f64()))
+                    .unwrap_or(0.0)
+            };
+
+            // wb = wallet balance, cw = cross wallet balance
+            let total = parse_f64("wb");
+            let cross_wallet = parse_f64("cw");
+
+            return Ok(Some(BalanceUpdateEvent {
+                asset: asset.to_string(),
+                free: cross_wallet,
+                locked: (total - cross_wallet).max(0.0),
+                total,
+                delta: None,
+                reason,
+                timestamp,
+            }));
+        }
+
+        Ok(None)
     }
 
     fn parse_futures_order_update(data: &Value) -> ExchangeResult<crate::core::OrderUpdateEvent> {

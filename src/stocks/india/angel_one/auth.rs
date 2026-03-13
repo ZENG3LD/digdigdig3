@@ -16,6 +16,7 @@
 //! - No HMAC signature required (token-based only)
 
 use std::collections::HashMap;
+use std::net::UdpSocket;
 use totp_rs::{Algorithm, TOTP};
 use crate::core::{ExchangeResult, ExchangeError};
 
@@ -121,11 +122,23 @@ impl AngelOneAuth {
         headers.insert("X-PrivateKey".to_string(), self.api_key.clone());
         headers.insert("Content-Type".to_string(), "application/json".to_string());
 
-        // Required IP/MAC headers - using placeholder values
-        // In production, these should be actual client IP and MAC address
-        headers.insert("X-ClientLocalIP".to_string(), "192.168.1.1".to_string());
-        headers.insert("X-ClientPublicIP".to_string(), "0.0.0.0".to_string());
-        headers.insert("X-MACAddress".to_string(), "00:00:00:00:00:00".to_string());
+        // Detect local IP via routing trick: connect UDP socket to external address,
+        // then read back the local address chosen by the OS. No packets are sent.
+        let local_ip = UdpSocket::bind("0.0.0.0:0")
+            .and_then(|sock| {
+                sock.connect("8.8.8.8:80")?;
+                sock.local_addr()
+            })
+            .map(|addr| addr.ip().to_string())
+            .unwrap_or_else(|_| "127.0.0.1".to_string());
+
+        // Use locally administered MAC address as safe default.
+        // 02:00:00:00:00:00 is the standard locally-administered unicast placeholder.
+        let mac_address = "02:00:00:00:00:00".to_string();
+
+        headers.insert("X-ClientLocalIP".to_string(), local_ip.clone());
+        headers.insert("X-ClientPublicIP".to_string(), local_ip);
+        headers.insert("X-MACAddress".to_string(), mac_address);
 
         Ok(headers)
     }

@@ -190,19 +190,39 @@ impl MarketData for JQuantsConnector {
         _interval: &str, // JQuants only has daily data on free tier
         limit: Option<u16>,
         _account_type: AccountType,
-        _end_time: Option<i64>,
+        end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
+        use chrono::{DateTime, Duration, NaiveDate, Utc};
+
         let code = format_symbol(&symbol);
         let mut params = HashMap::new();
         params.insert("code".to_string(), code);
 
-        // TODO: Add date range support based on limit
-        // For now, fetch all available data
+        // Determine the end date: use end_time if provided, otherwise today
+        let end_date: NaiveDate = if let Some(end_ms) = end_time {
+            let dt = DateTime::from_timestamp_millis(end_ms)
+                .ok_or_else(|| ExchangeError::InvalidRequest(
+                    "Invalid end_time timestamp".to_string()
+                ))?;
+            dt.date_naive()
+        } else {
+            Utc::now().date_naive()
+        };
+
+        // Determine the start date: go back `limit` calendar days from end_date
+        // JQuants returns trading days only, so fetching extra days is safe.
+        let days_back = limit.unwrap_or(100) as i64;
+        let start_date = end_date - Duration::days(days_back - 1);
+
+        // JQuants expects YYYYMMDD format
+        let fmt = |d: NaiveDate| d.format("%Y%m%d").to_string();
+        params.insert("from".to_string(), fmt(start_date));
+        params.insert("to".to_string(), fmt(end_date));
 
         let response = self.get(JQuantsEndpoint::DailyQuotes, params).await?;
         let mut klines = JQuantsParser::parse_daily_quotes(&response)?;
 
-        // Apply limit if specified
+        // Apply limit if specified (in case API returned more than requested)
         if let Some(lim) = limit {
             let len = klines.len();
             if len > lim as usize {

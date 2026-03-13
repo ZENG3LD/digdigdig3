@@ -117,20 +117,54 @@ impl DhanWebSocket {
 
     /// Parse binary quote packet (180 bytes, Little Endian)
     ///
-    /// Contains full 5-level market depth
+    /// # Packet Structure (Little Endian)
+    /// - Bytes  0-1:  packet type (u16)
+    /// - Bytes  2-3:  exchange segment (u16)
+    /// - Bytes  4-7:  security id (u32)
+    /// - Bytes  8-15: LTP — Last Traded Price (f64)
+    /// - Bytes 16-23: high (f64)
+    /// - Bytes 24-31: low (f64)
+    /// - Bytes 32-39: open (f64)
+    /// - Bytes 40-47: close / previous close (f64)
+    /// - Bytes 48-55: volume (f64)
     pub fn parse_quote_packet(&self, data: &[u8]) -> ExchangeResult<HashMap<String, f64>> {
-        if data.len() < 180 {
+        if data.len() < 56 {
             return Err(ExchangeError::Parse(format!(
-                "Invalid quote packet size: {} (expected 180)",
+                "Invalid quote packet size: {} (expected at least 56)",
                 data.len()
             )));
         }
 
-        // TODO: Implement full quote packet parsing
-        // See research/websocket_full.md for complete structure
+        use byteorder::{LittleEndian, ByteOrder};
 
         let mut result = HashMap::new();
-        result.insert("packet_size".to_string(), data.len() as f64);
+
+        let packet_type = LittleEndian::read_u16(&data[0..2]);
+        result.insert("packet_type".to_string(), packet_type as f64);
+
+        let exchange_segment = LittleEndian::read_u16(&data[2..4]);
+        result.insert("exchange_segment".to_string(), exchange_segment as f64);
+
+        let security_id = LittleEndian::read_u32(&data[4..8]);
+        result.insert("security_id".to_string(), security_id as f64);
+
+        let ltp = LittleEndian::read_f64(&data[8..16]);
+        result.insert("ltp".to_string(), ltp);
+
+        let high = LittleEndian::read_f64(&data[16..24]);
+        result.insert("high".to_string(), high);
+
+        let low = LittleEndian::read_f64(&data[24..32]);
+        result.insert("low".to_string(), low);
+
+        let open = LittleEndian::read_f64(&data[32..40]);
+        result.insert("open".to_string(), open);
+
+        let close = LittleEndian::read_f64(&data[40..48]);
+        result.insert("close".to_string(), close);
+
+        let volume = LittleEndian::read_f64(&data[48..56]);
+        result.insert("volume".to_string(), volume);
 
         Ok(result)
     }

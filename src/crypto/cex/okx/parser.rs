@@ -537,25 +537,137 @@ impl OkxParser {
     }
 
     /// Парсить WebSocket order update
+    ///
+    /// OKX WS orders channel data item:
+    /// `{"instId":"BTC-USDT","ordId":"123","clOrdId":"","px":"67000","sz":"0.1",
+    ///   "side":"buy","ordType":"limit","state":"filled","accFillSz":"0.1",
+    ///   "avgPx":"67000","fillPx":"67000","fillSz":"0.1","fillFee":"-0.1",
+    ///   "fillFeeCcy":"USDT","tradeId":"456","cTime":"1234","uTime":"1234"}`
     pub fn parse_ws_order_update(data: &Value) -> ExchangeResult<OrderUpdateEvent> {
-        // TODO: Implement proper OrderUpdateEvent parsing
-        // For now, extract minimal required fields
-        let _ = data; // Suppress unused variable warning
-        Err(ExchangeError::Parse("WebSocket order updates not yet implemented".to_string()))
+        let order_id = Self::get_str(data, "ordId")
+            .ok_or_else(|| ExchangeError::Parse("Missing 'ordId'".to_string()))?
+            .to_string();
+
+        let symbol = Self::get_str(data, "instId").unwrap_or("").to_string();
+
+        let side = match Self::get_str(data, "side").unwrap_or("buy").to_lowercase().as_str() {
+            "sell" => OrderSide::Sell,
+            _ => OrderSide::Buy,
+        };
+
+        let order_type = match Self::get_str(data, "ordType").unwrap_or("limit").to_lowercase().as_str() {
+            "market" => OrderType::Market,
+            _ => OrderType::Limit { price: Self::get_f64(data, "px").unwrap_or(0.0) },
+        };
+
+        let status = Self::parse_order_status(data);
+
+        let quantity = Self::get_f64(data, "sz").unwrap_or(0.0);
+        let filled_quantity = Self::get_f64(data, "accFillSz").unwrap_or(0.0);
+        let timestamp = Self::get_i64(data, "uTime")
+            .or_else(|| Self::get_i64(data, "cTime"))
+            .unwrap_or(0);
+
+        Ok(OrderUpdateEvent {
+            order_id,
+            client_order_id: Self::get_str(data, "clOrdId")
+                .filter(|s| !s.is_empty())
+                .map(String::from),
+            symbol,
+            side,
+            order_type,
+            status,
+            price: Self::get_f64(data, "px"),
+            quantity,
+            filled_quantity,
+            average_price: Self::get_f64(data, "avgPx"),
+            last_fill_price: Self::get_f64(data, "fillPx"),
+            last_fill_quantity: Self::get_f64(data, "fillSz"),
+            last_fill_commission: Self::get_f64(data, "fillFee"),
+            commission_asset: Self::get_str(data, "fillFeeCcy")
+                .filter(|s| !s.is_empty())
+                .map(String::from),
+            trade_id: Self::get_str(data, "tradeId")
+                .filter(|s| !s.is_empty())
+                .map(String::from),
+            timestamp,
+        })
     }
 
     /// Парсить WebSocket balance update
+    ///
+    /// OKX WS account channel data item:
+    /// `{"totalEq":"10000","details":[{"ccy":"USDT","availBal":"5000","frozenBal":"5000","eq":"10000"}]}`
+    /// Returns one `BalanceUpdateEvent` per currency in `details`.
+    /// Callers that need multi-currency should loop over the raw data array themselves;
+    /// this helper returns the first non-empty entry.
     pub fn parse_ws_balance_update(data: &Value) -> ExchangeResult<BalanceUpdateEvent> {
-        // TODO: Implement proper BalanceUpdateEvent parsing
-        let _ = data;
-        Err(ExchangeError::Parse("WebSocket balance updates not yet implemented".to_string()))
+        // Try to get the first currency detail from the `details` array.
+        let detail = data.get("details")
+            .and_then(|d| d.as_array())
+            .and_then(|arr| arr.first())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'details' in balance update".to_string()))?;
+
+        let asset = Self::get_str(detail, "ccy")
+            .ok_or_else(|| ExchangeError::Parse("Missing 'ccy' in balance detail".to_string()))?
+            .to_string();
+
+        let free = Self::get_f64(detail, "availBal").unwrap_or(0.0);
+        let locked = Self::get_f64(detail, "frozenBal").unwrap_or(0.0);
+        let total = Self::get_f64(detail, "eq").unwrap_or(free + locked);
+
+        let timestamp = Self::get_i64(data, "uTime").unwrap_or(0);
+
+        Ok(BalanceUpdateEvent {
+            asset,
+            free,
+            locked,
+            total,
+            delta: None,
+            reason: None,
+            timestamp,
+        })
     }
 
     /// Парсить WebSocket position update
+    ///
+    /// OKX WS positions channel data item:
+    /// `{"instId":"BTC-USDT","posSide":"long","pos":"0.1","avgPx":"67000",
+    ///   "upl":"100","liqPx":"60000","markPx":"67100","lever":"10","mgnMode":"cross","uTime":"1234"}`
     pub fn parse_ws_position_update(data: &Value) -> ExchangeResult<PositionUpdateEvent> {
-        // TODO: Implement proper PositionUpdateEvent parsing
-        let _ = data;
-        Err(ExchangeError::Parse("WebSocket position updates not yet implemented".to_string()))
+        let symbol = Self::get_str(data, "instId").unwrap_or("").to_string();
+
+        let pos_qty = Self::get_f64(data, "pos").unwrap_or(0.0);
+        let pos_side_str = Self::get_str(data, "posSide").unwrap_or("net");
+        let side = match pos_side_str {
+            "long" => PositionSide::Long,
+            "short" => PositionSide::Short,
+            _ => {
+                if pos_qty >= 0.0 { PositionSide::Long } else { PositionSide::Short }
+            }
+        };
+
+        let margin_type = match Self::get_str(data, "mgnMode") {
+            Some("isolated") => Some(MarginType::Isolated),
+            _ => Some(MarginType::Cross),
+        };
+
+        let timestamp = Self::get_i64(data, "uTime").unwrap_or(0);
+
+        Ok(PositionUpdateEvent {
+            symbol,
+            side,
+            quantity: pos_qty.abs(),
+            entry_price: Self::get_f64(data, "avgPx").unwrap_or(0.0),
+            mark_price: Self::get_f64(data, "markPx"),
+            unrealized_pnl: Self::get_f64(data, "upl").unwrap_or(0.0),
+            realized_pnl: None,
+            liquidation_price: Self::get_f64(data, "liqPx"),
+            leverage: Self::get_f64(data, "lever").map(|l| l as u32),
+            margin_type,
+            reason: None,
+            timestamp,
+        })
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

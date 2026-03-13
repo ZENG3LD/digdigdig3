@@ -11,6 +11,20 @@ use super::endpoints::*;
 use super::auth::*;
 use super::parser::*;
 
+/// Detect the most likely KRX market for a given 6-digit stock code.
+///
+/// KOSDAQ codes predominantly start with 2 or 3 (e.g. 035720 Kakao, 293490 Kakao Pay).
+/// All other first digits (0, 1, 4, 5, 6, 7, 8, 9) are KOSPI by convention.
+/// This is a heuristic — authoritative classification requires querying the KRX base-info
+/// endpoint, but this covers the vast majority of real-world cases without a network round-trip.
+fn detect_market(code: &str) -> MarketId {
+    let first_digit = code.chars().next().unwrap_or('0');
+    match first_digit {
+        '2' | '3' => MarketId::Kosdaq,
+        _ => MarketId::Kospi,
+    }
+}
+
 /// KRX (Korea Exchange) connector
 pub struct KrxConnector {
     client: Client,
@@ -296,9 +310,16 @@ impl MarketData for KrxConnector {
             current += Duration::days(1);
         }
 
-        // Determine market from symbol (assume KOSPI by default)
-        // TODO: Add market detection logic based on symbol
-        let market = MarketId::Kospi;
+        // Detect market from the stock code.
+        // Korean 6-digit codes have a conventional first-digit breakdown:
+        //   0, 1        → KOSPI (e.g. 005930 Samsung, 000660 SK Hynix)
+        //   2 (2xxxxx)  → KOSDAQ (most 2-series codes)
+        //   3 (3xxxxx)  → KOSDAQ (e.g. 035720 Kakao also classified here)
+        //   4, 5        → KOSPI preferred (ETFs, preferred shares)
+        //   6, 7, 8, 9  → KOSPI
+        // This is a best-effort heuristic; exact classification requires
+        // querying the KRX base info endpoint.
+        let market = detect_market(&symbol.base);
 
         // Fetch all dates and collect klines
         // Note: In production, you may want to add rate limiting and concurrency control

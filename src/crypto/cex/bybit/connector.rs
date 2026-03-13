@@ -250,9 +250,44 @@ impl BybitConnector {
         params.insert("category".to_string(), account_type_to_category(account_type).to_string());
 
         let response = self.get(BybitEndpoint::Ticker, params).await?;
-        // TODO: parse all tickers
-        let _ = response;
-        Ok(vec![])
+
+        let result = response.get("result")
+            .ok_or_else(|| ExchangeError::Parse("Missing 'result' field".to_string()))?;
+        let list = result.get("list")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'result.list' array".to_string()))?;
+
+        let timestamp = response.get("time").and_then(|t| t.as_i64()).unwrap_or(0);
+
+        let tickers = list.iter().map(|data| {
+            let parse_str_f64 = |key: &str| -> Option<f64> {
+                data.get(key).and_then(|v| v.as_str()).and_then(|s| s.parse().ok())
+            };
+
+            let last_price = parse_str_f64("lastPrice").unwrap_or(0.0);
+            let prev_price = parse_str_f64("prevPrice24h");
+            let price_change_24h = prev_price.map(|p| last_price - p);
+            let price_change_percent_24h = data.get("price24hPcnt")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .map(|v| v * 100.0);
+
+            Ticker {
+                symbol: data.get("symbol").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                last_price,
+                bid_price: parse_str_f64("bid1Price"),
+                ask_price: parse_str_f64("ask1Price"),
+                high_24h: parse_str_f64("highPrice24h"),
+                low_24h: parse_str_f64("lowPrice24h"),
+                volume_24h: parse_str_f64("volume24h"),
+                quote_volume_24h: parse_str_f64("turnover24h"),
+                price_change_24h,
+                price_change_percent_24h,
+                timestamp,
+            }
+        }).collect();
+
+        Ok(tickers)
     }
 
     /// Get symbols

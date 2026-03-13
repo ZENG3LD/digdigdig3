@@ -393,7 +393,17 @@ impl HyperliquidParser {
                 leverage,
                 liquidation_price: Self::get_f64(position, "liquidationPx"),
                 margin: Self::get_f64(position, "marginUsed"),
-                margin_type: crate::core::MarginType::Cross, // TODO: Detect from leverage.type
+                margin_type: {
+                    let lev_type = position.get("leverage")
+                        .and_then(|lev| lev.get("type"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("cross");
+                    if lev_type.eq_ignore_ascii_case("isolated") {
+                        crate::core::MarginType::Isolated
+                    } else {
+                        crate::core::MarginType::Cross
+                    }
+                },
                 take_profit: None,
                 stop_loss: None,
             });
@@ -419,8 +429,33 @@ impl HyperliquidParser {
             _ => OrderSide::Buy,
         };
 
-        // TODO: Parse order type from "t" field
-        let order_type = OrderType::Limit { price: 0.0 };
+        // Parse order type from "t" field.
+        // Hyperliquid "t" is an object: {"limit": {"tif": "Gtc"}} or
+        // {"trigger": {"triggerPx": "65000", "isMarket": true, "tpsl": "sl"}}
+        let order_type = if let Some(t_obj) = data.get("t") {
+            if t_obj.get("limit").is_some() {
+                let price = Self::get_f64(data, "limitPx").unwrap_or(0.0);
+                OrderType::Limit { price }
+            } else if let Some(trigger) = t_obj.get("trigger") {
+                let trigger_px = trigger.get("triggerPx")
+                    .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64()))
+                    .unwrap_or(0.0);
+                let is_market = trigger.get("isMarket").and_then(|v| v.as_bool()).unwrap_or(true);
+                if is_market {
+                    OrderType::StopMarket { stop_price: trigger_px }
+                } else {
+                    let limit_price = Self::get_f64(data, "limitPx").unwrap_or(trigger_px);
+                    OrderType::StopLimit { stop_price: trigger_px, limit_price }
+                }
+            } else {
+                // Unknown sub-type — fall back to limit with actual price
+                let price = Self::get_f64(data, "limitPx").unwrap_or(0.0);
+                OrderType::Limit { price }
+            }
+        } else {
+            let price = Self::get_f64(data, "limitPx").unwrap_or(0.0);
+            OrderType::Limit { price }
+        };
 
         let orig_sz = Self::get_f64(data, "origSz").unwrap_or(0.0);
         let sz = Self::get_f64(data, "sz").unwrap_or(0.0);

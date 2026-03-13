@@ -30,6 +30,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use chrono::Utc;
+
 use async_trait::async_trait;
 use futures_util::{Stream, StreamExt, SinkExt, stream::{SplitSink, SplitStream}};
 use serde_json::{json, Value};
@@ -235,7 +237,14 @@ impl DeribitWebSocket {
                 format!("chart.trades.{}.{}", instrument, interval)
             },
             StreamType::OrderUpdate => "user.orders.any.any.raw".to_string(),
-            StreamType::BalanceUpdate => "user.portfolio.BTC".to_string(), // TODO: support multiple currencies
+            // BalanceUpdate: Deribit uses per-currency portfolio channels.
+            // Subscribing to a single channel (e.g. user.portfolio.BTC) would miss
+            // balances in ETH, USDC, USDT, SOL etc.  We return a comma-joined list of
+            // the five major settlement currencies so the caller can fan out.
+            // The subscribe() method sends all returned channels in one request.
+            StreamType::BalanceUpdate => {
+                "user.portfolio.BTC,user.portfolio.ETH,user.portfolio.USDC,user.portfolio.USDT,user.portfolio.SOL".to_string()
+            }
             StreamType::PositionUpdate => "user.changes.any.any.raw".to_string(),
             _ => String::new(),
         }
@@ -373,8 +382,27 @@ impl DeribitWebSocket {
             DeribitParser::parse_ws_trade(data).ok().map(StreamEvent::Trade)
         } else if channel.starts_with("user.orders.") {
             DeribitParser::parse_ws_order_update(data).ok().map(StreamEvent::OrderUpdate)
+        } else if channel.starts_with("user.portfolio.") {
+            // data is the portfolio object: {"currency":"BTC","equity":...,"balance":...}
+            let currency = channel.strip_prefix("user.portfolio.").unwrap_or("");
+            let balance_val = |key: &str| -> f64 {
+                data.get(key)
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0)
+            };
+            let total = balance_val("equity");
+            let available = balance_val("available_funds");
+            let event = crate::core::BalanceUpdateEvent {
+                asset: currency.to_string(),
+                free: available,
+                locked: (total - available).max(0.0),
+                total,
+                delta: None,
+                reason: Some(crate::core::BalanceChangeReason::Other),
+                timestamp: Utc::now().timestamp_millis(),
+            };
+            Some(StreamEvent::BalanceUpdate(event))
         } else {
-            // user.portfolio not yet implemented in parser
             None
         }
     }
@@ -559,9 +587,12 @@ impl WebSocketConnector for DeribitWebSocket {
             return Err(WebSocketError::Subscription("Unsupported stream type".to_string()));
         }
 
+        // Channel may be a comma-joined list (e.g. BalanceUpdate → multiple portfolio channels)
+        let channels: Vec<String> = channel.split(',').map(|s| s.trim().to_string()).collect();
+
         // Subscribe
         let is_private = self.is_private_subscription(&request);
-        self.subscribe_channels(vec![channel], is_private).await
+        self.subscribe_channels(channels, is_private).await
             .map_err(|e| WebSocketError::Subscription(format!("Subscribe failed: {}", e)))?;
 
         // Track subscription
@@ -578,9 +609,12 @@ impl WebSocketConnector for DeribitWebSocket {
             return Ok(());
         }
 
+        // Channel may be a comma-joined list (e.g. BalanceUpdate → multiple portfolio channels)
+        let channels: Vec<String> = channel.split(',').map(|s| s.trim().to_string()).collect();
+
         // Unsubscribe
         let is_private = self.is_private_subscription(&request);
-        self.unsubscribe_channels(vec![channel], is_private).await
+        self.unsubscribe_channels(channels, is_private).await
             .map_err(|e| WebSocketError::Subscription(format!("Unsubscribe failed: {}", e)))?;
 
         // Remove from tracking

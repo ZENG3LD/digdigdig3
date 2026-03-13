@@ -451,8 +451,32 @@ impl WebSocketConnector for MexcWebSocket {
         Ok(())
     }
 
-    async fn unsubscribe(&mut self, _request: SubscriptionRequest) -> WebSocketResult<()> {
-        // TODO: Implement unsubscribe
+    async fn unsubscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+        // Build the same channel name that was used during subscribe, then send UNSUBSCRIPTION
+        let symbol_str = format_symbol(&request.symbol, self.account_type);
+
+        let channel = match &request.stream_type {
+            StreamType::Ticker => MexcWsChannels::mini_ticker(&symbol_str),
+            StreamType::Trade => MexcWsChannels::aggre_deals(&symbol_str),
+            StreamType::Orderbook | StreamType::OrderbookDelta => MexcWsChannels::aggre_depth(&symbol_str),
+            StreamType::Kline { interval } => MexcWsChannels::kline(&symbol_str, interval),
+            _ => {
+                // Unknown or unsupported stream type — remove from local tracking only
+                self.subscriptions.lock().await.remove(&request);
+                return Ok(());
+            }
+        };
+
+        let msg = json!({
+            "method": "UNSUBSCRIPTION",
+            "params": [channel]
+        });
+
+        self.send_message(&msg).await
+            .map_err(|e| WebSocketError::Subscription(format!("Unsubscribe failed: {}", e)))?;
+
+        self.subscriptions.lock().await.remove(&request);
+
         Ok(())
     }
 

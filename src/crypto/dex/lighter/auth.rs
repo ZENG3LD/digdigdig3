@@ -1,35 +1,37 @@
 //! # Lighter Authentication
 //!
-//! Lighter uses cryptographic signature-based authentication with ECDSA.
+//! Lighter uses a ZK-native cryptographic stack for authentication — **NOT** standard ECDSA.
 //!
-//! ## Authentication Methods
+//! ## Cryptographic Stack
 //!
-//! 1. **Transaction Signing** (Write Operations)
-//!    - ECDSA signature with API key private key
-//!    - Used for orders, cancellations, modifications
-//!    - Requires nonce management
+//! - **Curve**: ECgFp5 (a 5-isogeny of the Goldilocks curve, Schnorr signatures)
+//! - **Hash**: Poseidon2 (ZK-friendly sponge hash over the Goldilocks field)
+//! - **Field**: Goldilocks (p = 2^64 − 2^32 + 1)
 //!
-//! 2. **Auth Tokens** (Read Operations)
-//!    - Standard format: `{expiry}:{account_index}:{api_key_index}:{random_hex}`
-//!    - Max expiry: 8 hours
-//!    - Used for WebSocket and authenticated REST endpoints
+//! This stack is incompatible with standard `k256`, `secp256k1`, or `ed25519` libraries.
+//! Implementing it requires either the `lighter-sdk` Rust crate or a custom ECgFp5
+//! implementation of Schnorr signing over the Goldilocks field.
 //!
-//! 3. **Read-Only Tokens**
-//!    - Format: `ro:{account_index}:{single|all}:{expiry}:{random_hex}`
+//! ## Token Formats (structure only — signing not implemented)
+//!
+//! 1. **Auth Token** (Write / WebSocket)
+//!    - Format: `{expiry_unix}:{account_index}:{api_key_index}:{random_hex}`
+//!    - The random_hex part must be replaced by a valid Schnorr+Poseidon2 signature.
+//!    - Max expiry: 8 hours (28 800 s)
+//!
+//! 2. **Read-Only Token**
+//!    - Format: `ro:{account_index}:{single|all}:{expiry_unix}:{random_hex}`
 //!    - Max expiry: 10 years
-//!    - Safer for data access without trading
 //!
-//! ## Implementation Note
+//! ## Current Status
 //!
-//! Phase 1: Focus on PUBLIC market data (no auth needed)
-//! Phase 2: Implement auth token generation for account data
-//! Phase 3: Implement transaction signing for trading
+//! All signing operations return `ExchangeError::Auth` with a descriptive message.
+//! Public market data endpoints do not require authentication and work as expected.
 
 use std::collections::HashMap;
 
 use crate::core::{
     Credentials, ExchangeResult, ExchangeError,
-    timestamp_seconds,
 };
 
 /// Lighter authentication handler
@@ -87,66 +89,57 @@ impl LighterAuth {
         }
     }
 
-    /// Generate standard auth token
+    /// Generate standard auth token.
     ///
-    /// Format: `{expiry_unix}:{account_index}:{api_key_index}:{random_hex}`
+    /// **NOT IMPLEMENTED** — Lighter auth tokens require a Schnorr signature over the
+    /// Goldilocks field using ECgFp5 + Poseidon2 hashing. This cryptographic stack is not
+    /// available in standard Rust crates (`k256`, `secp256k1`, etc.) and requires either
+    /// the official `lighter-sdk` crate or a custom ECgFp5 implementation.
     ///
-    /// # Arguments
-    /// * `expiry_seconds` - Expiry duration in seconds (max 8 hours = 28800)
-    ///
-    /// # Note
-    /// This is a placeholder implementation. The actual token should be signed
-    /// using the API key private key in a production implementation.
-    pub fn generate_auth_token(&self, expiry_seconds: u64) -> ExchangeResult<String> {
-        let account_index = self.account_index
-            .ok_or_else(|| ExchangeError::Auth("account_index required for auth token".to_string()))?;
-        let api_key_index = self.api_key_index
-            .ok_or_else(|| ExchangeError::Auth("api_key_index required for auth token".to_string()))?;
-
-        // Max 8 hours
-        let max_expiry = 8 * 60 * 60;
-        let expiry = std::cmp::min(expiry_seconds, max_expiry);
-
-        let expiry_time = timestamp_seconds() + expiry;
-        let random_hex = self.generate_random_hex();
-
-        Ok(format!("{}:{}:{}:{}", expiry_time, account_index, api_key_index, random_hex))
+    /// Token format (for reference): `{expiry_unix}:{account_index}:{api_key_index}:{signature}`
+    pub fn generate_auth_token(&self, _expiry_seconds: u64) -> ExchangeResult<String> {
+        Err(ExchangeError::Auth(
+            "Lighter auth token generation requires ZK-native Schnorr+ECgFp5+Poseidon2 signing \
+             over the Goldilocks field. This is incompatible with standard ECDSA libraries. \
+             Use the official lighter-sdk or implement ECgFp5 signing manually."
+                .to_string(),
+        ))
     }
 
-    /// Generate read-only auth token
+    /// Generate read-only auth token.
     ///
-    /// Format: `ro:{account_index}:{single|all}:{expiry_unix}:{random_hex}`
-    ///
-    /// # Arguments
-    /// * `expiry_seconds` - Expiry duration in seconds (min 1 day, max 10 years)
-    /// * `scope` - "single" or "all" for sub-accounts
-    pub fn generate_readonly_token(&self, expiry_seconds: u64, scope: &str) -> ExchangeResult<String> {
-        let account_index = self.account_index
-            .ok_or_else(|| ExchangeError::Auth("account_index required for readonly token".to_string()))?;
-
-        // Min 1 day, max 10 years
-        let min_expiry = 24 * 60 * 60;
-        let max_expiry = 10 * 365 * 24 * 60 * 60;
-        let expiry = std::cmp::max(min_expiry, std::cmp::min(expiry_seconds, max_expiry));
-
-        let expiry_time = timestamp_seconds() + expiry;
-        let random_hex = self.generate_random_hex();
-
-        Ok(format!("ro:{}:{}:{}:{}", account_index, scope, expiry_time, random_hex))
+    /// **NOT IMPLEMENTED** — Same signing requirement as `generate_auth_token`.
+    /// Read-only tokens use the format `ro:{account_index}:{single|all}:{expiry_unix}:{signature}`.
+    pub fn generate_readonly_token(&self, _expiry_seconds: u64, _scope: &str) -> ExchangeResult<String> {
+        Err(ExchangeError::Auth(
+            "Lighter read-only token generation requires ZK-native Schnorr+ECgFp5+Poseidon2 signing. \
+             Use the official lighter-sdk or implement ECgFp5 signing manually."
+                .to_string(),
+        ))
     }
 
-    /// Sign transaction (placeholder for Phase 3)
+    /// Sign a Lighter transaction.
     ///
-    /// # Note
-    /// This requires ECDSA signing implementation with the API key private key.
-    /// For now, returns an error to indicate it's not implemented.
+    /// **NOT IMPLEMENTED** — Lighter transaction signing requires:
+    /// - **Curve**: ECgFp5 (Schnorr over the Goldilocks field, NOT secp256k1/ECDSA)
+    /// - **Hash**: Poseidon2 sponge (ZK-friendly, NOT SHA-256/Keccak)
+    ///
+    /// Transaction types include:
+    /// - `tx_type = 14` — L2CreateOrder
+    /// - `tx_type = 15` — L2CancelOrder
+    ///
+    /// To implement: add the `lighter-sdk` crate (if published) or port the ECgFp5
+    /// Schnorr+Poseidon2 signing logic from the Lighter TypeScript SDK.
     pub fn sign_transaction(
         &self,
         _tx_type: u8,
         _tx_data: &HashMap<String, serde_json::Value>,
     ) -> ExchangeResult<String> {
         Err(ExchangeError::Auth(
-            "Transaction signing not yet implemented (Phase 3)".to_string()
+            "Lighter transaction signing requires ZK-native Schnorr+ECgFp5+Poseidon2 signing \
+             (NOT standard ECDSA/secp256k1). Use the official lighter-sdk or port the \
+             ECgFp5 signing from the Lighter TypeScript SDK."
+                .to_string(),
         ))
     }
 
@@ -158,20 +151,6 @@ impl LighterAuth {
     /// Get L1 address
     pub fn l1_address(&self) -> Option<&str> {
         self.l1_address.as_deref()
-    }
-
-    /// Generate random hex string (8 characters)
-    fn generate_random_hex(&self) -> String {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        // Simple random hex based on timestamp
-        // In production, use a proper CSPRNG
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("System time is before UNIX epoch")
-            .subsec_nanos();
-
-        format!("{:08x}", nanos)
     }
 
     /// Create headers for authenticated requests
@@ -197,35 +176,32 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_auth_token() {
+    fn test_generate_auth_token_returns_error() {
+        // Signing requires ZK-native ECgFp5+Poseidon2 — not yet implemented.
         let passphrase = r#"{"account_index": 1, "api_key_index": 3}"#;
         let credentials = Credentials::new("dummy_key", "dummy_secret")
             .with_passphrase(passphrase);
 
         let auth = LighterAuth::new(&credentials).unwrap();
-        let token = auth.generate_auth_token(3600).unwrap();
+        let result = auth.generate_auth_token(3600);
 
-        // Token format: {expiry}:{account_index}:{api_key_index}:{random_hex}
-        let parts: Vec<&str> = token.split(':').collect();
-        assert_eq!(parts.len(), 4);
-        assert_eq!(parts[1], "1"); // account_index
-        assert_eq!(parts[2], "3"); // api_key_index
+        assert!(result.is_err(), "Expected auth token generation to fail (ZK signing not implemented)");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("ECgFp5"), "Error should mention ECgFp5: {}", err_msg);
     }
 
     #[test]
-    fn test_generate_readonly_token() {
+    fn test_generate_readonly_token_returns_error() {
+        // Signing requires ZK-native ECgFp5+Poseidon2 — not yet implemented.
         let passphrase = r#"{"account_index": 1}"#;
         let credentials = Credentials::new("dummy_key", "dummy_secret")
             .with_passphrase(passphrase);
 
         let auth = LighterAuth::new(&credentials).unwrap();
-        let token = auth.generate_readonly_token(86400, "single").unwrap();
+        let result = auth.generate_readonly_token(86400, "single");
 
-        // Token format: ro:{account_index}:{single|all}:{expiry}:{random_hex}
-        let parts: Vec<&str> = token.split(':').collect();
-        assert_eq!(parts.len(), 5);
-        assert_eq!(parts[0], "ro");
-        assert_eq!(parts[1], "1"); // account_index
-        assert_eq!(parts[2], "single");
+        assert!(result.is_err(), "Expected readonly token generation to fail (ZK signing not implemented)");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("ECgFp5"), "Error should mention ECgFp5: {}", err_msg);
     }
 }

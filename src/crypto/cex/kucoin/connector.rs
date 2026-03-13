@@ -314,9 +314,50 @@ impl KuCoinConnector {
         };
 
         let response = self.get(endpoint, HashMap::new(), account_type).await?;
-        // TODO: parse all tickers
-        let _ = response;
-        Ok(vec![])
+
+        let data = response.get("data")
+            .ok_or_else(|| ExchangeError::Parse("Missing 'data' field".to_string()))?;
+
+        // Spot: data = { ticker: [...], time: 123 }
+        // Futures: data = [ {...}, {...} ] (direct array)
+        let (arr, timestamp) = if let Some(ticker_arr) = data.get("ticker").and_then(|v| v.as_array()) {
+            let ts = data.get("time").and_then(|t| t.as_i64()).unwrap_or(0);
+            (ticker_arr, ts)
+        } else if let Some(direct_arr) = data.as_array() {
+            (direct_arr, 0i64)
+        } else {
+            return Err(ExchangeError::Parse("Unexpected all-tickers data format".to_string()));
+        };
+
+        let tickers = arr.iter().map(|item| {
+            let get_f64 = |key: &str| -> Option<f64> {
+                item.get(key)
+                    .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64()))
+            };
+            let get_i64 = |key: &str| -> Option<i64> {
+                item.get(key).and_then(|v| v.as_i64())
+            };
+
+            let ts = get_i64("time").unwrap_or(timestamp);
+            let last = get_f64("last").or_else(|| get_f64("price")).unwrap_or(0.0);
+            let change_rate = get_f64("changeRate").map(|r| r * 100.0);
+
+            Ticker {
+                symbol: item.get("symbol").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                last_price: last,
+                bid_price: get_f64("buy").or_else(|| get_f64("bestBidPrice")),
+                ask_price: get_f64("sell").or_else(|| get_f64("bestAskPrice")),
+                high_24h: get_f64("high"),
+                low_24h: get_f64("low"),
+                volume_24h: get_f64("vol"),
+                quote_volume_24h: get_f64("volValue"),
+                price_change_24h: get_f64("changePrice"),
+                price_change_percent_24h: change_rate,
+                timestamp: ts,
+            }
+        }).collect();
+
+        Ok(tickers)
     }
 
     /// Получить информацию о символах

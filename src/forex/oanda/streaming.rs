@@ -7,6 +7,7 @@
 //! - Newline-delimited JSON messages
 //! - Heartbeats every 5 seconds
 
+use reqwest::Client;
 use serde_json::Value;
 
 use crate::core::{ExchangeError, ExchangeResult};
@@ -47,11 +48,16 @@ pub struct PriceUpdate {
 
 /// HTTP streaming client for OANDA pricing stream
 pub struct PricingStream {
-    // Will be implemented when needed - placeholder for now
-    _auth: OandaAuth,
-    _urls: OandaUrls,
-    _account_id: String,
-    _instruments: Vec<String>,
+    auth: OandaAuth,
+    urls: OandaUrls,
+    account_id: String,
+    instruments: Vec<String>,
+    /// Byte buffer for partial lines received from the chunk stream
+    line_buf: Vec<u8>,
+    /// Pending complete lines waiting to be returned as messages
+    pending_lines: std::collections::VecDeque<String>,
+    /// Active HTTP response stream
+    response: Option<reqwest::Response>,
 }
 
 impl PricingStream {
@@ -63,32 +69,105 @@ impl PricingStream {
         instruments: Vec<String>,
     ) -> Self {
         Self {
-            _auth: auth,
-            _urls: urls,
-            _account_id: account_id,
-            _instruments: instruments,
+            auth,
+            urls,
+            account_id,
+            instruments,
+            line_buf: Vec::new(),
+            pending_lines: std::collections::VecDeque::new(),
+            response: None,
         }
     }
 
     /// Connect to pricing stream
+    ///
+    /// Issues GET `{stream_url}/v3/accounts/{account_id}/pricing/stream?instruments=...`
+    /// with `Authorization: Bearer {token}` and keeps the response alive for streaming.
     pub async fn connect(&mut self) -> ExchangeResult<()> {
-        // TODO: Implement HTTP streaming connection
-        // This requires using reqwest with stream feature
-        Err(ExchangeError::UnsupportedOperation(
-            "HTTP streaming not yet implemented - use REST polling for now".to_string()
-        ))
+        let instruments_param = self.instruments.join(",");
+        let url = format!(
+            "{}/v3/accounts/{}/pricing/stream?instruments={}",
+            self.urls.stream_url,
+            self.account_id,
+            instruments_param
+        );
+
+        let client = Client::new();
+        let response = client
+            .get(&url)
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.auth.token()),
+            )
+            .header("Accept-Datetime-Format", "RFC3339")
+            .send()
+            .await
+            .map_err(|e| ExchangeError::Network(format!("Failed to connect to pricing stream: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ExchangeError::Http(format!(
+                "Pricing stream HTTP {}: {}",
+                status, body
+            )));
+        }
+
+        self.line_buf.clear();
+        self.pending_lines.clear();
+        self.response = Some(response);
+        Ok(())
     }
 
     /// Get next message from stream
+    ///
+    /// Reads the next complete newline-delimited JSON line from the HTTP chunked response
+    /// and parses it into a [`StreamMessage`].
     pub async fn next_message(&mut self) -> ExchangeResult<StreamMessage> {
-        // TODO: Read next line from HTTP stream and parse JSON
-        Err(ExchangeError::UnsupportedOperation(
-            "HTTP streaming not yet implemented - use REST polling for now".to_string()
-        ))
+        loop {
+            // Return any already-buffered complete lines first
+            if let Some(line) = self.pending_lines.pop_front() {
+                if !line.trim().is_empty() {
+                    return parse_message(&line);
+                }
+                continue;
+            }
+
+            // Read next chunk from the HTTP body
+            let response = self.response.as_mut().ok_or_else(|| {
+                ExchangeError::Network("Not connected — call connect() first".to_string())
+            })?;
+
+            let chunk = response.chunk().await
+                .map_err(|e| ExchangeError::Network(format!("Stream read error: {}", e)))?;
+
+            match chunk {
+                None => {
+                    return Err(ExchangeError::Network("Pricing stream closed by server".to_string()));
+                }
+                Some(bytes) => {
+                    // Accumulate bytes into line buffer and split on newlines
+                    for b in bytes.iter().copied() {
+                        if b == b'\n' {
+                            let line = String::from_utf8_lossy(&self.line_buf).into_owned();
+                            self.line_buf.clear();
+                            if !line.trim().is_empty() {
+                                self.pending_lines.push_back(line);
+                            }
+                        } else {
+                            self.line_buf.push(b);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Close the stream
     pub async fn close(&mut self) -> ExchangeResult<()> {
+        self.response = None;
+        self.line_buf.clear();
+        self.pending_lines.clear();
         Ok(())
     }
 }
@@ -99,9 +178,15 @@ impl PricingStream {
 
 /// HTTP streaming client for OANDA transaction stream
 pub struct TransactionStream {
-    _auth: OandaAuth,
-    _urls: OandaUrls,
-    _account_id: String,
+    auth: OandaAuth,
+    urls: OandaUrls,
+    account_id: String,
+    /// Byte buffer for partial lines
+    line_buf: Vec<u8>,
+    /// Pending complete lines
+    pending_lines: std::collections::VecDeque<String>,
+    /// Active HTTP response stream
+    response: Option<reqwest::Response>,
 }
 
 impl TransactionStream {
@@ -112,30 +197,98 @@ impl TransactionStream {
         account_id: String,
     ) -> Self {
         Self {
-            _auth: auth,
-            _urls: urls,
-            _account_id: account_id,
+            auth,
+            urls,
+            account_id,
+            line_buf: Vec::new(),
+            pending_lines: std::collections::VecDeque::new(),
+            response: None,
         }
     }
 
     /// Connect to transaction stream
+    ///
+    /// Issues GET `{stream_url}/v3/accounts/{account_id}/transactions/stream`
+    /// with `Authorization: Bearer {token}`.
     pub async fn connect(&mut self) -> ExchangeResult<()> {
-        // TODO: Implement HTTP streaming connection
-        Err(ExchangeError::UnsupportedOperation(
-            "HTTP streaming not yet implemented - use REST polling for now".to_string()
-        ))
+        let url = format!(
+            "{}/v3/accounts/{}/transactions/stream",
+            self.urls.stream_url,
+            self.account_id,
+        );
+
+        let client = Client::new();
+        let response = client
+            .get(&url)
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.auth.token()),
+            )
+            .header("Accept-Datetime-Format", "RFC3339")
+            .send()
+            .await
+            .map_err(|e| ExchangeError::Network(format!("Failed to connect to transaction stream: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ExchangeError::Api {
+                code: status.as_u16() as i32,
+                message: format!("Transaction stream HTTP {}: {}", status, body),
+            });
+        }
+
+        self.line_buf.clear();
+        self.pending_lines.clear();
+        self.response = Some(response);
+        Ok(())
     }
 
     /// Get next message from stream
+    ///
+    /// Reads the next complete newline-delimited JSON line and parses it into a [`StreamMessage`].
     pub async fn next_message(&mut self) -> ExchangeResult<StreamMessage> {
-        // TODO: Read next line from HTTP stream and parse JSON
-        Err(ExchangeError::UnsupportedOperation(
-            "HTTP streaming not yet implemented - use REST polling for now".to_string()
-        ))
+        loop {
+            if let Some(line) = self.pending_lines.pop_front() {
+                if !line.trim().is_empty() {
+                    return parse_message(&line);
+                }
+                continue;
+            }
+
+            let response = self.response.as_mut().ok_or_else(|| {
+                ExchangeError::Network("Not connected — call connect() first".to_string())
+            })?;
+
+            let chunk = response.chunk().await
+                .map_err(|e| ExchangeError::Network(format!("Stream read error: {}", e)))?;
+
+            match chunk {
+                None => {
+                    return Err(ExchangeError::Network("Transaction stream closed by server".to_string()));
+                }
+                Some(bytes) => {
+                    for &b in bytes.iter() {
+                        if b == b'\n' {
+                            let line = String::from_utf8_lossy(&self.line_buf).into_owned();
+                            self.line_buf.clear();
+                            if !line.trim().is_empty() {
+                                self.pending_lines.push_back(line);
+                            }
+                        } else {
+                            self.line_buf.push(b);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Close the stream
     pub async fn close(&mut self) -> ExchangeResult<()> {
+        self.response = None;
+        self.line_buf.clear();
+        self.pending_lines.clear();
         Ok(())
     }
 }
@@ -144,8 +297,8 @@ impl TransactionStream {
 // HELPERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Parse streaming message
-fn _parse_message(line: &str) -> ExchangeResult<StreamMessage> {
+/// Parse a newline-delimited streaming message line into a [`StreamMessage`]
+pub fn parse_message(line: &str) -> ExchangeResult<StreamMessage> {
     let value: Value = serde_json::from_str(line)
         .map_err(|e| ExchangeError::Parse(format!("Failed to parse JSON: {}", e)))?;
 
@@ -224,7 +377,6 @@ fn _parse_message(line: &str) -> ExchangeResult<StreamMessage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn test_parse_price_message() {

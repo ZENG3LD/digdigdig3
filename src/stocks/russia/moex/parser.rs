@@ -27,6 +27,7 @@
 //! }
 //! ```
 
+use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
 use serde_json::Value;
 use crate::core::types::{Kline, Ticker, OrderBook};
 
@@ -88,15 +89,19 @@ impl MoexParser {
     /// Parse timestamp from MOEX datetime string
     ///
     /// MOEX formats:
-    /// - Date: "2026-01-26"
-    /// - Time: "19:00:01"
     /// - DateTime: "2026-01-26 19:00:01"
-    fn parse_timestamp(_datetime_str: &str) -> Option<i64> {
-        // For simplicity, parse as Unix timestamp in milliseconds
-        // In production, you'd use chrono or time crate for proper parsing
-        // For now, return current time as fallback
-        // TODO: Implement proper datetime parsing
-        Some(chrono::Utc::now().timestamp_millis())
+    /// - Date only: "2026-01-26" (interpreted as midnight UTC)
+    fn parse_timestamp(datetime_str: &str) -> Option<i64> {
+        // Try full datetime first: "YYYY-MM-DD HH:MM:SS"
+        if let Ok(ndt) = NaiveDateTime::parse_from_str(datetime_str, "%Y-%m-%d %H:%M:%S") {
+            return Some(Utc.from_utc_datetime(&ndt).timestamp_millis());
+        }
+        // Fall back to date only: "YYYY-MM-DD" → midnight UTC
+        if let Ok(nd) = NaiveDate::parse_from_str(datetime_str, "%Y-%m-%d") {
+            let ndt = nd.and_hms_opt(0, 0, 0)?;
+            return Some(Utc.from_utc_datetime(&ndt).timestamp_millis());
+        }
+        None
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

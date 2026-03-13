@@ -363,6 +363,43 @@ impl UniswapWebSocket {
         if is_negative { -result } else { result }
     }
 
+    /// Look up the canonical Uniswap V3 pool address for a well-known token pair.
+    ///
+    /// Returns the highest-liquidity pool address for each pair. Both slash-separated
+    /// forms (`ETH/USDC`) and their WETH-prefixed variants are accepted.
+    ///
+    /// Pool addresses are for Ethereum mainnet only. For other chains, use
+    /// `subscribe_to_pool()` directly with the correct address.
+    pub fn get_pool_address(symbol: &str) -> Option<&'static str> {
+        match symbol {
+            // ETH/USDC — WETH/USDC 0.05% pool (highest liquidity)
+            "ETH/USDC" | "WETH/USDC" | "USDC/ETH" | "USDC/WETH" => {
+                Some("0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640")
+            }
+            // ETH/USDT — WETH/USDT 0.05% pool
+            "ETH/USDT" | "WETH/USDT" | "USDT/ETH" | "USDT/WETH" => {
+                Some("0x4e68Ccd3E89f51C3074ca5072bbAC773960dFa36")
+            }
+            // WBTC/ETH — WBTC/WETH 0.3% pool
+            "WBTC/ETH" | "WBTC/WETH" | "ETH/WBTC" | "WETH/WBTC" => {
+                Some("0xCBCdF9626bC03E24f779434178A73a0B4bad62eD")
+            }
+            // WBTC/USDC — 0.3% pool
+            "WBTC/USDC" | "USDC/WBTC" => {
+                Some("0x99ac8cA7087fA4A2A1FB6357269965A2014ABc35")
+            }
+            // ETH/DAI — WETH/DAI 0.3% pool
+            "ETH/DAI" | "WETH/DAI" | "DAI/ETH" | "DAI/WETH" => {
+                Some("0xC2e9F25Be6257c210d7Adf0D4Cd6E3E881ba25f8")
+            }
+            // USDC/USDT — stablecoin 0.01% pool
+            "USDC/USDT" | "USDT/USDC" => {
+                Some("0x3416cF6C708Da44DB2624D63ea0AAef7113527C6")
+            }
+            _ => None,
+        }
+    }
+
     /// Start heartbeat monitoring task
     fn start_heartbeat_task(
         last_message: Arc<Mutex<Instant>>,
@@ -437,15 +474,20 @@ impl WebSocketConnector for UniswapWebSocket {
     }
 
     async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
-        // For Uniswap, we need to determine the pool address from the symbol
-        // This is a simplified implementation - in production you'd look up the pool address
+        // Determine the pool address from the symbol using the known-pairs lookup table.
+        let symbol = &request.symbol;
+        let symbol_str = format!("{}/{}", symbol.base, symbol.quote);
 
-        // Store subscription
+        let pool_address = Self::get_pool_address(&symbol_str)
+            .ok_or_else(|| WebSocketError::UnsupportedOperation(format!(
+                "Unknown Uniswap V3 pool for symbol '{}'. \
+                 Supported pairs: ETH/USDC, ETH/USDT, WBTC/ETH, WBTC/USDC, ETH/DAI, USDC/USDT. \
+                 Use subscribe_to_pool() directly with a known pool address.",
+                symbol_str
+            )))?;
+
+        // Store subscription only after we know the pool is supported
         self.subscriptions.lock().await.insert(request.clone());
-
-        // For now, we'll use a placeholder pool address
-        // In production, you'd map symbol to actual pool address
-        let pool_address = "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"; // WETH/USDC 0.05%
 
         self.subscribe_to_pool(pool_address).await?;
 

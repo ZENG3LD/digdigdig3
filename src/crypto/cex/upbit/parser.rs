@@ -69,12 +69,13 @@ impl UpbitParser {
             .ok_or_else(|| ExchangeError::Parse(format!("Missing '{}'", key)))
     }
 
-    /// Parse ISO 8601 timestamp to milliseconds
-    fn _parse_iso_timestamp(_iso_str: &str) -> Option<i64> {
-        // Upbit format: "2024-06-19T08:31:43+00:00"
-        // For now, we'll use a simple parser
-        // TODO: Use chrono or time crate for proper parsing
-        None // Placeholder
+    /// Parse ISO 8601 timestamp string to milliseconds since Unix epoch.
+    ///
+    /// Upbit format: `"2024-06-19T08:31:43+09:00"` (RFC 3339 / ISO 8601 with offset).
+    fn parse_iso_timestamp(iso_str: &str) -> Option<i64> {
+        chrono::DateTime::parse_from_rfc3339(iso_str)
+            .ok()
+            .map(|dt| dt.timestamp_millis())
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════
@@ -325,7 +326,11 @@ impl UpbitParser {
             average_price,
             commission: None,
             commission_asset: None,
-            created_at: 0, // TODO: Parse created_at ISO 8601
+            created_at: data
+                .get("created_at")
+                .and_then(|v| v.as_str())
+                .and_then(Self::parse_iso_timestamp)
+                .unwrap_or(0),
             updated_at: None,
             time_in_force: crate::core::TimeInForce::Gtc,
         })

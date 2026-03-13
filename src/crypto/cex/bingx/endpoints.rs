@@ -80,6 +80,22 @@ pub enum BingxEndpoint {
     SwapPositions,
     SwapLeverage,
     SwapMarginType,
+
+    // === ACCOUNT TRANSFERS ===
+    InnerTransfer,
+    TransferHistory,
+
+    // === CUSTODIAL FUNDS ===
+    DepositAddress,
+    Withdraw,
+    DepositHistory,
+    WithdrawHistory,
+
+    // === SUB ACCOUNTS ===
+    SubAccountCreate,
+    SubAccountList,
+    SubAccountTransfer,
+    SubAccountAssets,
 }
 
 impl BingxEndpoint {
@@ -132,6 +148,22 @@ impl BingxEndpoint {
             Self::SwapPositions => "/openApi/swap/v2/user/positions",
             Self::SwapLeverage => "/openApi/swap/v2/trade/leverage",
             Self::SwapMarginType => "/openApi/swap/v2/trade/marginType",
+
+            // Account Transfers
+            Self::InnerTransfer => "/openApi/api/v3/post/account/innerTransfer",
+            Self::TransferHistory => "/openApi/api/v3/get/asset/transfer",
+
+            // Custodial Funds
+            Self::DepositAddress => "/openApi/wallets/v1/capital/deposit/address",
+            Self::Withdraw => "/openApi/wallets/v1/capital/withdraw/apply",
+            Self::DepositHistory => "/openApi/api/v3/capital/deposit/hisrec",
+            Self::WithdrawHistory => "/openApi/api/v3/capital/withdraw/history",
+
+            // Sub Accounts
+            Self::SubAccountCreate => "/openApi/subAccount/v1/create",
+            Self::SubAccountList => "/openApi/subAccount/v1/list",
+            Self::SubAccountTransfer => "/openApi/subAccount/v1/transfer",
+            Self::SubAccountAssets => "/openApi/subAccount/v1/assets",
         }
     }
 
@@ -166,7 +198,11 @@ impl BingxEndpoint {
             | Self::SwapCloseAllPositions
             | Self::SwapLeverage
             | Self::SwapMarginType
-            | Self::SwapAmend => "POST",
+            | Self::SwapAmend
+            | Self::InnerTransfer
+            | Self::Withdraw
+            | Self::SubAccountCreate
+            | Self::SubAccountTransfer => "POST",
 
             Self::SpotCancelAllOrders
             | Self::SwapCancelAllOrders

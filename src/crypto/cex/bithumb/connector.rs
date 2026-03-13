@@ -28,8 +28,12 @@ use crate::core::{
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };
 use crate::core::http::RetryConfig;
+use crate::core::types::{
+    WithdrawRequest, WithdrawResponse, DepositAddress,
+    FundsHistoryFilter, FundsRecord, FundsRecordType,
+};
 use crate::core::traits::{
-    ExchangeIdentity, MarketData, Trading, Account, Positions,
+    ExchangeIdentity, MarketData, Trading, Account, Positions, CustodialFunds,
 };
 use crate::core::utils::SimpleRateLimiter;
 
@@ -601,11 +605,358 @@ impl Positions for BithumbConnector {
                 Err(ExchangeError::UnsupportedOperation(
                 format!("Set leverage not supported for {:?}", account_type)
                 ))
-    
+
             }
             _ => Err(ExchangeError::UnsupportedOperation(
                 format!("{:?} not supported on {:?}", req, self.exchange_id())
             )),
         }
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CUSTODIAL FUNDS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Bithumb Pro supports custodial deposit/withdrawal operations.
+///
+/// - Deposit address: `POST /wallet/depositAddress`
+/// - Withdraw: `POST /withdraw`
+/// - Deposit history: `POST /wallet/depositHistory`
+/// - Withdrawal history: `POST /wallet/withdrawHistory`
+#[async_trait]
+impl CustodialFunds for BithumbConnector {
+    async fn get_deposit_address(
+        &self,
+        asset: &str,
+        network: Option<&str>,
+    ) -> ExchangeResult<DepositAddress> {
+        let mut params = HashMap::new();
+        params.insert("coinType".to_string(), asset.to_uppercase());
+        if let Some(net) = network {
+            params.insert("chain".to_string(), net.to_string());
+        }
+
+        let response = self.post(
+            BithumbEndpoint::SpotDepositAddress,
+            params,
+            AccountType::Spot,
+        ).await?;
+
+        let data = BithumbParser::extract_data(&response)?;
+
+        let address = data.get("address")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'address' field".to_string()))?
+            .to_string();
+
+        let tag = data.get("tag")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+
+        let returned_network = data.get("chain")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .or_else(|| network.map(String::from));
+
+        Ok(DepositAddress {
+            address,
+            tag,
+            network: returned_network,
+            asset: asset.to_uppercase(),
+            created_at: None,
+        })
+    }
+
+    async fn withdraw(&self, req: WithdrawRequest) -> ExchangeResult<WithdrawResponse> {
+        let mut params = HashMap::new();
+        params.insert("coinType".to_string(), req.asset.to_uppercase());
+        params.insert("quantity".to_string(), req.amount.to_string());
+        params.insert("addr".to_string(), req.address.clone());
+
+        if let Some(tag) = &req.tag {
+            params.insert("destination".to_string(), tag.clone());
+        }
+
+        if let Some(network) = &req.network {
+            params.insert("chain".to_string(), network.clone());
+        }
+
+        let response = self.post(
+            BithumbEndpoint::SpotWithdraw,
+            params,
+            AccountType::Spot,
+        ).await?;
+
+        let data = BithumbParser::extract_data(&response)?;
+
+        let withdraw_id = data.get("orderId")
+            .or_else(|| data.get("withdrawId"))
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| "submitted".to_string());
+
+        Ok(WithdrawResponse {
+            withdraw_id,
+            status: "Pending".to_string(),
+            tx_hash: None,
+        })
+    }
+
+    async fn get_funds_history(
+        &self,
+        filter: FundsHistoryFilter,
+    ) -> ExchangeResult<Vec<FundsRecord>> {
+        match filter.record_type {
+            FundsRecordType::Deposit => {
+                let mut params = HashMap::new();
+                if let Some(asset) = &filter.asset {
+                    params.insert("coinType".to_string(), asset.to_uppercase());
+                }
+                if let Some(limit) = filter.limit {
+                    params.insert("limit".to_string(), limit.to_string());
+                }
+
+                let response = self.post(
+                    BithumbEndpoint::SpotDepositHistory,
+                    params,
+                    AccountType::Spot,
+                ).await?;
+
+                parse_deposit_history(&response)
+            }
+            FundsRecordType::Withdrawal => {
+                let mut params = HashMap::new();
+                if let Some(asset) = &filter.asset {
+                    params.insert("coinType".to_string(), asset.to_uppercase());
+                }
+                if let Some(limit) = filter.limit {
+                    params.insert("limit".to_string(), limit.to_string());
+                }
+
+                let response = self.post(
+                    BithumbEndpoint::SpotWithdrawHistory,
+                    params,
+                    AccountType::Spot,
+                ).await?;
+
+                parse_withdrawal_history(&response)
+            }
+            FundsRecordType::Both => {
+                let asset_upper = filter.asset.as_deref().map(str::to_uppercase);
+
+                let mut dep_params = HashMap::new();
+                let mut wit_params = HashMap::new();
+                if let Some(ref asset) = asset_upper {
+                    dep_params.insert("coinType".to_string(), asset.clone());
+                    wit_params.insert("coinType".to_string(), asset.clone());
+                }
+                if let Some(limit) = filter.limit {
+                    dep_params.insert("limit".to_string(), limit.to_string());
+                    wit_params.insert("limit".to_string(), limit.to_string());
+                }
+
+                let dep_response = self.post(
+                    BithumbEndpoint::SpotDepositHistory,
+                    dep_params,
+                    AccountType::Spot,
+                ).await?;
+                let wit_response = self.post(
+                    BithumbEndpoint::SpotWithdrawHistory,
+                    wit_params,
+                    AccountType::Spot,
+                ).await?;
+
+                let mut records = parse_deposit_history(&dep_response)?;
+                records.extend(parse_withdrawal_history(&wit_response)?);
+                Ok(records)
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FUNDS HISTORY PARSING HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Parse deposit history response from Bithumb Pro.
+///
+/// Expected format:
+/// ```json
+/// {
+///   "code": "0",
+///   "data": {
+///     "list": [
+///       {
+///         "coinType": "BTC",
+///         "quantity": "0.5",
+///         "txId": "abc123",
+///         "chain": "BTC",
+///         "status": "success",
+///         "createTime": 1650000000000
+///       }
+///     ]
+///   }
+/// }
+/// ```
+fn parse_deposit_history(response: &serde_json::Value) -> ExchangeResult<Vec<FundsRecord>> {
+    BithumbParser::check_response(response)?;
+    let data = BithumbParser::extract_data(response)?;
+
+    let items = data.get("list")
+        .and_then(|v| v.as_array())
+        .or_else(|| data.as_array())
+        .ok_or_else(|| ExchangeError::Parse("Expected array in deposit history".to_string()))?;
+
+    let mut records = Vec::with_capacity(items.len());
+    for item in items {
+        let id = item.get("id")
+            .or_else(|| item.get("txId"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let asset = item.get("coinType")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let amount = item.get("quantity")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse().ok())
+            .or_else(|| item.get("quantity").and_then(|v| v.as_f64()))
+            .unwrap_or(0.0);
+
+        let tx_hash = item.get("txId")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+
+        let network = item.get("chain")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        let status = item.get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        let timestamp = item.get("createTime")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+
+        records.push(FundsRecord::Deposit {
+            id,
+            asset,
+            amount,
+            tx_hash,
+            network,
+            status,
+            timestamp,
+        });
+    }
+
+    Ok(records)
+}
+
+/// Parse withdrawal history response from Bithumb Pro.
+///
+/// Expected format:
+/// ```json
+/// {
+///   "code": "0",
+///   "data": {
+///     "list": [
+///       {
+///         "coinType": "BTC",
+///         "quantity": "0.1",
+///         "fee": "0.0005",
+///         "addr": "1A2B3C...",
+///         "destination": "",
+///         "txId": "def456",
+///         "chain": "BTC",
+///         "status": "success",
+///         "createTime": 1650000000000
+///       }
+///     ]
+///   }
+/// }
+/// ```
+fn parse_withdrawal_history(response: &serde_json::Value) -> ExchangeResult<Vec<FundsRecord>> {
+    BithumbParser::check_response(response)?;
+    let data = BithumbParser::extract_data(response)?;
+
+    let items = data.get("list")
+        .and_then(|v| v.as_array())
+        .or_else(|| data.as_array())
+        .ok_or_else(|| ExchangeError::Parse("Expected array in withdrawal history".to_string()))?;
+
+    let mut records = Vec::with_capacity(items.len());
+    for item in items {
+        let id = item.get("id")
+            .or_else(|| item.get("orderId"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let asset = item.get("coinType")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let amount = item.get("quantity")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse().ok())
+            .or_else(|| item.get("quantity").and_then(|v| v.as_f64()))
+            .unwrap_or(0.0);
+
+        let fee = item.get("fee")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse().ok())
+            .or_else(|| item.get("fee").and_then(|v| v.as_f64()));
+
+        let address = item.get("addr")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let tag = item.get("destination")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+
+        let tx_hash = item.get("txId")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+
+        let network = item.get("chain")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        let status = item.get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        let timestamp = item.get("createTime")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+
+        records.push(FundsRecord::Withdrawal {
+            id,
+            asset,
+            amount,
+            fee,
+            address,
+            tag,
+            tx_hash,
+            network,
+            status,
+            timestamp,
+        });
+    }
+
+    Ok(records)
 }

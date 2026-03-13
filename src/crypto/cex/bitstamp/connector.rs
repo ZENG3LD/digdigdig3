@@ -29,11 +29,13 @@ use crate::core::{
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     CancelAllResponse,
     ExchangeIdentity, MarketData, Trading, Account,
-    CancelAll, AmendOrder,
+    CancelAll, AmendOrder, CustodialFunds,
     AmendRequest,
+    DepositAddress, WithdrawResponse, FundsRecord,
 };
 use crate::core::types::SymbolInfo;
 use crate::core::types::ConnectorStats;
+use crate::core::types::{WithdrawRequest, FundsHistoryFilter, FundsRecordType};
 use crate::core::utils::SimpleRateLimiter;
 
 use super::endpoints::{BitstampUrls, BitstampEndpoint, format_symbol, map_kline_interval};
@@ -190,6 +192,72 @@ impl BitstampConnector {
         }
 
         // Set body
+        if !body.is_empty() {
+            request = request.body(body.clone());
+        }
+
+        let response = request.send()
+            .await
+            .map_err(|e| ExchangeError::Network(format!("Request failed: {}", e)))?;
+
+        let status = response.status();
+        let body_text = response.text()
+            .await
+            .map_err(|e| ExchangeError::Network(format!("Failed to read response: {}", e)))?;
+
+        if !status.is_success() {
+            return Err(ExchangeError::Api {
+                code: status.as_u16() as i32,
+                message: body_text,
+            });
+        }
+
+        let json: Value = serde_json::from_str(&body_text)
+            .map_err(|e| ExchangeError::Parse(format!("Failed to parse JSON: {}", e)))?;
+
+        Ok(json)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // POST WITH CUSTOM PATH (for currency-parameterized endpoints)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// POST request using a fully-formed custom path.
+    ///
+    /// Used for Bitstamp endpoints where the path depends on a currency code
+    /// rather than a trading pair (e.g. `/api/v2/btc_address/`).
+    async fn post_path(
+        &self,
+        path: &str,
+        body_params: HashMap<String, String>,
+    ) -> ExchangeResult<Value> {
+        self.rate_limit_wait().await;
+
+        let base_url = BitstampUrls::base_url();
+
+        let body = if body_params.is_empty() {
+            String::new()
+        } else {
+            let pairs: Vec<String> = body_params.iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect();
+            pairs.join("&")
+        };
+
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+        let headers = auth.sign_request("POST", path, "", &body);
+
+        let url = format!("{}{}", base_url, path);
+
+        let mut request = self.reqwest_client
+            .post(&url)
+            .header("Content-Type", "application/x-www-form-urlencoded");
+
+        for (key, value) in headers.iter() {
+            request = request.header(key, value);
+        }
+
         if !body.is_empty() {
             request = request.body(body.clone());
         }
@@ -411,6 +479,25 @@ impl Trading for BitstampConnector {
                         let response = self.post(endpoint, Some(&pair), params).await?;
                         BitstampParser::parse_order(&response).map(PlaceOrderResponse::Simple)
             }
+            OrderType::StopLimit { stop_price, limit_price } => {
+                // Bitstamp only supports sell-side stop-limit orders.
+                // Buy-side stop-limit is not available via the REST API.
+                if side != OrderSide::Sell {
+                    return Err(ExchangeError::UnsupportedOperation(
+                        "Buy-side StopLimit not supported on Bitstamp — only sell-side".to_string()
+                    ));
+                }
+
+                let pair = format_symbol(&symbol, account_type);
+                let mut params = HashMap::new();
+                params.insert("amount".to_string(), quantity.to_string());
+                params.insert("stop_price".to_string(), stop_price.to_string());
+                params.insert("limit_price".to_string(), limit_price.to_string());
+
+                let response = self.post(BitstampEndpoint::SellStopLimit, Some(&pair), params).await?;
+                BitstampParser::parse_order(&response).map(PlaceOrderResponse::Simple)
+            }
+
             _ => Err(ExchangeError::UnsupportedOperation(
                 format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
             )),
@@ -589,6 +676,176 @@ impl AmendOrder for BitstampConnector {
 
         let response = self.post(BitstampEndpoint::ReplaceOrder, None, params).await?;
         BitstampParser::parse_order(&response)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CUSTODIAL FUNDS (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl CustodialFunds for BitstampConnector {
+    /// Get deposit address for an asset.
+    ///
+    /// Bitstamp uses currency-specific endpoints:
+    /// `POST /api/v2/{currency}_address/` — e.g. `/api/v2/btc_address/`
+    async fn get_deposit_address(
+        &self,
+        asset: &str,
+        _network: Option<&str>,
+    ) -> ExchangeResult<DepositAddress> {
+        let currency = asset.to_lowercase();
+        let path = format!("/api/v2/{}_address/", currency);
+
+        let response = self.post_path(&path, HashMap::new()).await?;
+
+        // Response: {"address": "...", "destination_tag": "..."} or {"address": "..."}
+        let address = response.get("address")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ExchangeError::Parse("Missing address in deposit address response".to_string()))?
+            .to_string();
+
+        let tag = response.get("destination_tag")
+            .or_else(|| response.get("memo"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        Ok(DepositAddress {
+            address,
+            tag,
+            network: None, // Bitstamp doesn't return network info here
+            asset: asset.to_string(),
+            created_at: None,
+        })
+    }
+
+    /// Submit a withdrawal request.
+    ///
+    /// Bitstamp uses currency-specific endpoints:
+    /// `POST /api/v2/{currency}_withdrawal/` — e.g. `/api/v2/btc_withdrawal/`
+    /// Params: amount, address, destination_tag
+    async fn withdraw(&self, req: WithdrawRequest) -> ExchangeResult<WithdrawResponse> {
+        let currency = req.asset.to_lowercase();
+        let path = format!("/api/v2/{}_withdrawal/", currency);
+
+        let mut params = HashMap::new();
+        params.insert("amount".to_string(), req.amount.to_string());
+        params.insert("address".to_string(), req.address.clone());
+
+        if let Some(tag) = &req.tag {
+            params.insert("destination_tag".to_string(), tag.clone());
+        }
+
+        let response = self.post_path(&path, params).await?;
+
+        // Response: {"id": 12345, ...} on success
+        let withdraw_id = response.get("id")
+            .and_then(|v| v.as_i64())
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "0".to_string());
+
+        Ok(WithdrawResponse {
+            withdraw_id,
+            status: "Pending".to_string(),
+            tx_hash: None,
+        })
+    }
+
+    /// Get withdrawal history.
+    ///
+    /// Bitstamp does not provide a standalone deposit history endpoint.
+    /// `POST /api/v2/withdrawal-requests/` — params: timedelta (seconds from now)
+    ///
+    /// Deposit queries return an empty vec since there is no deposit history endpoint.
+    async fn get_funds_history(
+        &self,
+        filter: FundsHistoryFilter,
+    ) -> ExchangeResult<Vec<FundsRecord>> {
+        // Deposits: not available as standalone — return empty
+        if filter.record_type == FundsRecordType::Deposit {
+            return Ok(vec![]);
+        }
+
+        // Withdrawals via /api/v2/withdrawal-requests/
+        let mut params = HashMap::new();
+
+        // timedelta: how many seconds back to look (from now)
+        let timedelta_secs = if let Some(start) = filter.start_time {
+            let now_ms = crate::core::timestamp_millis() as i64;
+            ((now_ms - start) / 1000).max(0) as u64
+        } else {
+            86400 * 30 // default: 30 days
+        };
+
+        params.insert("timedelta".to_string(), timedelta_secs.to_string());
+
+        if let Some(limit) = filter.limit {
+            params.insert("limit".to_string(), limit.min(1000).to_string());
+        }
+
+        let response = self.post(BitstampEndpoint::WithdrawalRequests, None, params).await?;
+
+        let records = if let Some(arr) = response.as_array() {
+            arr.iter().filter_map(|item| {
+                let obj = item.as_object()?;
+
+                // Filter by asset if specified
+                let currency = obj.get("currency")
+                    .or_else(|| obj.get("asset"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_uppercase();
+
+                if let Some(ref asset_filter) = filter.asset {
+                    if !currency.eq_ignore_ascii_case(asset_filter) {
+                        return None;
+                    }
+                }
+
+                let id = obj.get("id")?.as_i64()?.to_string();
+                let amount_str = obj.get("amount").and_then(|v| v.as_str()).unwrap_or("0");
+                let amount = amount_str.parse::<f64>().unwrap_or(0.0);
+                let address = obj.get("address")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let timestamp = obj.get("datetime")
+                    .or_else(|| obj.get("created_at"))
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                let status_code = obj.get("status").and_then(|v| v.as_i64()).unwrap_or(0);
+                let status = match status_code {
+                    0 => "Open",
+                    1 => "InProcess",
+                    2 => "Finished",
+                    3 => "Canceled",
+                    4 => "Failed",
+                    _ => "Unknown",
+                }.to_string();
+                let tx_hash = obj.get("transaction_id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+
+                Some(FundsRecord::Withdrawal {
+                    id,
+                    asset: currency,
+                    amount,
+                    fee: None,
+                    address,
+                    tag: None,
+                    tx_hash,
+                    network: None,
+                    status,
+                    timestamp,
+                })
+            }).collect()
+        } else {
+            vec![]
+        };
+
+        Ok(records)
     }
 }
 

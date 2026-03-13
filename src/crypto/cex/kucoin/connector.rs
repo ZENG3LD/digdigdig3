@@ -31,12 +31,18 @@ use crate::core::{
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     AmendRequest, CancelAllResponse, OrderResult,
+    TransferResponse, DepositAddress, WithdrawResponse, FundsRecord,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
     CancelAll, AmendOrder, BatchOrders,
+    AccountTransfers, CustodialFunds, SubAccounts,
 };
-use crate::core::types::ConnectorStats;
+use crate::core::types::{
+    TransferRequest, TransferHistoryFilter, WithdrawRequest,
+    FundsHistoryFilter, FundsRecordType, SubAccountOperation, SubAccountResult,
+    SubAccount, ConnectorStats,
+};
 use crate::core::utils::WeightRateLimiter;
 
 use super::endpoints::{KuCoinUrls, KuCoinEndpoint, format_symbol, map_kline_interval, map_futures_granularity};
@@ -1622,5 +1628,512 @@ impl AmendOrder for KuCoinConnector {
 
         let symbol_str = format_symbol(&req.symbol.base, &req.symbol.quote, account_type);
         KuCoinParser::parse_amend_order(&response, &symbol_str)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT TRANSFERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Internal transfers between KuCoin account types.
+///
+/// - Transfer: `POST /api/v3/accounts/inner-transfer`
+/// - History:  `GET  /api/v1/accounts/inner-transfer`
+///
+/// AccountType mapping:
+/// - `Spot`           → `"main"`   (Main/funding account)
+/// - `FuturesCross`   → `"trade"`  (Spot trade account)
+/// - `Margin`         → `"margin"` (Margin account)
+#[async_trait]
+impl AccountTransfers for KuCoinConnector {
+    async fn transfer(&self, req: TransferRequest) -> ExchangeResult<TransferResponse> {
+        fn map_account(at: AccountType) -> &'static str {
+            match at {
+                AccountType::Spot => "main",
+                AccountType::FuturesCross | AccountType::FuturesIsolated => "trade",
+                AccountType::Margin => "margin",
+            }
+        }
+
+        let client_oid = format!("cc_{}", crate::core::timestamp_millis());
+        let body = json!({
+            "clientOid": client_oid,
+            "currency": req.asset,
+            "from": map_account(req.from_account),
+            "to": map_account(req.to_account),
+            "amount": req.amount.to_string(),
+        });
+
+        let account_type = AccountType::Spot; // transfers use spot base URL
+        let base_url = self.urls.rest_url(account_type);
+        let path = KuCoinEndpoint::InnerTransfer.path();
+        let url = format!("{}{}", base_url, path);
+
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+        let body_str = body.to_string();
+        let headers = auth.sign_request("POST", path, &body_str);
+
+        let response = self.http.post(&url, &body, &headers).await?;
+        self.check_response(&response)?;
+
+        let data = KuCoinParser::extract_data(&response)?;
+        let transfer_id = data.get("orderId")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&client_oid)
+            .to_string();
+
+        Ok(TransferResponse {
+            transfer_id,
+            status: "Successful".to_string(),
+            asset: req.asset,
+            amount: req.amount,
+            timestamp: Some(crate::core::timestamp_millis() as i64),
+        })
+    }
+
+    async fn get_transfer_history(
+        &self,
+        filter: TransferHistoryFilter,
+    ) -> ExchangeResult<Vec<TransferResponse>> {
+        let account_type = AccountType::Spot;
+        let base_url = self.urls.rest_url(account_type);
+        let path = KuCoinEndpoint::TransferHistory.path();
+
+        let mut params: HashMap<String, String> = HashMap::new();
+        if let Some(start) = filter.start_time {
+            params.insert("startAt".to_string(), start.to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("endAt".to_string(), end.to_string());
+        }
+        if let Some(limit) = filter.limit {
+            params.insert("pageSize".to_string(), limit.min(500).to_string());
+        }
+
+        let query = if params.is_empty() {
+            String::new()
+        } else {
+            let qs: Vec<String> = params.iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect();
+            format!("?{}", qs.join("&"))
+        };
+
+        let url = format!("{}{}{}", base_url, path, query);
+        let full_path = format!("{}{}", path, query);
+
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+        let headers = auth.sign_request("GET", &full_path, "");
+
+        let response = self.http.get_with_headers(&url, &HashMap::new(), &headers).await?;
+        self.check_response(&response)?;
+
+        let data = KuCoinParser::extract_data(&response)?;
+        let items = data.get("items")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut records = Vec::with_capacity(items.len());
+        for item in items {
+            let transfer_id = item.get("orderId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let asset = item.get("currency")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let amount = item.get("amount")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let status = item.get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("DONE")
+                .to_string();
+            let timestamp = item.get("createdAt")
+                .and_then(|v| v.as_i64());
+            records.push(TransferResponse {
+                transfer_id,
+                status,
+                asset,
+                amount,
+                timestamp,
+            });
+        }
+
+        Ok(records)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CUSTODIAL FUNDS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Deposit and withdrawal management for KuCoin.
+///
+/// - Deposit address: `GET  /api/v3/deposit-addresses`
+/// - Withdraw:        `POST /api/v1/withdrawals`
+/// - Deposit history: `GET  /api/v1/deposits`
+/// - Withdrawal hist: `GET  /api/v1/withdrawals`
+#[async_trait]
+impl CustodialFunds for KuCoinConnector {
+    async fn get_deposit_address(
+        &self,
+        asset: &str,
+        network: Option<&str>,
+    ) -> ExchangeResult<DepositAddress> {
+        let account_type = AccountType::Spot;
+        let base_url = self.urls.rest_url(account_type);
+        let path = KuCoinEndpoint::DepositAddress.path();
+
+        let mut params = HashMap::new();
+        params.insert("currency".to_string(), asset.to_string());
+        if let Some(chain) = network {
+            params.insert("chain".to_string(), chain.to_string());
+        }
+
+        let query: Vec<String> = params.iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        let query_str = query.join("&");
+        let url = format!("{}{}?{}", base_url, path, query_str);
+        let full_path = format!("{}?{}", path, query_str);
+
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+        let headers = auth.sign_request("GET", &full_path, "");
+
+        let response = self.http.get_with_headers(&url, &HashMap::new(), &headers).await?;
+        self.check_response(&response)?;
+
+        let data = KuCoinParser::extract_data(&response)?;
+        let address = data.get("address")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ExchangeError::Parse("Missing address field".to_string()))?
+            .to_string();
+        let tag = data.get("memo")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+        let network_out = data.get("chain")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        Ok(DepositAddress {
+            address,
+            tag,
+            network: network_out,
+            asset: asset.to_string(),
+            created_at: None,
+        })
+    }
+
+    async fn withdraw(&self, req: WithdrawRequest) -> ExchangeResult<WithdrawResponse> {
+        let account_type = AccountType::Spot;
+        let base_url = self.urls.rest_url(account_type);
+        let path = KuCoinEndpoint::Withdraw.path();
+        let url = format!("{}{}", base_url, path);
+
+        let mut body = json!({
+            "currency": req.asset,
+            "address": req.address,
+            "amount": req.amount,
+        });
+        if let Some(chain) = req.network {
+            body["chain"] = json!(chain);
+        }
+        if let Some(memo) = req.tag {
+            body["memo"] = json!(memo);
+        }
+
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+        let body_str = body.to_string();
+        let headers = auth.sign_request("POST", path, &body_str);
+
+        let response = self.http.post(&url, &body, &headers).await?;
+        self.check_response(&response)?;
+
+        let data = KuCoinParser::extract_data(&response)?;
+        let withdraw_id = data.get("withdrawalId")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        Ok(WithdrawResponse {
+            withdraw_id,
+            status: "Pending".to_string(),
+            tx_hash: None,
+        })
+    }
+
+    async fn get_funds_history(
+        &self,
+        filter: FundsHistoryFilter,
+    ) -> ExchangeResult<Vec<FundsRecord>> {
+        let account_type = AccountType::Spot;
+        let base_url = self.urls.rest_url(account_type);
+
+        let endpoint = match filter.record_type {
+            FundsRecordType::Deposit => KuCoinEndpoint::DepositHistory,
+            FundsRecordType::Withdrawal => KuCoinEndpoint::WithdrawalHistory,
+            FundsRecordType::Both => KuCoinEndpoint::DepositHistory, // fetch deposits first
+        };
+
+        let path = endpoint.path();
+
+        let mut params: HashMap<String, String> = HashMap::new();
+        if let Some(ref asset) = filter.asset {
+            params.insert("currency".to_string(), asset.clone());
+        }
+        if let Some(start) = filter.start_time {
+            params.insert("startAt".to_string(), start.to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("endAt".to_string(), end.to_string());
+        }
+        if let Some(limit) = filter.limit {
+            params.insert("pageSize".to_string(), limit.min(500).to_string());
+        }
+
+        let query = if params.is_empty() {
+            String::new()
+        } else {
+            let qs: Vec<String> = params.iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect();
+            format!("?{}", qs.join("&"))
+        };
+
+        let url = format!("{}{}{}", base_url, path, query);
+        let full_path = format!("{}{}", path, query);
+
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+        let headers = auth.sign_request("GET", &full_path, "");
+
+        let response = self.http.get_with_headers(&url, &HashMap::new(), &headers).await?;
+        self.check_response(&response)?;
+
+        let data = KuCoinParser::extract_data(&response)?;
+        let items = data.get("items")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let is_deposit = matches!(filter.record_type, FundsRecordType::Deposit | FundsRecordType::Both);
+        let mut records = Vec::with_capacity(items.len());
+
+        for item in items {
+            let id = item.get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let asset = item.get("currency")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let amount = item.get("amount")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let status = item.get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("UNKNOWN")
+                .to_string();
+            let timestamp = item.get("createdAt")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let tx_hash = item.get("txId")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            let network = item.get("chain")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+
+            if is_deposit {
+                records.push(FundsRecord::Deposit {
+                    id,
+                    asset,
+                    amount,
+                    tx_hash,
+                    network,
+                    status,
+                    timestamp,
+                });
+            } else {
+                let fee = item.get("fee")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<f64>().ok());
+                let address = item.get("address")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let tag = item.get("memo")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(String::from);
+                records.push(FundsRecord::Withdrawal {
+                    id,
+                    asset,
+                    amount,
+                    fee,
+                    address,
+                    tag,
+                    tx_hash,
+                    network,
+                    status,
+                    timestamp,
+                });
+            }
+        }
+
+        Ok(records)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SUB-ACCOUNTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Sub-account management for KuCoin.
+///
+/// - Create:   `POST /api/v2/sub/user/created`
+/// - List:     `GET  /api/v2/sub/user`
+/// - Transfer: `POST /api/v2/accounts/sub-transfer`
+/// - Balance:  `GET  /api/v1/sub-accounts/{subUserId}`
+#[async_trait]
+impl SubAccounts for KuCoinConnector {
+    async fn sub_account_operation(
+        &self,
+        op: SubAccountOperation,
+    ) -> ExchangeResult<SubAccountResult> {
+        let account_type = AccountType::Spot;
+        let base_url = self.urls.rest_url(account_type);
+
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+
+        match op {
+            SubAccountOperation::Create { label } => {
+                let path = KuCoinEndpoint::SubAccountCreate.path();
+                let url = format!("{}{}", base_url, path);
+                let body = json!({
+                    "subName": label,
+                    "access": "All",
+                });
+                let body_str = body.to_string();
+                let headers = auth.sign_request("POST", path, &body_str);
+                let response = self.http.post(&url, &body, &headers).await?;
+                self.check_response(&response)?;
+
+                let data = KuCoinParser::extract_data(&response)?;
+                let uid = data.get("uid")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| data.get("userId").and_then(|v| v.as_str()))
+                    .unwrap_or("")
+                    .to_string();
+                let name = data.get("subName")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&label)
+                    .to_string();
+
+                Ok(SubAccountResult {
+                    id: Some(uid),
+                    name: Some(name),
+                    accounts: vec![],
+                    transaction_id: None,
+                })
+            }
+
+            SubAccountOperation::List => {
+                let path = KuCoinEndpoint::SubAccountList.path();
+                let url = format!("{}{}", base_url, path);
+                let headers = auth.sign_request("GET", path, "");
+                let response = self.http.get_with_headers(&url, &HashMap::new(), &headers).await?;
+                self.check_response(&response)?;
+
+                let data = KuCoinParser::extract_data(&response)?;
+                let items = data.as_array().cloned().unwrap_or_default();
+
+                let accounts: Vec<SubAccount> = items.iter().map(|item| {
+                    SubAccount {
+                        id: item.get("userId")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        name: item.get("subName")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        status: item.get("status")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Normal")
+                            .to_string(),
+                    }
+                }).collect();
+
+                Ok(SubAccountResult {
+                    id: None,
+                    name: None,
+                    accounts,
+                    transaction_id: None,
+                })
+            }
+
+            SubAccountOperation::Transfer { sub_account_id, asset, amount, to_sub } => {
+                let path = KuCoinEndpoint::SubAccountTransfer.path();
+                let url = format!("{}{}", base_url, path);
+                let direction = if to_sub { "OUT" } else { "IN" };
+                let client_oid = format!("cc_{}", crate::core::timestamp_millis());
+                let body = json!({
+                    "clientOid": client_oid,
+                    "currency": asset,
+                    "amount": amount.to_string(),
+                    "direction": direction,
+                    "subUserId": sub_account_id,
+                    "accountType": "MAIN",
+                });
+                let body_str = body.to_string();
+                let headers = auth.sign_request("POST", path, &body_str);
+                let response = self.http.post(&url, &body, &headers).await?;
+                self.check_response(&response)?;
+
+                let data = KuCoinParser::extract_data(&response)?;
+                let order_id = data.get("orderId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&client_oid)
+                    .to_string();
+
+                Ok(SubAccountResult {
+                    id: Some(sub_account_id),
+                    name: None,
+                    accounts: vec![],
+                    transaction_id: Some(order_id),
+                })
+            }
+
+            SubAccountOperation::GetBalance { sub_account_id } => {
+                let path = KuCoinEndpoint::SubAccountBalance.path()
+                    .replace("{subUserId}", &sub_account_id);
+                let url = format!("{}{}", base_url, path);
+                let headers = auth.sign_request("GET", &path, "");
+                let response = self.http.get_with_headers(&url, &HashMap::new(), &headers).await?;
+                self.check_response(&response)?;
+
+                Ok(SubAccountResult {
+                    id: Some(sub_account_id),
+                    name: None,
+                    accounts: vec![],
+                    transaction_id: None,
+                })
+            }
+        }
     }
 }

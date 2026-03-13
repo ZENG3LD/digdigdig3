@@ -128,6 +128,22 @@ pub enum BitgetEndpoint {
     // === COMMON ===
     TradeRate,
     VipFeeRate,
+
+    // === TRANSFERS ===
+    Transfer,                    // POST /api/v2/spot/wallet/transfer
+    TransferHistory,             // GET  /api/v2/spot/account/transferRecords
+
+    // === CUSTODIAL FUNDS ===
+    DepositAddress,              // GET  /api/v2/spot/wallet/deposit-address
+    Withdraw,                    // POST /api/v2/spot/wallet/withdrawal
+    DepositHistory,              // GET  /api/v2/spot/wallet/deposit-records
+    WithdrawHistory,             // GET  /api/v2/spot/wallet/withdrawal-records
+
+    // === SUB ACCOUNTS ===
+    SubAccountCreate,            // POST /api/v2/user/create-virtual-subaccount
+    SubAccountList,              // GET  /api/v2/user/virtual-subaccount-list
+    SubAccountTransfer,          // POST /api/v2/user/virtual-subaccount-transfer
+    SubAccountAssets,            // GET  /api/v2/user/virtual-subaccount-assets
 }
 
 impl BitgetEndpoint {
@@ -201,6 +217,22 @@ impl BitgetEndpoint {
             // Common
             Self::TradeRate => "/api/v2/common/trade-rate",
             Self::VipFeeRate => "/api/v2/spot/market/vip-fee-rate",
+
+            // Transfers
+            Self::Transfer => "/api/v2/spot/wallet/transfer",
+            Self::TransferHistory => "/api/v2/spot/account/transferRecords",
+
+            // Custodial Funds
+            Self::DepositAddress => "/api/v2/spot/wallet/deposit-address",
+            Self::Withdraw => "/api/v2/spot/wallet/withdrawal",
+            Self::DepositHistory => "/api/v2/spot/wallet/deposit-records",
+            Self::WithdrawHistory => "/api/v2/spot/wallet/withdrawal-records",
+
+            // Sub Accounts
+            Self::SubAccountCreate => "/api/v2/user/create-virtual-subaccount",
+            Self::SubAccountList => "/api/v2/user/virtual-subaccount-list",
+            Self::SubAccountTransfer => "/api/v2/user/virtual-subaccount-transfer",
+            Self::SubAccountAssets => "/api/v2/user/virtual-subaccount-assets",
         }
     }
 
@@ -249,7 +281,11 @@ impl BitgetEndpoint {
             | Self::FuturesTwapOrder
             | Self::FuturesSetLeverage
             | Self::FuturesSetMarginMode
-            | Self::FuturesSetMargin => "POST",
+            | Self::FuturesSetMargin
+            | Self::Transfer
+            | Self::Withdraw
+            | Self::SubAccountCreate
+            | Self::SubAccountTransfer => "POST",
 
             _ => "GET",
         }

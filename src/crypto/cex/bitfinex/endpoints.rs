@@ -70,6 +70,18 @@ pub enum BitfinexEndpoint {
     Positions,
     PositionHistory,
     PositionSnapshot,
+
+    // === ACCOUNT TRANSFERS ===
+    Transfer,
+
+    // === CUSTODIAL FUNDS ===
+    DepositAddress,
+    Withdraw,
+    Movements,
+
+    // === SUB ACCOUNTS ===
+    SubAccountList,
+    SubAccountTransfer,
 }
 
 impl BitfinexEndpoint {
@@ -107,6 +119,18 @@ impl BitfinexEndpoint {
             Self::Positions => "/auth/r/positions",
             Self::PositionHistory => "/auth/r/positions/hist",
             Self::PositionSnapshot => "/auth/r/positions/snap",
+
+            // Account Transfers
+            Self::Transfer => "/auth/w/transfer",
+
+            // Custodial Funds
+            Self::DepositAddress => "/auth/w/deposit/address",
+            Self::Withdraw => "/auth/w/withdraw",
+            Self::Movements => "/auth/r/movements/{symbol}/hist",
+
+            // Sub Accounts
+            Self::SubAccountList => "/auth/r/sub_accounts/list",
+            Self::SubAccountTransfer => "/auth/w/sub_account/transfer",
         }
     }
 
@@ -145,7 +169,13 @@ impl BitfinexEndpoint {
             | Self::TradeHistoryBySymbol
             | Self::Positions
             | Self::PositionHistory
-            | Self::PositionSnapshot => "POST",
+            | Self::PositionSnapshot
+            | Self::Transfer
+            | Self::DepositAddress
+            | Self::Withdraw
+            | Self::Movements
+            | Self::SubAccountList
+            | Self::SubAccountTransfer => "POST",
 
             // GET for all public endpoints
             _ => "GET",

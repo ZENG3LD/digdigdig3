@@ -18,6 +18,11 @@ impl CoinbaseUrls {
         "https://api.coinbase.com/api/v3/brokerage"
     }
 
+    /// Get v2 API base URL (used for deposits/withdrawals)
+    pub fn v2_url() -> &'static str {
+        "https://api.coinbase.com/v2"
+    }
+
     /// Get public market data base URL (no auth required)
     /// Public endpoints use the /market prefix under the brokerage path
     pub fn market_url() -> &'static str {
@@ -73,6 +78,14 @@ pub enum CoinbaseEndpoint {
     ListOrders,       // GET /orders/historical/batch
     ListFills,        // GET /orders/historical/fills
     PreviewOrder,     // POST /orders/preview
+
+    // === CUSTODIAL FUNDS (v2 API) ===
+    // Note: these use the v2 base URL, not the brokerage URL.
+    // The account_id must be embedded in the path by the connector.
+    V2AccountDeposits,      // GET  /v2/accounts/{id}/deposits
+    V2AccountTransactions,  // GET  /v2/accounts/{id}/transactions
+    V2CreateAddress,        // POST /v2/accounts/{id}/addresses (generate deposit address)
+    V2SendTransaction,      // POST /v2/accounts/{id}/transactions (type=send for withdrawal)
 }
 
 impl CoinbaseEndpoint {
@@ -101,6 +114,12 @@ impl CoinbaseEndpoint {
             Self::ListOrders => "/orders/historical/batch",
             Self::ListFills => "/orders/historical/fills",
             Self::PreviewOrder => "/orders/preview",
+
+            // v2 paths — caller must substitute {account_id} in the path
+            Self::V2AccountDeposits => "/accounts/{account_id}/deposits",
+            Self::V2AccountTransactions => "/accounts/{account_id}/transactions",
+            Self::V2CreateAddress => "/accounts/{account_id}/addresses",
+            Self::V2SendTransaction => "/accounts/{account_id}/transactions",
         }
     }
 
@@ -111,7 +130,9 @@ impl CoinbaseEndpoint {
             Self::CreateOrder
             | Self::CancelOrders
             | Self::EditOrder
-            | Self::PreviewOrder => "POST",
+            | Self::PreviewOrder
+            | Self::V2CreateAddress
+            | Self::V2SendTransaction => "POST",
 
             // GET requests
             _ => "GET",
@@ -127,6 +148,17 @@ impl CoinbaseEndpoint {
             // All other endpoints require authentication
             _ => true,
         }
+    }
+
+    /// Check if this endpoint uses the v2 API base URL (not the brokerage URL)
+    pub fn is_v2(&self) -> bool {
+        matches!(
+            self,
+            Self::V2AccountDeposits
+                | Self::V2AccountTransactions
+                | Self::V2CreateAddress
+                | Self::V2SendTransaction
+        )
     }
 
     /// Check if endpoint has public alternative

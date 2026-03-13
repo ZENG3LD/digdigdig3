@@ -32,15 +32,22 @@ use crate::core::{
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     MarginType,
     AmendRequest, CancelAllResponse, OrderResult,
+    TransferResponse, DepositAddress, WithdrawResponse, FundsRecord,
+};
+use crate::core::types::{
+    TransferRequest, TransferHistoryFilter,
+    WithdrawRequest, FundsHistoryFilter, FundsRecordType,
+    SubAccountOperation, SubAccountResult,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
     CancelAll, AmendOrder, BatchOrders,
+    AccountTransfers, CustodialFunds, SubAccounts,
 };
 use crate::core::types::ConnectorStats;
 use crate::core::utils::WeightRateLimiter;
 
-use super::endpoints::{BybitUrls, BybitEndpoint, format_symbol, account_type_to_category, map_kline_interval};
+use super::endpoints::{BybitUrls, BybitEndpoint, format_symbol, account_type_to_category, account_type_to_transfer_type, map_kline_interval};
 use super::auth::BybitAuth;
 use super::parser::BybitParser;
 
@@ -1769,5 +1776,238 @@ impl BatchOrders for BybitConnector {
 
     fn max_batch_cancel_size(&self) -> usize {
         10 // Bybit limit
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT TRANSFERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Internal transfers between Bybit account types.
+///
+/// Bybit: `POST /v5/asset/transfer/inter-transfer`
+/// Supports UNIFIED, SPOT, CONTRACT, and FUND account types.
+#[async_trait]
+impl AccountTransfers for BybitConnector {
+    async fn transfer(&self, req: TransferRequest) -> ExchangeResult<TransferResponse> {
+        // Generate a unique transfer ID (UUID-like using timestamp)
+        let transfer_id = format!("t{}", crate::core::timestamp_millis());
+
+        let body = serde_json::json!({
+            "transferId": transfer_id,
+            "coin": req.asset,
+            "amount": req.amount.to_string(),
+            "fromAccountType": account_type_to_transfer_type(req.from_account),
+            "toAccountType": account_type_to_transfer_type(req.to_account),
+        });
+
+        let response = self.post(BybitEndpoint::InterTransfer, body).await?;
+        let mut result = BybitParser::parse_transfer_response(&response)?;
+
+        // Fill in the fields that Bybit doesn't echo back in the response
+        result.asset = req.asset;
+        result.amount = req.amount;
+        Ok(result)
+    }
+
+    async fn get_transfer_history(
+        &self,
+        filter: TransferHistoryFilter,
+    ) -> ExchangeResult<Vec<TransferResponse>> {
+        let mut params = HashMap::new();
+
+        if let Some(st) = filter.start_time {
+            params.insert("startTime".to_string(), st.to_string());
+        }
+        if let Some(et) = filter.end_time {
+            params.insert("endTime".to_string(), et.to_string());
+        }
+        if let Some(lim) = filter.limit {
+            params.insert("limit".to_string(), lim.to_string());
+        }
+
+        let response = self.get(BybitEndpoint::TransferHistory, params).await?;
+        BybitParser::parse_transfer_history(&response)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CUSTODIAL FUNDS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Deposit and withdrawal management for Bybit.
+///
+/// - Deposit address: `GET /v5/asset/deposit/query-address`
+/// - Withdraw: `POST /v5/asset/withdraw/create`
+/// - Deposit history: `GET /v5/asset/deposit/query-record`
+/// - Withdrawal history: `GET /v5/asset/withdraw/query-record`
+#[async_trait]
+impl CustodialFunds for BybitConnector {
+    async fn get_deposit_address(
+        &self,
+        asset: &str,
+        network: Option<&str>,
+    ) -> ExchangeResult<DepositAddress> {
+        let mut params = HashMap::new();
+        params.insert("coin".to_string(), asset.to_uppercase());
+
+        if let Some(net) = network {
+            params.insert("chainType".to_string(), net.to_string());
+        }
+
+        let response = self.get(BybitEndpoint::DepositAddress, params).await?;
+        BybitParser::parse_deposit_address(&response, asset, network)
+    }
+
+    async fn withdraw(&self, req: WithdrawRequest) -> ExchangeResult<WithdrawResponse> {
+        let mut body = serde_json::json!({
+            "coin": req.asset,
+            "amount": req.amount.to_string(),
+            "address": req.address,
+            "forceChain": 1,
+        });
+
+        if let Some(net) = req.network {
+            body["chain"] = serde_json::Value::String(net);
+        }
+        if let Some(tag) = req.tag {
+            body["tag"] = serde_json::Value::String(tag);
+        }
+
+        let response = self.post(BybitEndpoint::Withdraw, body).await?;
+        BybitParser::parse_withdraw_response(&response)
+    }
+
+    async fn get_funds_history(
+        &self,
+        filter: FundsHistoryFilter,
+    ) -> ExchangeResult<Vec<FundsRecord>> {
+        match filter.record_type {
+            FundsRecordType::Deposit => {
+                let mut params = HashMap::new();
+                if let Some(ref asset) = filter.asset {
+                    params.insert("coin".to_string(), asset.clone());
+                }
+                if let Some(st) = filter.start_time {
+                    params.insert("startTime".to_string(), st.to_string());
+                }
+                if let Some(et) = filter.end_time {
+                    params.insert("endTime".to_string(), et.to_string());
+                }
+                if let Some(lim) = filter.limit {
+                    params.insert("limit".to_string(), lim.to_string());
+                }
+
+                let response = self.get(BybitEndpoint::DepositHistory, params).await?;
+                BybitParser::parse_deposit_history(&response)
+            }
+            FundsRecordType::Withdrawal => {
+                let mut params = HashMap::new();
+                if let Some(ref asset) = filter.asset {
+                    params.insert("coin".to_string(), asset.clone());
+                }
+                if let Some(st) = filter.start_time {
+                    params.insert("startTime".to_string(), st.to_string());
+                }
+                if let Some(et) = filter.end_time {
+                    params.insert("endTime".to_string(), et.to_string());
+                }
+                if let Some(lim) = filter.limit {
+                    params.insert("limit".to_string(), lim.to_string());
+                }
+
+                let response = self.get(BybitEndpoint::WithdrawHistory, params).await?;
+                BybitParser::parse_withdrawal_history(&response)
+            }
+            FundsRecordType::Both => {
+                // Bybit has separate endpoints — fetch both and merge
+                let deposit_filter = FundsHistoryFilter {
+                    record_type: FundsRecordType::Deposit,
+                    ..filter.clone()
+                };
+                let withdrawal_filter = FundsHistoryFilter {
+                    record_type: FundsRecordType::Withdrawal,
+                    ..filter
+                };
+
+                let mut deposits = self.get_funds_history(deposit_filter).await?;
+                let withdrawals = self.get_funds_history(withdrawal_filter).await?;
+                deposits.extend(withdrawals);
+                Ok(deposits)
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SUB-ACCOUNTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Sub-account management for Bybit.
+///
+/// - Create: `POST /v5/user/create-sub-member`
+/// - List: `GET /v5/user/query-sub-members`
+/// - Transfer: `POST /v5/asset/transfer/universal-transfer`
+/// - Get balance: `GET /v5/asset/transfer/query-account-coins-balance`
+#[async_trait]
+impl SubAccounts for BybitConnector {
+    async fn sub_account_operation(
+        &self,
+        op: SubAccountOperation,
+    ) -> ExchangeResult<SubAccountResult> {
+        match op {
+            SubAccountOperation::Create { label } => {
+                let body = serde_json::json!({
+                    "username": label,
+                    "memberType": 1,  // 1 = normal sub-account
+                });
+
+                let response = self.post(BybitEndpoint::CreateSubMember, body).await?;
+                BybitParser::parse_create_sub_member(&response)
+            }
+
+            SubAccountOperation::List => {
+                let response = self.get(BybitEndpoint::ListSubMembers, HashMap::new()).await?;
+                BybitParser::parse_list_sub_members(&response)
+            }
+
+            SubAccountOperation::Transfer { sub_account_id, asset, amount, to_sub } => {
+                // Universal transfer: master ↔ sub-account
+                // For master → sub: fromMemberId = master UID (empty = self), toMemberId = sub_account_id
+                // For sub → master: fromMemberId = sub_account_id, toMemberId = master UID (empty = self)
+                // Bybit universal transfer requires explicit member IDs.
+                // We use the fromAccountType/toAccountType as UNIFIED for both sides since
+                // we don't have the user's account type preference here.
+                let transfer_id = format!("u{}", crate::core::timestamp_millis());
+
+                let (from_member, to_member) = if to_sub {
+                    ("".to_string(), sub_account_id.clone())
+                } else {
+                    (sub_account_id.clone(), "".to_string())
+                };
+
+                let body = serde_json::json!({
+                    "transferId": transfer_id,
+                    "coin": asset,
+                    "amount": amount.to_string(),
+                    "fromMemberId": from_member,
+                    "toMemberId": to_member,
+                    "fromAccountType": "UNIFIED",
+                    "toAccountType": "UNIFIED",
+                });
+
+                let response = self.post(BybitEndpoint::UniversalTransfer, body).await?;
+                BybitParser::parse_universal_transfer(&response)
+            }
+
+            SubAccountOperation::GetBalance { sub_account_id } => {
+                let mut params = HashMap::new();
+                params.insert("memberId".to_string(), sub_account_id);
+                params.insert("accountType".to_string(), "UNIFIED".to_string());
+
+                let response = self.get(BybitEndpoint::SubAccountBalance, params).await?;
+                BybitParser::parse_sub_account_balance(&response)
+            }
+        }
     }
 }

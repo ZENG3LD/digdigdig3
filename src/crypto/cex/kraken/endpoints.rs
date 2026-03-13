@@ -102,6 +102,17 @@ pub enum KrakenEndpoint {
 
     // === FUTURES LEVERAGE ===
     FuturesSetLeverage,
+
+    // === CUSTODIAL FUNDS (Spot) ===
+    SpotDepositAddresses,   // POST /0/private/DepositAddresses
+    SpotWithdraw,           // POST /0/private/Withdraw
+    SpotDepositStatus,      // POST /0/private/DepositStatus
+    SpotWithdrawStatus,     // POST /0/private/WithdrawStatus
+
+    // === SUB-ACCOUNTS (Spot) ===
+    SpotListSubaccounts,        // POST /0/private/ListSubaccounts
+    SpotTransferToSubaccount,   // POST /0/private/TransferToSubaccount
+    SpotTransferFromSubaccount, // POST /0/private/TransferFromSubaccount
 }
 
 impl KrakenEndpoint {
@@ -152,6 +163,17 @@ impl KrakenEndpoint {
 
             // Futures Leverage
             Self::FuturesSetLeverage => "/derivatives/api/v3/leveragepreferences",
+
+            // Custodial Funds
+            Self::SpotDepositAddresses => "/0/private/DepositAddresses",
+            Self::SpotWithdraw => "/0/private/Withdraw",
+            Self::SpotDepositStatus => "/0/private/DepositStatus",
+            Self::SpotWithdrawStatus => "/0/private/WithdrawStatus",
+
+            // Sub-Accounts
+            Self::SpotListSubaccounts => "/0/private/ListSubaccounts",
+            Self::SpotTransferToSubaccount => "/0/private/TransferToSubaccount",
+            Self::SpotTransferFromSubaccount => "/0/private/TransferFromSubaccount",
         }
     }
 
@@ -192,7 +214,14 @@ impl KrakenEndpoint {
             | Self::FuturesCancelOrder
             | Self::FuturesBatchOrder
             | Self::FuturesEditOrder
-            | Self::FuturesSetLeverage => "POST",
+            | Self::FuturesSetLeverage
+            | Self::SpotDepositAddresses
+            | Self::SpotWithdraw
+            | Self::SpotDepositStatus
+            | Self::SpotWithdrawStatus
+            | Self::SpotListSubaccounts
+            | Self::SpotTransferToSubaccount
+            | Self::SpotTransferFromSubaccount => "POST",
 
             // GET endpoints
             _ => "GET",

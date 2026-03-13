@@ -107,6 +107,34 @@ pub enum OkxEndpoint {
     // === FUNDING ===
     FundingRate,
     FundingRateHistory,
+
+    // === ASSET TRANSFERS ===
+    /// POST /api/v5/asset/transfer
+    AssetTransfer,
+    /// GET /api/v5/asset/transfer-state
+    TransferState,
+    /// GET /api/v5/asset/bills
+    AssetBills,
+
+    // === CUSTODIAL FUNDS ===
+    /// GET /api/v5/asset/deposit-address
+    DepositAddress,
+    /// POST /api/v5/asset/withdrawal
+    Withdrawal,
+    /// GET /api/v5/asset/deposit-history
+    DepositHistory,
+    /// GET /api/v5/asset/withdrawal-history
+    WithdrawalHistory,
+
+    // === SUB-ACCOUNTS ===
+    /// POST /api/v5/users/subaccount/create
+    SubAccountCreate,
+    /// GET /api/v5/users/subaccount/list
+    SubAccountList,
+    /// POST /api/v5/asset/subaccount/transfer
+    SubAccountTransfer,
+    /// GET /api/v5/account/subaccount/balances
+    SubAccountBalances,
 }
 
 impl OkxEndpoint {
@@ -158,6 +186,23 @@ impl OkxEndpoint {
             Self::AlgoOrder => "/api/v5/trade/order-algo",
             Self::AlgoOrderCancel => "/api/v5/trade/cancel-algos",
             Self::AlgoOpenOrders => "/api/v5/trade/orders-algo-pending",
+
+            // Asset Transfers
+            Self::AssetTransfer => "/api/v5/asset/transfer",
+            Self::TransferState => "/api/v5/asset/transfer-state",
+            Self::AssetBills => "/api/v5/asset/bills",
+
+            // Custodial Funds
+            Self::DepositAddress => "/api/v5/asset/deposit-address",
+            Self::Withdrawal => "/api/v5/asset/withdrawal",
+            Self::DepositHistory => "/api/v5/asset/deposit-history",
+            Self::WithdrawalHistory => "/api/v5/asset/withdrawal-history",
+
+            // Sub-accounts
+            Self::SubAccountCreate => "/api/v5/users/subaccount/create",
+            Self::SubAccountList => "/api/v5/users/subaccount/list",
+            Self::SubAccountTransfer => "/api/v5/asset/subaccount/transfer",
+            Self::SubAccountBalances => "/api/v5/account/subaccount/balances",
         }
     }
 
@@ -195,7 +240,11 @@ impl OkxEndpoint {
             | Self::SetLeverage
             | Self::SetPositionMode
             | Self::AlgoOrder
-            | Self::AlgoOrderCancel => "POST",
+            | Self::AlgoOrderCancel
+            | Self::AssetTransfer
+            | Self::Withdrawal
+            | Self::SubAccountCreate
+            | Self::SubAccountTransfer => "POST",
 
             _ => "GET",
         }
@@ -275,5 +324,24 @@ pub fn get_trade_mode(account_type: AccountType) -> &'static str {
         AccountType::Margin => "cross",
         AccountType::FuturesCross => "cross",
         AccountType::FuturesIsolated => "isolated",
+    }
+}
+
+/// Map AccountType to OKX account ID for asset transfer endpoint.
+///
+/// OKX account IDs:
+/// - 1  = Spot (Classic Account)
+/// - 5  = Margin
+/// - 6  = Funding (Asset)
+/// - 18 = Unified Trading Account (SWAP / Futures)
+///
+/// Spot maps to 6 (Funding) as source when transferring from spot wallet,
+/// or to 1 (Spot) when referring to spot trading account.
+/// For simplicity: Spot → 6 (funding/asset), Margin → 5, Futures → 18.
+pub fn get_account_id(account_type: AccountType) -> &'static str {
+    match account_type {
+        AccountType::Spot => "6",
+        AccountType::Margin => "5",
+        AccountType::FuturesCross | AccountType::FuturesIsolated => "18",
     }
 }

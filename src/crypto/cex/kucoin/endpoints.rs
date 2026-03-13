@@ -116,6 +116,32 @@ pub enum KuCoinEndpoint {
     FuturesPosition,
     FuturesSetLeverage,
 
+    // === ACCOUNT TRANSFERS ===
+    /// POST /api/v3/accounts/inner-transfer — transfer between account types
+    InnerTransfer,
+    /// GET /api/v1/accounts/inner-transfer — transfer history (paginated)
+    TransferHistory,
+
+    // === CUSTODIAL FUNDS ===
+    /// GET /api/v3/deposit-addresses — deposit address for an asset/chain
+    DepositAddress,
+    /// POST /api/v1/withdrawals — submit withdrawal request
+    Withdraw,
+    /// GET /api/v1/deposits — deposit history
+    DepositHistory,
+    /// GET /api/v1/withdrawals — withdrawal history
+    WithdrawalHistory,
+
+    // === SUB-ACCOUNTS ===
+    /// POST /api/v2/sub/user/created — create sub-account
+    SubAccountCreate,
+    /// GET /api/v2/sub/user — list sub-accounts
+    SubAccountList,
+    /// POST /api/v2/accounts/sub-transfer — transfer to/from sub-account
+    SubAccountTransfer,
+    /// GET /api/v1/sub-accounts/{subUserId} — get sub-account balance
+    SubAccountBalance,
+
     // === WEBSOCKET ===
     WsPublicToken,
     WsPrivateToken,
@@ -183,6 +209,22 @@ impl KuCoinEndpoint {
             Self::FuturesPosition => "/api/v1/position",
             Self::FuturesSetLeverage => "/api/v1/position/risk-limit-level/change",
 
+            // Account Transfers
+            Self::InnerTransfer => "/api/v3/accounts/inner-transfer",
+            Self::TransferHistory => "/api/v1/accounts/inner-transfer",
+
+            // Custodial Funds
+            Self::DepositAddress => "/api/v3/deposit-addresses",
+            Self::Withdraw => "/api/v1/withdrawals",
+            Self::DepositHistory => "/api/v1/deposits",
+            Self::WithdrawalHistory => "/api/v1/withdrawals",
+
+            // Sub-Accounts
+            Self::SubAccountCreate => "/api/v2/sub/user/created",
+            Self::SubAccountList => "/api/v2/sub/user",
+            Self::SubAccountTransfer => "/api/v2/accounts/sub-transfer",
+            Self::SubAccountBalance => "/api/v1/sub-accounts/{subUserId}",
+
             // WebSocket
             Self::WsPublicToken => "/api/v1/bullet-public",
             Self::WsPrivateToken => "/api/v1/bullet-private",
@@ -224,7 +266,11 @@ impl KuCoinEndpoint {
             | Self::SpotBatchOrders
             | Self::FuturesBatchOrders
             | Self::WsPublicToken
-            | Self::WsPrivateToken => "POST",
+            | Self::WsPrivateToken
+            | Self::InnerTransfer
+            | Self::Withdraw
+            | Self::SubAccountCreate
+            | Self::SubAccountTransfer => "POST",
 
             Self::SpotCancelOrder
             | Self::SpotCancelAllOrders

@@ -36,8 +36,13 @@ use crate::core::types::SymbolInfo;
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
 };
-use crate::core::{CancelAll, AmendOrder, BatchOrders};
+use crate::core::{CancelAll, AmendOrder, BatchOrders, AccountTransfers, CustodialFunds, SubAccounts};
 use crate::core::types::{ConnectorStats, CancelAllResponse, OrderResult};
+use crate::core::types::{
+    TransferRequest, TransferHistoryFilter, TransferResponse,
+    DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord, FundsHistoryFilter, FundsRecordType,
+    SubAccountOperation, SubAccountResult, SubAccount,
+};
 use crate::core::utils::SimpleRateLimiter;
 
 use super::endpoints::{BingxUrls, BingxEndpoint, format_symbol, map_kline_interval};
@@ -1288,5 +1293,406 @@ impl AmendOrder for BingxConnector {
 
         // Fetch the updated order
         self.get_order(&symbol.to_string(), &req.order_id, account_type).await
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT TRANSFERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AccountTransfers for BingxConnector {
+    /// Transfer between Fund and Standard account.
+    ///
+    /// Endpoint: POST /openApi/api/v3/post/account/innerTransfer
+    /// Params: asset, amount, transferSide (FUND_TO_STANDARD | STANDARD_TO_FUND)
+    async fn transfer(&self, req: TransferRequest) -> ExchangeResult<TransferResponse> {
+        use crate::core::AccountType;
+
+        // Determine direction from from_account / to_account
+        let transfer_side = match (&req.from_account, &req.to_account) {
+            (AccountType::Spot, AccountType::FuturesCross)
+            | (AccountType::Spot, AccountType::FuturesIsolated) => "STANDARD_TO_FUND",
+            (AccountType::FuturesCross, AccountType::Spot)
+            | (AccountType::FuturesIsolated, AccountType::Spot) => "FUND_TO_STANDARD",
+            _ => "STANDARD_TO_FUND",
+        };
+
+        let mut params = HashMap::new();
+        params.insert("asset".to_string(), req.asset.clone());
+        params.insert("amount".to_string(), req.amount.to_string());
+        params.insert("transferSide".to_string(), transfer_side.to_string());
+
+        let response = self.post(BingxEndpoint::InnerTransfer, params, AccountType::Spot).await?;
+        self.check_response(&response)?;
+
+        let data = response.get("data").cloned().unwrap_or(serde_json::json!({}));
+        let transfer_id = data.get("tranId")
+            .and_then(|v| v.as_str().map(String::from)
+                .or_else(|| v.as_i64().map(|n| n.to_string())))
+            .unwrap_or_else(|| "unknown".to_string());
+
+        Ok(TransferResponse {
+            transfer_id,
+            status: "Successful".to_string(),
+            asset: req.asset,
+            amount: req.amount,
+            timestamp: None,
+        })
+    }
+
+    /// Get internal transfer history.
+    ///
+    /// Endpoint: GET /openApi/api/v3/get/asset/transfer
+    async fn get_transfer_history(
+        &self,
+        filter: TransferHistoryFilter,
+    ) -> ExchangeResult<Vec<TransferResponse>> {
+        use crate::core::AccountType;
+
+        let mut params = HashMap::new();
+        if let Some(start) = filter.start_time {
+            params.insert("startTime".to_string(), start.to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("endTime".to_string(), end.to_string());
+        }
+        if let Some(limit) = filter.limit {
+            params.insert("limit".to_string(), limit.to_string());
+        }
+
+        let response = self.get(BingxEndpoint::TransferHistory, params, AccountType::Spot).await?;
+        let data = BingxParser::extract_data(&response)?;
+
+        let records = data.as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .map(|item| {
+                let transfer_id = item.get("tranId")
+                    .and_then(|v| v.as_str().map(String::from)
+                        .or_else(|| v.as_i64().map(|n| n.to_string())))
+                    .unwrap_or_default();
+                let asset = item.get("asset")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let amount = BingxParser::get_f64(item, "amount").unwrap_or(0.0);
+                let status = item.get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown")
+                    .to_string();
+                let timestamp = item.get("timestamp").and_then(|v| v.as_i64());
+
+                TransferResponse {
+                    transfer_id,
+                    status,
+                    asset,
+                    amount,
+                    timestamp,
+                }
+            })
+            .collect();
+
+        Ok(records)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CUSTODIAL FUNDS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl CustodialFunds for BingxConnector {
+    /// Get deposit address for an asset on a given network.
+    ///
+    /// Endpoint: GET /openApi/wallets/v1/capital/deposit/address
+    async fn get_deposit_address(
+        &self,
+        asset: &str,
+        network: Option<&str>,
+    ) -> ExchangeResult<DepositAddress> {
+        use crate::core::AccountType;
+
+        let mut params = HashMap::new();
+        params.insert("coin".to_string(), asset.to_string());
+        if let Some(net) = network {
+            params.insert("network".to_string(), net.to_string());
+        }
+
+        let response = self.get(BingxEndpoint::DepositAddress, params, AccountType::Spot).await?;
+        let data = BingxParser::extract_data(&response)?;
+
+        let address = data.get("address")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'address' field".to_string()))?
+            .to_string();
+        let tag = data.get("tag")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+        let net = data.get("network")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .or_else(|| network.map(String::from));
+
+        Ok(DepositAddress {
+            address,
+            tag,
+            network: net,
+            asset: asset.to_string(),
+            created_at: None,
+        })
+    }
+
+    /// Submit a withdrawal request.
+    ///
+    /// Endpoint: POST /openApi/wallets/v1/capital/withdraw/apply
+    async fn withdraw(&self, req: WithdrawRequest) -> ExchangeResult<WithdrawResponse> {
+        use crate::core::AccountType;
+
+        let mut params = HashMap::new();
+        params.insert("coin".to_string(), req.asset.clone());
+        params.insert("address".to_string(), req.address.clone());
+        params.insert("amount".to_string(), req.amount.to_string());
+        // walletType: 0 = on-chain, 1 = internal
+        params.insert("walletType".to_string(), "0".to_string());
+        if let Some(net) = &req.network {
+            params.insert("network".to_string(), net.clone());
+        }
+        if let Some(tag) = &req.tag {
+            params.insert("addressTag".to_string(), tag.clone());
+        }
+
+        let response = self.post(BingxEndpoint::Withdraw, params, AccountType::Spot).await?;
+        self.check_response(&response)?;
+
+        let data = response.get("data").cloned().unwrap_or(serde_json::json!({}));
+        let withdraw_id = data.get("id")
+            .and_then(|v| v.as_str().map(String::from)
+                .or_else(|| v.as_i64().map(|n| n.to_string())))
+            .unwrap_or_else(|| "unknown".to_string());
+
+        Ok(WithdrawResponse {
+            withdraw_id,
+            status: "Pending".to_string(),
+            tx_hash: None,
+        })
+    }
+
+    /// Get deposit and/or withdrawal history.
+    ///
+    /// Endpoint (deposits): GET /openApi/api/v3/capital/deposit/hisrec
+    /// Endpoint (withdrawals): GET /openApi/api/v3/capital/withdraw/history
+    async fn get_funds_history(
+        &self,
+        filter: FundsHistoryFilter,
+    ) -> ExchangeResult<Vec<FundsRecord>> {
+        use crate::core::AccountType;
+
+        let mut records: Vec<FundsRecord> = Vec::new();
+
+        let build_params = |f: &FundsHistoryFilter| {
+            let mut p = HashMap::new();
+            if let Some(a) = &f.asset {
+                p.insert("coin".to_string(), a.clone());
+            }
+            if let Some(s) = f.start_time {
+                p.insert("startTime".to_string(), s.to_string());
+            }
+            if let Some(e) = f.end_time {
+                p.insert("endTime".to_string(), e.to_string());
+            }
+            if let Some(l) = f.limit {
+                p.insert("limit".to_string(), l.to_string());
+            }
+            p
+        };
+
+        // Fetch deposits
+        if matches!(filter.record_type, FundsRecordType::Deposit | FundsRecordType::Both) {
+            let params = build_params(&filter);
+            let response = self.get(BingxEndpoint::DepositHistory, params, AccountType::Spot).await?;
+            if let Ok(data) = BingxParser::extract_data(&response) {
+                if let Some(arr) = data.as_array() {
+                    for item in arr {
+                        let id = item.get("id")
+                            .and_then(|v| v.as_str().map(String::from)
+                                .or_else(|| v.as_i64().map(|n| n.to_string())))
+                            .unwrap_or_default();
+                        let asset = item.get("coin").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let amount = BingxParser::get_f64(item, "amount").unwrap_or(0.0);
+                        let tx_hash = item.get("txId").and_then(|v| v.as_str()).map(String::from);
+                        let network = item.get("network").and_then(|v| v.as_str()).map(String::from);
+                        let status = item.get("status").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
+                        let timestamp = item.get("insertTime").and_then(|v| v.as_i64()).unwrap_or(0);
+
+                        records.push(FundsRecord::Deposit {
+                            id,
+                            asset,
+                            amount,
+                            tx_hash,
+                            network,
+                            status,
+                            timestamp,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Fetch withdrawals
+        if matches!(filter.record_type, FundsRecordType::Withdrawal | FundsRecordType::Both) {
+            let params = build_params(&filter);
+            let response = self.get(BingxEndpoint::WithdrawHistory, params, AccountType::Spot).await?;
+            if let Ok(data) = BingxParser::extract_data(&response) {
+                if let Some(arr) = data.as_array() {
+                    for item in arr {
+                        let id = item.get("id")
+                            .and_then(|v| v.as_str().map(String::from)
+                                .or_else(|| v.as_i64().map(|n| n.to_string())))
+                            .unwrap_or_default();
+                        let asset = item.get("coin").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let amount = BingxParser::get_f64(item, "amount").unwrap_or(0.0);
+                        let fee = BingxParser::get_f64(item, "transactionFee");
+                        let address = item.get("address").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let tag = item.get("addressTag").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from);
+                        let tx_hash = item.get("txId").and_then(|v| v.as_str()).map(String::from);
+                        let network = item.get("network").and_then(|v| v.as_str()).map(String::from);
+                        let status = item.get("status").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
+                        let timestamp = item.get("applyTime").and_then(|v| v.as_i64()).unwrap_or(0);
+
+                        records.push(FundsRecord::Withdrawal {
+                            id,
+                            asset,
+                            amount,
+                            fee,
+                            address,
+                            tag,
+                            tx_hash,
+                            network,
+                            status,
+                            timestamp,
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(records)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SUB ACCOUNTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl SubAccounts for BingxConnector {
+    /// Perform a sub-account operation.
+    ///
+    /// - Create: POST /openApi/subAccount/v1/create
+    /// - List: GET /openApi/subAccount/v1/list
+    /// - Transfer: POST /openApi/subAccount/v1/transfer
+    /// - GetBalance: GET /openApi/subAccount/v1/assets
+    async fn sub_account_operation(
+        &self,
+        op: SubAccountOperation,
+    ) -> ExchangeResult<SubAccountResult> {
+        use crate::core::AccountType;
+
+        match op {
+            SubAccountOperation::Create { label } => {
+                let mut params = HashMap::new();
+                params.insert("subAccountString".to_string(), label.clone());
+
+                let response = self.post(BingxEndpoint::SubAccountCreate, params, AccountType::Spot).await?;
+                self.check_response(&response)?;
+
+                let data = response.get("data").cloned().unwrap_or(serde_json::json!({}));
+                let id = data.get("subUid")
+                    .and_then(|v| v.as_str().map(String::from)
+                        .or_else(|| v.as_i64().map(|n| n.to_string())));
+
+                Ok(SubAccountResult {
+                    id,
+                    name: Some(label),
+                    accounts: vec![],
+                    transaction_id: None,
+                })
+            }
+
+            SubAccountOperation::List => {
+                let response = self.get(BingxEndpoint::SubAccountList, HashMap::new(), AccountType::Spot).await?;
+                let data = BingxParser::extract_data(&response)?;
+
+                let accounts = data.as_array()
+                    .unwrap_or(&vec![])
+                    .iter()
+                    .map(|item| {
+                        let id = item.get("subUid")
+                            .and_then(|v| v.as_str().map(String::from)
+                                .or_else(|| v.as_i64().map(|n| n.to_string())))
+                            .unwrap_or_default();
+                        let name = item.get("note")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let status = item.get("status")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Normal")
+                            .to_string();
+                        SubAccount { id, name, status }
+                    })
+                    .collect();
+
+                Ok(SubAccountResult {
+                    id: None,
+                    name: None,
+                    accounts,
+                    transaction_id: None,
+                })
+            }
+
+            SubAccountOperation::Transfer { sub_account_id, asset, amount, to_sub } => {
+                // type: 1 = master → sub, 2 = sub → master
+                let transfer_type = if to_sub { "1" } else { "2" };
+
+                let mut params = HashMap::new();
+                params.insert("subUid".to_string(), sub_account_id);
+                params.insert("coin".to_string(), asset.clone());
+                params.insert("amount".to_string(), amount.to_string());
+                params.insert("type".to_string(), transfer_type.to_string());
+
+                let response = self.post(BingxEndpoint::SubAccountTransfer, params, AccountType::Spot).await?;
+                self.check_response(&response)?;
+
+                let data = response.get("data").cloned().unwrap_or(serde_json::json!({}));
+                let transaction_id = data.get("tranId")
+                    .and_then(|v| v.as_str().map(String::from)
+                        .or_else(|| v.as_i64().map(|n| n.to_string())));
+
+                Ok(SubAccountResult {
+                    id: None,
+                    name: None,
+                    accounts: vec![],
+                    transaction_id,
+                })
+            }
+
+            SubAccountOperation::GetBalance { sub_account_id } => {
+                let mut params = HashMap::new();
+                params.insert("subUid".to_string(), sub_account_id.clone());
+
+                let response = self.get(BingxEndpoint::SubAccountAssets, params, AccountType::Spot).await?;
+                self.check_response(&response)?;
+
+                Ok(SubAccountResult {
+                    id: Some(sub_account_id),
+                    name: None,
+                    accounts: vec![],
+                    transaction_id: None,
+                })
+            }
+        }
     }
 }

@@ -98,6 +98,18 @@ pub enum CryptoComEndpoint {
     ChangeAccountLeverage,
     ChangeIsolatedMarginLeverage,
 
+    // === CUSTODIAL FUNDS ===
+    GetDepositAddress,
+    CreateWithdrawal,
+    GetDepositHistory,
+    GetWithdrawalHistory,
+
+    // === SUB ACCOUNTS ===
+    SubAccountCreate,
+    SubAccountList,
+    SubAccountTransfer,
+    SubAccountGetBalances,
+
     // === WEBSOCKET ===
     WsAuth,
     WsHeartbeat,
@@ -145,6 +157,18 @@ impl CryptoComEndpoint {
             Self::ClosePosition => "private/close-position",
             Self::ChangeAccountLeverage => "private/change-account-leverage",
             Self::ChangeIsolatedMarginLeverage => "private/change-isolated-margin-leverage",
+
+            // Custodial Funds
+            Self::GetDepositAddress => "private/get-deposit-address",
+            Self::CreateWithdrawal => "private/create-withdrawal",
+            Self::GetDepositHistory => "private/get-deposit-history",
+            Self::GetWithdrawalHistory => "private/get-withdrawal-history",
+
+            // Sub Accounts
+            Self::SubAccountCreate => "private/subaccount/create",
+            Self::SubAccountList => "private/subaccount/get-subaccounts",
+            Self::SubAccountTransfer => "private/subaccount/transfer",
+            Self::SubAccountGetBalances => "private/subaccount/get-balances",
 
             // WebSocket
             Self::WsAuth => "public/auth",

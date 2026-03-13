@@ -31,9 +31,15 @@ use crate::core::types::SymbolInfo;
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
 };
-use crate::core::{CancelAll, AmendOrder, BatchOrders};
+use crate::core::{CancelAll, AmendOrder, BatchOrders, AccountTransfers, CustodialFunds, SubAccounts};
 use crate::core::types::{
     ConnectorStats, CancelAllResponse, OrderResult, AmendRequest,
+    TransferRequest, TransferHistoryFilter, TransferResponse,
+    DepositAddress, WithdrawResponse, FundsRecord,
+};
+use crate::core::types::{
+    WithdrawRequest, FundsHistoryFilter, FundsRecordType,
+    SubAccountOperation, SubAccountResult, SubAccount,
 };
 use crate::core::utils::SimpleRateLimiter;
 
@@ -1077,5 +1083,349 @@ impl BatchOrders for BitfinexConnector {
     /// Maximum batch cancel size (Bitfinex limit: 75 operations per request).
     fn max_batch_cancel_size(&self) -> usize {
         75
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT TRANSFERS (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AccountTransfers for BitfinexConnector {
+    /// Transfer between Bitfinex wallets (exchange/margin/funding).
+    ///
+    /// Endpoint: POST /v2/auth/w/transfer
+    /// Body: from, to, currency, currency_to, amount
+    async fn transfer(&self, req: TransferRequest) -> ExchangeResult<TransferResponse> {
+        fn account_type_to_wallet(account_type: AccountType) -> &'static str {
+            match account_type {
+                AccountType::Spot => "exchange",
+                AccountType::Margin => "margin",
+                AccountType::FuturesCross | AccountType::FuturesIsolated => "funding",
+            }
+        }
+
+        let from_wallet = account_type_to_wallet(req.from_account);
+        let to_wallet = account_type_to_wallet(req.to_account);
+
+        let body = json!({
+            "from": from_wallet,
+            "to": to_wallet,
+            "currency": req.asset.to_uppercase(),
+            "currency_to": req.asset.to_uppercase(),
+            "amount": req.amount.to_string(),
+        });
+
+        let response = self.post(BitfinexEndpoint::Transfer, &[], body).await?;
+
+        // Response: [1, "SUCCESS", null, "transfer", [...transfer_data]]
+        // Or: [0, "ERROR", null, "transfer", "error message"]
+        if let Some(arr) = response.as_array() {
+            let mts_created = arr.get(4)
+                .and_then(|v| v.as_array())
+                .and_then(|inner| inner.first())
+                .and_then(|v| v.as_i64());
+
+            return Ok(TransferResponse {
+                transfer_id: format!("{}", mts_created.unwrap_or(0)),
+                status: "Successful".to_string(),
+                asset: req.asset,
+                amount: req.amount,
+                timestamp: mts_created,
+            });
+        }
+
+        Err(ExchangeError::Parse("Unexpected transfer response format".to_string()))
+    }
+
+    /// Transfer history is not available via a standard endpoint on Bitfinex.
+    ///
+    /// Returns an empty vec — use movements endpoint for deposit/withdrawal history instead.
+    async fn get_transfer_history(
+        &self,
+        _filter: TransferHistoryFilter,
+    ) -> ExchangeResult<Vec<TransferResponse>> {
+        Ok(vec![])
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CUSTODIAL FUNDS (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl CustodialFunds for BitfinexConnector {
+    /// Get deposit address for an asset on a given network/method.
+    ///
+    /// Endpoint: POST /v2/auth/w/deposit/address
+    /// Body: wallet (exchange), method (network/coin), op_renew (0/1)
+    async fn get_deposit_address(
+        &self,
+        asset: &str,
+        network: Option<&str>,
+    ) -> ExchangeResult<DepositAddress> {
+        let method = network.unwrap_or(asset).to_lowercase();
+
+        let body = json!({
+            "wallet": "exchange",
+            "method": method,
+            "op_renew": 0,
+        });
+
+        let response = self.post(BitfinexEndpoint::DepositAddress, &[], body).await?;
+
+        // Response: [MTS, TYPE, MESSAGE_ID, null, [nil, METHOD, CURRENCY_CODE, nil, nil, ADDRESS, ...]]
+        if let Some(arr) = response.as_array() {
+            if let Some(inner) = arr.get(4).and_then(|v| v.as_array()) {
+                let address = inner.get(5)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                let tag = inner.get(6)
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+
+                return Ok(DepositAddress {
+                    address,
+                    tag,
+                    network: Some(method),
+                    asset: asset.to_string(),
+                    created_at: None,
+                });
+            }
+        }
+
+        Err(ExchangeError::Parse("Unexpected deposit address response format".to_string()))
+    }
+
+    /// Submit a withdrawal request.
+    ///
+    /// Endpoint: POST /v2/auth/w/withdraw
+    /// Body: wallet, method, amount, address, payment_id (tag)
+    async fn withdraw(&self, req: WithdrawRequest) -> ExchangeResult<WithdrawResponse> {
+        let method = req.network
+            .as_deref()
+            .unwrap_or(&req.asset)
+            .to_lowercase();
+
+        let mut body = json!({
+            "wallet": "exchange",
+            "method": method,
+            "amount": req.amount.to_string(),
+            "address": req.address,
+        });
+
+        if let Some(tag) = &req.tag {
+            body["payment_id"] = json!(tag);
+        }
+
+        let response = self.post(BitfinexEndpoint::Withdraw, &[], body).await?;
+
+        // Response: [MTS, TYPE, MESSAGE_ID, null, [WITHDRAWAL_ID, ...]]
+        if let Some(arr) = response.as_array() {
+            let withdraw_id = arr.get(4)
+                .and_then(|v| v.as_array())
+                .and_then(|inner| inner.first())
+                .and_then(|v| v.as_i64())
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "0".to_string());
+
+            return Ok(WithdrawResponse {
+                withdraw_id,
+                status: "Pending".to_string(),
+                tx_hash: None,
+            });
+        }
+
+        Err(ExchangeError::Parse("Unexpected withdraw response format".to_string()))
+    }
+
+    /// Get deposit and/or withdrawal history via movements endpoint.
+    ///
+    /// Endpoint: POST /v2/auth/r/movements/{Symbol}/hist
+    /// Movements cover both deposits (positive amount) and withdrawals (negative amount).
+    async fn get_funds_history(
+        &self,
+        filter: FundsHistoryFilter,
+    ) -> ExchangeResult<Vec<FundsRecord>> {
+        let symbol = filter.asset.as_deref().unwrap_or("").to_uppercase();
+        let symbol_path = if symbol.is_empty() { "".to_string() } else { symbol.clone() };
+
+        let mut body = json!({});
+        if let Some(start) = filter.start_time {
+            body["start"] = json!(start);
+        }
+        if let Some(end) = filter.end_time {
+            body["end"] = json!(end);
+        }
+        if let Some(limit) = filter.limit {
+            body["limit"] = json!(limit.min(1000));
+        }
+
+        let response = self.post(
+            BitfinexEndpoint::Movements,
+            &[("symbol", &symbol_path)],
+            body,
+        ).await?;
+
+        // Movements array: each element is:
+        // [ID, CURRENCY, CURRENCY_NAME, nil, nil, MTS_STARTED, MTS_UPDATED, nil, nil,
+        //  STATUS, nil, nil, AMOUNT, FEES, nil, DESTINATION_ADDRESS, nil, nil, nil, TRANSACTION_ID, ...]
+        let records = if let Some(arr) = response.as_array() {
+            arr.iter().filter_map(|item| {
+                let m = item.as_array()?;
+                let id = m.first()?.as_i64()?.to_string();
+                let currency = m.get(1)?.as_str().unwrap_or("").to_string();
+                let timestamp = m.get(5)?.as_i64().unwrap_or(0);
+                let status = m.get(9)?.as_str().unwrap_or("Unknown").to_string();
+                let amount = m.get(12)?.as_f64().unwrap_or(0.0);
+                let _fee = m.get(13).and_then(|v| v.as_f64());
+                let address = m.get(15).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let tx_hash = m.get(20).and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+
+                // Filter by asset if specified
+                if let Some(ref asset_filter) = filter.asset {
+                    if !currency.eq_ignore_ascii_case(asset_filter) {
+                        return None;
+                    }
+                }
+
+                if amount >= 0.0 {
+                    // Deposit
+                    if matches!(filter.record_type, FundsRecordType::Deposit | FundsRecordType::Both) {
+                        Some(FundsRecord::Deposit {
+                            id,
+                            asset: currency,
+                            amount,
+                            tx_hash,
+                            network: None,
+                            status,
+                            timestamp,
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    // Withdrawal (negative amount)
+                    if matches!(filter.record_type, FundsRecordType::Withdrawal | FundsRecordType::Both) {
+                        Some(FundsRecord::Withdrawal {
+                            id,
+                            asset: currency,
+                            amount: amount.abs(),
+                            fee: _fee.map(|f| f.abs()),
+                            address,
+                            tag: None,
+                            tx_hash,
+                            network: None,
+                            status,
+                            timestamp,
+                        })
+                    } else {
+                        None
+                    }
+                }
+            }).collect()
+        } else {
+            vec![]
+        };
+
+        Ok(records)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SUB ACCOUNTS (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl SubAccounts for BitfinexConnector {
+    /// Perform sub-account operations (list, transfer; create/get_balance not supported).
+    async fn sub_account_operation(
+        &self,
+        op: SubAccountOperation,
+    ) -> ExchangeResult<SubAccountResult> {
+        match op {
+            SubAccountOperation::List => {
+                let response = self.post(BitfinexEndpoint::SubAccountList, &[], json!({})).await?;
+
+                // Response is an array of sub-account objects
+                let accounts = if let Some(arr) = response.as_array() {
+                    arr.iter().filter_map(|item| {
+                        let obj = item.as_object()?;
+                        let id = obj.get("id")?.as_i64()?.to_string();
+                        let name = obj.get("email")
+                            .or_else(|| obj.get("name"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let status = obj.get("status")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Normal")
+                            .to_string();
+                        Some(SubAccount { id, name, status })
+                    }).collect()
+                } else {
+                    vec![]
+                };
+
+                Ok(SubAccountResult {
+                    id: None,
+                    name: None,
+                    accounts,
+                    transaction_id: None,
+                })
+            }
+
+            SubAccountOperation::Transfer { sub_account_id, asset, amount, to_sub } => {
+                // Bitfinex sub-account transfer: POST /v2/auth/w/sub_account/transfer
+                // Body: sub_account_id, wallet_from, wallet_to, amount, currency
+                let (wallet_from, wallet_to) = if to_sub {
+                    ("exchange", "exchange") // master → sub, exchange wallet on both sides
+                } else {
+                    ("exchange", "exchange") // sub → master
+                };
+
+                let body = json!({
+                    "sub_account_id": sub_account_id.parse::<i64>().unwrap_or(0),
+                    "wallet_from": wallet_from,
+                    "wallet_to": wallet_to,
+                    "amount": amount.to_string(),
+                    "currency": asset.to_uppercase(),
+                    "to_sub": to_sub,
+                });
+
+                let response = self.post(BitfinexEndpoint::SubAccountTransfer, &[], body).await?;
+
+                let transaction_id = response.as_array()
+                    .and_then(|arr| arr.get(4))
+                    .and_then(|v| v.as_array())
+                    .and_then(|inner| inner.first())
+                    .and_then(|v| v.as_i64())
+                    .map(|id| id.to_string());
+
+                Ok(SubAccountResult {
+                    id: Some(sub_account_id),
+                    name: None,
+                    accounts: vec![],
+                    transaction_id,
+                })
+            }
+
+            SubAccountOperation::Create { .. } => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "Create sub-account not supported via Bitfinex REST API".to_string()
+                ))
+            }
+
+            SubAccountOperation::GetBalance { .. } => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "Get sub-account balance not supported via standard Bitfinex REST API".to_string()
+                ))
+            }
+        }
     }
 }

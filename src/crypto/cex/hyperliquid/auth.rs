@@ -372,6 +372,25 @@ pub fn msgpack_update_isolated_margin_action(asset: u32, is_buy: bool, ntli: i64
     enc.finish()
 }
 
+/// Encode a "usdClassTransfer" action into msgpack.
+///
+/// Keys sorted: amount, toPerp, type
+pub fn msgpack_usd_class_transfer_action(amount: &str, to_perp: bool) -> Vec<u8> {
+    let mut enc = MsgpackEncoder::new();
+    enc.begin_map(3);
+
+    enc.write_str("amount");
+    enc.write_str(amount);
+
+    enc.write_str("toPerp");
+    enc.write_bool(to_perp);
+
+    enc.write_str("type");
+    enc.write_str("usdClassTransfer");
+
+    enc.finish()
+}
+
 /// Encode a "twapOrder" action into msgpack.
 ///
 /// Outer dict keys sorted: twap, type
@@ -761,6 +780,27 @@ impl HyperliquidAuth {
                 "r": reduce_only,
                 "m": duration_minutes,
             },
+        });
+        Ok(build_exchange_request(action, nonce, sig, vault_address))
+    }
+
+    /// Sign and build exchange request for a USD class transfer (spot ↔ perp).
+    ///
+    /// `to_perp = true`  → transfer USDC from Spot wallet to Perp wallet
+    /// `to_perp = false` → transfer USDC from Perp wallet to Spot wallet
+    pub fn sign_usd_class_transfer(
+        &self,
+        amount: &str,
+        to_perp: bool,
+        vault_address: Option<&[u8; 20]>,
+    ) -> ExchangeResult<serde_json::Value> {
+        let nonce = self.get_next_nonce();
+        let action_bytes = msgpack_usd_class_transfer_action(amount, to_perp);
+        let sig = self.sign_l1_action(&action_bytes, nonce, vault_address)?;
+        let action = serde_json::json!({
+            "type": "usdClassTransfer",
+            "amount": amount,
+            "toPerp": to_perp,
         });
         Ok(build_exchange_request(action, nonce, sig, vault_address))
     }

@@ -28,16 +28,22 @@ use crate::core::{
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     AmendRequest, CancelAllResponse, OrderResult,
 };
+use crate::core::types::{
+    TransferRequest, TransferHistoryFilter, TransferResponse,
+    DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord, FundsHistoryFilter, FundsRecordType,
+    SubAccountOperation, SubAccountResult,
+};
 use crate::core::types::OcoResponse;
 use crate::core::types::SymbolInfo;
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
     CancelAll, AmendOrder, BatchOrders,
+    AccountTransfers, CustodialFunds, SubAccounts,
 };
 use crate::core::types::ConnectorStats;
 use crate::core::utils::SimpleRateLimiter;
 
-use super::endpoints::{OkxUrls, OkxEndpoint, format_symbol, map_kline_interval, get_inst_type, get_trade_mode};
+use super::endpoints::{OkxUrls, OkxEndpoint, format_symbol, map_kline_interval, get_inst_type, get_trade_mode, get_account_id};
 use super::auth::OkxAuth;
 use super::parser::OkxParser;
 
@@ -1315,5 +1321,243 @@ impl BatchOrders for OkxConnector {
 
     fn max_batch_cancel_size(&self) -> usize {
         20 // OKX limit
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT TRANSFERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Internal transfers between account types via OKX asset transfer endpoint.
+///
+/// OKX: `POST /api/v5/asset/transfer`
+/// Account IDs: 6 = Funding/Spot, 5 = Margin, 18 = Unified Trading (Futures/SWAP).
+#[async_trait]
+impl AccountTransfers for OkxConnector {
+    /// Transfer an asset between two OKX account types.
+    ///
+    /// Maps our `AccountType` to OKX account IDs:
+    /// - `Spot` → `6` (Funding account)
+    /// - `Margin` → `5`
+    /// - `FuturesCross` / `FuturesIsolated` → `18` (Unified Trading Account)
+    async fn transfer(&self, req: TransferRequest) -> ExchangeResult<TransferResponse> {
+        let from_id = get_account_id(req.from_account);
+        let to_id = get_account_id(req.to_account);
+
+        let body = json!({
+            "ccy": req.asset,
+            "amt": req.amount.to_string(),
+            "from": from_id,
+            "to": to_id,
+        });
+
+        let response = self.post(OkxEndpoint::AssetTransfer, body).await?;
+        OkxParser::parse_transfer_response(&response)
+    }
+
+    /// Get the history of internal transfers.
+    ///
+    /// Uses `GET /api/v5/asset/bills` for a general ledger view that covers
+    /// all internal account movements.
+    async fn get_transfer_history(
+        &self,
+        filter: TransferHistoryFilter,
+    ) -> ExchangeResult<Vec<TransferResponse>> {
+        let mut params = HashMap::new();
+
+        // type=1 = Transfer (internal account transfer)
+        params.insert("type".to_string(), "1".to_string());
+
+        if let Some(start) = filter.start_time {
+            params.insert("begin".to_string(), start.to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("end".to_string(), end.to_string());
+        }
+        if let Some(limit) = filter.limit {
+            params.insert("limit".to_string(), limit.min(100).to_string());
+        }
+
+        let response = self.get(OkxEndpoint::AssetBills, params).await?;
+        OkxParser::parse_transfer_history(&response)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CUSTODIAL FUNDS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Deposit and withdrawal management via OKX asset endpoints.
+///
+/// OKX deposit address: `GET /api/v5/asset/deposit-address`
+/// OKX withdrawal: `POST /api/v5/asset/withdrawal`
+/// OKX deposit history: `GET /api/v5/asset/deposit-history`
+/// OKX withdrawal history: `GET /api/v5/asset/withdrawal-history`
+#[async_trait]
+impl CustodialFunds for OkxConnector {
+    /// Get the deposit address for an asset on a given network.
+    ///
+    /// `network = None` returns the first available address.
+    /// `network = Some("ERC20")` returns the ERC-20 address for that asset.
+    async fn get_deposit_address(
+        &self,
+        asset: &str,
+        network: Option<&str>,
+    ) -> ExchangeResult<DepositAddress> {
+        let mut params = HashMap::new();
+        params.insert("ccy".to_string(), asset.to_string());
+
+        if let Some(chain) = network {
+            params.insert("chain".to_string(), chain.to_string());
+        }
+
+        let response = self.get(OkxEndpoint::DepositAddress, params).await?;
+        OkxParser::parse_deposit_address(&response)
+    }
+
+    /// Submit a withdrawal request.
+    ///
+    /// OKX requires a `fee` parameter for on-chain withdrawals.
+    /// The fee is exchange-determined per chain — pass `0` to use OKX minimum.
+    /// `dest = 4` means on-chain withdrawal.
+    async fn withdraw(&self, req: WithdrawRequest) -> ExchangeResult<WithdrawResponse> {
+        let mut body = json!({
+            "ccy": req.asset,
+            "amt": req.amount.to_string(),
+            "dest": "4",            // 4 = on-chain withdrawal
+            "toAddr": req.address,
+            "fee": "0",             // minimum fee — exchange will validate and reject if insufficient
+        });
+
+        if let Some(chain) = req.network {
+            body["chain"] = json!(chain);
+        }
+        if let Some(tag) = req.tag {
+            body["tag"] = json!(tag);
+        }
+
+        let response = self.post(OkxEndpoint::Withdrawal, body).await?;
+        OkxParser::parse_withdrawal_response(&response)
+    }
+
+    /// Get deposit and/or withdrawal history.
+    ///
+    /// Dispatches to the appropriate OKX endpoint based on `filter.record_type`.
+    /// For `FundsRecordType::Both`, queries deposits and then withdrawals separately
+    /// and merges the results.
+    async fn get_funds_history(
+        &self,
+        filter: FundsHistoryFilter,
+    ) -> ExchangeResult<Vec<FundsRecord>> {
+        let mut params = HashMap::new();
+
+        if let Some(ref asset) = filter.asset {
+            params.insert("ccy".to_string(), asset.clone());
+        }
+        if let Some(start) = filter.start_time {
+            params.insert("after".to_string(), start.to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("before".to_string(), end.to_string());
+        }
+        if let Some(limit) = filter.limit {
+            params.insert("limit".to_string(), limit.min(100).to_string());
+        }
+
+        match filter.record_type {
+            FundsRecordType::Deposit => {
+                let response = self.get(OkxEndpoint::DepositHistory, params).await?;
+                OkxParser::parse_deposit_history(&response)
+            }
+            FundsRecordType::Withdrawal => {
+                let response = self.get(OkxEndpoint::WithdrawalHistory, params).await?;
+                OkxParser::parse_withdrawal_history(&response)
+            }
+            FundsRecordType::Both => {
+                let dep_response = self.get(OkxEndpoint::DepositHistory, params.clone()).await?;
+                let mut records = OkxParser::parse_deposit_history(&dep_response)?;
+
+                let wd_response = self.get(OkxEndpoint::WithdrawalHistory, params).await?;
+                let mut withdrawals = OkxParser::parse_withdrawal_history(&wd_response)?;
+
+                records.append(&mut withdrawals);
+                Ok(records)
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SUB-ACCOUNTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Sub-account management via OKX sub-account endpoints.
+///
+/// OKX sub-account create: `POST /api/v5/users/subaccount/create`
+/// OKX sub-account list: `GET /api/v5/users/subaccount/list`
+/// OKX sub-account transfer: `POST /api/v5/asset/subaccount/transfer`
+/// OKX sub-account balance: `GET /api/v5/account/subaccount/balances`
+#[async_trait]
+impl SubAccounts for OkxConnector {
+    /// Perform a sub-account operation (create, list, transfer, get balance).
+    ///
+    /// `SubAccountOperation::Create` uses `label` as the `subAcct` name on OKX.
+    /// `SubAccountOperation::Transfer` uses `sub_account_id` as the OKX sub-account name.
+    async fn sub_account_operation(
+        &self,
+        op: SubAccountOperation,
+    ) -> ExchangeResult<SubAccountResult> {
+        match op {
+            SubAccountOperation::Create { label } => {
+                let body = json!({
+                    "subAcct": label,
+                    "label": label,
+                });
+                let response = self.post(OkxEndpoint::SubAccountCreate, body).await?;
+                OkxParser::parse_sub_account_create(&response)
+            }
+
+            SubAccountOperation::List => {
+                let response = self.get(OkxEndpoint::SubAccountList, HashMap::new()).await?;
+                OkxParser::parse_sub_account_list(&response)
+            }
+
+            SubAccountOperation::Transfer { sub_account_id, asset, amount, to_sub } => {
+                // On OKX, sub-account transfers always route through the master account.
+                // `from` / `to` are OKX account IDs (6 = Funding).
+                // When to_sub = true: master (6) → sub; when false: sub (6) → master (6).
+                let (from_sub_acct, to_sub_acct) = if to_sub {
+                    (None::<&str>, Some(sub_account_id.as_str()))
+                } else {
+                    (Some(sub_account_id.as_str()), None)
+                };
+
+                let mut body = json!({
+                    "ccy": asset,
+                    "amt": amount.to_string(),
+                    "from": "6",    // Funding account
+                    "to": "6",      // Funding account on sub
+                    "type": if to_sub { "0" } else { "1" },  // 0=master→sub, 1=sub→master
+                });
+
+                if let Some(from_sub) = from_sub_acct {
+                    body["fromSubAccount"] = json!(from_sub);
+                }
+                if let Some(to_sub_name) = to_sub_acct {
+                    body["toSubAccount"] = json!(to_sub_name);
+                }
+
+                let response = self.post(OkxEndpoint::SubAccountTransfer, body).await?;
+                OkxParser::parse_sub_account_transfer(&response)
+            }
+
+            SubAccountOperation::GetBalance { sub_account_id } => {
+                let mut params = HashMap::new();
+                params.insert("subAcct".to_string(), sub_account_id);
+
+                let response = self.get(OkxEndpoint::SubAccountBalances, params).await?;
+                OkxParser::parse_sub_account_balance(&response)
+            }
+        }
     }
 }

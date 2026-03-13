@@ -73,6 +73,25 @@ pub enum MexcEndpoint {
     // === BATCH ORDERS ===
     BatchOrders,          // POST /api/v3/batchOrders
 
+    // === BATCH ORDERS ===
+    BatchOrdersCancel,    // DELETE /api/v3/batchOrders (unused placeholder)
+
+    // === TRANSFERS ===
+    Transfer,                  // POST /api/v3/capital/transfer
+    TransferHistory,           // GET  /api/v3/capital/transfer
+
+    // === CUSTODIAL FUNDS ===
+    DepositAddress,            // GET  /api/v3/capital/deposit/address
+    Withdraw,                  // POST /api/v3/capital/withdraw
+    DepositHistory,            // GET  /api/v3/capital/deposit/hisrec
+    WithdrawHistory,           // GET  /api/v3/capital/withdraw/history
+
+    // === SUB ACCOUNTS ===
+    SubAccountCreate,          // POST /api/v3/sub-account/virtualSubAccount
+    SubAccountList,            // GET  /api/v3/sub-account/list
+    SubAccountTransfer,        // POST /api/v3/capital/sub-account/universalTransfer
+    SubAccountAssets,          // GET  /api/v3/sub-account/assets
+
     // === FUTURES MARKET DATA ===
     FuturesPing,          // GET /api/v1/contract/ping
     FuturesTicker,        // GET /api/v1/contract/ticker
@@ -112,6 +131,23 @@ impl MexcEndpoint {
             Self::OpenOrders => "/api/v3/openOrders",
             Self::AllOrders => "/api/v3/allOrders",
             Self::BatchOrders => "/api/v3/batchOrders",
+            Self::BatchOrdersCancel => "/api/v3/batchOrders",
+
+            // Transfers
+            Self::Transfer => "/api/v3/capital/transfer",
+            Self::TransferHistory => "/api/v3/capital/transfer",
+
+            // Custodial Funds
+            Self::DepositAddress => "/api/v3/capital/deposit/address",
+            Self::Withdraw => "/api/v3/capital/withdraw",
+            Self::DepositHistory => "/api/v3/capital/deposit/hisrec",
+            Self::WithdrawHistory => "/api/v3/capital/withdraw/history",
+
+            // Sub Accounts
+            Self::SubAccountCreate => "/api/v3/sub-account/virtualSubAccount",
+            Self::SubAccountList => "/api/v3/sub-account/list",
+            Self::SubAccountTransfer => "/api/v3/capital/sub-account/universalTransfer",
+            Self::SubAccountAssets => "/api/v3/sub-account/assets",
 
             // Futures Market Data
             Self::FuturesPing => "/api/v1/contract/ping",
@@ -129,11 +165,16 @@ impl MexcEndpoint {
             // POST requests
             Self::PlaceOrder
             | Self::TestOrder
-            | Self::BatchOrders => "POST",
+            | Self::BatchOrders
+            | Self::Transfer
+            | Self::Withdraw
+            | Self::SubAccountCreate
+            | Self::SubAccountTransfer => "POST",
 
             // DELETE requests
             Self::CancelOrder
-            | Self::CancelAllOrders => "DELETE",
+            | Self::CancelAllOrders
+            | Self::BatchOrdersCancel => "DELETE",
 
             // GET requests (default)
             _ => "GET",
@@ -177,6 +218,23 @@ impl MexcEndpoint {
             | Self::FuturesKlines
             | Self::FuturesRecentTrades
             | Self::FuturesContractInfo
+        )
+    }
+
+    /// Check if endpoint is a transfer/funds/subaccount endpoint (always spot base URL)
+    pub fn is_capital(&self) -> bool {
+        matches!(
+            self,
+            Self::Transfer
+            | Self::TransferHistory
+            | Self::DepositAddress
+            | Self::Withdraw
+            | Self::DepositHistory
+            | Self::WithdrawHistory
+            | Self::SubAccountCreate
+            | Self::SubAccountList
+            | Self::SubAccountTransfer
+            | Self::SubAccountAssets
         )
     }
 }

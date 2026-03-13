@@ -779,6 +779,240 @@ impl CoinbaseParser {
         Ok(symbols)
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // CUSTODIAL FUNDS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Find account UUID for a given asset from `GET /api/v3/brokerage/accounts`
+    ///
+    /// Returns the first account matching the asset currency.
+    /// Coinbase uses UUIDs per asset to identify accounts for v2 API calls.
+    pub fn find_account_id_for_asset(response: &Value, asset: &str) -> ExchangeResult<String> {
+        let accounts = response.get("accounts")
+            .and_then(|a| a.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing accounts array".to_string()))?;
+
+        let asset_upper = asset.to_uppercase();
+        for account in accounts {
+            let currency = account.get("currency")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if currency == asset_upper {
+                let uuid = account.get("uuid")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ExchangeError::Parse("Missing account uuid".to_string()))?;
+                return Ok(uuid.to_string());
+            }
+        }
+
+        Err(ExchangeError::Parse(format!(
+            "No Coinbase account found for asset '{}'", asset
+        )))
+    }
+
+    /// Parse deposit address from `POST /v2/accounts/{id}/addresses`
+    ///
+    /// Response:
+    /// ```json
+    /// {"data":{"id":"...","address":"1A1zP1...","address_info":{"address":"1A1zP1..."},...}}
+    /// ```
+    pub fn parse_deposit_address(response: &Value, asset: &str) -> ExchangeResult<DepositAddress> {
+        Self::check_error(response)?;
+
+        let data = response.get("data")
+            .ok_or_else(|| ExchangeError::Parse("Missing 'data' field in address response".to_string()))?;
+
+        let address = data.get("address")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'address' field".to_string()))?
+            .to_string();
+
+        let tag = data.get("destination_tag")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+
+        let network = data.get("network")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+
+        let created_at = data.get("created_at")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Self::parse_rfc3339_to_millis(s));
+
+        Ok(DepositAddress {
+            address,
+            tag,
+            network,
+            asset: asset.to_string(),
+            created_at,
+        })
+    }
+
+    /// Parse withdraw response from `POST /v2/accounts/{id}/transactions` (type=send)
+    ///
+    /// Response:
+    /// ```json
+    /// {"data":{"id":"...","status":"pending","type":"send",...}}
+    /// ```
+    pub fn parse_withdraw_response(response: &Value) -> ExchangeResult<WithdrawResponse> {
+        Self::check_error(response)?;
+
+        let data = response.get("data")
+            .ok_or_else(|| ExchangeError::Parse("Missing 'data' field in transaction response".to_string()))?;
+
+        let withdraw_id = data.get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ExchangeError::Parse("Missing transaction 'id'".to_string()))?
+            .to_string();
+
+        let status = data.get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("pending")
+            .to_string();
+
+        let tx_hash = data.get("network")
+            .and_then(|n| n.get("hash"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+
+        Ok(WithdrawResponse {
+            withdraw_id,
+            status,
+            tx_hash,
+        })
+    }
+
+    /// Parse deposit history from `GET /v2/accounts/{id}/deposits`
+    ///
+    /// Response:
+    /// ```json
+    /// {"data":[{"id":"...","amount":{"amount":"0.5","currency":"BTC"},"status":"completed","created_at":"..."},...]}
+    /// ```
+    pub fn parse_deposit_history(response: &Value, asset: &str) -> ExchangeResult<Vec<FundsRecord>> {
+        Self::check_error(response)?;
+
+        let data = response.get("data")
+            .and_then(|d| d.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'data' array in deposits response".to_string()))?;
+
+        let records = data.iter().map(|item| {
+            let id = item.get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let amount = item.get("amount")
+                .and_then(|a| a.get("amount"))
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+
+            let status = item.get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+
+            let timestamp = item.get("created_at")
+                .and_then(|v| v.as_str())
+                .and_then(|s| Self::parse_rfc3339_to_millis(s))
+                .unwrap_or(0);
+
+            let tx_hash = item.get("transaction")
+                .and_then(|t| t.get("hash"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+
+            FundsRecord::Deposit {
+                id,
+                asset: asset.to_string(),
+                amount,
+                tx_hash,
+                network: None,
+                status,
+                timestamp,
+            }
+        }).collect();
+
+        Ok(records)
+    }
+
+    /// Parse withdrawal history from `GET /v2/accounts/{id}/transactions` (type=send)
+    ///
+    /// Response:
+    /// ```json
+    /// {"data":[{"id":"...","type":"send","amount":{"amount":"-0.1","currency":"BTC"},"status":"completed",...},...]}
+    /// ```
+    pub fn parse_withdrawal_history(response: &Value, asset: &str) -> ExchangeResult<Vec<FundsRecord>> {
+        Self::check_error(response)?;
+
+        let data = response.get("data")
+            .and_then(|d| d.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'data' array in transactions response".to_string()))?;
+
+        let records = data.iter()
+            .filter(|item| {
+                // Only include "send" type (withdrawals)
+                item.get("type")
+                    .and_then(|v| v.as_str())
+                    .map(|t| t == "send")
+                    .unwrap_or(false)
+            })
+            .map(|item| {
+                let id = item.get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                // Amount is negative for sends; take absolute value
+                let amount = item.get("amount")
+                    .and_then(|a| a.get("amount"))
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .map(f64::abs)
+                    .unwrap_or(0.0);
+
+                let address = item.get("to")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                let status = item.get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+
+                let timestamp = item.get("created_at")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| Self::parse_rfc3339_to_millis(s))
+                    .unwrap_or(0);
+
+                let tx_hash = item.get("network")
+                    .and_then(|n| n.get("hash"))
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(String::from);
+
+                FundsRecord::Withdrawal {
+                    id,
+                    asset: asset.to_string(),
+                    amount,
+                    fee: None,
+                    address,
+                    tag: None,
+                    tx_hash,
+                    network: None,
+                    status,
+                    timestamp,
+                }
+            }).collect();
+
+        Ok(records)
+    }
+
     /// Count decimal places in an increment string like "0.00000001"
     fn count_decimal_places(s: &str) -> usize {
         if let Some(dot_pos) = s.find('.') {

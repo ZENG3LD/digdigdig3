@@ -29,7 +29,10 @@ use crate::core::{
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
+    CustodialFunds,
+    DepositAddress, WithdrawResponse, FundsRecord,
 };
+use crate::core::types::{WithdrawRequest, FundsHistoryFilter};
 use crate::core::types::{ConnectorStats, SymbolInfo, CancelAllResponse, AmendRequest};
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
@@ -1026,6 +1029,214 @@ impl AmendOrder for DeribitConnector {
 
         let response = self.rpc_call(DeribitMethod::Edit, params).await?;
         DeribitParser::parse_order(&response, "")
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CUSTODIAL FUNDS (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl CustodialFunds for DeribitConnector {
+    async fn get_deposit_address(
+        &self,
+        asset: &str,
+        _network: Option<&str>,
+    ) -> ExchangeResult<DepositAddress> {
+        // GET /private/get_current_deposit_address — params: currency
+        // Deribit does not use a separate "network" param; currency identifies the chain.
+        let mut params = HashMap::new();
+        params.insert("currency".to_string(), json!(asset.to_uppercase()));
+
+        let response = self.rpc_call(DeribitMethod::GetCurrentDepositAddress, params).await?;
+
+        let result = response.get("result")
+            .ok_or_else(|| ExchangeError::Parse("Missing result in deposit address response".to_string()))?;
+
+        let address = result.get("address")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ExchangeError::Parse("Missing address field".to_string()))?
+            .to_string();
+
+        let tag = result.get("tag")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        Ok(DepositAddress {
+            address,
+            tag,
+            network: None, // Deribit uses currency to identify the network
+            asset: asset.to_uppercase(),
+            created_at: None,
+        })
+    }
+
+    async fn withdraw(&self, req: WithdrawRequest) -> ExchangeResult<WithdrawResponse> {
+        // GET /private/withdraw — Deribit uses GET for some private endpoints
+        // params: currency, address, amount, priority (optional)
+        let mut params = HashMap::new();
+        params.insert("currency".to_string(), json!(req.asset.to_uppercase()));
+        params.insert("address".to_string(), json!(req.address));
+        params.insert("amount".to_string(), json!(req.amount));
+
+        // priority: "insane" | "extreme_high" | "very_high" | "high" | "mid" | "low" | "very_low"
+        // Default to "mid" if not specified (standard fee, reasonable speed)
+        params.insert("priority".to_string(), json!("mid"));
+
+        let response = self.rpc_call(DeribitMethod::Withdraw, params).await?;
+
+        let result = response.get("result")
+            .ok_or_else(|| ExchangeError::Parse("Missing result in withdraw response".to_string()))?;
+
+        let withdraw_id = result.get("id")
+            .and_then(|v| v.as_u64())
+            .map(|id| id.to_string())
+            .ok_or_else(|| ExchangeError::Parse("Missing id in withdraw response".to_string()))?;
+
+        let status = result.get("state")
+            .and_then(|v| v.as_str())
+            .unwrap_or("submitted")
+            .to_string();
+
+        let tx_hash = result.get("transaction_id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        Ok(WithdrawResponse {
+            withdraw_id,
+            status,
+            tx_hash,
+        })
+    }
+
+    async fn get_funds_history(
+        &self,
+        filter: FundsHistoryFilter,
+    ) -> ExchangeResult<Vec<FundsRecord>> {
+        use crate::core::types::FundsRecordType;
+
+        // Deribit requires a currency param — default to BTC if none specified
+        let currency = filter.asset
+            .as_deref()
+            .map(|a: &str| a.to_uppercase())
+            .unwrap_or_else(|| "BTC".to_string());
+
+        let fetch_deposits = matches!(
+            filter.record_type,
+            FundsRecordType::Deposit | FundsRecordType::Both
+        );
+        let fetch_withdrawals = matches!(
+            filter.record_type,
+            FundsRecordType::Withdrawal | FundsRecordType::Both
+        );
+
+        let count = filter.limit.unwrap_or(50).min(1000) as u64;
+        let mut records = Vec::new();
+
+        // Fetch deposit records
+        if fetch_deposits {
+            let mut params = HashMap::new();
+            params.insert("currency".to_string(), json!(currency));
+            params.insert("count".to_string(), json!(count));
+            params.insert("offset".to_string(), json!(0u64));
+
+            let response = self.rpc_call(DeribitMethod::GetDeposits, params).await?;
+
+            let result = response.get("result").unwrap_or(&response);
+            let data = result.get("data")
+                .and_then(|v| v.as_array())
+                .or_else(|| result.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            for item in data {
+                let id = item.get("id")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n.to_string())
+                    .unwrap_or_default();
+                let amount = item.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let tx_hash = item.get("transaction_id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+                let status = item.get("state")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let timestamp = item.get("updated_timestamp")
+                    .or_else(|| item.get("received_timestamp"))
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+
+                records.push(FundsRecord::Deposit {
+                    id,
+                    asset: currency.clone(),
+                    amount,
+                    tx_hash,
+                    network: None,
+                    status,
+                    timestamp,
+                });
+            }
+        }
+
+        // Fetch withdrawal records
+        if fetch_withdrawals {
+            let mut params = HashMap::new();
+            params.insert("currency".to_string(), json!(currency));
+            params.insert("count".to_string(), json!(count));
+            params.insert("offset".to_string(), json!(0u64));
+
+            let response = self.rpc_call(DeribitMethod::GetWithdrawals, params).await?;
+
+            let result = response.get("result").unwrap_or(&response);
+            let data = result.get("data")
+                .and_then(|v| v.as_array())
+                .or_else(|| result.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            for item in data {
+                let id = item.get("id")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n.to_string())
+                    .unwrap_or_default();
+                let amount = item.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let fee = item.get("fee").and_then(|v| v.as_f64());
+                let address = item.get("address")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let tx_hash = item.get("transaction_id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+                let status = item.get("state")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let timestamp = item.get("updated_timestamp")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+
+                records.push(FundsRecord::Withdrawal {
+                    id,
+                    asset: currency.clone(),
+                    amount,
+                    fee,
+                    address,
+                    tag: None, // Deribit doesn't use destination tags
+                    tx_hash,
+                    network: None,
+                    status,
+                    timestamp,
+                });
+            }
+        }
+
+        Ok(records)
     }
 }
 

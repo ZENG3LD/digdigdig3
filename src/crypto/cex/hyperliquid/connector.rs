@@ -31,9 +31,10 @@ use crate::core::{
     PlaceOrderResponse, BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, FeeInfo,
     AmendRequest, OrderResult,
+    CancelAllResponse,
 };
-use crate::core::traits::{Trading, Account, Positions, AmendOrder, BatchOrders};
-use crate::core::types::{ConnectorStats, SymbolInfo, AlgoOrderResponse};
+use crate::core::traits::{Trading, Account, Positions, AmendOrder, BatchOrders, CancelAll, AccountTransfers};
+use crate::core::types::{ConnectorStats, SymbolInfo, AlgoOrderResponse, TransferRequest, TransferHistoryFilter, TransferResponse};
 use crate::core::utils::WeightRateLimiter;
 
 use super::{HyperliquidUrls, HyperliquidAuth, HyperliquidParser, HyperliquidEndpoint};
@@ -1417,5 +1418,199 @@ impl BatchOrders for HyperliquidConnector {
 
     fn max_batch_cancel_size(&self) -> usize {
         10 // Same limit for cancel batches
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CANCEL ALL TRAIT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl CancelAll for HyperliquidConnector {
+    /// Cancel all open orders, optionally scoped to a symbol.
+    ///
+    /// Hyperliquid has no native cancel-all endpoint.
+    /// Implementation:
+    ///   1. Fetch all open orders via `POST /info {"type": "openOrders", "user": "0x..."}`
+    ///   2. Filter by symbol if scope is `BySymbol` or `All { symbol: Some(...) }`
+    ///   3. Send a single batch cancel via `POST /exchange` with all (asset, oid) pairs
+    ///
+    /// This is a single batch cancel request — NOT a loop over `cancel_order`.
+    async fn cancel_all_orders(
+        &self,
+        scope: CancelScope,
+        _account_type: AccountType,
+    ) -> ExchangeResult<CancelAllResponse> {
+        let auth = self.require_auth()?;
+        let wallet = self.wallet_address()?;
+
+        // Fetch all open orders (no signature required — just wallet address)
+        let params = serde_json::json!({ "user": wallet, "dex": "" });
+        let response = self.info_request(InfoType::OpenOrders, params).await?;
+        let open_orders = HyperliquidParser::parse_orders(&response)?;
+
+        // Determine optional symbol filter from scope
+        let symbol_filter: Option<&str> = match &scope {
+            CancelScope::All { symbol: Some(sym) } => Some(&sym.base),
+            CancelScope::BySymbol { symbol: sym } => Some(&sym.base),
+            CancelScope::All { symbol: None } => None,
+            // Single and Batch are handled by Trading::cancel_order — not this trait
+            _ => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "CancelAll::cancel_all_orders only supports All and BySymbol scopes".to_string()
+                ));
+            }
+        };
+
+        // Build (asset_index, oid) pairs, optionally filtered by symbol
+        let mut cancels: Vec<(u32, u64)> = Vec::new();
+        for order in &open_orders {
+            if let Some(filter) = symbol_filter {
+                if !order.symbol.eq_ignore_ascii_case(filter) {
+                    continue;
+                }
+            }
+            if let Ok(oid) = order.id.parse::<u64>() {
+                let asset = self.symbol_to_asset_index(&order.symbol).await.unwrap_or(0);
+                cancels.push((asset, oid));
+            }
+        }
+
+        // Nothing to cancel — return early with zero counts
+        if cancels.is_empty() {
+            return Ok(CancelAllResponse {
+                cancelled_count: 0,
+                failed_count: 0,
+                details: Vec::new(),
+            });
+        }
+
+        // One single batch cancel request
+        let body = auth.sign_cancel_action(&cancels, None)?;
+        let exchange_response = self.exchange_request(&body).await?;
+
+        // Parse per-cancel statuses to build detailed results
+        let data = HyperliquidParser::extract_exchange_data(&exchange_response)?;
+        let statuses = data.get("statuses")
+            .and_then(|s| s.as_array())
+            .ok_or_else(|| ExchangeError::Parse(
+                "Missing statuses in cancel-all response".to_string()
+            ))?;
+
+        let mut cancelled_count = 0u32;
+        let mut failed_count = 0u32;
+        let mut details: Vec<OrderResult> = Vec::with_capacity(statuses.len());
+
+        for (status, (_, oid)) in statuses.iter().zip(cancels.iter()) {
+            if let Some(err) = status.get("error").and_then(|e| e.as_str()) {
+                failed_count += 1;
+                details.push(OrderResult {
+                    order: None,
+                    client_order_id: None,
+                    success: false,
+                    error: Some(err.to_string()),
+                    error_code: None,
+                });
+            } else {
+                cancelled_count += 1;
+                details.push(OrderResult {
+                    order: Some(Order {
+                        id: oid.to_string(),
+                        client_order_id: None,
+                        symbol: symbol_filter.unwrap_or("").to_string(),
+                        side: OrderSide::Buy,
+                        order_type: OrderType::Limit { price: 0.0 },
+                        status: OrderStatus::Canceled,
+                        price: None,
+                        stop_price: None,
+                        quantity: 0.0,
+                        filled_quantity: 0.0,
+                        average_price: None,
+                        commission: None,
+                        commission_asset: None,
+                        created_at: 0,
+                        updated_at: Some(crate::core::timestamp_millis() as i64),
+                        time_in_force: TimeInForce::Gtc,
+                    }),
+                    client_order_id: None,
+                    success: true,
+                    error: None,
+                    error_code: None,
+                });
+            }
+        }
+
+        Ok(CancelAllResponse {
+            cancelled_count,
+            failed_count,
+            details,
+        })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT TRANSFERS TRAIT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AccountTransfers for HyperliquidConnector {
+    /// Transfer USDC between Spot and Perp wallets.
+    ///
+    /// Uses the `usdClassTransfer` action on `/exchange`.
+    /// - Spot → Perp:   `from_account = Spot, to_account = FuturesCross`  → `toPerp: true`
+    /// - Perp → Spot:   `from_account = FuturesCross, to_account = Spot`  → `toPerp: false`
+    ///
+    /// Only USDC transfers between Spot and Perp are supported.
+    /// Other asset/account combinations return `UnsupportedOperation`.
+    async fn transfer(&self, req: TransferRequest) -> ExchangeResult<TransferResponse> {
+        let auth = self.require_auth()?;
+
+        // Determine transfer direction
+        let to_perp = match (&req.from_account, &req.to_account) {
+            (AccountType::Spot, AccountType::FuturesCross)
+            | (AccountType::Spot, AccountType::FuturesIsolated) => true,
+            (AccountType::FuturesCross, AccountType::Spot)
+            | (AccountType::FuturesIsolated, AccountType::Spot) => false,
+            _ => {
+                return Err(ExchangeError::UnsupportedOperation(format!(
+                    "Hyperliquid only supports Spot ↔ Perp (FuturesCross) USDC transfers. \
+                     Got: {:?} → {:?}",
+                    req.from_account, req.to_account
+                )));
+            }
+        };
+
+        // Normalize amount to string (no trailing zeros)
+        let amount_str = super::auth::normalize_price(req.amount);
+
+        // Sign and send the transfer action
+        let body = auth.sign_usd_class_transfer(&amount_str, to_perp, None)?;
+        let response = self.exchange_request(&body).await?;
+
+        // usdClassTransfer response: { "status": "ok", "response": { "type": "default" } }
+        // No transfer ID is returned — generate a synthetic one from nonce context
+        let transfer_id = response
+            .pointer("/response/data")
+            .and_then(|d| d.as_str())
+            .unwrap_or("ok")
+            .to_string();
+
+        Ok(TransferResponse {
+            transfer_id,
+            status: "Successful".to_string(),
+            asset: req.asset,
+            amount: req.amount,
+            timestamp: Some(crate::core::timestamp_millis() as i64),
+        })
+    }
+
+    /// Get transfer history between Spot and Perp.
+    ///
+    /// Hyperliquid does not expose a transfer history endpoint — returns empty vec.
+    async fn get_transfer_history(
+        &self,
+        _filter: TransferHistoryFilter,
+    ) -> ExchangeResult<Vec<TransferResponse>> {
+        Ok(Vec::new())
     }
 }

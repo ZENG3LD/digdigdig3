@@ -73,6 +73,7 @@ pub enum BithumbEndpoint {
 
     // === SPOT ACCOUNT ===
     SpotAccount,
+    SpotDepositAddress,
     SpotWithdraw,
     SpotDepositHistory,
     SpotWithdrawHistory,
@@ -110,6 +111,7 @@ impl BithumbEndpoint {
 
             // Spot Account
             Self::SpotAccount => "/spot/account",
+            Self::SpotDepositAddress => "/wallet/depositAddress",
             Self::SpotWithdraw => "/withdraw",
             Self::SpotDepositHistory => "/wallet/depositHistory",
             Self::SpotWithdrawHistory => "/wallet/withdrawHistory",
@@ -158,6 +160,7 @@ impl BithumbEndpoint {
             | Self::SpotOpenOrders
             | Self::SpotHistoryOrders
             | Self::SpotAccount
+            | Self::SpotDepositAddress
             | Self::SpotWithdraw
             | Self::SpotDepositHistory
             | Self::SpotWithdrawHistory => "POST",

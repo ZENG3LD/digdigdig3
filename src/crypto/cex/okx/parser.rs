@@ -28,6 +28,10 @@ use crate::core::types::{
     SymbolInfo, CancelAllResponse, OrderResult,
 };
 use crate::core::types::AlgoOrderResponse;
+use crate::core::types::{
+    TransferResponse, DepositAddress, WithdrawResponse, FundsRecord,
+    SubAccountResult, SubAccount,
+};
 
 /// Order book level pairs (price, quantity)
 type OrderBookLevels = Vec<(f64, f64)>;
@@ -665,6 +669,316 @@ impl OkxParser {
             created_at: 0,
             updated_at: None,
             time_in_force: TimeInForce::Gtc,
+        })
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ACCOUNT TRANSFERS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse asset transfer response.
+    ///
+    /// OKX: `data[0] = { transId, ccy, from, amt, to }`
+    pub fn parse_transfer_response(response: &Value) -> ExchangeResult<TransferResponse> {
+        let data = Self::extract_first_data(response)?;
+
+        let transfer_id = Self::get_str(data, "transId")
+            .ok_or_else(|| ExchangeError::Parse("Missing 'transId' in transfer response".to_string()))?
+            .to_string();
+
+        let asset = Self::get_str(data, "ccy")
+            .unwrap_or("")
+            .to_string();
+
+        let amount = Self::get_f64(data, "amt").unwrap_or(0.0);
+
+        Ok(TransferResponse {
+            transfer_id,
+            status: "successful".to_string(),
+            asset,
+            amount,
+            timestamp: None,
+        })
+    }
+
+    /// Parse transfer history from asset/bills or transfer-state response.
+    ///
+    /// OKX bills: `data = [{ billId, ccy, sz, ts, ... }, ...]`
+    /// OKX transfer-state: `data = [{ transId, ccy, from, amt, to, state, ts }, ...]`
+    pub fn parse_transfer_history(response: &Value) -> ExchangeResult<Vec<TransferResponse>> {
+        let data = Self::extract_data(response)?;
+        let arr = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("'data' is not an array".to_string()))?;
+
+        let records = arr.iter().map(|item| {
+            // transfer-state uses transId, bills use billId
+            let transfer_id = Self::get_str(item, "transId")
+                .or_else(|| Self::get_str(item, "billId"))
+                .unwrap_or("")
+                .to_string();
+
+            let asset = Self::get_str(item, "ccy")
+                .unwrap_or("")
+                .to_string();
+
+            // bills use "sz", transfer-state uses "amt"
+            let amount = Self::get_f64(item, "amt")
+                .or_else(|| Self::get_f64(item, "sz"))
+                .unwrap_or(0.0)
+                .abs();
+
+            let status = Self::get_str(item, "state")
+                .unwrap_or("successful")
+                .to_string();
+
+            let timestamp = Self::get_i64(item, "ts");
+
+            TransferResponse {
+                transfer_id,
+                status,
+                asset,
+                amount,
+                timestamp,
+            }
+        }).collect();
+
+        Ok(records)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // CUSTODIAL FUNDS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse deposit address response.
+    ///
+    /// OKX: `data[0] = { addr, tag, chain, ccy, ... }`
+    pub fn parse_deposit_address(response: &Value) -> ExchangeResult<DepositAddress> {
+        let data = Self::extract_first_data(response)?;
+
+        let address = Self::get_str(data, "addr")
+            .ok_or_else(|| ExchangeError::Parse("Missing 'addr' in deposit address response".to_string()))?
+            .to_string();
+
+        let asset = Self::get_str(data, "ccy")
+            .unwrap_or("")
+            .to_string();
+
+        let tag = Self::get_str(data, "tag")
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+
+        let network = Self::get_str(data, "chain")
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+
+        Ok(DepositAddress {
+            address,
+            tag,
+            network,
+            asset,
+            created_at: Self::get_i64(data, "ts"),
+        })
+    }
+
+    /// Parse withdrawal response.
+    ///
+    /// OKX: `data[0] = { wdId, ccy, ... }`
+    pub fn parse_withdrawal_response(response: &Value) -> ExchangeResult<WithdrawResponse> {
+        let data = Self::extract_first_data(response)?;
+
+        let withdraw_id = Self::get_str(data, "wdId")
+            .ok_or_else(|| ExchangeError::Parse("Missing 'wdId' in withdrawal response".to_string()))?
+            .to_string();
+
+        Ok(WithdrawResponse {
+            withdraw_id,
+            status: "pending".to_string(),
+            tx_hash: None,
+        })
+    }
+
+    /// Parse deposit history.
+    ///
+    /// OKX: `data = [{ depId, ccy, amt, txId, chain, state, ts }, ...]`
+    pub fn parse_deposit_history(response: &Value) -> ExchangeResult<Vec<FundsRecord>> {
+        let data = Self::extract_data(response)?;
+        let arr = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("'data' is not an array".to_string()))?;
+
+        let records = arr.iter().map(|item| {
+            let id = Self::get_str(item, "depId")
+                .unwrap_or("")
+                .to_string();
+            let asset = Self::get_str(item, "ccy")
+                .unwrap_or("")
+                .to_string();
+            let amount = Self::get_f64(item, "amt").unwrap_or(0.0);
+            let tx_hash = Self::get_str(item, "txId")
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            let network = Self::get_str(item, "chain")
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            // OKX deposit states: 0=waiting, 1=credited, 2=successful, 8=pending review
+            let status = match Self::get_str(item, "state").unwrap_or("0") {
+                "2" => "Credited",
+                "1" => "Credited",
+                "0" => "Pending",
+                _ => "Pending",
+            }.to_string();
+            let timestamp = Self::get_i64(item, "ts").unwrap_or(0);
+
+            FundsRecord::Deposit {
+                id,
+                asset,
+                amount,
+                tx_hash,
+                network,
+                status,
+                timestamp,
+            }
+        }).collect();
+
+        Ok(records)
+    }
+
+    /// Parse withdrawal history.
+    ///
+    /// OKX: `data = [{ wdId, ccy, amt, fee, to, tag, txId, chain, state, ts }, ...]`
+    pub fn parse_withdrawal_history(response: &Value) -> ExchangeResult<Vec<FundsRecord>> {
+        let data = Self::extract_data(response)?;
+        let arr = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("'data' is not an array".to_string()))?;
+
+        let records = arr.iter().map(|item| {
+            let id = Self::get_str(item, "wdId")
+                .unwrap_or("")
+                .to_string();
+            let asset = Self::get_str(item, "ccy")
+                .unwrap_or("")
+                .to_string();
+            let amount = Self::get_f64(item, "amt").unwrap_or(0.0);
+            let fee = Self::get_f64(item, "fee");
+            let address = Self::get_str(item, "to")
+                .unwrap_or("")
+                .to_string();
+            let tag = Self::get_str(item, "tag")
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            let tx_hash = Self::get_str(item, "txId")
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            let network = Self::get_str(item, "chain")
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            // OKX withdrawal states: -3/-2/-1=cancel, 0=email, 1=pending, 2=sent, 3=crypto, 4/5=pending, 7=approved, 10=waiting, 4=success
+            let status = match Self::get_str(item, "state").unwrap_or("0") {
+                "2" | "3" => "Completed",
+                "-3" | "-2" | "-1" => "Failed",
+                _ => "Pending",
+            }.to_string();
+            let timestamp = Self::get_i64(item, "ts").unwrap_or(0);
+
+            FundsRecord::Withdrawal {
+                id,
+                asset,
+                amount,
+                fee,
+                address,
+                tag,
+                tx_hash,
+                network,
+                status,
+                timestamp,
+            }
+        }).collect();
+
+        Ok(records)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SUB-ACCOUNTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse sub-account create response.
+    ///
+    /// OKX: `data[0] = { subAcct, label, ... }`
+    pub fn parse_sub_account_create(response: &Value) -> ExchangeResult<SubAccountResult> {
+        let data = Self::extract_first_data(response)?;
+
+        let name = Self::get_str(data, "subAcct")
+            .unwrap_or("")
+            .to_string();
+
+        Ok(SubAccountResult {
+            id: Some(name.clone()),
+            name: Some(name),
+            accounts: vec![],
+            transaction_id: None,
+        })
+    }
+
+    /// Parse sub-account list response.
+    ///
+    /// OKX: `data = [{ subAcct, label, uid, enable, ts }, ...]`
+    pub fn parse_sub_account_list(response: &Value) -> ExchangeResult<SubAccountResult> {
+        let data = Self::extract_data(response)?;
+        let arr = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("'data' is not an array".to_string()))?;
+
+        let accounts = arr.iter().map(|item| {
+            let name = Self::get_str(item, "subAcct")
+                .unwrap_or("")
+                .to_string();
+            let id = Self::get_str(item, "uid")
+                .unwrap_or(&name)
+                .to_string();
+            let status = if Self::get_str(item, "enable").unwrap_or("true") == "true" {
+                "Normal".to_string()
+            } else {
+                "Frozen".to_string()
+            };
+
+            SubAccount { id, name, status }
+        }).collect();
+
+        Ok(SubAccountResult {
+            id: None,
+            name: None,
+            accounts,
+            transaction_id: None,
+        })
+    }
+
+    /// Parse sub-account transfer response.
+    ///
+    /// OKX: `data[0] = { transId }`
+    pub fn parse_sub_account_transfer(response: &Value) -> ExchangeResult<SubAccountResult> {
+        let data = Self::extract_first_data(response)?;
+
+        let transaction_id = Self::get_str(data, "transId")
+            .map(String::from);
+
+        Ok(SubAccountResult {
+            id: None,
+            name: None,
+            accounts: vec![],
+            transaction_id,
+        })
+    }
+
+    /// Parse sub-account balance response.
+    ///
+    /// OKX: `data[0] = { acctEq, details: [...] }` (same format as regular balance)
+    pub fn parse_sub_account_balance(response: &Value) -> ExchangeResult<SubAccountResult> {
+        // Verify response succeeds; balance details not mapped into SubAccountResult
+        Self::extract_data(response)?;
+
+        Ok(SubAccountResult {
+            id: None,
+            name: None,
+            accounts: vec![],
+            transaction_id: None,
         })
     }
 

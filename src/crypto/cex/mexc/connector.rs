@@ -32,8 +32,13 @@ use crate::core::{
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account,
 };
-use crate::core::{CancelAll, BatchOrders};
-use crate::core::types::{ConnectorStats, CancelAllResponse, OrderResult};
+use crate::core::{CancelAll, BatchOrders, AccountTransfers, CustodialFunds, SubAccounts};
+use crate::core::types::{
+    ConnectorStats, CancelAllResponse, OrderResult,
+    TransferRequest, TransferHistoryFilter, TransferResponse,
+    DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord, FundsHistoryFilter, FundsRecordType,
+    SubAccountOperation, SubAccountResult, SubAccount,
+};
 use crate::core::utils::WeightRateLimiter;
 
 use super::endpoints::{MexcUrls, MexcEndpoint, format_symbol, map_kline_interval};
@@ -1052,6 +1057,405 @@ impl BatchOrders for MexcConnector {
 
     fn max_batch_cancel_size(&self) -> usize {
         0 // Not supported
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT TRANSFERS (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AccountTransfers for MexcConnector {
+    /// Transfer between Spot, Margin, and Futures accounts.
+    ///
+    /// POST /api/v3/capital/transfer
+    /// Params: asset, amount, fromAccountType (SPOT/FUTURES/MARGIN), toAccountType
+    async fn transfer(&self, req: TransferRequest) -> ExchangeResult<TransferResponse> {
+        let from_type = account_type_to_mexc_str(req.from_account);
+        let to_type = account_type_to_mexc_str(req.to_account);
+
+        let mut params = HashMap::new();
+        params.insert("asset".to_string(), req.asset.clone());
+        params.insert("amount".to_string(), req.amount.to_string());
+        params.insert("fromAccountType".to_string(), from_type.to_string());
+        params.insert("toAccountType".to_string(), to_type.to_string());
+
+        let response = self.post(MexcEndpoint::Transfer, params).await?;
+
+        let tran_id = response["tranId"]
+            .as_str()
+            .map(|s| s.to_string())
+            .or_else(|| response["tranId"].as_i64().map(|n| n.to_string()))
+            .unwrap_or_else(|| "unknown".to_string());
+
+        Ok(TransferResponse {
+            transfer_id: tran_id,
+            status: "Successful".to_string(),
+            asset: req.asset,
+            amount: req.amount,
+            timestamp: Some(crate::core::timestamp_millis() as i64),
+        })
+    }
+
+    /// Get internal transfer history.
+    ///
+    /// GET /api/v3/capital/transfer
+    async fn get_transfer_history(
+        &self,
+        filter: TransferHistoryFilter,
+    ) -> ExchangeResult<Vec<TransferResponse>> {
+        let mut params = HashMap::new();
+
+        if let Some(start) = filter.start_time {
+            params.insert("startTime".to_string(), start.to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("endTime".to_string(), end.to_string());
+        }
+        if let Some(limit) = filter.limit {
+            params.insert("limit".to_string(), limit.to_string());
+        }
+
+        let response = self.get(MexcEndpoint::TransferHistory, params).await?;
+
+        let rows = response.get("rows")
+            .and_then(|v| v.as_array())
+            .or_else(|| response.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let records = rows.iter().map(|item| {
+            let tran_id = item["tranId"]
+                .as_str()
+                .map(|s| s.to_string())
+                .or_else(|| item["tranId"].as_i64().map(|n| n.to_string()))
+                .unwrap_or_else(|| "unknown".to_string());
+
+            let asset = item["asset"].as_str().unwrap_or("").to_string();
+            let amount = item["amount"]
+                .as_str()
+                .and_then(|s| s.parse::<f64>().ok())
+                .or_else(|| item["amount"].as_f64())
+                .unwrap_or(0.0);
+            let status = item["status"].as_str().unwrap_or("Unknown").to_string();
+            let timestamp = item["timestamp"].as_i64()
+                .or_else(|| item["createTime"].as_i64());
+
+            TransferResponse {
+                transfer_id: tran_id,
+                status,
+                asset,
+                amount,
+                timestamp,
+            }
+        }).collect();
+
+        Ok(records)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CUSTODIAL FUNDS (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl CustodialFunds for MexcConnector {
+    /// Get deposit address for an asset.
+    ///
+    /// GET /api/v3/capital/deposit/address
+    async fn get_deposit_address(
+        &self,
+        asset: &str,
+        network: Option<&str>,
+    ) -> ExchangeResult<DepositAddress> {
+        let mut params = HashMap::new();
+        params.insert("coin".to_string(), asset.to_uppercase());
+
+        if let Some(net) = network {
+            params.insert("network".to_string(), net.to_string());
+        }
+
+        let response = self.get(MexcEndpoint::DepositAddress, params).await?;
+
+        let address = response["address"]
+            .as_str()
+            .ok_or_else(|| ExchangeError::Parse("Missing deposit address".into()))?
+            .to_string();
+
+        let tag = response["tag"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        let net = response["network"]
+            .as_str()
+            .or_else(|| network)
+            .map(|s| s.to_string());
+
+        Ok(DepositAddress {
+            address,
+            tag,
+            network: net,
+            asset: asset.to_uppercase(),
+            created_at: None,
+        })
+    }
+
+    /// Submit a withdrawal request.
+    ///
+    /// POST /api/v3/capital/withdraw
+    async fn withdraw(&self, req: WithdrawRequest) -> ExchangeResult<WithdrawResponse> {
+        let mut params = HashMap::new();
+        params.insert("coin".to_string(), req.asset.clone());
+        params.insert("address".to_string(), req.address.clone());
+        params.insert("amount".to_string(), req.amount.to_string());
+
+        if let Some(net) = &req.network {
+            params.insert("network".to_string(), net.clone());
+        }
+        if let Some(memo) = &req.tag {
+            params.insert("memo".to_string(), memo.clone());
+        }
+
+        let response = self.post(MexcEndpoint::Withdraw, params).await?;
+
+        let withdraw_id = response["id"]
+            .as_str()
+            .map(|s| s.to_string())
+            .or_else(|| response["id"].as_i64().map(|n| n.to_string()))
+            .unwrap_or_else(|| "unknown".to_string());
+
+        Ok(WithdrawResponse {
+            withdraw_id,
+            status: "Pending".to_string(),
+            tx_hash: None,
+        })
+    }
+
+    /// Get deposit and/or withdrawal history.
+    ///
+    /// GET /api/v3/capital/deposit/hisrec  (deposits)
+    /// GET /api/v3/capital/withdraw/history (withdrawals)
+    async fn get_funds_history(
+        &self,
+        filter: FundsHistoryFilter,
+    ) -> ExchangeResult<Vec<FundsRecord>> {
+        let mut records = Vec::new();
+
+        let mut params = HashMap::new();
+        if let Some(asset) = &filter.asset {
+            params.insert("coin".to_string(), asset.to_uppercase());
+        }
+        if let Some(start) = filter.start_time {
+            params.insert("startTime".to_string(), start.to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("endTime".to_string(), end.to_string());
+        }
+        if let Some(limit) = filter.limit {
+            params.insert("limit".to_string(), limit.to_string());
+        }
+
+        if matches!(filter.record_type, FundsRecordType::Deposit | FundsRecordType::Both) {
+            let response = self.get(MexcEndpoint::DepositHistory, params.clone()).await?;
+
+            let items = response.as_array().cloned().unwrap_or_default();
+            for item in &items {
+                let id = item["id"].as_str().unwrap_or("").to_string();
+                let asset = item["coin"].as_str().unwrap_or("").to_string();
+                let amount = item["amount"]
+                    .as_str().and_then(|s| s.parse::<f64>().ok())
+                    .or_else(|| item["amount"].as_f64())
+                    .unwrap_or(0.0);
+                let tx_hash = item["txId"].as_str().map(|s| s.to_string());
+                let network = item["network"].as_str().map(|s| s.to_string());
+                let status = item["status"].as_str().unwrap_or("Unknown").to_string();
+                let timestamp = item["insertTime"].as_i64().unwrap_or(0);
+
+                records.push(FundsRecord::Deposit {
+                    id,
+                    asset,
+                    amount,
+                    tx_hash,
+                    network,
+                    status,
+                    timestamp,
+                });
+            }
+        }
+
+        if matches!(filter.record_type, FundsRecordType::Withdrawal | FundsRecordType::Both) {
+            let response = self.get(MexcEndpoint::WithdrawHistory, params).await?;
+
+            let items = response.as_array().cloned().unwrap_or_default();
+            for item in &items {
+                let id = item["id"].as_str().unwrap_or("").to_string();
+                let asset = item["coin"].as_str().unwrap_or("").to_string();
+                let amount = item["amount"]
+                    .as_str().and_then(|s| s.parse::<f64>().ok())
+                    .or_else(|| item["amount"].as_f64())
+                    .unwrap_or(0.0);
+                let fee = item["transactionFee"]
+                    .as_str().and_then(|s| s.parse::<f64>().ok())
+                    .or_else(|| item["transactionFee"].as_f64());
+                let address = item["address"].as_str().unwrap_or("").to_string();
+                let tag = item["addressTag"].as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+                let tx_hash = item["txId"].as_str().map(|s| s.to_string());
+                let network = item["network"].as_str().map(|s| s.to_string());
+                let status = item["status"].as_str().unwrap_or("Unknown").to_string();
+                let timestamp = item["applyTime"].as_i64()
+                    .or_else(|| item["insertTime"].as_i64())
+                    .unwrap_or(0);
+
+                records.push(FundsRecord::Withdrawal {
+                    id,
+                    asset,
+                    amount,
+                    fee,
+                    address,
+                    tag,
+                    tx_hash,
+                    network,
+                    status,
+                    timestamp,
+                });
+            }
+        }
+
+        Ok(records)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SUB ACCOUNTS (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl SubAccounts for MexcConnector {
+    /// Perform sub-account operations: Create, List, Transfer, GetBalance.
+    async fn sub_account_operation(
+        &self,
+        op: SubAccountOperation,
+    ) -> ExchangeResult<SubAccountResult> {
+        match op {
+            SubAccountOperation::Create { label } => {
+                // POST /api/v3/sub-account/virtualSubAccount
+                let mut params = HashMap::new();
+                params.insert("subUserName".to_string(), label.clone());
+
+                let response = self.post(MexcEndpoint::SubAccountCreate, params).await?;
+
+                let id = response["subUserId"]
+                    .as_str()
+                    .map(|s| s.to_string())
+                    .or_else(|| response["subUserId"].as_i64().map(|n| n.to_string()));
+
+                Ok(SubAccountResult {
+                    id,
+                    name: Some(label),
+                    accounts: vec![],
+                    transaction_id: None,
+                })
+            }
+
+            SubAccountOperation::List => {
+                // GET /api/v3/sub-account/list
+                let response = self.get(MexcEndpoint::SubAccountList, HashMap::new()).await?;
+
+                let items = response.get("subAccounts")
+                    .and_then(|v| v.as_array())
+                    .or_else(|| response.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+
+                let accounts = items.iter().map(|item| {
+                    let id = item["subUserId"]
+                        .as_str()
+                        .map(|s| s.to_string())
+                        .or_else(|| item["subUserId"].as_i64().map(|n| n.to_string()))
+                        .unwrap_or_default();
+                    let name = item["subUserName"].as_str().unwrap_or("").to_string();
+                    let status = if item["isFreeze"].as_bool().unwrap_or(false) {
+                        "Frozen".to_string()
+                    } else {
+                        "Normal".to_string()
+                    };
+
+                    SubAccount { id, name, status }
+                }).collect();
+
+                Ok(SubAccountResult {
+                    id: None,
+                    name: None,
+                    accounts,
+                    transaction_id: None,
+                })
+            }
+
+            SubAccountOperation::Transfer { sub_account_id, asset, amount, to_sub } => {
+                // POST /api/v3/capital/sub-account/universalTransfer
+                // fromEmail / toEmail identifies the direction
+                // MEXC uses email as sub-account identifier
+                let mut params = HashMap::new();
+                if to_sub {
+                    params.insert("toEmail".to_string(), sub_account_id.clone());
+                    params.insert("fromAccountType".to_string(), "SPOT".to_string());
+                    params.insert("toAccountType".to_string(), "SPOT".to_string());
+                } else {
+                    params.insert("fromEmail".to_string(), sub_account_id.clone());
+                    params.insert("fromAccountType".to_string(), "SPOT".to_string());
+                    params.insert("toAccountType".to_string(), "SPOT".to_string());
+                }
+                params.insert("asset".to_string(), asset);
+                params.insert("amount".to_string(), amount.to_string());
+
+                let response = self.post(MexcEndpoint::SubAccountTransfer, params).await?;
+
+                let tran_id = response["tranId"]
+                    .as_str()
+                    .map(|s| s.to_string())
+                    .or_else(|| response["tranId"].as_i64().map(|n| n.to_string()));
+
+                Ok(SubAccountResult {
+                    id: None,
+                    name: None,
+                    accounts: vec![],
+                    transaction_id: tran_id,
+                })
+            }
+
+            SubAccountOperation::GetBalance { sub_account_id } => {
+                // GET /api/v3/sub-account/assets?email={sub_account_id}
+                let mut params = HashMap::new();
+                params.insert("email".to_string(), sub_account_id);
+
+                let _response = self.get(MexcEndpoint::SubAccountAssets, params).await?;
+
+                // Balance is available in response but SubAccountResult doesn't carry it;
+                // return the sub-account id as acknowledgement that data was fetched.
+                Ok(SubAccountResult {
+                    id: None,
+                    name: None,
+                    accounts: vec![],
+                    transaction_id: None,
+                })
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Map internal AccountType to MEXC's transfer account type string.
+fn account_type_to_mexc_str(account_type: AccountType) -> &'static str {
+    match account_type {
+        AccountType::Spot => "SPOT",
+        AccountType::Margin => "MARGIN",
+        AccountType::FuturesCross | AccountType::FuturesIsolated => "FUTURES",
     }
 }
 

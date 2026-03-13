@@ -563,6 +563,336 @@ impl BybitParser {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════
+    // ACCOUNT TRANSFERS PARSERS
+    // ═══════════════════════════════════════════════════════════════════════════════
+
+    /// Parse inter-transfer response.
+    ///
+    /// Bybit returns: `result = { transferId }`
+    pub fn parse_transfer_response(json: &Value) -> ExchangeResult<TransferResponse> {
+        let result = Self::extract_result(json)?;
+
+        let transfer_id = result["transferId"].as_str()
+            .ok_or_else(|| ExchangeError::Parse("Missing transferId".to_string()))?
+            .to_string();
+
+        Ok(TransferResponse {
+            transfer_id,
+            status: "SUCCESS".to_string(),
+            asset: String::new(),
+            amount: 0.0,
+            timestamp: None,
+        })
+    }
+
+    /// Parse transfer history response.
+    ///
+    /// Bybit returns: `result.list = [{ transferId, coin, amount, fromAccountType, toAccountType, status, timestamp }]`
+    pub fn parse_transfer_history(json: &Value) -> ExchangeResult<Vec<TransferResponse>> {
+        let result = Self::extract_result(json)?;
+        let list = result["list"].as_array()
+            .cloned()
+            .unwrap_or_default();
+
+        let records = list.iter()
+            .map(|item| {
+                let transfer_id = item["transferId"].as_str()
+                    .unwrap_or("")
+                    .to_string();
+                let asset = item["coin"].as_str()
+                    .unwrap_or("")
+                    .to_string();
+                let amount = item["amount"].as_str()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                let status = item["status"].as_str()
+                    .unwrap_or("UNKNOWN")
+                    .to_string();
+                let timestamp = item["timestamp"].as_str()
+                    .and_then(|s| s.parse::<i64>().ok());
+
+                TransferResponse {
+                    transfer_id,
+                    status,
+                    asset,
+                    amount,
+                    timestamp,
+                }
+            })
+            .collect();
+
+        Ok(records)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // CUSTODIAL FUNDS PARSERS
+    // ═══════════════════════════════════════════════════════════════════════════════
+
+    /// Parse deposit address response.
+    ///
+    /// Bybit returns: `result = { coin, chains: [{ chainType, addressDeposit, tagDeposit, ... }] }`
+    pub fn parse_deposit_address(json: &Value, asset: &str, network: Option<&str>) -> ExchangeResult<DepositAddress> {
+        let result = Self::extract_result(json)?;
+
+        let coin = result["coin"].as_str().unwrap_or(asset);
+
+        let chains = result["chains"].as_array()
+            .ok_or_else(|| ExchangeError::Parse("Missing chains array in deposit address".to_string()))?;
+
+        // Pick the chain matching `network`, or the first one if network is None.
+        let chain_data = if let Some(net) = network {
+            chains.iter()
+                .find(|c| {
+                    c["chainType"].as_str().map(|s| s.eq_ignore_ascii_case(net)).unwrap_or(false)
+                })
+                .ok_or_else(|| ExchangeError::Parse(
+                    format!("Network '{}' not found in deposit address chains", net)
+                ))?
+        } else {
+            chains.first()
+                .ok_or_else(|| ExchangeError::Parse("No chains in deposit address response".to_string()))?
+        };
+
+        let address = chain_data["addressDeposit"].as_str()
+            .ok_or_else(|| ExchangeError::Parse("Missing addressDeposit".to_string()))?
+            .to_string();
+
+        let tag = chain_data["tagDeposit"].as_str()
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+
+        let chain_type = chain_data["chainType"].as_str().map(String::from);
+
+        Ok(DepositAddress {
+            address,
+            tag,
+            network: chain_type,
+            asset: coin.to_string(),
+            created_at: None,
+        })
+    }
+
+    /// Parse withdrawal response.
+    ///
+    /// Bybit returns: `result = { id }`
+    pub fn parse_withdraw_response(json: &Value) -> ExchangeResult<WithdrawResponse> {
+        let result = Self::extract_result(json)?;
+
+        let withdraw_id = result["id"].as_str()
+            .ok_or_else(|| ExchangeError::Parse("Missing withdrawal id".to_string()))?
+            .to_string();
+
+        Ok(WithdrawResponse {
+            withdraw_id,
+            status: "PENDING".to_string(),
+            tx_hash: None,
+        })
+    }
+
+    /// Parse deposit history response.
+    ///
+    /// Bybit returns: `result.rows = [{ txID, coin, amount, chain, status, successAt }]`
+    pub fn parse_deposit_history(json: &Value) -> ExchangeResult<Vec<FundsRecord>> {
+        let result = Self::extract_result(json)?;
+
+        // deposit history uses "rows" not "list"
+        let rows = result["rows"].as_array()
+            .cloned()
+            .unwrap_or_default();
+
+        let records = rows.iter()
+            .map(|item| {
+                let id = item["txID"].as_str().unwrap_or("").to_string();
+                let asset = item["coin"].as_str().unwrap_or("").to_string();
+                let amount = item["amount"].as_str()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                let tx_hash = item["txID"].as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(String::from);
+                let network = item["chain"].as_str().map(String::from);
+                let status = item["status"].as_str().unwrap_or("UNKNOWN").to_string();
+                let timestamp = item["successAt"].as_str()
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .unwrap_or(0);
+
+                FundsRecord::Deposit {
+                    id,
+                    asset,
+                    amount,
+                    tx_hash,
+                    network,
+                    status,
+                    timestamp,
+                }
+            })
+            .collect();
+
+        Ok(records)
+    }
+
+    /// Parse withdrawal history response.
+    ///
+    /// Bybit returns: `result.rows = [{ withdrawId, coin, amount, chain, address, tag, txID, status, createTime }]`
+    pub fn parse_withdrawal_history(json: &Value) -> ExchangeResult<Vec<FundsRecord>> {
+        let result = Self::extract_result(json)?;
+
+        let rows = result["rows"].as_array()
+            .cloned()
+            .unwrap_or_default();
+
+        let records = rows.iter()
+            .map(|item| {
+                let id = item["withdrawId"].as_str().unwrap_or("").to_string();
+                let asset = item["coin"].as_str().unwrap_or("").to_string();
+                let amount = item["amount"].as_str()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                let fee = item["withdrawFee"].as_str()
+                    .and_then(|s| s.parse::<f64>().ok());
+                let address = item["address"].as_str().unwrap_or("").to_string();
+                let tag = item["tag"].as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(String::from);
+                let tx_hash = item["txID"].as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(String::from);
+                let network = item["chain"].as_str().map(String::from);
+                let status = item["status"].as_str().unwrap_or("UNKNOWN").to_string();
+                let timestamp = item["createTime"].as_str()
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .unwrap_or(0);
+
+                FundsRecord::Withdrawal {
+                    id,
+                    asset,
+                    amount,
+                    fee,
+                    address,
+                    tag,
+                    tx_hash,
+                    network,
+                    status,
+                    timestamp,
+                }
+            })
+            .collect();
+
+        Ok(records)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // SUB-ACCOUNT PARSERS
+    // ═══════════════════════════════════════════════════════════════════════════════
+
+    /// Parse create sub-account response.
+    ///
+    /// Bybit returns: `result = { uid, username, memberType, status, remark }`
+    pub fn parse_create_sub_member(json: &Value) -> ExchangeResult<SubAccountResult> {
+        let result = Self::extract_result(json)?;
+
+        let id = result["uid"].as_u64()
+            .map(|u| u.to_string())
+            .or_else(|| result["uid"].as_str().map(String::from));
+
+        let name = result["username"].as_str().map(String::from);
+
+        Ok(SubAccountResult {
+            id,
+            name,
+            accounts: vec![],
+            transaction_id: None,
+        })
+    }
+
+    /// Parse list sub-members response.
+    ///
+    /// Bybit returns: `result.subMembers = [{ uid, username, memberType, status, remark }]`
+    pub fn parse_list_sub_members(json: &Value) -> ExchangeResult<SubAccountResult> {
+        let result = Self::extract_result(json)?;
+
+        let sub_members = result["subMembers"].as_array()
+            .cloned()
+            .unwrap_or_default();
+
+        let accounts: Vec<SubAccount> = sub_members.iter()
+            .map(|item| {
+                let id = item["uid"].as_u64()
+                    .map(|u| u.to_string())
+                    .or_else(|| item["uid"].as_str().map(String::from))
+                    .unwrap_or_default();
+                let name = item["username"].as_str().unwrap_or("").to_string();
+                let status = match item["status"].as_u64() {
+                    Some(1) => "Normal",
+                    Some(2) => "Login Banned",
+                    Some(4) => "Frozen",
+                    _ => "Unknown",
+                }.to_string();
+
+                SubAccount { id, name, status }
+            })
+            .collect();
+
+        Ok(SubAccountResult {
+            id: None,
+            name: None,
+            accounts,
+            transaction_id: None,
+        })
+    }
+
+    /// Parse universal transfer response.
+    ///
+    /// Bybit returns: `result = { transferId }`
+    pub fn parse_universal_transfer(json: &Value) -> ExchangeResult<SubAccountResult> {
+        let result = Self::extract_result(json)?;
+
+        let transfer_id = result["transferId"].as_str()
+            .ok_or_else(|| ExchangeError::Parse("Missing transferId in universal transfer response".to_string()))?
+            .to_string();
+
+        Ok(SubAccountResult {
+            id: None,
+            name: None,
+            accounts: vec![],
+            transaction_id: Some(transfer_id),
+        })
+    }
+
+    /// Parse sub-account balance response.
+    ///
+    /// Bybit returns: `result = { memberId, accountType, balance: [{ coin, walletBalance, ... }] }`
+    /// The balance list is returned as `transaction_id` is not applicable here.
+    /// We store the coin balances as a JSON summary in `transaction_id`.
+    pub fn parse_sub_account_balance(json: &Value) -> ExchangeResult<SubAccountResult> {
+        let result = Self::extract_result(json)?;
+
+        let member_id = result["memberId"].as_str()
+            .or_else(|| result["memberId"].as_u64().map(|_| "").filter(|_| false))
+            .map(String::from);
+
+        // Summarize balance as "COIN:amount,COIN:amount,..."
+        let balance_summary = result["balance"].as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| {
+                        let coin = item["coin"].as_str()?;
+                        let amount = item["walletBalance"].as_str().unwrap_or("0");
+                        Some(format!("{}:{}", coin, amount))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",")
+            });
+
+        Ok(SubAccountResult {
+            id: member_id,
+            name: None,
+            accounts: vec![],
+            transaction_id: balance_summary,
+        })
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════
     // WEBSOCKET PARSERS
     // ═══════════════════════════════════════════════════════════════════════════════
 

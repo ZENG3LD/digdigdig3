@@ -124,6 +124,32 @@ pub enum BinanceEndpoint {
     // === WEBSOCKET ===
     SpotListenKey,
     FuturesListenKey,
+
+    // === ACCOUNT TRANSFERS ===
+    /// Universal transfer: POST /sapi/v1/asset/transfer
+    AssetTransfer,
+    /// Universal transfer history: GET /sapi/v1/asset/transfer
+    AssetTransferHistory,
+
+    // === CUSTODIAL FUNDS ===
+    /// Deposit address: GET /sapi/v1/capital/deposit/address
+    DepositAddress,
+    /// Withdraw: POST /sapi/v1/capital/withdraw/apply
+    Withdraw,
+    /// Deposit history: GET /sapi/v1/capital/deposit/hisrec
+    DepositHistory,
+    /// Withdrawal history: GET /sapi/v1/capital/withdraw/history
+    WithdrawHistory,
+
+    // === SUB-ACCOUNTS ===
+    /// Create virtual sub-account: POST /sapi/v1/sub-account/virtualSubAccount
+    SubAccountCreate,
+    /// List sub-accounts: GET /sapi/v1/sub-account/list
+    SubAccountList,
+    /// Universal transfer between sub-accounts: POST /sapi/v1/sub-account/universalTransfer
+    SubAccountTransfer,
+    /// Get sub-account assets/balance: GET /sapi/v3/sub-account/assets
+    SubAccountAssets,
 }
 
 impl BinanceEndpoint {
@@ -191,6 +217,22 @@ impl BinanceEndpoint {
             // WebSocket
             Self::SpotListenKey => "/api/v3/userDataStream",
             Self::FuturesListenKey => "/fapi/v1/listenKey",
+
+            // Account Transfers
+            Self::AssetTransfer => "/sapi/v1/asset/transfer",
+            Self::AssetTransferHistory => "/sapi/v1/asset/transfer",
+
+            // Custodial Funds
+            Self::DepositAddress => "/sapi/v1/capital/deposit/address",
+            Self::Withdraw => "/sapi/v1/capital/withdraw/apply",
+            Self::DepositHistory => "/sapi/v1/capital/deposit/hisrec",
+            Self::WithdrawHistory => "/sapi/v1/capital/withdraw/history",
+
+            // Sub-Accounts
+            Self::SubAccountCreate => "/sapi/v1/sub-account/virtualSubAccount",
+            Self::SubAccountList => "/sapi/v1/sub-account/list",
+            Self::SubAccountTransfer => "/sapi/v1/sub-account/universalTransfer",
+            Self::SubAccountAssets => "/sapi/v3/sub-account/assets",
         }
     }
 
@@ -232,7 +274,11 @@ impl BinanceEndpoint {
             | Self::FuturesAlgoTwap
             | Self::FuturesBatchOrders
             | Self::SpotListenKey
-            | Self::FuturesListenKey => "POST",
+            | Self::FuturesListenKey
+            | Self::AssetTransfer
+            | Self::Withdraw
+            | Self::SubAccountCreate
+            | Self::SubAccountTransfer => "POST",
 
             Self::SpotCancelOrder
             | Self::SpotCancelAllOrders

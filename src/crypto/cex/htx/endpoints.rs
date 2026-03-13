@@ -107,6 +107,16 @@ pub enum HtxEndpoint {
     // === ALGO ORDERS ===
     /// POST /v2/algo-orders — place trailing stop or other algo orders
     AlgoOrders,
+
+    // === TRANSFERS ===
+    Transfer,                // POST /v1/futures/transfer
+    TransferHistory,         // GET  /v2/account/transfer
+
+    // === SUB ACCOUNTS ===
+    SubAccountCreate,        // POST /v2/sub-user/creation
+    SubAccountList,          // GET  /v2/sub-user/user-list
+    SubAccountTransfer,      // POST /v1/subuser/transfer
+    SubAccountBalance,       // GET  /v1/account/accounts/{sub-uid}
 }
 
 impl HtxEndpoint {
@@ -158,6 +168,16 @@ impl HtxEndpoint {
 
             // Algo Orders
             Self::AlgoOrders => "/v2/algo-orders",
+
+            // Transfers
+            Self::Transfer => "/v1/futures/transfer",
+            Self::TransferHistory => "/v2/account/transfer",
+
+            // Sub Accounts
+            Self::SubAccountCreate => "/v2/sub-user/creation",
+            Self::SubAccountList => "/v2/sub-user/user-list",
+            Self::SubAccountTransfer => "/v1/subuser/transfer",
+            Self::SubAccountBalance => "/v1/account/accounts/{sub-uid}",
         }
     }
 
@@ -171,7 +191,10 @@ impl HtxEndpoint {
             | Self::CancelOpenOrders
             | Self::Withdraw
             | Self::WithdrawCancel
-            | Self::AlgoOrders => "POST",
+            | Self::AlgoOrders
+            | Self::Transfer
+            | Self::SubAccountCreate
+            | Self::SubAccountTransfer => "POST",
 
             // GET requests
             _ => "GET",

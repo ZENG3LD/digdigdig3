@@ -119,6 +119,32 @@ pub enum GateioEndpoint {
     FuturesPositions,
     FuturesPosition,
     FuturesSetLeverage,
+
+    // === ACCOUNT TRANSFERS ===
+    /// POST /wallet/transfers — transfer between account types
+    WalletTransfer,
+    /// GET /wallet/transfers — transfer history (paginated)
+    WalletTransferHistory,
+
+    // === CUSTODIAL FUNDS ===
+    /// GET /wallet/deposit_address — deposit address for an asset
+    DepositAddress,
+    /// POST /withdrawals — submit withdrawal request
+    Withdraw,
+    /// GET /wallet/deposits — deposit history
+    DepositHistory,
+    /// GET /wallet/withdrawals — withdrawal history
+    WithdrawalHistory,
+
+    // === SUB-ACCOUNTS ===
+    /// POST /sub_accounts — create sub-account
+    SubAccountCreate,
+    /// GET /sub_accounts — list sub-accounts
+    SubAccountList,
+    /// POST /sub_accounts/transfers — transfer to/from sub-account
+    SubAccountTransfer,
+    /// GET /sub_accounts/{user_id}/balances — get sub-account balances
+    SubAccountBalance,
 }
 
 impl GateioEndpoint {
@@ -178,6 +204,22 @@ impl GateioEndpoint {
             Self::FuturesPositions => format!("/futures/{}/positions", settle.unwrap_or("usdt")),
             Self::FuturesPosition => format!("/futures/{}/positions/{{contract}}", settle.unwrap_or("usdt")),
             Self::FuturesSetLeverage => format!("/futures/{}/positions/{{contract}}/leverage", settle.unwrap_or("usdt")),
+
+            // Account Transfers
+            Self::WalletTransfer => "/wallet/transfers".to_string(),
+            Self::WalletTransferHistory => "/wallet/transfers".to_string(),
+
+            // Custodial Funds
+            Self::DepositAddress => "/wallet/deposit_address".to_string(),
+            Self::Withdraw => "/withdrawals".to_string(),
+            Self::DepositHistory => "/wallet/deposits".to_string(),
+            Self::WithdrawalHistory => "/wallet/withdrawals".to_string(),
+
+            // Sub-Accounts
+            Self::SubAccountCreate => "/sub_accounts".to_string(),
+            Self::SubAccountList => "/sub_accounts".to_string(),
+            Self::SubAccountTransfer => "/sub_accounts/transfers".to_string(),
+            Self::SubAccountBalance => "/sub_accounts/{user_id}/balances".to_string(),
         }
     }
 
@@ -209,7 +251,11 @@ impl GateioEndpoint {
             | Self::SpotPriceOrders
             | Self::SpotBatchOrders
             | Self::FuturesBatchOrders
-            | Self::FuturesSetLeverage => "POST",
+            | Self::FuturesSetLeverage
+            | Self::WalletTransfer
+            | Self::Withdraw
+            | Self::SubAccountCreate
+            | Self::SubAccountTransfer => "POST",
 
             Self::SpotCancelOrder
             | Self::SpotCancelAllOrders

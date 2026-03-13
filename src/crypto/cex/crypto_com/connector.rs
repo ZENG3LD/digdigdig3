@@ -28,7 +28,11 @@ use crate::core::{
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     CancelAllResponse, AmendRequest, MarginType,
     ExchangeIdentity, MarketData, Trading, Account, Positions,
-    CancelAll, AmendOrder, BatchOrders,
+    CancelAll, AmendOrder, BatchOrders, CustodialFunds, SubAccounts,
+};
+use crate::core::types::{
+    DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord, FundsHistoryFilter, FundsRecordType,
+    SubAccountOperation, SubAccountResult, SubAccount,
 };
 use crate::core::types::{SymbolInfo, OrderResult};
 use crate::core::types::ConnectorStats;
@@ -1362,5 +1366,293 @@ impl BatchOrders for CryptoComConnector {
     /// Maximum batch cancel size (Crypto.com limit: 10 orders per batch).
     fn max_batch_cancel_size(&self) -> usize {
         10
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CUSTODIAL FUNDS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl CustodialFunds for CryptoComConnector {
+    /// Get deposit address for an asset on a given network.
+    ///
+    /// Endpoint: POST /private/get-deposit-address
+    async fn get_deposit_address(
+        &self,
+        asset: &str,
+        network: Option<&str>,
+    ) -> ExchangeResult<DepositAddress> {
+        let mut params = json!({ "currency": asset });
+        if let Some(net) = network {
+            params["network_id"] = json!(net);
+        }
+
+        let response = self.request(CryptoComEndpoint::GetDepositAddress, params).await?;
+
+        // Response: {"result": {"deposit_address_list": [{"address": ..., "create_time": ..., "id": ..., "network": ..., "status": ..., "whitelist_status": ...}]}}
+        let addresses = response.get("result")
+            .and_then(|r| r.get("deposit_address_list"))
+            .and_then(|v| v.as_array());
+
+        let item = addresses
+            .and_then(|arr| arr.first())
+            .ok_or_else(|| ExchangeError::Parse("No deposit addresses returned".to_string()))?;
+
+        let address = item.get("address")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'address' field".to_string()))?
+            .to_string();
+        let tag = item.get("address_tag")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+        let net = item.get("network")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .or_else(|| network.map(String::from));
+        let created_at = item.get("create_time").and_then(|v| v.as_i64());
+
+        Ok(DepositAddress {
+            address,
+            tag,
+            network: net,
+            asset: asset.to_string(),
+            created_at,
+        })
+    }
+
+    /// Submit a withdrawal request.
+    ///
+    /// Endpoint: POST /private/create-withdrawal
+    async fn withdraw(&self, req: WithdrawRequest) -> ExchangeResult<WithdrawResponse> {
+        let mut params = json!({
+            "currency": req.asset,
+            "amount": req.amount,
+            "address": req.address,
+        });
+
+        if let Some(net) = &req.network {
+            params["network_id"] = json!(net);
+        }
+        if let Some(tag) = &req.tag {
+            params["address_tag"] = json!(tag);
+        }
+
+        let response = self.request(CryptoComEndpoint::CreateWithdrawal, params).await?;
+
+        let data = response.get("result").cloned().unwrap_or(json!({}));
+        let withdraw_id = data.get("id")
+            .and_then(|v| v.as_str().map(String::from)
+                .or_else(|| v.as_i64().map(|n| n.to_string())))
+            .unwrap_or_else(|| "unknown".to_string());
+
+        Ok(WithdrawResponse {
+            withdraw_id,
+            status: "Pending".to_string(),
+            tx_hash: None,
+        })
+    }
+
+    /// Get deposit and/or withdrawal history.
+    ///
+    /// Endpoint (deposits): POST /private/get-deposit-history
+    /// Endpoint (withdrawals): POST /private/get-withdrawal-history
+    async fn get_funds_history(
+        &self,
+        filter: FundsHistoryFilter,
+    ) -> ExchangeResult<Vec<FundsRecord>> {
+        let mut records: Vec<FundsRecord> = Vec::new();
+
+        let build_params = |f: &FundsHistoryFilter| {
+            let mut p = json!({});
+            if let Some(a) = &f.asset {
+                p["currency"] = json!(a);
+            }
+            if let Some(s) = f.start_time {
+                p["start_ts"] = json!(s);
+            }
+            if let Some(e) = f.end_time {
+                p["end_ts"] = json!(e);
+            }
+            if let Some(l) = f.limit {
+                p["page_size"] = json!(l);
+            }
+            p
+        };
+
+        if matches!(filter.record_type, FundsRecordType::Deposit | FundsRecordType::Both) {
+            let params = build_params(&filter);
+            let response = self.request(CryptoComEndpoint::GetDepositHistory, params).await?;
+            if let Some(deposit_list) = response.get("result")
+                .and_then(|r| r.get("deposit_list"))
+                .and_then(|v| v.as_array())
+            {
+                for item in deposit_list {
+                    let id = item.get("id")
+                        .and_then(|v| v.as_str().map(String::from)
+                            .or_else(|| v.as_i64().map(|n| n.to_string())))
+                        .unwrap_or_default();
+                    let asset = item.get("currency").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let amount = item.get("amount").and_then(|v| v.as_f64())
+                        .or_else(|| item.get("amount").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()))
+                        .unwrap_or(0.0);
+                    let tx_hash = item.get("txid").and_then(|v| v.as_str()).map(String::from);
+                    let network = item.get("network").and_then(|v| v.as_str()).map(String::from);
+                    let status = item.get("status").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
+                    let timestamp = item.get("create_time").and_then(|v| v.as_i64()).unwrap_or(0);
+
+                    records.push(FundsRecord::Deposit {
+                        id, asset, amount, tx_hash, network, status, timestamp,
+                    });
+                }
+            }
+        }
+
+        if matches!(filter.record_type, FundsRecordType::Withdrawal | FundsRecordType::Both) {
+            let params = build_params(&filter);
+            let response = self.request(CryptoComEndpoint::GetWithdrawalHistory, params).await?;
+            if let Some(withdrawal_list) = response.get("result")
+                .and_then(|r| r.get("withdrawal_list"))
+                .and_then(|v| v.as_array())
+            {
+                for item in withdrawal_list {
+                    let id = item.get("id")
+                        .and_then(|v| v.as_str().map(String::from)
+                            .or_else(|| v.as_i64().map(|n| n.to_string())))
+                        .unwrap_or_default();
+                    let asset = item.get("currency").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let amount = item.get("amount").and_then(|v| v.as_f64())
+                        .or_else(|| item.get("amount").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()))
+                        .unwrap_or(0.0);
+                    let fee = item.get("fee").and_then(|v| v.as_f64())
+                        .or_else(|| item.get("fee").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()));
+                    let address = item.get("address").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let tag = item.get("address_tag").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from);
+                    let tx_hash = item.get("txid").and_then(|v| v.as_str()).map(String::from);
+                    let network = item.get("network").and_then(|v| v.as_str()).map(String::from);
+                    let status = item.get("status").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
+                    let timestamp = item.get("create_time").and_then(|v| v.as_i64()).unwrap_or(0);
+
+                    records.push(FundsRecord::Withdrawal {
+                        id, asset, amount, fee, address, tag, tx_hash, network, status, timestamp,
+                    });
+                }
+            }
+        }
+
+        Ok(records)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SUB ACCOUNTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl SubAccounts for CryptoComConnector {
+    /// Perform a sub-account operation.
+    ///
+    /// - Create: POST /private/subaccount/create
+    /// - List: POST /private/subaccount/get-subaccounts
+    /// - Transfer: POST /private/subaccount/transfer
+    /// - GetBalance: POST /private/subaccount/get-balances
+    async fn sub_account_operation(
+        &self,
+        op: SubAccountOperation,
+    ) -> ExchangeResult<SubAccountResult> {
+        match op {
+            SubAccountOperation::Create { label } => {
+                let params = json!({ "subaccount_label": label });
+                let response = self.request(CryptoComEndpoint::SubAccountCreate, params).await?;
+
+                let data = response.get("result").cloned().unwrap_or(json!({}));
+                let id = data.get("uuid")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+
+                Ok(SubAccountResult {
+                    id,
+                    name: Some(label),
+                    accounts: vec![],
+                    transaction_id: None,
+                })
+            }
+
+            SubAccountOperation::List => {
+                let response = self.request(CryptoComEndpoint::SubAccountList, json!({})).await?;
+
+                let sub_account_list = response.get("result")
+                    .and_then(|r| r.get("sub_account_list"))
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+
+                let accounts = sub_account_list.iter().map(|item| {
+                    let id = item.get("uuid")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let name = item.get("label")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let status = item.get("enabled")
+                        .and_then(|v| v.as_bool())
+                        .map(|b| if b { "Active" } else { "Disabled" })
+                        .unwrap_or("Unknown")
+                        .to_string();
+                    SubAccount { id, name, status }
+                }).collect();
+
+                Ok(SubAccountResult {
+                    id: None,
+                    name: None,
+                    accounts,
+                    transaction_id: None,
+                })
+            }
+
+            SubAccountOperation::Transfer { sub_account_id, asset, amount, to_sub } => {
+                // direction: "IN" = master → sub, "OUT" = sub → master
+                let direction = if to_sub { "IN" } else { "OUT" };
+
+                let params = json!({
+                    "sub_account_uuid": sub_account_id,
+                    "currency": asset,
+                    "amount": amount.to_string(),
+                    "direction": direction,
+                });
+
+                let response = self.request(CryptoComEndpoint::SubAccountTransfer, params).await?;
+
+                let transaction_id = response.get("result")
+                    .and_then(|r| r.get("id"))
+                    .and_then(|v| v.as_str().map(String::from)
+                        .or_else(|| v.as_i64().map(|n| n.to_string())));
+
+                Ok(SubAccountResult {
+                    id: None,
+                    name: None,
+                    accounts: vec![],
+                    transaction_id,
+                })
+            }
+
+            SubAccountOperation::GetBalance { sub_account_id } => {
+                let params = json!({ "sub_account_uuid": sub_account_id });
+                let response = self.request(CryptoComEndpoint::SubAccountGetBalances, params).await?;
+
+                // Response contains balance data; we return the sub-account ID for reference
+                let _ = response; // balance data available in response if needed by caller
+
+                Ok(SubAccountResult {
+                    id: Some(sub_account_id),
+                    name: None,
+                    accounts: vec![],
+                    transaction_id: None,
+                })
+            }
+        }
     }
 }

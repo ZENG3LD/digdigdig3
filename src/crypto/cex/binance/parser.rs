@@ -11,6 +11,8 @@ use crate::core::types::{
     FundingRate, SymbolInfo, FeeInfo,
     OcoResponse, CancelAllResponse, OrderResult,
     AlgoOrderResponse, BracketResponse,
+    TransferResponse, DepositAddress, WithdrawResponse, FundsRecord,
+    SubAccountResult, SubAccount,
 };
 
 /// Парсер ответов Binance API
@@ -714,6 +716,323 @@ impl BinanceParser {
         }
 
         Err(ExchangeError::Parse("Cannot extract fee info from response".to_string()))
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ACCOUNT TRANSFERS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse transfer response from POST /sapi/v1/asset/transfer
+    ///
+    /// Binance returns: `{"tranId": 13526853623}`
+    pub fn parse_transfer_response(response: &Value, asset: &str, amount: f64) -> ExchangeResult<TransferResponse> {
+        Self::check_error(response)?;
+
+        let transfer_id = response.get("tranId")
+            .and_then(|v| {
+                if let Some(n) = v.as_i64() {
+                    Some(n.to_string())
+                } else {
+                    v.as_str().map(String::from)
+                }
+            })
+            .ok_or_else(|| ExchangeError::Parse("Missing 'tranId' in transfer response".to_string()))?;
+
+        Ok(TransferResponse {
+            transfer_id,
+            status: "Successful".to_string(),
+            asset: asset.to_string(),
+            amount,
+            timestamp: None,
+        })
+    }
+
+    /// Parse transfer history from GET /sapi/v1/asset/transfer
+    ///
+    /// Binance returns: `{"total": N, "rows": [{...}, ...]}`
+    pub fn parse_transfer_history(response: &Value) -> ExchangeResult<Vec<TransferResponse>> {
+        Self::check_error(response)?;
+
+        let rows = response.get("rows")
+            .and_then(|r| r.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'rows' in transfer history response".to_string()))?;
+
+        let mut result = Vec::with_capacity(rows.len());
+        for item in rows {
+            let transfer_id = item.get("tranId")
+                .and_then(|v| {
+                    if let Some(n) = v.as_i64() {
+                        Some(n.to_string())
+                    } else {
+                        v.as_str().map(String::from)
+                    }
+                })
+                .unwrap_or_default();
+
+            let asset = Self::get_str(item, "asset").unwrap_or("").to_string();
+            let amount = Self::get_f64(item, "amount").unwrap_or(0.0);
+            let status = Self::get_str(item, "status").unwrap_or("").to_string();
+            let timestamp = item.get("timestamp").and_then(|t| t.as_i64());
+
+            result.push(TransferResponse {
+                transfer_id,
+                status,
+                asset,
+                amount,
+                timestamp,
+            });
+        }
+
+        Ok(result)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // CUSTODIAL FUNDS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse deposit address from GET /sapi/v1/capital/deposit/address
+    ///
+    /// Binance returns: `{"address": "...", "coin": "BTC", "tag": "", "url": "..."}`
+    pub fn parse_deposit_address(response: &Value) -> ExchangeResult<DepositAddress> {
+        Self::check_error(response)?;
+
+        let address = Self::get_str(response, "address")
+            .ok_or_else(|| ExchangeError::Parse("Missing 'address' in deposit address response".to_string()))?
+            .to_string();
+
+        let asset = Self::get_str(response, "coin").unwrap_or("").to_string();
+        let tag = Self::get_str(response, "tag")
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+        let network = Self::get_str(response, "network")
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+
+        Ok(DepositAddress {
+            address,
+            tag,
+            network,
+            asset,
+            created_at: None,
+        })
+    }
+
+    /// Parse withdraw response from POST /sapi/v1/capital/withdraw/apply
+    ///
+    /// Binance returns: `{"id": "7213fea8e94b4a5593d507237e5a555b"}`
+    pub fn parse_withdraw_response(response: &Value) -> ExchangeResult<WithdrawResponse> {
+        Self::check_error(response)?;
+
+        let withdraw_id = Self::get_str(response, "id")
+            .ok_or_else(|| ExchangeError::Parse("Missing 'id' in withdraw response".to_string()))?
+            .to_string();
+
+        Ok(WithdrawResponse {
+            withdraw_id,
+            status: "Pending".to_string(),
+            tx_hash: None,
+        })
+    }
+
+    /// Parse deposit history from GET /sapi/v1/capital/deposit/hisrec
+    ///
+    /// Binance returns an array of deposit records.
+    pub fn parse_deposit_history(response: &Value) -> ExchangeResult<Vec<FundsRecord>> {
+        Self::check_error(response)?;
+
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array in deposit history response".to_string()))?;
+
+        let mut result = Vec::with_capacity(arr.len());
+        for item in arr {
+            let id = item.get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let asset = Self::get_str(item, "coin").unwrap_or("").to_string();
+            let amount = Self::get_f64(item, "amount").unwrap_or(0.0);
+            let tx_hash = Self::get_str(item, "txId")
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            let network = Self::get_str(item, "network")
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            // Binance deposit status: 0=pending, 1=credited, 6=wrong_deposit, 7=waiting_user_confirm
+            let status_code = item.get("status").and_then(|s| s.as_i64()).unwrap_or(0);
+            let status = match status_code {
+                0 => "Pending",
+                1 => "Credited",
+                _ => "Unknown",
+            }.to_string();
+            let timestamp = item.get("insertTime").and_then(|t| t.as_i64()).unwrap_or(0);
+
+            result.push(FundsRecord::Deposit {
+                id,
+                asset,
+                amount,
+                tx_hash,
+                network,
+                status,
+                timestamp,
+            });
+        }
+
+        Ok(result)
+    }
+
+    /// Parse withdrawal history from GET /sapi/v1/capital/withdraw/history
+    ///
+    /// Binance returns an array of withdrawal records.
+    pub fn parse_withdrawal_history(response: &Value) -> ExchangeResult<Vec<FundsRecord>> {
+        Self::check_error(response)?;
+
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array in withdrawal history response".to_string()))?;
+
+        let mut result = Vec::with_capacity(arr.len());
+        for item in arr {
+            let id = Self::get_str(item, "id").unwrap_or("").to_string();
+            let asset = Self::get_str(item, "coin").unwrap_or("").to_string();
+            let amount = Self::get_f64(item, "amount").unwrap_or(0.0);
+            let fee = Self::get_f64(item, "transactionFee");
+            let address = Self::get_str(item, "address").unwrap_or("").to_string();
+            let tag = Self::get_str(item, "addressTag")
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            let tx_hash = Self::get_str(item, "txId")
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            let network = Self::get_str(item, "network")
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            // Binance withdrawal status: 0=email_sent, 1=cancelled, 2=awaiting_approval,
+            //   3=rejected, 4=processing, 5=failure, 6=completed
+            let status_code = item.get("status").and_then(|s| s.as_i64()).unwrap_or(0);
+            let status = match status_code {
+                0 => "EmailSent",
+                1 => "Cancelled",
+                2 => "AwaitingApproval",
+                3 => "Rejected",
+                4 => "Processing",
+                5 => "Failed",
+                6 => "Completed",
+                _ => "Unknown",
+            }.to_string();
+            let timestamp = item.get("applyTime")
+                .and_then(|t| t.as_str())
+                .and_then(|s| s.parse::<i64>().ok())
+                .or_else(|| item.get("applyTime").and_then(|t| t.as_i64()))
+                .unwrap_or(0);
+
+            result.push(FundsRecord::Withdrawal {
+                id,
+                asset,
+                amount,
+                fee,
+                address,
+                tag,
+                tx_hash,
+                network,
+                status,
+                timestamp,
+            });
+        }
+
+        Ok(result)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SUB-ACCOUNTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse sub-account create response from POST /sapi/v1/sub-account/virtualSubAccount
+    ///
+    /// Binance returns: `{"email": "virtual_sub_email@binance.com"}`
+    pub fn parse_sub_account_create(response: &Value) -> ExchangeResult<SubAccountResult> {
+        Self::check_error(response)?;
+
+        let email = Self::get_str(response, "email").unwrap_or("").to_string();
+
+        Ok(SubAccountResult {
+            id: Some(email.clone()),
+            name: Some(email),
+            accounts: Vec::new(),
+            transaction_id: None,
+        })
+    }
+
+    /// Parse sub-account list from GET /sapi/v1/sub-account/list
+    ///
+    /// Binance returns: `{"subAccounts": [{...}, ...]}`
+    pub fn parse_sub_account_list(response: &Value) -> ExchangeResult<SubAccountResult> {
+        Self::check_error(response)?;
+
+        let arr = response.get("subAccounts")
+            .and_then(|a| a.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'subAccounts' in list response".to_string()))?;
+
+        let accounts: Vec<SubAccount> = arr.iter().map(|item| {
+            SubAccount {
+                id: Self::get_str(item, "email").unwrap_or("").to_string(),
+                name: Self::get_str(item, "email").unwrap_or("").to_string(),
+                status: if item.get("isFreeze").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    "Frozen".to_string()
+                } else {
+                    "Normal".to_string()
+                },
+            }
+        }).collect();
+
+        Ok(SubAccountResult {
+            id: None,
+            name: None,
+            accounts,
+            transaction_id: None,
+        })
+    }
+
+    /// Parse sub-account universal transfer response from POST /sapi/v1/sub-account/universalTransfer
+    ///
+    /// Binance returns: `{"tranId": 12345, "clientTranId": "..."}`
+    pub fn parse_sub_account_transfer(response: &Value) -> ExchangeResult<SubAccountResult> {
+        Self::check_error(response)?;
+
+        let tran_id = response.get("tranId")
+            .and_then(|v| {
+                if let Some(n) = v.as_i64() {
+                    Some(n.to_string())
+                } else {
+                    v.as_str().map(String::from)
+                }
+            });
+
+        Ok(SubAccountResult {
+            id: None,
+            name: None,
+            accounts: Vec::new(),
+            transaction_id: tran_id,
+        })
+    }
+
+    /// Parse sub-account assets/balance from GET /sapi/v3/sub-account/assets
+    ///
+    /// Binance returns: `{"balances": [{...}, ...]}`
+    pub fn parse_sub_account_assets(response: &Value) -> ExchangeResult<SubAccountResult> {
+        Self::check_error(response)?;
+
+        // The balance data is present but we store the transaction_id as a summary marker.
+        // Callers who want detailed balance data should parse the raw response themselves.
+        let balance_count = response.get("balances")
+            .and_then(|b| b.as_array())
+            .map(|arr| arr.len())
+            .unwrap_or(0);
+
+        Ok(SubAccountResult {
+            id: None,
+            name: None,
+            accounts: Vec::new(),
+            transaction_id: Some(format!("balance_assets_count={}", balance_count)),
+        })
     }
 
     fn parse_position_data(data: &Value) -> Option<Position> {

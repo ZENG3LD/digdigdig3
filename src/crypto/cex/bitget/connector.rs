@@ -37,9 +37,12 @@ use crate::core::{
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
 };
-use crate::core::{CancelAll, AmendOrder, BatchOrders};
+use crate::core::{CancelAll, AmendOrder, BatchOrders, AccountTransfers, CustodialFunds, SubAccounts};
 use crate::core::types::{
     ConnectorStats, CancelAllResponse, OrderResult, AmendRequest,
+    TransferRequest, TransferHistoryFilter, TransferResponse,
+    DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord, FundsHistoryFilter, FundsRecordType,
+    SubAccountOperation, SubAccountResult, SubAccount,
 };
 use crate::core::utils::SimpleRateLimiter;
 
@@ -1902,5 +1905,409 @@ impl BatchOrders for BitgetConnector {
         }
 
         Ok(results)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT TRANSFERS (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AccountTransfers for BitgetConnector {
+    /// Transfer between Spot, Futures, P2P, etc.
+    ///
+    /// POST /api/v2/spot/wallet/transfer
+    /// Body: { fromType, toType, amount, coin }
+    async fn transfer(&self, req: TransferRequest) -> ExchangeResult<TransferResponse> {
+        let from_type = bitget_account_type_str(req.from_account);
+        let to_type = bitget_account_type_str(req.to_account);
+
+        let body = json!({
+            "fromType": from_type,
+            "toType": to_type,
+            "amount": req.amount.to_string(),
+            "coin": req.asset.to_uppercase(),
+        });
+
+        let response = self.post(BitgetEndpoint::Transfer, body, AccountType::Spot).await?;
+
+        let tran_id = response.get("data")
+            .and_then(|d| d.get("transferId"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        Ok(TransferResponse {
+            transfer_id: tran_id,
+            status: "Successful".to_string(),
+            asset: req.asset,
+            amount: req.amount,
+            timestamp: Some(crate::core::timestamp_millis() as i64),
+        })
+    }
+
+    /// Get internal transfer history.
+    ///
+    /// GET /api/v2/spot/account/transferRecords
+    async fn get_transfer_history(
+        &self,
+        filter: TransferHistoryFilter,
+    ) -> ExchangeResult<Vec<TransferResponse>> {
+        let mut params = HashMap::new();
+
+        if let Some(start) = filter.start_time {
+            params.insert("startTime".to_string(), start.to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("endTime".to_string(), end.to_string());
+        }
+        if let Some(limit) = filter.limit {
+            params.insert("limit".to_string(), limit.to_string());
+        }
+
+        let response = self.get(BitgetEndpoint::TransferHistory, params, AccountType::Spot).await?;
+
+        let data = response.get("data")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let records = data.iter().map(|item| {
+            let tran_id = item["clientOid"]
+                .as_str()
+                .map(|s| s.to_string())
+                .or_else(|| item["transferId"].as_str().map(|s| s.to_string()))
+                .unwrap_or_else(|| "unknown".to_string());
+
+            let asset = item["coin"].as_str().unwrap_or("").to_string();
+            let amount = item["size"]
+                .as_str().and_then(|s| s.parse::<f64>().ok())
+                .or_else(|| item["size"].as_f64())
+                .unwrap_or(0.0);
+            let status = item["status"].as_str().unwrap_or("Unknown").to_string();
+            let timestamp = item["cTime"]
+                .as_str().and_then(|s| s.parse::<i64>().ok())
+                .or_else(|| item["cTime"].as_i64());
+
+            TransferResponse {
+                transfer_id: tran_id,
+                status,
+                asset,
+                amount,
+                timestamp,
+            }
+        }).collect();
+
+        Ok(records)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CUSTODIAL FUNDS (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl CustodialFunds for BitgetConnector {
+    /// Get deposit address for an asset.
+    ///
+    /// GET /api/v2/spot/wallet/deposit-address
+    async fn get_deposit_address(
+        &self,
+        asset: &str,
+        network: Option<&str>,
+    ) -> ExchangeResult<DepositAddress> {
+        let mut params = HashMap::new();
+        params.insert("coin".to_string(), asset.to_uppercase());
+
+        if let Some(chain) = network {
+            params.insert("chain".to_string(), chain.to_string());
+        }
+
+        let response = self.get(BitgetEndpoint::DepositAddress, params, AccountType::Spot).await?;
+
+        let data = response.get("data")
+            .ok_or_else(|| ExchangeError::Parse("No deposit address data".into()))?;
+
+        let address = data["address"]
+            .as_str()
+            .ok_or_else(|| ExchangeError::Parse("Missing deposit address".into()))?
+            .to_string();
+
+        let tag = data["tag"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        let net = data["chain"]
+            .as_str()
+            .or(network)
+            .map(|s| s.to_string());
+
+        Ok(DepositAddress {
+            address,
+            tag,
+            network: net,
+            asset: asset.to_uppercase(),
+            created_at: None,
+        })
+    }
+
+    /// Submit a withdrawal request.
+    ///
+    /// POST /api/v2/spot/wallet/withdrawal
+    async fn withdraw(&self, req: WithdrawRequest) -> ExchangeResult<WithdrawResponse> {
+        let mut body = json!({
+            "coin": req.asset.to_uppercase(),
+            "address": req.address,
+            "amount": req.amount.to_string(),
+            "transferType": "on_chain",
+        });
+
+        if let Some(chain) = &req.network {
+            body["chain"] = json!(chain);
+        }
+        if let Some(tag) = &req.tag {
+            body["tag"] = json!(tag);
+        }
+
+        let response = self.post(BitgetEndpoint::Withdraw, body, AccountType::Spot).await?;
+
+        let withdraw_id = response.get("data")
+            .and_then(|d| d.get("orderId"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        Ok(WithdrawResponse {
+            withdraw_id,
+            status: "Pending".to_string(),
+            tx_hash: None,
+        })
+    }
+
+    /// Get deposit and/or withdrawal history.
+    ///
+    /// GET /api/v2/spot/wallet/deposit-records  (deposits)
+    /// GET /api/v2/spot/wallet/withdrawal-records (withdrawals)
+    async fn get_funds_history(
+        &self,
+        filter: FundsHistoryFilter,
+    ) -> ExchangeResult<Vec<FundsRecord>> {
+        let mut records = Vec::new();
+
+        let mut base_params = HashMap::new();
+        if let Some(asset) = &filter.asset {
+            base_params.insert("coin".to_string(), asset.to_uppercase());
+        }
+        if let Some(start) = filter.start_time {
+            base_params.insert("startTime".to_string(), start.to_string());
+        }
+        if let Some(end) = filter.end_time {
+            base_params.insert("endTime".to_string(), end.to_string());
+        }
+        if let Some(limit) = filter.limit {
+            base_params.insert("limit".to_string(), limit.to_string());
+        }
+
+        if matches!(filter.record_type, FundsRecordType::Deposit | FundsRecordType::Both) {
+            let response = self.get(BitgetEndpoint::DepositHistory, base_params.clone(), AccountType::Spot).await?;
+
+            let data = response.get("data")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            for item in &data {
+                let id = item["id"].as_str().unwrap_or("").to_string();
+                let asset = item["coin"].as_str().unwrap_or("").to_string();
+                let amount = item["size"]
+                    .as_str().and_then(|s| s.parse::<f64>().ok())
+                    .or_else(|| item["size"].as_f64())
+                    .unwrap_or(0.0);
+                let tx_hash = item["tradeId"].as_str().map(|s| s.to_string());
+                let network = item["chain"].as_str().map(|s| s.to_string());
+                let status = item["status"].as_str().unwrap_or("Unknown").to_string();
+                let timestamp = item["cTime"]
+                    .as_str().and_then(|s| s.parse::<i64>().ok())
+                    .or_else(|| item["cTime"].as_i64())
+                    .unwrap_or(0);
+
+                records.push(FundsRecord::Deposit {
+                    id,
+                    asset,
+                    amount,
+                    tx_hash,
+                    network,
+                    status,
+                    timestamp,
+                });
+            }
+        }
+
+        if matches!(filter.record_type, FundsRecordType::Withdrawal | FundsRecordType::Both) {
+            let response = self.get(BitgetEndpoint::WithdrawHistory, base_params, AccountType::Spot).await?;
+
+            let data = response.get("data")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            for item in &data {
+                let id = item["id"].as_str().unwrap_or("").to_string();
+                let asset = item["coin"].as_str().unwrap_or("").to_string();
+                let amount = item["size"]
+                    .as_str().and_then(|s| s.parse::<f64>().ok())
+                    .or_else(|| item["size"].as_f64())
+                    .unwrap_or(0.0);
+                let fee = item["fee"]
+                    .as_str().and_then(|s| s.parse::<f64>().ok())
+                    .or_else(|| item["fee"].as_f64());
+                let address = item["toAddress"].as_str().unwrap_or("").to_string();
+                let tag = item["tag"].as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+                let tx_hash = item["tradeId"].as_str().map(|s| s.to_string());
+                let network = item["chain"].as_str().map(|s| s.to_string());
+                let status = item["status"].as_str().unwrap_or("Unknown").to_string();
+                let timestamp = item["cTime"]
+                    .as_str().and_then(|s| s.parse::<i64>().ok())
+                    .or_else(|| item["cTime"].as_i64())
+                    .unwrap_or(0);
+
+                records.push(FundsRecord::Withdrawal {
+                    id,
+                    asset,
+                    amount,
+                    fee,
+                    address,
+                    tag,
+                    tx_hash,
+                    network,
+                    status,
+                    timestamp,
+                });
+            }
+        }
+
+        Ok(records)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SUB ACCOUNTS (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl SubAccounts for BitgetConnector {
+    /// Perform sub-account operations: Create, List, Transfer, GetBalance.
+    async fn sub_account_operation(
+        &self,
+        op: SubAccountOperation,
+    ) -> ExchangeResult<SubAccountResult> {
+        match op {
+            SubAccountOperation::Create { label } => {
+                // POST /api/v2/user/create-virtual-subaccount
+                let body = json!({ "subAccountName": label.clone() });
+
+                let response = self.post(BitgetEndpoint::SubAccountCreate, body, AccountType::Spot).await?;
+
+                let id = response.get("data")
+                    .and_then(|d| d.get("userId"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                Ok(SubAccountResult {
+                    id,
+                    name: Some(label),
+                    accounts: vec![],
+                    transaction_id: None,
+                })
+            }
+
+            SubAccountOperation::List => {
+                // GET /api/v2/user/virtual-subaccount-list
+                let response = self.get(BitgetEndpoint::SubAccountList, HashMap::new(), AccountType::Spot).await?;
+
+                let data = response.get("data")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+
+                let accounts = data.iter().map(|item| {
+                    let id = item["userId"].as_str().unwrap_or("").to_string();
+                    let name = item["subAccountName"].as_str().unwrap_or("").to_string();
+                    let status = item["status"].as_str().unwrap_or("normal").to_string();
+
+                    SubAccount { id, name, status }
+                }).collect();
+
+                Ok(SubAccountResult {
+                    id: None,
+                    name: None,
+                    accounts,
+                    transaction_id: None,
+                })
+            }
+
+            SubAccountOperation::Transfer { sub_account_id, asset, amount, to_sub } => {
+                // POST /api/v2/user/virtual-subaccount-transfer
+                // fromSubUid / toSubUid identifies direction
+                let mut body = json!({
+                    "coin": asset.to_uppercase(),
+                    "amount": amount.to_string(),
+                    "fromType": "spot",
+                    "toType": "spot",
+                });
+
+                if to_sub {
+                    body["toSubUid"] = json!(sub_account_id);
+                } else {
+                    body["fromSubUid"] = json!(sub_account_id);
+                }
+
+                let response = self.post(BitgetEndpoint::SubAccountTransfer, body, AccountType::Spot).await?;
+
+                let tran_id = response.get("data")
+                    .and_then(|d| d.get("clientOid"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                Ok(SubAccountResult {
+                    id: None,
+                    name: None,
+                    accounts: vec![],
+                    transaction_id: tran_id,
+                })
+            }
+
+            SubAccountOperation::GetBalance { sub_account_id } => {
+                // GET /api/v2/user/virtual-subaccount-assets?subUid={id}
+                let mut params = HashMap::new();
+                params.insert("subUid".to_string(), sub_account_id.clone());
+
+                let _response = self.get(BitgetEndpoint::SubAccountAssets, params, AccountType::Spot).await?;
+
+                Ok(SubAccountResult {
+                    id: Some(sub_account_id),
+                    name: None,
+                    accounts: vec![],
+                    transaction_id: None,
+                })
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Map internal AccountType to Bitget transfer type string.
+fn bitget_account_type_str(account_type: AccountType) -> &'static str {
+    match account_type {
+        AccountType::Spot => "spot",
+        AccountType::Margin => "p2p",
+        AccountType::FuturesCross => "usdt_futures",
+        AccountType::FuturesIsolated => "coin_futures",
     }
 }

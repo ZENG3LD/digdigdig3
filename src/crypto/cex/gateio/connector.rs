@@ -28,12 +28,18 @@ use crate::core::{
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     AmendRequest, CancelAllResponse, OrderResult,
+    TransferResponse, DepositAddress, WithdrawResponse, FundsRecord,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
     CancelAll, AmendOrder, BatchOrders,
+    AccountTransfers, CustodialFunds, SubAccounts,
 };
-use crate::core::types::ConnectorStats;
+use crate::core::types::{
+    TransferRequest, TransferHistoryFilter, WithdrawRequest,
+    FundsHistoryFilter, FundsRecordType, SubAccountOperation, SubAccountResult,
+    SubAccount, ConnectorStats,
+};
 use crate::core::utils::WeightRateLimiter;
 
 use super::endpoints::{GateioUrls, GateioEndpoint, format_symbol, map_kline_interval};
@@ -1656,5 +1662,498 @@ impl BatchOrders for GateioConnector {
 
     fn max_batch_cancel_size(&self) -> usize {
         0 // No native batch cancel
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT TRANSFERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Internal transfers between Gate.io account types.
+///
+/// - Transfer: `POST /api/v4/wallet/transfers`
+/// - History:  `GET  /api/v4/wallet/transfers`
+///
+/// AccountType mapping:
+/// - `Spot`           → `"spot"`
+/// - `FuturesCross`   → `"futures"`
+/// - `Margin`         → `"margin"`
+#[async_trait]
+impl AccountTransfers for GateioConnector {
+    async fn transfer(&self, req: TransferRequest) -> ExchangeResult<TransferResponse> {
+        fn map_account(at: AccountType) -> &'static str {
+            match at {
+                AccountType::Spot => "spot",
+                AccountType::FuturesCross | AccountType::FuturesIsolated => "futures",
+                AccountType::Margin => "margin",
+            }
+        }
+
+        let account_type = AccountType::Spot; // transfers use spot base URL
+        let base_url = self.urls.rest_url(account_type);
+        let path = GateioEndpoint::WalletTransfer.path(None);
+        let url = format!("{}{}", base_url, path);
+
+        let body = json!({
+            "currency": req.asset,
+            "from": map_account(req.from_account),
+            "to": map_account(req.to_account),
+            "amount": req.amount.to_string(),
+        });
+
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+        let body_str = body.to_string();
+        let headers = auth.sign_request("POST", &path, "", &body_str);
+
+        let response = self.http.post(&url, &body, &headers).await?;
+        GateioParser::check_error(&response)?;
+
+        // Gate.io transfer response is typically empty on success; generate synthetic ID
+        let transfer_id = format!("t_{}", crate::core::timestamp_millis());
+
+        Ok(TransferResponse {
+            transfer_id,
+            status: "Successful".to_string(),
+            asset: req.asset,
+            amount: req.amount,
+            timestamp: Some(crate::core::timestamp_millis() as i64),
+        })
+    }
+
+    async fn get_transfer_history(
+        &self,
+        filter: TransferHistoryFilter,
+    ) -> ExchangeResult<Vec<TransferResponse>> {
+        let account_type = AccountType::Spot;
+        let base_url = self.urls.rest_url(account_type);
+        let path = GateioEndpoint::WalletTransferHistory.path(None);
+
+        let mut params: HashMap<String, String> = HashMap::new();
+        if let Some(start) = filter.start_time {
+            params.insert("from".to_string(), (start / 1000).to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("to".to_string(), (end / 1000).to_string());
+        }
+        if let Some(limit) = filter.limit {
+            params.insert("limit".to_string(), limit.min(1000).to_string());
+        }
+
+        let query_string = if params.is_empty() {
+            String::new()
+        } else {
+            let qs: Vec<String> = params.iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect();
+            qs.join("&")
+        };
+
+        let url = if query_string.is_empty() {
+            format!("{}{}", base_url, path)
+        } else {
+            format!("{}{}?{}", base_url, path, query_string)
+        };
+
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+        let headers = auth.sign_request("GET", &path, &query_string, "");
+
+        let response = self.http.get_with_headers(&url, &HashMap::new(), &headers).await?;
+        GateioParser::check_error(&response)?;
+
+        let items = response.as_array().cloned().unwrap_or_default();
+        let mut records = Vec::with_capacity(items.len());
+
+        for item in items {
+            let transfer_id = item.get("id")
+                .and_then(|v| v.as_i64())
+                .map(|v| v.to_string())
+                .unwrap_or_default();
+            let asset = item.get("currency")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let amount = item.get("amount")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let status = "Successful".to_string();
+            let timestamp = item.get("timestamp")
+                .and_then(|v| v.as_i64())
+                .map(|t| t * 1000); // Gate.io uses seconds, convert to ms
+            records.push(TransferResponse {
+                transfer_id,
+                status,
+                asset,
+                amount,
+                timestamp,
+            });
+        }
+
+        Ok(records)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CUSTODIAL FUNDS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Deposit and withdrawal management for Gate.io.
+///
+/// - Deposit address: `GET  /api/v4/wallet/deposit_address`
+/// - Withdraw:        `POST /api/v4/withdrawals`
+/// - Deposit history: `GET  /api/v4/wallet/deposits`
+/// - Withdrawal hist: `GET  /api/v4/wallet/withdrawals`
+#[async_trait]
+impl CustodialFunds for GateioConnector {
+    async fn get_deposit_address(
+        &self,
+        asset: &str,
+        network: Option<&str>,
+    ) -> ExchangeResult<DepositAddress> {
+        let account_type = AccountType::Spot;
+        let base_url = self.urls.rest_url(account_type);
+        let path = GateioEndpoint::DepositAddress.path(None);
+
+        let mut params = HashMap::new();
+        params.insert("currency".to_string(), asset.to_string());
+        if let Some(chain) = network {
+            params.insert("chain".to_string(), chain.to_string());
+        }
+
+        let query_string: Vec<String> = params.iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        let qs = query_string.join("&");
+        let url = format!("{}{}?{}", base_url, path, qs);
+
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+        let headers = auth.sign_request("GET", &path, &qs, "");
+
+        let response = self.http.get_with_headers(&url, &HashMap::new(), &headers).await?;
+        GateioParser::check_error(&response)?;
+
+        let address = response.get("address")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ExchangeError::Parse("Missing address field".to_string()))?
+            .to_string();
+        let tag = response.get("payment_id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+        let network_out = response.get("chain")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        Ok(DepositAddress {
+            address,
+            tag,
+            network: network_out,
+            asset: asset.to_string(),
+            created_at: None,
+        })
+    }
+
+    async fn withdraw(&self, req: WithdrawRequest) -> ExchangeResult<WithdrawResponse> {
+        let account_type = AccountType::Spot;
+        let base_url = self.urls.rest_url(account_type);
+        let path = GateioEndpoint::Withdraw.path(None);
+        let url = format!("{}{}", base_url, path);
+
+        let mut body = json!({
+            "currency": req.asset,
+            "address": req.address,
+            "amount": req.amount.to_string(),
+        });
+        if let Some(chain) = req.network {
+            body["chain"] = json!(chain);
+        }
+        if let Some(memo) = req.tag {
+            body["memo"] = json!(memo);
+        }
+
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+        let body_str = body.to_string();
+        let headers = auth.sign_request("POST", &path, "", &body_str);
+
+        let response = self.http.post(&url, &body, &headers).await?;
+        GateioParser::check_error(&response)?;
+
+        let withdraw_id = response.get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let status = response.get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("PENDING")
+            .to_string();
+        let tx_hash = response.get("txid")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+
+        Ok(WithdrawResponse {
+            withdraw_id,
+            status,
+            tx_hash,
+        })
+    }
+
+    async fn get_funds_history(
+        &self,
+        filter: FundsHistoryFilter,
+    ) -> ExchangeResult<Vec<FundsRecord>> {
+        let account_type = AccountType::Spot;
+        let base_url = self.urls.rest_url(account_type);
+
+        let endpoint = match filter.record_type {
+            FundsRecordType::Deposit => GateioEndpoint::DepositHistory,
+            FundsRecordType::Withdrawal => GateioEndpoint::WithdrawalHistory,
+            FundsRecordType::Both => GateioEndpoint::DepositHistory,
+        };
+
+        let path = endpoint.path(None);
+
+        let mut params: HashMap<String, String> = HashMap::new();
+        if let Some(ref asset) = filter.asset {
+            params.insert("currency".to_string(), asset.clone());
+        }
+        if let Some(start) = filter.start_time {
+            params.insert("from".to_string(), (start / 1000).to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("to".to_string(), (end / 1000).to_string());
+        }
+        if let Some(limit) = filter.limit {
+            params.insert("limit".to_string(), limit.min(1000).to_string());
+        }
+
+        let query_string = if params.is_empty() {
+            String::new()
+        } else {
+            let qs: Vec<String> = params.iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect();
+            qs.join("&")
+        };
+
+        let url = if query_string.is_empty() {
+            format!("{}{}", base_url, path)
+        } else {
+            format!("{}{}?{}", base_url, path, query_string)
+        };
+
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+        let headers = auth.sign_request("GET", &path, &query_string, "");
+
+        let response = self.http.get_with_headers(&url, &HashMap::new(), &headers).await?;
+        GateioParser::check_error(&response)?;
+
+        let items = response.as_array().cloned().unwrap_or_default();
+        let is_deposit = matches!(filter.record_type, FundsRecordType::Deposit | FundsRecordType::Both);
+        let mut records = Vec::with_capacity(items.len());
+
+        for item in items {
+            let id = item.get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let asset = item.get("currency")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let amount = item.get("amount")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let status = item.get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("UNKNOWN")
+                .to_string();
+            let timestamp = item.get("timestamp")
+                .and_then(|v| v.as_i64())
+                .map(|t| t * 1000)  // Gate.io uses seconds
+                .unwrap_or(0);
+            let tx_hash = item.get("txid")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            let network = item.get("chain")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+
+            if is_deposit {
+                records.push(FundsRecord::Deposit {
+                    id,
+                    asset,
+                    amount,
+                    tx_hash,
+                    network,
+                    status,
+                    timestamp,
+                });
+            } else {
+                let fee = item.get("fee")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<f64>().ok());
+                let address = item.get("withdraw_address")
+                    .or_else(|| item.get("address"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let tag = item.get("memo")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(String::from);
+                records.push(FundsRecord::Withdrawal {
+                    id,
+                    asset,
+                    amount,
+                    fee,
+                    address,
+                    tag,
+                    tx_hash,
+                    network,
+                    status,
+                    timestamp,
+                });
+            }
+        }
+
+        Ok(records)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SUB-ACCOUNTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Sub-account management for Gate.io.
+///
+/// - Create:   `POST /api/v4/sub_accounts`
+/// - List:     `GET  /api/v4/sub_accounts`
+/// - Transfer: `POST /api/v4/sub_accounts/transfers`
+/// - Balance:  `GET  /api/v4/sub_accounts/{user_id}/balances`
+#[async_trait]
+impl SubAccounts for GateioConnector {
+    async fn sub_account_operation(
+        &self,
+        op: SubAccountOperation,
+    ) -> ExchangeResult<SubAccountResult> {
+        let account_type = AccountType::Spot;
+        let base_url = self.urls.rest_url(account_type);
+
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+
+        match op {
+            SubAccountOperation::Create { label } => {
+                let path = GateioEndpoint::SubAccountCreate.path(None);
+                let url = format!("{}{}", base_url, path);
+                let body = json!({ "login_name": label });
+                let body_str = body.to_string();
+                let headers = auth.sign_request("POST", &path, "", &body_str);
+                let response = self.http.post(&url, &body, &headers).await?;
+                GateioParser::check_error(&response)?;
+
+                let user_id = response.get("user_id")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v.to_string())
+                    .unwrap_or_default();
+                let name = response.get("login_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&label)
+                    .to_string();
+
+                Ok(SubAccountResult {
+                    id: Some(user_id),
+                    name: Some(name),
+                    accounts: vec![],
+                    transaction_id: None,
+                })
+            }
+
+            SubAccountOperation::List => {
+                let path = GateioEndpoint::SubAccountList.path(None);
+                let url = format!("{}{}", base_url, path);
+                let headers = auth.sign_request("GET", &path, "", "");
+                let response = self.http.get_with_headers(&url, &HashMap::new(), &headers).await?;
+                GateioParser::check_error(&response)?;
+
+                let items = response.as_array().cloned().unwrap_or_default();
+                let accounts: Vec<SubAccount> = items.iter().map(|item| {
+                    SubAccount {
+                        id: item.get("user_id")
+                            .and_then(|v| v.as_i64())
+                            .map(|v| v.to_string())
+                            .unwrap_or_default(),
+                        name: item.get("login_name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        status: item.get("state")
+                            .and_then(|v| v.as_i64())
+                            .map(|s| if s == 1 { "Normal" } else { "Locked" })
+                            .unwrap_or("Normal")
+                            .to_string(),
+                    }
+                }).collect();
+
+                Ok(SubAccountResult {
+                    id: None,
+                    name: None,
+                    accounts,
+                    transaction_id: None,
+                })
+            }
+
+            SubAccountOperation::Transfer { sub_account_id, asset, amount, to_sub } => {
+                let path = GateioEndpoint::SubAccountTransfer.path(None);
+                let url = format!("{}{}", base_url, path);
+                let direction = if to_sub { "to" } else { "from" };
+                let body = json!({
+                    "currency": asset,
+                    "sub_account": sub_account_id,
+                    "direction": direction,
+                    "amount": amount.to_string(),
+                    "sub_account_type": "spot",
+                });
+                let body_str = body.to_string();
+                let headers = auth.sign_request("POST", &path, "", &body_str);
+                let response = self.http.post(&url, &body, &headers).await?;
+                GateioParser::check_error(&response)?;
+
+                // Gate.io returns empty on success; generate a synthetic transaction ID
+                let tx_id = format!("sub_tx_{}", crate::core::timestamp_millis());
+
+                Ok(SubAccountResult {
+                    id: Some(sub_account_id),
+                    name: None,
+                    accounts: vec![],
+                    transaction_id: Some(tx_id),
+                })
+            }
+
+            SubAccountOperation::GetBalance { sub_account_id } => {
+                let path = GateioEndpoint::SubAccountBalance.path(None)
+                    .replace("{user_id}", &sub_account_id);
+                let url = format!("{}{}", base_url, path);
+                let headers = auth.sign_request("GET", &path, "", "");
+                let response = self.http.get_with_headers(&url, &HashMap::new(), &headers).await?;
+                GateioParser::check_error(&response)?;
+
+                Ok(SubAccountResult {
+                    id: Some(sub_account_id),
+                    name: None,
+                    accounts: vec![],
+                    transaction_id: None,
+                })
+            }
+        }
     }
 }

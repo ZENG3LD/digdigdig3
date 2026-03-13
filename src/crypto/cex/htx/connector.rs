@@ -33,8 +33,13 @@ use crate::core::{
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
 };
-use crate::core::{CancelAll, BatchOrders};
-use crate::core::types::{ConnectorStats, CancelAllResponse, OrderResult};
+use crate::core::{CancelAll, BatchOrders, AccountTransfers, CustodialFunds, SubAccounts};
+use crate::core::types::{
+    ConnectorStats, CancelAllResponse, OrderResult,
+    TransferRequest, TransferHistoryFilter, TransferResponse,
+    DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord, FundsHistoryFilter, FundsRecordType,
+    SubAccountOperation, SubAccountResult, SubAccount,
+};
 use crate::core::utils::WeightRateLimiter;
 
 use super::endpoints::{HtxUrls, HtxEndpoint, format_symbol, map_kline_interval};
@@ -1228,5 +1233,429 @@ impl BatchOrders for HtxConnector {
 
     fn max_batch_cancel_size(&self) -> usize {
         50
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT TRANSFERS (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AccountTransfers for HtxConnector {
+    /// Transfer between Spot and Futures accounts.
+    ///
+    /// POST /v1/futures/transfer
+    /// Body: { currency, amount, type: "pro-to-futures" | "futures-to-pro" }
+    async fn transfer(&self, req: TransferRequest) -> ExchangeResult<TransferResponse> {
+        use crate::core::AccountType;
+
+        let transfer_type = match (req.from_account, req.to_account) {
+            (AccountType::Spot | AccountType::Margin, AccountType::FuturesCross | AccountType::FuturesIsolated) => {
+                "pro-to-futures"
+            }
+            (AccountType::FuturesCross | AccountType::FuturesIsolated, AccountType::Spot | AccountType::Margin) => {
+                "futures-to-pro"
+            }
+            _ => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    format!("HTX transfer from {:?} to {:?} not supported", req.from_account, req.to_account)
+                ));
+            }
+        };
+
+        let body = json!({
+            "currency": req.asset.to_lowercase(),
+            "amount": req.amount,
+            "type": transfer_type,
+        });
+
+        let response = self.post(HtxEndpoint::Transfer, body).await?;
+
+        // HTX v1: {"status": "ok", "data": <tranId>}
+        let tran_id = response.get("data")
+            .and_then(|v| v.as_i64())
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        Ok(TransferResponse {
+            transfer_id: tran_id,
+            status: "Successful".to_string(),
+            asset: req.asset,
+            amount: req.amount,
+            timestamp: Some(crate::core::timestamp_millis() as i64),
+        })
+    }
+
+    /// Get internal transfer history.
+    ///
+    /// GET /v2/account/transfer
+    async fn get_transfer_history(
+        &self,
+        filter: TransferHistoryFilter,
+    ) -> ExchangeResult<Vec<TransferResponse>> {
+        let mut params = HashMap::new();
+
+        if let Some(start) = filter.start_time {
+            params.insert("startTime".to_string(), start.to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("endTime".to_string(), end.to_string());
+        }
+        if let Some(limit) = filter.limit {
+            params.insert("limit".to_string(), limit.to_string());
+        }
+
+        let response = self.get(HtxEndpoint::TransferHistory, params).await?;
+
+        let data = response.get("data")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let records = data.iter().map(|item| {
+            let tran_id = item["transactId"]
+                .as_str()
+                .map(|s| s.to_string())
+                .or_else(|| item["transactId"].as_i64().map(|n| n.to_string()))
+                .unwrap_or_else(|| "unknown".to_string());
+
+            let asset = item["currency"].as_str().unwrap_or("").to_string();
+            let amount = item["amount"]
+                .as_str().and_then(|s| s.parse::<f64>().ok())
+                .or_else(|| item["amount"].as_f64())
+                .unwrap_or(0.0);
+            let status = item["state"].as_str().unwrap_or("Unknown").to_string();
+            let timestamp = item["createAt"].as_i64();
+
+            TransferResponse {
+                transfer_id: tran_id,
+                status,
+                asset,
+                amount,
+                timestamp,
+            }
+        }).collect();
+
+        Ok(records)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CUSTODIAL FUNDS (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl CustodialFunds for HtxConnector {
+    /// Get deposit address for an asset.
+    ///
+    /// GET /v2/account/deposit/address
+    async fn get_deposit_address(
+        &self,
+        asset: &str,
+        network: Option<&str>,
+    ) -> ExchangeResult<DepositAddress> {
+        let mut params = HashMap::new();
+        params.insert("currency".to_string(), asset.to_lowercase());
+
+        if let Some(chain) = network {
+            params.insert("chain".to_string(), chain.to_string());
+        }
+
+        let response = self.get(HtxEndpoint::DepositAddress, params).await?;
+
+        // HTX v2: {"code": 200, "data": [{"currency": "...", "address": "...", "chain": "...", "addressTag": "..."}]}
+        let data = response.get("data")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .ok_or_else(|| ExchangeError::Parse("No deposit address data".into()))?;
+
+        let address = data["address"]
+            .as_str()
+            .ok_or_else(|| ExchangeError::Parse("Missing deposit address".into()))?
+            .to_string();
+
+        let tag = data["addressTag"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        let net = data["chain"]
+            .as_str()
+            .or(network)
+            .map(|s| s.to_string());
+
+        Ok(DepositAddress {
+            address,
+            tag,
+            network: net,
+            asset: asset.to_uppercase(),
+            created_at: None,
+        })
+    }
+
+    /// Submit a withdrawal request.
+    ///
+    /// POST /v1/dw/withdraw/api/create
+    async fn withdraw(&self, req: WithdrawRequest) -> ExchangeResult<WithdrawResponse> {
+        let mut body = json!({
+            "address": req.address,
+            "amount": req.amount.to_string(),
+            "currency": req.asset.to_lowercase(),
+        });
+
+        if let Some(chain) = &req.network {
+            body["chain"] = json!(chain);
+        }
+        if let Some(tag) = &req.tag {
+            body["addr-tag"] = json!(tag);
+        }
+
+        let response = self.post(HtxEndpoint::Withdraw, body).await?;
+
+        // HTX v1: {"status": "ok", "data": <withdraw-id>}
+        let withdraw_id = response.get("data")
+            .and_then(|v| v.as_i64())
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        Ok(WithdrawResponse {
+            withdraw_id,
+            status: "Pending".to_string(),
+            tx_hash: None,
+        })
+    }
+
+    /// Get deposit and/or withdrawal history.
+    ///
+    /// GET /v1/query/deposit-withdraw?type=deposit|withdraw
+    async fn get_funds_history(
+        &self,
+        filter: FundsHistoryFilter,
+    ) -> ExchangeResult<Vec<FundsRecord>> {
+        let mut records = Vec::new();
+
+        let mut base_params = HashMap::new();
+        if let Some(asset) = &filter.asset {
+            base_params.insert("currency".to_string(), asset.to_lowercase());
+        }
+        if let Some(limit) = filter.limit {
+            base_params.insert("size".to_string(), limit.to_string());
+        }
+
+        if matches!(filter.record_type, FundsRecordType::Deposit | FundsRecordType::Both) {
+            let mut params = base_params.clone();
+            params.insert("type".to_string(), "deposit".to_string());
+
+            let response = self.get(HtxEndpoint::DepositHistory, params).await?;
+
+            let data = HtxParser::extract_result_v1(&response)
+                .ok()
+                .and_then(|v| v.as_array().cloned())
+                .unwrap_or_default();
+
+            for item in &data {
+                let id = item["id"]
+                    .as_i64().map(|n| n.to_string())
+                    .or_else(|| item["id"].as_str().map(|s| s.to_string()))
+                    .unwrap_or_default();
+                let asset = item["currency"].as_str().unwrap_or("").to_string();
+                let amount = item["amount"].as_f64().unwrap_or(0.0);
+                let tx_hash = item["txHash"].as_str().map(|s| s.to_string());
+                let network = item["chain"].as_str().map(|s| s.to_string());
+                let status = item["state"].as_str().unwrap_or("Unknown").to_string();
+                let timestamp = item["updatedAt"].as_i64()
+                    .or_else(|| item["createAt"].as_i64())
+                    .unwrap_or(0);
+
+                records.push(FundsRecord::Deposit {
+                    id,
+                    asset,
+                    amount,
+                    tx_hash,
+                    network,
+                    status,
+                    timestamp,
+                });
+            }
+        }
+
+        if matches!(filter.record_type, FundsRecordType::Withdrawal | FundsRecordType::Both) {
+            let mut params = base_params;
+            params.insert("type".to_string(), "withdraw".to_string());
+
+            let response = self.get(HtxEndpoint::WithdrawHistory, params).await?;
+
+            let data = HtxParser::extract_result_v1(&response)
+                .ok()
+                .and_then(|v| v.as_array().cloned())
+                .unwrap_or_default();
+
+            for item in &data {
+                let id = item["id"]
+                    .as_i64().map(|n| n.to_string())
+                    .or_else(|| item["id"].as_str().map(|s| s.to_string()))
+                    .unwrap_or_default();
+                let asset = item["currency"].as_str().unwrap_or("").to_string();
+                let amount = item["amount"].as_f64().unwrap_or(0.0);
+                let fee = item["fee"].as_f64();
+                let address = item["address"].as_str().unwrap_or("").to_string();
+                let tag = item["addressTag"].as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+                let tx_hash = item["txHash"].as_str().map(|s| s.to_string());
+                let network = item["chain"].as_str().map(|s| s.to_string());
+                let status = item["state"].as_str().unwrap_or("Unknown").to_string();
+                let timestamp = item["updatedAt"].as_i64()
+                    .or_else(|| item["createAt"].as_i64())
+                    .unwrap_or(0);
+
+                records.push(FundsRecord::Withdrawal {
+                    id,
+                    asset,
+                    amount,
+                    fee,
+                    address,
+                    tag,
+                    tx_hash,
+                    network,
+                    status,
+                    timestamp,
+                });
+            }
+        }
+
+        Ok(records)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SUB ACCOUNTS (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl SubAccounts for HtxConnector {
+    /// Perform sub-account operations: Create, List, Transfer, GetBalance.
+    async fn sub_account_operation(
+        &self,
+        op: SubAccountOperation,
+    ) -> ExchangeResult<SubAccountResult> {
+        match op {
+            SubAccountOperation::Create { label } => {
+                // POST /v2/sub-user/creation
+                // Body: {"userList": [{"userName": "..."}]}
+                let body = json!({
+                    "userList": [{"userName": label.clone()}]
+                });
+
+                let response = self.post(HtxEndpoint::SubAccountCreate, body).await?;
+
+                // Response: {"code": 200, "data": [{"uid": 123, "userName": "..."}]}
+                let data = response.get("data")
+                    .and_then(|v| v.as_array())
+                    .and_then(|arr| arr.first());
+
+                let id = data.and_then(|d| d["uid"].as_i64()).map(|n| n.to_string());
+
+                Ok(SubAccountResult {
+                    id,
+                    name: Some(label),
+                    accounts: vec![],
+                    transaction_id: None,
+                })
+            }
+
+            SubAccountOperation::List => {
+                // GET /v2/sub-user/user-list
+                let response = self.get(HtxEndpoint::SubAccountList, HashMap::new()).await?;
+
+                let data = response.get("data")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+
+                let accounts = data.iter().map(|item| {
+                    let id = item["uid"]
+                        .as_i64().map(|n| n.to_string())
+                        .unwrap_or_default();
+                    let name = item["userName"].as_str().unwrap_or("").to_string();
+                    let status = if item["userState"].as_str() == Some("lock") {
+                        "Frozen".to_string()
+                    } else {
+                        "Normal".to_string()
+                    };
+
+                    SubAccount { id, name, status }
+                }).collect();
+
+                Ok(SubAccountResult {
+                    id: None,
+                    name: None,
+                    accounts,
+                    transaction_id: None,
+                })
+            }
+
+            SubAccountOperation::Transfer { sub_account_id, asset, amount, to_sub } => {
+                // POST /v1/subuser/transfer
+                // type: "master-transfer-in" (sub→master) or "master-transfer-out" (master→sub)
+                let transfer_type = if to_sub {
+                    "master-transfer-out"
+                } else {
+                    "master-transfer-in"
+                };
+
+                let sub_uid: i64 = sub_account_id.parse().map_err(|_| {
+                    ExchangeError::InvalidRequest(
+                        format!("HTX sub-account id must be numeric UID, got: {}", sub_account_id)
+                    )
+                })?;
+
+                let body = json!({
+                    "sub-uid": sub_uid,
+                    "currency": asset.to_lowercase(),
+                    "amount": amount.to_string(),
+                    "type": transfer_type,
+                });
+
+                let response = self.post(HtxEndpoint::SubAccountTransfer, body).await?;
+
+                let tran_id = response.get("data")
+                    .and_then(|v| v.as_i64())
+                    .map(|n| n.to_string());
+
+                Ok(SubAccountResult {
+                    id: None,
+                    name: None,
+                    accounts: vec![],
+                    transaction_id: tran_id,
+                })
+            }
+
+            SubAccountOperation::GetBalance { sub_account_id } => {
+                // GET /v1/account/accounts/{sub-uid}
+                let path = HtxEndpoint::SubAccountBalance.path_with_vars(&[("sub-uid", &sub_account_id)]);
+
+                let base_url = HtxUrls::base_url(self.testnet);
+                let auth = self.auth.as_ref()
+                    .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+                let query = auth.build_signed_query("GET", "api.huobi.pro", &path, &HashMap::new());
+
+                let url = format!("{}{}?{}", base_url, path, query);
+
+                self.rate_limit_wait(1).await;
+                let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
+                self.update_rate_from_headers(&resp_headers);
+
+                // Balance is available but SubAccountResult doesn't carry raw balances.
+                let _ = response;
+
+                Ok(SubAccountResult {
+                    id: Some(sub_account_id),
+                    name: None,
+                    accounts: vec![],
+                    transaction_id: None,
+                })
+            }
+        }
     }
 }

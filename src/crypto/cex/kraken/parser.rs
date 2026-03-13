@@ -28,6 +28,8 @@ use crate::core::types::{
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, SymbolInfo,
     CancelAllResponse, OrderResult,
+    DepositAddress, WithdrawResponse, FundsRecord,
+    SubAccountResult, SubAccount,
 };
 
 /// Parser for Kraken API responses
@@ -806,6 +808,240 @@ impl KrakenParser {
                 error_code: None,
             }
         }).collect())
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // CUSTODIAL FUNDS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse deposit address from `POST /0/private/DepositAddresses`
+    ///
+    /// Response result is an array of address objects:
+    /// ```json
+    /// [{"address":"1A1zP1...","expiretm":"0","new":true}]
+    /// ```
+    pub fn parse_deposit_address(response: &Value, asset: &str) -> ExchangeResult<DepositAddress> {
+        let result = Self::extract_result(response)?;
+        let arr = result.as_array()
+            .ok_or_else(|| ExchangeError::Parse("DepositAddresses result is not an array".to_string()))?;
+
+        let first = arr.first()
+            .ok_or_else(|| ExchangeError::Parse("No deposit addresses returned".to_string()))?;
+
+        let address = first.get("address")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ExchangeError::Parse("Missing deposit address".to_string()))?
+            .to_string();
+
+        let tag = first.get("memo")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+
+        Ok(DepositAddress {
+            address,
+            tag,
+            network: None,
+            asset: asset.to_string(),
+            created_at: None,
+        })
+    }
+
+    /// Parse withdraw response from `POST /0/private/Withdraw`
+    ///
+    /// Response result: `{"refid":"AGBSO6T-..."}` for spot
+    pub fn parse_withdraw_response(response: &Value) -> ExchangeResult<WithdrawResponse> {
+        let result = Self::extract_result(response)?;
+
+        let withdraw_id = result.get("refid")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ExchangeError::Parse("Missing withdrawal refid".to_string()))?
+            .to_string();
+
+        Ok(WithdrawResponse {
+            withdraw_id,
+            status: "Pending".to_string(),
+            tx_hash: None,
+        })
+    }
+
+    /// Parse deposit history from `POST /0/private/DepositStatus`
+    ///
+    /// Response result is an array:
+    /// ```json
+    /// [{"method":"Bitcoin","aclass":"currency","asset":"XXBT","refid":"...","txid":"...","info":"...","amount":"0.5","fee":"0.0001","time":1234567890,"status":"Success","status-prop":"return"}]
+    /// ```
+    pub fn parse_deposit_history(response: &Value) -> ExchangeResult<Vec<FundsRecord>> {
+        let result = Self::extract_result(response)?;
+        let arr = match result.as_array() {
+            Some(a) => a,
+            None => return Ok(vec![]),
+        };
+
+        let records = arr.iter().map(|item| {
+            let id = item.get("refid")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let asset = item.get("asset")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let amount = item.get("amount")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let tx_hash = item.get("txid")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            let status = item.get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown")
+                .to_string();
+            let timestamp = item.get("time")
+                .and_then(|v| v.as_i64())
+                .map(|t| t * 1000) // Kraken returns Unix seconds
+                .unwrap_or(0);
+
+            FundsRecord::Deposit {
+                id,
+                asset,
+                amount,
+                tx_hash,
+                network: None,
+                status,
+                timestamp,
+            }
+        }).collect();
+
+        Ok(records)
+    }
+
+    /// Parse withdrawal history from `POST /0/private/WithdrawStatus`
+    ///
+    /// Response result is an array of withdrawal objects.
+    pub fn parse_withdrawal_history(response: &Value) -> ExchangeResult<Vec<FundsRecord>> {
+        let result = Self::extract_result(response)?;
+        let arr = match result.as_array() {
+            Some(a) => a,
+            None => return Ok(vec![]),
+        };
+
+        let records = arr.iter().map(|item| {
+            let id = item.get("refid")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let asset = item.get("asset")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let amount = item.get("amount")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let fee = item.get("fee")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok());
+            let address = item.get("info")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let tx_hash = item.get("txid")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            let status = item.get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown")
+                .to_string();
+            let timestamp = item.get("time")
+                .and_then(|v| v.as_i64())
+                .map(|t| t * 1000)
+                .unwrap_or(0);
+
+            FundsRecord::Withdrawal {
+                id,
+                asset,
+                amount,
+                fee,
+                address,
+                tag: None,
+                tx_hash,
+                network: None,
+                status,
+                timestamp,
+            }
+        }).collect();
+
+        Ok(records)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SUB-ACCOUNTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse list of sub-accounts from `POST /0/private/ListSubaccounts`
+    ///
+    /// Response result is an array of account objects.
+    pub fn parse_list_subaccounts(response: &Value) -> ExchangeResult<SubAccountResult> {
+        let result = Self::extract_result(response)?;
+        let arr = match result.as_array() {
+            Some(a) => a,
+            None => {
+                return Ok(SubAccountResult {
+                    id: None,
+                    name: None,
+                    accounts: vec![],
+                    transaction_id: None,
+                });
+            }
+        };
+
+        let accounts = arr.iter().map(|item| {
+            let id = item.get("id")
+                .and_then(|v| v.as_str())
+                .or_else(|| item.get("username").and_then(|v| v.as_str()))
+                .unwrap_or("")
+                .to_string();
+            let name = item.get("username")
+                .and_then(|v| v.as_str())
+                .or_else(|| item.get("name").and_then(|v| v.as_str()))
+                .unwrap_or("")
+                .to_string();
+            SubAccount {
+                id,
+                name,
+                status: "Normal".to_string(),
+            }
+        }).collect();
+
+        Ok(SubAccountResult {
+            id: None,
+            name: None,
+            accounts,
+            transaction_id: None,
+        })
+    }
+
+    /// Parse sub-account transfer response
+    ///
+    /// Response result: `{"transfer_id":"..."}` or similar.
+    pub fn parse_subaccount_transfer(response: &Value) -> ExchangeResult<SubAccountResult> {
+        let result = Self::extract_result(response)?;
+
+        let transaction_id = result.get("transfer_id")
+            .or_else(|| result.get("refid"))
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        Ok(SubAccountResult {
+            id: None,
+            name: None,
+            accounts: vec![],
+            transaction_id,
+        })
     }
 }
 

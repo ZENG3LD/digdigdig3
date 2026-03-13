@@ -99,6 +99,22 @@ pub enum BybitEndpoint {
 
     // === FEES ===
     FeeRate,          // GET /v5/account/fee-rate
+
+    // === ACCOUNT TRANSFERS ===
+    InterTransfer,         // POST /v5/asset/transfer/inter-transfer
+    TransferHistory,       // GET  /v5/asset/transfer/query-inter-transfer-list
+
+    // === CUSTODIAL FUNDS ===
+    DepositAddress,        // GET  /v5/asset/deposit/query-address
+    Withdraw,              // POST /v5/asset/withdraw/create
+    DepositHistory,        // GET  /v5/asset/deposit/query-record
+    WithdrawHistory,       // GET  /v5/asset/withdraw/query-record
+
+    // === SUB-ACCOUNTS ===
+    CreateSubMember,       // POST /v5/user/create-sub-member
+    ListSubMembers,        // GET  /v5/user/query-sub-members
+    UniversalTransfer,     // POST /v5/asset/transfer/universal-transfer
+    SubAccountBalance,     // GET  /v5/asset/transfer/query-account-coins-balance
 }
 
 impl BybitEndpoint {
@@ -140,6 +156,22 @@ impl BybitEndpoint {
 
             // Fees
             Self::FeeRate => "/v5/account/fee-rate",
+
+            // Account Transfers
+            Self::InterTransfer => "/v5/asset/transfer/inter-transfer",
+            Self::TransferHistory => "/v5/asset/transfer/query-inter-transfer-list",
+
+            // Custodial Funds
+            Self::DepositAddress => "/v5/asset/deposit/query-address",
+            Self::Withdraw => "/v5/asset/withdraw/create",
+            Self::DepositHistory => "/v5/asset/deposit/query-record",
+            Self::WithdrawHistory => "/v5/asset/withdraw/query-record",
+
+            // Sub-Accounts
+            Self::CreateSubMember => "/v5/user/create-sub-member",
+            Self::ListSubMembers => "/v5/user/query-sub-members",
+            Self::UniversalTransfer => "/v5/asset/transfer/universal-transfer",
+            Self::SubAccountBalance => "/v5/asset/transfer/query-account-coins-balance",
         }
     }
 
@@ -156,7 +188,11 @@ impl BybitEndpoint {
             | Self::SetLeverage
             | Self::SetMarginMode
             | Self::AddMargin
-            | Self::TpSlMode => "POST",
+            | Self::TpSlMode
+            | Self::InterTransfer
+            | Self::Withdraw
+            | Self::CreateSubMember
+            | Self::UniversalTransfer => "POST",
 
             // GET requests
             _ => "GET",
@@ -215,6 +251,22 @@ pub fn account_type_to_category(account_type: AccountType) -> &'static str {
     match account_type {
         AccountType::Spot | AccountType::Margin => "spot",
         AccountType::FuturesCross | AccountType::FuturesIsolated => "linear",
+    }
+}
+
+/// Map our AccountType to Bybit transfer account type string.
+///
+/// Bybit inter-transfer account types:
+/// - `UNIFIED`  — Unified Trading Account (UTA)
+/// - `SPOT`     — Spot account
+/// - `CONTRACT` — Derivatives / Futures account
+/// - `FUND`     — Funding (asset) account
+pub fn account_type_to_transfer_type(account_type: AccountType) -> &'static str {
+    match account_type {
+        AccountType::Spot => "SPOT",
+        AccountType::Margin => "UNIFIED",
+        AccountType::FuturesCross => "CONTRACT",
+        AccountType::FuturesIsolated => "CONTRACT",
     }
 }
 

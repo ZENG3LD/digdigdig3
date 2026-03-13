@@ -73,9 +73,13 @@ use crate::core::{
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };
+use crate::core::types::{
+    WithdrawRequest, WithdrawResponse, DepositAddress,
+    FundsHistoryFilter, FundsRecord, FundsRecordType,
+};
 use crate::core::types::SymbolInfo;
 use crate::core::traits::{
-    ExchangeIdentity, MarketData, Trading, Account, Positions, CancelAll,
+    ExchangeIdentity, MarketData, Trading, Account, Positions, CancelAll, CustodialFunds,
 };
 use crate::core::types::{CancelAllResponse, OrderResult};
 use crate::core::types::ConnectorStats;
@@ -252,6 +256,59 @@ impl CoinbaseConnector {
         let (response, resp_headers) = self.http.post_with_response_headers(&url, &body, &headers).await?;
         self.update_rate_from_headers(&resp_headers);
         Ok(response)
+    }
+
+    /// GET request against the v2 API with a dynamic path (account-specific endpoints).
+    ///
+    /// `path` must be a fully constructed path like `/accounts/{uuid}/deposits`.
+    async fn get_v2(&self, path: &str, params: HashMap<String, String>) -> ExchangeResult<Value> {
+        self.rate_limit_wait(1).await;
+
+        let query = if params.is_empty() {
+            String::new()
+        } else {
+            let qs: Vec<String> = params.iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect();
+            format!("?{}", qs.join("&"))
+        };
+
+        let full_path = format!("{}{}", path, query);
+        let url = format!("{}{}", CoinbaseUrls::v2_url(), full_path);
+
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+        let headers = auth.sign_request("GET", &full_path)
+            .map_err(ExchangeError::Auth)?;
+
+        let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &headers).await?;
+        self.update_rate_from_headers(&resp_headers);
+        Ok(response)
+    }
+
+    /// POST request against the v2 API with a dynamic path.
+    async fn post_v2(&self, path: &str, body: Value) -> ExchangeResult<Value> {
+        self.rate_limit_wait(1).await;
+
+        let url = format!("{}{}", CoinbaseUrls::v2_url(), path);
+
+        let auth = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+        let headers = auth.sign_request("POST", path)
+            .map_err(ExchangeError::Auth)?;
+
+        let (response, resp_headers) = self.http.post_with_response_headers(&url, &body, &headers).await?;
+        self.update_rate_from_headers(&resp_headers);
+        Ok(response)
+    }
+
+    /// Find the Coinbase account UUID for a given asset (e.g. "BTC", "ETH").
+    ///
+    /// Coinbase uses per-asset account UUIDs in the v2 API. This helper fetches
+    /// the account list and returns the UUID for the requested asset.
+    async fn find_account_id(&self, asset: &str) -> ExchangeResult<String> {
+        let response = self.get(CoinbaseEndpoint::Accounts, HashMap::new()).await?;
+        CoinbaseParser::find_account_id_for_asset(&response, asset)
     }
 }
 
@@ -1152,6 +1209,108 @@ impl CancelAll for CoinbaseConnector {
             failed_count,
             details,
         })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CUSTODIAL FUNDS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Deposit and withdrawal management for Coinbase.
+///
+/// Uses the Coinbase v2 API endpoints which operate on per-asset account UUIDs.
+/// The account UUID is resolved automatically via the `/accounts` endpoint.
+///
+/// - Deposit address: `POST /v2/accounts/{id}/addresses`
+/// - Withdraw:        `POST /v2/accounts/{id}/transactions` (type=send)
+/// - Deposit history: `GET  /v2/accounts/{id}/deposits`
+/// - Withdrawal hist: `GET  /v2/accounts/{id}/transactions` (type=send)
+#[async_trait]
+impl CustodialFunds for CoinbaseConnector {
+    async fn get_deposit_address(
+        &self,
+        asset: &str,
+        _network: Option<&str>,
+    ) -> ExchangeResult<DepositAddress> {
+        // Resolve the per-asset account UUID first
+        let account_id = self.find_account_id(asset).await?;
+        let path = format!("/accounts/{}/addresses", account_id);
+
+        let response = self.post_v2(&path, serde_json::json!({})).await?;
+        CoinbaseParser::parse_deposit_address(&response, asset)
+    }
+
+    async fn withdraw(&self, req: WithdrawRequest) -> ExchangeResult<WithdrawResponse> {
+        let account_id = self.find_account_id(&req.asset).await?;
+        let path = format!("/accounts/{}/transactions", account_id);
+
+        let mut body = serde_json::json!({
+            "type": "send",
+            "to": req.address,
+            "amount": req.amount.to_string(),
+            "currency": req.asset.to_uppercase(),
+        });
+
+        // Add destination tag / memo if present (required for XRP, XLM, etc.)
+        if let Some(ref tag) = req.tag {
+            body["destination_tag"] = serde_json::json!(tag);
+        }
+
+        // Network hint — Coinbase uses the network field for certain assets
+        if let Some(ref network) = req.network {
+            body["network"] = serde_json::json!(network);
+        }
+
+        let response = self.post_v2(&path, body).await?;
+        CoinbaseParser::parse_withdraw_response(&response)
+    }
+
+    async fn get_funds_history(
+        &self,
+        filter: FundsHistoryFilter,
+    ) -> ExchangeResult<Vec<FundsRecord>> {
+        let asset = filter.asset.as_deref().unwrap_or("USD");
+        let account_id = self.find_account_id(asset).await?;
+
+        match filter.record_type {
+            FundsRecordType::Deposit => {
+                let mut params = HashMap::new();
+                if let Some(limit) = filter.limit {
+                    params.insert("limit".to_string(), limit.to_string());
+                }
+                let path = format!("/accounts/{}/deposits", account_id);
+                let response = self.get_v2(&path, params).await?;
+                CoinbaseParser::parse_deposit_history(&response, asset)
+            }
+
+            FundsRecordType::Withdrawal => {
+                let mut params = HashMap::new();
+                if let Some(limit) = filter.limit {
+                    params.insert("limit".to_string(), limit.to_string());
+                }
+                let path = format!("/accounts/{}/transactions", account_id);
+                let response = self.get_v2(&path, params).await?;
+                CoinbaseParser::parse_withdrawal_history(&response, asset)
+            }
+
+            FundsRecordType::Both => {
+                // Fetch deposits and outgoing transactions, combine them
+                let dep_path = format!("/accounts/{}/deposits", account_id);
+                let txn_path = format!("/accounts/{}/transactions", account_id);
+
+                let mut params = HashMap::new();
+                if let Some(limit) = filter.limit {
+                    params.insert("limit".to_string(), limit.to_string());
+                }
+
+                let dep_response = self.get_v2(&dep_path, params.clone()).await?;
+                let txn_response = self.get_v2(&txn_path, params).await?;
+
+                let mut records = CoinbaseParser::parse_deposit_history(&dep_response, asset)?;
+                records.extend(CoinbaseParser::parse_withdrawal_history(&txn_response, asset)?);
+                Ok(records)
+            }
+        }
     }
 }
 

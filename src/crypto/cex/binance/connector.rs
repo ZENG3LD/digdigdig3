@@ -29,10 +29,17 @@ use crate::core::{
     AmendRequest, CancelAllResponse, OrderResult,
     MarginType,
 };
-use crate::core::types::{ConnectorStats, SymbolInfo};
+use crate::core::types::{
+    ConnectorStats, SymbolInfo,
+    TransferRequest, TransferHistoryFilter, TransferResponse,
+    DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord,
+    FundsHistoryFilter, FundsRecordType,
+    SubAccountOperation, SubAccountResult,
+};
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
     CancelAll, AmendOrder, BatchOrders,
+    AccountTransfers, CustodialFunds, SubAccounts,
 };
 use crate::core::utils::WeightRateLimiter;
 
@@ -1677,5 +1684,236 @@ impl BatchOrders for BinanceConnector {
 
     fn max_batch_cancel_size(&self) -> usize {
         10 // Binance Futures limit
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT TRANSFERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Map our AccountType pair to Binance universal transfer type string.
+///
+/// Binance transfer types (SAPI v1): MAIN_UMFUTURE, UMFUTURE_MAIN, MAIN_MARGIN,
+/// MARGIN_MAIN, UMFUTURE_MARGIN, MARGIN_UMFUTURE, etc.
+fn map_transfer_type(from: AccountType, to: AccountType) -> ExchangeResult<&'static str> {
+    match (from, to) {
+        (AccountType::Spot, AccountType::FuturesCross) => Ok("MAIN_UMFUTURE"),
+        (AccountType::FuturesCross, AccountType::Spot) => Ok("UMFUTURE_MAIN"),
+        (AccountType::Spot, AccountType::FuturesIsolated) => Ok("MAIN_CMFUTURE"),
+        (AccountType::FuturesIsolated, AccountType::Spot) => Ok("CMFUTURE_MAIN"),
+        (AccountType::Spot, AccountType::Margin) => Ok("MAIN_MARGIN"),
+        (AccountType::Margin, AccountType::Spot) => Ok("MARGIN_MAIN"),
+        (AccountType::FuturesCross, AccountType::Margin) => Ok("UMFUTURE_MARGIN"),
+        (AccountType::Margin, AccountType::FuturesCross) => Ok("MARGIN_UMFUTURE"),
+        (AccountType::FuturesIsolated, AccountType::Margin) => Ok("CMFUTURE_MARGIN"),
+        (AccountType::Margin, AccountType::FuturesIsolated) => Ok("MARGIN_CMFUTURE"),
+        _ => Err(ExchangeError::InvalidRequest(format!(
+            "Unsupported transfer direction: {:?} → {:?}",
+            from, to
+        ))),
+    }
+}
+
+#[async_trait]
+impl AccountTransfers for BinanceConnector {
+    async fn transfer(&self, req: TransferRequest) -> ExchangeResult<TransferResponse> {
+        let transfer_type = map_transfer_type(req.from_account, req.to_account)?;
+
+        let mut params = HashMap::new();
+        params.insert("type".to_string(), transfer_type.to_string());
+        params.insert("asset".to_string(), req.asset.clone());
+        params.insert("amount".to_string(), req.amount.to_string());
+
+        let response = self.post(BinanceEndpoint::AssetTransfer, params, AccountType::Spot).await?;
+        BinanceParser::parse_transfer_response(&response, &req.asset, req.amount)
+    }
+
+    async fn get_transfer_history(
+        &self,
+        filter: TransferHistoryFilter,
+    ) -> ExchangeResult<Vec<TransferResponse>> {
+        // Binance requires a `type` param for history; we default to MAIN_UMFUTURE
+        // as the most common query. Callers who need a specific type should filter
+        // the result or extend the filter type in the future.
+        let mut params: HashMap<String, String> = HashMap::new();
+        params.insert("type".to_string(), "MAIN_UMFUTURE".to_string());
+
+        if let Some(start) = filter.start_time {
+            params.insert("startTime".to_string(), start.to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("endTime".to_string(), end.to_string());
+        }
+        if let Some(limit) = filter.limit {
+            params.insert("size".to_string(), limit.to_string());
+        }
+
+        let response = self.get(BinanceEndpoint::AssetTransferHistory, params, AccountType::Spot).await?;
+        BinanceParser::parse_transfer_history(&response)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CUSTODIAL FUNDS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl CustodialFunds for BinanceConnector {
+    async fn get_deposit_address(
+        &self,
+        asset: &str,
+        network: Option<&str>,
+    ) -> ExchangeResult<DepositAddress> {
+        let mut params: HashMap<String, String> = HashMap::new();
+        params.insert("coin".to_string(), asset.to_uppercase());
+
+        if let Some(net) = network {
+            params.insert("network".to_string(), net.to_string());
+        }
+
+        let response = self.get(BinanceEndpoint::DepositAddress, params, AccountType::Spot).await?;
+        BinanceParser::parse_deposit_address(&response)
+    }
+
+    async fn withdraw(&self, req: WithdrawRequest) -> ExchangeResult<WithdrawResponse> {
+        let mut params: HashMap<String, String> = HashMap::new();
+        params.insert("coin".to_string(), req.asset.to_uppercase());
+        params.insert("address".to_string(), req.address.clone());
+        params.insert("amount".to_string(), req.amount.to_string());
+
+        if let Some(net) = &req.network {
+            params.insert("network".to_string(), net.clone());
+        }
+        if let Some(tag) = &req.tag {
+            params.insert("addressTag".to_string(), tag.clone());
+        }
+
+        let response = self.post(BinanceEndpoint::Withdraw, params, AccountType::Spot).await?;
+        BinanceParser::parse_withdraw_response(&response)
+    }
+
+    async fn get_funds_history(
+        &self,
+        filter: FundsHistoryFilter,
+    ) -> ExchangeResult<Vec<FundsRecord>> {
+        match filter.record_type {
+            FundsRecordType::Deposit => {
+                let mut params: HashMap<String, String> = HashMap::new();
+                if let Some(asset) = &filter.asset {
+                    params.insert("coin".to_string(), asset.to_uppercase());
+                }
+                if let Some(start) = filter.start_time {
+                    params.insert("startTime".to_string(), start.to_string());
+                }
+                if let Some(end) = filter.end_time {
+                    params.insert("endTime".to_string(), end.to_string());
+                }
+                if let Some(limit) = filter.limit {
+                    params.insert("limit".to_string(), limit.to_string());
+                }
+                let response = self.get(BinanceEndpoint::DepositHistory, params, AccountType::Spot).await?;
+                BinanceParser::parse_deposit_history(&response)
+            }
+            FundsRecordType::Withdrawal => {
+                let mut params: HashMap<String, String> = HashMap::new();
+                if let Some(asset) = &filter.asset {
+                    params.insert("coin".to_string(), asset.to_uppercase());
+                }
+                if let Some(start) = filter.start_time {
+                    params.insert("startTime".to_string(), start.to_string());
+                }
+                if let Some(end) = filter.end_time {
+                    params.insert("endTime".to_string(), end.to_string());
+                }
+                if let Some(limit) = filter.limit {
+                    params.insert("limit".to_string(), limit.to_string());
+                }
+                let response = self.get(BinanceEndpoint::WithdrawHistory, params, AccountType::Spot).await?;
+                BinanceParser::parse_withdrawal_history(&response)
+            }
+            FundsRecordType::Both => {
+                // Binance has separate endpoints — fetch both and merge
+                let deposit_filter = FundsHistoryFilter {
+                    record_type: FundsRecordType::Deposit,
+                    asset: filter.asset.clone(),
+                    start_time: filter.start_time,
+                    end_time: filter.end_time,
+                    limit: filter.limit,
+                };
+                let withdrawal_filter = FundsHistoryFilter {
+                    record_type: FundsRecordType::Withdrawal,
+                    asset: filter.asset.clone(),
+                    start_time: filter.start_time,
+                    end_time: filter.end_time,
+                    limit: filter.limit,
+                };
+                let mut deposits = self.get_funds_history(deposit_filter).await?;
+                let withdrawals = self.get_funds_history(withdrawal_filter).await?;
+                deposits.extend(withdrawals);
+                Ok(deposits)
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SUB-ACCOUNTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl SubAccounts for BinanceConnector {
+    async fn sub_account_operation(
+        &self,
+        op: SubAccountOperation,
+    ) -> ExchangeResult<SubAccountResult> {
+        match op {
+            SubAccountOperation::Create { label } => {
+                let mut params = HashMap::new();
+                params.insert("subAccountString".to_string(), label);
+
+                let response = self.post(BinanceEndpoint::SubAccountCreate, params, AccountType::Spot).await?;
+                BinanceParser::parse_sub_account_create(&response)
+            }
+
+            SubAccountOperation::List => {
+                let params = HashMap::new();
+                let response = self.get(BinanceEndpoint::SubAccountList, params, AccountType::Spot).await?;
+                BinanceParser::parse_sub_account_list(&response)
+            }
+
+            SubAccountOperation::Transfer { sub_account_id, asset, amount, to_sub } => {
+                // universalTransfer: fromEmail/toEmail + fromAccountType/toAccountType
+                // We treat sub_account_id as the sub-account email.
+                // Master account email is not known here, so we use a placeholder approach:
+                // if to_sub = true: master(SPOT) → sub(SPOT)
+                // if to_sub = false: sub(SPOT) → master(SPOT)
+                let mut params = HashMap::new();
+
+                if to_sub {
+                    // fromEmail = master (we pass empty, Binance treats missing as master)
+                    params.insert("toEmail".to_string(), sub_account_id.clone());
+                    params.insert("fromAccountType".to_string(), "SPOT".to_string());
+                    params.insert("toAccountType".to_string(), "SPOT".to_string());
+                } else {
+                    params.insert("fromEmail".to_string(), sub_account_id.clone());
+                    params.insert("fromAccountType".to_string(), "SPOT".to_string());
+                    params.insert("toAccountType".to_string(), "SPOT".to_string());
+                }
+
+                params.insert("asset".to_string(), asset);
+                params.insert("amount".to_string(), amount.to_string());
+
+                let response = self.post(BinanceEndpoint::SubAccountTransfer, params, AccountType::Spot).await?;
+                BinanceParser::parse_sub_account_transfer(&response)
+            }
+
+            SubAccountOperation::GetBalance { sub_account_id } => {
+                let mut params = HashMap::new();
+                params.insert("email".to_string(), sub_account_id);
+
+                let response = self.get(BinanceEndpoint::SubAccountAssets, params, AccountType::Spot).await?;
+                BinanceParser::parse_sub_account_assets(&response)
+            }
+        }
     }
 }

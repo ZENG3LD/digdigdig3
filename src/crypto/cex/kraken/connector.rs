@@ -28,10 +28,15 @@ use crate::core::{
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     AmendRequest, CancelAllResponse, OrderResult,
 };
+use crate::core::types::{
+    WithdrawRequest, WithdrawResponse, DepositAddress,
+    FundsHistoryFilter, FundsRecord, FundsRecordType,
+    SubAccountOperation, SubAccountResult,
+};
 use crate::core::types::SymbolInfo;
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
-    CancelAll, AmendOrder, BatchOrders,
+    CancelAll, AmendOrder, BatchOrders, CustodialFunds, SubAccounts,
 };
 use crate::core::types::ConnectorStats;
 use crate::core::utils::DecayingRateLimiter;
@@ -1185,6 +1190,213 @@ impl BatchOrders for KrakenConnector {
 
     fn max_batch_cancel_size(&self) -> usize {
         10 // Kraken Futures batchorder limit
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CUSTODIAL FUNDS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Deposit and withdrawal management for Kraken.
+///
+/// - Deposit address: `POST /0/private/DepositAddresses`
+/// - Withdraw:        `POST /0/private/Withdraw`
+/// - Deposit history: `POST /0/private/DepositStatus`
+/// - Withdrawal hist: `POST /0/private/WithdrawStatus`
+///
+/// Note: Kraken asset names use internal format — XXBT for BTC, ZUSD for USD.
+/// This implementation maps common tickers to Kraken's format.
+#[async_trait]
+impl CustodialFunds for KrakenConnector {
+    async fn get_deposit_address(
+        &self,
+        asset: &str,
+        network: Option<&str>,
+    ) -> ExchangeResult<DepositAddress> {
+        // Map common asset names to Kraken internal format
+        let kraken_asset = map_asset_to_kraken(asset);
+
+        let mut params = HashMap::new();
+        params.insert("asset".to_string(), kraken_asset.to_string());
+        if let Some(method) = network {
+            params.insert("method".to_string(), method.to_string());
+        }
+        // new=true requests a fresh address instead of reusing an existing one
+        params.insert("new".to_string(), "false".to_string());
+
+        let response = self.post(
+            KrakenEndpoint::SpotDepositAddresses,
+            params,
+            AccountType::Spot,
+        ).await?;
+
+        KrakenParser::parse_deposit_address(&response, asset)
+    }
+
+    async fn withdraw(&self, req: WithdrawRequest) -> ExchangeResult<WithdrawResponse> {
+        let kraken_asset = map_asset_to_kraken(&req.asset);
+
+        let mut params = HashMap::new();
+        params.insert("asset".to_string(), kraken_asset.to_string());
+        // Kraken uses a pre-registered withdrawal address "key" (name), not raw address
+        // We use the address field as the key name
+        params.insert("key".to_string(), req.address.clone());
+        params.insert("amount".to_string(), req.amount.to_string());
+
+        let response = self.post(
+            KrakenEndpoint::SpotWithdraw,
+            params,
+            AccountType::Spot,
+        ).await?;
+
+        KrakenParser::parse_withdraw_response(&response)
+    }
+
+    async fn get_funds_history(
+        &self,
+        filter: FundsHistoryFilter,
+    ) -> ExchangeResult<Vec<FundsRecord>> {
+        let asset = filter.asset.as_deref().unwrap_or("");
+        let kraken_asset = if asset.is_empty() {
+            String::new()
+        } else {
+            map_asset_to_kraken(asset)
+        };
+
+        match filter.record_type {
+            FundsRecordType::Deposit => {
+                let mut params = HashMap::new();
+                if !kraken_asset.is_empty() {
+                    params.insert("asset".to_string(), kraken_asset.to_string());
+                }
+                let response = self.post(
+                    KrakenEndpoint::SpotDepositStatus,
+                    params,
+                    AccountType::Spot,
+                ).await?;
+                KrakenParser::parse_deposit_history(&response)
+            }
+            FundsRecordType::Withdrawal => {
+                let mut params = HashMap::new();
+                if !kraken_asset.is_empty() {
+                    params.insert("asset".to_string(), kraken_asset.to_string());
+                }
+                let response = self.post(
+                    KrakenEndpoint::SpotWithdrawStatus,
+                    params,
+                    AccountType::Spot,
+                ).await?;
+                KrakenParser::parse_withdrawal_history(&response)
+            }
+            FundsRecordType::Both => {
+                // Fetch both and combine
+                let mut deposits_params = HashMap::new();
+                let mut withdrawals_params = HashMap::new();
+                if !kraken_asset.is_empty() {
+                    deposits_params.insert("asset".to_string(), kraken_asset.to_string());
+                    withdrawals_params.insert("asset".to_string(), kraken_asset.to_string());
+                }
+                let dep_response = self.post(
+                    KrakenEndpoint::SpotDepositStatus,
+                    deposits_params,
+                    AccountType::Spot,
+                ).await?;
+                let wit_response = self.post(
+                    KrakenEndpoint::SpotWithdrawStatus,
+                    withdrawals_params,
+                    AccountType::Spot,
+                ).await?;
+
+                let mut records = KrakenParser::parse_deposit_history(&dep_response)?;
+                records.extend(KrakenParser::parse_withdrawal_history(&wit_response)?);
+                Ok(records)
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SUB-ACCOUNTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Sub-account management for Kraken.
+///
+/// Kraken supports listing sub-accounts and transferring funds between them
+/// via the standard private REST API. Creating sub-accounts and querying
+/// individual balances are not available through the standard API.
+#[async_trait]
+impl SubAccounts for KrakenConnector {
+    async fn sub_account_operation(
+        &self,
+        op: SubAccountOperation,
+    ) -> ExchangeResult<SubAccountResult> {
+        match op {
+            SubAccountOperation::List => {
+                let response = self.post(
+                    KrakenEndpoint::SpotListSubaccounts,
+                    HashMap::new(),
+                    AccountType::Spot,
+                ).await?;
+                KrakenParser::parse_list_subaccounts(&response)
+            }
+
+            SubAccountOperation::Transfer { sub_account_id, asset, amount, to_sub } => {
+                let kraken_asset = map_asset_to_kraken(&asset);
+                let mut params = HashMap::new();
+                params.insert("asset".to_string(), kraken_asset.to_string());
+                params.insert("amount".to_string(), amount.to_string());
+                params.insert("subaccount".to_string(), sub_account_id.clone());
+
+                let endpoint = if to_sub {
+                    KrakenEndpoint::SpotTransferToSubaccount
+                } else {
+                    KrakenEndpoint::SpotTransferFromSubaccount
+                };
+
+                let response = self.post(endpoint, params, AccountType::Spot).await?;
+                KrakenParser::parse_subaccount_transfer(&response)
+            }
+
+            SubAccountOperation::Create { .. } => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "Kraken does not support sub-account creation via standard API".to_string()
+                ))
+            }
+
+            SubAccountOperation::GetBalance { .. } => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "Kraken does not support per-sub-account balance queries via standard API".to_string()
+                ))
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ASSET NAME MAPPING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Map common asset ticker to Kraken's internal asset name.
+///
+/// Kraken uses non-standard names for some assets:
+/// - BTC → XXBT
+/// - USD → ZUSD
+/// - EUR → ZEUR
+///
+/// For all other assets the ticker is returned as-is (uppercased).
+fn map_asset_to_kraken(asset: &str) -> String {
+    match asset.to_uppercase().as_str() {
+        "BTC" | "XBT" => "XXBT".to_string(),
+        "ETH" => "XETH".to_string(),
+        "LTC" => "XLTC".to_string(),
+        "XRP" => "XXRP".to_string(),
+        "USD" => "ZUSD".to_string(),
+        "EUR" => "ZEUR".to_string(),
+        "GBP" => "ZGBP".to_string(),
+        "CAD" => "ZCAD".to_string(),
+        "JPY" => "ZJPY".to_string(),
+        // For assets not in the map, pass through as-is
+        other => other.to_string(),
     }
 }
 

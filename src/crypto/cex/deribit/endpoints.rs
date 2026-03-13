@@ -85,6 +85,12 @@ pub enum DeribitMethod {
     GetUserTradesByCurrency,
     GetSettlementHistoryByInstrument,
 
+    // === PRIVATE CUSTODIAL FUNDS ===
+    GetCurrentDepositAddress,
+    Withdraw,
+    GetDeposits,
+    GetWithdrawals,
+
     // === PRIVATE POSITIONS ===
     GetPosition,
     GetPositions,
@@ -133,6 +139,12 @@ impl DeribitMethod {
             Self::GetUserTradesByInstrument => "private/get_user_trades_by_instrument",
             Self::GetUserTradesByCurrency => "private/get_user_trades_by_currency",
             Self::GetSettlementHistoryByInstrument => "private/get_settlement_history_by_instrument",
+
+            // Private Custodial Funds
+            Self::GetCurrentDepositAddress => "private/get_current_deposit_address",
+            Self::Withdraw => "private/withdraw",
+            Self::GetDeposits => "private/get_deposits",
+            Self::GetWithdrawals => "private/get_withdrawals",
 
             // Private Positions
             Self::GetPosition => "private/get_position",

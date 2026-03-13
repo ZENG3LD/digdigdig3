@@ -30,9 +30,11 @@ use crate::core::{
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     CancelAllResponse,
     ExchangeIdentity, MarketData, Trading, Account,
-    CancelAll, AmendOrder,
+    CancelAll, AmendOrder, CustodialFunds,
     AmendRequest,
+    DepositAddress, WithdrawResponse, FundsRecord,
 };
+use crate::core::types::{WithdrawRequest, FundsHistoryFilter, FundsRecordType};
 use crate::core::types::SymbolInfo;
 use crate::core::types::ConnectorStats;
 use crate::core::utils::GroupRateLimiter;
@@ -678,6 +680,254 @@ impl CancelAll for UpbitConnector {
             failed_count: 0,
             details: vec![],
         })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CUSTODIAL FUNDS (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl CustodialFunds for UpbitConnector {
+    async fn get_deposit_address(
+        &self,
+        asset: &str,
+        network: Option<&str>,
+    ) -> ExchangeResult<DepositAddress> {
+        // First try to get an existing address from GET /v1/deposits/coin_addresses
+        let mut params = HashMap::new();
+        params.insert("currency".to_string(), asset.to_uppercase());
+        if let Some(net) = network {
+            params.insert("net_type".to_string(), net.to_string());
+        }
+
+        let existing = self.get(UpbitEndpoint::ListDepositAddresses, params.clone(), AccountType::Spot).await;
+
+        // If we get a valid address back, return it
+        if let Ok(ref response) = existing {
+            // Response may be a single object or array
+            let addr_obj = if let Some(arr) = response.as_array() {
+                arr.first().cloned()
+            } else if response.is_object() {
+                Some(response.clone())
+            } else {
+                None
+            };
+
+            if let Some(obj) = addr_obj {
+                if let Some(addr) = obj.get("deposit_address").and_then(|v| v.as_str()) {
+                    if !addr.is_empty() {
+                        return Ok(DepositAddress {
+                            address: addr.to_string(),
+                            tag: obj.get("secondary_address")
+                                .and_then(|v| v.as_str())
+                                .filter(|s| !s.is_empty())
+                                .map(|s| s.to_string()),
+                            network: network.map(|n| n.to_string()),
+                            asset: asset.to_uppercase(),
+                            created_at: None,
+                        });
+                    }
+                }
+            }
+        }
+
+        // If no existing address found, generate one via POST /v1/deposits/generate_coin_address
+        let body = if let Some(net) = network {
+            serde_json::json!({
+                "currency": asset.to_uppercase(),
+                "net_type": net,
+            })
+        } else {
+            serde_json::json!({
+                "currency": asset.to_uppercase(),
+            })
+        };
+
+        let response = self.post(UpbitEndpoint::CreateDepositAddress, body, AccountType::Spot).await?;
+
+        // Upbit may return 202 (generating) or 200 (ready)
+        let address = response.get("deposit_address")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+
+        if address.is_empty() {
+            return Err(ExchangeError::InvalidRequest(
+                "Deposit address is being generated — retry in a few seconds".to_string()
+            ));
+        }
+
+        Ok(DepositAddress {
+            address: address.to_string(),
+            tag: response.get("secondary_address")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string()),
+            network: network.map(|n| n.to_string()),
+            asset: asset.to_uppercase(),
+            created_at: None,
+        })
+    }
+
+    async fn withdraw(&self, req: WithdrawRequest) -> ExchangeResult<WithdrawResponse> {
+        // POST /v1/withdraws/coin
+        let mut body = serde_json::json!({
+            "currency": req.asset.to_uppercase(),
+            "amount": req.amount.to_string(),
+            "address": req.address,
+        });
+
+        if let Some(ref net) = req.network {
+            body["net_type"] = serde_json::json!(net);
+        }
+
+        // secondary_address = destination tag / memo for assets like XRP
+        if let Some(ref tag) = req.tag {
+            body["secondary_address"] = serde_json::json!(tag);
+        }
+
+        let response = self.post(UpbitEndpoint::InitiateWithdrawal, body, AccountType::Spot).await?;
+
+        let withdraw_id = response.get("uuid")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ExchangeError::Parse("Missing uuid in withdrawal response".to_string()))?
+            .to_string();
+
+        let status = response.get("state")
+            .and_then(|v| v.as_str())
+            .unwrap_or("submitted")
+            .to_string();
+
+        let tx_hash = response.get("txid")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        Ok(WithdrawResponse {
+            withdraw_id,
+            status,
+            tx_hash,
+        })
+    }
+
+    async fn get_funds_history(
+        &self,
+        filter: FundsHistoryFilter,
+    ) -> ExchangeResult<Vec<FundsRecord>> {
+        let mut records = Vec::new();
+
+        let fetch_deposits = matches!(
+            filter.record_type,
+            FundsRecordType::Deposit | FundsRecordType::Both
+        );
+        let fetch_withdrawals = matches!(
+            filter.record_type,
+            FundsRecordType::Withdrawal | FundsRecordType::Both
+        );
+
+        // Fetch deposit records
+        if fetch_deposits {
+            let mut params: HashMap<String, String> = HashMap::new();
+            if let Some(ref asset) = filter.asset {
+                params.insert("currency".to_string(), asset.to_uppercase());
+            }
+            if let Some(limit) = filter.limit {
+                params.insert("limit".to_string(), limit.min(100u32).to_string());
+            }
+            params.insert("order_by".to_string(), "desc".to_string());
+
+            let response = self.get(UpbitEndpoint::ListDeposits, params, AccountType::Spot).await?;
+
+            if let Some(arr) = response.as_array() {
+                for item in arr {
+                    let id = item.get("uuid").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let asset_name = item.get("currency").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let amount = item.get("amount").and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .or_else(|| item.get("amount").and_then(|v| v.as_f64()))
+                        .unwrap_or(0.0);
+                    let tx_hash = item.get("txid").and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string());
+                    let status = item.get("state").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let timestamp = item.get("created_at").and_then(|v| v.as_str())
+                        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                        .map(|dt| dt.timestamp_millis())
+                        .unwrap_or(0);
+                    let network = item.get("net_type").and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string());
+
+                    records.push(FundsRecord::Deposit {
+                        id,
+                        asset: asset_name,
+                        amount,
+                        tx_hash,
+                        network,
+                        status,
+                        timestamp,
+                    });
+                }
+            }
+        }
+
+        // Fetch withdrawal records
+        if fetch_withdrawals {
+            let mut params: HashMap<String, String> = HashMap::new();
+            if let Some(ref asset) = filter.asset {
+                params.insert("currency".to_string(), asset.to_uppercase());
+            }
+            if let Some(limit) = filter.limit {
+                params.insert("limit".to_string(), limit.min(100u32).to_string());
+            }
+            params.insert("order_by".to_string(), "desc".to_string());
+
+            let response = self.get(UpbitEndpoint::ListWithdrawals, params, AccountType::Spot).await?;
+
+            if let Some(arr) = response.as_array() {
+                for item in arr {
+                    let id = item.get("uuid").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let asset_name = item.get("currency").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let amount = item.get("amount").and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .or_else(|| item.get("amount").and_then(|v| v.as_f64()))
+                        .unwrap_or(0.0);
+                    let fee = item.get("fee").and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .or_else(|| item.get("fee").and_then(|v| v.as_f64()));
+                    let address = item.get("address").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let tag = item.get("secondary_address").and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string());
+                    let tx_hash = item.get("txid").and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string());
+                    let status = item.get("state").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let timestamp = item.get("created_at").and_then(|v| v.as_str())
+                        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                        .map(|dt| dt.timestamp_millis())
+                        .unwrap_or(0);
+                    let network = item.get("net_type").and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string());
+
+                    records.push(FundsRecord::Withdrawal {
+                        id,
+                        asset: asset_name,
+                        amount,
+                        fee,
+                        address,
+                        tag,
+                        tx_hash,
+                        network,
+                        status,
+                        timestamp,
+                    });
+                }
+            }
+        }
+
+        Ok(records)
     }
 }
 

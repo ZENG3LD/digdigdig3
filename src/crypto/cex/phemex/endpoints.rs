@@ -106,6 +106,17 @@ pub enum PhemexEndpoint {
     SetLeverage,
     SetRiskLimit,
     AssignBalance,
+
+    // === CUSTODIAL FUNDS ===
+    DepositAddress,
+    Withdraw,
+    DepositList,
+    WithdrawList,
+
+    // === SUB ACCOUNTS ===
+    SubAccountCreate,
+    SubAccountList,
+    SubAccountTransfer,
 }
 
 impl PhemexEndpoint {
@@ -164,6 +175,17 @@ impl PhemexEndpoint {
             Self::SetLeverage => "/positions/leverage",
             Self::SetRiskLimit => "/positions/riskLimit",
             Self::AssignBalance => "/positions/assign",
+
+            // Custodial Funds
+            Self::DepositAddress => "/exchange/wallets/v2/depositAddress",
+            Self::Withdraw => "/exchange/wallets/createWithdraw",
+            Self::DepositList => "/exchange/wallets/depositList",
+            Self::WithdrawList => "/exchange/wallets/withdrawList",
+
+            // Sub Accounts
+            Self::SubAccountCreate => "/phemex-user/users/children",
+            Self::SubAccountList => "/phemex-user/users/children",
+            Self::SubAccountTransfer => "/assets/universal-transfer",
         }
     }
 
@@ -196,7 +218,10 @@ impl PhemexEndpoint {
             | Self::ContractCreateOrder
             | Self::HedgedCreateOrder
             | Self::Transfer
-            | Self::AssignBalance => "POST",
+            | Self::AssignBalance
+            | Self::Withdraw
+            | Self::SubAccountCreate
+            | Self::SubAccountTransfer => "POST",
 
             // PUT endpoints
             Self::SpotAmendOrder

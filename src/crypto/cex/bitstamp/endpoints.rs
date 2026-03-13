@@ -57,6 +57,15 @@ pub enum BitstampEndpoint {
 
     // === FUTURES/PERPETUALS ===
     OpenPositions,    // POST /api/v2/open_positions/
+
+    // === STOP LIMIT ORDERS ===
+    BuyStopLimit,     // POST /api/v2/buy/stop_limit/{pair}/
+    SellStopLimit,    // POST /api/v2/sell/stop_limit/{pair}/
+
+    // === CUSTODIAL FUNDS ===
+    DepositAddress,   // POST /api/v2/{currency}_address/
+    Withdrawal,       // POST /api/v2/{currency}_withdrawal/
+    WithdrawalRequests, // POST /api/v2/withdrawal-requests/
 }
 
 impl BitstampEndpoint {
@@ -90,6 +99,17 @@ impl BitstampEndpoint {
 
             // Futures/Perpetuals
             Self::OpenPositions => "/api/v2/open_positions/",
+
+            // Stop Limit Orders
+            Self::BuyStopLimit => "/api/v2/buy/stop_limit",
+            Self::SellStopLimit => "/api/v2/sell/stop_limit",
+
+            // Custodial Funds
+            // These use dynamic paths — the path() method returns a template;
+            // use path_with_pair() for actual currency-based paths.
+            Self::DepositAddress => "/api/v2/deposit-address/",
+            Self::Withdrawal => "/api/v2/withdrawal/",
+            Self::WithdrawalRequests => "/api/v2/withdrawal-requests/",
         }
     }
 
@@ -104,6 +124,16 @@ impl BitstampEndpoint {
             }
             Self::BuyMarket | Self::SellMarket => {
                 format!("{}/{}/", self.path(), pair)
+            }
+            Self::BuyStopLimit | Self::SellStopLimit => {
+                format!("{}/{}/", self.path(), pair)
+            }
+            // Currency-specific custodial endpoints — pair is the currency (e.g. "btc", "eth")
+            Self::DepositAddress => {
+                format!("/api/v2/{}_address/", pair)
+            }
+            Self::Withdrawal => {
+                format!("/api/v2/{}_withdrawal/", pair)
             }
             _ => self.path().to_string(),
         }
@@ -138,6 +168,18 @@ impl BitstampEndpoint {
 
             // Private endpoints
             _ => true,
+        }
+    }
+
+    /// Get dynamic path for currency-parameterized custodial endpoints.
+    ///
+    /// Used internally when the path depends on a currency code rather than a trading pair.
+    pub fn custodial_path(&self, currency: &str) -> String {
+        let currency_lower = currency.to_lowercase();
+        match self {
+            Self::DepositAddress => format!("/api/v2/{}_address/", currency_lower),
+            Self::Withdrawal => format!("/api/v2/{}_withdrawal/", currency_lower),
+            _ => self.path().to_string(),
         }
     }
 }

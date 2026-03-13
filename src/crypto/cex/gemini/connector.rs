@@ -29,13 +29,15 @@ use crate::core::{
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
-    CancelAllResponse, CancelAll,
+    CancelAllResponse, CancelAll, CustodialFunds,
+    DepositAddress, WithdrawResponse, FundsRecord,
 };
 use crate::core::types::SymbolInfo;
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
 };
 use crate::core::types::ConnectorStats;
+use crate::core::types::{WithdrawRequest, FundsHistoryFilter, FundsRecordType};
 use crate::core::utils::SimpleRateLimiter;
 
 use super::endpoints::{GeminiUrls, GeminiEndpoint, format_symbol, normalize_symbol, map_kline_interval};
@@ -629,6 +631,189 @@ impl CancelAll for GeminiConnector {
             failed_count,
             details: vec![],
         })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CUSTODIAL FUNDS (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl CustodialFunds for GeminiConnector {
+    /// Get a new deposit address for an asset.
+    ///
+    /// Endpoint: POST /v1/deposit/{currency}/newAddress
+    /// The `network` parameter is used as the currency path segment if provided.
+    async fn get_deposit_address(
+        &self,
+        asset: &str,
+        network: Option<&str>,
+    ) -> ExchangeResult<DepositAddress> {
+        let currency = network.unwrap_or(asset).to_lowercase();
+        let params = HashMap::new();
+
+        let response = self.post(
+            GeminiEndpoint::NewDepositAddress,
+            params,
+            &[("network", &currency)],
+        ).await?;
+
+        // Response: {"currency": "BTC", "address": "...", "label": "...", "timestamp": ...}
+        let address = response.get("address")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ExchangeError::Parse("Missing address in deposit address response".to_string()))?
+            .to_string();
+
+        let created_at = response.get("timestamp")
+            .and_then(|v| v.as_i64());
+
+        Ok(DepositAddress {
+            address,
+            tag: None, // Gemini doesn't return a tag/memo for standard addresses
+            network: Some(currency),
+            asset: asset.to_string(),
+            created_at,
+        })
+    }
+
+    /// Submit a withdrawal request.
+    ///
+    /// Endpoint: POST /v1/withdraw/{currency}
+    /// Params: address, amount
+    async fn withdraw(&self, req: WithdrawRequest) -> ExchangeResult<WithdrawResponse> {
+        let currency = req.asset.to_lowercase();
+
+        let mut params = HashMap::new();
+        params.insert("address".to_string(), json!(req.address));
+        params.insert("amount".to_string(), json!(req.amount.to_string()));
+
+        let response = self.post(
+            GeminiEndpoint::Withdraw,
+            params,
+            &[("currency", &currency)],
+        ).await?;
+
+        // Response: {"destination": "...", "amount": "...", "txHash": "...", "withdrawalId": "..."}
+        // or on error: {"result": "error", "reason": "..."}
+        let withdraw_id = response.get("withdrawalId")
+            .or_else(|| response.get("id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let tx_hash = response.get("txHash")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        Ok(WithdrawResponse {
+            withdraw_id,
+            status: "Pending".to_string(),
+            tx_hash,
+        })
+    }
+
+    /// Get deposit and/or withdrawal history via the transfers endpoint.
+    ///
+    /// Endpoint: POST /v1/transfers
+    /// Both deposits and withdrawals are returned by the same endpoint.
+    /// Filtered client-side by `type` field ("Deposit" or "Withdrawal").
+    async fn get_funds_history(
+        &self,
+        filter: FundsHistoryFilter,
+    ) -> ExchangeResult<Vec<FundsRecord>> {
+        let mut params = HashMap::new();
+
+        if let Some(limit) = filter.limit {
+            params.insert("limit_transfers".to_string(), json!(limit.min(50u32)));
+        }
+
+        if let Some(start) = filter.start_time {
+            // Gemini uses Unix timestamp in seconds
+            params.insert("timestamp".to_string(), json!(start / 1000));
+        }
+
+        let response = self.post(GeminiEndpoint::Transfers, params, &[]).await?;
+
+        // Response is an array of transfer objects:
+        // {"type": "Deposit"|"Withdrawal", "status": "...", "timestampms": ...,
+        //  "eid": ..., "currency": "...", "amount": "...",
+        //  "destination": "...", "txHash": "...", "feeAmount": "..."}
+        let records = if let Some(arr) = response.as_array() {
+            arr.iter().filter_map(|item| {
+                let obj = item.as_object()?;
+
+                let transfer_type = obj.get("type")?.as_str()?;
+                let currency = obj.get("currency")?.as_str().unwrap_or("").to_uppercase();
+
+                // Filter by asset if specified
+                if let Some(ref asset_filter) = filter.asset {
+                    if !currency.eq_ignore_ascii_case(asset_filter) {
+                        return None;
+                    }
+                }
+
+                let id = obj.get("eid").and_then(|v| v.as_i64()).map(|v| v.to_string())
+                    .or_else(|| obj.get("eventId").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                    .unwrap_or_default();
+                let amount_str = obj.get("amount").and_then(|v| v.as_str()).unwrap_or("0");
+                let amount = amount_str.parse::<f64>().unwrap_or(0.0);
+                let timestamp = obj.get("timestampms").and_then(|v| v.as_i64()).unwrap_or(0);
+                let status = obj.get("status").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
+                let tx_hash = obj.get("txHash")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+
+                match transfer_type {
+                    "Deposit" | "deposit" => {
+                        if matches!(filter.record_type, FundsRecordType::Deposit | FundsRecordType::Both) {
+                            Some(FundsRecord::Deposit {
+                                id,
+                                asset: currency,
+                                amount,
+                                tx_hash,
+                                network: None,
+                                status,
+                                timestamp,
+                            })
+                        } else {
+                            None
+                        }
+                    }
+                    "Withdrawal" | "withdrawal" => {
+                        if matches!(filter.record_type, FundsRecordType::Withdrawal | FundsRecordType::Both) {
+                            let address = obj.get("destination")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let fee_str = obj.get("feeAmount").and_then(|v| v.as_str()).unwrap_or("0");
+                            let fee = fee_str.parse::<f64>().ok().filter(|&f| f > 0.0);
+
+                            Some(FundsRecord::Withdrawal {
+                                id,
+                                asset: currency,
+                                amount,
+                                fee,
+                                address,
+                                tag: None,
+                                tx_hash,
+                                network: None,
+                                status,
+                                timestamp,
+                            })
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                }
+            }).collect()
+        } else {
+            vec![]
+        };
+
+        Ok(records)
     }
 }
 

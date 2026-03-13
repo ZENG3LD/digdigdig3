@@ -33,7 +33,12 @@ use crate::core::{
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     CancelAllResponse, AmendRequest, MarginType,
     ExchangeIdentity, MarketData, Trading, Account, Positions,
-    CancelAll, AmendOrder,
+    CancelAll, AmendOrder, AccountTransfers, CustodialFunds, SubAccounts,
+};
+use crate::core::types::{
+    TransferRequest, TransferHistoryFilter, TransferResponse,
+    DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord, FundsHistoryFilter, FundsRecordType,
+    SubAccountOperation, SubAccountResult, SubAccount,
 };
 use crate::core::types::SymbolInfo;
 use crate::core::types::ConnectorStats;
@@ -1235,6 +1240,334 @@ impl Positions for PhemexConnector {
                 // requires separate orders for TP and SL (no unified endpoint)
                 Err(ExchangeError::UnsupportedOperation(
                     "SetTpSl not supported as a single operation on Phemex; place separate TP/SL orders".to_string()
+                ))
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT TRANSFERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AccountTransfers for PhemexConnector {
+    /// Transfer between Spot and Futures account.
+    ///
+    /// Endpoint: POST /assets/transfer
+    /// Params: amountEv (×10^8), currency, moveOp (1=spot→futures, 2=futures→spot)
+    async fn transfer(&self, req: TransferRequest) -> ExchangeResult<TransferResponse> {
+        let move_op = match (&req.from_account, &req.to_account) {
+            (AccountType::Spot, AccountType::FuturesCross)
+            | (AccountType::Spot, AccountType::FuturesIsolated) => 1i64,
+            _ => 2i64, // futures → spot
+        };
+
+        let amount_ev = scale_value(req.amount, self.default_value_scale);
+
+        let body = serde_json::json!({
+            "amountEv": amount_ev,
+            "currency": req.asset,
+            "moveOp": move_op,
+        });
+
+        let response = self.post(PhemexEndpoint::Transfer, body, AccountType::Spot).await?;
+
+        // Phemex transfer response: {"code": 0, "msg": "", "data": {"linkKey": "..."}
+        let transfer_id = response.get("data")
+            .and_then(|d| d.get("linkKey"))
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| "unknown".to_string());
+
+        Ok(TransferResponse {
+            transfer_id,
+            status: "Successful".to_string(),
+            asset: req.asset,
+            amount: req.amount,
+            timestamp: None,
+        })
+    }
+
+    /// Transfer history is not available on Phemex as a standard endpoint.
+    /// Returns empty vec rather than an error to keep callers functional.
+    async fn get_transfer_history(
+        &self,
+        _filter: TransferHistoryFilter,
+    ) -> ExchangeResult<Vec<TransferResponse>> {
+        Ok(vec![])
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CUSTODIAL FUNDS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl CustodialFunds for PhemexConnector {
+    /// Get deposit address for an asset on a given network.
+    ///
+    /// Endpoint: GET /exchange/wallets/v2/depositAddress
+    async fn get_deposit_address(
+        &self,
+        asset: &str,
+        network: Option<&str>,
+    ) -> ExchangeResult<DepositAddress> {
+        let mut params = HashMap::new();
+        params.insert("currency".to_string(), asset.to_string());
+        if let Some(chain) = network {
+            params.insert("chainName".to_string(), chain.to_string());
+        }
+
+        let response = self.get(PhemexEndpoint::DepositAddress, params, AccountType::Spot).await?;
+
+        // Phemex response: {"code": 0, "data": {"address": "...", "tag": "..."}}
+        let data = response.get("data")
+            .ok_or_else(|| ExchangeError::Parse("Missing 'data' field".to_string()))?;
+
+        let address = data.get("address")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'address' field".to_string()))?
+            .to_string();
+        let tag = data.get("tag")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+        let net = data.get("chainName")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .or_else(|| network.map(String::from));
+
+        Ok(DepositAddress {
+            address,
+            tag,
+            network: net,
+            asset: asset.to_string(),
+            created_at: None,
+        })
+    }
+
+    /// Submit a withdrawal request.
+    ///
+    /// Endpoint: POST /exchange/wallets/createWithdraw
+    async fn withdraw(&self, req: WithdrawRequest) -> ExchangeResult<WithdrawResponse> {
+        let mut body = serde_json::json!({
+            "currency": req.asset,
+            "address": req.address,
+            "amount": req.amount.to_string(),
+        });
+
+        if let Some(chain) = &req.network {
+            body["chainName"] = serde_json::json!(chain);
+        }
+        if let Some(tag) = &req.tag {
+            body["addressTag"] = serde_json::json!(tag);
+        }
+
+        let response = self.post(PhemexEndpoint::Withdraw, body, AccountType::Spot).await?;
+
+        let data = response.get("data").cloned().unwrap_or(serde_json::json!({}));
+        let withdraw_id = data.get("id")
+            .and_then(|v| v.as_str().map(String::from)
+                .or_else(|| v.as_i64().map(|n| n.to_string())))
+            .unwrap_or_else(|| "unknown".to_string());
+
+        Ok(WithdrawResponse {
+            withdraw_id,
+            status: "Pending".to_string(),
+            tx_hash: None,
+        })
+    }
+
+    /// Get deposit and/or withdrawal history.
+    ///
+    /// Endpoint (deposits): GET /exchange/wallets/depositList
+    /// Endpoint (withdrawals): GET /exchange/wallets/withdrawList
+    async fn get_funds_history(
+        &self,
+        filter: FundsHistoryFilter,
+    ) -> ExchangeResult<Vec<FundsRecord>> {
+        let mut records: Vec<FundsRecord> = Vec::new();
+
+        let build_params = |f: &FundsHistoryFilter| {
+            let mut p = HashMap::new();
+            if let Some(a) = &f.asset {
+                p.insert("currency".to_string(), a.clone());
+            }
+            if let Some(s) = f.start_time {
+                p.insert("start".to_string(), s.to_string());
+            }
+            if let Some(e) = f.end_time {
+                p.insert("end".to_string(), e.to_string());
+            }
+            if let Some(l) = f.limit {
+                p.insert("limit".to_string(), l.to_string());
+            }
+            p
+        };
+
+        if matches!(filter.record_type, FundsRecordType::Deposit | FundsRecordType::Both) {
+            let params = build_params(&filter);
+            let response = self.get(PhemexEndpoint::DepositList, params, AccountType::Spot).await?;
+            if let Some(data) = response.get("data").and_then(|d| d.get("rows")).and_then(|v| v.as_array()) {
+                for item in data {
+                    let id = item.get("id")
+                        .and_then(|v| v.as_str().map(String::from)
+                            .or_else(|| v.as_i64().map(|n| n.to_string())))
+                        .unwrap_or_default();
+                    let asset = item.get("currency").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let amount_ev = item.get("amountEv").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let amount = amount_ev as f64 / 10f64.powi(self.default_value_scale as i32);
+                    let tx_hash = item.get("txHash").and_then(|v| v.as_str()).map(String::from);
+                    let network = item.get("chainName").and_then(|v| v.as_str()).map(String::from);
+                    let status = item.get("status").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
+                    let timestamp = item.get("submitTime").and_then(|v| v.as_i64()).unwrap_or(0);
+
+                    records.push(FundsRecord::Deposit {
+                        id, asset, amount, tx_hash, network, status, timestamp,
+                    });
+                }
+            }
+        }
+
+        if matches!(filter.record_type, FundsRecordType::Withdrawal | FundsRecordType::Both) {
+            let params = build_params(&filter);
+            let response = self.get(PhemexEndpoint::WithdrawList, params, AccountType::Spot).await?;
+            if let Some(data) = response.get("data").and_then(|d| d.get("rows")).and_then(|v| v.as_array()) {
+                for item in data {
+                    let id = item.get("id")
+                        .and_then(|v| v.as_str().map(String::from)
+                            .or_else(|| v.as_i64().map(|n| n.to_string())))
+                        .unwrap_or_default();
+                    let asset = item.get("currency").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let amount_ev = item.get("amountEv").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let amount = amount_ev as f64 / 10f64.powi(self.default_value_scale as i32);
+                    let fee_ev = item.get("feeEv").and_then(|v| v.as_i64());
+                    let fee = fee_ev.map(|f| f as f64 / 10f64.powi(self.default_value_scale as i32));
+                    let address = item.get("address").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let tag = item.get("addressTag").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from);
+                    let tx_hash = item.get("txHash").and_then(|v| v.as_str()).map(String::from);
+                    let network = item.get("chainName").and_then(|v| v.as_str()).map(String::from);
+                    let status = item.get("status").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
+                    let timestamp = item.get("submitTime").and_then(|v| v.as_i64()).unwrap_or(0);
+
+                    records.push(FundsRecord::Withdrawal {
+                        id, asset, amount, fee, address, tag, tx_hash, network, status, timestamp,
+                    });
+                }
+            }
+        }
+
+        Ok(records)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SUB ACCOUNTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl SubAccounts for PhemexConnector {
+    /// Perform a sub-account operation.
+    ///
+    /// - Create: POST /phemex-user/users/children
+    /// - List: GET /phemex-user/users/children
+    /// - Transfer: POST /assets/universal-transfer
+    /// - GetBalance: UnsupportedOperation
+    async fn sub_account_operation(
+        &self,
+        op: SubAccountOperation,
+    ) -> ExchangeResult<SubAccountResult> {
+        match op {
+            SubAccountOperation::Create { label } => {
+                let body = serde_json::json!({
+                    "childUsername": label,
+                });
+
+                let response = self.post(PhemexEndpoint::SubAccountCreate, body, AccountType::Spot).await?;
+
+                let data = response.get("data").cloned().unwrap_or(serde_json::json!({}));
+                let id = data.get("userId")
+                    .and_then(|v| v.as_str().map(String::from)
+                        .or_else(|| v.as_i64().map(|n| n.to_string())));
+
+                Ok(SubAccountResult {
+                    id,
+                    name: Some(label),
+                    accounts: vec![],
+                    transaction_id: None,
+                })
+            }
+
+            SubAccountOperation::List => {
+                let response = self.get(PhemexEndpoint::SubAccountList, HashMap::new(), AccountType::Spot).await?;
+
+                let items = response.get("data")
+                    .and_then(|d| d.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+
+                let accounts = items.iter().map(|item| {
+                    let id = item.get("userId")
+                        .and_then(|v| v.as_str().map(String::from)
+                            .or_else(|| v.as_i64().map(|n| n.to_string())))
+                        .unwrap_or_default();
+                    let name = item.get("username")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let status = item.get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Normal")
+                        .to_string();
+                    SubAccount { id, name, status }
+                }).collect();
+
+                Ok(SubAccountResult {
+                    id: None,
+                    name: None,
+                    accounts,
+                    transaction_id: None,
+                })
+            }
+
+            SubAccountOperation::Transfer { sub_account_id, asset, amount, to_sub } => {
+                let amount_ev = scale_value(amount, self.default_value_scale);
+
+                // For master→sub: fromUserId = master (empty string), toUserId = sub
+                // For sub→master: fromUserId = sub, toUserId = master (empty string)
+                // Phemex requires both IDs to be provided; use empty string for "self"
+                let (from_user_id, to_user_id) = if to_sub {
+                    ("".to_string(), sub_account_id.clone())
+                } else {
+                    (sub_account_id.clone(), "".to_string())
+                };
+
+                let body = serde_json::json!({
+                    "fromUserId": from_user_id,
+                    "toUserId": to_user_id,
+                    "currency": asset,
+                    "amountEv": amount_ev,
+                });
+
+                let response = self.post(PhemexEndpoint::SubAccountTransfer, body, AccountType::Spot).await?;
+
+                let transaction_id = response.get("data")
+                    .and_then(|d| d.get("linkKey"))
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+
+                Ok(SubAccountResult {
+                    id: None,
+                    name: None,
+                    accounts: vec![],
+                    transaction_id,
+                })
+            }
+
+            SubAccountOperation::GetBalance { .. } => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "GetBalance for sub-accounts is not available on Phemex".to_string()
                 ))
             }
         }

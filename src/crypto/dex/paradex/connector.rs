@@ -799,6 +799,12 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
             CancelScope::Batch { .. } => Err(ExchangeError::UnsupportedOperation(
                 "Batch cancel not supported on Paradex; use CancelAll/BySymbol instead".to_string()
             )),
+
+            CancelScope::ByLabel(_) | CancelScope::ByCurrencyKind { .. } | CancelScope::ScheduledAt(_) => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "ByLabel/ByCurrencyKind/ScheduledAt cancel scopes not supported on Paradex".to_string()
+                ))
+            }
         }
     }
 
@@ -992,6 +998,12 @@ impl Positions for ParadexConnector {
             PositionModification::AddMargin { .. } | PositionModification::RemoveMargin { .. } => {
                 Err(ExchangeError::UnsupportedOperation(
                     "Paradex uses auto-margin management; manual margin add/remove not supported".to_string()
+                ))
+            }
+
+            PositionModification::SwitchPositionMode { .. } | PositionModification::MovePositions { .. } => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "SwitchPositionMode/MovePositions not supported on Paradex".to_string()
                 ))
             }
         }

@@ -250,6 +250,10 @@ pub fn format_symbol(symbol: &str, account_type: AccountType) -> String {
             // Cross margin is the default for perpetuals
             symbol.to_uppercase()
         }
+        _ => {
+            // Unsupported account types default to spot format
+            symbol.to_string()
+        }
     }
 }
 

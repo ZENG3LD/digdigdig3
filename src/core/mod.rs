@@ -78,16 +78,17 @@ pub use types::{
     Kline, Ticker, OrderBook, PublicTrade, FundingRate,
     // Trading
     Price, Quantity, Asset, Timestamp,
-    OrderSide, OrderType, OrderStatus, TimeInForce, Order,
+    OrderSide, OrderType, TriggerDirection, OrderStatus, TimeInForce, Order,
     OrderRequest, CancelRequest, CancelScope,
     AmendRequest, AmendFields, OrderHistoryFilter, OrdersQuery,
     PositionMode, PositionSide, Position, PositionModification, PositionQuery,
-    UserTrade,
+    UserTrade, UserTradeFilter,
     Balance, AccountInfo, BalanceQuery, MarginType, SymbolInfo,
     ExchangeCredentials,
     // Responses
     PlaceOrderResponse, OrderResult, CancelAllResponse,
     FeeInfo, TransferResponse, DepositAddress, WithdrawResponse, FundsRecord,
+    ClosedPnlRecord, LongShortRatio,
     // WebSocket
     ConnectionStatus, StreamType, SubscriptionRequest, StreamEvent,
     OrderUpdateEvent, BalanceUpdateEvent, PositionUpdateEvent,

@@ -691,7 +691,10 @@ impl Trading for CryptoComConnector {
             | OrderType::Iceberg { .. }
             | OrderType::Twap { .. }
             | OrderType::Gtd { .. }
-            | OrderType::ReduceOnly { .. } => Err(ExchangeError::UnsupportedOperation(
+            | OrderType::ReduceOnly { .. }
+            | OrderType::Oto { .. }
+            | OrderType::ConditionalPlan { .. }
+            | OrderType::DcaRecurring { .. } => Err(ExchangeError::UnsupportedOperation(
                 format!("{:?} order type not supported on Crypto.com", req.order_type)
             )),
         }
@@ -803,6 +806,11 @@ impl Trading for CryptoComConnector {
 
             CancelScope::Batch { .. } => Err(ExchangeError::UnsupportedOperation(
                 "Batch cancel not supported via cancel_order on Crypto.com".to_string()
+            )),
+            CancelScope::ByLabel(_)
+            | CancelScope::ByCurrencyKind { .. }
+            | CancelScope::ScheduledAt(_) => Err(ExchangeError::UnsupportedOperation(
+                "ByLabel/ByCurrencyKind/ScheduledAt cancel scopes not supported on Crypto.com".into()
             )),
         }
     }
@@ -1157,6 +1165,18 @@ impl Positions for CryptoComConnector {
                 // TP/SL must be placed as separate TAKE_PROFIT / STOP_LOSS orders
                 Err(ExchangeError::UnsupportedOperation(
                     "SetTpSl not supported as a single operation on Crypto.com; place separate TP/SL orders".to_string()
+                ))
+            }
+
+            PositionModification::SwitchPositionMode { .. } => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "SwitchPositionMode not supported on Crypto.com".into()
+                ))
+            }
+
+            PositionModification::MovePositions { .. } => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "MovePositions not supported on Crypto.com".into()
                 ))
             }
         }

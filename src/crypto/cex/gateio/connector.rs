@@ -141,6 +141,7 @@ impl GateioConnector {
             let limiter = match account_type {
                 AccountType::Spot | AccountType::Margin => &self.spot_rate_limiter,
                 AccountType::FuturesCross | AccountType::FuturesIsolated => &self.futures_rate_limiter,
+                AccountType::Earn | AccountType::Lending | AccountType::Options | AccountType::Convert => &self.spot_rate_limiter,
             };
             if let Ok(mut guard) = limiter.lock() {
                 guard.update_from_server(used);
@@ -157,6 +158,7 @@ impl GateioConnector {
         let limiter = match account_type {
             AccountType::Spot | AccountType::Margin => &self.spot_rate_limiter,
             AccountType::FuturesCross | AccountType::FuturesIsolated => &self.futures_rate_limiter,
+            AccountType::Earn | AccountType::Lending | AccountType::Options | AccountType::Convert => &self.spot_rate_limiter,
         };
 
         loop {
@@ -846,7 +848,8 @@ impl Trading for GateioConnector {
                 }
             }
             OrderType::TrailingStop { .. } | OrderType::Oco { .. } | OrderType::Bracket { .. }
-            | OrderType::Twap { .. } | OrderType::Gtd { .. } => {
+            | OrderType::Twap { .. } | OrderType::Gtd { .. }
+            | OrderType::Oto { .. } | OrderType::ConditionalPlan { .. } | OrderType::DcaRecurring { .. } => {
                 return Err(ExchangeError::UnsupportedOperation(
                     format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
                 ));
@@ -973,6 +976,11 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
                     "Gate.io does not support batch cancel. Cancel orders individually.".to_string()
                 ))
             }
+            CancelScope::ByLabel(_)
+            | CancelScope::ByCurrencyKind { .. }
+            | CancelScope::ScheduledAt(_) => Err(ExchangeError::UnsupportedOperation(
+                "Gate.io does not support this cancel scope".to_string()
+            )),
         }
     }
 
@@ -1437,6 +1445,12 @@ impl Positions for GateioConnector {
                 GateioParser::check_error(&response)?;
                 Ok(())
             }
+            PositionModification::SwitchPositionMode { .. } => Err(ExchangeError::UnsupportedOperation(
+                "SwitchPositionMode not supported on Gate.io".to_string()
+            )),
+            PositionModification::MovePositions { .. } => Err(ExchangeError::UnsupportedOperation(
+                "MovePositions not supported on Gate.io".to_string()
+            )),
         }
     }
 }
@@ -1717,6 +1731,7 @@ impl AccountTransfers for GateioConnector {
                 AccountType::Spot => "spot",
                 AccountType::FuturesCross | AccountType::FuturesIsolated => "futures",
                 AccountType::Margin => "margin",
+                AccountType::Earn | AccountType::Lending | AccountType::Options | AccountType::Convert => "spot",
             }
         }
 

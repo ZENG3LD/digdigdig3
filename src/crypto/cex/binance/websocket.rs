@@ -189,6 +189,7 @@ impl BinanceWebSocket {
         let endpoint = match self.account_type {
             AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotListenKey,
             AccountType::FuturesCross | AccountType::FuturesIsolated => BinanceEndpoint::FuturesListenKey,
+            _ => BinanceEndpoint::SpotListenKey,
         };
 
         let url = format!("{}{}", base_url, endpoint.path());
@@ -218,6 +219,7 @@ impl BinanceWebSocket {
         let endpoint = match self.account_type {
             AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotListenKey,
             AccountType::FuturesCross | AccountType::FuturesIsolated => BinanceEndpoint::FuturesListenKey,
+            _ => BinanceEndpoint::SpotListenKey,
         };
 
         let path = format!("{}?listenKey={}", endpoint.path(), listen_key);
@@ -259,6 +261,7 @@ impl BinanceWebSocket {
                             let endpoint = match account_type {
                                 AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotListenKey,
                                 AccountType::FuturesCross | AccountType::FuturesIsolated => BinanceEndpoint::FuturesListenKey,
+                                _ => BinanceEndpoint::SpotListenKey,
                             };
 
                             let path = format!("{}?listenKey={}", endpoint.path(), key_copy);

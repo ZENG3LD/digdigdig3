@@ -553,6 +553,15 @@ impl Trading for BitfinexConnector {
                 BitfinexParser::parse_submit_order(&response).map(PlaceOrderResponse::Simple)
             }
 
+            OrderType::Oto { .. } => Err(ExchangeError::UnsupportedOperation(
+                "Oto orders not supported on Bitfinex".into()
+            )),
+            OrderType::ConditionalPlan { .. } => Err(ExchangeError::UnsupportedOperation(
+                "ConditionalPlan orders not supported on Bitfinex".into()
+            )),
+            OrderType::DcaRecurring { .. } => Err(ExchangeError::UnsupportedOperation(
+                "DcaRecurring orders not supported on Bitfinex".into()
+            )),
             _ => Err(ExchangeError::UnsupportedOperation(
                 format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
             )),
@@ -798,7 +807,9 @@ impl Positions for BitfinexConnector {
         account_type: AccountType,
     ) -> ExchangeResult<crate::core::FundingRate> {
         match account_type {
-            AccountType::Spot | AccountType::Margin => {
+            AccountType::Spot | AccountType::Margin
+            | AccountType::Earn | AccountType::Lending
+            | AccountType::Options | AccountType::Convert => {
                 return Err(ExchangeError::UnsupportedOperation(
                     "Funding rate not supported for Spot/Margin".to_string()
                 ));
@@ -1102,6 +1113,8 @@ impl AccountTransfers for BitfinexConnector {
                 AccountType::Spot => "exchange",
                 AccountType::Margin => "margin",
                 AccountType::FuturesCross | AccountType::FuturesIsolated => "funding",
+                AccountType::Lending => "funding",
+                AccountType::Earn | AccountType::Options | AccountType::Convert => "exchange",
             }
         }
 

@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use crate::core::types::{
     AccountType, ExchangeResult, Order,
     OrderHistoryFilter, OrderRequest, CancelRequest, PlaceOrderResponse,
+    UserTrade, UserTradeFilter,
 };
 
 use super::ExchangeIdentity;
@@ -73,4 +74,25 @@ pub trait Trading: ExchangeIdentity {
         filter: OrderHistoryFilter,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>>;
+
+    /// Get the user's own trade fills (executions).
+    ///
+    /// Returns individual fill records for completed orders, optionally filtered
+    /// by symbol, order ID, or time range.
+    ///
+    /// Default implementation returns `UnsupportedOperation` — connectors
+    /// that expose a native fills/trades endpoint should override this.
+    ///
+    /// ~20/24: all major CEX exchanges. GMX, Uniswap, Raydium return
+    /// `UnsupportedOperation` (AMM — fills are on-chain events, not exchange records).
+    async fn get_user_trades(
+        &self,
+        filter: UserTradeFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<UserTrade>> {
+        let _ = (filter, account_type);
+        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+            "get_user_trades not implemented".into(),
+        ))
+    }
 }

@@ -1067,7 +1067,7 @@ impl Positions for HtxConnector {
                 Err(ExchangeError::NotSupported("Leverage not available for spot trading".to_string()))
             }
             _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} not supported on {:?}", req, self.exchange_id())
+                "Position modification not supported on HTX spot".to_string()
             )),
         }
     }

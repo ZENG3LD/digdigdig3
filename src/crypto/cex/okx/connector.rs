@@ -779,6 +779,9 @@ impl Trading for OkxConnector {
                      Construct manually: place entry order, then place an OCO algo order after fill.".to_string()
                 ));
             }
+            _ => return Err(ExchangeError::UnsupportedOperation(
+                "This order type is not supported by OKX".to_string()
+            )),
         };
 
         let response = self.post(OkxEndpoint::PlaceOrder, body).await?;
@@ -888,6 +891,9 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
                 let order_id_str = OkxParser::get_str(first, "ordId").unwrap_or("").to_string();
                 self.get_order(&symbol.to_string(), &order_id_str, account_type).await
             }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                "This cancel scope is not supported by OKX".to_string()
+            )),
         }
     }
 
@@ -1261,6 +1267,9 @@ impl Positions for OkxConnector {
                 OkxParser::extract_data(&response)?;
                 Ok(())
             }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                "This position modification is not supported by OKX".to_string()
+            )),
         }
     }
 }

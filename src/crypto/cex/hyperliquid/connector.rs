@@ -693,6 +693,13 @@ impl Trading for HyperliquidConnector {
 
                 pairs
             }
+            CancelScope::ByLabel(_)
+            | CancelScope::ByCurrencyKind { .. }
+            | CancelScope::ScheduledAt(_) => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Hyperliquid does not support this cancel scope".to_string()
+                ));
+            }
             CancelScope::BySymbol { symbol: sym } => {
                 // Cancel all open orders for a specific symbol
                 let wallet = self.wallet_address()?;
@@ -1118,6 +1125,12 @@ impl Positions for HyperliquidConnector {
                      Set TP/SL at order placement using StopMarket/StopLimit order types.".to_string()
                 ))
             }
+            PositionModification::SwitchPositionMode { .. } => Err(ExchangeError::UnsupportedOperation(
+                "SwitchPositionMode not supported on Hyperliquid".to_string()
+            )),
+            PositionModification::MovePositions { .. } => Err(ExchangeError::UnsupportedOperation(
+                "MovePositions not supported on Hyperliquid".to_string()
+            )),
         }
     }
 }

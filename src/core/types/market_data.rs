@@ -109,6 +109,8 @@ pub struct MarkPrice {
     pub mark_price: f64,
     /// Index price (опционально)
     pub index_price: Option<f64>,
+    /// Current funding rate (опционально — только для перпетуальных контрактов)
+    pub funding_rate: Option<f64>,
     /// Timestamp
     pub timestamp: i64,
 }

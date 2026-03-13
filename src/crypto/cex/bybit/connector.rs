@@ -1153,6 +1153,9 @@ impl Trading for BybitConnector {
             OrderType::Twap { .. } => Err(ExchangeError::UnsupportedOperation(
                 "TWAP orders are not available via Bybit API (UI-only strategy feature)".to_string()
             )),
+            _ => Err(ExchangeError::UnsupportedOperation(
+                "This order type is not supported by Bybit".to_string()
+            )),
         }
     }
 
@@ -1307,6 +1310,9 @@ impl Trading for BybitConnector {
                     "Batch cancel not natively supported on Bybit V5 (no atomic batch-cancel endpoint)".to_string()
                 ))
             }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                "This cancel scope is not supported by Bybit".to_string()
+            )),
         }
     }
 
@@ -1400,6 +1406,7 @@ impl Account for BybitConnector {
         params.insert("accountType".to_string(), match account_type {
             AccountType::Spot | AccountType::Margin => "UNIFIED",
             AccountType::FuturesCross | AccountType::FuturesIsolated => "CONTRACT",
+            _ => "UNIFIED",
         }.to_string());
 
         let response = self.get(BybitEndpoint::Balance, params).await?;
@@ -1772,6 +1779,9 @@ impl Positions for BybitConnector {
                 self.check_response(&response)?;
                 Ok(())
             }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                "This position modification is not supported by Bybit".to_string()
+            )),
         }
     }
 }

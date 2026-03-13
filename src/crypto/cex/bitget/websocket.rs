@@ -486,6 +486,8 @@ impl BitgetWebSocket {
         let inst_type = match account_type {
             AccountType::Spot | AccountType::Margin => "SPOT",
             AccountType::FuturesIsolated | AccountType::FuturesCross => "USDT-FUTURES",
+            AccountType::Earn | AccountType::Lending
+            | AccountType::Options | AccountType::Convert => "SPOT",
         };
 
         let (channel, inst_id) = match &request.stream_type {

@@ -881,6 +881,12 @@ impl Trading for AlpacaConnector {
                     "ReduceOnly orders are not supported on Alpaca (stock broker, no futures)".to_string()
                 ));
             }
+
+            OrderType::Oto { .. } | OrderType::ConditionalPlan { .. } | OrderType::DcaRecurring { .. } => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Oto/ConditionalPlan/DcaRecurring orders are not supported on Alpaca".to_string()
+                ));
+            }
         };
 
         let response = self.post_trading(AlpacaEndpoint::Orders, body).await?;
@@ -1075,6 +1081,12 @@ impl Positions for AlpacaConnector {
             PositionModification::SetTpSl { .. } => {
                 Err(ExchangeError::UnsupportedOperation(
                     "SetTpSl is not supported on Alpaca positions directly — use Bracket orders instead".to_string()
+                ))
+            }
+
+            PositionModification::SwitchPositionMode { .. } | PositionModification::MovePositions { .. } => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "SwitchPositionMode/MovePositions not supported on Alpaca".to_string()
                 ))
             }
         }

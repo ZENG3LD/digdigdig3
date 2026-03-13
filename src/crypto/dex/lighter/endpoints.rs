@@ -242,6 +242,10 @@ pub fn format_symbol(base: &str, quote: &str, account_type: AccountType) -> Stri
             // Perpetuals: Just base symbol (quote is implied USDC)
             base.to_uppercase()
         }
+        _ => {
+            // Unsupported account types default to spot format
+            format!("{}/{}", base.to_uppercase(), quote.to_uppercase())
+        }
     }
 }
 

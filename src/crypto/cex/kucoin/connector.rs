@@ -714,6 +714,9 @@ impl MarketData for KuCoinConnector {
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
                 params.insert("granularity".to_string(), map_futures_granularity(interval).to_string());
             }
+            _ => {
+                params.insert("type".to_string(), map_kline_interval(interval).to_string());
+            }
         }
 
         // KuCoin has no limit param — control batch size via startAt/endAt time window (max 1500 bars)
@@ -1025,6 +1028,11 @@ impl Trading for KuCoinConnector {
                     format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
                 ));
             }
+            _ => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    format!("Order type not supported on KuCoin")
+                ));
+            }
         };
 
         let response = self.post(endpoint, body, account_type).await?;
@@ -1173,6 +1181,9 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
                     "KuCoin does not support batch cancel. Cancel orders individually.".to_string()
                 ))
             }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                "This cancel scope is not supported by KuCoin".to_string()
+            )),
         }
     }
 
@@ -1583,6 +1594,9 @@ impl Positions for KuCoinConnector {
 
                 Ok(())
             }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                "This position modification is not supported by KuCoin".to_string()
+            )),
         }
     }
 }
@@ -1743,6 +1757,9 @@ impl BatchOrders for KuCoinConnector {
                 }).collect();
                 (KuCoinEndpoint::FuturesBatchOrders, json!(batch))
             }
+            _ => return Err(ExchangeError::UnsupportedOperation(
+                "This account type is not supported for batch orders on KuCoin".to_string()
+            )),
         };
 
         let response = self.post(endpoint, batch_json, account_type).await?;
@@ -1850,6 +1867,7 @@ impl AccountTransfers for KuCoinConnector {
                 AccountType::Spot => "main",
                 AccountType::FuturesCross | AccountType::FuturesIsolated => "trade",
                 AccountType::Margin => "margin",
+                _ => "main",
             }
         }
 

@@ -620,6 +620,12 @@ impl Trading for OandaConnector {
                     "OANDA does not support TWAP orders".to_string()
                 ));
             }
+
+            OrderType::Oto { .. } | OrderType::ConditionalPlan { .. } | OrderType::DcaRecurring { .. } => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Oto/ConditionalPlan/DcaRecurring orders are not supported on OANDA".to_string()
+                ));
+            }
         };
 
         let response = self.post(endpoint, body).await?;
@@ -891,6 +897,12 @@ impl Positions for OandaConnector {
             PositionModification::SetTpSl { .. } => {
                 Err(ExchangeError::UnsupportedOperation(
                     "OANDA TP/SL is set on individual trades, not positions — use place_order with Bracket".to_string()
+                ))
+            }
+
+            PositionModification::SwitchPositionMode { .. } | PositionModification::MovePositions { .. } => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "SwitchPositionMode/MovePositions not supported on OANDA".to_string()
                 ))
             }
         }

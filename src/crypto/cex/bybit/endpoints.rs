@@ -53,6 +53,7 @@ impl BybitUrls {
         match account_type {
             AccountType::Spot | AccountType::Margin => Self::ws_spot_url(testnet),
             AccountType::FuturesCross | AccountType::FuturesIsolated => Self::ws_linear_url(testnet),
+            _ => Self::ws_spot_url(testnet),
         }
     }
 }
@@ -282,6 +283,7 @@ pub fn account_type_to_category(account_type: AccountType) -> &'static str {
     match account_type {
         AccountType::Spot | AccountType::Margin => "spot",
         AccountType::FuturesCross | AccountType::FuturesIsolated => "linear",
+        _ => "spot",
     }
 }
 
@@ -298,6 +300,7 @@ pub fn account_type_to_transfer_type(account_type: AccountType) -> &'static str 
         AccountType::Margin => "UNIFIED",
         AccountType::FuturesCross => "CONTRACT",
         AccountType::FuturesIsolated => "CONTRACT",
+        _ => "SPOT",
     }
 }
 

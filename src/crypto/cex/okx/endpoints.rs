@@ -301,6 +301,10 @@ pub fn format_symbol(base: &str, quote: &str, account_type: AccountType) -> Stri
             // Futures: BASE-QUOTE-SWAP (perpetual)
             format!("{}-{}-SWAP", base.to_uppercase(), quote.to_uppercase())
         }
+        _ => {
+            // Unsupported account types default to spot format
+            format!("{}-{}", base.to_uppercase(), quote.to_uppercase())
+        }
     }
 }
 
@@ -340,6 +344,7 @@ pub fn get_inst_type(account_type: AccountType) -> &'static str {
         AccountType::Spot => "SPOT",
         AccountType::Margin => "MARGIN",
         AccountType::FuturesCross | AccountType::FuturesIsolated => "SWAP",
+        _ => "SPOT",
     }
 }
 
@@ -350,6 +355,7 @@ pub fn get_trade_mode(account_type: AccountType) -> &'static str {
         AccountType::Margin => "cross",
         AccountType::FuturesCross => "cross",
         AccountType::FuturesIsolated => "isolated",
+        _ => "cash",
     }
 }
 
@@ -369,5 +375,6 @@ pub fn get_account_id(account_type: AccountType) -> &'static str {
         AccountType::Spot => "6",
         AccountType::Margin => "5",
         AccountType::FuturesCross | AccountType::FuturesIsolated => "18",
+        _ => "6",
     }
 }

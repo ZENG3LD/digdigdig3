@@ -246,6 +246,10 @@ pub fn format_symbol(base: &str, quote: &str, account_type: AccountType) -> Stri
             // Note: Gemini perpetuals are denominated in GUSD (Gemini Dollar)
             format!("{}gusdperp", base.to_lowercase())
         }
+        _ => {
+            // Unsupported account types default to spot format
+            format!("{}{}", base.to_lowercase(), quote.to_lowercase())
+        }
     }
 }
 

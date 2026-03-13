@@ -382,6 +382,7 @@ impl GateioWebSocket {
                     let ping_channel = match account_type {
                         AccountType::Spot | AccountType::Margin => "spot.ping",
                         AccountType::FuturesCross | AccountType::FuturesIsolated => "futures.ping",
+                        AccountType::Earn | AccountType::Lending | AccountType::Options | AccountType::Convert => "spot.ping",
                     };
 
                     let ping = json!({
@@ -413,6 +414,7 @@ impl GateioWebSocket {
         let prefix = match account_type {
             AccountType::Spot | AccountType::Margin => "spot",
             AccountType::FuturesCross | AccountType::FuturesIsolated => "futures",
+            AccountType::Earn | AccountType::Lending | AccountType::Options | AccountType::Convert => "spot",
         };
 
         match &request.stream_type {

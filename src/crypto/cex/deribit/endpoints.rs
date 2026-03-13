@@ -254,6 +254,10 @@ pub fn format_symbol(base: &str, quote: &str, account_type: AccountType) -> Stri
             // Default to perpetual format
             format!("{}-PERPETUAL", base.to_uppercase())
         }
+        _ => {
+            // Unsupported account types default to spot format
+            format!("{}-{}", base.to_uppercase(), quote.to_uppercase())
+        }
     }
 }
 

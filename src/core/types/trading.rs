@@ -49,6 +49,22 @@ impl OrderSide {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// TRIGGER DIRECTION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Direction of a price trigger condition.
+///
+/// Used in `OrderType::ConditionalPlan` to specify whether the order
+/// activates when price crosses above or below the trigger level.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum TriggerDirection {
+    /// Trigger fires when price rises above the trigger level.
+    Above,
+    /// Trigger fires when price falls below the trigger level.
+    Below,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // ORDER TYPE — fat enum covering all 24 exchanges
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -196,6 +212,46 @@ pub enum OrderType {
     ReduceOnly {
         /// Limit price (None = market).
         price: Option<Price>,
+    },
+
+    /// OTO (One-Triggers-the-Other) — the secondary order is only placed
+    /// if and when the primary (entry) order fills.
+    ///
+    /// ~8/24: Bybit, OKX, Binance, KuCoin, Phemex, HyperLiquid, Paradex, dYdX.
+    Oto {
+        /// Optional entry price (None = market entry).
+        entry_price: Option<f64>,
+        /// The secondary order to place after the entry fills.
+        secondary_order: Box<OrderType>,
+    },
+
+    /// Conditional plan — places an order of any type once a price trigger
+    /// condition is met.
+    ///
+    /// ~12/24: Bybit, OKX, Binance Futures, KuCoin, GateIO, Bitget, BingX,
+    /// Phemex, Deribit, HyperLiquid, Paradex, dYdX.
+    ConditionalPlan {
+        /// Price level that activates the order.
+        trigger_price: f64,
+        /// Direction — does price need to go above or below `trigger_price`?
+        trigger_direction: TriggerDirection,
+        /// The order to submit once the trigger fires.
+        order_after_trigger: Box<OrderType>,
+    },
+
+    /// DCA (Dollar-Cost Averaging) recurring order — automatically repeats
+    /// at a fixed interval for a number of cycles or indefinitely.
+    ///
+    /// ~5/24: Binance (algo), Bybit (algo), OKX (algo), Bitget (algo), BingX (algo).
+    DcaRecurring {
+        /// Interval between each DCA sub-order in seconds.
+        interval_seconds: u64,
+        /// Total number of cycles before the plan terminates.
+        /// `None` = run indefinitely until manually stopped.
+        total_cycles: Option<u32>,
+        /// Optional maximum price (for buys) or minimum price (for sells).
+        /// Sub-orders are skipped if the market price exceeds this limit.
+        price_limit: Option<f64>,
     },
 }
 
@@ -385,6 +441,26 @@ pub enum CancelScope {
         /// The symbol whose orders should all be cancelled.
         symbol: super::Symbol,
     },
+
+    /// Cancel all orders sharing a specific client-assigned label or tag.
+    ///
+    /// ~6/24: OKX, Deribit, Bybit, HyperLiquid, Paradex, Lighter.
+    ByLabel(String),
+
+    /// Cancel all orders for a specific currency and instrument kind.
+    ///
+    /// ~3/24: Deribit, Bybit options, OKX options.
+    ByCurrencyKind {
+        /// The currency (e.g. "BTC", "ETH").
+        currency: String,
+        /// Instrument kind (e.g. "option", "future", "spot").
+        kind: String,
+    },
+
+    /// Cancel an order that is scheduled to execute at a specific timestamp.
+    ///
+    /// ~4/24: Bybit, OKX, KuCoin, Bitget (conditional/algo scheduled orders).
+    ScheduledAt(u64),
 }
 
 /// Cancel order request for `Trading::cancel_order`.
@@ -577,6 +653,25 @@ pub enum PositionModification {
         stop_loss: Option<Price>,
         /// Account type context.
         account_type: super::AccountType,
+    },
+
+    /// Switch between one-way and hedge (dual-side) position mode.
+    ///
+    /// ~10/24: Binance Futures, Bybit, OKX, KuCoin Futures, Bitget, BingX,
+    /// Phemex, HyperLiquid, Paradex, dYdX.
+    SwitchPositionMode {
+        /// The target position mode.
+        mode: PositionMode,
+    },
+
+    /// Move open positions between two internal accounts (e.g. cross → isolated).
+    ///
+    /// ~4/24: OKX (portfolio margin), Bybit (unified account), GateIO, Phemex.
+    MovePositions {
+        /// Source account identifier.
+        from_account: String,
+        /// Destination account identifier.
+        to_account: String,
     },
 }
 
@@ -1031,6 +1126,25 @@ pub struct UserTrade {
     pub is_maker: bool,
     /// Timestamp
     pub timestamp: Timestamp,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// USER TRADE FILTER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Filter parameters for `Trading::get_user_trades`.
+#[derive(Debug, Clone, Default)]
+pub struct UserTradeFilter {
+    /// Optional symbol filter. `None` = all symbols.
+    pub symbol: Option<String>,
+    /// Optional order ID to fetch fills for a specific order.
+    pub order_id: Option<String>,
+    /// Start of time range (Unix ms). `None` = exchange default.
+    pub start_time: Option<u64>,
+    /// End of time range (Unix ms). `None` = now.
+    pub end_time: Option<u64>,
+    /// Maximum number of records to return. `None` = exchange default.
+    pub limit: Option<u32>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

@@ -58,6 +58,9 @@ pub use auth::{
 pub use operations::{
     CancelAll, AmendOrder, BatchOrders,
     AccountTransfers, CustodialFunds, SubAccounts,
+    MarginTrading, EarnStaking, ConvertSwap, CopyTrading,
+    LiquidityProvider, VaultManager, StakingDelegation, BlockTradeOtc,
+    MarketMakerProtection, TriggerOrders, PredictionMarket,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════

@@ -439,6 +439,12 @@ impl MarketData for BitgetConnector {
                 };
                 params.insert("limit".to_string(), limit.to_string());
             }
+            AccountType::Earn | AccountType::Lending
+            | AccountType::Options | AccountType::Convert => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "OrderBook not supported for this account type on Bitget".into()
+                ));
+            }
         }
 
         let response = self.get(endpoint, params, account_type).await?;
@@ -473,6 +479,12 @@ impl MarketData for BitgetConnector {
                 // V2 Futures uses "granularity" with format: "1m", "1H", "1D"
                 params.insert("granularity".to_string(), map_futures_granularity(interval).to_string());
                 params.insert("limit".to_string(), limit.unwrap_or(200).min(1000).to_string());
+            }
+            AccountType::Earn | AccountType::Lending
+            | AccountType::Options | AccountType::Convert => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Klines not supported for this account type on Bitget".into()
+                ));
             }
         }
 
@@ -1480,6 +1492,18 @@ impl Positions for BitgetConnector {
                 self.post(BitgetEndpoint::FuturesPosTpSl, body, account_type).await?;
                 Ok(())
             }
+
+            PositionModification::SwitchPositionMode { .. } => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "SwitchPositionMode not supported on Bitget".into()
+                ))
+            }
+
+            PositionModification::MovePositions { .. } => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "MovePositions not supported on Bitget".into()
+                ))
+            }
         }
     }
 }
@@ -2467,5 +2491,9 @@ fn bitget_account_type_str(account_type: AccountType) -> &'static str {
         AccountType::Margin => "p2p",
         AccountType::FuturesCross => "usdt_futures",
         AccountType::FuturesIsolated => "coin_futures",
+        AccountType::Earn => "spot",
+        AccountType::Lending => "p2p",
+        AccountType::Options => "coin_futures",
+        AccountType::Convert => "spot",
     }
 }

@@ -250,3 +250,166 @@ pub enum PlaceOrderResponse {
     /// An algorithmic order (TWAP, etc.) was submitted.
     Algo(AlgoOrderResponse),
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MARGIN TRADING TYPES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Response from `MarginTrading::margin_borrow`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarginBorrowResponse {
+    /// Exchange-assigned transaction ID.
+    pub tran_id: String,
+
+    /// Asset borrowed.
+    pub asset: String,
+
+    /// Amount borrowed.
+    pub amount: f64,
+}
+
+/// Response from `MarginTrading::margin_repay`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarginRepayResponse {
+    /// Exchange-assigned transaction ID.
+    pub tran_id: String,
+
+    /// Asset repaid.
+    pub asset: String,
+
+    /// Amount repaid.
+    pub amount: f64,
+}
+
+/// A single margin interest record from `MarginTrading::get_margin_interest`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarginInterestRecord {
+    /// Asset for which interest was charged.
+    pub asset: String,
+
+    /// Interest amount charged.
+    pub interest: f64,
+
+    /// Hourly interest rate applied.
+    pub interest_rate: f64,
+
+    /// Unix timestamp (ms) when interest was charged.
+    pub timestamp: u64,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EARN / STAKING TYPES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// An available earn product from `EarnStaking::get_earn_products`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EarnProduct {
+    /// Exchange-assigned product identifier.
+    pub product_id: String,
+
+    /// Asset associated with this earn product.
+    pub asset: String,
+
+    /// Estimated annual percentage yield.
+    pub apy: f64,
+
+    /// Minimum subscription amount (if any).
+    pub min_amount: Option<f64>,
+
+    /// Maximum subscription amount (if any).
+    pub max_amount: Option<f64>,
+}
+
+/// An active earn position from `EarnStaking::get_earn_positions`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EarnPosition {
+    /// Exchange-assigned product identifier.
+    pub product_id: String,
+
+    /// Asset held in this earn position.
+    pub asset: String,
+
+    /// Principal amount subscribed.
+    pub amount: f64,
+
+    /// Interest accrued but not yet distributed.
+    pub accrued_interest: f64,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CONVERT / SWAP TYPES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// A conversion quote from `ConvertSwap::get_convert_quote`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConvertQuote {
+    /// Exchange-assigned quote identifier (used to accept the quote).
+    pub quote_id: String,
+
+    /// Asset being sold.
+    pub from_asset: String,
+
+    /// Asset being bought.
+    pub to_asset: String,
+
+    /// Amount of `from_asset` to sell.
+    pub from_amount: f64,
+
+    /// Amount of `to_asset` to receive.
+    pub to_amount: f64,
+
+    /// Conversion price (`to_asset` per unit of `from_asset`).
+    pub price: f64,
+
+    /// Unix timestamp (ms) when this quote expires.
+    pub expires_at: u64,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CLOSED PNL RECORD
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// A single closed position P&L record from `Positions::get_closed_pnl`.
+///
+/// ~12/24: Bybit, OKX, Binance Futures, KuCoin, GateIO, Bitget, BingX,
+/// Phemex, Deribit, HyperLiquid, Paradex, dYdX.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClosedPnlRecord {
+    /// Trading pair.
+    pub symbol: String,
+    /// Side of the closed position (e.g. "Long", "Short").
+    pub side: String,
+    /// Closed size (in base asset units).
+    pub closed_size: f64,
+    /// Average entry price of the closed position.
+    pub avg_entry_price: f64,
+    /// Average exit price when the position was closed.
+    pub avg_exit_price: f64,
+    /// Realized P&L for this close event (in quote asset).
+    pub closed_pnl: f64,
+    /// Unix timestamp (ms) when the position was closed.
+    pub timestamp: u64,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LONG/SHORT RATIO
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Long/short ratio snapshot from `Positions::get_long_short_ratio`.
+///
+/// Market sentiment indicator — proportion of long vs short accounts
+/// or positions for a given symbol.
+///
+/// ~8/24: Binance Futures, Bybit, OKX, KuCoin Futures, Bitget, BingX,
+/// GateIO, HTX.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LongShortRatio {
+    /// Trading pair.
+    pub symbol: String,
+    /// Fraction of long accounts/positions (0.0–1.0).
+    pub long_ratio: f64,
+    /// Fraction of short accounts/positions (0.0–1.0).
+    pub short_ratio: f64,
+    /// Unix timestamp (ms) of the snapshot.
+    pub timestamp: u64,
+}

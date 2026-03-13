@@ -336,5 +336,6 @@ pub fn account_type_to_string(account_type: AccountType) -> &'static str {
         AccountType::Spot => "spot",
         AccountType::Margin => "margin",
         AccountType::FuturesCross | AccountType::FuturesIsolated => "futures",
+        _ => "spot",
     }
 }

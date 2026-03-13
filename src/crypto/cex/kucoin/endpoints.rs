@@ -39,6 +39,7 @@ impl KuCoinUrls {
         match account_type {
             AccountType::Spot | AccountType::Margin => self.spot_rest,
             AccountType::FuturesCross | AccountType::FuturesIsolated => self.futures_rest,
+            _ => self.spot_rest,
         }
     }
 
@@ -47,6 +48,7 @@ impl KuCoinUrls {
         match account_type {
             AccountType::Spot | AccountType::Margin => self.spot_ws,
             AccountType::FuturesCross | AccountType::FuturesIsolated => self.futures_ws,
+            _ => self.spot_ws,
         }
     }
 }
@@ -378,6 +380,10 @@ pub fn format_symbol(base: &str, quote: &str, account_type: AccountType) -> Stri
                 "USD" => format!("{}USDM", base),    // USD-margined perpetual (inverse, coin-margined)
                 _ => format!("{}{}M", base, quote.to_uppercase()), // Generic fallback
             }
+        }
+        _ => {
+            // Unsupported account types default to spot format
+            format!("{}-{}", base, quote)
         }
     }
 }

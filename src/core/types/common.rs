@@ -258,6 +258,22 @@ pub enum AccountType {
     FuturesCross,
     /// Фьючерсы с изолированной маржой
     FuturesIsolated,
+    /// Earn / savings / staking account.
+    ///
+    /// ~8/24: Binance, Bybit, OKX, KuCoin, GateIO, HTX, MEXC, Bitget.
+    Earn,
+    /// Lending / margin lending account.
+    ///
+    /// ~6/24: Binance, Bybit, OKX, KuCoin, GateIO, Bitfinex.
+    Lending,
+    /// Options account.
+    ///
+    /// ~5/24: Binance, Bybit, OKX, Deribit, KuCoin.
+    Options,
+    /// Convert / swap sub-account (instant conversion without order book).
+    ///
+    /// ~7/24: Binance, Bybit, OKX, KuCoin, GateIO, HTX, CryptoCom.
+    Convert,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

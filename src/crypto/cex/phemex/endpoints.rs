@@ -287,6 +287,10 @@ pub fn format_symbol(base: &str, quote: &str, account_type: AccountType) -> Stri
             // Use spot format as fallback
             format!("s{}{}", base.to_uppercase(), quote.to_uppercase())
         }
+        _ => {
+            // Unsupported account types default to spot format
+            format!("s{}{}", base.to_uppercase(), quote.to_uppercase())
+        }
     }
 }
 

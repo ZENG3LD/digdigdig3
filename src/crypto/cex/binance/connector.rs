@@ -1194,6 +1194,9 @@ impl Trading for BinanceConnector {
                 let order = BinanceParser::parse_order(&response, &symbol.to_string())?;
                 Ok(PlaceOrderResponse::Simple(order))
             }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                "This order type is not supported by Binance".to_string()
+            )),
         }
     }
 
@@ -1229,6 +1232,9 @@ impl Trading for BinanceConnector {
                     "Use CancelAll::cancel_all_orders for cancel-all on Binance".to_string()
                 ))
             }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                "This cancel scope is not supported by Binance".to_string()
+            )),
         }
     }
 
@@ -1643,6 +1649,9 @@ impl Positions for BinanceConnector {
                     "SetTpSl is not a single native endpoint on Binance. Place separate TP/SL orders.".to_string()
                 ))
             }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                "This position modification is not supported by Binance".to_string()
+            )),
         }
     }
 }

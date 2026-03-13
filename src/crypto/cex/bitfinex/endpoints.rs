@@ -219,6 +219,11 @@ pub fn format_symbol(base: &str, quote: &str, account_type: AccountType) -> Stri
             let quote_mapped = if quote_up == "USDT" { "UST" } else { &quote_up };
             format!("t{}F0:{}F0", base_up, quote_mapped)
         }
+        _ => {
+            // Unsupported account types default to spot format
+            let quote_mapped = if quote_up == "USDT" { "USD" } else { &quote_up };
+            format!("t{}{}", base_up, quote_mapped)
+        }
     }
 }
 

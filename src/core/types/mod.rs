@@ -17,4 +17,7 @@ pub use responses::{
     OrderResult, CancelAllResponse, BracketResponse, OcoResponse,
     AlgoOrderResponse, TransferResponse, DepositAddress, WithdrawResponse,
     FundsRecord, FeeInfo, PlaceOrderResponse,
+    MarginBorrowResponse, MarginRepayResponse, MarginInterestRecord,
+    EarnProduct, EarnPosition, ConvertQuote,
+    ClosedPnlRecord, LongShortRatio,
 };

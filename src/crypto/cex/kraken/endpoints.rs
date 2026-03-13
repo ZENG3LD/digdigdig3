@@ -39,6 +39,7 @@ impl KrakenUrls {
         match account_type {
             AccountType::Spot | AccountType::Margin => self.spot_rest,
             AccountType::FuturesCross | AccountType::FuturesIsolated => self.futures_rest,
+            _ => self.spot_rest,
         }
     }
 
@@ -47,6 +48,7 @@ impl KrakenUrls {
         match account_type {
             AccountType::Spot | AccountType::Margin => self.spot_ws,
             AccountType::FuturesCross | AccountType::FuturesIsolated => self.futures_ws,
+            _ => self.spot_ws,
         }
     }
 }
@@ -277,6 +279,11 @@ pub fn format_symbol(base: &str, quote: &str, account_type: AccountType) -> Stri
             // BTC → XBT for Bitcoin
             let base = if base.to_uppercase() == "BTC" { "XBT" } else { base };
             format!("PI_{}{}", base, quote)
+        }
+        _ => {
+            // Unsupported account types default to spot format
+            let base = if base.to_uppercase() == "BTC" { "XBT" } else { base };
+            format!("{}{}", base, quote)
         }
     }
 }

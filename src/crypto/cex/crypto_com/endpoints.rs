@@ -254,6 +254,9 @@ pub fn account_type_to_instrument(account_type: AccountType) -> InstrumentType {
     match account_type {
         AccountType::Spot | AccountType::Margin => InstrumentType::Spot,
         AccountType::FuturesCross | AccountType::FuturesIsolated => InstrumentType::Perpetual,
+        AccountType::Earn | AccountType::Lending
+        | AccountType::Convert => InstrumentType::Spot,
+        AccountType::Options => InstrumentType::Perpetual,
     }
 }
 

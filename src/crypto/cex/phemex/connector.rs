@@ -758,7 +758,10 @@ impl Trading for PhemexConnector {
             | OrderType::Oco { .. }
             | OrderType::Iceberg { .. }
             | OrderType::Twap { .. }
-            | OrderType::Gtd { .. } => Err(ExchangeError::UnsupportedOperation(
+            | OrderType::Gtd { .. }
+            | OrderType::Oto { .. }
+            | OrderType::ConditionalPlan { .. }
+            | OrderType::DcaRecurring { .. } => Err(ExchangeError::UnsupportedOperation(
                 format!("{:?} order type not supported on Phemex", req.order_type)
             )),
         }
@@ -857,6 +860,11 @@ impl Trading for PhemexConnector {
 
             CancelScope::Batch { .. } => Err(ExchangeError::UnsupportedOperation(
                 "Batch cancel not supported via cancel_order on Phemex; use CancelAll trait".to_string()
+            )),
+            CancelScope::ByLabel(_)
+            | CancelScope::ByCurrencyKind { .. }
+            | CancelScope::ScheduledAt(_) => Err(ExchangeError::UnsupportedOperation(
+                "Phemex does not support this cancel scope".to_string()
             )),
         }
     }
@@ -1242,6 +1250,12 @@ impl Positions for PhemexConnector {
                     "SetTpSl not supported as a single operation on Phemex; place separate TP/SL orders".to_string()
                 ))
             }
+            PositionModification::SwitchPositionMode { .. } => Err(ExchangeError::UnsupportedOperation(
+                "SwitchPositionMode not supported on Phemex".to_string()
+            )),
+            PositionModification::MovePositions { .. } => Err(ExchangeError::UnsupportedOperation(
+                "MovePositions not supported on Phemex".to_string()
+            )),
         }
     }
 }

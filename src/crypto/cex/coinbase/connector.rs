@@ -683,7 +683,9 @@ impl Trading for CoinbaseConnector {
                 })
             }
             OrderType::ReduceOnly { .. } | OrderType::TrailingStop { .. }
-            | OrderType::Iceberg { .. } | OrderType::Twap { .. } => {
+            | OrderType::Iceberg { .. } | OrderType::Twap { .. }
+            | OrderType::Oto { .. } | OrderType::ConditionalPlan { .. }
+            | OrderType::DcaRecurring { .. } => {
                 return Err(ExchangeError::UnsupportedOperation(
                     format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
                 ));
@@ -921,6 +923,13 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
                     updated_at: Some(crate::core::timestamp_millis() as i64),
                     time_in_force: crate::core::TimeInForce::Gtc,
                 })
+            }
+            CancelScope::ByLabel(_)
+            | CancelScope::ByCurrencyKind { .. }
+            | CancelScope::ScheduledAt(_) => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "ByLabel/ByCurrencyKind/ScheduledAt cancel scopes not supported on Coinbase".into()
+                ));
             }
         }
     }

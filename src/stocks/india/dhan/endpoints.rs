@@ -304,6 +304,7 @@ pub fn map_product_type(account_type: AccountType) -> &'static str {
         AccountType::Margin => "INTRADAY",    // Intraday (MIS)
         AccountType::FuturesCross => "MARGIN", // Margin (NRML)
         AccountType::FuturesIsolated => "MARGIN",
+        _ => "CNC",
     }
 }
 

@@ -39,6 +39,7 @@ impl BinanceUrls {
         match account_type {
             AccountType::Spot | AccountType::Margin => self.spot_rest,
             AccountType::FuturesCross | AccountType::FuturesIsolated => self.futures_rest,
+            _ => self.spot_rest,
         }
     }
 
@@ -47,6 +48,7 @@ impl BinanceUrls {
         match account_type {
             AccountType::Spot | AccountType::Margin => self.spot_ws,
             AccountType::FuturesCross | AccountType::FuturesIsolated => self.futures_ws,
+            _ => self.spot_ws,
         }
     }
 }

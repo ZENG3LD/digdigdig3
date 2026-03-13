@@ -539,7 +539,8 @@ impl Trading for KrakenConnector {
                 (p, OrderType::Iceberg { price, display_quantity }, Some(price), None, crate::core::TimeInForce::Gtc)
             }
             OrderType::TrailingStop { .. } | OrderType::Oco { .. } | OrderType::Bracket { .. }
-            | OrderType::Twap { .. } => {
+            | OrderType::Twap { .. }
+            | OrderType::Oto { .. } | OrderType::ConditionalPlan { .. } | OrderType::DcaRecurring { .. } => {
                 return Err(ExchangeError::UnsupportedOperation(
                     format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
                 ));
@@ -758,6 +759,11 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
                     "Kraken Futures batch cancel requires individual cancels. Use CancelScope::Single.".to_string()
                 ))
             }
+            CancelScope::ByLabel(_)
+            | CancelScope::ByCurrencyKind { .. }
+            | CancelScope::ScheduledAt(_) => Err(ExchangeError::UnsupportedOperation(
+                "Kraken does not support this cancel scope".to_string()
+            )),
         }
     }
 
@@ -994,9 +1000,11 @@ impl Positions for KrakenConnector {
             PositionModification::SetMarginMode { .. }
             | PositionModification::AddMargin { .. }
             | PositionModification::RemoveMargin { .. }
-            | PositionModification::SetTpSl { .. } => {
+            | PositionModification::SetTpSl { .. }
+            | PositionModification::SwitchPositionMode { .. }
+            | PositionModification::MovePositions { .. } => {
                 Err(ExchangeError::UnsupportedOperation(
-                    format!("{:?} not supported on {:?}", req, self.exchange_id())
+                    "This position modification is not supported on Kraken".to_string()
                 ))
             }
         }

@@ -342,6 +342,11 @@ impl MarketData for MexcConnector {
                 let ticker = self.get_ticker(symbol, account_type).await?;
                 Ok(ticker.last_price)
             }
+            AccountType::Earn | AccountType::Lending | AccountType::Options | AccountType::Convert => {
+                Err(ExchangeError::UnsupportedOperation(
+                    format!("{:?} account type not supported on MEXC", account_type)
+                ))
+            }
         }
     }
 
@@ -376,6 +381,11 @@ impl MarketData for MexcConnector {
                 let data = response.get("data")
                     .ok_or_else(|| ExchangeError::Parse("Missing data field in futures orderbook".into()))?;
                 MexcParser::parse_orderbook_futures(data)
+            }
+            AccountType::Earn | AccountType::Lending | AccountType::Options | AccountType::Convert => {
+                Err(ExchangeError::UnsupportedOperation(
+                    format!("{:?} account type not supported on MEXC", account_type)
+                ))
             }
         }
     }
@@ -450,6 +460,11 @@ impl MarketData for MexcConnector {
                     .ok_or_else(|| ExchangeError::Parse("Missing data field in futures klines".into()))?;
                 MexcParser::parse_klines_futures(klines_data)
             }
+            AccountType::Earn | AccountType::Lending | AccountType::Options | AccountType::Convert => {
+                Err(ExchangeError::UnsupportedOperation(
+                    format!("{:?} account type not supported on MEXC", account_type)
+                ))
+            }
         }
     }
 
@@ -484,6 +499,11 @@ impl MarketData for MexcConnector {
                 };
 
                 MexcParser::parse_ticker_futures(ticker_data)
+            }
+            AccountType::Earn | AccountType::Lending | AccountType::Options | AccountType::Convert => {
+                Err(ExchangeError::UnsupportedOperation(
+                    format!("{:?} account type not supported on MEXC", account_type)
+                ))
             }
         }
     }
@@ -1528,6 +1548,7 @@ fn account_type_to_mexc_str(account_type: AccountType) -> &'static str {
         AccountType::Spot => "SPOT",
         AccountType::Margin => "MARGIN",
         AccountType::FuturesCross | AccountType::FuturesIsolated => "FUTURES",
+        AccountType::Earn | AccountType::Lending | AccountType::Options | AccountType::Convert => "SPOT",
     }
 }
 

@@ -276,6 +276,10 @@ pub fn format_symbol(symbol: &Symbol, account_type: AccountType) -> String {
             // Futures: underscore separator
             format!("{}_{}", symbol.base.to_uppercase(), symbol.quote.to_uppercase())
         },
+        _ => {
+            // Unsupported account types default to spot format
+            format!("{}{}", symbol.base.to_uppercase(), symbol.quote.to_uppercase())
+        },
     }
 }
 

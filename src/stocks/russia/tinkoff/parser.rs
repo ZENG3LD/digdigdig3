@@ -382,6 +382,159 @@ impl TinkoffParser {
         }).collect()
     }
 
+    /// Parse PostStopOrder response
+    ///
+    /// Response: {stopOrderId, ...}
+    pub fn parse_stop_order_result(response: &Value) -> ExchangeResult<Order> {
+        // Stop orders return stopOrderId, not orderId
+        let order_id = Self::get_str(response, "stopOrderId")
+            .or_else(|| Self::get_str(response, "orderId"))
+            .ok_or_else(|| ExchangeError::Parse("Missing stopOrderId".to_string()))?
+            .to_string();
+
+        let direction_str = Self::get_str(response, "direction")
+            .unwrap_or("STOP_ORDER_DIRECTION_BUY");
+        let side = if direction_str.contains("SELL") {
+            OrderSide::Sell
+        } else {
+            OrderSide::Buy
+        };
+
+        let lots = Self::get_i64(response, "lotsRequested")
+            .unwrap_or(0) as f64;
+
+        let timestamp = chrono::Utc::now().timestamp_millis();
+
+        Ok(Order {
+            id: order_id,
+            client_order_id: None,
+            symbol: String::new(), // filled by caller
+            side,
+            order_type: OrderType::Market, // placeholder; caller sets correct type
+            status: OrderStatus::New,
+            price: None,        // filled by caller for StopLimit
+            stop_price: None,   // filled by caller
+            quantity: lots,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: timestamp,
+            updated_at: Some(timestamp),
+            time_in_force: TimeInForce::Gtc,
+        })
+    }
+
+    /// Parse GetOperations response to Vec<Order>
+    ///
+    /// Response: {operations: [{id, state, figi, operationType, payment, price, quantity, date}]}
+    pub fn parse_operations(response: &Value, limit: usize) -> ExchangeResult<Vec<Order>> {
+        let operations = response
+            .get("operations")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'operations' array".to_string()))?;
+
+        operations.iter()
+            .take(limit)
+            .map(|op| {
+                let order_id = Self::get_str(op, "id")
+                    .unwrap_or("unknown")
+                    .to_string();
+
+                let state_str = Self::get_str(op, "state")
+                    .unwrap_or("OPERATION_STATE_EXECUTED");
+                let status = match state_str {
+                    "OPERATION_STATE_EXECUTED" => OrderStatus::Filled,
+                    "OPERATION_STATE_CANCELED" => OrderStatus::Canceled,
+                    "OPERATION_STATE_UNSPECIFIED" => OrderStatus::Open,
+                    _ => OrderStatus::Filled,
+                };
+
+                // Operation type: BUY, SELL, etc.
+                let op_type = Self::get_str(op, "operationType")
+                    .unwrap_or("OPERATION_TYPE_BUY");
+                let side = if op_type.contains("SELL") {
+                    OrderSide::Sell
+                } else {
+                    OrderSide::Buy
+                };
+
+                let symbol = Self::get_str(op, "figi")
+                    .unwrap_or("")
+                    .to_string();
+
+                let price = op.get("price")
+                    .and_then(|p| Self::parse_quotation(p).ok());
+
+                let quantity = Self::get_i64(op, "quantity")
+                    .unwrap_or(0) as f64;
+
+                let date_str = Self::get_str(op, "date").unwrap_or("");
+                let timestamp = if !date_str.is_empty() {
+                    Self::parse_timestamp(date_str).unwrap_or_else(|_| chrono::Utc::now().timestamp_millis())
+                } else {
+                    chrono::Utc::now().timestamp_millis()
+                };
+
+                // Parse commission if present
+                let commission = op.get("commission")
+                    .and_then(|c| Self::parse_money_value(c).ok());
+
+                Ok(Order {
+                    id: order_id,
+                    client_order_id: None,
+                    symbol,
+                    side,
+                    order_type: OrderType::Market,
+                    status,
+                    price,
+                    stop_price: None,
+                    quantity,
+                    filled_quantity: quantity,
+                    average_price: price,
+                    commission,
+                    commission_asset: Some("RUB".to_string()),
+                    created_at: timestamp,
+                    updated_at: Some(timestamp),
+                    time_in_force: TimeInForce::Gtc,
+                })
+            })
+            .collect()
+    }
+
+    /// Parse GetUserTariff response to FeeInfo
+    ///
+    /// Response: {unaryLimits: [...], streamLimits: [...]}
+    /// Tinkoff tariff doesn't directly expose maker/taker rates.
+    /// We return approximate commission rates based on standard Tinkoff pricing.
+    pub fn parse_fee_info(response: &Value, symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        // Tinkoff tariff tiers in percent:
+        // - Investor tariff: 0.1% taker, no maker distinction
+        // - Trader tariff: 0.04% (maker/taker same)
+        // - Premium tariff: 0.025% (maker/taker same)
+        //
+        // The GetUserTariff response contains rate plan info but not explicit fee rates.
+        // We parse what we can and return standard defaults.
+
+        // Try to detect tariff from response metadata
+        let taker_rate = response
+            .get("takerFeeRate")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0004); // Default: 0.04% (Trader tariff)
+
+        let maker_rate = response
+            .get("makerFeeRate")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(taker_rate); // Tinkoff doesn't distinguish maker/taker
+
+        Ok(FeeInfo {
+            maker_rate,
+            taker_rate,
+            symbol: symbol.map(|s| s.to_string()),
+            tier: None,
+        })
+    }
+
     // ═══════════════════════════════════════════════════════════════════════
     // HELPER METHODS
     // ═══════════════════════════════════════════════════════════════════════

@@ -78,7 +78,7 @@ pub enum ExchangeId {
     Tinkoff,     // Russian stock broker (MOEX) - FREE API, stocks, bonds, ETFs, futures, options
     Moex,        // Moscow Exchange (MOEX) ISS API - FREE delayed data, real-time with subscription, Russia's largest exchange
     Krx,         // Korea Exchange data provider (KOSPI, KOSDAQ, KONEX) - FREE API with approval, daily data
-    // Futu - DISABLED: TCP + Protocol Buffers architecture (incompatible with REST v5). See futu/research/RECOMMENDATIONS.md
+    Futu,        // Futu Securities (HK, US, CN stocks) - TCP + Protocol Buffers via OpenD gateway
 
     // Economic Data Feeds
     Fred,        // Federal Reserve Economic Data (FRED) - 840,000+ economic time series, free API
@@ -146,7 +146,7 @@ impl ExchangeId {
             Self::Tinkoff => "tinkoff",
             Self::Moex => "moex",
             Self::Krx => "krx",
-            // Self::Futu => "futu",  // DISABLED
+            Self::Futu => "futu",
             Self::Fred => "fred",
             Self::Bls => "bls",
             Self::YahooFinance => "yahoo_finance",
@@ -207,6 +207,7 @@ impl ExchangeId {
             "tinkoff" => Some(Self::Tinkoff),
             "moex" => Some(Self::Moex),
             "krx" => Some(Self::Krx),
+            "futu" => Some(Self::Futu),
             "fred" => Some(Self::Fred),
             "bls" => Some(Self::Bls),
             "yahoo_finance" => Some(Self::YahooFinance),
@@ -220,8 +221,7 @@ impl ExchangeId {
             Self::HyperLiquid => ExchangeType::Hybrid,
             Self::Lighter | Self::Uniswap | Self::Jupiter | Self::Raydium | Self::Gmx | Self::Paradex | Self::Dydx => ExchangeType::Dex,
             Self::Polymarket | Self::Polygon | Self::Finnhub | Self::Tiingo | Self::Twelvedata | Self::Coinglass | Self::CryptoCompare | Self::WhaleAlert | Self::Bitquery | Self::DefiLlama | Self::Dukascopy | Self::JQuants | Self::Krx | Self::Fred | Self::Bls | Self::YahooFinance => ExchangeType::DataProvider,
-            Self::Alpaca | Self::Oanda | Self::AngelOne | Self::Zerodha | Self::Fyers | Self::Dhan | Self::Upstox | Self::Tinkoff | Self::AlphaVantage | Self::Moex | Self::Ib => ExchangeType::Cex, // Brokers/providers with trading capabilities
-            // Self::Futu => ExchangeType::Cex,  // DISABLED
+            Self::Alpaca | Self::Oanda | Self::AngelOne | Self::Zerodha | Self::Fyers | Self::Dhan | Self::Upstox | Self::Tinkoff | Self::AlphaVantage | Self::Moex | Self::Ib | Self::Futu => ExchangeType::Cex, // Brokers/providers with trading capabilities
             Self::Custom(_) => ExchangeType::Cex, // default
             _ => ExchangeType::Cex,
         }

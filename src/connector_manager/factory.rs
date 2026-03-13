@@ -428,6 +428,11 @@ impl ConnectorFactory {
                     "Interactive Brokers requires credentials".into()
                 ))
             }
+            ExchangeId::Futu => {
+                Err(ExchangeError::Auth(
+                    "Futu requires OpenD TCP+Protobuf connection - create FutuConnector manually".into()
+                ))
+            }
             ExchangeId::Bls => {
                 Err(ExchangeError::Auth(
                     "BLS is a data feed - use BlsConnector directly".into()
@@ -752,6 +757,12 @@ impl ConnectorFactory {
                 // IB (Interactive Brokers) requires complex setup
                 Err(ExchangeError::Auth(
                     "Interactive Brokers requires TWS/Gateway connection - create manually".into()
+                ))
+            }
+            ExchangeId::Futu => {
+                // Futu requires OpenD TCP+Protobuf connection — not constructable from HTTP credentials
+                Err(ExchangeError::Auth(
+                    "Futu requires OpenD TCP+Protobuf connection - create FutuConnector manually with FutuAuth".into()
                 ))
             }
 

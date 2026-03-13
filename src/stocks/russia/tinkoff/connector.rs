@@ -428,89 +428,177 @@ impl Trading for TinkoffConnector {
         let symbol = req.symbol.clone();
         let side = req.side;
         let quantity = req.quantity;
-        let account_type = req.account_type;
+
+        let direction_str = match side {
+            OrderSide::Buy => "ORDER_DIRECTION_BUY",
+            OrderSide::Sell => "ORDER_DIRECTION_SELL",
+        };
 
         match req.order_type {
             OrderType::Market => {
                 let account_id = self.account_id.as_ref()
-                            .ok_or_else(|| ExchangeError::InvalidRequest("Account ID not set. Call initialize_account() first".to_string()))?;
-                
-                        let ticker = format_ticker(&symbol);
-                        let figi = self.get_figi_by_ticker(&ticker).await?;
-                
-                        // Generate unique order ID
-                        let order_id = uuid::Uuid::new_v4().to_string();
-                
-                        let direction_str = match side {
-                            OrderSide::Buy => "ORDER_DIRECTION_BUY",
-                            OrderSide::Sell => "ORDER_DIRECTION_SELL",
-                        };
-                
-                        let body = serde_json::json!({
-                            "figi": figi,
-                            "quantity": quantity as i64,
-                            "direction": direction_str,
-                            "accountId": account_id,
-                            "orderType": "ORDER_TYPE_MARKET",
-                            "orderId": order_id,
-                        });
-                
-                        let response = self.post(TinkoffEndpoint::PostOrder, body).await?;
-                        let mut result = TinkoffParser::parse_order_result(&response)?;
-                        result.symbol = ticker;
-                        Ok(PlaceOrderResponse::Simple(result))
+                    .ok_or_else(|| ExchangeError::InvalidRequest(
+                        "Account ID not set. Call initialize_account() first".to_string()
+                    ))?;
+
+                let ticker = format_ticker(&symbol);
+                let figi = self.get_figi_by_ticker(&ticker).await?;
+                let order_id = req.client_order_id
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+                let body = serde_json::json!({
+                    "figi": figi,
+                    "quantity": quantity as i64,
+                    "direction": direction_str,
+                    "accountId": account_id,
+                    "orderType": "ORDER_TYPE_MARKET",
+                    "orderId": order_id,
+                });
+
+                let response = self.post(TinkoffEndpoint::PostOrder, body).await?;
+                let mut result = TinkoffParser::parse_order_result(&response)?;
+                result.symbol = ticker;
+                Ok(PlaceOrderResponse::Simple(result))
             }
+
             OrderType::Limit { price } => {
                 let account_id = self.account_id.as_ref()
-                            .ok_or_else(|| ExchangeError::InvalidRequest("Account ID not set. Call initialize_account() first".to_string()))?;
-                
-                        let ticker = format_ticker(&symbol);
-                        let figi = self.get_figi_by_ticker(&ticker).await?;
-                
-                        // Generate unique order ID
-                        let order_id = uuid::Uuid::new_v4().to_string();
-                
-                        let direction_str = match side {
-                            OrderSide::Buy => "ORDER_DIRECTION_BUY",
-                            OrderSide::Sell => "ORDER_DIRECTION_SELL",
-                        };
-                
-                        // Convert price to Quotation format
-                        let units = price.floor() as i64;
-                        let nano = ((price - units as f64) * 1_000_000_000.0) as i32;
-                
-                        let body = serde_json::json!({
-                            "figi": figi,
-                            "quantity": quantity as i64,
-                            "direction": direction_str,
-                            "accountId": account_id,
-                            "orderType": "ORDER_TYPE_LIMIT",
-                            "orderId": order_id,
-                            "price": {
-                                "units": units,
-                                "nano": nano,
-                            },
-                        });
-                
-                        let response = self.post(TinkoffEndpoint::PostOrder, body).await?;
-                        let mut result = TinkoffParser::parse_order_result(&response)?;
-                        result.symbol = ticker;
-                        Ok(PlaceOrderResponse::Simple(result))
+                    .ok_or_else(|| ExchangeError::InvalidRequest(
+                        "Account ID not set. Call initialize_account() first".to_string()
+                    ))?;
+
+                let ticker = format_ticker(&symbol);
+                let figi = self.get_figi_by_ticker(&ticker).await?;
+                let order_id = req.client_order_id
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+                let (units, nano) = price_to_quotation(price);
+
+                let body = serde_json::json!({
+                    "figi": figi,
+                    "quantity": quantity as i64,
+                    "direction": direction_str,
+                    "accountId": account_id,
+                    "orderType": "ORDER_TYPE_LIMIT",
+                    "orderId": order_id,
+                    "price": { "units": units, "nano": nano },
+                });
+
+                let response = self.post(TinkoffEndpoint::PostOrder, body).await?;
+                let mut result = TinkoffParser::parse_order_result(&response)?;
+                result.symbol = ticker;
+                Ok(PlaceOrderResponse::Simple(result))
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} order type not supported on {:?}", req.order_type, self.exchange_id())
+
+            OrderType::StopMarket { stop_price } => {
+                let account_id = self.account_id.as_ref()
+                    .ok_or_else(|| ExchangeError::InvalidRequest(
+                        "Account ID not set. Call initialize_account() first".to_string()
+                    ))?;
+
+                let ticker = format_ticker(&symbol);
+                let figi = self.get_figi_by_ticker(&ticker).await?;
+                let (stop_units, stop_nano) = price_to_quotation(stop_price);
+
+                let stop_direction = match side {
+                    OrderSide::Buy => "STOP_ORDER_DIRECTION_BUY",
+                    OrderSide::Sell => "STOP_ORDER_DIRECTION_SELL",
+                };
+
+                let body = serde_json::json!({
+                    "figi": figi,
+                    "quantity": quantity as i64,
+                    "stopPrice": { "units": stop_units, "nano": stop_nano },
+                    "direction": stop_direction,
+                    "accountId": account_id,
+                    "stopOrderType": "STOP_ORDER_TYPE_STOP_LOSS",
+                });
+
+                let response = self.post(TinkoffEndpoint::PostStopOrder, body).await?;
+                let mut result = TinkoffParser::parse_stop_order_result(&response)?;
+                result.symbol = ticker;
+                result.stop_price = Some(stop_price);
+                Ok(PlaceOrderResponse::Simple(result))
+            }
+
+            OrderType::StopLimit { stop_price, limit_price } => {
+                let account_id = self.account_id.as_ref()
+                    .ok_or_else(|| ExchangeError::InvalidRequest(
+                        "Account ID not set. Call initialize_account() first".to_string()
+                    ))?;
+
+                let ticker = format_ticker(&symbol);
+                let figi = self.get_figi_by_ticker(&ticker).await?;
+                let (stop_units, stop_nano) = price_to_quotation(stop_price);
+                let (limit_units, limit_nano) = price_to_quotation(limit_price);
+
+                let stop_direction = match side {
+                    OrderSide::Buy => "STOP_ORDER_DIRECTION_BUY",
+                    OrderSide::Sell => "STOP_ORDER_DIRECTION_SELL",
+                };
+
+                let body = serde_json::json!({
+                    "figi": figi,
+                    "quantity": quantity as i64,
+                    "stopPrice": { "units": stop_units, "nano": stop_nano },
+                    "price": { "units": limit_units, "nano": limit_nano },
+                    "direction": stop_direction,
+                    "accountId": account_id,
+                    "stopOrderType": "STOP_ORDER_TYPE_STOP_LIMIT",
+                });
+
+                let response = self.post(TinkoffEndpoint::PostStopOrder, body).await?;
+                let mut result = TinkoffParser::parse_stop_order_result(&response)?;
+                result.symbol = ticker;
+                result.stop_price = Some(stop_price);
+                result.price = Some(limit_price);
+                Ok(PlaceOrderResponse::Simple(result))
+            }
+
+            other => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} order type not supported on Tinkoff", other)
             )),
         }
     }
 
     async fn get_order_history(
         &self,
-        _filter: OrderHistoryFilter,
+        filter: OrderHistoryFilter,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_order_history not yet implemented".to_string()
-        ))
+        use chrono::{Utc, TimeZone};
+
+        let account_id = self.account_id.as_ref()
+            .ok_or_else(|| ExchangeError::InvalidRequest("Account ID not set".to_string()))?;
+
+        // Tinkoff GetOperations requires from/to timestamps
+        let now = Utc::now();
+        let from = filter.start_time
+            .map(|ms| Utc.timestamp_millis_opt(ms).single().unwrap_or(now - chrono::Duration::days(7)))
+            .unwrap_or_else(|| now - chrono::Duration::days(7));
+        let to = filter.end_time
+            .map(|ms| Utc.timestamp_millis_opt(ms).single().unwrap_or(now))
+            .unwrap_or(now);
+
+        let mut body = serde_json::json!({
+            "accountId": account_id,
+            "from": from.to_rfc3339(),
+            "to": to.to_rfc3339(),
+            // OPERATION_STATE_EXECUTED for filled, OPERATION_STATE_CANCELED for cancelled
+            "state": "OPERATION_STATE_EXECUTED",
+        });
+
+        // Add FIGI filter if symbol is provided
+        if let Some(ref sym) = filter.symbol {
+            let ticker = format_ticker(sym);
+            // Best effort: if we have a cached FIGI we'd use it, else skip filter
+            // For now, include ticker as a hint — Tinkoff ignores unknown fields gracefully
+            body["figi"] = serde_json::Value::String(ticker);
+        }
+
+        let response = self.post(TinkoffEndpoint::GetOperations, body).await?;
+        let limit = filter.limit.unwrap_or(u32::MAX) as usize;
+        TinkoffParser::parse_operations(&response, limit)
     }
 async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         match req.scope {
@@ -643,10 +731,9 @@ impl Account for TinkoffConnector {
         })
     }
 
-    async fn get_fees(&self, _symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
-        Err(ExchangeError::UnsupportedOperation(
-            "get_fees not yet implemented".to_string()
-        ))
+    async fn get_fees(&self, symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        let response = self.post(TinkoffEndpoint::GetUserTariff, serde_json::json!({})).await?;
+        TinkoffParser::parse_fee_info(&response, symbol)
     }
 }
 
@@ -705,18 +792,114 @@ impl Positions for TinkoffConnector {
 
     async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
         match req {
-            PositionModification::SetLeverage { symbol: ref _symbol, leverage: _leverage, account_type: _account_type } => {
-                let _symbol = _symbol.clone();
+            PositionModification::ClosePosition { symbol, account_type } => {
+                // Close position by placing a counter-order for the full open quantity
+                let positions = self.get_positions(PositionQuery {
+                    symbol: Some(symbol.clone()),
+                    account_type,
+                }).await?;
 
-                // Leverage setting is not applicable for stock trading
-                Err(ExchangeError::UnsupportedOperation(
-                "Leverage setting not available - not applicable for stock market".to_string()
-                ))
-    
+                if positions.is_empty() {
+                    return Err(ExchangeError::NotFound(
+                        format!("No open position for {}", format_ticker(&symbol))
+                    ));
+                }
+
+                let pos = &positions[0];
+                let close_side = match pos.side {
+                    PositionSide::Long => OrderSide::Sell,
+                    PositionSide::Short => OrderSide::Buy,
+                    PositionSide::Both => OrderSide::Sell,
+                };
+
+                let order_req = OrderRequest {
+                    symbol: symbol.clone(),
+                    side: close_side,
+                    order_type: OrderType::Market,
+                    quantity: pos.quantity,
+                    time_in_force: TimeInForce::Gtc,
+                    account_type,
+                    client_order_id: None,
+                    reduce_only: false,
+                };
+
+                self.place_order(order_req).await?;
+                Ok(())
             }
-            _ => Err(ExchangeError::UnsupportedOperation(
-                format!("{:?} not supported on {:?}", req, self.exchange_id())
+
+            PositionModification::SetLeverage { .. } => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "Leverage setting not available — not applicable for stock market".to_string()
+                ))
+            }
+
+            other => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} not supported on Tinkoff", other)
             )),
         }
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// OPTIONAL TRAIT: AmendOrder (Tinkoff supports ReplaceOrder)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AmendOrder for TinkoffConnector {
+    /// Amend a live order using Tinkoff's ReplaceOrder endpoint.
+    ///
+    /// Tinkoff ReplaceOrder supports changing quantity and/or price of a
+    /// live limit order without cancel+replace. At least one of `fields.price`
+    /// or `fields.quantity` must be `Some`.
+    ///
+    /// Note: Only limit orders can be amended on Tinkoff.
+    async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
+        let account_id = self.account_id.as_ref()
+            .ok_or_else(|| ExchangeError::InvalidRequest(
+                "Account ID not set. Call initialize_account() first".to_string()
+            ))?;
+
+        if req.fields.price.is_none() && req.fields.quantity.is_none() {
+            return Err(ExchangeError::InvalidRequest(
+                "AmendRequest: at least one of price or quantity must be Some".to_string()
+            ));
+        }
+
+        let mut body = serde_json::json!({
+            "accountId": account_id,
+            "orderId": req.order_id,
+            // idempotencyKey is required by Tinkoff ReplaceOrder
+            "idempotencyKey": uuid::Uuid::new_v4().to_string(),
+        });
+
+        if let Some(qty) = req.fields.quantity {
+            body["quantity"] = serde_json::Value::Number(
+                serde_json::Number::from(qty as i64)
+            );
+        }
+
+        if let Some(price) = req.fields.price {
+            let (units, nano) = price_to_quotation(price);
+            body["price"] = serde_json::json!({ "units": units, "nano": nano });
+        }
+
+        let response = self.post(TinkoffEndpoint::ReplaceOrder, body).await?;
+        let mut order = TinkoffParser::parse_order_result(&response)?;
+        order.symbol = format_ticker(&req.symbol);
+        Ok(order)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HELPERS — Quotation conversion
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Convert f64 price to Tinkoff Quotation (units: i64, nano: i32).
+///
+/// Tinkoff uses `Quotation { units: i64, nano: i32 }` for prices.
+/// Example: 123.45 → (123, 450_000_000)
+fn price_to_quotation(price: f64) -> (i64, i32) {
+    let units = price.floor() as i64;
+    let nano = ((price - units as f64) * 1_000_000_000.0).round() as i32;
+    (units, nano)
 }

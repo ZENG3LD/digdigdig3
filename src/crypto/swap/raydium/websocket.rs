@@ -62,7 +62,7 @@
 //! ```
 
 use std::pin::Pin;
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
@@ -265,9 +265,14 @@ pub struct RaydiumWebSocket {
     rpc_url: String,
     status: Arc<Mutex<ConnectionStatus>>,
     subscriptions: Arc<Mutex<HashSet<SubscriptionRequest>>>,
-    broadcast_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
+    /// Broadcast sender created at construction time — always valid, never None.
+    /// Receivers are created on demand via `tx.subscribe()`.
+    broadcast_tx: broadcast::Sender<WebSocketResult<StreamEvent>>,
     sub_handles: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
     last_ping: Arc<Mutex<Instant>>,
+    /// Cache mapping "{base_mint}/{quote_mint}" → pool_address to avoid
+    /// redundant REST lookups when subscribing to the same pair repeatedly.
+    pool_cache: Arc<StdMutex<HashMap<String, String>>>,
 }
 
 impl RaydiumWebSocket {
@@ -285,14 +290,29 @@ impl RaydiumWebSocket {
             )
         };
 
+        // Create the broadcast channel here so `event_stream()` can be called
+        // safely before any subscription task is spawned.
+        let (broadcast_tx, _) = broadcast::channel(1000);
+
+        // Pre-populate the pool cache with known pairs to avoid REST lookups
+        // for the most common pairs.
+        let mut cache = HashMap::new();
+        let sol_usdc_key = format!(
+            "{}/{}",
+            well_known_mints::SOL,
+            well_known_mints::USDC
+        );
+        cache.insert(sol_usdc_key, well_known_mints::SOL_USDC_POOL.to_string());
+
         Ok(Self {
             ws_url,
             rpc_url,
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
-            broadcast_tx: Arc::new(StdMutex::new(None)),
+            broadcast_tx,
             sub_handles: Arc::new(Mutex::new(Vec::new())),
             last_ping: Arc::new(Mutex::new(Instant::now())),
+            pool_cache: Arc::new(StdMutex::new(cache)),
         })
     }
 
@@ -365,16 +385,15 @@ impl RaydiumWebSocket {
         );
 
         let ws_url = self.ws_url.clone();
+        // Clone the sender — the background task broadcasts on the same channel
+        // that was created in `new()`.  Receivers obtained via `event_stream()`
+        // before or after spawning will both receive events correctly.
         let broadcast_tx = self.broadcast_tx.clone();
         let last_ping = self.last_ping.clone();
         let status = self.status.clone();
         let symbol = request.symbol.clone();
 
         let handle = tokio::spawn(async move {
-            // Create broadcast channel and store sender for the lifetime of this task
-            let (tx, _) = broadcast::channel(1000);
-            *broadcast_tx.lock().unwrap() = Some(tx);
-
             let mut reconnect_delay = Duration::from_secs(1);
             let max_delay = Duration::from_secs(60);
 
@@ -399,11 +418,9 @@ impl RaydiumWebSocket {
                             e,
                             reconnect_delay
                         );
-                        if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
-                            let _ = tx.send(Err(WebSocketError::ConnectionError(
-                                format!("Subscription error: {}", e),
-                            )));
-                        }
+                        let _ = broadcast_tx.send(Err(WebSocketError::ConnectionError(
+                            format!("Subscription error: {}", e),
+                        )));
                     }
                 }
 
@@ -424,7 +441,7 @@ impl RaydiumWebSocket {
         ws_url: &str,
         vault_info: &PoolVaultInfo,
         symbol: &Symbol,
-        broadcast_tx: &Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
+        broadcast_tx: &broadcast::Sender<WebSocketResult<StreamEvent>>,
         last_ping: &Arc<Mutex<Instant>>,
         status: &Arc<Mutex<ConnectionStatus>>,
     ) -> WebSocketResult<()> {
@@ -607,9 +624,7 @@ impl RaydiumWebSocket {
                                             timestamp: utils::timestamp_millis() as i64,
                                         };
 
-                                        if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
-                                            let _ = tx.send(Ok(StreamEvent::Ticker(ticker)));
-                                        }
+                                        let _ = broadcast_tx.send(Ok(StreamEvent::Ticker(ticker)));
                                     }
                                 }
                             }
@@ -643,26 +658,92 @@ impl RaydiumWebSocket {
         Ok(())
     }
 
-    /// Get pool address for a symbol
-    fn get_pool_address(symbol: &Symbol) -> Result<String, String> {
-        let base = &symbol.base;
-        let quote = &symbol.quote;
+    /// Resolve pool address for a symbol.
+    ///
+    /// Resolution order:
+    /// 1. In-memory cache (populated with well-known pairs at startup and with
+    ///    every successful REST lookup).
+    /// 2. Raydium REST API `GET /pools/info/mint` — returns the highest-TVL
+    ///    pool for the given mint pair.
+    ///
+    /// The result is cached so subsequent calls for the same pair are free.
+    async fn resolve_pool_address(&self, symbol: &Symbol) -> Result<String, String> {
+        let cache_key = format!("{}/{}", symbol.base, symbol.quote);
 
-        // Case-sensitive comparison for Solana mint addresses
-        if base == well_known_mints::SOL && quote == well_known_mints::USDC {
-            return Ok(well_known_mints::SOL_USDC_POOL.to_string());
+        // 1. Check cache first
+        if let Ok(cache) = self.pool_cache.lock() {
+            if let Some(addr) = cache.get(&cache_key) {
+                return Ok(addr.clone());
+            }
         }
 
-        // Also check case-insensitive (Symbol::new() may uppercase)
-        let base_lower = base.to_lowercase();
-        let quote_lower = quote.to_lowercase();
-        if base_lower == well_known_mints::SOL.to_lowercase()
-            && quote_lower == well_known_mints::USDC.to_lowercase()
-        {
-            return Ok(well_known_mints::SOL_USDC_POOL.to_string());
+        // 2. Dynamic REST lookup via Raydium /pools/info/mint
+        let pool_address = Self::fetch_pool_address_by_mints(
+            &self.rpc_url,
+            &symbol.base,
+            &symbol.quote,
+        )
+        .await?;
+
+        // Store in cache
+        if let Ok(mut cache) = self.pool_cache.lock() {
+            cache.insert(cache_key, pool_address.clone());
         }
 
-        Err(format!("No known pool for {}/{}", base, quote))
+        Ok(pool_address)
+    }
+
+    /// Fetch the highest-TVL pool address for a mint pair via the Raydium REST API.
+    ///
+    /// Note: `rpc_url` here refers to the Solana RPC used for WS connections, but
+    /// this REST call goes to the Raydium API V3 base URL derived from the same
+    /// network (mainnet/devnet).
+    async fn fetch_pool_address_by_mints(
+        rpc_url: &str,
+        mint_a: &str,
+        mint_b: &str,
+    ) -> Result<String, String> {
+        // Derive the Raydium API V3 base from the RPC URL convention
+        let api_base = if rpc_url.contains("devnet") {
+            "https://api-v3-devnet.raydium.io"
+        } else {
+            "https://api-v3.raydium.io"
+        };
+
+        let url = format!(
+            "{}/pools/info/mint?mint1={}&mint2={}&sort=liquidity&order=desc&page=1",
+            api_base, mint_a, mint_b
+        );
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
+
+        let response = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("REST pool lookup failed: {}", e))?;
+
+        let json: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse pool lookup response: {}", e))?;
+
+        // Response shape: { "success": true, "data": { "data": [ { "id": "...", ... } ] } }
+        let pool_id = json
+            .get("data")
+            .and_then(|d| d.get("data"))
+            .and_then(|arr| arr.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|pool| pool.get("id"))
+            .and_then(|id| id.as_str())
+            .ok_or_else(|| {
+                format!("No pool found for mints {}/{}", mint_a, mint_b)
+            })?;
+
+        Ok(pool_id.to_string())
     }
 }
 
@@ -692,8 +773,10 @@ impl WebSocketConnector for RaydiumWebSocket {
     }
 
     async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
-        let pool_address =
-            Self::get_pool_address(&request.symbol).map_err(WebSocketError::ProtocolError)?;
+        let pool_address = self
+            .resolve_pool_address(&request.symbol)
+            .await
+            .map_err(WebSocketError::ProtocolError)?;
         self.subscribe_to_pool(&pool_address, request.clone())
             .await?;
         self.subscriptions.lock().await.insert(request);
@@ -706,24 +789,19 @@ impl WebSocketConnector for RaydiumWebSocket {
     }
 
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        let tx_guard = self.broadcast_tx.lock().unwrap();
-        if let Some(ref tx) = *tx_guard {
-            let rx = tx.subscribe();
-            Box::pin(
-                tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| async move {
-                    match result {
-                        Ok(event) => Some(event),
-                        Err(
-                            tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(_),
-                        ) => Some(Err(WebSocketError::ConnectionError(
+        let rx = self.broadcast_tx.subscribe();
+        Box::pin(
+            tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| async move {
+                match result {
+                    Ok(event) => Some(event),
+                    Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(_)) => {
+                        Some(Err(WebSocketError::ConnectionError(
                             "Event stream lagged behind".to_string(),
-                        ))),
+                        )))
                     }
-                }),
-            )
-        } else {
-            Box::pin(futures_util::stream::empty())
-        }
+                }
+            }),
+        )
     }
 
     fn active_subscriptions(&self) -> Vec<SubscriptionRequest> {

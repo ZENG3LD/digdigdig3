@@ -17,10 +17,14 @@ pub struct GmxUrls {
     pub avalanche_rest: &'static str,
     pub avalanche_fallback1: &'static str,
     pub avalanche_fallback2: &'static str,
-    /// The Graph subgraph for GMX V2 on Arbitrum (historical data)
+    /// The Graph subgraph for GMX V2 on Arbitrum (stats/historical data)
     pub arbitrum_subgraph: &'static str,
-    /// The Graph subgraph for GMX V2 on Avalanche (historical data)
+    /// The Graph subgraph for GMX V2 on Avalanche (stats/historical data)
     pub avalanche_subgraph: &'static str,
+    /// Subsquid GraphQL endpoint for GMX V2 on Arbitrum (positions, orders, trade history)
+    pub arbitrum_subsquid: &'static str,
+    /// Subsquid GraphQL endpoint for GMX V2 on Avalanche (positions, orders, trade history)
+    pub avalanche_subsquid: &'static str,
 }
 
 impl GmxUrls {
@@ -32,9 +36,13 @@ impl GmxUrls {
         avalanche_rest: "https://avalanche-api.gmxinfra.io",
         avalanche_fallback1: "https://avalanche-api-fallback.gmxinfra.io",
         avalanche_fallback2: "https://avalanche-api-fallback2.gmxinfra.io",
-        // GMX V2 subgraphs on The Graph (public, no API key required)
+        // GMX V2 stats subgraphs on The Graph / Satsuma (public, no API key required)
         arbitrum_subgraph: "https://subgraph.satsuma-prod.com/3b2ced13c8d9/gmx/synthetics-arbitrum-stats/api",
         avalanche_subgraph: "https://subgraph.satsuma-prod.com/3b2ced13c8d9/gmx/synthetics-avalanche-stats/api",
+        // Subsquid indexer — positions, orders, and trade history for V2
+        // Source: https://docs.gmx.io/docs/api/subsquid/
+        arbitrum_subsquid: "https://gmx.squids.live/gmx-synthetics-arbitrum:prod/api/graphql",
+        avalanche_subsquid: "https://gmx.squids.live/gmx-synthetics-avalanche:prod/api/graphql",
     };
 
     /// Get REST base URL for chain
@@ -48,12 +56,25 @@ impl GmxUrls {
 
     /// Get The Graph subgraph URL for chain
     ///
-    /// Returns the GraphQL endpoint for historical GMX V2 data on the given chain.
+    /// Returns the GraphQL endpoint for historical GMX V2 stats data on the given chain.
     pub fn subgraph_url(&self, chain: &str) -> &str {
         match chain.to_lowercase().as_str() {
             "arbitrum" | "arb" => self.arbitrum_subgraph,
             "avalanche" | "avax" => self.avalanche_subgraph,
             _ => self.arbitrum_subgraph, // Default to Arbitrum
+        }
+    }
+
+    /// Get Subsquid GraphQL URL for chain
+    ///
+    /// Returns the Subsquid endpoint for per-account positions, orders, and
+    /// trade history on the given chain.  This is distinct from `subgraph_url`
+    /// which points to The Graph stats subgraph.
+    pub fn subsquid_url(&self, chain: &str) -> &str {
+        match chain.to_lowercase().as_str() {
+            "arbitrum" | "arb" => self.arbitrum_subsquid,
+            "avalanche" | "avax" => self.avalanche_subsquid,
+            _ => self.arbitrum_subsquid, // Default to Arbitrum
         }
     }
 

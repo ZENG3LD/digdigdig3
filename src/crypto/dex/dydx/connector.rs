@@ -775,7 +775,9 @@ impl Trading for DydxConnector {
             use crate::core::chain::ChainProvider as _;
             use super::tx_builder::{
                 build_place_order_tx, build_place_conditional_order_tx,
+                build_place_long_term_order_tx,
                 signing_key_from_bytes, ShortTermOrderParams, ConditionalOrderParams,
+                LongTermOrderParams,
             };
             use super::proto::dydxprotocol::OrderConditionType;
 
@@ -824,6 +826,13 @@ impl Trading for DydxConnector {
                 // Determine whether this is a conditional (stop/TP) order.
                 // Conditional orders use ORDER_FLAG_CONDITIONAL (32), must have a
                 // trigger_subticks and condition_type, and always use good_til_block_time.
+                //
+                // Mapping:
+                //   StopMarket / StopLimit                 → StopLoss  (1)
+                //   ConditionalPlan { Above, ... }         → TakeProfit (2)
+                //     — price rises above trigger: typical TP for a long position
+                //   ConditionalPlan { Below, ... }         → StopLoss  (1)
+                //     — price falls below trigger: typical SL for a long position
                 let conditional_info: Option<(super::proto::dydxprotocol::OrderConditionType, f64)> =
                     match &req.order_type {
                         crate::core::OrderType::StopMarket { stop_price } => {
@@ -831,6 +840,23 @@ impl Trading for DydxConnector {
                         }
                         crate::core::OrderType::StopLimit { stop_price, .. } => {
                             Some((OrderConditionType::StopLoss, *stop_price))
+                        }
+                        // ConditionalPlan with TriggerDirection::Above routes to TakeProfit.
+                        // ConditionalPlan with TriggerDirection::Below routes to StopLoss.
+                        crate::core::OrderType::ConditionalPlan {
+                            trigger_price,
+                            trigger_direction,
+                            ..
+                        } => {
+                            let cond_type = match trigger_direction {
+                                crate::core::TriggerDirection::Above => {
+                                    OrderConditionType::TakeProfit
+                                }
+                                crate::core::TriggerDirection::Below => {
+                                    OrderConditionType::StopLoss
+                                }
+                            };
+                            Some((cond_type, *trigger_price))
                         }
                         _ => None,
                     };
@@ -895,35 +921,91 @@ impl Trading for DydxConnector {
                         None,
                     )?
                 } else {
-                    // Standard SHORT_TERM order (Limit / Market)
-                    let good_til_block = match &req.time_in_force {
-                        crate::core::TimeInForce::GoodTilBlock { block_height } => {
-                            *block_height as u32
+                    // Detect whether this is a LONG_TERM order.
+                    //
+                    // dYdX supports two non-conditional order lifetimes:
+                    //   SHORT_TERM — expires at a block height (ORDER_FLAG_SHORT_TERM = 0)
+                    //   LONG_TERM  — expires at a UTC timestamp (ORDER_FLAG_LONG_TERM = 64)
+                    //
+                    // A caller signals LONG_TERM intent by using TimeInForce::Gtd, which
+                    // carries an `expire_time` in milliseconds since the Unix epoch.
+                    // We also treat OrderType::Gtd { expire_time } the same way.
+                    //
+                    // Any other TIF falls through to the SHORT_TERM path.
+                    let long_term_expiry_secs: Option<u32> = match (&req.time_in_force, &req.order_type) {
+                        (crate::core::TimeInForce::Gtd, crate::core::OrderType::Gtd { expire_time, .. }) => {
+                            // expire_time is Unix ms; convert to Unix seconds for dYdX wire format.
+                            Some((*expire_time / 1000) as u32)
                         }
-                        _ => 0u32,
+                        (crate::core::TimeInForce::Gtd, _) => {
+                            // TIF is Gtd but order type doesn't carry a timestamp.
+                            // Default to 90 days from now — maximum LONG_TERM lifetime on dYdX.
+                            let now_secs = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs();
+                            Some((now_secs + 90 * 24 * 3600) as u32)
+                        }
+                        _ => None,
                     };
 
-                    let params = ShortTermOrderParams {
-                        owner_address: owner_address.clone(),
-                        subaccount_number: 0,
-                        client_id,
-                        clob_pair_id,
-                        is_buy,
-                        quantums,
-                        subticks,
-                        good_til_block,
-                        time_in_force: tif_i32,
-                        reduce_only,
-                    };
+                    if let Some(good_til_block_time) = long_term_expiry_secs {
+                        // LONG_TERM order: expires at a wall-clock timestamp.
+                        // Uses ORDER_FLAG_LONG_TERM (64) and good_til_block_time instead of
+                        // good_til_block.  No fee is required (same zero-fee policy as SHORT_TERM).
+                        let params = LongTermOrderParams {
+                            owner_address: owner_address.clone(),
+                            subaccount_number: 0,
+                            client_id,
+                            clob_pair_id,
+                            is_buy,
+                            quantums,
+                            subticks,
+                            good_til_block_time,
+                            time_in_force: tif_i32,
+                            reduce_only,
+                        };
 
-                    build_place_order_tx(
-                        &params,
-                        &signing_key,
-                        account_number,
-                        sequence,
-                        &chain_id,
-                        None, // zero fee — standard for dYdX short-term orders
-                    )?
+                        build_place_long_term_order_tx(
+                            &params,
+                            &signing_key,
+                            account_number,
+                            sequence,
+                            &chain_id,
+                            None,
+                        )?
+                    } else {
+                        // Standard SHORT_TERM order (Limit / Market / PostOnly / IOC / FOK).
+                        // Expires at a block height; 0 means "use exchange default" (current + 20).
+                        let good_til_block = match &req.time_in_force {
+                            crate::core::TimeInForce::GoodTilBlock { block_height } => {
+                                *block_height as u32
+                            }
+                            _ => 0u32,
+                        };
+
+                        let params = ShortTermOrderParams {
+                            owner_address: owner_address.clone(),
+                            subaccount_number: 0,
+                            client_id,
+                            clob_pair_id,
+                            is_buy,
+                            quantums,
+                            subticks,
+                            good_til_block,
+                            time_in_force: tif_i32,
+                            reduce_only,
+                        };
+
+                        build_place_order_tx(
+                            &params,
+                            &signing_key,
+                            account_number,
+                            sequence,
+                            &chain_id,
+                            None, // zero fee — standard for dYdX short-term orders
+                        )?
+                    }
                 };
 
                 let resp = self.place_order_grpc(tx_bytes).await?;
@@ -948,12 +1030,16 @@ impl Trading for DydxConnector {
                 let display_price = match &req.order_type {
                     crate::core::OrderType::Limit { price } => Some(*price),
                     crate::core::OrderType::StopLimit { limit_price, .. } => Some(*limit_price),
+                    crate::core::OrderType::Gtd { price, .. } => Some(*price),
                     _ => None,
                 };
 
                 let display_stop_price = match &req.order_type {
                     crate::core::OrderType::StopMarket { stop_price } => Some(*stop_price),
                     crate::core::OrderType::StopLimit { stop_price, .. } => Some(*stop_price),
+                    crate::core::OrderType::ConditionalPlan { trigger_price, .. } => {
+                        Some(*trigger_price)
+                    }
                     _ => None,
                 };
 
@@ -1500,6 +1586,99 @@ impl DydxConnector {
         params.insert("referralCode".to_string(), referral_code.to_string());
         self.get(DydxEndpoint::AffiliateAddress, params).await
     }
+
+    /// Cancel all open orders, optionally filtered to a single symbol.
+    ///
+    /// This is a helper that is NOT part of the `Trading` trait because dYdX v4
+    /// has no native "cancel-all" endpoint — every cancel is a separate signed
+    /// on-chain transaction (`MsgCancelOrder`).
+    ///
+    /// ## Behaviour
+    ///
+    /// 1. Fetches all open orders via the Indexer REST API (`get_open_orders`).
+    /// 2. Iterates serially and cancels each order using `cancel_order`.
+    ///    Serial execution is intentional: the Cosmos sequence number must
+    ///    increment monotonically across broadcast transactions, and the
+    ///    `CosmosProvider` already manages that counter.
+    /// 3. If any individual cancel fails, the error is collected and execution
+    ///    continues for the remaining orders.  A combined error is returned only
+    ///    if **all** cancels fail; partial failures surface via `tracing::warn`.
+    ///
+    /// ## Requires
+    ///
+    /// - `onchain-cosmos` + `grpc` features enabled.
+    /// - A `CosmosProvider` attached via [`Self::with_cosmos_provider`].
+    /// - A gRPC channel attached via [`Self::with_grpc_channel`].
+    /// - Trading credentials (api_key = hex private key, api_secret = address).
+    ///
+    /// ## Returns
+    ///
+    /// The list of `Order` structs with `status = Canceled` for every order
+    /// that was successfully cancelled.
+    #[cfg(all(feature = "onchain-cosmos", feature = "grpc"))]
+    pub async fn cancel_all_orders(
+        &self,
+        symbol: Option<&str>,
+        account_type: crate::core::AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        use crate::core::CancelScope;
+
+        // Fetch all open orders via the read-only Indexer REST API.
+        let open_orders = self.get_open_orders(symbol, account_type).await?;
+
+        if open_orders.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let symbol_hint: Option<crate::core::Symbol> = symbol.map(|s| {
+            let parts: Vec<&str> = s.splitn(2, '-').collect();
+            crate::core::Symbol {
+                base: parts.first().copied().unwrap_or(s).to_string(),
+                quote: parts.get(1).copied().unwrap_or("USD").to_string(),
+            }
+        });
+
+        let mut cancelled = Vec::with_capacity(open_orders.len());
+        let mut error_count = 0usize;
+
+        for order in open_orders {
+            let cancel_req = crate::core::CancelRequest {
+                scope: CancelScope::Single {
+                    order_id: order.id.clone(),
+                },
+                symbol: symbol_hint.clone(),
+                account_type,
+            };
+
+            match self.cancel_order(cancel_req).await {
+                Ok(cancelled_order) => {
+                    cancelled.push(cancelled_order);
+                }
+                Err(e) => {
+                    error_count += 1;
+                    tracing::warn!(
+                        "cancel_all_orders: failed to cancel order {} for {}: {}",
+                        order.id,
+                        order.symbol,
+                        e
+                    );
+                }
+            }
+        }
+
+        if cancelled.is_empty() && error_count > 0 {
+            return Err(ExchangeError::Api {
+                code: -1,
+                message: format!(
+                    "cancel_all_orders: all {} cancel attempts failed. \
+                     Check trading credentials and gRPC connectivity.",
+                    error_count
+                ),
+            });
+        }
+
+        Ok(cancelled)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1604,6 +1783,27 @@ fn order_request_to_quantums_subticks(
         }
         // Stop-limit: execution at limit_price; trigger at stop_price
         crate::core::OrderType::StopLimit { limit_price, .. } => *limit_price,
+
+        // ConditionalPlan: the inner order_after_trigger determines the execution price.
+        // Extract the limit price from the inner order when available; otherwise sweep.
+        crate::core::OrderType::ConditionalPlan { order_after_trigger, .. } => {
+            match order_after_trigger.as_ref() {
+                crate::core::OrderType::Limit { price } => *price,
+                crate::core::OrderType::StopLimit { limit_price, .. } => *limit_price,
+                // Inner market order → sweep sentinel
+                _ => {
+                    if req.side == crate::core::OrderSide::Buy {
+                        f64::MAX / 1e10
+                    } else {
+                        1.0
+                    }
+                }
+            }
+        }
+
+        // Gtd (Good-Till-Date): long-term limit order with timestamp expiry.
+        crate::core::OrderType::Gtd { price, .. } => *price,
+
         _ => {
             return Err(ExchangeError::UnsupportedOperation(format!(
                 "dYdX tx builder: order type {:?} is not yet supported via \

@@ -12,10 +12,10 @@
 //! - `Trading::place_order` and `cancel_order` build **unsigned** `TransactionRequest`
 //!   objects when the `onchain-evm` feature is enabled and `with_onchain()` was called.
 //!   The caller is responsible for signing and broadcasting.
-//! - `get_open_orders` / `get_order_history` remain `UnsupportedOperation` — GMX is a
-//!   keeper-based DEX; open order state lives in contract storage, not a REST endpoint.
-//! - `Account::get_balance` returns the native token (ETH / AVAX) balance when onchain
-//!   is available; ERC-20 token balances require separate contract calls not yet wired.
+//! - `get_open_orders` / `get_order_history` / `get_positions` query the Subsquid indexer
+//!   and require a wallet address to be known.  They return empty Vec if no wallet is set.
+//! - `Account::get_balance` returns native token (ETH/AVAX) + ERC-20 balances via
+//!   `eth_call balanceOf` when the `onchain-evm` feature is enabled.
 //! - WebSocket uses polling instead of native WebSocket API
 
 use std::collections::HashMap;
@@ -66,8 +66,10 @@ use crate::core::types::OrderType;
 pub struct GmxConnector {
     /// HTTP client for REST endpoints
     http: HttpClient,
-    /// GraphQL client for The Graph subgraph historical data queries
+    /// GraphQL client for The Graph stats subgraph (historical aggregate data)
     subgraph: GraphQlClient,
+    /// GraphQL client for Subsquid (per-account positions, orders, trade history)
+    subsquid: GraphQlClient,
     /// Authentication (no-op for public REST endpoints)
     #[allow(dead_code)]
     auth: GmxAuth,
@@ -103,13 +105,20 @@ impl GmxConnector {
         let http = HttpClient::new(30_000)?; // 30 sec timeout
         let auth = GmxAuth::public();
 
-        // Build GraphQL client for The Graph subgraph (historical data).
+        // Build GraphQL client for The Graph stats subgraph (historical aggregate data).
         // Endpoint is resolved per-chain at construction time; chain does not
         // change after construction so a single fixed-endpoint client is fine.
         let subgraph_url = urls.subgraph_url(&chain);
         let subgraph = GraphQlClient::new(
             HttpClient::new(30_000)?,
             subgraph_url,
+        );
+
+        // Build GraphQL client for Subsquid (per-account positions / orders).
+        let subsquid_url = urls.subsquid_url(&chain);
+        let subsquid = GraphQlClient::new(
+            HttpClient::new(30_000)?,
+            subsquid_url,
         );
 
         // Conservative: 12 requests per 60 seconds (~1 req/5s)
@@ -120,6 +129,7 @@ impl GmxConnector {
         Ok(Self {
             http,
             subgraph,
+            subsquid,
             auth,
             urls,
             chain,
@@ -380,11 +390,13 @@ impl GmxConnector {
     // SUBGRAPH QUERIES (The Graph — historical data)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// Query the GMX V2 The Graph subgraph for historical on-chain data.
+    /// Query the GMX V2 The Graph stats subgraph for historical aggregate data.
     ///
     /// The subgraph endpoint is chosen at construction time based on the chain
     /// (`arbitrum` or `avalanche`).  All GMX subgraph queries are public —
     /// no API key is required.
+    ///
+    /// For per-account data (positions, orders) use `query_subsquid` instead.
     ///
     /// # Parameters
     /// - `query`     — GraphQL query string
@@ -408,6 +420,51 @@ impl GmxConnector {
     ) -> ExchangeResult<Value> {
         self.rate_limit_wait().await;
         self.subgraph.query(query, variables).await
+    }
+
+    /// Query the GMX V2 Subsquid indexer for per-account data.
+    ///
+    /// Use this for positions, open orders, and trade history.
+    /// The Subsquid endpoint (`gmx.squids.live`) is publicly accessible
+    /// without an API key.
+    ///
+    /// # Parameters
+    /// - `query`     — GraphQL query string
+    /// - `variables` — optional variables object
+    ///
+    /// # Example
+    /// ```ignore
+    /// let connector = GmxConnector::arbitrum().await?;
+    ///
+    /// let result = connector.query_subsquid(
+    ///     r#"query Positions($account: String!) {
+    ///         positions(where: { account_eq: $account, isOpen_eq: true }) {
+    ///             id market isLong sizeInUsd entryPrice unrealizedPnl
+    ///         }
+    ///     }"#,
+    ///     Some(serde_json::json!({ "account": "0xYourAddress" })),
+    /// ).await?;
+    /// ```
+    pub async fn query_subsquid(
+        &self,
+        query: &str,
+        variables: Option<Value>,
+    ) -> ExchangeResult<Value> {
+        self.rate_limit_wait().await;
+        self.subsquid.query(query, variables).await
+    }
+
+    /// Return the wallet address as a lowercase hex string, or `None` when
+    /// no wallet has been set (no-onchain-evm build or `with_onchain` not called).
+    fn wallet_address_str(&self) -> Option<String> {
+        #[cfg(feature = "onchain-evm")]
+        {
+            return self.wallet_address.map(|a| format!("{:?}", a).to_lowercase());
+        }
+        #[cfg(not(feature = "onchain-evm"))]
+        {
+            None
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -956,45 +1013,142 @@ impl Trading for GmxConnector {
     async fn get_order(
         &self,
         _symbol: &str,
-        _order_id: &str,
+        order_id: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Order> {
-        // GMX on-chain perps: individual order lookup requires The Graph or
-        // direct contract storage read (Reader.getOrder).  REST API has no endpoint.
-        Err(ExchangeError::UnsupportedOperation(
-            "GMX does not expose a REST endpoint for individual order lookup. \
-             Use The Graph subgraph (query_subgraph) or the Reader contract directly."
-                .to_string(),
-        ))
+        // Look up a single order by its on-chain key via Subsquid.
+        // Subsquid `order` (singular) query by id.
+        let gql = format!(
+            r#"query {{
+                order(id: "{id}") {{
+                    id
+                    orderType
+                    market
+                    indexTokenSymbol
+                    sizeDeltaUsd
+                    triggerPrice
+                    acceptablePrice
+                    isLong
+                    status
+                    timestamp
+                }}
+            }}"#,
+            id = order_id,
+        );
+
+        let response = self.query_subsquid(&gql, None).await?;
+        GmxParser::parse_single_order(&response)
     }
 
     async fn get_open_orders(
         &self,
-        _symbol: Option<&str>,
+        symbol: Option<&str>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        // GMX on-chain perps: open orders live in contract storage.
-        // The Graph provides a GraphQL interface; REST API does not expose them.
-        // Use connector.query_subgraph() with an orders query instead.
-        Err(ExchangeError::UnsupportedOperation(
-            "GMX open orders are in contract storage, not a REST endpoint. \
-             Use connector.query_subgraph() with a GraphQL orders query."
-                .to_string(),
-        ))
+        // Resolve wallet address — required to scope to an account
+        let account = match self.wallet_address_str() {
+            Some(addr) => addr,
+            None => return Ok(Vec::new()),
+        };
+
+        // Optional symbol filter
+        let symbol_filter = match symbol {
+            Some(sym) => {
+                let base = sym.split('/').next().unwrap_or(sym).to_uppercase();
+                format!(", indexTokenSymbol_eq: \"{}\"", base)
+            }
+            None => String::new(),
+        };
+
+        let gql = format!(
+            r#"query {{
+                orders(where: {{ account_eq: "{account}", status_eq: "active"{symbol_filter} }}) {{
+                    id
+                    orderType
+                    market
+                    indexTokenSymbol
+                    sizeDeltaUsd
+                    triggerPrice
+                    acceptablePrice
+                    isLong
+                    status
+                    timestamp
+                }}
+            }}"#,
+            account = account,
+            symbol_filter = symbol_filter,
+        );
+
+        let response = self.query_subsquid(&gql, None).await?;
+        GmxParser::parse_orders(&response)
     }
 
     async fn get_order_history(
         &self,
-        _filter: OrderHistoryFilter,
+        filter: OrderHistoryFilter,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        // GMX on-chain perps: historical orders are in The Graph subgraph.
-        // Use connector.query_subgraph() with a historical orders query.
-        Err(ExchangeError::UnsupportedOperation(
-            "GMX order history is available via The Graph subgraph. \
-             Use connector.query_subgraph() with a historical orders query."
-                .to_string(),
-        ))
+        // Resolve wallet address — required to scope to an account
+        let account = match self.wallet_address_str() {
+            Some(addr) => addr,
+            None => return Ok(Vec::new()),
+        };
+
+        // Status filter: historical orders are executed or cancelled
+        let status_filter = match &filter.status {
+            Some(crate::core::types::OrderStatus::Filled) => {
+                ", status_eq: \"executed\"".to_string()
+            }
+            Some(crate::core::types::OrderStatus::Canceled) => {
+                ", status_eq: \"cancelled\"".to_string()
+            }
+            _ => {
+                // All completed orders (not active)
+                ", status_in: [\"executed\", \"cancelled\", \"frozen\"]".to_string()
+            }
+        };
+
+        // Symbol filter
+        let symbol_filter = match &filter.symbol {
+            Some(sym) => {
+                let base = sym.base.to_uppercase();
+                format!(", indexTokenSymbol_eq: \"{}\"", base)
+            }
+            None => String::new(),
+        };
+
+        // Limit
+        let limit_clause = match filter.limit {
+            Some(n) => format!(", limit: {}", n.min(1000)),
+            None => String::new(),
+        };
+
+        let gql = format!(
+            r#"query {{
+                orders(
+                    where: {{ account_eq: "{account}"{status_filter}{symbol_filter} }}
+                    orderBy: timestamp_DESC{limit_clause}
+                ) {{
+                    id
+                    orderType
+                    market
+                    indexTokenSymbol
+                    sizeDeltaUsd
+                    triggerPrice
+                    acceptablePrice
+                    isLong
+                    status
+                    timestamp
+                }}
+            }}"#,
+            account = account,
+            status_filter = status_filter,
+            symbol_filter = symbol_filter,
+            limit_clause = limit_clause,
+        );
+
+        let response = self.query_subsquid(&gql, None).await?;
+        GmxParser::parse_orders(&response)
     }
 }
 
@@ -1008,6 +1162,8 @@ impl Account for GmxConnector {
         #[cfg(feature = "onchain-evm")]
         {
             if let Some(ref onchain) = self.onchain {
+                use crate::core::chain::EvmChain;
+
                 let wallet = self.wallet_address.ok_or_else(|| {
                     ExchangeError::InvalidRequest(
                         "wallet_address is required to query GMX on-chain balance. \
@@ -1018,41 +1174,87 @@ impl Account for GmxConnector {
 
                 let wallet_str = format!("{:?}", wallet);
 
-                // Filter: if the query asks for a specific asset, only return it
-                // if it is the native token (ETH / AVAX).  ERC-20 balances require
-                // separate contract calls and are not yet implemented.
                 let native_asset = match self.chain.as_str() {
                     "avalanche" | "avax" => "AVAX",
                     _ => "ETH",
                 };
 
+                // Helper: convert a U256 raw token balance to f64 with given decimals
+                let u256_to_f64 = |raw: U256, decimals: u32| -> f64 {
+                    let divisor = U256::from(10u64).pow(U256::from(decimals));
+                    let whole = raw / divisor;
+                    let remainder = raw % divisor;
+                    whole.to_string().parse::<f64>().unwrap_or(0.0)
+                        + remainder.to_string().parse::<f64>().unwrap_or(0.0)
+                        / 10_f64.powi(decimals as i32)
+                };
+
+                // If a specific asset is requested, try ERC-20 lookup first
                 if let Some(ref asset) = query.asset {
                     let asset_upper = asset.to_uppercase();
-                    if asset_upper != native_asset
-                        && asset_upper != "WETH"
-                        && asset_upper != "WAVAX"
+
+                    // Check whether the asset is the native token
+                    if asset_upper == native_asset
+                        || asset_upper == "WETH"
+                        || asset_upper == "WAVAX"
                     {
-                        return Err(ExchangeError::UnsupportedOperation(format!(
-                            "GMX on-chain balance: only the native token ({}) is supported \
-                             via get_balance. ERC-20 token balances require direct contract \
-                             calls not yet implemented.",
-                            native_asset
-                        )));
+                        // Native / wrapped native balance
+                        let raw = onchain.get_native_balance(&wallet_str).await?;
+                        let balance_f64 = u256_to_f64(raw, 18);
+                        return Ok(vec![Balance {
+                            asset: asset_upper,
+                            free: balance_f64,
+                            locked: 0.0,
+                            total: balance_f64,
+                        }]);
                     }
+
+                    // Try to resolve as a known collateral token (ERC-20)
+                    // Use the collateral address map for WETH/WBTC, then USDC as fallback
+                    let maybe_token_addr: Option<Address> =
+                        Self::gmx_collateral_address(&asset_upper, &self.chain)
+                            .or_else(|| {
+                                // USDC
+                                if asset_upper == "USDC" || asset_upper == "USDC.E" {
+                                    Self::usdc_address(&self.chain).ok()
+                                } else {
+                                    None
+                                }
+                            });
+
+                    if let Some(token_addr) = maybe_token_addr {
+                        // Determine token decimals
+                        let decimals: u32 = match asset_upper.as_str() {
+                            "WBTC" | "BTC" => 8,
+                            "USDC" | "USDC.E" | "USDT" => 6,
+                            _ => 18,
+                        };
+
+                        let raw = onchain.provider()
+                            .erc20_balance(token_addr, wallet)
+                            .await?;
+                        let balance_f64 = u256_to_f64(raw, decimals);
+
+                        return Ok(vec![Balance {
+                            asset: asset_upper,
+                            free: balance_f64,
+                            locked: 0.0,
+                            total: balance_f64,
+                        }]);
+                    }
+
+                    // Unknown ERC-20 — not in our address tables
+                    return Err(ExchangeError::UnsupportedOperation(format!(
+                        "GMX on-chain balance: token '{}' is not in the known collateral \
+                         address table. Use the onchain EvmProvider directly for arbitrary \
+                         ERC-20 queries.",
+                        asset
+                    )));
                 }
 
+                // No specific asset — return native token balance
                 let raw_balance = onchain.get_native_balance(&wallet_str).await?;
-
-                // Convert U256 wei balance to f64 ETH (/ 10^18).
-                // U256 → f64 conversion: divide by 1e18 using floating point.
-                let balance_eth = {
-                    let divisor = U256::from(10u64).pow(U256::from(18u32));
-                    let whole = raw_balance / divisor;
-                    let remainder = raw_balance % divisor;
-                    // Convert to f64 preserving fractional part.
-                    whole.to_string().parse::<f64>().unwrap_or(0.0)
-                        + remainder.to_string().parse::<f64>().unwrap_or(0.0) / 1e18
-                };
+                let balance_eth = u256_to_f64(raw_balance, 18);
 
                 let balance = Balance {
                     asset: native_asset.to_string(),
@@ -1104,24 +1306,61 @@ impl Account for GmxConnector {
 
 #[async_trait]
 impl Positions for GmxConnector {
-    async fn get_positions(&self, _query: PositionQuery) -> ExchangeResult<Vec<Position>> {
-        Err(ExchangeError::UnsupportedOperation(
-            "GMX positions require smart contract queries (PositionStore contract) \
-             or The Graph subgraph. REST API does not expose per-account positions."
-                .to_string(),
-        ))
+    async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
+        // Resolve wallet address — required to scope to an account
+        let account = match self.wallet_address_str() {
+            Some(addr) => addr,
+            None => {
+                // No wallet available: return empty rather than error
+                return Ok(Vec::new());
+            }
+        };
+
+        // Build symbol filter clause (optional)
+        let symbol_filter = match &query.symbol {
+            Some(sym) => {
+                let base = sym.base.to_uppercase();
+                format!(", indexTokenSymbol_eq: \"{}\"", base)
+            }
+            None => String::new(),
+        };
+
+        let gql = format!(
+            r#"query {{
+                positions(where: {{ account_eq: "{account}", isOpen_eq: true{symbol_filter} }}) {{
+                    id
+                    market
+                    indexTokenSymbol
+                    collateralToken
+                    isLong
+                    sizeInUsd
+                    sizeInTokens
+                    collateralAmount
+                    entryPrice
+                    unrealizedPnl
+                    realizedPnl
+                    createdAt
+                }}
+            }}"#,
+            account = account,
+            symbol_filter = symbol_filter,
+        );
+
+        let response = self.query_subsquid(&gql, None).await?;
+        GmxParser::parse_positions(&response)
     }
 
     async fn get_funding_rate(
         &self,
-        _symbol: &str,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
-        Err(ExchangeError::UnsupportedOperation(
-            "GMX uses borrowing fees (not funding rates). \
-             Borrow rates are available in /markets REST endpoint as annualized rates."
-                .to_string(),
-        ))
+        // GMX V2 has genuine funding rates (not just borrowing fees).
+        // The dominant OI side pays the other side; rate changes with OI imbalance.
+        // Source: GET /markets/info — fields: fundingFactorPerSecond, longsPayShorts
+        let response = self.get(GmxEndpoint::MarketInfo, HashMap::new()).await?;
+        // Default to long-side rate; caller can query again with explicit side if needed
+        GmxParser::parse_funding_rate(&response, symbol, true)
     }
 
     async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {

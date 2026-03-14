@@ -51,6 +51,7 @@ use crate::core::{
 use crate::core::types::{WebSocketResult, WebSocketError, TradeSide};
 use crate::core::traits::WebSocketConnector;
 use crate::core::utils::timestamp_millis;
+use super::endpoints::find_pool_by_address;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONSTANTS
@@ -304,9 +305,17 @@ impl UniswapWebSocket {
         let amount0 = I256::from_be_bytes::<32>(amount0_bytes.try_into().ok()?);
         let amount1 = I256::from_be_bytes::<32>(amount1_bytes.try_into().ok()?);
 
-        // Determine price and side from amounts
-        // In Uniswap, negative amount = token sold, positive = token bought
-        let (price, quantity, is_buy) = Self::calculate_trade_info(amount0, amount1);
+        // Look up token decimals from the pool registry so we can scale amounts
+        // correctly.  For unknown pools we fall back to 18/18 which gives raw
+        // wei values (consistent with the old behaviour).
+        let (token0_decimals, token1_decimals) =
+            find_pool_by_address(pool_address)
+                .map(|meta| (meta.token0_decimals, meta.token1_decimals))
+                .unwrap_or((18, 18));
+
+        // Determine price and side from amounts with decimal scaling
+        let (price, quantity, is_buy) =
+            Self::calculate_trade_info(amount0, amount1, token0_decimals, token1_decimals);
 
         // Create PublicTrade event
         let trade = PublicTrade {
@@ -323,22 +332,43 @@ impl UniswapWebSocket {
         Some(StreamEvent::Trade(trade))
     }
 
-    /// Calculate trade information from amounts
-    fn calculate_trade_info(amount0: I256, amount1: I256) -> (f64, f64, bool) {
-        // Convert I256 to f64 (simplified)
-        let amt0 = Self::i256_to_f64(amount0);
-        let amt1 = Self::i256_to_f64(amount1);
+    /// Calculate trade information from raw amounts, scaling by token decimals.
+    ///
+    /// Amounts from the Swap event are raw integers in each token's smallest
+    /// unit (e.g. wei for WETH, micro-USDC for USDC).  Dividing by
+    /// `10^decimals` converts them to human-readable units before computing the
+    /// price ratio.
+    ///
+    /// - `token0_decimals` / `token1_decimals`: from pool metadata (e.g. 6 for
+    ///   USDC, 18 for WETH, 8 for WBTC).
+    fn calculate_trade_info(
+        amount0: I256,
+        amount1: I256,
+        token0_decimals: u8,
+        token1_decimals: u8,
+    ) -> (f64, f64, bool) {
+        let amt0_raw = Self::i256_to_f64(amount0);
+        let amt1_raw = Self::i256_to_f64(amount1);
 
-        // Determine direction
-        let is_buy = amt0 < 0.0; // If amount0 is negative, token0 was sold (buying token1)
+        // Scale by per-token decimals
+        let scale0 = 10_f64.powi(token0_decimals as i32);
+        let scale1 = 10_f64.powi(token1_decimals as i32);
+        let amt0 = amt0_raw / scale0;
+        let amt1 = amt1_raw / scale1;
 
-        // Calculate price and quantity
+        // Determine direction: negative amount means the pool paid out that
+        // token (i.e. the swapper received it).
+        // amt0 < 0 → token0 left the pool → buyer received token0
+        let is_buy = amt0 < 0.0;
+
+        // Price = how much token1 per token0 (in human-readable units)
         let price = if amt0.abs() > 0.0 {
             amt1.abs() / amt0.abs()
         } else {
             0.0
         };
 
+        // Quantity in token0 units
         let quantity = amt0.abs();
 
         (price, quantity, is_buy)

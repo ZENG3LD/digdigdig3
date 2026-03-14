@@ -12,6 +12,7 @@ use serde_json::Value;
 use crate::core::types::{
     ExchangeError, ExchangeResult,
     Kline, OrderBook, Ticker,
+    FundingRate, Position, PositionSide, MarginType, Order, OrderSide, OrderStatus, OrderType, TimeInForce,
 };
 
 /// Parser for GMX API responses
@@ -357,6 +358,413 @@ impl GmxParser {
     }
 
     // Note: WebSocket-like functionality is handled in websocket.rs via polling
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FUNDING RATE (from /markets/info)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse funding rate for a given symbol from the `/markets/info` response.
+    ///
+    /// The `/markets/info` endpoint returns an object keyed by market token address:
+    /// ```json
+    /// {
+    ///   "0x70d9...": {
+    ///     "marketSymbol": "ETH/USD [ETH-USDC]",
+    ///     "indexTokenSymbol": "ETH",
+    ///     "fundingFactorPerSecond": "380517503805175",
+    ///     "longsPayShorts": true,
+    ///     "borrowingFactorPerSecondForLongs": "190258751902587",
+    ///     "borrowingFactorPerSecondForShorts": "190258751902587"
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// `is_long` selects which side's effective rate to return:
+    /// - `true`  → `fundingFactorPerSecond` (positive when `longsPayShorts`, negative otherwise)
+    /// - `false` → negated rate
+    ///
+    /// Rates are raw per-second factors with 30-decimal precision.
+    /// Converted to per-hour by multiplying by 3600.
+    pub fn parse_funding_rate(
+        response: &Value,
+        symbol: &str,
+        is_long: bool,
+    ) -> ExchangeResult<FundingRate> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        // Extract base symbol (e.g. "ETH" from "ETH/USD")
+        let base = symbol.split('/').next().unwrap_or(symbol).to_uppercase();
+
+        // Response can be either:
+        // 1. A top-level object {"markets": [...]} (unlikely for /markets/info but defensive)
+        // 2. An object keyed by market token address
+        let markets_obj = if let Some(inner) = response.get("markets") {
+            inner
+        } else {
+            response
+        };
+
+        // Find a market entry whose indexTokenSymbol (or marketSymbol prefix) matches
+        let market_data = if let Some(obj) = markets_obj.as_object() {
+            obj.values().find(|v| {
+                // Match by indexTokenSymbol field
+                v.get("indexTokenSymbol")
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.to_uppercase() == base)
+                    .unwrap_or(false)
+            }).ok_or_else(|| ExchangeError::Parse(format!(
+                "Symbol '{}' not found in /markets/info response", base
+            )))?
+        } else if let Some(arr) = markets_obj.as_array() {
+            // Fallback: array of market objects
+            arr.iter().find(|v| {
+                v.get("indexTokenSymbol")
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.to_uppercase() == base)
+                    .unwrap_or(false)
+            }).ok_or_else(|| ExchangeError::Parse(format!(
+                "Symbol '{}' not found in /markets/info response", base
+            )))?
+        } else {
+            return Err(ExchangeError::Parse(
+                "/markets/info: expected object or array".to_string()
+            ));
+        };
+
+        // Parse funding factor per second (30-decimal precision string)
+        // Rate = factor / 10^30 per second → multiply by 3600 for per-hour
+        let raw_factor: f64 = market_data
+            .get("fundingFactorPerSecond")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+
+        // Convert to hourly rate: raw / 10^30 * 3600
+        let factor_per_hour = raw_factor / 1e30 * 3600.0;
+
+        // longsPayShorts determines sign
+        let longs_pay = market_data
+            .get("longsPayShorts")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        // If longsPayShorts=true: longs pay (positive rate for longs, negative for shorts)
+        // If longsPayShorts=false: shorts pay (negative rate for longs, positive for shorts)
+        let rate = if is_long {
+            if longs_pay { factor_per_hour } else { -factor_per_hour }
+        } else {
+            if longs_pay { -factor_per_hour } else { factor_per_hour }
+        };
+
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+
+        Ok(FundingRate {
+            symbol: symbol.to_string(),
+            rate,
+            next_funding_time: None, // GMX uses continuous funding, no discrete settlement
+            timestamp: now_ms,
+        })
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SUBSQUID — POSITIONS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse open positions from a Subsquid GraphQL response.
+    ///
+    /// Expected Subsquid response shape:
+    /// ```json
+    /// {
+    ///   "data": {
+    ///     "positions": [
+    ///       {
+    ///         "id": "...",
+    ///         "market": "0x...",
+    ///         "collateralToken": "0x...",
+    ///         "isLong": true,
+    ///         "sizeInUsd": "5000000000000000000000000000000000",
+    ///         "sizeInTokens": "2000000000000000000",
+    ///         "collateralAmount": "500000000000000000",
+    ///         "entryPrice": "2500000000000000000000000000000000",
+    ///         "unrealizedPnl": "100000000000000000000000000000000",
+    ///         "createdAt": 1674567890,
+    ///         "indexTokenSymbol": "ETH"
+    ///       }
+    ///     ]
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// USD values use 30-decimal precision; `sizeInTokens` / `collateralAmount` use
+    /// token-native decimals.
+    pub fn parse_positions(response: &Value) -> ExchangeResult<Vec<Position>> {
+        let arr = response
+            .get("data")
+            .and_then(|d| d.get("positions"))
+            .and_then(|p| p.as_array())
+            .ok_or_else(|| ExchangeError::Parse(
+                "Subsquid positions: expected data.positions array".to_string()
+            ))?;
+
+        let mut positions = Vec::with_capacity(arr.len());
+
+        for item in arr {
+            // Determine symbol: prefer "indexTokenSymbol", fall back to market address
+            let raw_symbol = item.get("indexTokenSymbol")
+                .and_then(|v| v.as_str())
+                .unwrap_or_else(|| {
+                    item.get("market")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("UNKNOWN")
+                });
+            let symbol = format!("{}/USD", raw_symbol.to_uppercase());
+
+            let is_long = item.get("isLong")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let side = if is_long { PositionSide::Long } else { PositionSide::Short };
+
+            // sizeInUsd: 30-decimal USD → f64
+            let size_usd: f64 = item.get("sizeInUsd")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .map(|v| v / 1e30)
+                .unwrap_or(0.0);
+
+            // sizeInTokens: token-native decimals (18 for most) → use as quantity
+            let size_tokens: f64 = item.get("sizeInTokens")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .map(|v| v / 1e18)
+                .unwrap_or(size_usd);
+
+            // entryPrice: 30-decimal USD
+            let entry_price: f64 = item.get("entryPrice")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .map(|v| v / 1e30)
+                .unwrap_or(0.0);
+
+            // unrealizedPnl: 30-decimal USD (may be negative string)
+            let unrealized_pnl: f64 = item.get("unrealizedPnl")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .map(|v| v / 1e30)
+                .or_else(|| {
+                    // Some Subsquid versions return as numeric
+                    item.get("unrealizedPnl").and_then(|v| v.as_f64())
+                })
+                .unwrap_or(0.0);
+
+            // realizedPnl: optional
+            let realized_pnl: Option<f64> = item.get("realizedPnl")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .map(|v| v / 1e30);
+
+            // collateralAmount: token decimals (18 default)
+            // Not directly mapped to a Position field; use for margin approximation
+            let collateral: f64 = item.get("collateralAmount")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .map(|v| v / 1e18)
+                .unwrap_or(0.0);
+
+            // Leverage: size_usd / collateral_usd (approximation since collateral is in tokens)
+            // We leave it as 1 when we cannot compute it reliably
+            let leverage: u32 = if collateral > 0.0 && entry_price > 0.0 {
+                let collateral_usd = collateral * entry_price;
+                if collateral_usd > 0.0 {
+                    (size_usd / collateral_usd).round() as u32
+                } else {
+                    1
+                }
+            } else {
+                1
+            };
+
+            positions.push(Position {
+                symbol,
+                side,
+                quantity: size_tokens,
+                entry_price,
+                mark_price: None,
+                unrealized_pnl,
+                realized_pnl,
+                liquidation_price: None,
+                leverage,
+                margin_type: MarginType::Cross, // GMX always cross (shared pool)
+                margin: Some(collateral),
+                take_profit: None,
+                stop_loss: None,
+            });
+        }
+
+        Ok(positions)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SUBSQUID — ORDERS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse orders from a Subsquid GraphQL response.
+    ///
+    /// Used for both `get_open_orders` (status=active) and
+    /// `get_order_history` (status=executed/cancelled).
+    ///
+    /// Expected shape per order in `data.orders`:
+    /// ```json
+    /// {
+    ///   "id": "0x...",
+    ///   "orderType": "MarketIncrease",
+    ///   "market": "0x...",
+    ///   "indexTokenSymbol": "ETH",
+    ///   "sizeDeltaUsd": "1000000000000000000000000000000000",
+    ///   "triggerPrice": "2500000000000000000000000000000000",
+    ///   "isLong": true,
+    ///   "status": "active",
+    ///   "timestamp": 1674567890
+    /// }
+    /// ```
+    pub fn parse_orders(response: &Value) -> ExchangeResult<Vec<Order>> {
+        let arr = response
+            .get("data")
+            .and_then(|d| d.get("orders"))
+            .and_then(|p| p.as_array())
+            .ok_or_else(|| ExchangeError::Parse(
+                "Subsquid orders: expected data.orders array".to_string()
+            ))?;
+
+        let mut orders = Vec::with_capacity(arr.len());
+
+        for item in arr {
+            let id = item.get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+
+            let raw_symbol = item.get("indexTokenSymbol")
+                .and_then(|v| v.as_str())
+                .unwrap_or("UNKNOWN");
+            let symbol = format!("{}/USD", raw_symbol.to_uppercase());
+
+            let is_long = item.get("isLong")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let side = if is_long { OrderSide::Buy } else { OrderSide::Sell };
+
+            // Map Subsquid orderType string to our enum
+            let order_type_str = item.get("orderType")
+                .and_then(|v| v.as_str())
+                .unwrap_or("MarketIncrease");
+            let (order_type, stop_price) = Self::map_order_type(order_type_str, item);
+
+            // sizeDeltaUsd: 30-decimal USD
+            let size_usd: f64 = item.get("sizeDeltaUsd")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .map(|v| v / 1e30)
+                .unwrap_or(0.0);
+
+            // triggerPrice: 30-decimal USD → price field for limit orders
+            let trigger_price: Option<f64> = item.get("triggerPrice")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .map(|v| v / 1e30)
+                .filter(|&p| p > 0.0);
+
+            let status_str = item.get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("active");
+            let status = Self::map_order_status(status_str);
+
+            let timestamp_sec = item.get("timestamp")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let created_at = timestamp_sec * 1000; // to ms
+
+            orders.push(Order {
+                id,
+                client_order_id: None,
+                symbol,
+                side,
+                order_type,
+                status,
+                price: trigger_price,
+                stop_price,
+                quantity: size_usd, // GMX sizes are in USD notional
+                filled_quantity: 0.0,
+                average_price: None,
+                commission: None,
+                commission_asset: None,
+                created_at,
+                updated_at: None,
+                time_in_force: TimeInForce::Gtc,
+            });
+        }
+
+        Ok(orders)
+    }
+
+    /// Parse a single order from Subsquid `data.order` (singular).
+    pub fn parse_single_order(response: &Value) -> ExchangeResult<Order> {
+        // Some Subsquid queries return `data.order` (singular) for by-id lookup
+        let item = response
+            .get("data")
+            .and_then(|d| d.get("order"))
+            .ok_or_else(|| ExchangeError::Parse(
+                "Subsquid order: expected data.order object".to_string()
+            ))?;
+
+        // Wrap in a fake array response for code reuse
+        let fake = serde_json::json!({
+            "data": { "orders": [item] }
+        });
+        let mut orders = Self::parse_orders(&fake)?;
+        orders.pop().ok_or_else(|| ExchangeError::Parse(
+            "Subsquid order: empty result".to_string()
+        ))
+    }
+
+    /// Map Subsquid order type string to our `OrderType` enum.
+    ///
+    /// Also returns an optional `stop_price` for stop-type orders.
+    fn map_order_type(order_type_str: &str, item: &Value) -> (OrderType, Option<f64>) {
+        let trigger_price: Option<f64> = item.get("triggerPrice")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .map(|v| v / 1e30)
+            .filter(|&p| p > 0.0);
+
+        match order_type_str {
+            "LimitIncrease" | "LimitDecrease" | "LimitSwap" => {
+                let price = trigger_price.unwrap_or(0.0);
+                (OrderType::Limit { price }, None)
+            }
+            "StopLossDecrease" => {
+                let stop = trigger_price.unwrap_or(0.0);
+                (OrderType::StopMarket { stop_price: stop }, Some(stop))
+            }
+            _ => {
+                // MarketIncrease, MarketDecrease, MarketSwap, Liquidation, etc.
+                (OrderType::Market, None)
+            }
+        }
+    }
+
+    /// Map Subsquid order status string to our `OrderStatus` enum.
+    fn map_order_status(status: &str) -> OrderStatus {
+        match status.to_lowercase().as_str() {
+            "active" | "open" => OrderStatus::Open,
+            "executed" | "filled" => OrderStatus::Filled,
+            "cancelled" | "canceled" => OrderStatus::Canceled,
+            "frozen" | "frozen-order" => OrderStatus::Open, // frozen = paused, still live
+            _ => OrderStatus::Open,
+        }
+    }
 }
 
 #[cfg(test)]

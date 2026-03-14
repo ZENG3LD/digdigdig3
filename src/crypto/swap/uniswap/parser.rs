@@ -12,6 +12,33 @@ use crate::core::{
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// TYPES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Unsigned swap transaction returned by the Trading API `/swap` endpoint.
+///
+/// The caller must sign the transaction and broadcast it to the Ethereum network.
+#[derive(Debug, Clone)]
+pub struct SwapTransaction {
+    /// ABI-encoded calldata for the swap (0x-prefixed hex)
+    pub calldata: String,
+    /// Target contract address (Uniswap Universal Router)
+    pub to: String,
+    /// ETH value to send with the transaction (in wei, hex-encoded)
+    pub value: String,
+    /// Gas estimate from the API
+    pub gas_limit: Option<u64>,
+    /// Maximum fee per gas (EIP-1559, in wei)
+    pub max_fee_per_gas: Option<String>,
+    /// Maximum priority fee per gas (EIP-1559, in wei)
+    pub max_priority_fee_per_gas: Option<String>,
+    /// Chain ID
+    pub chain_id: Option<u64>,
+    /// Full raw response for advanced usage
+    pub raw: Value,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // PARSER
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -66,18 +93,64 @@ impl UniswapParser {
         Ok(price)
     }
 
-    /// Parse swap transaction response
-    pub fn parse_swap_transaction(response: &Value) -> ExchangeResult<String> {
+    /// Parse swap transaction response from the Trading API `/swap` endpoint.
+    ///
+    /// Extracts the unsigned transaction fields so the caller can sign and broadcast.
+    pub fn parse_swap_transaction(response: &Value) -> ExchangeResult<SwapTransaction> {
         let tx = response
             .get("transaction")
             .ok_or_else(|| ExchangeError::Parse("Missing transaction field".to_string()))?;
 
-        let data = tx
+        let calldata = tx
             .get("data")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ExchangeError::Parse("Missing transaction data".to_string()))?;
+            .ok_or_else(|| ExchangeError::Parse("Missing transaction data".to_string()))?
+            .to_string();
 
-        Ok(data.to_string())
+        let to = tx
+            .get("to")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let value = tx
+            .get("value")
+            .and_then(|v| v.as_str())
+            .unwrap_or("0x0")
+            .to_string();
+
+        let gas_limit = tx
+            .get("gasLimit")
+            .and_then(|v| v.as_str())
+            .and_then(|s| {
+                let hex = s.trim_start_matches("0x");
+                u64::from_str_radix(hex, 16).ok()
+            });
+
+        let max_fee_per_gas = tx
+            .get("maxFeePerGas")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let max_priority_fee_per_gas = tx
+            .get("maxPriorityFeePerGas")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let chain_id = tx
+            .get("chainId")
+            .and_then(|v| v.as_u64());
+
+        Ok(SwapTransaction {
+            calldata,
+            to,
+            value,
+            gas_limit,
+            max_fee_per_gas,
+            max_priority_fee_per_gas,
+            chain_id,
+            raw: response.clone(),
+        })
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

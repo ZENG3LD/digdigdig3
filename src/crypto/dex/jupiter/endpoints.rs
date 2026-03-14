@@ -58,9 +58,9 @@ pub enum JupiterEndpoint {
     // === TOKENS API ===
     /// GET /tokens/v2/search - search tokens
     TokenSearch,
-    /// GET /tokens/v2/tag - query by tag
+    /// GET /tokens/v2/tag/{tag} - query by tag
     TokenTag,
-    /// GET /tokens/v2/{category}/{interval} - top tokens
+    /// GET /tokens/v2/{category}/{interval} - top tokens by category
     TokenCategory,
     /// GET /tokens/v2/recent - recently created tokens
     TokenRecent,
@@ -68,7 +68,7 @@ pub enum JupiterEndpoint {
     TokensV2,
 
     // === ULTRA SWAP API ===
-    /// POST /ultra/v1/order — create a new Ultra swap order
+    /// GET /ultra/v1/order — create a new Ultra swap order (GET with query params)
     UltraSwapOrder,
     /// GET /ultra/v1/status — get swap status by transaction ID
     UltraSwapStatus,
@@ -76,12 +76,40 @@ pub enum JupiterEndpoint {
     UltraSwapCreate,
     /// POST /ultra/v1/execute — execute (broadcast) a signed swap transaction
     UltraSwapExecute,
-    /// GET /ultra/v1/balances — get token balances for a wallet
-    UltraSwapBalances,
+    /// GET /ultra/v1/holdings/{address} — get token holdings for a wallet
+    UltraHoldings,
+    /// GET /ultra/v1/holdings/{address}/native — get native SOL balance only
+    UltraHoldingsNative,
+
+    // === TRIGGER API (limit orders) ===
+    /// POST /trigger/v1/createOrder — create a trigger (limit) order
+    TriggerCreateOrder,
+    /// POST /trigger/v1/execute — execute a signed trigger order transaction
+    TriggerExecute,
+    /// POST /trigger/v1/cancelOrder — cancel a single trigger order
+    TriggerCancelOrder,
+    /// POST /trigger/v1/cancelOrders — cancel multiple trigger orders
+    TriggerCancelOrders,
+    /// GET /trigger/v1/getTriggerOrders — query trigger orders for a wallet
+    TriggerGetOrders,
+
+    // === RECURRING API (DCA orders) ===
+    /// POST /recurring/v1/createOrder — create a recurring DCA order
+    RecurringCreateOrder,
+    /// POST /recurring/v1/execute — execute a signed recurring order transaction
+    RecurringExecute,
+    /// POST /recurring/v1/cancelOrder — cancel a recurring order
+    RecurringCancelOrder,
+    /// GET /recurring/v1/getRecurringOrders — query recurring orders for a wallet
+    RecurringGetOrders,
 }
 
 impl JupiterEndpoint {
     /// Получить полный URL для endpoint'а
+    ///
+    /// For path-parameterised endpoints (`UltraHoldings`, `UltraHoldingsNative`,
+    /// `TokenTag`, `TokenCategory`) the caller appends the path segments after
+    /// calling this method (the returned string has no trailing slash).
     pub fn url(&self, urls: &JupiterUrls) -> String {
         match self {
             Self::Quote => format!("{}/quote", urls.swap_rest),
@@ -89,8 +117,10 @@ impl JupiterEndpoint {
             Self::SwapInstructions => format!("{}/swap-instructions", urls.swap_rest),
             Self::Price => urls.price_rest.to_string(),
             Self::TokenSearch => format!("{}/search", urls.tokens_rest),
+            // Caller appends "/{tag}"
             Self::TokenTag => format!("{}/tag", urls.tokens_rest),
-            Self::TokenCategory => urls.tokens_rest.to_string(), // path appended dynamically
+            // Caller appends "/{category}/{interval}"
+            Self::TokenCategory => urls.tokens_rest.to_string(),
             Self::TokenRecent => format!("{}/recent", urls.tokens_rest),
             Self::TokensV2 => urls.tokens_rest.to_string(),
 
@@ -99,7 +129,23 @@ impl JupiterEndpoint {
             Self::UltraSwapStatus => format!("{}/ultra/v1/status", urls.base_url()),
             Self::UltraSwapCreate => format!("{}/ultra/v1/create", urls.base_url()),
             Self::UltraSwapExecute => format!("{}/ultra/v1/execute", urls.base_url()),
-            Self::UltraSwapBalances => format!("{}/ultra/v1/balances", urls.base_url()),
+            // Caller appends "/{address}"
+            Self::UltraHoldings => format!("{}/ultra/v1/holdings", urls.base_url()),
+            // Caller appends "/{address}/native"
+            Self::UltraHoldingsNative => format!("{}/ultra/v1/holdings", urls.base_url()),
+
+            // Trigger API
+            Self::TriggerCreateOrder => format!("{}/trigger/v1/createOrder", urls.base_url()),
+            Self::TriggerExecute => format!("{}/trigger/v1/execute", urls.base_url()),
+            Self::TriggerCancelOrder => format!("{}/trigger/v1/cancelOrder", urls.base_url()),
+            Self::TriggerCancelOrders => format!("{}/trigger/v1/cancelOrders", urls.base_url()),
+            Self::TriggerGetOrders => format!("{}/trigger/v1/getTriggerOrders", urls.base_url()),
+
+            // Recurring API
+            Self::RecurringCreateOrder => format!("{}/recurring/v1/createOrder", urls.base_url()),
+            Self::RecurringExecute => format!("{}/recurring/v1/execute", urls.base_url()),
+            Self::RecurringCancelOrder => format!("{}/recurring/v1/cancelOrder", urls.base_url()),
+            Self::RecurringGetOrders => format!("{}/recurring/v1/getRecurringOrders", urls.base_url()),
         }
     }
 
@@ -114,9 +160,15 @@ impl JupiterEndpoint {
         match self {
             Self::Swap
             | Self::SwapInstructions
-            | Self::UltraSwapOrder
             | Self::UltraSwapCreate
-            | Self::UltraSwapExecute => "POST",
+            | Self::UltraSwapExecute
+            | Self::TriggerCreateOrder
+            | Self::TriggerExecute
+            | Self::TriggerCancelOrder
+            | Self::TriggerCancelOrders
+            | Self::RecurringCreateOrder
+            | Self::RecurringExecute
+            | Self::RecurringCancelOrder => "POST",
             _ => "GET",
         }
     }

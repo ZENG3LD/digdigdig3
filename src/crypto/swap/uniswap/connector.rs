@@ -35,7 +35,7 @@ use crate::core::types::{
 
 use super::endpoints::{UniswapUrls, UniswapEndpoint, format_token_address, find_pool_metadata, PoolMetadata};
 use super::auth::UniswapAuth;
-use super::parser::UniswapParser;
+use super::parser::{UniswapParser, SwapTransaction};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR
@@ -286,6 +286,38 @@ impl UniswapConnector {
         self.post_subgraph_query(&query).await
     }
 
+    /// Query the most recent daily volume for a pool from the subgraph.
+    ///
+    /// Returns the `volumeUSD` from `poolDayDatas` for the latest day entry.
+    /// Falls back to `None` on any error so the caller can degrade gracefully.
+    async fn query_pool_day_volume(&self, pool_address: &str) -> Option<f64> {
+        let query = format!(
+            r#"{{
+                poolDayDatas(
+                    first: 1
+                    orderBy: date
+                    orderDirection: desc
+                    where: {{ pool: "{}" }}
+                ) {{
+                    volumeUSD
+                    date
+                }}
+            }}"#,
+            pool_address.to_lowercase()
+        );
+
+        let response = self.post_subgraph_query(&query).await.ok()?;
+
+        let entries = response
+            .get("data")?
+            .get("poolDayDatas")?
+            .as_array()?;
+
+        let first = entries.first()?;
+        let vol_str = first.get("volumeUSD")?.as_str()?;
+        vol_str.parse::<f64>().ok()
+    }
+
     /// Query all pools from subgraph
     async fn query_all_pools(&self, limit: u16) -> ExchangeResult<Value> {
         let query = format!(
@@ -403,7 +435,69 @@ impl UniswapConnector {
         self.post_trading_api(UniswapEndpoint::Quote, body).await
     }
 
-    /// Get token balance (via Ethereum RPC)
+    /// Get the number of decimals for a token address.
+    ///
+    /// Checks a static map of well-known tokens first.  If the address is not
+    /// recognised, falls back to calling `decimals()` (selector `0x313ce567`)
+    /// on the ERC-20 contract via `eth_call`.
+    pub async fn get_token_decimals(&self, token_address: &str) -> ExchangeResult<u8> {
+        // Static lookup for well-known tokens (avoids an RPC round-trip)
+        let addr_lower = token_address.to_lowercase();
+        let known = match addr_lower.as_str() {
+            // WETH — 18 decimals
+            "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2" => Some(18u8),
+            // USDC — 6 decimals
+            "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48" => Some(6),
+            // USDT — 6 decimals
+            "0xdac17f958d2ee523a2206206994597c13d831ec7" => Some(6),
+            // DAI — 18 decimals
+            "0x6b175474e89094c44da98b954eedeac495271d0f" => Some(18),
+            // WBTC — 8 decimals
+            "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599" => Some(8),
+            // UNI — 18 decimals
+            "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984" => Some(18),
+            _ => None,
+        };
+
+        if let Some(d) = known {
+            return Ok(d);
+        }
+
+        // Fallback: call decimals() on the contract — selector 0x313ce567
+        let params = vec![
+            json!({
+                "to": token_address,
+                "data": "0x313ce567"
+            }),
+            json!("latest"),
+        ];
+
+        let response = self.post_eth_rpc("eth_call", params).await?;
+
+        let result = response
+            .get("result")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ExchangeError::Parse("Missing result for decimals()".to_string()))?;
+
+        let hex_str = result.trim_start_matches("0x");
+        if hex_str.is_empty() {
+            return Ok(18); // fallback default
+        }
+
+        // ABI-encoded uint8 return is right-aligned in a 32-byte word
+        let val = u128::from_str_radix(
+            &hex_str[hex_str.len().saturating_sub(2)..],
+            16,
+        )
+        .map_err(|e| ExchangeError::Parse(format!("Invalid decimals hex: {}", e)))?;
+
+        Ok(val as u8)
+    }
+
+    /// Get token balance (via Ethereum RPC) with correct decimal scaling.
+    ///
+    /// Uses a static lookup for well-known tokens and falls back to calling
+    /// `decimals()` on the contract for unknown tokens.
     pub async fn get_token_balance(
         &self,
         token_address: &str,
@@ -432,11 +526,13 @@ impl UniswapConnector {
             .ok_or_else(|| ExchangeError::Parse("Missing result".to_string()))?;
 
         let hex_str = result.trim_start_matches("0x");
-        let balance_wei = u128::from_str_radix(hex_str, 16)
+        let balance_raw = u128::from_str_radix(hex_str, 16)
             .map_err(|e| ExchangeError::Parse(format!("Invalid hex: {}", e)))?;
 
-        // Assume 18 decimals (should query token.decimals() in production)
-        let balance = balance_wei as f64 / 1e18;
+        // Resolve decimals — use correct value per token
+        let decimals = self.get_token_decimals(token_address).await.unwrap_or(18);
+        let divisor = 10_f64.powi(decimals as i32);
+        let balance = balance_raw as f64 / divisor;
 
         Ok(balance)
     }
@@ -553,11 +649,19 @@ impl MarketData for UniswapConnector {
         // Get pool address
         let pool_address = self.get_pool_address(&symbol.base, &symbol.quote)?;
 
-        // Query pool data
-        let response = self.query_pool(&pool_address).await?;
+        // Query pool data and 24h volume in parallel
+        let (pool_response, volume_24h) = tokio::join!(
+            self.query_pool(&pool_address),
+            self.query_pool_day_volume(&pool_address),
+        );
+        let pool_response = pool_response?;
 
-        // Parse ticker
-        UniswapParser::parse_ticker(&response, &symbol.to_string())
+        // Parse ticker — override volume_24h with the accurate daily figure
+        let mut ticker = UniswapParser::parse_ticker(&pool_response, &symbol.to_string())?;
+        if volume_24h.is_some() {
+            ticker.volume_24h = volume_24h;
+        }
+        Ok(ticker)
     }
 
     async fn ping(&self) -> ExchangeResult<()> {
@@ -724,5 +828,128 @@ impl UniswapConnector {
             .collect();
 
         Ok(symbols)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SWAP FLOW
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Build an unsigned swap transaction via the Uniswap Trading API.
+    ///
+    /// Steps:
+    /// 1. Fetches a quote from `/quote`
+    /// 2. POSTs to `/swap` with the quote and swap parameters
+    /// 3. Parses and returns the unsigned transaction data
+    ///
+    /// The returned [`SwapTransaction`] contains calldata, `to`, `value` and
+    /// gas fields.  The caller must sign the transaction and broadcast it to
+    /// the Ethereum network.
+    ///
+    /// # Arguments
+    /// - `token_in`          — symbol or address of the input token (e.g. `"WETH"`)
+    /// - `token_out`         — symbol or address of the output token (e.g. `"USDC"`)
+    /// - `amount`            — input amount in the token's smallest unit (wei / subunits)
+    /// - `recipient`         — Ethereum address that will receive the output tokens
+    /// - `slippage_tolerance` — maximum acceptable slippage, e.g. `0.005` for 0.5 %
+    pub async fn get_swap_transaction(
+        &self,
+        token_in: &str,
+        token_out: &str,
+        amount: &str,
+        recipient: &str,
+        slippage_tolerance: f64,
+    ) -> ExchangeResult<SwapTransaction> {
+        let account_type = AccountType::Spot;
+        let token_in_addr = format_token_address(token_in, account_type);
+        let token_out_addr = format_token_address(token_out, account_type);
+
+        // Step 1: get a quote so we have `quoteId` and output amount
+        let quote_response = self.get_quote(token_in, token_out, amount, account_type).await?;
+
+        // Extract the quote object for inclusion in the swap request
+        let quote = quote_response
+            .get("quote")
+            .ok_or_else(|| ExchangeError::Parse("Quote response missing 'quote' field".to_string()))?;
+
+        // Slippage tolerance as percentage string (e.g. 0.005 → "0.5")
+        let slippage_pct = slippage_tolerance * 100.0;
+
+        // Step 2: POST to /swap
+        let body = json!({
+            "quote": quote,
+            "swapConfig": {
+                "recipient": recipient,
+                "slippageTolerance": slippage_pct,
+                "deadline": 1800  // 30 minutes
+            },
+            "tokenInChainId": self.urls.chain_id,
+            "tokenOutChainId": self.urls.chain_id,
+            "tokenIn": token_in_addr,
+            "tokenOut": token_out_addr,
+        });
+
+        let response = self.post_trading_api(UniswapEndpoint::Swap, body).await?;
+
+        // Step 3: parse the unsigned transaction
+        UniswapParser::parse_swap_transaction(&response)
+    }
+
+    /// Check whether a token has sufficient approval for the Uniswap Permit2 contract.
+    ///
+    /// POSTs to the Trading API `/approval` endpoint and returns the raw JSON
+    /// response.  If approval is required, the response will contain an
+    /// `approvalTx` field with the unsigned ERC-20 `approve()` calldata.
+    ///
+    /// # Arguments
+    /// - `token`  — symbol or address of the token to check (e.g. `"USDC"`)
+    /// - `wallet` — Ethereum wallet address
+    /// - `amount` — amount that must be approved (in smallest unit)
+    pub async fn check_token_approval(
+        &self,
+        token: &str,
+        wallet: &str,
+        amount: &str,
+    ) -> ExchangeResult<Value> {
+        let account_type = AccountType::Spot;
+        let token_addr = format_token_address(token, account_type);
+
+        let body = json!({
+            "walletAddress": wallet,
+            "token": token_addr,
+            "amount": amount,
+            "chainId": self.urls.chain_id
+        });
+
+        self.post_trading_api(UniswapEndpoint::CheckApproval, body).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TVL
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Query the Total Value Locked (TVL) in USD for a token pair's pool.
+    ///
+    /// `totalValueLockedUSD` is already fetched by `query_pool()` but was not
+    /// previously exposed.  This method parses and returns it directly.
+    pub async fn get_pool_tvl(&self, base: &str, quote: &str) -> ExchangeResult<f64> {
+        let pool_address = self.get_pool_address(base, quote)?;
+        let response = self.query_pool(&pool_address).await?;
+
+        let data = response
+            .get("data")
+            .ok_or_else(|| ExchangeError::Parse("Missing data field".to_string()))?;
+
+        let pool = data
+            .get("pool")
+            .ok_or_else(|| ExchangeError::Parse("Missing pool field".to_string()))?;
+
+        let tvl_str = pool
+            .get("totalValueLockedUSD")
+            .and_then(|v| v.as_str())
+            .unwrap_or("0");
+
+        tvl_str
+            .parse::<f64>()
+            .map_err(|e| ExchangeError::Parse(format!("Invalid TVL: {}", e)))
     }
 }

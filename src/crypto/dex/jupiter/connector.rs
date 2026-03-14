@@ -242,27 +242,27 @@ impl JupiterConnector {
     /// Create a new Ultra Swap order
     ///
     /// The Ultra Swap API provides an improved routing experience with guaranteed
-    /// execution. Returns an order object including the transaction to sign.
+    /// execution. Returns an order object including the transaction to sign and a
+    /// `requestId` that must be forwarded to `execute_ultra_swap`.
+    ///
+    /// Uses `GET /ultra/v1/order` with query parameters (not a POST body).
     ///
     /// `input_mint` and `output_mint` are Solana mint addresses.
     /// `amount` is the raw input amount (in lamports / smallest unit).
-    /// `slippage_bps` is the maximum acceptable slippage in basis points (e.g. 50 = 0.5%).
+    /// `taker` is the user's Solana wallet public key.
     pub async fn create_ultra_swap_order(
         &self,
         input_mint: &str,
         output_mint: &str,
         amount: u64,
-        slippage_bps: u16,
-        user_public_key: &str,
+        taker: &str,
     ) -> ExchangeResult<Value> {
-        let body = serde_json::json!({
-            "inputMint": input_mint,
-            "outputMint": output_mint,
-            "amount": amount.to_string(),
-            "slippageBps": slippage_bps,
-            "userPublicKey": user_public_key,
-        });
-        self.post(JupiterEndpoint::UltraSwapOrder, body).await
+        let mut params = HashMap::new();
+        params.insert("inputMint".to_string(), input_mint.to_string());
+        params.insert("outputMint".to_string(), output_mint.to_string());
+        params.insert("amount".to_string(), amount.to_string());
+        params.insert("taker".to_string(), taker.to_string());
+        self.get(JupiterEndpoint::UltraSwapOrder, params).await
     }
 
     /// Get the status of an Ultra Swap by transaction ID
@@ -300,23 +300,307 @@ impl JupiterConnector {
     /// Execute (broadcast) a signed Ultra Swap transaction
     ///
     /// `signed_transaction` is the Base64-encoded signed Solana transaction.
+    /// `request_id` is the UUID returned by `create_ultra_swap_order` — it is
+    /// required by the `/execute` endpoint to correlate the order.
     /// Returns the transaction signature and confirmation status.
-    pub async fn execute_ultra_swap(&self, signed_transaction: &str) -> ExchangeResult<Value> {
+    pub async fn execute_ultra_swap(
+        &self,
+        signed_transaction: &str,
+        request_id: &str,
+    ) -> ExchangeResult<Value> {
         let body = serde_json::json!({
             "signedTransaction": signed_transaction,
+            "requestId": request_id,
         });
         self.post(JupiterEndpoint::UltraSwapExecute, body).await
     }
 
-    /// Get token balances for a wallet address
+    /// Get token holdings for a wallet address
     ///
-    /// Returns all SPL token balances for the given Solana wallet public key
-    /// as seen by the Jupiter Ultra API.
-    /// Corresponds to `GET /ultra/v1/balances`.
-    pub async fn get_ultra_balances(&self, wallet: &str) -> ExchangeResult<Value> {
+    /// Returns native SOL balance (top-level) and all SPL token balances (under
+    /// `tokens`) for the given Solana wallet public key. Uses the current
+    /// `GET /ultra/v1/holdings/{address}` endpoint (replaces the deprecated
+    /// `/ultra/v1/balances` endpoint).
+    pub async fn get_ultra_holdings(&self, wallet: &str) -> ExchangeResult<Value> {
+        let url = format!("{}/{}", JupiterEndpoint::UltraHoldings.url(&self.urls), wallet);
+        self.rate_limit_wait().await;
+        let headers = self.auth.auth_headers();
+        let response = self.http.get_with_headers(&url, &HashMap::new(), &headers).await?;
+        JupiterParser::check_error(&response)?;
+        Ok(response)
+    }
+
+    /// Get native SOL balance only for a wallet address
+    ///
+    /// Corresponds to `GET /ultra/v1/holdings/{address}/native`.
+    /// Faster than `get_ultra_holdings` for wallets with many token accounts.
+    pub async fn get_ultra_holdings_native(&self, wallet: &str) -> ExchangeResult<Value> {
+        let url = format!("{}/{}/native", JupiterEndpoint::UltraHoldingsNative.url(&self.urls), wallet);
+        self.rate_limit_wait().await;
+        let headers = self.auth.auth_headers();
+        let response = self.http.get_with_headers(&url, &HashMap::new(), &headers).await?;
+        JupiterParser::check_error(&response)?;
+        Ok(response)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TRIGGER API (limit orders)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Create a trigger (limit) order
+    ///
+    /// A trigger order executes when the market price reaches the implied ratio
+    /// `taking_amount / making_amount`.
+    ///
+    /// Returns an unsigned Solana transaction (`transaction`), the `order`
+    /// account address, and a `requestId` needed for `execute_trigger_order`.
+    ///
+    /// All amount strings are in the token's smallest unit (pre-decimals).
+    pub async fn create_trigger_order(
+        &self,
+        input_mint: &str,
+        output_mint: &str,
+        making_amount: u64,
+        taking_amount: u64,
+        maker: &str,
+        expiry: Option<i64>,
+    ) -> ExchangeResult<Value> {
+        let mut body = serde_json::json!({
+            "inputMint": input_mint,
+            "outputMint": output_mint,
+            "maker": maker,
+            "payer": maker,
+            "makingAmount": making_amount.to_string(),
+            "takingAmount": taking_amount.to_string(),
+        });
+
+        if let Some(ts) = expiry {
+            body["expiredAt"] = serde_json::json!(ts);
+        }
+
+        self.post(JupiterEndpoint::TriggerCreateOrder, body).await
+    }
+
+    /// Execute a signed trigger order transaction
+    ///
+    /// `signed_transaction` is the Base64-encoded signed Solana transaction from
+    /// `create_trigger_order`. `request_id` is the UUID from that same response.
+    pub async fn execute_trigger_order(
+        &self,
+        signed_transaction: &str,
+        request_id: &str,
+    ) -> ExchangeResult<Value> {
+        let body = serde_json::json!({
+            "signedTransaction": signed_transaction,
+            "requestId": request_id,
+        });
+        self.post(JupiterEndpoint::TriggerExecute, body).await
+    }
+
+    /// Cancel a single trigger order
+    ///
+    /// Returns an unsigned Solana transaction and `requestId`.
+    /// The caller must sign and submit via `execute_trigger_order`.
+    pub async fn cancel_trigger_order(
+        &self,
+        order_id: &str,
+        maker: &str,
+    ) -> ExchangeResult<Value> {
+        let body = serde_json::json!({
+            "maker": maker,
+            "order": order_id,
+            "computeUnitPrice": "auto",
+        });
+        self.post(JupiterEndpoint::TriggerCancelOrder, body).await
+    }
+
+    /// Cancel multiple trigger orders in bulk
+    ///
+    /// `order_ids` lists the order account addresses to cancel.  If the slice
+    /// is empty the API cancels ALL open orders for `maker`.
+    ///
+    /// Returns one or more unsigned transactions batched in groups of 5.
+    pub async fn cancel_trigger_orders(
+        &self,
+        order_ids: &[&str],
+        maker: &str,
+    ) -> ExchangeResult<Value> {
+        let mut body = serde_json::json!({
+            "maker": maker,
+            "computeUnitPrice": "auto",
+        });
+
+        if !order_ids.is_empty() {
+            body["orders"] = serde_json::json!(order_ids);
+        }
+
+        self.post(JupiterEndpoint::TriggerCancelOrders, body).await
+    }
+
+    /// Get trigger orders for a wallet
+    ///
+    /// `status` must be `"active"` or `"history"`.
+    /// Results are paginated — 10 orders per page. Pass `page` to paginate.
+    pub async fn get_trigger_orders(
+        &self,
+        wallet: &str,
+        status: &str,
+        page: Option<u32>,
+    ) -> ExchangeResult<Value> {
         let mut params = HashMap::new();
-        params.insert("userPublicKey".to_string(), wallet.to_string());
-        self.get(JupiterEndpoint::UltraSwapBalances, params).await
+        params.insert("user".to_string(), wallet.to_string());
+        params.insert("orderStatus".to_string(), status.to_string());
+        if let Some(p) = page {
+            params.insert("page".to_string(), p.to_string());
+        }
+        self.get(JupiterEndpoint::TriggerGetOrders, params).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // RECURRING API (DCA orders)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Create a time-based recurring (DCA) order
+    ///
+    /// Deposits `total_amount` of `input_mint` and splits it into `num_orders`
+    /// executions, each separated by `interval_secs` seconds.
+    ///
+    /// Returns an unsigned Solana transaction and a `requestId` needed for
+    /// `execute_recurring_order`.
+    pub async fn create_recurring_order(
+        &self,
+        input_mint: &str,
+        output_mint: &str,
+        total_amount: u64,
+        num_orders: u32,
+        interval_secs: u64,
+        maker: &str,
+    ) -> ExchangeResult<Value> {
+        let body = serde_json::json!({
+            "user": maker,
+            "inputMint": input_mint,
+            "outputMint": output_mint,
+            "params": {
+                "time": {
+                    "inAmount": total_amount,
+                    "numberOfOrders": num_orders,
+                    "interval": interval_secs,
+                    "minPrice": null,
+                    "maxPrice": null,
+                    "startAt": null,
+                }
+            }
+        });
+        self.post(JupiterEndpoint::RecurringCreateOrder, body).await
+    }
+
+    /// Execute a signed recurring order transaction
+    ///
+    /// `signed_transaction` is the Base64-encoded signed Solana transaction.
+    /// `request_id` is the UUID from `create_recurring_order`.
+    pub async fn execute_recurring_order(
+        &self,
+        signed_transaction: &str,
+        request_id: &str,
+    ) -> ExchangeResult<Value> {
+        let body = serde_json::json!({
+            "signedTransaction": signed_transaction,
+            "requestId": request_id,
+        });
+        self.post(JupiterEndpoint::RecurringExecute, body).await
+    }
+
+    /// Cancel a recurring order
+    ///
+    /// `order_id` is the on-chain order account address.
+    /// Returns an unsigned Solana transaction and `requestId` for signing.
+    pub async fn cancel_recurring_order(
+        &self,
+        order_id: &str,
+        maker: &str,
+    ) -> ExchangeResult<Value> {
+        let body = serde_json::json!({
+            "order": order_id,
+            "user": maker,
+            "recurringType": "time",
+        });
+        self.post(JupiterEndpoint::RecurringCancelOrder, body).await
+    }
+
+    /// Get recurring orders for a wallet
+    ///
+    /// `status` must be `"active"` or `"history"`.
+    /// Results are paginated — 10 orders per page.
+    pub async fn get_recurring_orders(
+        &self,
+        wallet: &str,
+        status: &str,
+        page: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("user".to_string(), wallet.to_string());
+        params.insert("orderStatus".to_string(), status.to_string());
+        params.insert("recurringType".to_string(), "time".to_string());
+        if let Some(p) = page {
+            params.insert("page".to_string(), p.to_string());
+        }
+        self.get(JupiterEndpoint::RecurringGetOrders, params).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TOKENS V2 API
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Search tokens by name or symbol
+    ///
+    /// Corresponds to `GET /tokens/v2/search?query=...`.
+    pub async fn search_tokens(&self, query: &str) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("query".to_string(), query.to_string());
+        self.get(JupiterEndpoint::TokenSearch, params).await
+    }
+
+    /// Get tokens by tag
+    ///
+    /// Corresponds to `GET /tokens/v2/tag/{tag}`.
+    /// Common tags: `"verified"`, `"strict"`, `"community"`, `"lst"`.
+    pub async fn get_token_by_tag(&self, tag: &str) -> ExchangeResult<Value> {
+        let url = format!("{}/{}", JupiterEndpoint::TokenTag.url(&self.urls), tag);
+        self.rate_limit_wait().await;
+        let headers = self.auth.auth_headers();
+        let response = self.http.get_with_headers(&url, &HashMap::new(), &headers).await?;
+        JupiterParser::check_error(&response)?;
+        Ok(response)
+    }
+
+    /// Get trending tokens by category and interval
+    ///
+    /// Corresponds to `GET /tokens/v2/{category}/{interval}`.
+    /// Example categories: `"trending"`, `"new"`.
+    /// Example intervals: `"1h"`, `"6h"`, `"24h"`.
+    pub async fn get_trending_tokens(
+        &self,
+        category: &str,
+        interval: &str,
+    ) -> ExchangeResult<Value> {
+        let url = format!(
+            "{}/{}/{}",
+            JupiterEndpoint::TokenCategory.url(&self.urls),
+            category,
+            interval,
+        );
+        self.rate_limit_wait().await;
+        let headers = self.auth.auth_headers();
+        let response = self.http.get_with_headers(&url, &HashMap::new(), &headers).await?;
+        JupiterParser::check_error(&response)?;
+        Ok(response)
+    }
+
+    /// Get recently created tokens
+    ///
+    /// Corresponds to `GET /tokens/v2/recent`.
+    pub async fn get_recent_tokens(&self) -> ExchangeResult<Value> {
+        self.get(JupiterEndpoint::TokenRecent, HashMap::new()).await
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -620,12 +904,56 @@ impl Trading for JupiterConnector {
 
 #[async_trait]
 impl Account for JupiterConnector {
-    async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
-        Err(ExchangeError::UnsupportedOperation(
-            "Jupiter has no account system. \
-             Query SPL token balances directly via Solana RPC (getTokenAccountsByOwner)."
-                .to_string(),
-        ))
+    async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        // The wallet address is passed via `BalanceQuery::asset` when querying a
+        // specific address, or we fall back to the api key owner wallet if the
+        // field is empty.  Jupiter has no custody — balances live on-chain and
+        // are surfaced via the Ultra holdings endpoint.
+        let wallet = if let Some(ref asset) = query.asset {
+            if asset.is_empty() {
+                return Err(ExchangeError::InvalidRequest(
+                    "Wallet address is required in BalanceQuery::asset for Jupiter".to_string(),
+                ));
+            }
+            asset.clone()
+        } else {
+            return Err(ExchangeError::InvalidRequest(
+                "Wallet address is required in BalanceQuery::asset for Jupiter".to_string(),
+            ));
+        };
+
+        let response = self.get_ultra_holdings(&wallet).await?;
+
+        // Parse native SOL balance from top level
+        let mut balances: Vec<Balance> = Vec::new();
+
+        if let Some(ui_amount) = response.get("uiAmount").and_then(|v| v.as_f64()) {
+            balances.push(Balance {
+                asset: "SOL".to_string(),
+                free: ui_amount,
+                locked: 0.0,
+                total: ui_amount,
+            });
+        }
+
+        // Parse SPL token balances from the `tokens` map
+        if let Some(tokens) = response.get("tokens").and_then(|v| v.as_object()) {
+            for (mint, token_data) in tokens {
+                let ui_amount = token_data
+                    .get("uiAmount")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
+
+                balances.push(Balance {
+                    asset: mint.clone(),
+                    free: ui_amount,
+                    locked: 0.0,
+                    total: ui_amount,
+                });
+            }
+        }
+
+        Ok(balances)
     }
 
     async fn get_account_info(&self, _account_type: AccountType) -> ExchangeResult<AccountInfo> {

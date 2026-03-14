@@ -20,7 +20,7 @@
 //!
 //! ## Contract Addresses (Arbitrum Mainnet)
 //!
-//! - ExchangeRouter: `0x7C68C7866A64FA2160F78EEaE12217FFbf871fa8`
+//! - ExchangeRouter: `0x87d66368cD08a7Ca42252f5ab44B2fb6d1Fb8d15` (current; old: `0x7C68C7866A64FA2160F78EEaE12217FFbf871fa8`)
 //! - OrderVault: `0x31eF83a530Fde1B38EE9A18093A333D8Bbbc40D5`
 //! - WETH (Arbitrum): `0x82aF49447D8a07e3bd95BD0d56f35241523fBab1`
 
@@ -38,8 +38,12 @@ use crate::core::{ExchangeError, ExchangeResult};
 // GMX V2 CONTRACT ADDRESSES (Arbitrum Mainnet)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// GMX V2 ExchangeRouter on Arbitrum
-pub const EXCHANGE_ROUTER_ARBITRUM: &str = "0x7C68C7866A64FA2160F78EEaE12217FFbf871fa8";
+/// GMX V2 ExchangeRouter on Arbitrum (current as of 2026-03-11)
+///
+/// Updated from deprecated address `0x7C68C7866A64FA2160F78EEaE12217FFbf871fa8`.
+/// The old address still exists on-chain but reverts on `createOrder`.
+/// Source: GMX Contracts V2 docs — https://docs.gmx.io/docs/api/contracts-v2/
+pub const EXCHANGE_ROUTER_ARBITRUM: &str = "0x87d66368cD08a7Ca42252f5ab44B2fb6d1Fb8d15";
 
 /// GMX V2 OrderVault on Arbitrum (receives collateral before createOrder)
 pub const ORDER_VAULT_ARBITRUM: &str = "0x31eF83a530Fde1B38EE9A18093A333D8Bbbc40D5";

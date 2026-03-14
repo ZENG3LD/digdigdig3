@@ -119,6 +119,20 @@ impl RaydiumConnector {
         self.http.get(&url, params).await
     }
 
+    /// Make POST request to endpoint
+    async fn post_request(
+        &self,
+        endpoint: RaydiumEndpoint,
+        body: &serde_json::Value,
+    ) -> ExchangeResult<serde_json::Value> {
+        self.rate_limit_wait().await;
+
+        let url = endpoint.url(&self.urls);
+        let headers = HashMap::new();
+
+        self.http.post(&url, body, &headers).await
+    }
+
     /// Get pool data by mint pair
     async fn get_pool_by_mints(
         &self,
@@ -234,6 +248,222 @@ impl RaydiumConnector {
         let mut params = HashMap::new();
         params.insert("owner".to_string(), wallet.to_string());
         self.get_request(RaydiumEndpoint::FarmOwnership, &params).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SWAP API
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Get swap quote for a token pair
+    ///
+    /// Returns routing and pricing data for a proposed swap.
+    /// Use the returned quote response with [`build_swap_transaction`] to
+    /// obtain a serialized transaction ready for signing.
+    ///
+    /// # Arguments
+    /// * `input_mint`   - Source token mint address (Base58)
+    /// * `output_mint`  - Destination token mint address (Base58)
+    /// * `amount`       - Quantity in smallest units (lamports / token atomic units)
+    /// * `slippage_bps` - Maximum accepted slippage in basis points (50 = 0.5%)
+    /// * `base_in`      - `true` to fix the input amount (`SwapQuoteBaseIn`),
+    ///                    `false` to fix the output amount (`SwapQuoteBaseOut`)
+    ///
+    /// Corresponds to `GET /compute/swap-base-in` or `GET /compute/swap-base-out`.
+    pub async fn get_swap_quote(
+        &self,
+        input_mint: &str,
+        output_mint: &str,
+        amount: u64,
+        slippage_bps: u64,
+        base_in: bool,
+    ) -> ExchangeResult<serde_json::Value> {
+        let endpoint = if base_in {
+            RaydiumEndpoint::SwapQuoteBaseIn
+        } else {
+            RaydiumEndpoint::SwapQuoteBaseOut
+        };
+
+        let mut params = HashMap::new();
+        params.insert("inputMint".to_string(), input_mint.to_string());
+        params.insert("outputMint".to_string(), output_mint.to_string());
+        params.insert("amount".to_string(), amount.to_string());
+        params.insert("slippageBps".to_string(), slippage_bps.to_string());
+        // txVersion is required by the Trade API
+        params.insert("txVersion".to_string(), "V0".to_string());
+
+        self.get_request(endpoint, &params).await
+    }
+
+    /// Build a serialized swap transaction from a quote
+    ///
+    /// POSTs the quote response (obtained from [`get_swap_quote`]) together
+    /// with the user's wallet public key to the Trade API. Returns a
+    /// base64-encoded, unsigned Solana transaction that the user must sign
+    /// and submit to the network.
+    ///
+    /// # Arguments
+    /// * `quote_response` - Full JSON object returned by [`get_swap_quote`]
+    /// * `wallet_pubkey`  - User's Solana wallet public key (Base58)
+    ///
+    /// Corresponds to `POST /transaction/swap-base-in` or
+    /// `POST /transaction/swap-base-out`.  The variant is inferred from
+    /// the `swapType` field inside `quote_response`; if the field is absent
+    /// the base-in endpoint is used as default.
+    pub async fn build_swap_transaction(
+        &self,
+        quote_response: &serde_json::Value,
+        wallet_pubkey: &str,
+    ) -> ExchangeResult<String> {
+        // Determine endpoint from quote type (base-in vs base-out).
+        // The compute endpoints embed a `swapType` field in their response.
+        let is_base_in = quote_response
+            .get("swapType")
+            .and_then(|v| v.as_str())
+            .map(|s| s != "BaseOut")
+            .unwrap_or(true);
+
+        let endpoint = if is_base_in {
+            RaydiumEndpoint::SwapTransactionBaseIn
+        } else {
+            RaydiumEndpoint::SwapTransactionBaseOut
+        };
+
+        let body = serde_json::json!({
+            "swapResponse": quote_response,
+            "wallet": wallet_pubkey,
+            "txVersion": "V0",
+            "wrapSol": true,
+            "unwrapSol": true,
+        });
+
+        let response = self.post_request(endpoint, &body).await?;
+
+        // The Trade API wraps the serialized transaction(s) under `data`.
+        // It may return a single transaction or an array; we return the
+        // first (and typically only) base64 string.
+        let data = response
+            .get("data")
+            .ok_or_else(|| ExchangeError::Parse("Missing 'data' in swap transaction response".to_string()))?;
+
+        // data may be an array of transaction objects or a single object
+        let tx_obj = if let Some(arr) = data.as_array() {
+            arr.first()
+                .ok_or_else(|| ExchangeError::Parse("Empty transaction array in swap response".to_string()))?
+        } else {
+            data
+        };
+
+        // Each transaction object has a `transaction` key with the base64 string
+        tx_obj
+            .get("transaction")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| ExchangeError::Parse(
+                "Missing 'transaction' field in swap transaction response".to_string()
+            ))
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MINT / TOKEN ENDPOINTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Get Raydium's default token list
+    ///
+    /// Returns token metadata (mint address, symbol, decimals, logo) for all
+    /// tokens recognized by Raydium. Mainnet only.
+    /// Corresponds to `GET /mint/list`.
+    pub async fn get_token_list(&self) -> ExchangeResult<serde_json::Value> {
+        let params = HashMap::new();
+        self.get_request(RaydiumEndpoint::MintList, &params).await
+    }
+
+    /// Get detailed token info for specific mint addresses
+    ///
+    /// `mints` is a slice of Base58 Solana token mint addresses.
+    /// Multiple mints are sent as a single comma-separated `mints` query param.
+    /// Corresponds to `GET /mint/ids`.
+    pub async fn get_token_info(&self, mints: &[&str]) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        params.insert("mints".to_string(), mints.join(","));
+        self.get_request(RaydiumEndpoint::MintIds, &params).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // POOL ENDPOINTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Get paginated pool list
+    ///
+    /// Returns all Raydium liquidity pools with TVL, volume and APR data.
+    /// Optional params accepted by the API (type, sort, order, page, pageSize)
+    /// can be passed via `extra_params`.
+    /// Corresponds to `GET /pools/info/list`.
+    pub async fn get_pool_list(
+        &self,
+        extra_params: Option<HashMap<String, String>>,
+    ) -> ExchangeResult<serde_json::Value> {
+        let params = extra_params.unwrap_or_default();
+        self.get_request(RaydiumEndpoint::PoolList, &params).await
+    }
+
+    /// Get specific pools by their IDs
+    ///
+    /// `ids` is a slice of Base58 Solana pool public keys.
+    /// Multiple IDs are sent as a single comma-separated `ids` query param.
+    /// Corresponds to `GET /pools/info/ids`.
+    pub async fn get_pool_by_id(&self, ids: &[&str]) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        params.insert("ids".to_string(), ids.join(","));
+        self.get_request(RaydiumEndpoint::PoolIds, &params).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FARM ENDPOINTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Get paginated farm list
+    ///
+    /// Returns all active Raydium farms with APY and staking info.
+    /// Corresponds to `GET /farms/info/list`.
+    pub async fn get_farm_list(&self) -> ExchangeResult<serde_json::Value> {
+        let params = HashMap::new();
+        self.get_request(RaydiumEndpoint::FarmList, &params).await
+    }
+
+    /// Get specific farms by their IDs
+    ///
+    /// `ids` is a slice of Base58 farm public keys.
+    /// Multiple IDs are sent as a single comma-separated `ids` query param.
+    /// Corresponds to `GET /farms/info/ids`.
+    pub async fn get_farm_by_id(&self, ids: &[&str]) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        params.insert("ids".to_string(), ids.join(","));
+        self.get_request(RaydiumEndpoint::FarmIds, &params).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MAIN / INFRASTRUCTURE ENDPOINTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Get recommended Solana RPC endpoints for Raydium
+    ///
+    /// Returns a list of Solana RPC URLs recommended by the Raydium UI.
+    /// Useful for selecting low-latency RPCs for on-chain operations.
+    /// Corresponds to `GET /main/rpcs`.
+    pub async fn get_recommended_rpcs(&self) -> ExchangeResult<serde_json::Value> {
+        let params = HashMap::new();
+        self.get_request(RaydiumEndpoint::Rpcs, &params).await
+    }
+
+    /// Get auto priority fee recommendations
+    ///
+    /// Returns microLamport fee tiers (very-high, high, medium) for Solana
+    /// transaction priority.  Use these values in `computeUnitPriceMicroLamports`
+    /// when building swap transactions.
+    /// Corresponds to `GET /main/auto-fee`.
+    pub async fn get_priority_fees(&self) -> ExchangeResult<serde_json::Value> {
+        let params = HashMap::new();
+        self.get_request(RaydiumEndpoint::AutoFee, &params).await
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

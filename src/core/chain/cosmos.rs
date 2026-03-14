@@ -53,7 +53,8 @@ use crate::core::types::ExchangeError;
 /// Cosmos SDK-specific chain operations.
 ///
 /// Extends [`ChainProvider`] with sequence number management, tx simulation,
-/// and account queries specific to the Cosmos SDK transaction model.
+/// account queries specific to the Cosmos SDK transaction model, and
+/// IBC/DeFi monitoring methods useful across all Cosmos chains.
 ///
 /// ## Object safety
 ///
@@ -103,6 +104,130 @@ pub trait CosmosChain: ChainProvider {
     /// Equivalent to `ChainProvider::broadcast_tx` but named explicitly for
     /// Cosmos to match the Cosmos SDK vocabulary.
     async fn broadcast_tx_sync(&self, tx_bytes: &[u8]) -> Result<String, ExchangeError>;
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // IBC / DeFi monitoring
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Query any module's state via ABCI query path.
+    ///
+    /// `path` is the ABCI query path (e.g. `"/cosmos.bank.v1beta1.Query/Balance"`).
+    /// `data` is hex-encoded protobuf request bytes, or an empty string for
+    /// queries that take no additional data.
+    ///
+    /// Returns the raw JSON response from the node's ABCI query endpoint.
+    async fn abci_query(
+        &self,
+        path: &str,
+        data: &str,
+    ) -> Result<serde_json::Value, ExchangeError>;
+
+    /// Get all coin balances for an address (all denoms).
+    ///
+    /// Returns the `balances` array from `cosmos/bank/v1beta1/balances/{address}`.
+    /// Each element is a `{denom, amount}` JSON object.
+    async fn get_all_balances(
+        &self,
+        address: &str,
+    ) -> Result<Vec<serde_json::Value>, ExchangeError>;
+
+    /// Get IBC channel information.
+    ///
+    /// Queries `ibc/core/channel/v1/channels/{channel_id}/ports/{port_id}`.
+    /// Returns the full channel JSON object.
+    async fn get_ibc_channel(
+        &self,
+        channel_id: &str,
+        port_id: &str,
+    ) -> Result<serde_json::Value, ExchangeError>;
+
+    /// Resolve an IBC denom hash to its original path and base denom.
+    ///
+    /// `hash` is the hex hash portion only (without the `ibc/` prefix).
+    /// Queries `ibc/apps/transfer/v1/denom_traces/{hash}`.
+    async fn get_denom_trace(
+        &self,
+        hash: &str,
+    ) -> Result<serde_json::Value, ExchangeError>;
+
+    /// Query a CosmWasm smart contract.
+    ///
+    /// `contract` is the bech32 contract address.
+    /// `query_msg` is the JSON query message — it will be base64-encoded
+    /// and passed to `cosmwasm/wasm/v1/contract/{contract}/smart/{base64}`.
+    ///
+    /// Available on chains with CosmWasm: Osmosis, Neutron, Sei, etc.
+    async fn query_contract_smart(
+        &self,
+        contract: &str,
+        query_msg: serde_json::Value,
+    ) -> Result<serde_json::Value, ExchangeError>;
+
+    /// Get the current validator set.
+    ///
+    /// Returns the `validators` array from
+    /// `cosmos/staking/v1beta1/validators`.
+    async fn get_validators(&self) -> Result<Vec<serde_json::Value>, ExchangeError>;
+
+    /// Get all delegations for a delegator address.
+    ///
+    /// Returns the `delegation_responses` array from
+    /// `cosmos/staking/v1beta1/delegations/{delegator}`.
+    async fn get_delegations(
+        &self,
+        delegator: &str,
+    ) -> Result<Vec<serde_json::Value>, ExchangeError>;
+
+    /// Get governance proposals.
+    ///
+    /// `status` filters by proposal status string:
+    /// `"PROPOSAL_STATUS_VOTING_PERIOD"`, `"PROPOSAL_STATUS_PASSED"`, etc.
+    /// Pass `None` to retrieve all proposals.
+    ///
+    /// Returns the `proposals` array from `cosmos/gov/v1/proposals`.
+    async fn get_proposals(
+        &self,
+        status: Option<&str>,
+    ) -> Result<Vec<serde_json::Value>, ExchangeError>;
+
+    /// Fetch a transaction by hash.
+    ///
+    /// Returns the full JSON object from `cosmos/tx/v1beta1/txs/{hash}`.
+    async fn get_tx(&self, hash: &str) -> Result<serde_json::Value, ExchangeError>;
+
+    /// Search transactions by Tendermint events filter string.
+    ///
+    /// `events` is a URL-encoded events query, e.g.
+    /// `"message.sender='osmo1abc...'&message.action='/osmosis.gamm.v1beta1.MsgSwapExactAmountIn'"`.
+    /// `page` is 1-based pagination (defaults to page 1 when `None`).
+    ///
+    /// Returns the raw JSON response from `cosmos/tx/v1beta1/txs?events={events}`.
+    async fn search_txs(
+        &self,
+        events: &str,
+        page: Option<u32>,
+    ) -> Result<serde_json::Value, ExchangeError>;
+
+    /// Get pool information by pool ID.
+    ///
+    /// On Osmosis this queries `osmosis/gamm/v1beta1/pools/{pool_id}`.
+    /// On other chains the path may differ — returns the raw JSON response.
+    ///
+    /// Returns `ExchangeError::UnsupportedOperation` on chains that expose no
+    /// pool endpoint.
+    async fn get_pool(&self, pool_id: &str) -> Result<serde_json::Value, ExchangeError>;
+
+    /// List all pools (paginated).
+    ///
+    /// `pagination_key` is the base64-encoded pagination key from a previous
+    /// response; pass `None` to start from the first page.
+    ///
+    /// On Osmosis this queries `osmosis/gamm/v1beta1/pools`.
+    /// Returns the raw JSON response.
+    async fn get_pools(
+        &self,
+        pagination_key: Option<&str>,
+    ) -> Result<serde_json::Value, ExchangeError>;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -188,6 +313,38 @@ impl CosmosProvider {
     /// Osmosis mainnet (`osmosis-1`).
     pub fn osmosis_mainnet() -> Self {
         Self::new("https://lcd.osmosis.zone", "osmosis-1")
+    }
+
+    /// Osmosis mainnet — short alias matching the task spec.
+    #[inline]
+    pub fn osmosis() -> Self {
+        Self::osmosis_mainnet()
+    }
+
+    /// Injective Protocol mainnet (`injective-1`).
+    pub fn injective() -> Self {
+        Self::new("https://lcd.injective.network", "injective-1")
+    }
+
+    /// Sei Network mainnet (`pacific-1`).
+    pub fn sei() -> Self {
+        Self::new("https://rest.sei-apis.com", "pacific-1")
+    }
+
+    /// Neutron mainnet (`neutron-1`).
+    pub fn neutron() -> Self {
+        Self::new("https://rest.neutron.quasar.fi", "neutron-1")
+    }
+
+    /// dYdX v4 mainnet — short alias.
+    #[inline]
+    pub fn dydx() -> Self {
+        Self::dydx_mainnet()
+    }
+
+    /// Celestia mainnet (`celestia`).
+    pub fn celestia() -> Self {
+        Self::new("https://api.celestia.nodestake.top", "celestia")
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -663,6 +820,482 @@ impl CosmosChain for CosmosProvider {
 
     async fn broadcast_tx_sync(&self, tx_bytes: &[u8]) -> Result<String, ExchangeError> {
         self.broadcast_tx_rest(tx_bytes).await
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // IBC / DeFi monitoring implementations
+    // ─────────────────────────────────────────────────────────────────────────
+
+    async fn abci_query(
+        &self,
+        path: &str,
+        data: &str,
+    ) -> Result<serde_json::Value, ExchangeError> {
+        let mut url = format!(
+            "{}/abci_query?path={}&data={}",
+            self.endpoint,
+            urlencoding::encode(path),
+            urlencoding::encode(data),
+        );
+        // Append height=0 to query latest
+        url.push_str("&height=0&prove=false");
+
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| ExchangeError::Network(format!(
+                "CosmosProvider: abci_query failed for path '{}': {}",
+                path, e
+            )))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ExchangeError::Network(format!(
+                "CosmosProvider: abci_query HTTP {} for '{}': {}",
+                status, path, body
+            )));
+        }
+
+        resp.json().await.map_err(|e| ExchangeError::Parse(format!(
+            "CosmosProvider: abci_query JSON parse error: {}",
+            e
+        )))
+    }
+
+    async fn get_all_balances(
+        &self,
+        address: &str,
+    ) -> Result<Vec<serde_json::Value>, ExchangeError> {
+        let url = format!(
+            "{}/cosmos/bank/v1beta1/balances/{}",
+            self.endpoint, address
+        );
+
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| ExchangeError::Network(format!(
+                "CosmosProvider: get_all_balances failed for {}: {}",
+                address, e
+            )))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ExchangeError::Network(format!(
+                "CosmosProvider: get_all_balances HTTP {} for {}: {}",
+                status, address, body
+            )));
+        }
+
+        let json: serde_json::Value = resp.json().await.map_err(|e| {
+            ExchangeError::Parse(format!(
+                "CosmosProvider: get_all_balances JSON parse error: {}",
+                e
+            ))
+        })?;
+
+        let balances = json
+            .get("balances")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        Ok(balances)
+    }
+
+    async fn get_ibc_channel(
+        &self,
+        channel_id: &str,
+        port_id: &str,
+    ) -> Result<serde_json::Value, ExchangeError> {
+        let url = format!(
+            "{}/ibc/core/channel/v1/channels/{}/ports/{}",
+            self.endpoint, channel_id, port_id
+        );
+
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| ExchangeError::Network(format!(
+                "CosmosProvider: get_ibc_channel failed for {}/{}: {}",
+                channel_id, port_id, e
+            )))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ExchangeError::Network(format!(
+                "CosmosProvider: get_ibc_channel HTTP {} for {}/{}: {}",
+                status, channel_id, port_id, body
+            )));
+        }
+
+        resp.json().await.map_err(|e| ExchangeError::Parse(format!(
+            "CosmosProvider: get_ibc_channel JSON parse error: {}",
+            e
+        )))
+    }
+
+    async fn get_denom_trace(
+        &self,
+        hash: &str,
+    ) -> Result<serde_json::Value, ExchangeError> {
+        // Strip the "ibc/" prefix if the caller accidentally included it
+        let hash_only = hash.trim_start_matches("ibc/");
+
+        let url = format!(
+            "{}/ibc/apps/transfer/v1/denom_traces/{}",
+            self.endpoint, hash_only
+        );
+
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| ExchangeError::Network(format!(
+                "CosmosProvider: get_denom_trace failed for {}: {}",
+                hash_only, e
+            )))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ExchangeError::Network(format!(
+                "CosmosProvider: get_denom_trace HTTP {} for {}: {}",
+                status, hash_only, body
+            )));
+        }
+
+        resp.json().await.map_err(|e| ExchangeError::Parse(format!(
+            "CosmosProvider: get_denom_trace JSON parse error: {}",
+            e
+        )))
+    }
+
+    async fn query_contract_smart(
+        &self,
+        contract: &str,
+        query_msg: serde_json::Value,
+    ) -> Result<serde_json::Value, ExchangeError> {
+        use base64::Engine as _;
+
+        let query_bytes = serde_json::to_vec(&query_msg).map_err(|e| {
+            ExchangeError::Parse(format!(
+                "CosmosProvider: query_contract_smart serialize error: {}",
+                e
+            ))
+        })?;
+
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&query_bytes);
+
+        let url = format!(
+            "{}/cosmwasm/wasm/v1/contract/{}/smart/{}",
+            self.endpoint, contract, encoded
+        );
+
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| ExchangeError::Network(format!(
+                "CosmosProvider: query_contract_smart failed for {}: {}",
+                contract, e
+            )))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ExchangeError::Network(format!(
+                "CosmosProvider: query_contract_smart HTTP {} for {}: {}",
+                status, contract, body
+            )));
+        }
+
+        let json: serde_json::Value = resp.json().await.map_err(|e| {
+            ExchangeError::Parse(format!(
+                "CosmosProvider: query_contract_smart JSON parse error: {}",
+                e
+            ))
+        })?;
+
+        // Cosmos LCD wraps the result under `data`; return the inner value
+        Ok(json.get("data").cloned().unwrap_or(json))
+    }
+
+    async fn get_validators(&self) -> Result<Vec<serde_json::Value>, ExchangeError> {
+        let url = format!(
+            "{}/cosmos/staking/v1beta1/validators",
+            self.endpoint
+        );
+
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| ExchangeError::Network(format!(
+                "CosmosProvider: get_validators failed: {}",
+                e
+            )))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ExchangeError::Network(format!(
+                "CosmosProvider: get_validators HTTP {}: {}",
+                status, body
+            )));
+        }
+
+        let json: serde_json::Value = resp.json().await.map_err(|e| {
+            ExchangeError::Parse(format!(
+                "CosmosProvider: get_validators JSON parse error: {}",
+                e
+            ))
+        })?;
+
+        let validators = json
+            .get("validators")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        Ok(validators)
+    }
+
+    async fn get_delegations(
+        &self,
+        delegator: &str,
+    ) -> Result<Vec<serde_json::Value>, ExchangeError> {
+        let url = format!(
+            "{}/cosmos/staking/v1beta1/delegations/{}",
+            self.endpoint, delegator
+        );
+
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| ExchangeError::Network(format!(
+                "CosmosProvider: get_delegations failed for {}: {}",
+                delegator, e
+            )))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ExchangeError::Network(format!(
+                "CosmosProvider: get_delegations HTTP {} for {}: {}",
+                status, delegator, body
+            )));
+        }
+
+        let json: serde_json::Value = resp.json().await.map_err(|e| {
+            ExchangeError::Parse(format!(
+                "CosmosProvider: get_delegations JSON parse error: {}",
+                e
+            ))
+        })?;
+
+        let delegations = json
+            .get("delegation_responses")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        Ok(delegations)
+    }
+
+    async fn get_proposals(
+        &self,
+        status: Option<&str>,
+    ) -> Result<Vec<serde_json::Value>, ExchangeError> {
+        let mut url = format!("{}/cosmos/gov/v1/proposals", self.endpoint);
+        if let Some(s) = status {
+            url.push_str(&format!("?proposal_status={}", urlencoding::encode(s)));
+        }
+
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| ExchangeError::Network(format!(
+                "CosmosProvider: get_proposals failed: {}",
+                e
+            )))?;
+
+        if !resp.status().is_success() {
+            let status_code = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ExchangeError::Network(format!(
+                "CosmosProvider: get_proposals HTTP {}: {}",
+                status_code, body
+            )));
+        }
+
+        let json: serde_json::Value = resp.json().await.map_err(|e| {
+            ExchangeError::Parse(format!(
+                "CosmosProvider: get_proposals JSON parse error: {}",
+                e
+            ))
+        })?;
+
+        let proposals = json
+            .get("proposals")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        Ok(proposals)
+    }
+
+    async fn get_tx(&self, hash: &str) -> Result<serde_json::Value, ExchangeError> {
+        let url = format!("{}/cosmos/tx/v1beta1/txs/{}", self.endpoint, hash);
+
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| ExchangeError::Network(format!(
+                "CosmosProvider: get_tx failed for {}: {}",
+                hash, e
+            )))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ExchangeError::Network(format!(
+                "CosmosProvider: get_tx HTTP {} for {}: {}",
+                status, hash, body
+            )));
+        }
+
+        resp.json().await.map_err(|e| ExchangeError::Parse(format!(
+            "CosmosProvider: get_tx JSON parse error: {}",
+            e
+        )))
+    }
+
+    async fn search_txs(
+        &self,
+        events: &str,
+        page: Option<u32>,
+    ) -> Result<serde_json::Value, ExchangeError> {
+        let page_num = page.unwrap_or(1);
+        let url = format!(
+            "{}/cosmos/tx/v1beta1/txs?events={}&page={}",
+            self.endpoint,
+            urlencoding::encode(events),
+            page_num,
+        );
+
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| ExchangeError::Network(format!(
+                "CosmosProvider: search_txs failed: {}",
+                e
+            )))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ExchangeError::Network(format!(
+                "CosmosProvider: search_txs HTTP {}: {}",
+                status, body
+            )));
+        }
+
+        resp.json().await.map_err(|e| ExchangeError::Parse(format!(
+            "CosmosProvider: search_txs JSON parse error: {}",
+            e
+        )))
+    }
+
+    async fn get_pool(&self, pool_id: &str) -> Result<serde_json::Value, ExchangeError> {
+        // Osmosis GAMM endpoint — works for all poolmanager-style pools.
+        // Other Cosmos chains without a GAMM module will return a 404 which
+        // is propagated as a Network error; callers should handle accordingly.
+        let url = format!(
+            "{}/osmosis/gamm/v1beta1/pools/{}",
+            self.endpoint, pool_id
+        );
+
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| ExchangeError::Network(format!(
+                "CosmosProvider: get_pool failed for pool {}: {}",
+                pool_id, e
+            )))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ExchangeError::Network(format!(
+                "CosmosProvider: get_pool HTTP {} for pool {}: {}",
+                status, pool_id, body
+            )));
+        }
+
+        resp.json().await.map_err(|e| ExchangeError::Parse(format!(
+            "CosmosProvider: get_pool JSON parse error: {}",
+            e
+        )))
+    }
+
+    async fn get_pools(
+        &self,
+        pagination_key: Option<&str>,
+    ) -> Result<serde_json::Value, ExchangeError> {
+        let mut url = format!("{}/osmosis/gamm/v1beta1/pools", self.endpoint);
+        if let Some(key) = pagination_key {
+            url.push_str(&format!(
+                "?pagination.key={}",
+                urlencoding::encode(key)
+            ));
+        }
+
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| ExchangeError::Network(format!(
+                "CosmosProvider: get_pools failed: {}",
+                e
+            )))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ExchangeError::Network(format!(
+                "CosmosProvider: get_pools HTTP {}: {}",
+                status, body
+            )));
+        }
+
+        resp.json().await.map_err(|e| ExchangeError::Parse(format!(
+            "CosmosProvider: get_pools JSON parse error: {}",
+            e
+        )))
     }
 }
 

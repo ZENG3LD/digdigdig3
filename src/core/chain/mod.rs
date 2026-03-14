@@ -17,6 +17,9 @@
 //! | `onchain-ethereum` | Alias for `onchain-evm` (backward compat) |
 //! | `onchain-solana` | `SolanaProvider` — solana-client-backed Solana chain provider |
 //! | `onchain-starknet` | `StarkNetProvider` — raw JSON-RPC StarkNet chain provider |
+//! | `onchain-ton` | `TonProvider` — pure HTTP REST TON chain provider (no tonlib-rs) |
+//! | `onchain-sui` | `SuiProvider` — raw JSON-RPC Sui chain provider (no sui-sdk) |
+//! | `onchain-bitcoin` | `BitcoinProvider` — raw JSON-RPC Bitcoin chain provider |
 //!
 //! ## Usage
 //!
@@ -51,3 +54,23 @@ pub use cosmos::{CosmosChain, CosmosProvider};
 mod starknet_chain;
 #[cfg(feature = "onchain-starknet")]
 pub use starknet_chain::{StarkNetChain, StarkNetProvider};
+
+#[cfg(feature = "onchain-aptos")]
+mod aptos_chain;
+#[cfg(feature = "onchain-aptos")]
+pub use aptos_chain::{AptosChain, AptosProvider};
+
+#[cfg(feature = "onchain-ton")]
+mod ton_chain;
+#[cfg(feature = "onchain-ton")]
+pub use ton_chain::{TonChain, TonProvider};
+
+#[cfg(feature = "onchain-sui")]
+mod sui_chain;
+#[cfg(feature = "onchain-sui")]
+pub use sui_chain::{SuiChain, SuiProvider};
+
+#[cfg(feature = "onchain-bitcoin")]
+mod bitcoin_chain;
+#[cfg(feature = "onchain-bitcoin")]
+pub use bitcoin_chain::{BitcoinChain, BitcoinProvider};

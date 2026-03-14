@@ -38,6 +38,32 @@ pub enum ChainFamily {
 
     /// StarkNet L2.
     StarkNet,
+
+    /// Sui L1.
+    ///
+    /// `network` is the human-readable network name: `"mainnet"`, `"testnet"`,
+    /// or `"devnet"`.
+    Sui { network: String },
+
+    /// TON (Telegram Open Network) mainnet or testnet.
+    ///
+    /// `network` is `"mainnet"` or `"testnet"`.
+    Ton { network: String },
+
+    /// Aptos L1.
+    ///
+    /// `network` is the human-readable network name: `"mainnet"`, `"testnet"`,
+    /// or `"devnet"`.
+    Aptos { network: String },
+
+    /// Bitcoin network.
+    ///
+    /// `network` identifies the specific Bitcoin network:
+    /// - `"mainnet"` = Bitcoin mainnet
+    /// - `"testnet"` = Bitcoin testnet3
+    /// - `"signet"` = Bitcoin signet
+    /// - `"regtest"` = local regression test network
+    Bitcoin { network: String },
 }
 
 impl ChainFamily {
@@ -48,12 +74,31 @@ impl ChainFamily {
             Self::Solana => "solana".to_string(),
             Self::Cosmos { chain_id } => format!("cosmos:{chain_id}"),
             Self::StarkNet => "starknet".to_string(),
+            Self::Sui { network } => format!("sui:{network}"),
+            Self::Ton { network } => format!("ton:{network}"),
+            Self::Aptos { network } => format!("aptos:{network}"),
+            Self::Bitcoin { network } => format!("bitcoin:{network}"),
         }
     }
 
     /// Returns `true` if this is an EVM chain with the given `chain_id`.
     pub fn is_evm(&self, chain_id: u64) -> bool {
         matches!(self, Self::Evm { chain_id: id } if *id == chain_id)
+    }
+
+    /// Returns `true` if this is a Sui chain with the given network name.
+    pub fn is_sui(&self, network: &str) -> bool {
+        matches!(self, Self::Sui { network: n } if n == network)
+    }
+
+    /// Returns `true` if this is an Aptos chain with the given network name.
+    pub fn is_aptos(&self, network: &str) -> bool {
+        matches!(self, Self::Aptos { network: n } if n == network)
+    }
+
+    /// Returns `true` if this is a Bitcoin chain with the given network name.
+    pub fn is_bitcoin(&self, network: &str) -> bool {
+        matches!(self, Self::Bitcoin { network: n } if n == network)
     }
 }
 
@@ -99,6 +144,7 @@ pub enum TxStatus {
 /// - Solana: base58 pubkey, e.g. `"So11111111111111111111111111111111111111112"`
 /// - Cosmos: bech32, e.g. `"dydx1abc...xyz"`
 /// - StarkNet: hex felt, e.g. `"0x04abc..."`
+/// - Bitcoin: bech32 (P2WPKH/P2WSH) or legacy base58check address
 ///
 /// ## Transaction bytes
 ///
@@ -113,6 +159,7 @@ pub enum TxStatus {
 /// - EVM: Wei (18 decimals)
 /// - Solana: Lamports (9 decimals)
 /// - Cosmos: uATOM / udydx / etc. (6 decimals)
+/// - Bitcoin: Satoshis (8 decimals)
 #[async_trait]
 pub trait ChainProvider: Send + Sync {
     /// Which chain family (and chain ID) this provider connects to.
@@ -121,10 +168,11 @@ pub trait ChainProvider: Send + Sync {
     /// Broadcast a pre-signed transaction.
     ///
     /// `tx_bytes` — ABI-encoded EVM tx, serialized Solana transaction,
-    /// Cosmos proto-encoded `TxRaw`, or StarkNet invoke bytes.
+    /// Cosmos proto-encoded `TxRaw`, StarkNet invoke bytes, or Bitcoin raw
+    /// transaction hex (as UTF-8 bytes).
     ///
     /// Returns the transaction hash as a hex string (with `0x` for EVM,
-    /// base58 for Solana, etc.).
+    /// base58 for Solana, txid hex for Bitcoin, etc.).
     async fn broadcast_tx(&self, tx_bytes: &[u8]) -> Result<String, ExchangeError>;
 
     /// Current best block / slot / sequence height.
@@ -136,6 +184,7 @@ pub trait ChainProvider: Send + Sync {
     /// For Solana this returns the current slot (callers use `get_latest_blockhash`
     /// separately; `get_nonce` here is a best-effort slot approximation).
     /// For Cosmos this is the account sequence number.
+    /// For Bitcoin this always returns 0 (Bitcoin has no account nonces).
     async fn get_nonce(&self, address: &str) -> Result<u64, ExchangeError>;
 
     /// Native token balance in the chain's smallest unit, returned as a decimal string.

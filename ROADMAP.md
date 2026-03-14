@@ -62,11 +62,14 @@ Real swap execution lives in struct methods + optional on-chain features.
 - [x] Wire long-term orders via TimeInForce::Gtd → build_place_long_term_order_tx
 - [x] Implement cancel_all_orders helper (serial cancel with sequence tracking)
 
-### Lighter — blocked on cryptography (LAST — requires research)
-- [ ] Research ECgFp5+Poseidon2 from Lighter TypeScript SDK source
-- [ ] Port signing to Rust (unblocks all write operations)
-- [ ] Fix `get_order` for active orders (currently only scans inactive history)
-- [ ] Wire auth token into authenticated read endpoints
+### Lighter (DONE)
+- [x] Research ECgFp5+Poseidon2 from Go/TS SDKs + crate security audit
+- [x] Port complete crypto stack to Rust (2850 lines, zero third-party crates)
+  - Goldilocks GF(p), GFp5 quintic extension, ECgFp5 curve, Poseidon2, Schnorr
+  - Ported from official `elliottech/poseidon_crypto` + `pornin/ecgfp5` reference
+- [x] Wire into auth.rs: real signing replaces broken k256 stubs
+- [x] Fix `get_order`: now searches active + inactive orders
+- [x] Wire auth token into authenticated read endpoints
 
 ## Phase 1: Crypto CEX/DEX Execution Testing (Priority: HIGH)
 

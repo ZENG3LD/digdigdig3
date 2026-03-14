@@ -8,6 +8,7 @@ mod market_data;
 mod trading;
 mod websocket;
 mod responses;
+pub mod onchain;
 
 pub use common::*;
 pub use market_data::*;

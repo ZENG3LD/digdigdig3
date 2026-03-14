@@ -126,3 +126,13 @@ pub use http::GraphQlClient;
 
 // Re-exports chain types
 pub use chain::{ChainFamily, ChainProvider, TxStatus};
+
+// Re-exports on-chain event types
+pub use types::onchain::{
+    ChainId, OnChainEvent, OnChainEventType,
+    TokenAmount, TokenInfo,
+    LiquidityAction, LendingActionType, StakingActionType, GovernanceActionType,
+};
+
+// Re-exports event stream traits
+pub use traits::{EventProducer, EventFilter};

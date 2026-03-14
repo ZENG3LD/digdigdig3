@@ -43,6 +43,7 @@ mod positions;
 mod websocket;
 mod auth;
 mod operations;
+pub mod event_stream;
 
 pub use identity::ExchangeIdentity;
 pub use market_data::MarketData;
@@ -62,6 +63,7 @@ pub use operations::{
     LiquidityProvider, VaultManager, StakingDelegation, BlockTradeOtc,
     MarketMakerProtection, TriggerOrders, PredictionMarket,
 };
+pub use event_stream::{EventProducer, EventFilter};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // COMPOSITE TRAIT

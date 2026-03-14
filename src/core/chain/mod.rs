@@ -35,6 +35,8 @@
 mod provider;
 pub use provider::*;
 
+pub mod decoders;
+
 #[cfg(feature = "onchain-evm")]
 mod evm;
 #[cfg(feature = "onchain-evm")]

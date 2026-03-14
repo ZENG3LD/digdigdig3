@@ -665,6 +665,7 @@ impl MarketData for GmxConnector {
                 quantity_precision: 8,
                 min_quantity: None,
                 max_quantity: None,
+                tick_size: None,
                 step_size: None,
                 min_notional: None,
             }

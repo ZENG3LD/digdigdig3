@@ -672,6 +672,7 @@ impl PhemexParser {
                         quantity_precision: 8,
                         min_quantity,
                         max_quantity: None,
+                        tick_size: None,
                         step_size,
                         min_notional,
                     });

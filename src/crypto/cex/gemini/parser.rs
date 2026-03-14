@@ -715,6 +715,7 @@ impl GeminiParser {
             quantity_precision,
             min_quantity,
             max_quantity: None,
+            tick_size: None,
             step_size: None,
             min_notional: None,
         })

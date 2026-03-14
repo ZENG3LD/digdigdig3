@@ -383,6 +383,7 @@ impl MarketData for FyersConnector {
                 quantity_precision: 0,
                 min_quantity: Some(1.0),
                 max_quantity: None,
+                tick_size: None,
                 step_size: Some(1.0),
                 min_notional: None,
             });

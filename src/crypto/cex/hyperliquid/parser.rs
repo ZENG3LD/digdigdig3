@@ -732,6 +732,7 @@ impl HyperliquidParser {
                 quantity_precision: sz_decimals,
                 min_quantity: step_size,
                 max_quantity: None,
+                tick_size: None,
                 step_size,
                 min_notional: None,
             });
@@ -815,6 +816,7 @@ impl HyperliquidParser {
                 quantity_precision: sz_decimals,
                 min_quantity: step_size,
                 max_quantity: None,
+                tick_size: None,
                 step_size,
                 min_notional: None,
             });

@@ -312,6 +312,7 @@ impl GateioParser {
                     quantity_precision,
                     min_quantity,
                     max_quantity,
+                    tick_size: None,
                     step_size: None,
                     min_notional: Self::get_f64(item, "min_quote_amount"),
                 })

@@ -415,6 +415,7 @@ impl BinanceParser {
                 quantity_precision: s["quantityPrecision"].as_u64().unwrap_or(8) as u8,
                 min_quantity: None,
                 max_quantity: None,
+                tick_size: None,
                 step_size: None,
                 min_notional: None,
             });

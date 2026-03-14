@@ -1170,6 +1170,8 @@ pub struct SymbolInfo {
     pub min_quantity: Option<f64>,
     /// Максимальное количество
     pub max_quantity: Option<f64>,
+    /// Шаг цены (например, 0.01 для 2 знаков после запятой)
+    pub tick_size: Option<f64>,
     /// Шаг количества
     pub step_size: Option<f64>,
     /// Минимальный notional (price * qty)

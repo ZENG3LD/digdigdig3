@@ -119,6 +119,7 @@ pub use utils::{
     timestamp_millis, timestamp_seconds, timestamp_iso8601,
     SimpleRateLimiter, WeightRateLimiter,
     safe_price, safe_qty, format_price, format_qty,
+    PrecisionCache, PrecisionInfo,
 };
 
 // Re-exports transport

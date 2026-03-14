@@ -25,7 +25,9 @@
 //! | [`format_qty`] | floor, trailing zeros | exchanges requiring exact decimal places |
 
 use rust_decimal::Decimal;
+use std::collections::HashMap;
 use std::str::FromStr;
+use std::sync::RwLock;
 
 /// Converts an f64 price to a string rounded to the nearest `tick_size`.
 ///
@@ -142,6 +144,150 @@ fn decimal_places(s: &str) -> usize {
     s.find('.').map(|dot| s.len() - dot - 1).unwrap_or(0)
 }
 
+/// Convert integer precision (number of decimal places) to tick/step string.
+///
+/// `2` → `"0.01"`, `4` → `"0.0001"`, `0` → `"1"`, `8` → `"0.00000001"`.
+fn precision_to_tick(digits: u8) -> String {
+    if digits == 0 {
+        return "1".to_string();
+    }
+    let mut s = "0.".to_string();
+    for _ in 0..(digits - 1) {
+        s.push('0');
+    }
+    s.push('1');
+    s
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PRECISION CACHE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Per-symbol precision info for safe price/qty formatting.
+#[derive(Clone, Debug)]
+pub struct PrecisionInfo {
+    /// Tick size as string, e.g. `"0.01"`.
+    pub tick_size: String,
+    /// Step size as string, e.g. `"0.001"`.
+    pub step_size: String,
+}
+
+/// Thread-safe cache of per-symbol precision info.
+///
+/// Populated from [`ExchangeInfo`] after a connector calls `get_exchange_info()`.
+/// Used internally by connectors in `place_order()` / `amend_order()` to convert
+/// raw `f64` prices and quantities into safe, exchange-valid strings.
+///
+/// # Usage
+///
+/// ```ignore
+/// // In connector constructor or lazy init:
+/// let info = self.get_exchange_info().await?;
+/// self.precision.load_from_symbols(&info.symbols);
+///
+/// // In place_order:
+/// let price_str = self.precision.price(&symbol, price);
+/// let qty_str   = self.precision.qty(&symbol, quantity);
+/// ```
+pub struct PrecisionCache {
+    cache: RwLock<HashMap<String, PrecisionInfo>>,
+}
+
+impl PrecisionCache {
+    /// Create an empty cache.
+    pub fn new() -> Self {
+        Self {
+            cache: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Load precision info from a slice of [`SymbolInfo`].
+    ///
+    /// For each symbol:
+    /// - Uses `tick_size` / `step_size` if present and > 0
+    /// - Falls back to `price_precision` / `quantity_precision` integer digits
+    ///
+    /// Call this after `get_exchange_info()` succeeds.
+    pub fn load_from_symbols(&self, symbols: &[crate::core::types::SymbolInfo]) {
+        let mut cache = self.cache.write().unwrap();
+        for s in symbols {
+            let tick = match s.tick_size {
+                Some(t) if t > 0.0 => t.to_string(),
+                _ => precision_to_tick(s.price_precision),
+            };
+            let step = match s.step_size {
+                Some(t) if t > 0.0 => t.to_string(),
+                _ => precision_to_tick(s.quantity_precision),
+            };
+            cache.insert(s.symbol.clone(), PrecisionInfo {
+                tick_size: tick,
+                step_size: step,
+            });
+        }
+    }
+
+    /// Get safe price string for a symbol (rounded to nearest tick).
+    ///
+    /// Falls back to raw `f64::to_string()` if symbol is not in cache.
+    pub fn price(&self, symbol: &str, price: f64) -> String {
+        if let Some(info) = self.cache.read().unwrap().get(symbol) {
+            safe_price(price, &info.tick_size)
+        } else {
+            price.to_string()
+        }
+    }
+
+    /// Get safe quantity string for a symbol (floored to step_size).
+    ///
+    /// Falls back to raw `f64::to_string()` if symbol is not in cache.
+    pub fn qty(&self, symbol: &str, qty: f64) -> String {
+        if let Some(info) = self.cache.read().unwrap().get(symbol) {
+            safe_qty(qty, &info.step_size)
+        } else {
+            qty.to_string()
+        }
+    }
+
+    /// Get formatted price with trailing zeros (for exchanges requiring exact decimal places).
+    pub fn formatted_price(&self, symbol: &str, price: f64) -> String {
+        if let Some(info) = self.cache.read().unwrap().get(symbol) {
+            format_price(price, &info.tick_size)
+        } else {
+            price.to_string()
+        }
+    }
+
+    /// Get formatted quantity with trailing zeros.
+    pub fn formatted_qty(&self, symbol: &str, qty: f64) -> String {
+        if let Some(info) = self.cache.read().unwrap().get(symbol) {
+            format_qty(qty, &info.step_size)
+        } else {
+            qty.to_string()
+        }
+    }
+
+    /// Check if precision info is loaded for a symbol.
+    pub fn has_symbol(&self, symbol: &str) -> bool {
+        self.cache.read().unwrap().contains_key(symbol)
+    }
+
+    /// Number of symbols in cache.
+    pub fn len(&self) -> usize {
+        self.cache.read().unwrap().len()
+    }
+
+    /// Whether the cache is empty (no symbols loaded).
+    pub fn is_empty(&self) -> bool {
+        self.cache.read().unwrap().is_empty()
+    }
+}
+
+impl Default for PrecisionCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,5 +382,112 @@ mod tests {
     fn test_very_small_values() {
         assert_eq!(safe_qty(0.00000001, "0.00000001"), "0.00000001");
         assert_eq!(safe_price(0.00000001, "0.00000001"), "0.00000001");
+    }
+
+    // === precision_to_tick ===
+
+    #[test]
+    fn test_precision_to_tick() {
+        assert_eq!(precision_to_tick(0), "1");
+        assert_eq!(precision_to_tick(1), "0.1");
+        assert_eq!(precision_to_tick(2), "0.01");
+        assert_eq!(precision_to_tick(4), "0.0001");
+        assert_eq!(precision_to_tick(8), "0.00000001");
+    }
+
+    // === PrecisionCache ===
+
+    #[test]
+    fn test_cache_fallback_before_load() {
+        let cache = PrecisionCache::new();
+        // Before loading — raw f64 toString fallback
+        assert_eq!(cache.price("BTCUSDT", 67543.251), "67543.251");
+        assert_eq!(cache.qty("BTCUSDT", 0.123456), "0.123456");
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn test_cache_with_tick_step() {
+        let cache = PrecisionCache::new();
+        let symbols = vec![
+            crate::core::types::SymbolInfo {
+                symbol: "BTCUSDT".to_string(),
+                base_asset: "BTC".to_string(),
+                quote_asset: "USDT".to_string(),
+                status: "TRADING".to_string(),
+                price_precision: 2,
+                quantity_precision: 5,
+                tick_size: Some(0.01),
+                step_size: Some(0.00001),
+                min_quantity: None,
+                max_quantity: None,
+                min_notional: None,
+            },
+        ];
+        cache.load_from_symbols(&symbols);
+
+        assert_eq!(cache.len(), 1);
+        assert!(cache.has_symbol("BTCUSDT"));
+
+        // Price — rounds to nearest tick
+        assert_eq!(cache.price("BTCUSDT", 67543.251), "67543.25");
+        assert_eq!(cache.price("BTCUSDT", 67543.255), "67543.26");
+
+        // Qty — floors to step
+        assert_eq!(cache.qty("BTCUSDT", 0.123456), "0.12345");
+        assert_eq!(cache.qty("BTCUSDT", 0.123459), "0.12345"); // floor, NOT round
+
+        // Unknown symbol — fallback
+        assert_eq!(cache.price("UNKNOWN", 100.123), "100.123");
+    }
+
+    #[test]
+    fn test_cache_digits_fallback() {
+        let cache = PrecisionCache::new();
+        // No tick_size/step_size — falls back to precision digits
+        let symbols = vec![
+            crate::core::types::SymbolInfo {
+                symbol: "ETHUSDT".to_string(),
+                base_asset: "ETH".to_string(),
+                quote_asset: "USDT".to_string(),
+                status: "TRADING".to_string(),
+                price_precision: 2,
+                quantity_precision: 3,
+                tick_size: None,
+                step_size: None,
+                min_quantity: None,
+                max_quantity: None,
+                min_notional: None,
+            },
+        ];
+        cache.load_from_symbols(&symbols);
+
+        // precision 2 → tick "0.01", precision 3 → step "0.001"
+        assert_eq!(cache.price("ETHUSDT", 3456.789), "3456.79");
+        assert_eq!(cache.qty("ETHUSDT", 1.2345), "1.234");
+    }
+
+    #[test]
+    fn test_cache_formatted_trailing_zeros() {
+        let cache = PrecisionCache::new();
+        let symbols = vec![
+            crate::core::types::SymbolInfo {
+                symbol: "BTCUSDT".to_string(),
+                base_asset: "BTC".to_string(),
+                quote_asset: "USDT".to_string(),
+                status: "TRADING".to_string(),
+                price_precision: 2,
+                quantity_precision: 3,
+                tick_size: Some(0.01),
+                step_size: Some(0.001),
+                min_quantity: None,
+                max_quantity: None,
+                min_notional: None,
+            },
+        ];
+        cache.load_from_symbols(&symbols);
+
+        assert_eq!(cache.formatted_price("BTCUSDT", 100.5), "100.50");
+        assert_eq!(cache.formatted_qty("BTCUSDT", 1.5), "1.500");
     }
 }

@@ -767,6 +767,7 @@ pub fn clob_market_to_symbol_info(market: &ClobMarket) -> SymbolInfo {
             .as_ref()
             .and_then(|s| s.parse::<f64>().ok()),
         max_quantity: None,
+        tick_size: None,
         step_size: market
             .minimum_tick_size
             .as_ref()
@@ -805,6 +806,7 @@ pub fn poly_market_to_symbol_info(market: &PolyMarket) -> SymbolInfo {
         quantity_precision: 2,
         min_quantity: market.order_min_size,
         max_quantity: None,
+        tick_size: None,
         step_size: market.order_price_min_tick_size,
         min_notional: None,
     }

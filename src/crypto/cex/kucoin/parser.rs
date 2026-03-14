@@ -284,6 +284,7 @@ impl KuCoinParser {
                     quantity_precision,
                     min_quantity,
                     max_quantity,
+                    tick_size: None,
                     step_size,
                     min_notional: None,
                 })

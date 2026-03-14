@@ -546,6 +546,7 @@ impl MarketData for DydxConnector {
                 quantity_precision: 8,
                 min_quantity: min_notional,
                 max_quantity: None,
+                tick_size: None,
                 step_size,
                 min_notional: None,
             }

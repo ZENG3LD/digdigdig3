@@ -77,6 +77,7 @@ pub use core::{
 
     // Precision utilities
     safe_price, safe_qty, format_price, format_qty,
+    PrecisionCache, PrecisionInfo,
 
     // Transport
     HttpClient,

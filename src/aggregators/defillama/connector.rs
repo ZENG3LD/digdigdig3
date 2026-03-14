@@ -358,6 +358,7 @@ impl MarketData for DefiLlamaConnector {
                     quantity_precision: 0,
                     min_quantity: None,
                     max_quantity: None,
+                    tick_size: None,
                     step_size: None,
                     min_notional: None,
                 })

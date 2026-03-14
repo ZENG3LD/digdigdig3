@@ -4,6 +4,20 @@ Checkbox status tracks real validation against live data or real accounts — no
 
 ---
 
+## Phase 0: Precision Guard (DONE)
+
+f64 → Decimal conversion at Trading trait boundary. Prevents IEEE-754 drift from corrupting order prices.
+
+- [x] Research: f64 accumulation errors, CCXT approach, sub-tick drift analysis
+- [x] Core functions: `safe_price()` (round), `safe_qty()` (floor) in `core/utils/precision.rs`
+- [x] `PrecisionCache`: thread-safe per-symbol tick/step cache with RwLock
+- [x] `SymbolInfo.tick_size` field added
+- [x] 23 parsers extract real tick_size from exchange APIs
+- [x] PrecisionCache wired into all 19 CEX connectors (place_order, amend_order, batch_orders)
+- [x] 17 unit tests for precision functions + cache
+- [ ] DEX connectors: wire PrecisionCache into Lighter, GMX, Paradex, dYdX, Jupiter, Raydium
+- [ ] Non-crypto trading connectors: OANDA, Alpaca, Zerodha (have tick_size but not wired to PrecisionCache)
+
 ## Phase 1: Crypto CEX/DEX Execution Testing (Priority: HIGH)
 
 Testing order placement, cancellation, account queries on real exchanges.

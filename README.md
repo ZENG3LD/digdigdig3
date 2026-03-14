@@ -410,6 +410,30 @@ On-chain:
     ChainProvider (abstract provider trait)
 ```
 
+### Precision Guard (f64 → Decimal at Execution Boundary)
+
+All DataFeed paths use `f64` for maximum performance (indicators, UI, research). At the Trading trait boundary, prices and quantities are converted to exchange-safe strings via `rust_decimal`:
+
+```
+DataFeed:  get_klines() → Vec<Kline{f64}>  → indicators/UI (fast, no overhead)
+Execution: place_order(price: f64, qty: f64)
+               ↓
+           PrecisionCache.price(&symbol, price)  → "67543.25"
+           PrecisionCache.qty(&symbol, qty)      → "0.12345"
+               ↓
+           Exchange API receives exact string
+```
+
+**How it works:**
+- `safe_price(f64, tick)` — converts via `Decimal::from_str(price.to_string())`, rounds to nearest tick (like CCXT)
+- `safe_qty(f64, step)` — same conversion, floors to step_size (never exceeds available quantity)
+- `PrecisionCache` — per-symbol HashMap loaded from `get_exchange_info()`, stores tick/step per symbol
+- Fallback: raw `f64::to_string()` if symbol not in cache (backwards compatible)
+
+**Why not just f64::to_string()?** — `100.05_f64` is stored as `100.04999...` in IEEE-754. With floor rounding, this loses a full tick. The string-path via Ryu shortest-round-trip eliminates this drift.
+
+**tick_size sources:** 23 parsers extract real tick_size from exchange APIs (Binance PRICE_FILTER, Bybit priceFilter, OKX tickSz, etc.). Remaining connectors fall back to `price_precision` integer digits.
+
 ### Connector Manager
 
 The connector manager (`src/connector_manager/`) provides a runtime pool for managing multiple connectors simultaneously:

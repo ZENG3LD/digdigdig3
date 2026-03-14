@@ -55,33 +55,41 @@ These connectors implement `ExchangeIdentity` + `MarketData` + `WebSocketConnect
 
 ### Crypto CEX — Tested on real data via live bridge
 
-The following 21 connectors were validated against live exchange data in production use. "Tested" means real klines data was flowing through the live bridge, not that there are unit test files.
+The following 21 connectors were validated against live exchange data in production use.
 
-| Exchange | REST | WebSocket | Notes |
-|----------|------|-----------|-------|
-| Binance | Yes | Yes | Klines, ticker, orderbook, recent trades |
-| Bybit | Yes | Yes | Klines, ticker, orderbook |
-| OKX | Yes | Yes | Klines, ticker, orderbook |
-| KuCoin | Yes | Yes | Klines, ticker, orderbook |
-| Kraken | Yes | Yes | Klines, ticker, orderbook |
-| Coinbase | Yes | Yes | Klines, ticker, orderbook |
-| Gate.io | Yes | Yes | Klines, ticker, orderbook |
-| Bitfinex | Yes | Yes | Klines, ticker, orderbook |
-| Bitstamp | Yes | Yes | Klines, ticker, orderbook |
-| Gemini | Yes | Yes | Klines, ticker, orderbook |
-| MEXC | Yes | Yes | Klines, ticker, orderbook, recent trades |
-| HTX | Yes | Yes | Klines, ticker, orderbook |
-| Bitget | Yes | Yes | Klines, ticker, orderbook |
-| BingX | Yes | Yes | Klines, ticker, orderbook |
-| Crypto.com | Yes | Yes | Klines, ticker, orderbook |
-| Upbit | Yes | Yes | Klines, ticker, orderbook |
-| Deribit | Yes | Yes | Klines, ticker, orderbook |
-| HyperLiquid | Yes | Yes | Klines, ticker, orderbook |
-| dYdX v4 | Yes | Yes | Klines, ticker, orderbook — gRPC also available |
-| Lighter | Yes | Yes | Klines, ticker, orderbook, trades |
-| MOEX ISS | Yes | Yes | Klines, ticker — public Russian equity market data |
+**Legend:**
+- **Tested** — data flowed through the live bridge in production
+- **Untested** — code exists and compiles, never validated on real data
+- **N/A** — method not implemented (returns `UnsupportedOperation`)
 
-`get_recent_trades` is only implemented for Binance, MEXC, and Lighter. The other 18 connectors return `UnsupportedOperation` for that method.
+| Exchange | REST klines | REST ticker | REST orderbook | REST trades | WS trades | WS ticker | WS orderbook | WS klines |
+|----------|-------------|-------------|----------------|-------------|-----------|-----------|--------------|-----------|
+| Binance | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
+| Bybit | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
+| OKX | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
+| KuCoin | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
+| Kraken | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
+| Coinbase | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
+| Gate.io | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
+| Bitfinex | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
+| Bitstamp | Tested | Tested (poll/30s) | Untested | N/A | Tested | Tested | Untested | Untested |
+| Gemini | Tested | Tested (poll/15s) | Untested | N/A | Tested | Tested | Untested | Untested |
+| MEXC | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
+| HTX | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
+| Bitget | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
+| BingX | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
+| Crypto.com | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
+| Upbit | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
+| Deribit | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
+| HyperLiquid | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
+| dYdX v4 | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
+| Lighter | Tested | Untested | Untested | Untested | Tested | Tested | Untested | Untested |
+| MOEX ISS | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
+
+Notes:
+- Bitstamp and Gemini supplement WebSocket ticker with a REST poll fallback (30s and 15s intervals respectively). That REST `get_ticker` call was exercised in production.
+- `get_recent_trades` (REST trades column) is implemented only for Lighter. All other connectors return `UnsupportedOperation` and are marked N/A.
+- WS orderbook and WS klines channels exist in code for most connectors but were never subscribed to in a live session.
 
 ### Crypto CEX — Implemented, NOT tested on real data
 

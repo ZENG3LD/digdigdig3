@@ -533,6 +533,10 @@ impl MarketData for DydxConnector {
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<f64>().ok());
 
+            let tick_size = data.get("tickSize")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok());
+
             let min_notional = data.get("minOrderSize")
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<f64>().ok());
@@ -546,7 +550,7 @@ impl MarketData for DydxConnector {
                 quantity_precision: 8,
                 min_quantity: min_notional,
                 max_quantity: None,
-                tick_size: None,
+                tick_size,
                 step_size,
                 min_notional: None,
             }

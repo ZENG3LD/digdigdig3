@@ -470,6 +470,19 @@ impl HtxParser {
                 // min-order-value = min notional (price * qty)
                 let min_notional = item["min-order-value"].as_f64();
 
+                // Derive tick_size from price-precision: 10^(-price_precision)
+                // e.g. price_precision=2 → tick_size=0.01
+                let tick_size = item["tick-size"].as_f64().or_else(|| {
+                    let p = item["price-precision"].as_i64().unwrap_or(8);
+                    Some(10f64.powi(-(p as i32)))
+                });
+
+                // Derive step_size from amount-precision: 10^(-amount_precision)
+                let step_size = {
+                    let p = item["amount-precision"].as_i64().unwrap_or(8);
+                    Some(10f64.powi(-(p as i32)))
+                };
+
                 Some(crate::core::types::SymbolInfo {
                     symbol: symbol_raw,
                     base_asset,
@@ -479,8 +492,8 @@ impl HtxParser {
                     quantity_precision,
                     min_quantity,
                     max_quantity,
-                    tick_size: None,
-                    step_size: None,
+                    tick_size,
+                    step_size,
                     min_notional,
                 })
             })

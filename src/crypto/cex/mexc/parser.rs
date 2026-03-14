@@ -433,6 +433,14 @@ impl MexcParser {
                 // MEXC has maxQuoteAmount (in quote currency) but no direct maxQty field.
                 let max_quantity: Option<f64> = None;
 
+                // MEXC Spot exchangeInfo has no explicit tickSize field.
+                // Derive tick_size from quoteAssetPrecision: 10^(-precision).
+                // Also check pricePrecision (integer) which some MEXC futures endpoints use.
+                let tick_size = item["quoteAssetPrecision"].as_u64()
+                    .or_else(|| item["quotePrecision"].as_u64())
+                    .or_else(|| item["pricePrecision"].as_u64())
+                    .map(|p| 10f64.powi(-(p as i32)));
+
                 Some(crate::core::types::SymbolInfo {
                     symbol,
                     base_asset,
@@ -442,7 +450,7 @@ impl MexcParser {
                     quantity_precision,
                     min_quantity,
                     max_quantity,
-                    tick_size: None,
+                    tick_size,
                     step_size,
                     min_notional,
                 })

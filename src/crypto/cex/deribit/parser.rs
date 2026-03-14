@@ -718,8 +718,10 @@ impl DeribitParser {
                 continue;
             }
 
-            let price_precision = item.get("tick_size")
-                .and_then(|v| v.as_f64())
+            let raw_tick_size = item.get("tick_size")
+                .and_then(|v| v.as_f64());
+
+            let price_precision = raw_tick_size
                 .map(|ts| {
                     if ts <= 0.0 { 8u8 }
                     else { (-ts.log10().ceil()).max(0.0) as u8 }
@@ -741,7 +743,7 @@ impl DeribitParser {
                 quantity_precision: 8,
                 min_quantity,
                 max_quantity: None,
-                tick_size: None,
+                tick_size: raw_tick_size,
                 step_size,
                 min_notional: None,
             });

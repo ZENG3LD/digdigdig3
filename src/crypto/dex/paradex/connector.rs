@@ -521,31 +521,72 @@ impl MarketData for ParadexConnector {
 
     async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let response = self.get(ParadexEndpoint::Markets, HashMap::new()).await?;
-        let symbols = ParadexParser::parse_symbols(&response)?;
 
-        let infos = symbols.into_iter().map(|sym| {
-            // Paradex format is "BTC-USD-PERP" - split on first "-"
-            let parts: Vec<&str> = sym.splitn(2, '-').collect();
-            let base = parts.first().copied().unwrap_or(&sym).to_string();
-            let quote = if parts.len() > 1 {
-                // Take "USD" from "USD-PERP"
-                parts[1].split('-').next().unwrap_or("USD").to_string()
-            } else {
-                "USD".to_string()
-            };
-            SymbolInfo {
+        // Paradex markets endpoint returns {"results": [...]} where each entry has
+        // "symbol", "base_currency", "quote_currency", "price_tick_size",
+        // "order_size_increment", "min_notional", "max_order_size", "status".
+        let results = response
+            .get("results")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'results' array in markets response".to_string()))?;
+
+        let infos = results.iter().filter_map(|item| {
+            let sym = item.get("symbol").and_then(|v| v.as_str())?.to_string();
+
+            // base_currency / quote_currency are returned directly by the API
+            let base = item.get("base_currency")
+                .and_then(|v| v.as_str())
+                .unwrap_or_else(|| {
+                    // Fallback: split "BTC-USD-PERP" on first '-'
+                    sym.splitn(2, '-').next().unwrap_or(&sym)
+                })
+                .to_string();
+
+            let quote = item.get("quote_currency")
+                .and_then(|v| v.as_str())
+                .unwrap_or_else(|| {
+                    // Fallback: take middle segment of "BTC-USD-PERP"
+                    let parts: Vec<&str> = sym.splitn(3, '-').collect();
+                    if parts.len() > 1 { parts[1] } else { "USD" }
+                })
+                .to_string();
+
+            let status = item.get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("TRADING")
+                .to_string();
+
+            // Paradex provides "price_tick_size" as a decimal string e.g. "0.1"
+            let tick_size = item.get("price_tick_size")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok());
+
+            // "order_size_increment" maps to step_size
+            let step_size = item.get("order_size_increment")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok());
+
+            let min_notional = item.get("min_notional")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok());
+
+            let max_quantity = item.get("max_order_size")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok());
+
+            Some(SymbolInfo {
                 symbol: sym,
                 base_asset: base,
                 quote_asset: quote,
-                status: "TRADING".to_string(),
+                status,
                 price_precision: 8,
                 quantity_precision: 8,
                 min_quantity: None,
-                max_quantity: None,
-                tick_size: None,
-                step_size: None,
-                min_notional: None,
-            }
+                max_quantity,
+                tick_size,
+                step_size,
+                min_notional,
+            })
         }).collect();
 
         Ok(infos)

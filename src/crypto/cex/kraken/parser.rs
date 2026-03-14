@@ -621,6 +621,19 @@ impl KrakenParser {
                 .and_then(|s| s.parse::<f64>().ok())
                 .or_else(|| data.get("ordermin").and_then(|v| v.as_f64()));
 
+            // tick_size: price increment from the "tick_size" field (string like "0.1")
+            let tick_size = data.get("tick_size")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok());
+
+            // step_size: derived from lot_decimals (e.g. 8 → 0.00000001)
+            let step_size = {
+                let decimals = data.get("lot_decimals")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(8);
+                Some(10f64.powi(-(decimals as i32)))
+            };
+
             symbols.push(SymbolInfo {
                 symbol: pair_name.clone(),
                 base_asset,
@@ -630,8 +643,8 @@ impl KrakenParser {
                 quantity_precision,
                 min_quantity,
                 max_quantity: None,
-                tick_size: None,
-                step_size: None,
+                tick_size,
+                step_size,
                 min_notional: None,
             });
         }

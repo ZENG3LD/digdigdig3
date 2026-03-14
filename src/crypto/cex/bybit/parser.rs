@@ -448,7 +448,7 @@ impl BybitParser {
                     quantity_precision,
                     min_quantity,
                     max_quantity,
-                    tick_size: None,
+                    tick_size,
                     step_size,
                     min_notional: None,
                 })

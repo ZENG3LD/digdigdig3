@@ -374,6 +374,11 @@ impl MarketData for FyersConnector {
                 symbol.clone()
             };
 
+            // CSV column 6 is tick_size (Fyers format: fytoken,symbol,exchange,segment,description,lot_size,tick_size,...)
+            let tick_size = cols.get(6)
+                .and_then(|s| s.trim().parse::<f64>().ok())
+                .filter(|&v| v > 0.0);
+
             infos.push(SymbolInfo {
                 symbol: display_symbol.clone(),
                 base_asset: display_symbol,
@@ -383,7 +388,7 @@ impl MarketData for FyersConnector {
                 quantity_precision: 0,
                 min_quantity: Some(1.0),
                 max_quantity: None,
-                tick_size: None,
+                tick_size,
                 step_size: Some(1.0),
                 min_notional: None,
             });

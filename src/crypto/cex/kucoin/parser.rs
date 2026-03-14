@@ -274,6 +274,7 @@ impl KuCoinParser {
                 let min_quantity = Self::get_f64(item, "baseMinSize")
                     .or_else(|| Self::get_f64(item, "lotSize"));
                 let max_quantity = Self::get_f64(item, "baseMaxSize");
+                let min_notional = Self::get_f64(item, "quoteMinSize");
 
                 Some(crate::core::types::SymbolInfo {
                     symbol,
@@ -284,9 +285,9 @@ impl KuCoinParser {
                     quantity_precision,
                     min_quantity,
                     max_quantity,
-                    tick_size: None,
+                    tick_size,
                     step_size,
-                    min_notional: None,
+                    min_notional,
                 })
             })
             .collect();

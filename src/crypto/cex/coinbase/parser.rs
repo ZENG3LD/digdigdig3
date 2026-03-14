@@ -758,6 +758,12 @@ impl CoinbaseParser {
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<f64>().ok());
 
+            // tick_size: price increment from quote_increment (e.g. "0.01")
+            let tick_size = product.get("quote_increment")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok());
+
+            // step_size: quantity increment from base_increment (e.g. "0.00000001")
             let step_size = product.get("base_increment")
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<f64>().ok());
@@ -771,7 +777,7 @@ impl CoinbaseParser {
                 quantity_precision,
                 min_quantity,
                 max_quantity,
-                tick_size: None,
+                tick_size,
                 step_size,
                 min_notional,
             });

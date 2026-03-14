@@ -378,16 +378,28 @@ impl MarketData for OandaConnector {
                     (name.to_string(), "USD".to_string())
                 };
 
+                // OANDA provides pipLocation (negative int, e.g. -5 means 5 decimal places)
+                // tick_size = 10^pipLocation (e.g. -5 → 0.00001)
+                let pip_location = inst.get("pipLocation")
+                    .and_then(|v| v.as_i64());
+                let tick_size = pip_location.map(|pl| 10f64.powi(pl as i32));
+
+                // price_precision: number of digits after decimal point (displayPrecision or abs(pipLocation))
+                let price_precision = inst.get("displayPrecision")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or_else(|| pip_location.map(|pl| pl.unsigned_abs()).unwrap_or(5))
+                    as u8;
+
                 Some(SymbolInfo {
                     symbol: name.to_string(),
                     base_asset: base,
                     quote_asset: quote,
                     status: "TRADING".to_string(),
-                    price_precision: 5, // Forex typically 5 decimal places
+                    price_precision,
                     quantity_precision: 0,
                     min_quantity: Some(1.0),
                     max_quantity: None,
-                    tick_size: None,
+                    tick_size,
                     step_size: Some(1.0),
                     min_notional: None,
                 })

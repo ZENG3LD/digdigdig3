@@ -224,6 +224,7 @@ impl OkxParser {
 
             let min_quantity = Self::get_f64(item, "minSz");
             let max_quantity = Self::get_f64(item, "maxLmtSz");
+            let tick_size = Self::get_f64(item, "tickSz");
             let step_size = Self::get_f64(item, "lotSz");
             let min_notional = None; // OKX doesn't provide this directly
 
@@ -240,7 +241,7 @@ impl OkxParser {
                 quantity_precision,
                 min_quantity,
                 max_quantity,
-                tick_size: None,
+                tick_size,
                 step_size,
                 min_notional,
             });

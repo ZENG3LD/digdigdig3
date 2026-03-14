@@ -406,6 +406,38 @@ impl BinanceParser {
             let status = s["status"].as_str().unwrap_or("").to_string();
             if status != "TRADING" { continue; }
 
+            let filters = s["filters"].as_array();
+
+            let tick_size = filters.and_then(|f| {
+                f.iter()
+                    .find(|x| x["filterType"] == "PRICE_FILTER")
+                    .and_then(|x| x["tickSize"].as_str())
+                    .and_then(|s| s.parse::<f64>().ok())
+            });
+
+            let lot_size_filter = filters.and_then(|f| {
+                f.iter().find(|x| x["filterType"] == "LOT_SIZE")
+            });
+
+            let step_size = lot_size_filter
+                .and_then(|x| x["stepSize"].as_str())
+                .and_then(|s| s.parse::<f64>().ok());
+
+            let min_quantity = lot_size_filter
+                .and_then(|x| x["minQty"].as_str())
+                .and_then(|s| s.parse::<f64>().ok());
+
+            let max_quantity = lot_size_filter
+                .and_then(|x| x["maxQty"].as_str())
+                .and_then(|s| s.parse::<f64>().ok());
+
+            let min_notional = filters.and_then(|f| {
+                f.iter()
+                    .find(|x| x["filterType"] == "MIN_NOTIONAL" || x["filterType"] == "NOTIONAL")
+                    .and_then(|x| x["minNotional"].as_str())
+                    .and_then(|s| s.parse::<f64>().ok())
+            });
+
             result.push(SymbolInfo {
                 symbol: s["symbol"].as_str().unwrap_or("").to_string(),
                 base_asset: s["baseAsset"].as_str().unwrap_or("").to_string(),
@@ -413,11 +445,11 @@ impl BinanceParser {
                 status,
                 price_precision: s["pricePrecision"].as_u64().unwrap_or(8) as u8,
                 quantity_precision: s["quantityPrecision"].as_u64().unwrap_or(8) as u8,
-                min_quantity: None,
-                max_quantity: None,
-                tick_size: None,
-                step_size: None,
-                min_notional: None,
+                min_quantity,
+                max_quantity,
+                tick_size,
+                step_size,
+                min_notional,
             });
         }
         Ok(result)

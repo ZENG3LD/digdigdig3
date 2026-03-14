@@ -511,6 +511,10 @@ impl CryptoComParser {
 
             let min_quantity = step_size; // Minimum tradeable is typically 1 step
 
+            let tick_size = item.get("price_tick_size")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok());
+
             symbols.push(SymbolInfo {
                 symbol,
                 base_asset,
@@ -520,7 +524,7 @@ impl CryptoComParser {
                 quantity_precision,
                 min_quantity,
                 max_quantity: None,
-                tick_size: None,
+                tick_size,
                 step_size,
                 min_notional: None,
             });

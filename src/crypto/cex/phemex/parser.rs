@@ -663,6 +663,19 @@ impl PhemexParser {
                     let min_notional = item.get("minOrderValue")
                         .and_then(|v| v.as_f64());
 
+                    // tickSize may be a direct field (string or number); fall back to
+                    // deriving from priceScale: tick_size = 10^(-priceScale)
+                    let tick_size = item.get("tickSize")
+                        .and_then(|v| {
+                            v.as_str()
+                                .and_then(|s| s.parse::<f64>().ok())
+                                .or_else(|| v.as_f64())
+                        })
+                        .or_else(|| {
+                            // Derive from priceScale: 1 / 10^priceScale
+                            Some(10f64.powi(-(price_precision as i32)))
+                        });
+
                     symbols.push(SymbolInfo {
                         symbol,
                         base_asset,
@@ -672,7 +685,7 @@ impl PhemexParser {
                         quantity_precision: 8,
                         min_quantity,
                         max_quantity: None,
-                        tick_size: None,
+                        tick_size,
                         step_size,
                         min_notional,
                     });

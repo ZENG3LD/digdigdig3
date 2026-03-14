@@ -618,6 +618,12 @@ impl BitstampParser {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(8) as u8;
 
+            // Derive tick_size from counter_decimals: e.g. 2 decimals -> 0.01
+            let tick_size = Some(10f64.powi(-(price_precision as i32)));
+
+            // Derive step_size from base_decimals: e.g. 8 decimals -> 0.00000001
+            let step_size = Some(10f64.powi(-(quantity_precision as i32)));
+
             // "minimum_order" is like "25 USD" - parse the number
             let min_notional = item.get("minimum_order")
                 .and_then(|v| v.as_str())
@@ -633,8 +639,8 @@ impl BitstampParser {
                 quantity_precision,
                 min_quantity: None,
                 max_quantity: None,
-                tick_size: None,
-                step_size: None,
+                tick_size,
+                step_size,
                 min_notional,
             });
         }

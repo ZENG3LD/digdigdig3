@@ -716,6 +716,18 @@ impl MarketData for AlpacaConnector {
                 .unwrap_or("active")
                 .to_uppercase();
 
+            // Alpaca provides price_increment (tick size) and min_trade_increment (qty step)
+            // Both are string-encoded floats in the assets response
+            let tick_size = item.get("price_increment")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .filter(|&v| v > 0.0);
+            let step_size = item.get("min_trade_increment")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .filter(|&v| v > 0.0)
+                .or(Some(1.0));
+
             Some(SymbolInfo {
                 symbol: symbol.clone(),
                 base_asset: symbol,
@@ -725,8 +737,8 @@ impl MarketData for AlpacaConnector {
                 quantity_precision: 0,
                 min_quantity: Some(1.0),
                 max_quantity: None,
-                tick_size: None,
-                step_size: Some(1.0),
+                tick_size,
+                step_size,
                 min_notional: None,
             })
         }).collect();

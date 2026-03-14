@@ -343,6 +343,11 @@ impl MarketData for ZerodhaConnector {
                 continue;
             }
 
+            // CSV column 7 is tick_size (minimum price movement)
+            let tick_size = cols.get(7)
+                .and_then(|s| s.trim().parse::<f64>().ok())
+                .filter(|&v| v > 0.0);
+
             infos.push(SymbolInfo {
                 symbol: symbol.clone(),
                 base_asset: symbol,
@@ -352,7 +357,7 @@ impl MarketData for ZerodhaConnector {
                 quantity_precision: 0,
                 min_quantity: Some(1.0),
                 max_quantity: None,
-                tick_size: None,
+                tick_size,
                 step_size: Some(1.0),
                 min_notional: None,
             });

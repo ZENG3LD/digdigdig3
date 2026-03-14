@@ -303,6 +303,12 @@ impl GateioParser {
                     .and_then(|v| v.as_i64())
                     .map(|v| v as f64);
 
+                // tick_size: futures provides order_price_round as a decimal string
+                // (e.g. "0.1"), which is a real tick size. Spot only provides an
+                // integer precision digit count, so PrecisionCache handles that
+                // fallback — leave tick_size as None for spot.
+                let tick_size = price_tick;
+
                 Some(crate::core::types::SymbolInfo {
                     symbol,
                     base_asset,
@@ -312,7 +318,7 @@ impl GateioParser {
                     quantity_precision,
                     min_quantity,
                     max_quantity,
-                    tick_size: None,
+                    tick_size,
                     step_size: None,
                     min_notional: Self::get_f64(item, "min_quote_amount"),
                 })

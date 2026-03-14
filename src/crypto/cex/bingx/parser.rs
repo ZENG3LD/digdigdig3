@@ -783,6 +783,9 @@ impl BingxParser {
 
             let step_size = item.get("size").and_then(|v| v.as_f64());
 
+            // tickSize is a number in the swap contracts response
+            let tick_size = item.get("tickSize").and_then(|v| v.as_f64());
+
             symbols.push(SymbolInfo {
                 symbol,
                 base_asset,
@@ -792,7 +795,7 @@ impl BingxParser {
                 quantity_precision,
                 min_quantity,
                 max_quantity: None,
-                tick_size: None,
+                tick_size,
                 step_size,
                 min_notional: None,
             });
@@ -865,6 +868,11 @@ impl BingxParser {
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<f64>().ok());
 
+            // tickSize is a string in the spot symbols response (e.g. "0.01")
+            let tick_size = item.get("tickSize")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok());
+
             let min_notional = item.get("minNotional")
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<f64>().ok());
@@ -878,7 +886,7 @@ impl BingxParser {
                 quantity_precision,
                 min_quantity,
                 max_quantity,
-                tick_size: None,
+                tick_size,
                 step_size,
                 min_notional,
             });

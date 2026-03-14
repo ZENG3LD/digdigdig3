@@ -299,6 +299,19 @@ impl BitgetParser {
                 let max_quantity = Self::get_f64(item, "maxTradeAmount")
                     .or_else(|| Self::get_f64(item, "maxTradeNum"));
 
+                // priceEndStep is the explicit tick size (futures); for spot use
+                // pricePlace to derive 10^(-pricePlace) when priceEndStep is absent.
+                let tick_size = Self::get_f64(item, "priceEndStep")
+                    .or_else(|| {
+                        item.get("pricePlace")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.parse::<u32>().ok())
+                            .map(|places| 10f64.powi(-(places as i32)))
+                    });
+
+                // sizeMultiplier is the quantity step for futures contracts.
+                let step_size = Self::get_f64(item, "sizeMultiplier");
+
                 Some(crate::core::types::SymbolInfo {
                     symbol,
                     base_asset,
@@ -308,8 +321,8 @@ impl BitgetParser {
                     quantity_precision,
                     min_quantity,
                     max_quantity,
-                    tick_size: None,
-                    step_size: None,
+                    tick_size,
+                    step_size,
                     min_notional: None,
                 })
             })

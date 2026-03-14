@@ -706,6 +706,16 @@ impl GeminiParser {
             .and_then(|s| s.parse::<f64>().ok())
             .or_else(|| response.get("min_order_size").and_then(|v| v.as_f64()));
 
+        // quote_increment is the minimum price increment (tick_size for price)
+        let tick_size = response.get("quote_increment")
+            .and_then(|v| v.as_f64())
+            .filter(|&v| v > 0.0);
+
+        // tick_size field in Gemini is the minimum quantity increment (step_size)
+        let step_size = response.get("tick_size")
+            .and_then(|v| v.as_f64())
+            .filter(|&v| v > 0.0);
+
         Some(SymbolInfo {
             symbol,
             base_asset,
@@ -715,8 +725,8 @@ impl GeminiParser {
             quantity_precision,
             min_quantity,
             max_quantity: None,
-            tick_size: None,
-            step_size: None,
+            tick_size,
+            step_size,
             min_notional: None,
         })
     }

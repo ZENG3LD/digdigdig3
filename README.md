@@ -24,7 +24,7 @@ digdigdig3 is organized around capability levels. Each level describes what a co
 
 **Total connectors:** 140
 **Total source files (.rs):** 846
-**Lines of code (src/):** ~30,000
+**Lines of code (src/):** ~258,000
 **Blockchain chains supported:** 8 (EVM, Solana, Cosmos, Bitcoin, Aptos, StarkNet, Sui, TON)
 
 ---
@@ -508,7 +508,7 @@ WebSocket base: `src/core/websocket/base_websocket.rs` — handles reconnect, pi
 | Prediction markets | 1 |
 | **Total** | **139** |
 | Total .rs source files | 846 |
-| Lines of code (src/) | ~30,000 |
+| Lines of code (src/) | ~258,000 |
 | Blockchain chains | 8 |
 | Core traits | 13 |
 | Connectors with zero test coverage | ~120 |

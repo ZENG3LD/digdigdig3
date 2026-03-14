@@ -286,10 +286,12 @@ All CEX connectors and most broker connectors implement:
 | Connector | Execution Notes |
 |-----------|----------------|
 | dYdX v4 | Order placement via Cosmos gRPC — full trading trait implemented |
-| Lighter | `place_order` trait is stub (`UnsupportedOperation`). Real signed orders via `place_order_signed()` using ZK-native signing — not yet exposed through the standard `Trading` trait |
+| Lighter | Full trading trait — native ECgFp5+Poseidon2+Schnorr signing (2850 lines, zero third-party crates) |
 | Paradex | Full trading trait implemented, StarkNet signing via `onchain-starknet` feature |
-| GMX | Trading trait implemented but chain signing is not wired — `EvmProvider` is not attached to the connector |
-| Jupiter | Trading methods are stubs — `UnsupportedOperation`. Only ticker and WebSocket work |
+| GMX | Trading trait + positions/orders via Subsquid GraphQL, funding rates from REST, ERC-20 balances |
+| Jupiter | Swap via Ultra API + Trigger API (limit orders) + Recurring API (DCA). Trading trait stubs by design (AMM) |
+| Raydium | Swap quote + transaction builder. Trading trait stubs by design (AMM) |
+| Uniswap | Swap via Trading API + on-chain `exactInputSingle`. Trading trait stubs by design (AMM) |
 
 ### Stock Broker Execution
 
@@ -556,9 +558,8 @@ WebSocket base: `src/core/websocket/base_websocket.rs` — handles reconnect, pi
 | Phemex | HTTP 403 on WebSocket upgrade from restricted regions | REST may still work. WebSocket removed from live watchlist. Code retained |
 | GMX | No real-time WebSocket API — websocket.rs does REST polling internally | Removed from live watchlist. REST data works |
 | Paradex | Per-symbol WebSocket attribution is unreliable (exchange uses a global channel) | WebSocket removed from live watchlist. REST works |
-| Jupiter | Severely incomplete — klines, orderbook, all trading ops are stubs | Only ticker and WebSocket currently functional |
-| Lighter | `place_order` via the `Trading` trait is `UnsupportedOperation` | Real signed orders via internal `place_order_signed()` method — not exposed through standard trait yet |
-| GMX | `EvmProvider` not wired — trading requires EVM wallet but provider not attached | Trading trait compiles but chain signing path is broken at runtime |
+| Jupiter | Klines and orderbook impossible by design (aggregator, no historical data) | Swap APIs (Ultra, Trigger, Recurring) fully wired. Trading trait stubs are correct |
+| GMX | `EvmProvider` not wired — trading requires EVM wallet but provider not attached | Positions/orders via Subsquid work. On-chain trading needs EvmProvider attachment |
 | Futu | Requires OpenD local daemon | All methods return `UnsupportedOperation` until OpenD binary is running |
 
 ---
@@ -571,7 +572,6 @@ Testing is the main gap. 19 active CEX connectors and 85 intelligence feed conne
 |----------|------|
 | High | Add unit tests for the 19 active CEX connectors (Binance first, then Bybit/OKX) |
 | High | Wire `EvmProvider` to GMX connector for actual transaction submission |
-| High | Expose Lighter's `place_order_signed()` through the standard `Trading` trait |
 | High | Implement `get_recent_trades` for the 18 CEX connectors missing it |
 | Medium | Add WebSocket implementations for India stock brokers (Zerodha, Upstox, Angel One, Fyers) |
 | Medium | Implement `EventProducer` for at least EVM and Solana providers |

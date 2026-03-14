@@ -309,11 +309,11 @@ impl DydxWebSocket {
                 }
             }
             "v4_candles" => {
-                // Candles are per-market; parse as Kline event if the parser supports it.
-                // For now we silently accept the message so subscribers don't get errors.
-                // TODO: add DydxParser::parse_ws_candle when the Kline parser is wired.
-                let _ = &data;
-                None
+                // Candles are per-market/resolution. Parse as Kline and emit to subscribers.
+                match DydxParser::parse_ws_candle(&data) {
+                    Ok(event) => Some(Ok(event)),
+                    Err(e) => Some(Err(WebSocketError::Parse(e.to_string()))),
+                }
             }
             "v4_subaccounts" | "v4_parent_subaccounts" => {
                 // Private channels: orders, fills, positions for a subaccount.

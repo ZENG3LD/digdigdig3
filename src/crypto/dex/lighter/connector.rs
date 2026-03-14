@@ -496,30 +496,29 @@ impl Trading for LighterConnector {
         symbol: Option<&str>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        // Lighter's account endpoint embeds pending_order_count but not the order list directly.
-        // The accountInactiveOrders endpoint only covers inactive orders.
-        // Open/active orders are not exposed via a dedicated REST list endpoint (only via WS).
-        // Return empty with explanation if no auth, or the inactive orders (best-effort).
         let account_index = self._auth.as_ref()
             .and_then(|a| a.account_index())
             .ok_or_else(|| ExchangeError::Auth(
                 "Lighter get_open_orders requires account_index in credentials passphrase JSON.".to_string()
             ))?;
 
-        // Resolve optional market_id filter
-        let market_id_opt = if let Some(sym) = symbol {
-            self.get_market_id(sym, account_type).await.ok()
-        } else {
-            None
-        };
+        let mut params = HashMap::new();
+        params.insert("account_index".to_string(), account_index.to_string());
 
-        // Note: Lighter has no REST endpoint for listing open orders.
-        // Return UnsupportedOperation with a helpful note.
-        let _ = (account_index, market_id_opt);
-        Err(ExchangeError::UnsupportedOperation(
-            "Lighter does not provide a REST endpoint for listing open orders. \
-             Use the WebSocket account channel to receive real-time order updates.".to_string()
-        ))
+        // Optional market filter
+        if let Some(sym) = symbol {
+            if let Ok(market_id) = self.get_market_id(sym, account_type).await {
+                params.insert("market_id".to_string(), market_id.to_string());
+            }
+        }
+
+        // Auth token is currently optional on the server side per Lighter API docs
+        // (both `auth` query param and `Authorization` header are `required: false`).
+        // TODO: pass auth token once ECgFp5+Poseidon2 signing is implemented.
+
+        let response = self.get(LighterEndpoint::AccountActiveOrders, params, 300).await?;
+        let orders = LighterParser::parse_open_orders(&response)?;
+        Ok(orders)
     }
 
     async fn get_order_history(

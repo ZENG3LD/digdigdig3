@@ -51,9 +51,12 @@ mod inner {
     use crate::core::types::ExchangeError;
     use super::super::proto::dydxprotocol::{
         MsgPlaceOrder, MsgCancelOrder, Order, OrderId, SubaccountId,
-        OrderSide, OrderTimeInForce, OrderConditionType,
-        ORDER_FLAG_SHORT_TERM, ORDER_FLAG_LONG_TERM,
+        OrderSide, OrderConditionType,
+        ORDER_FLAG_SHORT_TERM, ORDER_FLAG_LONG_TERM, ORDER_FLAG_CONDITIONAL,
     };
+    // OrderTimeInForce is re-exported for callers building ShortTermOrderParams / LongTermOrderParams.
+    #[allow(unused_imports)]
+    pub use super::super::proto::dydxprotocol::OrderTimeInForce;
 
     // ─────────────────────────────────────────────────────────────────────────
     // TYPE URL CONSTANTS
@@ -72,6 +75,7 @@ mod inner {
     /// Parameters for placing a SHORT_TERM order on dYdX v4.
     ///
     /// For LONG_TERM orders, use [`LongTermOrderParams`].
+    /// For CONDITIONAL orders (stop/TP), use [`ConditionalOrderParams`].
     #[derive(Debug, Clone)]
     pub struct ShortTermOrderParams {
         /// bech32 dYdX chain address of the order owner (e.g. `"dydx1abc..."`).
@@ -121,6 +125,49 @@ mod inner {
         pub time_in_force: i32,
         /// Whether this is a reduce-only order (`1`) or normal (`0`).
         pub reduce_only: u32,
+    }
+
+    /// Parameters for placing a CONDITIONAL order (stop-loss or take-profit) on dYdX v4.
+    ///
+    /// Conditional orders use `ORDER_FLAG_CONDITIONAL` (32) and require:
+    /// - a `condition_type` — either `StopLoss` (1) or `TakeProfit` (2)
+    /// - a `trigger_subticks` — the price (in subticks) that activates the order
+    /// - the order `subticks` — the limit price to execute at after trigger
+    ///   (for a stop-market style, set this equal to `trigger_subticks` or
+    ///   use a large/small sentinel to simulate a market sweep)
+    ///
+    /// Conditional orders must use `good_til_block_time` (LONG_TERM expiry) per
+    /// the dYdX protocol — they cannot be SHORT_TERM.
+    #[derive(Debug, Clone)]
+    pub struct ConditionalOrderParams {
+        /// bech32 dYdX chain address of the order owner.
+        pub owner_address: String,
+        /// Subaccount index (0 for default).
+        pub subaccount_number: u32,
+        /// Client-assigned order ID.
+        pub client_id: u32,
+        /// CLOB pair ID.
+        pub clob_pair_id: u32,
+        /// Buy (`true`) or sell (`false`).
+        pub is_buy: bool,
+        /// Order size in base quantums.
+        pub quantums: u64,
+        /// Execution price in subticks (limit price after trigger fires).
+        ///
+        /// For a stop-market, set to a large value (buy) or 1 (sell) to
+        /// simulate a market sweep at any available price.
+        pub subticks: u64,
+        /// UTC timestamp (seconds) when the order expires.
+        pub good_til_block_time: u32,
+        /// Time-in-force flag.
+        pub time_in_force: i32,
+        /// Whether this is a reduce-only order (`1`) or normal (`0`).
+        pub reduce_only: u32,
+        /// Condition type: `StopLoss` (1) or `TakeProfit` (2).
+        pub condition_type: OrderConditionType,
+        /// Trigger price in subticks — the order activates when the oracle
+        /// price crosses this level.
+        pub trigger_subticks: u64,
     }
 
     /// Parameters for cancelling an existing order on dYdX v4.
@@ -246,6 +293,61 @@ mod inner {
                 client_metadata: 0,
                 condition_type: OrderConditionType::Unspecified as i32,
                 conditional_order_trigger_subticks: 0,
+            }),
+        };
+
+        let any = encode_as_any(TYPE_URL_PLACE_ORDER, &msg);
+        build_and_sign_tx(any, signing_key, account_number, sequence, chain_id, fee)
+    }
+
+    /// Build and sign a Cosmos `TxRaw` containing a `MsgPlaceOrder` for a
+    /// CONDITIONAL order (stop-loss or take-profit).
+    ///
+    /// Conditional orders use `ORDER_FLAG_CONDITIONAL` (32) and are identified by
+    /// both a `condition_type` and a `conditional_order_trigger_subticks` that
+    /// specifies the oracle-price level at which the order activates.
+    ///
+    /// ## Parameters
+    ///
+    /// - `params` — conditional order parameters
+    /// - `signing_key` — secp256k1 private key for signing
+    /// - `account_number` — from `CosmosChain::query_account`
+    /// - `sequence` — from `CosmosChain::next_sequence`
+    /// - `chain_id` — Cosmos chain identifier
+    /// - `fee` — transaction fee; `None` uses zero fee
+    pub fn build_place_conditional_order_tx(
+        params: &ConditionalOrderParams,
+        signing_key: &SigningKey,
+        account_number: u64,
+        sequence: u64,
+        chain_id: &str,
+        fee: Option<Fee>,
+    ) -> Result<Vec<u8>, ExchangeError> {
+        let msg = MsgPlaceOrder {
+            order: Some(Order {
+                order_id: Some(OrderId {
+                    subaccount_id: Some(SubaccountId {
+                        owner: params.owner_address.clone(),
+                        number: params.subaccount_number,
+                    }),
+                    client_id: params.client_id,
+                    order_flags: ORDER_FLAG_CONDITIONAL,
+                    clob_pair_id: params.clob_pair_id,
+                }),
+                side: if params.is_buy {
+                    OrderSide::Buy as i32
+                } else {
+                    OrderSide::Sell as i32
+                },
+                quantums: params.quantums,
+                subticks: params.subticks,
+                good_til_block: None,
+                good_til_block_time: Some(params.good_til_block_time),
+                time_in_force: params.time_in_force,
+                reduce_only: params.reduce_only,
+                client_metadata: 0,
+                condition_type: params.condition_type as i32,
+                conditional_order_trigger_subticks: params.trigger_subticks,
             }),
         };
 

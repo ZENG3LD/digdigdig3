@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::OnceCell;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -53,6 +54,39 @@ use tonic::transport::Channel;
 use crate::core::chain::cosmos::CosmosProvider;
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// MARKET CONFIG
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Per-market configuration fetched from `GET /v4/perpetualMarkets`.
+///
+/// Used to correctly encode `quantums` (size) and `subticks` (price) for
+/// on-chain order placement. Values are market-specific and must not be
+/// hard-coded.
+#[derive(Debug, Clone)]
+pub struct MarketConfig {
+    /// dYdX market ticker, e.g. `"BTC-USD"`.
+    pub ticker: String,
+    /// CLOB pair ID (0 = BTC-USD, 1 = ETH-USD, …).
+    pub clob_pair_id: u32,
+    /// Minimum size increment in base quantums.
+    ///
+    /// `quantums = round(size / step_base_quantums)` — must not be zero.
+    pub step_base_quantums: f64,
+    /// Price increment: `subticks = round(price * subticks_per_tick)`.
+    pub subticks_per_tick: f64,
+    /// Exponent used to convert quantums to base units:
+    /// `size_in_base = quantums * 10^quantum_conversion_exponent`.
+    pub quantum_conversion_exponent: i32,
+    /// Atomic resolution: decimal places of the base asset on the chain.
+    pub atomic_resolution: i32,
+}
+
+/// Thread-safe lazy cache of all perpetual market configs.
+///
+/// Populated on first call to `fetch_market_configs()` and reused thereafter.
+type MarketConfigCache = OnceCell<HashMap<String, MarketConfig>>;
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -86,6 +120,12 @@ pub struct DydxConnector {
     /// across concurrent order calls.
     #[cfg(feature = "onchain-cosmos")]
     cosmos_provider: Option<Arc<CosmosProvider>>,
+    /// Lazy-loaded cache of perpetual market configurations.
+    ///
+    /// Populated on first call to [`Self::fetch_market_configs`] by hitting
+    /// `GET /v4/perpetualMarkets`. Subsequent calls return the cached value
+    /// without a network round-trip.
+    market_config_cache: Arc<MarketConfigCache>,
 }
 
 impl DydxConnector {
@@ -115,6 +155,7 @@ impl DydxConnector {
             grpc_channel: None,
             #[cfg(feature = "onchain-cosmos")]
             cosmos_provider: None,
+            market_config_cache: Arc::new(OnceCell::new()),
         })
     }
 
@@ -728,8 +769,10 @@ impl Trading for DydxConnector {
             use crate::core::chain::cosmos::CosmosChain as _;
             use crate::core::chain::ChainProvider as _;
             use super::tx_builder::{
-                build_place_order_tx, signing_key_from_bytes, ShortTermOrderParams,
+                build_place_order_tx, build_place_conditional_order_tx,
+                signing_key_from_bytes, ShortTermOrderParams, ConditionalOrderParams,
             };
+            use super::proto::dydxprotocol::OrderConditionType;
 
             if let (Some(cosmos), Some(_channel)) =
                 (self.cosmos_provider.as_ref(), self.grpc_channel.as_ref())
@@ -761,55 +804,122 @@ impl Trading for DydxConnector {
                     _ => "dydx-mainnet-1".to_string(),
                 };
 
-                let clob_pair_id = symbol_to_clob_pair_id(&req.symbol.base);
+                // Fetch market config for this symbol (cached after first call).
+                // Used for both CLOB pair ID lookup and dynamic step size encoding.
+                let ticker = format!("{}-USD", req.symbol.base.to_uppercase());
+                let market_cfg = self.fetch_market_configs().await
+                    .ok()
+                    .and_then(|map| map.get(&ticker));
 
-                // Extract limit price → subticks
-                // NOTE: proper quantums/subticks encoding requires per-market step
-                // sizes from exchange info. This is a best-effort approximation.
-                // For production use with custom precision, call place_order_grpc()
-                // with a manually constructed and signed TxRaw.
-                let (quantums, subticks) = order_request_to_quantums_subticks(&req)?;
+                // Use dynamic CLOB pair ID from market config; fall back to static map.
+                let clob_pair_id = market_cfg
+                    .map(|cfg| cfg.clob_pair_id)
+                    .unwrap_or_else(|| symbol_to_clob_pair_id(&req.symbol.base));
 
-                // Extract block expiry from GoodTilBlock TIF, default to 0
-                let good_til_block = match &req.time_in_force {
-                    crate::core::TimeInForce::GoodTilBlock { block_height } => {
-                        *block_height as u32
-                    }
-                    _ => 0u32,
-                };
+                // Determine whether this is a conditional (stop/TP) order.
+                // Conditional orders use ORDER_FLAG_CONDITIONAL (32), must have a
+                // trigger_subticks and condition_type, and always use good_til_block_time.
+                let conditional_info: Option<(super::proto::dydxprotocol::OrderConditionType, f64)> =
+                    match &req.order_type {
+                        crate::core::OrderType::StopMarket { stop_price } => {
+                            Some((OrderConditionType::StopLoss, *stop_price))
+                        }
+                        crate::core::OrderType::StopLimit { stop_price, .. } => {
+                            Some((OrderConditionType::StopLoss, *stop_price))
+                        }
+                        _ => None,
+                    };
+
+                // Extract quantums/subticks using market-specific step sizes.
+                let (quantums, subticks) =
+                    order_request_to_quantums_subticks(&req, market_cfg)?;
+
+                let client_id = req.client_order_id
+                    .as_deref()
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or_else(|| {
+                        // Fallback: subsecond nanos as a cheap unique client ID
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .subsec_nanos()
+                    });
 
                 let tif_i32 = map_tif_to_dydx_i32(&req.time_in_force);
+                let reduce_only = if req.reduce_only { 1 } else { 0 };
+                let is_buy = req.side == crate::core::OrderSide::Buy;
 
-                let params = ShortTermOrderParams {
-                    owner_address: owner_address.clone(),
-                    subaccount_number: 0,
-                    client_id: req.client_order_id
-                        .as_deref()
-                        .and_then(|s| s.parse::<u32>().ok())
-                        .unwrap_or_else(|| {
-                            // Fallback: subsecond nanos as a cheap unique client ID
-                            std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .subsec_nanos()
-                        }),
-                    clob_pair_id,
-                    is_buy: req.side == crate::core::OrderSide::Buy,
-                    quantums,
-                    subticks,
-                    good_til_block,
-                    time_in_force: tif_i32,
-                    reduce_only: if req.reduce_only { 1 } else { 0 },
+                let tx_bytes = if let Some((condition_type, trigger_price)) = conditional_info {
+                    // Conditional orders must use good_til_block_time (LONG_TERM expiry).
+                    // Default to 28 days from now (maximum dYdX conditional lifetime).
+                    let good_til_block_time = {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        (now + 28 * 24 * 3600) as u32
+                    };
+
+                    // Compute trigger_subticks from trigger_price using market's subticks_per_tick.
+                    let subticks_per_tick = market_cfg
+                        .map(|cfg| cfg.subticks_per_tick)
+                        .unwrap_or(100_000.0);
+                    let trigger_subticks = (trigger_price * subticks_per_tick).round() as u64;
+
+                    let cond_params = ConditionalOrderParams {
+                        owner_address: owner_address.clone(),
+                        subaccount_number: 0,
+                        client_id,
+                        clob_pair_id,
+                        is_buy,
+                        quantums,
+                        subticks,
+                        good_til_block_time,
+                        time_in_force: tif_i32,
+                        reduce_only,
+                        condition_type,
+                        trigger_subticks,
+                    };
+
+                    build_place_conditional_order_tx(
+                        &cond_params,
+                        &signing_key,
+                        account_number,
+                        sequence,
+                        &chain_id,
+                        None,
+                    )?
+                } else {
+                    // Standard SHORT_TERM order (Limit / Market)
+                    let good_til_block = match &req.time_in_force {
+                        crate::core::TimeInForce::GoodTilBlock { block_height } => {
+                            *block_height as u32
+                        }
+                        _ => 0u32,
+                    };
+
+                    let params = ShortTermOrderParams {
+                        owner_address: owner_address.clone(),
+                        subaccount_number: 0,
+                        client_id,
+                        clob_pair_id,
+                        is_buy,
+                        quantums,
+                        subticks,
+                        good_til_block,
+                        time_in_force: tif_i32,
+                        reduce_only,
+                    };
+
+                    build_place_order_tx(
+                        &params,
+                        &signing_key,
+                        account_number,
+                        sequence,
+                        &chain_id,
+                        None, // zero fee — standard for dYdX short-term orders
+                    )?
                 };
-
-                let tx_bytes = build_place_order_tx(
-                    &params,
-                    &signing_key,
-                    account_number,
-                    sequence,
-                    &chain_id,
-                    None, // zero fee — standard for dYdX short-term orders
-                )?;
 
                 let resp = self.place_order_grpc(tx_bytes).await?;
 
@@ -830,8 +940,15 @@ impl Trading for DydxConnector {
                     .map(|r| r.txhash.clone())
                     .unwrap_or_default();
 
-                let price = match &req.order_type {
+                let display_price = match &req.order_type {
                     crate::core::OrderType::Limit { price } => Some(*price),
+                    crate::core::OrderType::StopLimit { limit_price, .. } => Some(*limit_price),
+                    _ => None,
+                };
+
+                let display_stop_price = match &req.order_type {
+                    crate::core::OrderType::StopMarket { stop_price } => Some(*stop_price),
+                    crate::core::OrderType::StopLimit { stop_price, .. } => Some(*stop_price),
                     _ => None,
                 };
 
@@ -842,8 +959,8 @@ impl Trading for DydxConnector {
                     side: req.side,
                     order_type: req.order_type,
                     status: crate::core::OrderStatus::Open,
-                    price,
-                    stop_price: None,
+                    price: display_price,
+                    stop_price: display_stop_price,
                     quantity: req.quantity,
                     filled_quantity: 0.0,
                     average_price: None,
@@ -1147,6 +1264,92 @@ impl DydxConnector {
         DydxParser::parse_positions(&response)
     }
 
+    /// Fetch all perpetual market configs from `GET /v4/perpetualMarkets`.
+    ///
+    /// Results are cached after the first successful fetch so subsequent calls
+    /// return immediately without a network round-trip.
+    ///
+    /// Each entry in the returned map is keyed by the dYdX ticker (e.g. `"BTC-USD"`)
+    /// and contains the market-specific step sizes needed for on-chain order encoding.
+    pub async fn fetch_market_configs(&self) -> ExchangeResult<&HashMap<String, MarketConfig>> {
+        self.market_config_cache
+            .get_or_try_init(|| async {
+                let response = self
+                    .get(DydxEndpoint::PerpetualMarkets, HashMap::new())
+                    .await?;
+
+                let markets = response
+                    .get("markets")
+                    .and_then(|m| m.as_object())
+                    .ok_or_else(|| {
+                        ExchangeError::Parse("Missing 'markets' in perpetualMarkets response".to_string())
+                    })?;
+
+                let mut configs = HashMap::with_capacity(markets.len());
+
+                for (ticker, market) in markets {
+                    // Parse all numeric fields; skip markets with missing required data.
+                    let clob_pair_id = market
+                        .get("clobPairId")
+                        .and_then(|v| v.as_str().and_then(|s| s.parse::<u32>().ok())
+                            .or_else(|| v.as_u64().map(|n| n as u32)))
+                        .unwrap_or(0);
+
+                    let step_base_quantums = market
+                        .get("stepBaseQuantum")
+                        .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok())
+                            .or_else(|| v.as_f64()))
+                        .unwrap_or(1_000_000.0); // safe fallback
+
+                    let subticks_per_tick = market
+                        .get("subticksPerTick")
+                        .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok())
+                            .or_else(|| v.as_f64()))
+                        .unwrap_or(100_000.0); // safe fallback
+
+                    let quantum_conversion_exponent = market
+                        .get("quantumConversionExponent")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(-9) as i32;
+
+                    let atomic_resolution = market
+                        .get("atomicResolution")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(-10) as i32;
+
+                    configs.insert(
+                        ticker.clone(),
+                        MarketConfig {
+                            ticker: ticker.clone(),
+                            clob_pair_id,
+                            step_base_quantums,
+                            subticks_per_tick,
+                            quantum_conversion_exponent,
+                            atomic_resolution,
+                        },
+                    );
+                }
+
+                Ok(configs)
+            })
+            .await
+    }
+
+    /// Get the [`MarketConfig`] for a specific ticker symbol (e.g. `"BTC-USD"`).
+    ///
+    /// Fetches and caches the full market config on the first call, then looks
+    /// up the requested ticker. Returns an error if the ticker is not found.
+    pub async fn get_market_config(&self, ticker: &str) -> ExchangeResult<&MarketConfig> {
+        let configs = self.fetch_market_configs().await?;
+        configs.get(ticker).ok_or_else(|| {
+            ExchangeError::Parse(format!(
+                "dYdX market '{}' not found in perpetualMarkets. \
+                 Check that the ticker is in 'BASE-USD' format and exists on dYdX.",
+                ticker
+            ))
+        })
+    }
+
     /// Получить market info (для clobPairId mapping)
     pub async fn get_market_info(&self, ticker: &str) -> ExchangeResult<Value> {
         let response = self.get(DydxEndpoint::PerpetualMarkets, HashMap::new()).await?;
@@ -1349,26 +1552,33 @@ fn symbol_to_clob_pair_id(base: &str) -> u32 {
     }
 }
 
-/// Extract `(quantums, subticks)` from an `OrderRequest`.
+/// Extract `(quantums, subticks)` from an `OrderRequest` using dynamic market config.
 ///
-/// This is a **best-effort** approximation. Proper encoding requires
-/// per-market step-size and subtick multipliers from the dYdX exchange
-/// info endpoint. The values here use simplified integer arithmetic.
+/// When `market_cfg` is `Some`, the market-specific `step_base_quantums` and
+/// `subticks_per_tick` values from the dYdX Indexer are used for precise encoding.
+/// When `None`, conservative fallback constants are used (suitable only for
+/// BTC-USD with approximate precision).
 ///
-/// For production orders, callers should:
-/// 1. Fetch market params from `get_exchange_info()`
-/// 2. Compute `quantums = quantity / stepBaseQuantum`
-/// 3. Compute `subticks = price / subticksPerTick`
-/// 4. Use `place_order_grpc()` with a hand-built `TxRaw` if precision is critical.
+/// ## Encoding rules (from dYdX protocol)
+///
+/// ```text
+/// quantums = round(quantity / step_base_quantums)
+/// subticks  = round(price   * subticks_per_tick)
+/// ```
+///
+/// Both values must be non-zero integers that fit in `u64`.
 #[cfg(all(feature = "onchain-cosmos", feature = "grpc"))]
 fn order_request_to_quantums_subticks(
     req: &OrderRequest,
+    market_cfg: Option<&MarketConfig>,
 ) -> ExchangeResult<(u64, u64)> {
-    // Extract the limit price from OrderType::Limit
+    // Extract the execution price from the order type.
+    // For conditional orders the "subticks" field is the limit price that
+    // executes after the trigger fires; for stop-market we simulate a sweep.
     let price = match &req.order_type {
         crate::core::OrderType::Limit { price } => *price,
         crate::core::OrderType::Market => {
-            // Market orders on dYdX use a very large price (buy) or 0 (sell)
+            // Market orders on dYdX use a very large price (buy) or 1 (sell)
             // for crossing the book. Use a sentinel that the chain accepts.
             if req.side == crate::core::OrderSide::Buy {
                 f64::MAX / 1e10 // large but fits in u64 subticks range
@@ -1376,6 +1586,19 @@ fn order_request_to_quantums_subticks(
                 1.0
             }
         }
+        // Stop-market: trigger = stop_price; execution uses a sweep sentinel
+        // so the order fills immediately at best available price after trigger.
+        crate::core::OrderType::StopMarket { .. } => {
+            if req.side == crate::core::OrderSide::Buy {
+                // Buy stop-market sweeps up: large price sentinel
+                f64::MAX / 1e10
+            } else {
+                // Sell stop-market sweeps down: 1 tick sentinel
+                1.0
+            }
+        }
+        // Stop-limit: execution at limit_price; trigger at stop_price
+        crate::core::OrderType::StopLimit { limit_price, .. } => *limit_price,
         _ => {
             return Err(ExchangeError::UnsupportedOperation(format!(
                 "dYdX tx builder: order type {:?} is not yet supported via \
@@ -1385,20 +1608,31 @@ fn order_request_to_quantums_subticks(
         }
     };
 
-    // Default step sizes for BTC-USD (clob_pair_id = 0).
-    // These are market-specific and should be fetched from exchange info.
-    // BTC-USD: stepBaseQuantum = 1e6 (satoshi-level), subticksPerTick = 1e5
-    const STEP_BASE_QUANTUM: f64 = 1_000_000.0;
-    const SUBTICKS_PER_TICK: f64 = 100_000.0;
+    // Use dynamic step sizes from market config when available.
+    // Fallback to BTC-USD defaults only as a last resort.
+    let (step_base_quantums, subticks_per_tick) = if let Some(cfg) = market_cfg {
+        (cfg.step_base_quantums, cfg.subticks_per_tick)
+    } else {
+        // Fallback: BTC-USD defaults (stepBaseQuantum=1e6, subticksPerTick=1e5)
+        tracing::warn!(
+            "order_request_to_quantums_subticks: no market config for '{}', \
+             using BTC-USD fallback step sizes. Fetch market config first for accuracy.",
+            req.symbol.base
+        );
+        (1_000_000.0_f64, 100_000.0_f64)
+    };
 
-    let quantums = (req.quantity * STEP_BASE_QUANTUM).round() as u64;
-    let subticks = (price * SUBTICKS_PER_TICK).round() as u64;
+    // quantums = round(quantity / step_base_quantums)
+    let quantums = (req.quantity / step_base_quantums).round() as u64;
+    // subticks  = round(price   * subticks_per_tick)
+    let subticks = (price * subticks_per_tick).round() as u64;
 
     if quantums == 0 {
-        return Err(ExchangeError::InvalidRequest(
-            "dYdX tx builder: computed quantums = 0; quantity is too small for default step size"
-                .to_string()
-        ));
+        return Err(ExchangeError::InvalidRequest(format!(
+            "dYdX tx builder: computed quantums = 0 for quantity {} with \
+             step_base_quantums = {}; quantity is too small.",
+            req.quantity, step_base_quantums
+        )));
     }
 
     Ok((quantums, subticks))

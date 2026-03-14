@@ -16,6 +16,7 @@
 //! | `onchain-evm` | `EvmProvider` — alloy-backed EVM chain provider |
 //! | `onchain-ethereum` | Alias for `onchain-evm` (backward compat) |
 //! | `onchain-solana` | `SolanaProvider` — solana-client-backed Solana chain provider |
+//! | `onchain-starknet` | `StarkNetProvider` — raw JSON-RPC StarkNet chain provider |
 //!
 //! ## Usage
 //!
@@ -45,3 +46,8 @@ pub use solana::*;
 pub mod cosmos;
 #[cfg(feature = "onchain-cosmos")]
 pub use cosmos::{CosmosChain, CosmosProvider};
+
+#[cfg(feature = "onchain-starknet")]
+mod starknet_chain;
+#[cfg(feature = "onchain-starknet")]
+pub use starknet_chain::{StarkNetChain, StarkNetProvider};

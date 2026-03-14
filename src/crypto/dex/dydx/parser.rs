@@ -458,6 +458,71 @@ impl DydxParser {
             timestamp: chrono::Utc::now().timestamp_millis(),
         })
     }
+
+    /// Parse a `v4_candles` WebSocket message into a [`Kline`].
+    ///
+    /// ## Expected wire format
+    ///
+    /// ```json
+    /// {
+    ///   "type": "channel_data",
+    ///   "channel": "v4_candles",
+    ///   "id": "BTC-USD/1MIN",
+    ///   "contents": {
+    ///     "startedAt": "2024-01-01T00:00:00.000Z",
+    ///     "open":  "42000.5",
+    ///     "high":  "42100.0",
+    ///     "low":   "41900.0",
+    ///     "close": "42050.0",
+    ///     "baseTokenVolume": "100.5",
+    ///     "usdVolume": "4220025.0",
+    ///     "trades": 150
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// The outer `"id"` field carries `"{SYMBOL}/{RESOLUTION}"` (e.g. `"BTC-USD/1MIN"`).
+    ///
+    /// ## Returns
+    ///
+    /// A `StreamEvent::Kline` wrapping the parsed [`Kline`], or an error if any
+    /// required field is missing or un-parseable.
+    pub fn parse_ws_candle(data: &Value) -> ExchangeResult<StreamEvent> {
+        let contents = data
+            .get("contents")
+            .ok_or_else(|| ExchangeError::Parse(
+                "v4_candles: missing 'contents' field".to_string()
+            ))?;
+
+        let open_time = Self::get_str(contents, "startedAt")
+            .and_then(Self::parse_iso_timestamp)
+            .unwrap_or(0);
+
+        let open  = Self::require_f64(contents, "open")?;
+        let high  = Self::require_f64(contents, "high")?;
+        let low   = Self::require_f64(contents, "low")?;
+        let close = Self::require_f64(contents, "close")?;
+
+        let volume = Self::get_f64(contents, "baseTokenVolume").unwrap_or(0.0);
+        let quote_volume = Self::get_f64(contents, "usdVolume");
+        let trades = contents
+            .get("trades")
+            .and_then(|t| t.as_u64());
+
+        let kline = Kline {
+            open_time,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            quote_volume,
+            close_time: None,
+            trades,
+        };
+
+        Ok(StreamEvent::Kline(kline))
+    }
 }
 
 #[cfg(test)]

@@ -45,6 +45,9 @@ use super::endpoints::{ParadexUrls, ParadexEndpoint, format_symbol, map_kline_re
 use super::auth::ParadexAuth;
 use super::parser::ParadexParser;
 
+#[cfg(feature = "onchain-starknet")]
+use crate::core::chain::StarkNetProvider;
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -61,6 +64,14 @@ pub struct ParadexConnector {
     testnet: bool,
     /// Rate limiter (grouped: public=1500/60s, orders=17250/60s, private_gets=600/60s)
     rate_limiter: Arc<Mutex<GroupRateLimiter>>,
+    /// Optional StarkNet chain provider for on-chain operations (invoke, call, nonce).
+    ///
+    /// When set, connectors can use `starknet_provider` to read nonces or call
+    /// contracts directly on StarkNet L2 without going through the Paradex REST API.
+    /// This is an advanced use-case; the Paradex REST API is sufficient for all
+    /// trading operations without this provider.
+    #[cfg(feature = "onchain-starknet")]
+    starknet_provider: Option<Arc<StarkNetProvider>>,
 }
 
 impl ParadexConnector {
@@ -101,6 +112,8 @@ impl ParadexConnector {
             urls,
             testnet,
             rate_limiter,
+            #[cfg(feature = "onchain-starknet")]
+            starknet_provider: None,
         })
     }
 
@@ -108,6 +121,42 @@ impl ParadexConnector {
     pub async fn public(testnet: bool) -> ExchangeResult<Self> {
         let credentials = Credentials::new("", ""); // Empty credentials
         Self::new(credentials, testnet).await
+    }
+
+    /// Attach a [`StarkNetProvider`] for direct on-chain operations.
+    ///
+    /// This is an optional extension. The Paradex REST API is fully functional
+    /// without a StarkNet provider. Use this when you need to:
+    /// - Read nonces directly from StarkNet (bypassing REST API latency)
+    /// - Call StarkNet contracts (e.g. token balances, position queries)
+    /// - Broadcast StarkNet transactions without going through Paradex
+    ///
+    /// The provider is shared via `Arc` so it can be reused across connectors.
+    ///
+    /// ## Example
+    ///
+    /// ```rust,ignore
+    /// use std::sync::Arc;
+    /// use digdigdig3::core::chain::StarkNetProvider;
+    ///
+    /// let connector = ParadexConnector::new(credentials, false)
+    ///     .await?
+    ///     .with_starknet_provider(Arc::new(StarkNetProvider::mainnet()));
+    /// ```
+    #[cfg(feature = "onchain-starknet")]
+    pub fn with_starknet_provider(mut self, provider: Arc<StarkNetProvider>) -> Self {
+        self.starknet_provider = Some(provider);
+        self
+    }
+
+    /// Get the attached [`StarkNetProvider`], if any.
+    ///
+    /// Returns `None` if no provider was attached via [`with_starknet_provider`].
+    ///
+    /// [`with_starknet_provider`]: ParadexConnector::with_starknet_provider
+    #[cfg(feature = "onchain-starknet")]
+    pub fn starknet_provider(&self) -> Option<&Arc<StarkNetProvider>> {
+        self.starknet_provider.as_ref()
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

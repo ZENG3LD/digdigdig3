@@ -437,6 +437,87 @@ impl LighterParser {
         Ok(positions)
     }
 
+    /// Parse open/active orders from `/api/v1/accountActiveOrders` response.
+    ///
+    /// The active orders response uses `initial_base_amount`, `market_index`, and `type`
+    /// as field names (different from the inactive orders response).
+    pub fn parse_open_orders(response: &Value) -> ExchangeResult<Vec<crate::core::types::Order>> {
+        Self::check_success(response)?;
+
+        let orders_raw = response.get("orders")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'orders' array".to_string()))?;
+
+        let orders = orders_raw.iter().map(|order| {
+            let order_index = order.get("order_index")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let client_order_index = order.get("client_order_index")
+                .and_then(|v| v.as_i64());
+            // Active orders response uses "market_index", not "market_id"
+            let market_index = order.get("market_index")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let side_str = Self::get_str(order, "side").unwrap_or("buy");
+            let side = if side_str.eq_ignore_ascii_case("sell") {
+                crate::core::types::OrderSide::Sell
+            } else {
+                crate::core::types::OrderSide::Buy
+            };
+            let price = order.get("price").and_then(Self::parse_f64);
+            // Active orders uses "initial_base_amount" or "remaining_base_amount" for qty
+            let quantity = order.get("initial_base_amount")
+                .and_then(Self::parse_f64)
+                .or_else(|| order.get("remaining_base_amount").and_then(Self::parse_f64))
+                .unwrap_or(0.0);
+            let filled_quantity = order.get("filled_base_amount")
+                .and_then(Self::parse_f64)
+                .unwrap_or(0.0);
+            // Active orders status: "open", "in-progress", "pending"
+            let status_str = Self::get_str(order, "status").unwrap_or("open");
+            let status = match status_str {
+                "open" | "in-progress" | "pending" => crate::core::types::OrderStatus::Open,
+                "filled" => crate::core::types::OrderStatus::Filled,
+                "cancelled" | "canceled" => crate::core::types::OrderStatus::Canceled,
+                "expired" => crate::core::types::OrderStatus::Expired,
+                _ => crate::core::types::OrderStatus::Open,
+            };
+            let created_at = Self::get_i64(order, "created_at")
+                .map(|t| t * 1000) // seconds to ms
+                .unwrap_or(0);
+            let updated_at = Self::get_i64(order, "updated_at")
+                .map(|t| t * 1000);
+            // Active orders response uses "type", not "order_type"
+            let order_type_str = Self::get_str(order, "type").unwrap_or("limit");
+            let order_type = if order_type_str.eq_ignore_ascii_case("market") {
+                crate::core::types::OrderType::Market
+            } else {
+                crate::core::types::OrderType::Limit { price: price.unwrap_or(0.0) }
+            };
+
+            crate::core::types::Order {
+                id: order_index.to_string(),
+                client_order_id: client_order_index.map(|i| i.to_string()),
+                symbol: market_index.to_string(), // market_index; caller can resolve
+                side,
+                order_type,
+                status,
+                price,
+                stop_price: order.get("trigger_price").and_then(Self::parse_f64),
+                quantity,
+                filled_quantity,
+                average_price: price,
+                commission: None,
+                commission_asset: None,
+                created_at,
+                updated_at,
+                time_in_force: crate::core::types::TimeInForce::Gtc,
+            }
+        }).collect();
+
+        Ok(orders)
+    }
+
     /// Parse orders from `/api/v1/accountInactiveOrders` response.
     pub fn parse_orders(response: &Value) -> ExchangeResult<Vec<crate::core::types::Order>> {
         Self::check_success(response)?;

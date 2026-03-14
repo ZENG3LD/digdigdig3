@@ -75,6 +75,9 @@ pub use core::{
     encode_base64, encode_hex, encode_hex_lower,
     timestamp_millis, timestamp_seconds, timestamp_iso8601,
 
+    // Precision utilities
+    safe_price, safe_qty, format_price, format_qty,
+
     // Transport
     HttpClient,
 };

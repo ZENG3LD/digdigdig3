@@ -123,3 +123,6 @@ solana-account-decoder = { version = "2", optional = true, default-features = fa
 
 # Cosmos SDK transaction builder + signer (for dYdX, Osmosis, etc.)
 cosmrs = { version = "0.22", optional = true, default-features = false, features = ["bip32"] }
+
+# Decimal arithmetic (f64 → Decimal conversion for safe price/qty rounding)
+rust_decimal = "1"

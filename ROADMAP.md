@@ -19,6 +19,54 @@ f64 → Decimal conversion at Trading trait boundary. Prevents IEEE-754 drift fr
 - [x] DEX with own precision systems: dYdX (MarketConfigCache), GMX (U256 on-chain), Lighter ({:.8} fixed)
 - [x] Stubs skipped: Jupiter, Raydium (place_order → UnsupportedOperation)
 
+## Phase 0.5: DEX/Swap Connector Gaps (Priority: HIGH)
+
+Complete unfinished DEX/swap connectors — wire existing endpoints, fix bugs, implement missing swap APIs.
+Trading trait is mandatory (CoreConnector supertrait) — AMMs return UnsupportedOperation by design.
+Real swap execution lives in struct methods + optional on-chain features.
+
+### GMX — stubs that should be real (data exists in API/Subsquid)
+- [ ] Fix `get_funding_rate` — wrongly stubbed, `/markets/info` returns `fundingRateLong/Short`
+- [ ] Implement `get_positions` via Subsquid GraphQL (`positions` entity)
+- [ ] Implement `get_open_orders` via Subsquid or `Reader.getAccountOrders()` on-chain
+- [ ] Implement `get_order_history` via Subsquid `TradeAction` entity
+- [ ] Implement `get_order` via Subsquid single-item lookup
+- [ ] Wire ERC-20 `balanceOf` into `get_balance` (token addresses already in connector)
+- [ ] Verify ExchangeRouter address (discrepancy: `onchain.rs` vs research doc)
+
+### Jupiter — swap APIs not wired
+- [ ] Fix Ultra Swap bug: wrong HTTP method (POST→GET) + missing `requestId` in execute
+- [ ] Update `get_ultra_balances` endpoint (deprecated `/balances` → `/holdings/{address}`)
+- [ ] Wire `get_ultra_balances` into Account trait `get_balance`
+- [ ] Implement Trigger API (limit orders): create, cancel, execute, query orders
+- [ ] Implement Recurring API (DCA orders): create, cancel, query
+- [ ] Add token search/trending/category wrapper methods
+
+### Raydium — swap pipeline missing wrappers
+- [ ] Implement `get_swap_quote()` wrapper over `SwapQuoteBaseIn/Out` endpoints
+- [ ] Implement `build_swap_transaction()` wrapper over `SwapTransactionBaseIn/Out` endpoints
+- [ ] Fix WebSocket: dynamic pool lookup (currently only SOL/USDC hardcoded)
+- [ ] Fix WebSocket race condition: broadcast channel init before `event_stream()`
+- [ ] Add missing wrappers: token list, farm list, pool list, recommended RPCs, priority fees
+
+### Uniswap — swap flow 80% done, needs final wiring
+- [ ] Wire `POST /swap` → `parse_swap_transaction()` (both exist, not connected)
+- [ ] Fix WebSocket prices: add decimal scaling (raw wei → human-readable)
+- [ ] Fix `get_token_balance()`: dynamic decimals query instead of hardcoded 18
+- [ ] Fix `volume_24h` in ticker: currently lifetime volume, not 24h
+- [ ] Surface TVL from pool queries (fetched but silently dropped)
+- [ ] Wire `POST /approval` endpoint (defined, not called)
+
+### dYdX — small gaps in order types
+- [ ] Wire TakeProfit conditional orders (`OrderConditionType::TakeProfit`)
+- [ ] Wire long-term orders via `TimeInForce::GoodTilTime` → `build_place_long_term_order_tx`
+- [ ] Implement cancel-all helper (loop `get_open_orders` + serial cancel with sequence tracking)
+
+### Lighter — blocked on cryptography
+- [ ] Port ECgFp5+Poseidon2 signing from TypeScript SDK to Rust (unblocks all write operations)
+- [ ] Fix `get_order` for active orders (currently only scans inactive history)
+- [ ] Wire auth token into authenticated read endpoints
+
 ## Phase 1: Crypto CEX/DEX Execution Testing (Priority: HIGH)
 
 Testing order placement, cancellation, account queries on real exchanges.
@@ -311,12 +359,12 @@ Methods that exist but were never validated on real data.
 - [ ] MOEX ISS: REST get_ticker
 
 ### DEX data gaps
-- [ ] dYdX: REST get_orderbook
-- [ ] dYdX: WS subscribe_orderbook (v4_orderbook channel)
-- [ ] Lighter: REST get_orderbook
-- [ ] GMX: REST get_orderbook (polling-based)
-- [ ] Jupiter: implement get_klines (currently stub)
-- [ ] Jupiter: implement get_orderbook (currently stub)
+- [ ] dYdX: REST get_orderbook — validate on real data
+- [ ] dYdX: WS subscribe_orderbook (v4_orderbook channel) — validate
+- [ ] Lighter: REST get_orderbook — validate on real data
+- [ ] GMX: get_orderbook — impossible (oracle pricing, no orderbook by design)
+- [ ] Jupiter: get_klines — impossible (no historical OHLCV API, need Birdeye/CoinGecko)
+- [ ] Jupiter: get_orderbook — impossible (aggregator, no native book)
 
 ---
 

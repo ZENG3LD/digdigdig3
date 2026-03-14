@@ -42,7 +42,7 @@ mod auth;
 mod parser;
 mod connector;
 mod websocket;
-#[cfg(feature = "onchain-ethereum")]
+#[cfg(feature = "onchain-evm")]
 pub mod eip712;
 
 pub use endpoints::{HyperliquidEndpoint, HyperliquidUrls};
@@ -51,7 +51,7 @@ pub use parser::HyperliquidParser;
 pub use connector::HyperliquidConnector;
 pub use websocket::HyperliquidWebSocket;
 
-#[cfg(feature = "onchain-ethereum")]
+#[cfg(feature = "onchain-evm")]
 pub use eip712::{
     Eip712Signer, HyperliquidDomain,
     WithdrawFromBridgeAction, UsdSendAction, SpotSendAction,

@@ -37,6 +37,9 @@ use crate::core::{
 #[cfg(feature = "k256-signing")]
 use k256::ecdsa::{SigningKey, Signature, signature::Signer};
 
+#[cfg(feature = "k256-signing")]
+use sha2::{Sha256, Digest};
+
 /// Lighter authentication handler
 #[derive(Clone)]
 pub struct LighterAuth {
@@ -199,6 +202,68 @@ impl LighterAuth {
         let mut headers = HashMap::new();
         headers.insert("Content-Type".to_string(), "application/json".to_string());
         headers
+    }
+
+    /// Build a canonical 32-byte hash for an L2CreateOrder (tx_type = 14) transaction.
+    ///
+    /// The hash is computed as SHA-256 over the UTF-8 JSON encoding of the
+    /// transaction fields, sorted by key, so the representation is deterministic.
+    ///
+    /// # Note
+    /// Lighter's production signing uses Poseidon2 over the Goldilocks field, not SHA-256.
+    /// This method provides a secp256k1-compatible hash for testing or for tooling
+    /// that bridges Lighter via an Ethereum-compatible intermediary.
+    #[cfg(feature = "k256-signing")]
+    pub fn build_create_order_hash(
+        &self,
+        account_index: u64,
+        market_id: u16,
+        is_ask: bool,
+        base_amount: &str,
+        price: &str,
+        nonce: u64,
+        order_type: u8,
+        time_in_force: u8,
+    ) -> [u8; 32] {
+        // Build a canonical string: fields sorted alphabetically.
+        let canonical = format!(
+            "account_index={}&base_amount={}&is_ask={}&market_id={}&nonce={}&order_type={}&price={}&time_in_force={}&tx_type=14",
+            account_index, base_amount, is_ask as u8, market_id, nonce, order_type, price, time_in_force
+        );
+        let mut hasher = Sha256::new();
+        hasher.update(canonical.as_bytes());
+        let result = hasher.finalize();
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&result);
+        hash
+    }
+
+    /// Build a canonical 32-byte hash for an L2CancelOrder (tx_type = 15) transaction.
+    ///
+    /// Same hashing approach as `build_create_order_hash`.
+    #[cfg(feature = "k256-signing")]
+    pub fn build_cancel_order_hash(
+        &self,
+        account_index: u64,
+        market_id: u16,
+        order_index: u64,
+        nonce: u64,
+    ) -> [u8; 32] {
+        let canonical = format!(
+            "account_index={}&market_id={}&nonce={}&order_index={}&tx_type=15",
+            account_index, market_id, nonce, order_index
+        );
+        let mut hasher = Sha256::new();
+        hasher.update(canonical.as_bytes());
+        let result = hasher.finalize();
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&result);
+        hash
+    }
+
+    /// Get the API key index
+    pub fn api_key_index(&self) -> Option<u16> {
+        self.api_key_index
     }
 }
 

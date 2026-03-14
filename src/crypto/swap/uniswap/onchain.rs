@@ -4,23 +4,24 @@
 //!
 //! ## Feature Gate
 //!
-//! This module is only compiled when the `onchain-ethereum` feature is enabled.
+//! This module is only compiled when the `onchain-evm` feature is enabled.
 //!
 //! ## Architecture
 //!
-//! - `UniswapOnchain` — wraps an alloy `DynProvider` and exposes high-level
+//! - `UniswapOnchain` — wraps a shared [`EvmProvider`] and exposes high-level
 //!   swap building primitives
 //! - `build_swap_tx()` — builds an unsigned Uniswap V3 `exactInputSingle` transaction
-//! - `get_token_balance_onchain()` — queries ERC-20 balance via alloy eth_call
-//! - `get_eth_balance()` — queries native ETH balance
+//! - `get_token_balance_onchain()` — queries ERC-20 balance via `EvmChain::erc20_balance`
+//! - `get_eth_balance()` — queries native ETH balance via `ChainProvider::get_native_balance`
 
-#![cfg(feature = "onchain-ethereum")]
+#![cfg(feature = "onchain-evm")]
 
-use alloy::network::Ethereum;
+use std::sync::Arc;
+
 use alloy::primitives::{Address, Bytes, U256};
-use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use alloy::rpc::types::eth::TransactionRequest;
 
+use crate::core::chain::{ChainProvider, EvmChain, EvmProvider};
 use crate::core::{ExchangeError, ExchangeResult};
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -32,9 +33,6 @@ pub const SWAP_ROUTER_MAINNET: &str = "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc4
 
 /// Uniswap V3 SwapRouter02 address (Sepolia testnet)
 pub const SWAP_ROUTER_TESTNET: &str = "0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48e";
-
-/// ERC-20 `balanceOf(address)` function selector
-const BALANCE_OF_SELECTOR: [u8; 4] = [0x70, 0xa0, 0x82, 0x31];
 
 /// Uniswap V3 `exactInputSingle` function selector
 /// keccak256("exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))")
@@ -93,18 +91,22 @@ pub struct SwapTxResult {
 
 /// On-chain provider wrapper for Uniswap V3 interactions.
 ///
-/// Wraps an alloy type-erased `DynProvider<Ethereum>` and exposes typed helpers for:
+/// Wraps a shared [`EvmProvider`] and exposes typed helpers for:
 /// - Building `exactInputSingle` calldata
-/// - Querying ERC-20 token balances
-/// - Sending signed swap transactions
+/// - Querying ERC-20 token balances via [`EvmChain::erc20_balance`]
+/// - Sending signed swap transactions via [`ChainProvider::broadcast_tx`]
 ///
 /// The caller is responsible for signing and broadcasting the resulting
 /// `TransactionRequest` via their preferred alloy signer.
 ///
+/// Multiple connectors targeting the same chain can share a single
+/// `Arc<EvmProvider>` to reuse the same HTTP connection pool.
+///
 /// ## Usage
 ///
 /// ```ignore
-/// let onchain = UniswapOnchain::new("https://ethereum-rpc.publicnode.com", false)?;
+/// let provider = Arc::new(EvmProvider::ethereum("https://ethereum-rpc.publicnode.com")?);
+/// let onchain = UniswapOnchain::with_provider(provider, false);
 ///
 /// let balance = onchain.get_token_balance_onchain(
 ///     "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", // USDC
@@ -112,27 +114,27 @@ pub struct SwapTxResult {
 /// ).await?;
 /// ```
 pub struct UniswapOnchain {
-    /// Alloy HTTP provider connected to an Ethereum node
-    provider: DynProvider<Ethereum>,
+    /// Shared EVM chain provider
+    provider: Arc<EvmProvider>,
     /// Whether we are on testnet (affects router address)
     testnet: bool,
 }
 
 impl UniswapOnchain {
+    /// Create a `UniswapOnchain` from an existing shared [`EvmProvider`].
+    ///
+    /// `testnet` — if `true`, uses Sepolia router address.
+    pub fn with_provider(provider: Arc<EvmProvider>, testnet: bool) -> Self {
+        Self { provider, testnet }
+    }
+
     /// Connect to an Ethereum JSON-RPC endpoint and build the provider.
     ///
     /// `rpc_url` — HTTP(S) URL of any Ethereum-compatible RPC node.
     /// `testnet` — if `true`, uses Sepolia router address.
     pub fn new(rpc_url: &str, testnet: bool) -> ExchangeResult<Self> {
-        let url: reqwest::Url = rpc_url.parse()
-            .map_err(|e| ExchangeError::InvalidRequest(format!("Invalid RPC URL '{}': {}", rpc_url, e)))?;
-
-        let provider = ProviderBuilder::new().connect_http(url);
-
-        Ok(Self {
-            provider: DynProvider::new(provider),
-            testnet,
-        })
+        let provider = EvmProvider::ethereum(rpc_url)?;
+        Ok(Self::with_provider(Arc::new(provider), testnet))
     }
 
     /// Address of the Uniswap V3 SwapRouter02 for the current network.
@@ -178,10 +180,10 @@ impl UniswapOnchain {
     ///
     /// Returns a `TransactionRequest` ready to be signed and sent.
     /// The caller must:
-    /// 1. Set nonce via `provider.get_transaction_count(from).await`.
+    /// 1. Set nonce via `provider.get_nonce(from).await`.
     /// 2. Set gas price / EIP-1559 max fee fields.
     /// 3. Sign via `alloy::signers::local::PrivateKeySigner`.
-    /// 4. Broadcast via `provider.send_raw_transaction(&rlp_bytes).await`.
+    /// 4. Broadcast via `send_raw_transaction(&rlp_bytes).await`.
     pub fn build_swap_tx(
         &self,
         params: &ExactInputSingleParams,
@@ -210,19 +212,14 @@ impl UniswapOnchain {
     ///
     /// Returns the transaction hash as a 0x-prefixed hex string.
     pub async fn send_raw_transaction(&self, raw_tx: &[u8]) -> ExchangeResult<String> {
-        let pending = self.provider
-            .send_raw_transaction(raw_tx)
-            .await
-            .map_err(|e| ExchangeError::Network(format!("send_raw_transaction failed: {}", e)))?;
-
-        Ok(format!("{:#x}", pending.tx_hash()))
+        self.provider.broadcast_tx(raw_tx).await
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // TOKEN BALANCE QUERY
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// Query the ERC-20 token balance of `wallet_address` via alloy eth_call.
+    /// Query the ERC-20 token balance of `wallet_address`.
     ///
     /// Returns the raw balance as `U256` (in the token's smallest unit).
     /// Divide by `10^decimals` to get human-readable amount.
@@ -239,52 +236,27 @@ impl UniswapOnchain {
         let wallet: Address = wallet_address.parse()
             .map_err(|e| ExchangeError::InvalidRequest(format!("Invalid wallet address '{}': {}", wallet_address, e)))?;
 
-        // Encode: balanceOf(address) = selector ++ padded wallet address
-        let mut calldata = Vec::with_capacity(4 + 32);
-        calldata.extend_from_slice(&BALANCE_OF_SELECTOR);
-        calldata.extend_from_slice(&pad_address(wallet));
-
-        let tx = TransactionRequest::default()
-            .to(token)
-            .input(Bytes::from(calldata).into());
-
-        let result = self.provider
-            .call(tx)
-            .await
-            .map_err(|e| ExchangeError::Network(format!("eth_call (balanceOf) failed: {}", e)))?;
-
-        // Result is 32-byte big-endian uint256
-        if result.len() < 32 {
-            return Err(ExchangeError::Parse(format!(
-                "balanceOf returned {} bytes, expected 32",
-                result.len()
-            )));
-        }
-        let balance = U256::from_be_slice(&result[..32]);
-        Ok(balance)
+        self.provider.erc20_balance(token, wallet).await
     }
 
     /// Query the native ETH balance of `wallet_address`.
     ///
     /// Returns the balance in wei as `U256`.
     pub async fn get_eth_balance(&self, wallet_address: &str) -> ExchangeResult<U256> {
-        let wallet: Address = wallet_address.parse()
-            .map_err(|e| ExchangeError::InvalidRequest(format!("Invalid wallet address: {}", e)))?;
-
-        let balance = self.provider
-            .get_balance(wallet)
-            .await
-            .map_err(|e| ExchangeError::Network(format!("eth_getBalance failed: {}", e)))?;
-
-        Ok(balance)
+        let balance_str = self.provider.get_native_balance(wallet_address).await?;
+        balance_str
+            .parse::<U256>()
+            .map_err(|e| ExchangeError::Parse(format!("Balance parse error: {}", e)))
     }
 
     /// Get the current block number.
     pub async fn get_block_number(&self) -> ExchangeResult<u64> {
-        self.provider
-            .get_block_number()
-            .await
-            .map_err(|e| ExchangeError::Network(format!("eth_blockNumber failed: {}", e)))
+        self.provider.get_height().await
+    }
+
+    /// Access the underlying [`EvmProvider`] for advanced operations.
+    pub fn provider(&self) -> &Arc<EvmProvider> {
+        &self.provider
     }
 }
 

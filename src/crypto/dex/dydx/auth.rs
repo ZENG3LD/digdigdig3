@@ -86,6 +86,24 @@ impl DydxAuth {
         self._credentials.as_ref().map(|c| c.api_key.as_str())
             .filter(|s| !s.is_empty())
     }
+
+    /// Return `(key_hex, bech32_address)` for Cosmos tx signing.
+    ///
+    /// Convention for trading credentials:
+    /// - `api_key`    = hex-encoded secp256k1 private key (32 bytes, optionally `0x`-prefixed)
+    /// - `api_secret` = bech32 dYdX chain address (`dydx1...`)
+    ///
+    /// Returns `None` if either field is absent or empty.
+    #[cfg(feature = "onchain-cosmos")]
+    pub fn trading_credentials(&self) -> Option<(String, String)> {
+        let creds = self._credentials.as_ref()?;
+        let key_hex = creds.api_key.as_str();
+        let address = creds.api_secret.as_str();
+        if key_hex.is_empty() || address.is_empty() {
+            return None;
+        }
+        Some((key_hex.to_string(), address.to_string()))
+    }
 }
 
 impl Default for DydxAuth {

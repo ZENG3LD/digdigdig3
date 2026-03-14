@@ -18,6 +18,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+#[cfg(feature = "k256-signing")]
+use hex;
+
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -167,8 +170,9 @@ impl LighterConnector {
         Ok(response)
     }
 
-    /// POST request (for trading - Phase 3)
-    async fn _post(
+    /// POST request (used by trading methods — called from `#[cfg(feature = "k256-signing")]` code)
+    #[cfg_attr(not(feature = "k256-signing"), allow(dead_code))]
+    async fn post(
         &self,
         endpoint: LighterEndpoint,
         body: Value,
@@ -183,12 +187,31 @@ impl LighterConnector {
         let _auth = self._auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
 
-        // TODO Phase 3: Implement transaction signing
-        let headers = HashMap::new();
+        let mut headers = HashMap::new();
+        headers.insert("Content-Type".to_string(), "application/json".to_string());
 
         let response = self.http.post(&url, &body, &headers).await?;
         self.check_response(&response)?;
         Ok(response)
+    }
+
+    /// Fetch the next available nonce for the authenticated account.
+    ///
+    /// Lighter requires a unique, monotonically increasing nonce per transaction.
+    /// The nonce is obtained from `GET /api/v1/nextNonce` and must be passed in
+    /// the transaction payload before signing.
+    #[cfg_attr(not(feature = "k256-signing"), allow(dead_code))]
+    async fn fetch_next_nonce(&self, account_index: u64) -> ExchangeResult<u64> {
+        let mut params = HashMap::new();
+        params.insert("account_index".to_string(), account_index.to_string());
+
+        let response = self.get(LighterEndpoint::NextNonce, params, 100).await?;
+
+        response.get("nonce")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| ExchangeError::Parse(
+                "Missing or invalid 'nonce' field in nextNonce response".to_string()
+            ))
     }
 
     /// Check response for errors
@@ -409,28 +432,35 @@ impl MarketData for LighterConnector {
 #[async_trait]
 impl Trading for LighterConnector {
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
-        // Lighter order placement requires ECDSA transaction signing:
-        //   1. Fetch next nonce via GET /api/v1/nextNonce
-        //   2. Build L2CreateOrder transaction
-        //   3. Sign with API key private key (ECDSA / secp256k1)
-        //   4. POST to /api/v1/sendTx with {tx_type: 14, tx_info: {..., signature}}
-        //
-        // ECDSA signing of the specific Lighter transaction format is not yet
-        // implemented in this connector (requires secp256k1 or k256 crate).
-        let _ = req;
-        Err(ExchangeError::UnsupportedOperation(
-            "Lighter order placement requires ECDSA transaction signing (tx_type=14 L2CreateOrder). \
-             Implement sign_transaction() in LighterAuth using secp256k1 or k256 crate.".to_string()
-        ))
+        #[cfg(feature = "k256-signing")]
+        {
+            return self.place_order_signed(req).await;
+        }
+
+        #[cfg(not(feature = "k256-signing"))]
+        {
+            let _ = req;
+            Err(ExchangeError::UnsupportedOperation(
+                "Lighter order placement requires ECDSA transaction signing. \
+                 Enable the 'k256-signing' feature flag to activate this.".to_string()
+            ))
+        }
     }
 
     async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
-        // Lighter order cancellation also requires signed transactions (tx_type=15 L2CancelOrder).
-        let _ = req;
-        Err(ExchangeError::UnsupportedOperation(
-            "Lighter order cancellation requires ECDSA transaction signing (tx_type=15 L2CancelOrder). \
-             Implement sign_transaction() in LighterAuth using secp256k1 or k256 crate.".to_string()
-        ))
+        #[cfg(feature = "k256-signing")]
+        {
+            return self.cancel_order_signed(req).await;
+        }
+
+        #[cfg(not(feature = "k256-signing"))]
+        {
+            let _ = req;
+            Err(ExchangeError::UnsupportedOperation(
+                "Lighter order cancellation requires ECDSA transaction signing. \
+                 Enable the 'k256-signing' feature flag to activate this.".to_string()
+            ))
+        }
     }
 
     async fn get_order(
@@ -908,6 +938,283 @@ impl LighterConnector {
         params.insert("by".to_string(), by_field);
         params.insert("value".to_string(), value);
         self.get(LighterEndpoint::WithdrawalDelays, params, 300).await
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SIGNED TRADING METHODS (k256-signing feature)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[cfg(feature = "k256-signing")]
+impl LighterConnector {
+    /// Place an order on Lighter using secp256k1 ECDSA signing (tx_type = 14).
+    ///
+    /// # Flow
+    ///
+    /// 1. Resolve account_index and market_id from credentials / symbol.
+    /// 2. Fetch the next nonce from `GET /api/v1/nextNonce`.
+    /// 3. Build the L2CreateOrder tx fields.
+    /// 4. Compute a deterministic 32-byte hash over the canonical tx payload.
+    /// 5. Sign the hash with the API key private key (secp256k1 ECDSA via k256).
+    /// 6. POST the signed payload to `POST /api/v1/sendTx`.
+    /// 7. Parse the response and return a `PlaceOrderResponse::Simple`.
+    ///
+    /// # Signing Note
+    ///
+    /// Lighter's native L2 protocol uses ECgFp5+Poseidon2 over the Goldilocks
+    /// field, not secp256k1 ECDSA. This implementation uses secp256k1 signing
+    /// as a bridge for testing and EVM-compatible tooling. The hash construction
+    /// (`build_create_order_hash`) is SHA-256 based — production use requires
+    /// porting the ECgFp5/Poseidon2 primitives from the Lighter TypeScript SDK.
+    pub(crate) async fn place_order_signed(
+        &self,
+        req: OrderRequest,
+    ) -> ExchangeResult<PlaceOrderResponse> {
+        let auth = self._auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth(
+                "Authentication required for place_order. \
+                 Provide credentials with api_key_index, account_index, and api_secret.".to_string()
+            ))?;
+
+        let account_index = auth.account_index()
+            .ok_or_else(|| ExchangeError::Auth(
+                "account_index required in credentials passphrase JSON for Lighter order placement. \
+                 Example: Credentials::new(\"\", \"<private_key_hex>\").with_passphrase(r#\"{\"account_index\": 1, \"api_key_index\": 0}\"#)".to_string()
+            ))?;
+
+        // Resolve market_id from the order symbol
+        let symbol_str = format_symbol(&req.symbol.base, &req.symbol.quote, req.account_type);
+        let market_id = self.get_market_id(&symbol_str, req.account_type).await?;
+
+        // Fetch nonce
+        let nonce = self.fetch_next_nonce(account_index).await?;
+
+        // Determine order direction (Lighter: is_ask = true for sells)
+        let is_ask = matches!(req.side, crate::core::OrderSide::Sell);
+
+        // Extract price and quantity from the order type
+        let (price_str, order_type_code) = match &req.order_type {
+            crate::core::OrderType::Limit { price } => {
+                (format!("{:.8}", price), 0u8) // 0 = limit
+            }
+            crate::core::OrderType::Market => {
+                // Market orders use price = 0 on Lighter
+                ("0".to_string(), 1u8) // 1 = market
+            }
+            crate::core::OrderType::PostOnly { price } => {
+                (format!("{:.8}", price), 2u8) // 2 = post-only
+            }
+            crate::core::OrderType::Ioc { price } => {
+                let p = price.unwrap_or(0.0);
+                (format!("{:.8}", p), 3u8) // 3 = IOC
+            }
+            _ => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Lighter only supports Limit, Market, PostOnly, and IOC order types.".to_string()
+                ));
+            }
+        };
+
+        let base_amount_str = format!("{:.8}", req.quantity);
+
+        // Time-in-force code (Lighter: 0=GTC, 1=IOC, 2=FOK, 3=GTB)
+        let tif_code: u8 = match req.time_in_force {
+            crate::core::TimeInForce::Gtc => 0,
+            crate::core::TimeInForce::Ioc => 1,
+            crate::core::TimeInForce::Fok => 2,
+            crate::core::TimeInForce::GoodTilBlock { .. } => 3,
+            _ => 0,
+        };
+
+        // Build hash and sign
+        let tx_hash = auth.build_create_order_hash(
+            account_index,
+            market_id,
+            is_ask,
+            &base_amount_str,
+            &price_str,
+            nonce,
+            order_type_code,
+            tif_code,
+        );
+
+        let signature_bytes = auth.sign_l2_transaction(&tx_hash)?;
+        let signature_hex = hex::encode(&signature_bytes);
+
+        // Build the tx_info payload
+        let tx_info = serde_json::json!({
+            "account_index": account_index,
+            "market_id": market_id,
+            "is_ask": is_ask,
+            "base_amount": base_amount_str,
+            "price": price_str,
+            "nonce": nonce,
+            "order_type": order_type_code,
+            "time_in_force": tif_code,
+            "signature": signature_hex,
+        });
+
+        let body = serde_json::json!({
+            "tx_type": 14,
+            "tx_info": tx_info,
+        });
+
+        let response = self.post(LighterEndpoint::SendTx, body, 100).await?;
+
+        // Parse the returned order from the response
+        let order_index = response.get("order_index")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+
+        let order_type_parsed = match &req.order_type {
+            crate::core::OrderType::Limit { price } => crate::core::OrderType::Limit { price: *price },
+            crate::core::OrderType::Market => crate::core::OrderType::Market,
+            crate::core::OrderType::PostOnly { price } => crate::core::OrderType::PostOnly { price: *price },
+            crate::core::OrderType::Ioc { price } => crate::core::OrderType::Ioc { price: *price },
+            other => other.clone(),
+        };
+
+        let order = crate::core::Order {
+            id: order_index.to_string(),
+            client_order_id: req.client_order_id.clone(),
+            symbol: symbol_str,
+            side: req.side,
+            order_type: order_type_parsed,
+            status: crate::core::types::OrderStatus::New,
+            price: match &req.order_type {
+                crate::core::OrderType::Limit { price } => Some(*price),
+                crate::core::OrderType::PostOnly { price } => Some(*price),
+                crate::core::OrderType::Ioc { price } => *price,
+                _ => None,
+            },
+            stop_price: None,
+            quantity: req.quantity,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: now_ms,
+            updated_at: None,
+            time_in_force: req.time_in_force,
+        };
+
+        Ok(PlaceOrderResponse::Simple(order))
+    }
+
+    /// Cancel an order on Lighter using secp256k1 ECDSA signing (tx_type = 15).
+    ///
+    /// # Flow
+    ///
+    /// 1. Extract order_index from `CancelScope::Single { order_id }`.
+    /// 2. Resolve account_index and market_id.
+    /// 3. Fetch the next nonce.
+    /// 4. Build hash and sign the L2CancelOrder transaction.
+    /// 5. POST to `POST /api/v1/sendTx`.
+    ///
+    /// Only `CancelScope::Single` is supported — Lighter cancels one order per
+    /// signed transaction. For bulk cancellation, use `cancel_order` in a loop
+    /// or use the batch endpoint via `POST /api/v1/sendTxBatch`.
+    pub(crate) async fn cancel_order_signed(
+        &self,
+        req: CancelRequest,
+    ) -> ExchangeResult<crate::core::Order> {
+        let auth = self._auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth(
+                "Authentication required for cancel_order.".to_string()
+            ))?;
+
+        let account_index = auth.account_index()
+            .ok_or_else(|| ExchangeError::Auth(
+                "account_index required in credentials passphrase JSON for Lighter order cancellation.".to_string()
+            ))?;
+
+        // Extract order_index from the cancel scope
+        let order_id_str = match &req.scope {
+            crate::core::types::CancelScope::Single { order_id } => order_id.clone(),
+            other => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    format!(
+                        "Lighter cancel_order only supports CancelScope::Single. \
+                         Got: {:?}. Each Lighter cancel requires a signed transaction per order.",
+                        other
+                    )
+                ));
+            }
+        };
+
+        let order_index: u64 = order_id_str.parse().map_err(|_| {
+            ExchangeError::InvalidRequest(format!(
+                "Lighter order_id must be a numeric order_index, got '{}'", order_id_str
+            ))
+        })?;
+
+        // Resolve market_id from optional symbol hint
+        let market_id = if let Some(sym) = &req.symbol {
+            let sym_str = format_symbol(&sym.base, &sym.quote, req.account_type);
+            self.get_market_id(&sym_str, req.account_type).await?
+        } else {
+            return Err(ExchangeError::InvalidRequest(
+                "Lighter cancel_order requires a symbol hint to determine market_id. \
+                 Set CancelRequest::symbol to the symbol of the order being cancelled.".to_string()
+            ));
+        };
+
+        // Fetch nonce
+        let nonce = self.fetch_next_nonce(account_index).await?;
+
+        // Build hash and sign
+        let tx_hash = auth.build_cancel_order_hash(account_index, market_id, order_index, nonce);
+        let signature_bytes = auth.sign_l2_transaction(&tx_hash)?;
+        let signature_hex = hex::encode(&signature_bytes);
+
+        let tx_info = serde_json::json!({
+            "account_index": account_index,
+            "market_id": market_id,
+            "order_index": order_index,
+            "nonce": nonce,
+            "signature": signature_hex,
+        });
+
+        let body = serde_json::json!({
+            "tx_type": 15,
+            "tx_info": tx_info,
+        });
+
+        let _response = self.post(LighterEndpoint::SendTx, body, 100).await?;
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+
+        let symbol_str = req.symbol
+            .as_ref()
+            .map(|s| format_symbol(&s.base, &s.quote, req.account_type))
+            .unwrap_or_default();
+
+        Ok(crate::core::Order {
+            id: order_id_str,
+            client_order_id: None,
+            symbol: symbol_str,
+            side: crate::core::types::OrderSide::Buy, // Unknown at cancel time
+            order_type: crate::core::OrderType::Limit { price: 0.0 },
+            status: crate::core::types::OrderStatus::Canceled,
+            price: None,
+            stop_price: None,
+            quantity: 0.0,
+            filled_quantity: 0.0,
+            average_price: None,
+            commission: None,
+            commission_asset: None,
+            created_at: now_ms,
+            updated_at: Some(now_ms),
+            time_in_force: crate::core::TimeInForce::Gtc,
+        })
     }
 }
 

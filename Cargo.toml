@@ -12,12 +12,19 @@ keywords = ["exchange", "trading", "crypto", "websocket", "connector"]
 categories = ["api-bindings", "asynchronous", "web-programming"]
 
 [features]
-default = ["onchain-ethereum"]
+default = ["onchain-evm"]
 websocket = []
-onchain-ethereum = ["dep:alloy"]
+# Canonical on-chain feature flags
+onchain-evm = ["dep:alloy"]
+onchain-solana = ["dep:solana-sdk", "dep:solana-client", "dep:solana-account-decoder"]
+onchain-cosmos = ["dep:cosmrs"]
+onchain-starknet = ["dep:starknet-crypto"]
+# Backward-compat alias — onchain-ethereum is now onchain-evm
+onchain-ethereum = ["onchain-evm"]
 grpc = ["dep:tonic", "dep:prost"]
 k256-signing = ["dep:k256"]
-starknet = ["dep:starknet-crypto"]
+# Legacy alias — starknet feature now maps to onchain-starknet
+starknet = ["onchain-starknet"]
 
 [dependencies]
 # Serialization
@@ -92,3 +99,14 @@ prost = { version = "0.13", optional = true }
 # Cryptographic signing (feature-gated)
 k256 = { version = "0.13", features = ["ecdsa-core", "ecdsa"], optional = true }
 starknet-crypto = { version = "0.6", optional = true }
+
+# Solana on-chain SDK — gated behind onchain-solana feature
+# default-features = false minimises compile-time
+# nonblocking RPC is a built-in module in solana-client v2 (not a cargo feature)
+solana-sdk = { version = "2", optional = true, default-features = false }
+solana-client = { version = "2", optional = true, default-features = false }
+# Provides UiAccountData for decoded account parsing (token balances etc.)
+solana-account-decoder = { version = "2", optional = true, default-features = false }
+
+# Cosmos SDK transaction builder + signer (for dYdX, Osmosis, etc.)
+cosmrs = { version = "0.22", optional = true, default-features = false, features = ["bip32"] }

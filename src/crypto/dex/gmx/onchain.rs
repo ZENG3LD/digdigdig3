@@ -4,7 +4,7 @@
 //!
 //! ## Feature Gate
 //!
-//! This module is only compiled when the `onchain-ethereum` feature is enabled.
+//! This module is only compiled when the `onchain-evm` feature is enabled.
 //!
 //! ## Architecture
 //!
@@ -24,13 +24,14 @@
 //! - OrderVault: `0x31eF83a530Fde1B38EE9A18093A333D8Bbbc40D5`
 //! - WETH (Arbitrum): `0x82aF49447D8a07e3bd95BD0d56f35241523fBab1`
 
-#![cfg(feature = "onchain-ethereum")]
+#![cfg(feature = "onchain-evm")]
 
-use alloy::network::Ethereum;
+use std::sync::Arc;
+
 use alloy::primitives::{Address, U256};
-use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use alloy::rpc::types::eth::TransactionRequest;
 
+use crate::core::chain::EvmProvider;
 use crate::core::{ExchangeError, ExchangeResult};
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -159,8 +160,11 @@ pub struct ClosePositionParams {
 
 /// On-chain provider wrapper for GMX V2 position management.
 ///
-/// Wraps an alloy type-erased `DynProvider<Ethereum>` and exposes typed helpers
-/// for building GMX V2 `multicall` transactions that open and close positions.
+/// Wraps a shared [`EvmProvider`] and exposes typed helpers for building GMX V2
+/// `multicall` transactions that open and close positions.
+///
+/// Multiple connectors targeting the same chain can share a single
+/// `Arc<EvmProvider>` to reuse the same HTTP connection pool.
 ///
 /// The caller is responsible for signing and broadcasting the resulting
 /// `TransactionRequest` via their preferred alloy signer.
@@ -168,43 +172,37 @@ pub struct ClosePositionParams {
 /// ## Usage
 ///
 /// ```ignore
-/// let onchain = GmxOnchain::arbitrum()?;
+/// let onchain = GmxOnchain::arbitrum();
 ///
 /// let tx = onchain.create_position_onchain(&params, from_address)?;
 /// // Sign `tx`, then call provider.send_raw_transaction(...)
 /// ```
 pub struct GmxOnchain {
-    /// Alloy HTTP provider
-    provider: DynProvider<Ethereum>,
+    /// Shared EVM chain provider
+    provider: Arc<EvmProvider>,
     /// Chain name: "arbitrum" or "avalanche"
     chain: String,
 }
 
 impl GmxOnchain {
-    /// Connect to an Ethereum-compatible RPC and build the provider.
+    /// Create a `GmxOnchain` from an existing shared [`EvmProvider`].
     ///
-    /// `rpc_url` — HTTP(S) RPC endpoint (e.g. Arbitrum One public RPC).
-    /// `chain`   — `"arbitrum"` or `"avalanche"`.
-    pub fn new(rpc_url: &str, chain: &str) -> ExchangeResult<Self> {
-        let url: reqwest::Url = rpc_url.parse()
-            .map_err(|e| ExchangeError::InvalidRequest(format!("Invalid RPC URL '{}': {}", rpc_url, e)))?;
-
-        let provider = ProviderBuilder::new().connect_http(url);
-
-        Ok(Self {
-            provider: DynProvider::new(provider),
+    /// `chain` — `"arbitrum"` or `"avalanche"` (used to select contract addresses).
+    pub fn with_provider(provider: Arc<EvmProvider>, chain: &str) -> Self {
+        Self {
+            provider,
             chain: chain.to_lowercase(),
-        })
+        }
     }
 
     /// Create provider for Arbitrum One using the public Offchain Labs RPC.
-    pub fn arbitrum() -> ExchangeResult<Self> {
-        Self::new("https://arb1.arbitrum.io/rpc", "arbitrum")
+    pub fn arbitrum() -> Self {
+        Self::with_provider(Arc::new(EvmProvider::arbitrum()), "arbitrum")
     }
 
     /// Create provider for Avalanche C-Chain using the public Ava Labs RPC.
-    pub fn avalanche() -> ExchangeResult<Self> {
-        Self::new("https://api.avax.network/ext/bc/C/rpc", "avalanche")
+    pub fn avalanche() -> Self {
+        Self::with_provider(Arc::new(EvmProvider::avalanche()), "avalanche")
     }
 
     /// ExchangeRouter address for the current chain.
@@ -366,20 +364,22 @@ impl GmxOnchain {
 
     /// Get the current block number on the connected chain.
     pub async fn get_block_number(&self) -> ExchangeResult<u64> {
-        self.provider
-            .get_block_number()
-            .await
-            .map_err(|e| ExchangeError::Network(format!("eth_blockNumber failed: {}", e)))
+        use crate::core::chain::ChainProvider;
+        self.provider.get_height().await
     }
 
     /// Get the native balance (ETH / AVAX) of `wallet_address`.
     pub async fn get_native_balance(&self, wallet_address: &str) -> ExchangeResult<U256> {
-        let wallet: Address = wallet_address.parse()
-            .map_err(|e| ExchangeError::InvalidRequest(format!("Invalid address '{}': {}", wallet_address, e)))?;
-        self.provider
-            .get_balance(wallet)
-            .await
-            .map_err(|e| ExchangeError::Network(format!("eth_getBalance failed: {}", e)))
+        use crate::core::chain::ChainProvider;
+        let balance_str = self.provider.get_native_balance(wallet_address).await?;
+        balance_str
+            .parse::<U256>()
+            .map_err(|e| ExchangeError::Parse(format!("Balance parse error: {}", e)))
+    }
+
+    /// Access the underlying [`EvmProvider`] for advanced operations.
+    pub fn provider(&self) -> &Arc<EvmProvider> {
+        &self.provider
     }
 }
 
@@ -647,5 +647,17 @@ mod tests {
         assert_eq!(GmxOrderType::MarketIncrease as u8, 0);
         assert_eq!(GmxOrderType::MarketDecrease as u8, 3);
         assert_eq!(GmxOrderType::LimitIncrease as u8, 1);
+    }
+
+    #[test]
+    fn test_arbitrum_constructor_chain_name() {
+        let onchain = GmxOnchain::arbitrum();
+        assert_eq!(onchain.chain, "arbitrum");
+    }
+
+    #[test]
+    fn test_avalanche_constructor_chain_name() {
+        let onchain = GmxOnchain::avalanche();
+        assert_eq!(onchain.chain, "avalanche");
     }
 }

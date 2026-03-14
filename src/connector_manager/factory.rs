@@ -87,6 +87,7 @@ use crate::crypto::cex::hyperliquid::HyperliquidConnector;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 use crate::crypto::dex::lighter::LighterConnector;
+#[cfg(feature = "onchain-evm")]
 use crate::crypto::swap::uniswap::UniswapConnector;
 use crate::crypto::dex::jupiter::JupiterConnector;
 use crate::crypto::swap::raydium::RaydiumConnector;

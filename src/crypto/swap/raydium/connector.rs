@@ -29,6 +29,11 @@ use crate::core::types::{
 };
 use crate::core::utils::SimpleRateLimiter;
 
+#[cfg(feature = "onchain-solana")]
+use solana_sdk::signature::{Keypair, Signer};
+#[cfg(feature = "onchain-solana")]
+use crate::core::chain::SolanaProvider;
+
 use super::{RaydiumUrls, RaydiumAuth, RaydiumParser, RaydiumEndpoint};
 
 /// Raydium DEX connector
@@ -43,6 +48,12 @@ pub struct RaydiumConnector {
     is_testnet: bool,
     /// Rate limiter (10 req/s conservative)
     rate_limiter: Arc<Mutex<SimpleRateLimiter>>,
+    /// Optional Solana chain provider for on-chain transaction submission.
+    ///
+    /// When present, [`submit_swap`] can deserialize, sign, and broadcast
+    /// swap transactions returned by the Raydium swap API.
+    #[cfg(feature = "onchain-solana")]
+    solana_provider: Option<Arc<SolanaProvider>>,
 }
 
 impl RaydiumConnector {
@@ -73,6 +84,8 @@ impl RaydiumConnector {
             _auth: auth,
             is_testnet,
             rate_limiter,
+            #[cfg(feature = "onchain-solana")]
+            solana_provider: None,
         })
     }
 
@@ -221,6 +234,103 @@ impl RaydiumConnector {
         let mut params = HashMap::new();
         params.insert("owner".to_string(), wallet.to_string());
         self.get_request(RaydiumEndpoint::FarmOwnership, &params).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ON-CHAIN INTEGRATION (onchain-solana feature)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Attach a Solana chain provider to enable on-chain swap execution.
+    ///
+    /// Once a provider is set, [`submit_swap`] can deserialize, sign, and
+    /// broadcast transactions returned by the Raydium swap API.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use std::sync::Arc;
+    /// use digdigdig3::core::chain::SolanaProvider;
+    ///
+    /// let provider = Arc::new(SolanaProvider::mainnet());
+    /// let connector = RaydiumConnector::new(false).await?
+    ///     .with_solana_provider(provider);
+    /// ```
+    #[cfg(feature = "onchain-solana")]
+    pub fn with_solana_provider(mut self, provider: Arc<SolanaProvider>) -> Self {
+        self.solana_provider = Some(provider);
+        self
+    }
+
+    /// Deserialize, sign, and submit a Raydium swap transaction to the Solana network.
+    ///
+    /// The Raydium swap API returns a base64-encoded, unsigned Solana transaction.
+    /// This method:
+    ///
+    /// 1. Decodes the base64 transaction bytes.
+    /// 2. Deserializes the bincode-encoded [`Transaction`].
+    /// 3. Signs it with the provided `keypair` (the user's wallet).
+    /// 4. Submits it via the attached [`SolanaProvider`].
+    ///
+    /// Returns the base58-encoded transaction signature on success.
+    ///
+    /// # Errors
+    ///
+    /// - `ExchangeError::UnsupportedOperation` if no `SolanaProvider` is attached.
+    /// - `ExchangeError::InvalidRequest` if base64 or bincode decoding fails.
+    /// - `ExchangeError::Network` if RPC submission fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Obtain an unsigned swap transaction from the Raydium Swap API
+    /// // (e.g. POST https://transaction-v1.raydium.io/transaction/swap)
+    /// let tx_b64 = "..."; // base64-encoded unsigned tx from Raydium API
+    ///
+    /// let sig = connector.submit_swap(tx_b64, &keypair).await?;
+    /// println!("Swap signature: {}", sig);
+    /// ```
+    #[cfg(feature = "onchain-solana")]
+    pub async fn submit_swap(
+        &self,
+        transaction_b64: &str,
+        keypair: &Keypair,
+    ) -> ExchangeResult<String> {
+        use base64::Engine as _;
+        use crate::core::chain::SolanaChain;
+
+        let provider = self.solana_provider.as_ref().ok_or_else(|| {
+            ExchangeError::UnsupportedOperation(
+                "No SolanaProvider attached. Call with_solana_provider() first.".to_string(),
+            )
+        })?;
+
+        // Step 1: Decode from base64
+        let tx_bytes = base64::engine::general_purpose::STANDARD
+            .decode(transaction_b64)
+            .map_err(|e| {
+                ExchangeError::InvalidRequest(format!(
+                    "Failed to decode swap transaction from base64: {}",
+                    e
+                ))
+            })?;
+
+        // Step 2: Deserialize from bincode
+        let mut tx: solana_sdk::transaction::Transaction =
+            bincode::deserialize(&tx_bytes).map_err(|e| {
+                ExchangeError::InvalidRequest(format!(
+                    "Failed to deserialize swap transaction (bincode): {}",
+                    e
+                ))
+            })?;
+
+        // Step 3: Get a fresh blockhash and sign
+        let blockhash = provider.get_latest_blockhash().await?;
+        tx.sign(&[keypair], blockhash);
+
+        // Step 4: Submit via SolanaProvider
+        let sig = provider.send_transaction(&tx).await?;
+
+        Ok(sig.to_string())
     }
 }
 

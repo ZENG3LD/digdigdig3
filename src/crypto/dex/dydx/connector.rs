@@ -49,6 +49,9 @@ use tonic::codec::ProstCodec;
 #[cfg(feature = "grpc")]
 use tonic::transport::Channel;
 
+#[cfg(feature = "onchain-cosmos")]
+use crate::core::chain::cosmos::CosmosProvider;
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -72,6 +75,17 @@ pub struct DydxConnector {
     /// Absent by default — the connector operates in read-only REST mode.
     #[cfg(feature = "grpc")]
     grpc_channel: Option<Channel>,
+    /// Optional Cosmos chain provider.
+    ///
+    /// When both `onchain-cosmos` and `grpc` features are active and a
+    /// `CosmosProvider` is attached via [`Self::with_cosmos_provider`],
+    /// `place_order` and `cancel_order` automatically build and broadcast
+    /// signed Cosmos SDK transactions using the tx builder.
+    ///
+    /// The provider manages sequence numbers to prevent nonce collisions
+    /// across concurrent order calls.
+    #[cfg(feature = "onchain-cosmos")]
+    cosmos_provider: Option<Arc<CosmosProvider>>,
 }
 
 impl DydxConnector {
@@ -99,6 +113,8 @@ impl DydxConnector {
             rate_limiter,
             #[cfg(feature = "grpc")]
             grpc_channel: None,
+            #[cfg(feature = "onchain-cosmos")]
+            cosmos_provider: None,
         })
     }
 
@@ -194,6 +210,39 @@ impl DydxConnector {
     #[cfg(feature = "grpc")]
     pub fn with_grpc_channel(mut self, channel: Channel) -> Self {
         self.grpc_channel = Some(channel);
+        self
+    }
+
+    /// Attach a [`CosmosProvider`] to enable automatic tx building.
+    ///
+    /// When both `onchain-cosmos` and `grpc` features are enabled and a
+    /// `CosmosProvider` is attached, calling `place_order` / `cancel_order`
+    /// with a properly configured connector will automatically build and sign
+    /// the Cosmos SDK transaction using `tx_builder`.
+    ///
+    /// The provider should also be connected to a gRPC channel via
+    /// [`Self::with_grpc_channel`] for broadcasting. Typically you would
+    /// call both:
+    ///
+    /// ```rust,no_run
+    /// # #[cfg(all(feature = "onchain-cosmos", feature = "grpc"))]
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// use std::sync::Arc;
+    /// use digdigdig3::core::chain::cosmos::CosmosProvider;
+    /// use digdigdig3::core::grpc::GrpcClient;
+    /// use digdigdig3::crypto::dex::dydx::DydxConnector;
+    ///
+    /// let cosmos = Arc::new(CosmosProvider::dydx_mainnet());
+    /// let grpc = GrpcClient::connect("https://dydx-ops-grpc.kingnodes.com:443").await?;
+    /// let connector = DydxConnector::public(false).await?
+    ///     .with_cosmos_provider(cosmos)
+    ///     .with_grpc_channel(grpc.channel());
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg(feature = "onchain-cosmos")]
+    pub fn with_cosmos_provider(mut self, provider: Arc<CosmosProvider>) -> Self {
+        self.cosmos_provider = Some(provider);
         self
     }
 
@@ -665,10 +714,150 @@ impl Trading for DydxConnector {
         // The Indexer REST API is read-only; write operations go through validator
         // nodes via gRPC/Protobuf and require a signed Cosmos transaction.
         //
-        // When the `grpc` feature is enabled and a channel has been attached via
-        // `DydxConnector::with_grpc_channel`, callers can use the low-level
-        // `place_order_grpc(tx_raw_bytes)` helper directly after constructing and
-        // signing the Cosmos SDK transaction externally (e.g. via `cosmrs`).
+        // Path 1 (onchain-cosmos + grpc + cosmos_provider + grpc_channel + credentials):
+        //   → use tx_builder to build + sign TxRaw, then broadcast via gRPC.
+        //
+        // Path 2 (grpc only, no cosmos_provider):
+        //   → return an informative error pointing to place_order_grpc().
+        //
+        // Path 3 (neither feature):
+        //   → return UnsupportedOperation.
+
+        #[cfg(all(feature = "onchain-cosmos", feature = "grpc"))]
+        {
+            use crate::core::chain::cosmos::CosmosChain as _;
+            use crate::core::chain::ChainProvider as _;
+            use super::tx_builder::{
+                build_place_order_tx, signing_key_from_bytes, ShortTermOrderParams,
+            };
+
+            if let (Some(cosmos), Some(_channel)) =
+                (self.cosmos_provider.as_ref(), self.grpc_channel.as_ref())
+            {
+                // api_key = hex-encoded secp256k1 private key (32 bytes)
+                // api_secret = bech32 dYdX chain address (dydx1...)
+                let (key_hex, owner_address) = self.auth.trading_credentials()
+                    .ok_or_else(|| ExchangeError::Auth(
+                        "dYdX place_order requires trading credentials: \
+                         api_key = hex secp256k1 private key, \
+                         api_secret = bech32 address (dydx1...)"
+                            .to_string()
+                    ))?;
+
+                let key_bytes = hex::decode(key_hex.trim_start_matches("0x"))
+                    .map_err(|e| ExchangeError::Auth(format!(
+                        "dYdX place_order: api_key is not valid hex: {}",
+                        e
+                    )))?;
+                let signing_key = signing_key_from_bytes(&key_bytes)?;
+
+                let (account_number, _) = cosmos.query_account(&owner_address).await?;
+                let sequence = cosmos.next_sequence(&owner_address).await?;
+
+                let chain_id = match cosmos.chain_family() {
+                    crate::core::chain::ChainFamily::Cosmos { ref chain_id } => {
+                        chain_id.clone()
+                    }
+                    _ => "dydx-mainnet-1".to_string(),
+                };
+
+                let clob_pair_id = symbol_to_clob_pair_id(&req.symbol.base);
+
+                // Extract limit price → subticks
+                // NOTE: proper quantums/subticks encoding requires per-market step
+                // sizes from exchange info. This is a best-effort approximation.
+                // For production use with custom precision, call place_order_grpc()
+                // with a manually constructed and signed TxRaw.
+                let (quantums, subticks) = order_request_to_quantums_subticks(&req)?;
+
+                // Extract block expiry from GoodTilBlock TIF, default to 0
+                let good_til_block = match &req.time_in_force {
+                    crate::core::TimeInForce::GoodTilBlock { block_height } => {
+                        *block_height as u32
+                    }
+                    _ => 0u32,
+                };
+
+                let tif_i32 = map_tif_to_dydx_i32(&req.time_in_force);
+
+                let params = ShortTermOrderParams {
+                    owner_address: owner_address.clone(),
+                    subaccount_number: 0,
+                    client_id: req.client_order_id
+                        .as_deref()
+                        .and_then(|s| s.parse::<u32>().ok())
+                        .unwrap_or_else(|| {
+                            // Fallback: subsecond nanos as a cheap unique client ID
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .subsec_nanos()
+                        }),
+                    clob_pair_id,
+                    is_buy: req.side == crate::core::OrderSide::Buy,
+                    quantums,
+                    subticks,
+                    good_til_block,
+                    time_in_force: tif_i32,
+                    reduce_only: if req.reduce_only { 1 } else { 0 },
+                };
+
+                let tx_bytes = build_place_order_tx(
+                    &params,
+                    &signing_key,
+                    account_number,
+                    sequence,
+                    &chain_id,
+                    None, // zero fee — standard for dYdX short-term orders
+                )?;
+
+                let resp = self.place_order_grpc(tx_bytes).await?;
+
+                let tx_response = resp.tx_response.as_ref();
+                let code = tx_response.map(|r| r.code).unwrap_or(1);
+                let raw_log = tx_response
+                    .map(|r| r.raw_log.clone())
+                    .unwrap_or_default();
+
+                if code != 0 {
+                    return Err(ExchangeError::Api {
+                        code: code as i32,
+                        message: format!("dYdX place_order rejected (code {}): {}", code, raw_log),
+                    });
+                }
+
+                let tx_hash = tx_response
+                    .map(|r| r.txhash.clone())
+                    .unwrap_or_default();
+
+                let price = match &req.order_type {
+                    crate::core::OrderType::Limit { price } => Some(*price),
+                    _ => None,
+                };
+
+                let order = Order {
+                    id: tx_hash,
+                    client_order_id: req.client_order_id,
+                    symbol: format!("{}-{}", req.symbol.base, req.symbol.quote),
+                    side: req.side,
+                    order_type: req.order_type,
+                    status: crate::core::OrderStatus::Open,
+                    price,
+                    stop_price: None,
+                    quantity: req.quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: chrono::Utc::now().timestamp_millis(),
+                    updated_at: None,
+                    time_in_force: req.time_in_force,
+                };
+
+                return Ok(PlaceOrderResponse::Simple(order));
+            }
+        }
+
         let _ = req;
 
         #[cfg(feature = "grpc")]
@@ -676,22 +865,150 @@ impl Trading for DydxConnector {
             return Err(ExchangeError::UnsupportedOperation(
                 "dYdX v4 order placement via gRPC: use `place_order_grpc(tx_raw_bytes)` \
                  directly. Build and sign the Cosmos SDK TxRaw externally (e.g. with \
-                 `cosmrs`), then pass the serialised bytes to that method."
+                 `cosmrs`), then pass the serialised bytes to that method. \
+                 Or enable `onchain-cosmos` feature and attach a CosmosProvider \
+                 via `DydxConnector::with_cosmos_provider` for automatic tx building."
                     .to_string(),
             ));
         }
 
         Err(ExchangeError::UnsupportedOperation(
             "dYdX v4 order placement requires Cosmos gRPC (Node API). \
-             Enable the `grpc` feature, connect a validator channel via \
-             `DydxConnector::with_grpc_channel`, and call `place_order_grpc(tx_raw_bytes)`."
+             Enable the `grpc` + `onchain-cosmos` features, connect a validator \
+             channel via `DydxConnector::with_grpc_channel`, attach a CosmosProvider \
+             via `DydxConnector::with_cosmos_provider`, and ensure credentials contain \
+             a signing key (api_key) and address (api_secret)."
                 .to_string(),
         ))
     }
 
     async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         // dYdX v4 order cancellation also requires Node gRPC (MsgCancelOrder).
-        // See the doc comment on `place_order` for the full flow.
+        //
+        // Path 1 (onchain-cosmos + grpc + cosmos_provider + grpc_channel + credentials):
+        //   → use tx_builder to build + sign cancel TxRaw, then broadcast.
+        //
+        // Path 2 / Path 3: same fallback as place_order.
+
+        #[cfg(all(feature = "onchain-cosmos", feature = "grpc"))]
+        {
+            use crate::core::chain::cosmos::CosmosChain as _;
+            use crate::core::chain::ChainProvider as _;
+            use super::tx_builder::{
+                build_cancel_order_tx, signing_key_from_bytes, CancelOrderParams,
+            };
+            use super::proto::dydxprotocol::ORDER_FLAG_SHORT_TERM;
+            use crate::core::CancelScope;
+
+            if let (Some(cosmos), Some(_channel)) =
+                (self.cosmos_provider.as_ref(), self.grpc_channel.as_ref())
+            {
+                let (key_hex, owner_address) = self.auth.trading_credentials()
+                    .ok_or_else(|| ExchangeError::Auth(
+                        "dYdX cancel_order requires trading credentials.".to_string()
+                    ))?;
+
+                let key_bytes = hex::decode(key_hex.trim_start_matches("0x"))
+                    .map_err(|e| ExchangeError::Auth(format!(
+                        "dYdX cancel_order: api_key is not valid hex: {}",
+                        e
+                    )))?;
+                let signing_key = signing_key_from_bytes(&key_bytes)?;
+
+                let (account_number, _) = cosmos.query_account(&owner_address).await?;
+                let sequence = cosmos.next_sequence(&owner_address).await?;
+
+                let chain_id = match cosmos.chain_family() {
+                    crate::core::chain::ChainFamily::Cosmos { ref chain_id } => {
+                        chain_id.clone()
+                    }
+                    _ => "dydx-mainnet-1".to_string(),
+                };
+
+                // Extract order_id and symbol from the cancel scope
+                let (order_id_str, symbol_base) = match &req.scope {
+                    CancelScope::Single { order_id } => {
+                        let base = req.symbol.as_ref()
+                            .map(|s| s.base.clone())
+                            .unwrap_or_default();
+                        (order_id.clone(), base)
+                    }
+                    _ => {
+                        return Err(ExchangeError::UnsupportedOperation(
+                            "dYdX cancel_order only supports CancelScope::Single.".to_string()
+                        ));
+                    }
+                };
+
+                let clob_pair_id = symbol_to_clob_pair_id(&symbol_base);
+
+                // dYdX order IDs encode client_id — parse best-effort
+                let client_id = order_id_str.parse::<u32>().unwrap_or(0);
+
+                let params = CancelOrderParams {
+                    owner_address: owner_address.clone(),
+                    subaccount_number: 0,
+                    client_id,
+                    clob_pair_id,
+                    order_flags: ORDER_FLAG_SHORT_TERM,
+                    good_til_block: None,    // caller must set via separate API if needed
+                    good_til_block_time: None,
+                };
+
+                let tx_bytes = build_cancel_order_tx(
+                    &params,
+                    &signing_key,
+                    account_number,
+                    sequence,
+                    &chain_id,
+                    None,
+                )?;
+
+                let resp = self.cancel_order_grpc(tx_bytes).await?;
+
+                let tx_response = resp.tx_response.as_ref();
+                let code = tx_response.map(|r| r.code).unwrap_or(1);
+                let raw_log = tx_response
+                    .map(|r| r.raw_log.clone())
+                    .unwrap_or_default();
+
+                if code != 0 {
+                    return Err(ExchangeError::Api {
+                        code: code as i32,
+                        message: format!("dYdX cancel_order rejected (code {}): {}", code, raw_log),
+                    });
+                }
+
+                let tx_hash = tx_response
+                    .map(|r| r.txhash.clone())
+                    .unwrap_or_default();
+
+                let symbol_str = req.symbol
+                    .as_ref()
+                    .map(|s| format!("{}-{}", s.base, s.quote))
+                    .unwrap_or_else(|| symbol_base.clone());
+
+                return Ok(Order {
+                    id: order_id_str,
+                    client_order_id: Some(tx_hash),
+                    symbol: symbol_str,
+                    side: crate::core::OrderSide::Buy, // unknown at cancel time
+                    order_type: crate::core::OrderType::Limit { price: 0.0 },
+                    status: crate::core::OrderStatus::Canceled,
+                    price: None,
+                    stop_price: None,
+                    quantity: 0.0,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    commission: None,
+                    commission_asset: None,
+                    created_at: 0,
+                    updated_at: Some(chrono::Utc::now().timestamp_millis()),
+                    time_in_force: crate::core::TimeInForce::Gtc,
+                });
+            }
+        }
+
         let _ = req;
 
         #[cfg(feature = "grpc")]
@@ -699,15 +1016,18 @@ impl Trading for DydxConnector {
             return Err(ExchangeError::UnsupportedOperation(
                 "dYdX v4 order cancellation via gRPC: use `cancel_order_grpc(tx_raw_bytes)` \
                  directly. Build and sign the Cosmos SDK TxRaw externally (e.g. with \
-                 `cosmrs`), then pass the serialised bytes to that method."
+                 `cosmrs`), then pass the serialised bytes to that method. \
+                 Or enable `onchain-cosmos` feature and attach a CosmosProvider \
+                 via `DydxConnector::with_cosmos_provider` for automatic tx building."
                     .to_string(),
             ));
         }
 
         Err(ExchangeError::UnsupportedOperation(
             "dYdX v4 order cancellation requires Cosmos gRPC (Node API). \
-             Enable the `grpc` feature, connect a validator channel via \
-             `DydxConnector::with_grpc_channel`, and call `cancel_order_grpc(tx_raw_bytes)`."
+             Enable the `grpc` + `onchain-cosmos` features, connect a validator \
+             channel via `DydxConnector::with_grpc_channel`, and attach a CosmosProvider \
+             via `DydxConnector::with_cosmos_provider`."
                 .to_string(),
         ))
     }
@@ -971,5 +1291,131 @@ impl DydxConnector {
         let mut params = HashMap::new();
         params.insert("referralCode".to_string(), referral_code.to_string());
         self.get(DydxEndpoint::AffiliateAddress, params).await
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TX BUILDER HELPERS (onchain-cosmos + grpc)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Map a base asset symbol to a dYdX CLOB pair ID.
+///
+/// This is a best-effort static mapping for common markets. For accurate
+/// mapping, call `get_exchange_info()` and cache the `clobPairId` values
+/// from the Indexer `/perpetualMarkets` endpoint.
+#[cfg(all(feature = "onchain-cosmos", feature = "grpc"))]
+fn symbol_to_clob_pair_id(base: &str) -> u32 {
+    match base.to_uppercase().as_str() {
+        "BTC" => 0,
+        "ETH" => 1,
+        "LINK" => 2,
+        "MATIC" => 3,
+        "CRV" => 4,
+        "SOL" => 5,
+        "ADA" => 6,
+        "AVAX" => 7,
+        "FIL" => 8,
+        "LTC" => 9,
+        "DOGE" => 10,
+        "ATOM" => 11,
+        "DOT" => 12,
+        "UNI" => 13,
+        "BCH" => 14,
+        "TRX" => 15,
+        "NEAR" => 16,
+        "MKR" => 17,
+        "XLM" => 18,
+        "ETC" => 19,
+        "COMP" => 20,
+        "APE" => 21,
+        "APT" => 22,
+        "ARB" => 23,
+        "BLUR" => 24,
+        "LDO" => 25,
+        "OP" => 26,
+        "PEPE" => 27,
+        "SEI" => 28,
+        "SUI" => 29,
+        "XRP" => 30,
+        "DYDX" => 31,
+        // Unknown market — callers should use exchange info to look up the real ID
+        _ => {
+            tracing::warn!(
+                "symbol_to_clob_pair_id: unknown market '{}', defaulting to 0 (BTC-USD)",
+                base
+            );
+            0
+        }
+    }
+}
+
+/// Extract `(quantums, subticks)` from an `OrderRequest`.
+///
+/// This is a **best-effort** approximation. Proper encoding requires
+/// per-market step-size and subtick multipliers from the dYdX exchange
+/// info endpoint. The values here use simplified integer arithmetic.
+///
+/// For production orders, callers should:
+/// 1. Fetch market params from `get_exchange_info()`
+/// 2. Compute `quantums = quantity / stepBaseQuantum`
+/// 3. Compute `subticks = price / subticksPerTick`
+/// 4. Use `place_order_grpc()` with a hand-built `TxRaw` if precision is critical.
+#[cfg(all(feature = "onchain-cosmos", feature = "grpc"))]
+fn order_request_to_quantums_subticks(
+    req: &OrderRequest,
+) -> ExchangeResult<(u64, u64)> {
+    // Extract the limit price from OrderType::Limit
+    let price = match &req.order_type {
+        crate::core::OrderType::Limit { price } => *price,
+        crate::core::OrderType::Market => {
+            // Market orders on dYdX use a very large price (buy) or 0 (sell)
+            // for crossing the book. Use a sentinel that the chain accepts.
+            if req.side == crate::core::OrderSide::Buy {
+                f64::MAX / 1e10 // large but fits in u64 subticks range
+            } else {
+                1.0
+            }
+        }
+        _ => {
+            return Err(ExchangeError::UnsupportedOperation(format!(
+                "dYdX tx builder: order type {:?} is not yet supported via \
+                 the automatic tx building path. Use place_order_grpc() directly.",
+                req.order_type
+            )));
+        }
+    };
+
+    // Default step sizes for BTC-USD (clob_pair_id = 0).
+    // These are market-specific and should be fetched from exchange info.
+    // BTC-USD: stepBaseQuantum = 1e6 (satoshi-level), subticksPerTick = 1e5
+    const STEP_BASE_QUANTUM: f64 = 1_000_000.0;
+    const SUBTICKS_PER_TICK: f64 = 100_000.0;
+
+    let quantums = (req.quantity * STEP_BASE_QUANTUM).round() as u64;
+    let subticks = (price * SUBTICKS_PER_TICK).round() as u64;
+
+    if quantums == 0 {
+        return Err(ExchangeError::InvalidRequest(
+            "dYdX tx builder: computed quantums = 0; quantity is too small for default step size"
+                .to_string()
+        ));
+    }
+
+    Ok((quantums, subticks))
+}
+
+/// Map `TimeInForce` to the dYdX `OrderTimeInForce` i32 value.
+#[cfg(all(feature = "onchain-cosmos", feature = "grpc"))]
+fn map_tif_to_dydx_i32(tif: &crate::core::TimeInForce) -> i32 {
+    use super::proto::dydxprotocol::OrderTimeInForce;
+    match tif {
+        crate::core::TimeInForce::Gtc
+        | crate::core::TimeInForce::Gtd
+        | crate::core::TimeInForce::GoodTilBlock { .. } => {
+            OrderTimeInForce::Unspecified as i32 // GTC on dYdX
+        }
+        crate::core::TimeInForce::Ioc => OrderTimeInForce::Ioc as i32,
+        crate::core::TimeInForce::Fok => OrderTimeInForce::FillOrKill as i32,
+        crate::core::TimeInForce::PostOnly => OrderTimeInForce::PostOnly as i32,
     }
 }

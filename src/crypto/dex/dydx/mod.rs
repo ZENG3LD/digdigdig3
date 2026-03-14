@@ -45,6 +45,14 @@ mod websocket;
 #[cfg(feature = "grpc")]
 pub mod proto;
 
+/// Cosmos SDK transaction builder for dYdX v4.
+///
+/// Builds and signs `TxRaw` bytes containing `MsgPlaceOrder` and
+/// `MsgCancelOrder` messages using `cosmrs`. Requires both `onchain-cosmos`
+/// and `grpc` features to be active.
+#[cfg(all(feature = "onchain-cosmos", feature = "grpc"))]
+pub mod tx_builder;
+
 pub use endpoints::{DydxEndpoint, DydxUrls};
 pub use auth::DydxAuth;
 pub use parser::DydxParser;

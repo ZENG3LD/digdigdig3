@@ -68,6 +68,7 @@ pub mod traits;
 pub mod utils;
 pub mod http;
 pub mod websocket;
+pub mod chain;
 
 #[cfg(feature = "grpc")]
 pub mod grpc;
@@ -122,3 +123,6 @@ pub use utils::{
 // Re-exports transport
 pub use http::HttpClient;
 pub use http::GraphQlClient;
+
+// Re-exports chain types
+pub use chain::{ChainFamily, ChainProvider, TxStatus};

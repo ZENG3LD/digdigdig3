@@ -37,6 +37,8 @@ use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
 };
 
+use crate::core::utils::precision::PrecisionCache;
+
 use super::endpoints::{OandaUrls, OandaEndpoint, format_symbol, map_granularity};
 use super::auth::OandaAuth;
 use super::parser::OandaParser;
@@ -57,6 +59,8 @@ pub struct OandaConnector {
     practice: bool,
     /// Account ID (cached)
     account_id: Option<String>,
+    /// Per-symbol precision cache (populated from get_exchange_info)
+    precision: PrecisionCache,
 }
 
 impl OandaConnector {
@@ -81,6 +85,7 @@ impl OandaConnector {
             urls,
             practice,
             account_id: None,
+            precision: PrecisionCache::new(),
         })
     }
 
@@ -404,8 +409,9 @@ impl MarketData for OandaConnector {
                     min_notional: None,
                 })
             })
-            .collect();
+            .collect::<Vec<SymbolInfo>>();
 
+        self.precision.load_from_symbols(&infos);
         Ok(infos)
     }
 }
@@ -429,7 +435,12 @@ impl Trading for OandaConnector {
             OrderSide::Buy => quantity,
             OrderSide::Sell => -quantity,
         };
-        let units_str = units.to_string();
+        let units_str = self.precision.qty(&instrument, units.abs());
+        let units_str = if units < 0.0 {
+            format!("-{}", units_str)
+        } else {
+            units_str
+        };
 
         let endpoint = OandaEndpoint::CreateOrder(account_id.to_string());
 
@@ -453,7 +464,7 @@ impl Trading for OandaConnector {
                         "type": "LIMIT",
                         "instrument": instrument,
                         "units": units_str,
-                        "price": price.to_string(),
+                        "price": self.precision.price(&instrument, price),
                         "timeInForce": "GTC",
                         "positionFill": "DEFAULT"
                     }
@@ -468,7 +479,7 @@ impl Trading for OandaConnector {
                         "type": "STOP",
                         "instrument": instrument,
                         "units": units_str,
-                        "price": stop_price.to_string(),
+                        "price": self.precision.price(&instrument, stop_price),
                         "timeInForce": "GTC",
                         "positionFill": "DEFAULT"
                     }
@@ -483,8 +494,8 @@ impl Trading for OandaConnector {
                         "type": "STOP",
                         "instrument": instrument,
                         "units": units_str,
-                        "price": stop_price.to_string(),
-                        "priceBound": limit_price.to_string(),
+                        "price": self.precision.price(&instrument, stop_price),
+                        "priceBound": self.precision.price(&instrument, limit_price),
                         "timeInForce": "GTC",
                         "positionFill": "DEFAULT"
                     }
@@ -500,7 +511,7 @@ impl Trading for OandaConnector {
                         "type": "TRAILING_STOP_LOSS",
                         "instrument": instrument,
                         "units": units_str,
-                        "distance": callback_rate.to_string(),
+                        "distance": self.precision.price(&instrument, callback_rate),
                         "timeInForce": "GTC",
                         "positionFill": "DEFAULT"
                     }
@@ -518,10 +529,10 @@ impl Trading for OandaConnector {
                 order_body.insert("timeInForce".to_string(), json!("GTC"));
                 order_body.insert("positionFill".to_string(), json!("DEFAULT"));
                 if let Some(p) = price {
-                    order_body.insert("price".to_string(), json!(p.to_string()));
+                    order_body.insert("price".to_string(), json!(self.precision.price(&instrument, p)));
                 }
-                order_body.insert("takeProfitOnFill".to_string(), json!({ "price": take_profit.to_string() }));
-                order_body.insert("stopLossOnFill".to_string(), json!({ "price": stop_loss.to_string() }));
+                order_body.insert("takeProfitOnFill".to_string(), json!({ "price": self.precision.price(&instrument, take_profit) }));
+                order_body.insert("stopLossOnFill".to_string(), json!({ "price": self.precision.price(&instrument, stop_loss) }));
 
                 let b = json!({ "order": serde_json::Value::Object(order_body) });
                 let entry_price = price;
@@ -533,7 +544,7 @@ impl Trading for OandaConnector {
                 let mut order_body = serde_json::Map::new();
                 if let Some(p) = price {
                     order_body.insert("type".to_string(), json!("LIMIT"));
-                    order_body.insert("price".to_string(), json!(p.to_string()));
+                    order_body.insert("price".to_string(), json!(self.precision.price(&instrument, p)));
                 } else {
                     order_body.insert("type".to_string(), json!("MARKET"));
                 }
@@ -552,7 +563,7 @@ impl Trading for OandaConnector {
                         "type": "LIMIT",
                         "instrument": instrument,
                         "units": units_str,
-                        "price": price.to_string(),
+                        "price": self.precision.price(&instrument, price),
                         "timeInForce": "FOK",
                         "positionFill": "DEFAULT"
                     }
@@ -576,7 +587,7 @@ impl Trading for OandaConnector {
                         "type": "LIMIT",
                         "instrument": instrument,
                         "units": units_str,
-                        "price": price.to_string(),
+                        "price": self.precision.price(&instrument, price),
                         "timeInForce": "GTD",
                         "gtdTime": expire_rfc3339,
                         "positionFill": "DEFAULT"
@@ -600,7 +611,7 @@ impl Trading for OandaConnector {
                 order_body.insert("timeInForce".to_string(), json!(tif_str));
                 order_body.insert("positionFill".to_string(), json!("REDUCE_ONLY"));
                 if let Some(p) = price {
-                    order_body.insert("price".to_string(), json!(p.to_string()));
+                    order_body.insert("price".to_string(), json!(self.precision.price(&instrument, p)));
                 }
 
                 let b = json!({ "order": serde_json::Value::Object(order_body) });
@@ -971,17 +982,24 @@ impl AmendOrder for OandaConnector {
         };
 
         let mut order_body = serde_json::Map::new();
+        let units_qty_str = self.precision.qty(&instrument, units.abs());
+        let units_str = if units < 0.0 {
+            format!("-{}", units_qty_str)
+        } else {
+            units_qty_str
+        };
+
         order_body.insert("type".to_string(), json!(order_type_str));
         order_body.insert("instrument".to_string(), json!(instrument));
-        order_body.insert("units".to_string(), json!(units.to_string()));
+        order_body.insert("units".to_string(), json!(units_str));
         order_body.insert("timeInForce".to_string(), json!("GTC"));
         order_body.insert("positionFill".to_string(), json!("DEFAULT"));
 
         if new_price != 0.0 {
-            order_body.insert("price".to_string(), json!(new_price.to_string()));
+            order_body.insert("price".to_string(), json!(self.precision.price(&instrument, new_price)));
         }
         if let Some(stop) = new_stop {
-            order_body.insert("priceBound".to_string(), json!(stop.to_string()));
+            order_body.insert("priceBound".to_string(), json!(self.precision.price(&instrument, stop)));
         }
 
         let body = json!({ "order": serde_json::Value::Object(order_body) });

@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 
 use crate::core::types::*;
 use crate::core::traits::*;
+use crate::core::utils::precision::PrecisionCache;
 
 use super::endpoints::*;
 use super::auth::*;
@@ -36,6 +37,7 @@ pub struct AlpacaConnector {
     endpoints: AlpacaEndpoints,
     testnet: bool,
     feed: DataFeed,
+    precision: PrecisionCache,
 }
 
 /// Data feed selection
@@ -57,6 +59,7 @@ impl AlpacaConnector {
             endpoints: AlpacaEndpoints::paper(),
             testnet: true, // Paper trading is testnet
             feed: DataFeed::Iex,
+            precision: PrecisionCache::new(),
         }
     }
 
@@ -74,6 +77,7 @@ impl AlpacaConnector {
             endpoints,
             testnet: !live,
             feed: DataFeed::Iex,
+            precision: PrecisionCache::new(),
         }
     }
 
@@ -97,6 +101,7 @@ impl AlpacaConnector {
             endpoints: AlpacaEndpoints::live(),
             testnet: false,
             feed: DataFeed::Iex,
+            precision: PrecisionCache::new(),
         }
     }
 
@@ -705,7 +710,7 @@ impl MarketData for AlpacaConnector {
         let arr = response.as_array()
             .ok_or_else(|| ExchangeError::Parse("Expected array of assets".to_string()))?;
 
-        let infos = arr.iter().filter_map(|item| {
+        let infos: Vec<SymbolInfo> = arr.iter().filter_map(|item| {
             let symbol = item.get("symbol")?.as_str()?.to_string();
             let tradable = item.get("tradable").and_then(|v| v.as_bool()).unwrap_or(false);
             if !tradable {
@@ -743,6 +748,8 @@ impl MarketData for AlpacaConnector {
             })
         }).collect();
 
+        self.precision.load_from_symbols(&infos);
+
         Ok(infos)
     }
 }
@@ -756,7 +763,7 @@ impl Trading for AlpacaConnector {
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         let symbol_str = format_symbol(&req.symbol);
         let side_str = req.side.as_str().to_lowercase();
-        let qty_str = req.quantity.to_string();
+        let qty_str = self.precision.qty(&symbol_str, req.quantity);
         let client_oid = req.client_order_id.clone();
 
         // Build base body fields shared by most order types
@@ -780,7 +787,7 @@ impl Trading for AlpacaConnector {
                 let tif = tif_str(req.time_in_force);
                 base.insert("type".to_string(), json!("limit"));
                 base.insert("time_in_force".to_string(), json!(tif));
-                base.insert("limit_price".to_string(), json!(price.to_string()));
+                base.insert("limit_price".to_string(), json!(self.precision.price(&symbol_str, price)));
                 Value::Object(base)
             }
 
@@ -788,7 +795,7 @@ impl Trading for AlpacaConnector {
                 let tif = tif_str(req.time_in_force);
                 base.insert("type".to_string(), json!("stop"));
                 base.insert("time_in_force".to_string(), json!(tif));
-                base.insert("stop_price".to_string(), json!(stop_price.to_string()));
+                base.insert("stop_price".to_string(), json!(self.precision.price(&symbol_str, stop_price)));
                 Value::Object(base)
             }
 
@@ -796,8 +803,8 @@ impl Trading for AlpacaConnector {
                 let tif = tif_str(req.time_in_force);
                 base.insert("type".to_string(), json!("stop_limit"));
                 base.insert("time_in_force".to_string(), json!(tif));
-                base.insert("stop_price".to_string(), json!(stop_price.to_string()));
-                base.insert("limit_price".to_string(), json!(limit_price.to_string()));
+                base.insert("stop_price".to_string(), json!(self.precision.price(&symbol_str, stop_price)));
+                base.insert("limit_price".to_string(), json!(self.precision.price(&symbol_str, limit_price)));
                 Value::Object(base)
             }
 
@@ -816,11 +823,11 @@ impl Trading for AlpacaConnector {
                 base.insert("type".to_string(), json!("limit"));
                 base.insert("time_in_force".to_string(), json!("gtc"));
                 base.insert("order_class".to_string(), json!("oco"));
-                base.insert("take_profit".to_string(), json!({ "limit_price": price.to_string() }));
+                base.insert("take_profit".to_string(), json!({ "limit_price": self.precision.price(&symbol_str, price) }));
                 let sl_obj = if let Some(slp) = stop_limit_price {
-                    json!({ "stop_price": stop_price.to_string(), "limit_price": slp.to_string() })
+                    json!({ "stop_price": self.precision.price(&symbol_str, stop_price), "limit_price": self.precision.price(&symbol_str, slp) })
                 } else {
-                    json!({ "stop_price": stop_price.to_string() })
+                    json!({ "stop_price": self.precision.price(&symbol_str, stop_price) })
                 };
                 base.insert("stop_loss".to_string(), sl_obj);
                 Value::Object(base)
@@ -830,15 +837,15 @@ impl Trading for AlpacaConnector {
                 // Entry type: market if price is None, limit otherwise
                 if let Some(entry_price) = price {
                     base.insert("type".to_string(), json!("limit"));
-                    base.insert("limit_price".to_string(), json!(entry_price.to_string()));
+                    base.insert("limit_price".to_string(), json!(self.precision.price(&symbol_str, entry_price)));
                 } else {
                     base.insert("type".to_string(), json!("market"));
                 }
                 base.insert("time_in_force".to_string(), json!("gtc"));
                 base.insert("order_class".to_string(), json!("bracket"));
-                base.insert("take_profit".to_string(), json!({ "limit_price": take_profit.to_string() }));
+                base.insert("take_profit".to_string(), json!({ "limit_price": self.precision.price(&symbol_str, take_profit) }));
                 // Alpaca requires at minimum a stop_price in stop_loss object
-                base.insert("stop_loss".to_string(), json!({ "stop_price": stop_loss.to_string() }));
+                base.insert("stop_loss".to_string(), json!({ "stop_price": self.precision.price(&symbol_str, stop_loss) }));
                 Value::Object(base)
             }
 
@@ -846,7 +853,7 @@ impl Trading for AlpacaConnector {
                 base.insert("time_in_force".to_string(), json!("ioc"));
                 if let Some(p) = price {
                     base.insert("type".to_string(), json!("limit"));
-                    base.insert("limit_price".to_string(), json!(p.to_string()));
+                    base.insert("limit_price".to_string(), json!(self.precision.price(&symbol_str, p)));
                 } else {
                     base.insert("type".to_string(), json!("market"));
                 }
@@ -856,7 +863,7 @@ impl Trading for AlpacaConnector {
             OrderType::Fok { price } => {
                 base.insert("type".to_string(), json!("limit"));
                 base.insert("time_in_force".to_string(), json!("fok"));
-                base.insert("limit_price".to_string(), json!(price.to_string()));
+                base.insert("limit_price".to_string(), json!(self.precision.price(&symbol_str, price)));
                 Value::Object(base)
             }
 
@@ -1160,17 +1167,18 @@ impl AmendOrder for AlpacaConnector {
     /// The returned order has a new exchange-assigned ID.
     async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
         let mut body = serde_json::Map::new();
+        let symbol_str = format_symbol(&req.symbol);
 
         if let Some(qty) = req.fields.quantity {
-            body.insert("qty".to_string(), json!(qty.to_string()));
+            body.insert("qty".to_string(), json!(self.precision.qty(&symbol_str, qty)));
         }
 
         if let Some(price) = req.fields.price {
-            body.insert("limit_price".to_string(), json!(price.to_string()));
+            body.insert("limit_price".to_string(), json!(self.precision.price(&symbol_str, price)));
         }
 
         if let Some(trigger) = req.fields.trigger_price {
-            body.insert("stop_price".to_string(), json!(trigger.to_string()));
+            body.insert("stop_price".to_string(), json!(self.precision.price(&symbol_str, trigger)));
         }
 
         if body.is_empty() {

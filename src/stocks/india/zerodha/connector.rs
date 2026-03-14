@@ -22,6 +22,7 @@ use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions, AmendOrder,
 };
 use crate::core::types::SymbolInfo;
+use crate::core::utils::precision::PrecisionCache;
 
 use super::endpoints::{ZerodhaEndpoints, ZerodhaEndpoint, format_symbol};
 use super::auth::ZerodhaAuth;
@@ -39,6 +40,8 @@ pub struct ZerodhaConnector {
     auth: ZerodhaAuth,
     /// Base URLs
     endpoints: ZerodhaEndpoints,
+    /// Per-symbol tick/step precision cache — populated after get_exchange_info()
+    precision: PrecisionCache,
 }
 
 impl ZerodhaConnector {
@@ -51,6 +54,7 @@ impl ZerodhaConnector {
             http,
             auth,
             endpoints,
+            precision: PrecisionCache::new(),
         })
     }
 
@@ -63,6 +67,7 @@ impl ZerodhaConnector {
                 http: HttpClient::new(30_000).expect("HTTP client creation should not fail with valid timeout"),
                 auth,
                 endpoints: ZerodhaEndpoints::default(),
+                precision: PrecisionCache::new(),
             }
         })
     }
@@ -363,6 +368,9 @@ impl MarketData for ZerodhaConnector {
             });
         }
 
+        // Populate precision cache so place_order/amend_order can format prices correctly
+        self.precision.load_from_symbols(&infos);
+
         Ok(infos)
     }
 }
@@ -404,7 +412,7 @@ impl Trading for ZerodhaConnector {
                     OrderSide::Buy => "BUY",
                     OrderSide::Sell => "SELL",
                 }.to_string());
-                body.insert("quantity".to_string(), quantity.to_string());
+                body.insert("quantity".to_string(), self.precision.qty(tradingsymbol, quantity));
                 body.insert("order_type".to_string(), "MARKET".to_string());
                 body.insert("product".to_string(), "CNC".to_string());
                 body.insert("validity".to_string(), validity.to_string());
@@ -421,9 +429,9 @@ impl Trading for ZerodhaConnector {
                     OrderSide::Buy => "BUY",
                     OrderSide::Sell => "SELL",
                 }.to_string());
-                body.insert("quantity".to_string(), quantity.to_string());
+                body.insert("quantity".to_string(), self.precision.qty(tradingsymbol, quantity));
                 body.insert("order_type".to_string(), "LIMIT".to_string());
-                body.insert("price".to_string(), price.to_string());
+                body.insert("price".to_string(), self.precision.price(tradingsymbol, price));
                 body.insert("product".to_string(), "CNC".to_string());
                 body.insert("validity".to_string(), validity.to_string());
 
@@ -440,13 +448,13 @@ impl Trading for ZerodhaConnector {
                     OrderSide::Buy => "BUY",
                     OrderSide::Sell => "SELL",
                 }.to_string());
-                body.insert("quantity".to_string(), quantity.to_string());
+                body.insert("quantity".to_string(), self.precision.qty(tradingsymbol, quantity));
                 body.insert("product".to_string(), "CNC".to_string());
                 body.insert("validity".to_string(), "IOC".to_string());
 
                 if let Some(p) = price {
                     body.insert("order_type".to_string(), "LIMIT".to_string());
-                    body.insert("price".to_string(), p.to_string());
+                    body.insert("price".to_string(), self.precision.price(tradingsymbol, p));
                 } else {
                     body.insert("order_type".to_string(), "MARKET".to_string());
                 }
@@ -464,9 +472,9 @@ impl Trading for ZerodhaConnector {
                     OrderSide::Buy => "BUY",
                     OrderSide::Sell => "SELL",
                 }.to_string());
-                body.insert("quantity".to_string(), quantity.to_string());
+                body.insert("quantity".to_string(), self.precision.qty(tradingsymbol, quantity));
                 body.insert("order_type".to_string(), "SL-M".to_string());
-                body.insert("trigger_price".to_string(), stop_price.to_string());
+                body.insert("trigger_price".to_string(), self.precision.price(tradingsymbol, stop_price));
                 body.insert("product".to_string(), "CNC".to_string());
                 body.insert("validity".to_string(), validity.to_string());
 
@@ -483,10 +491,10 @@ impl Trading for ZerodhaConnector {
                     OrderSide::Buy => "BUY",
                     OrderSide::Sell => "SELL",
                 }.to_string());
-                body.insert("quantity".to_string(), quantity.to_string());
+                body.insert("quantity".to_string(), self.precision.qty(tradingsymbol, quantity));
                 body.insert("order_type".to_string(), "SL".to_string());
-                body.insert("price".to_string(), limit_price.to_string());
-                body.insert("trigger_price".to_string(), stop_price.to_string());
+                body.insert("price".to_string(), self.precision.price(tradingsymbol, limit_price));
+                body.insert("trigger_price".to_string(), self.precision.price(tradingsymbol, stop_price));
                 body.insert("product".to_string(), "CNC".to_string());
                 body.insert("validity".to_string(), validity.to_string());
 
@@ -510,10 +518,10 @@ impl Trading for ZerodhaConnector {
                     OrderSide::Buy => "BUY",
                     OrderSide::Sell => "SELL",
                 }.to_string());
-                body.insert("quantity".to_string(), quantity.to_string());
+                body.insert("quantity".to_string(), self.precision.qty(tradingsymbol, quantity));
                 body.insert("order_type".to_string(), "LIMIT".to_string());
-                body.insert("price".to_string(), entry_price.to_string());
-                body.insert("trigger_price".to_string(), stop_loss.to_string());
+                body.insert("price".to_string(), self.precision.price(tradingsymbol, entry_price));
+                body.insert("trigger_price".to_string(), self.precision.price(tradingsymbol, stop_loss));
                 body.insert("product".to_string(), "MIS".to_string()); // CO requires MIS
                 body.insert("validity".to_string(), "DAY".to_string());
 
@@ -536,13 +544,13 @@ impl Trading for ZerodhaConnector {
                     OrderSide::Buy => "BUY",
                     OrderSide::Sell => "SELL",
                 }.to_string());
-                body.insert("quantity".to_string(), quantity.to_string());
+                body.insert("quantity".to_string(), self.precision.qty(tradingsymbol, quantity));
                 body.insert("order_type".to_string(), "LIMIT".to_string());
-                body.insert("price".to_string(), price.to_string());
+                body.insert("price".to_string(), self.precision.price(tradingsymbol, price));
                 body.insert("product".to_string(), "CNC".to_string());
                 body.insert("validity".to_string(), "DAY".to_string());
                 body.insert("iceberg_legs".to_string(), legs.to_string());
-                body.insert("iceberg_quantity".to_string(), display_quantity.to_string());
+                body.insert("iceberg_quantity".to_string(), self.precision.qty(tradingsymbol, display_quantity));
 
                 let response = self.post(ZerodhaEndpoint::PlaceOrder("iceberg".to_string()), body).await?;
                 ZerodhaParser::parse_order(&response).map(PlaceOrderResponse::Simple)
@@ -778,16 +786,20 @@ impl AmendOrder for ZerodhaConnector {
             ));
         }
 
+        // Derive tradingsymbol from the request symbol for precision lookup
+        let symbol_key = format_symbol(&req.symbol);
+        let amend_tradingsymbol: &str = symbol_key.split(':').nth(1).unwrap_or(&symbol_key);
+
         let mut body = HashMap::new();
 
         if let Some(price) = req.fields.price {
-            body.insert("price".to_string(), price.to_string());
+            body.insert("price".to_string(), self.precision.price(amend_tradingsymbol, price));
         }
         if let Some(qty) = req.fields.quantity {
-            body.insert("quantity".to_string(), qty.to_string());
+            body.insert("quantity".to_string(), self.precision.qty(amend_tradingsymbol, qty));
         }
         if let Some(trigger) = req.fields.trigger_price {
-            body.insert("trigger_price".to_string(), trigger.to_string());
+            body.insert("trigger_price".to_string(), self.precision.price(amend_tradingsymbol, trigger));
         }
 
         // Default variety to "regular"; callers can pass variety in order_id prefix

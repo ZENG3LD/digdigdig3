@@ -39,6 +39,7 @@ use crate::core::traits::{
     CancelAll, AmendOrder, BatchOrders,
 };
 use crate::core::utils::GroupRateLimiter;
+use crate::core::utils::precision::PrecisionCache;
 use crate::core::types::{ConnectorStats, SymbolInfo};
 
 use super::endpoints::{ParadexUrls, ParadexEndpoint, format_symbol, map_kline_resolution};
@@ -64,6 +65,8 @@ pub struct ParadexConnector {
     testnet: bool,
     /// Rate limiter (grouped: public=1500/60s, orders=17250/60s, private_gets=600/60s)
     rate_limiter: Arc<Mutex<GroupRateLimiter>>,
+    /// Per-symbol precision cache (populated from get_exchange_info)
+    precision: PrecisionCache,
     /// Optional StarkNet chain provider for on-chain operations (invoke, call, nonce).
     ///
     /// When set, connectors can use `starknet_provider` to read nonces or call
@@ -112,6 +115,7 @@ impl ParadexConnector {
             urls,
             testnet,
             rate_limiter,
+            precision: PrecisionCache::new(),
             #[cfg(feature = "onchain-starknet")]
             starknet_provider: None,
         })
@@ -530,7 +534,7 @@ impl MarketData for ParadexConnector {
             .and_then(|v| v.as_array())
             .ok_or_else(|| ExchangeError::Parse("Missing 'results' array in markets response".to_string()))?;
 
-        let infos = results.iter().filter_map(|item| {
+        let infos: Vec<SymbolInfo> = results.iter().filter_map(|item| {
             let sym = item.get("symbol").and_then(|v| v.as_str())?.to_string();
 
             // base_currency / quote_currency are returned directly by the API
@@ -589,6 +593,7 @@ impl MarketData for ParadexConnector {
             })
         }).collect();
 
+        self.precision.load_from_symbols(&infos);
         Ok(infos)
     }
 }
@@ -613,7 +618,7 @@ impl Trading for ParadexConnector {
                     "market": symbol_str,
                     "side": side_str,
                     "type": "MARKET",
-                    "size": quantity.to_string(),
+                    "size": self.precision.qty(&symbol_str, quantity),
                     "instruction": "IOC",
                     // NOTE: full production use requires StarkNet signature + signature_timestamp
                 });
@@ -627,8 +632,8 @@ impl Trading for ParadexConnector {
                     "market": symbol_str,
                     "side": side_str,
                     "type": "LIMIT",
-                    "price": price.to_string(),
-                    "size": quantity.to_string(),
+                    "price": self.precision.price(&symbol_str, price),
+                    "size": self.precision.qty(&symbol_str, quantity),
                     "instruction": "GTC",
                 });
 
@@ -641,8 +646,8 @@ impl Trading for ParadexConnector {
                     "market": symbol_str,
                     "side": side_str,
                     "type": "LIMIT",
-                    "price": price.to_string(),
-                    "size": quantity.to_string(),
+                    "price": self.precision.price(&symbol_str, price),
+                    "size": self.precision.qty(&symbol_str, quantity),
                     "instruction": "POST_ONLY",
                 });
 
@@ -655,13 +660,13 @@ impl Trading for ParadexConnector {
                     "market": symbol_str,
                     "side": side_str,
                     "type": "MARKET",
-                    "size": quantity.to_string(),
+                    "size": self.precision.qty(&symbol_str, quantity),
                     "instruction": "IOC",
                 });
                 // If price specified, treat as limit IOC
                 if let Some(p) = price {
                     body["type"] = json!("LIMIT");
-                    body["price"] = json!(p.to_string());
+                    body["price"] = json!(self.precision.price(&symbol_str, p));
                 }
 
                 let response = self.post(ParadexEndpoint::CreateOrder, body).await?;
@@ -673,8 +678,8 @@ impl Trading for ParadexConnector {
                     "market": symbol_str,
                     "side": side_str,
                     "type": "LIMIT",
-                    "price": price.to_string(),
-                    "size": quantity.to_string(),
+                    "price": self.precision.price(&symbol_str, price),
+                    "size": self.precision.qty(&symbol_str, quantity),
                     "instruction": "FOK",
                 });
 
@@ -687,8 +692,8 @@ impl Trading for ParadexConnector {
                     "market": symbol_str,
                     "side": side_str,
                     "type": "STOP_MARKET",
-                    "trigger_price": stop_price.to_string(),
-                    "size": quantity.to_string(),
+                    "trigger_price": self.precision.price(&symbol_str, stop_price),
+                    "size": self.precision.qty(&symbol_str, quantity),
                     "instruction": "IOC",
                 });
 
@@ -701,9 +706,9 @@ impl Trading for ParadexConnector {
                     "market": symbol_str,
                     "side": side_str,
                     "type": "STOP_LIMIT",
-                    "trigger_price": stop_price.to_string(),
-                    "price": limit_price.to_string(),
-                    "size": quantity.to_string(),
+                    "trigger_price": self.precision.price(&symbol_str, stop_price),
+                    "price": self.precision.price(&symbol_str, limit_price),
+                    "size": self.precision.qty(&symbol_str, quantity),
                     "instruction": "GTC",
                 });
 
@@ -720,12 +725,12 @@ impl Trading for ParadexConnector {
                     "market": symbol_str,
                     "side": side_str,
                     "type": order_type_str,
-                    "size": quantity.to_string(),
+                    "size": self.precision.qty(&symbol_str, quantity),
                     "instruction": if price.is_some() { "GTC" } else { "IOC" },
                     "reduce_only": true,
                 });
                 if price.is_some() {
-                    body["price"] = json!(price_val.to_string());
+                    body["price"] = json!(self.precision.price(&symbol_str, price_val));
                 }
 
                 let response = self.post(ParadexEndpoint::CreateOrder, body).await?;
@@ -737,8 +742,8 @@ impl Trading for ParadexConnector {
                     "market": symbol_str,
                     "side": side_str,
                     "type": "LIMIT",
-                    "price": price.to_string(),
-                    "size": quantity.to_string(),
+                    "price": self.precision.price(&symbol_str, price),
+                    "size": self.precision.qty(&symbol_str, quantity),
                     "instruction": "GTC",
                     "expiry": expire_time,
                 });
@@ -754,7 +759,7 @@ impl Trading for ParadexConnector {
                 let body = json!({
                     "market": symbol_str,
                     "side": side_str,
-                    "size": quantity.to_string(),
+                    "size": self.precision.qty(&symbol_str, quantity),
                     "algo_type": "TWAP",
                     // Duration in seconds; clamp to [30, 86400] per Paradex spec.
                     "duration": duration_seconds.clamp(30, 86400),
@@ -1054,7 +1059,7 @@ impl Positions for ParadexConnector {
                     let body = json!({
                         "market": symbol_str,
                         "type": "TAKE_PROFIT_MARKET",
-                        "trigger_price": tp.to_string(),
+                        "trigger_price": self.precision.price(&symbol_str, tp),
                         "instruction": "IOC",
                         "reduce_only": true,
                     });
@@ -1065,7 +1070,7 @@ impl Positions for ParadexConnector {
                     let body = json!({
                         "market": symbol_str,
                         "type": "STOP_MARKET",
-                        "trigger_price": sl.to_string(),
+                        "trigger_price": self.precision.price(&symbol_str, sl),
                         "instruction": "IOC",
                         "reduce_only": true,
                     });
@@ -1167,14 +1172,15 @@ impl AmendOrder for ParadexConnector {
     async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
         let mut body = json!({});
 
+        let amend_symbol_str = format_symbol(&req.symbol.base, &req.symbol.quote, req.account_type);
         if let Some(price) = req.fields.price {
-            body["price"] = json!(price.to_string());
+            body["price"] = json!(self.precision.price(&amend_symbol_str, price));
         }
         if let Some(qty) = req.fields.quantity {
-            body["size"] = json!(qty.to_string());
+            body["size"] = json!(self.precision.qty(&amend_symbol_str, qty));
         }
         if let Some(trigger) = req.fields.trigger_price {
-            body["trigger_price"] = json!(trigger.to_string());
+            body["trigger_price"] = json!(self.precision.price(&amend_symbol_str, trigger));
         }
 
         let response = self._put(
@@ -1208,23 +1214,23 @@ impl BatchOrders for ParadexConnector {
                     "market": symbol_str,
                     "side": side_str,
                     "type": "MARKET",
-                    "size": req.quantity.to_string(),
+                    "size": self.precision.qty(&symbol_str, req.quantity),
                     "instruction": "IOC",
                 }),
                 OrderType::Limit { price } => json!({
                     "market": symbol_str,
                     "side": side_str,
                     "type": "LIMIT",
-                    "price": price.to_string(),
-                    "size": req.quantity.to_string(),
+                    "price": self.precision.price(&symbol_str, *price),
+                    "size": self.precision.qty(&symbol_str, req.quantity),
                     "instruction": "GTC",
                 }),
                 OrderType::PostOnly { price } => json!({
                     "market": symbol_str,
                     "side": side_str,
                     "type": "LIMIT",
-                    "price": price.to_string(),
-                    "size": req.quantity.to_string(),
+                    "price": self.precision.price(&symbol_str, *price),
+                    "size": self.precision.qty(&symbol_str, req.quantity),
                     "instruction": "POST_ONLY",
                 }),
                 OrderType::Ioc { price } => {
@@ -1232,12 +1238,12 @@ impl BatchOrders for ParadexConnector {
                         "market": symbol_str,
                         "side": side_str,
                         "type": "MARKET",
-                        "size": req.quantity.to_string(),
+                        "size": self.precision.qty(&symbol_str, req.quantity),
                         "instruction": "IOC",
                     });
                     if let Some(p) = price {
                         o["type"] = json!("LIMIT");
-                        o["price"] = json!(p.to_string());
+                        o["price"] = json!(self.precision.price(&symbol_str, *p));
                     }
                     o
                 }
@@ -1245,15 +1251,15 @@ impl BatchOrders for ParadexConnector {
                     "market": symbol_str,
                     "side": side_str,
                     "type": "LIMIT",
-                    "price": price.to_string(),
-                    "size": req.quantity.to_string(),
+                    "price": self.precision.price(&symbol_str, *price),
+                    "size": self.precision.qty(&symbol_str, req.quantity),
                     "instruction": "FOK",
                 }),
                 _ => json!({
                     "market": symbol_str,
                     "side": side_str,
                     "type": "MARKET",
-                    "size": req.quantity.to_string(),
+                    "size": self.precision.qty(&symbol_str, req.quantity),
                     "instruction": "IOC",
                 }),
             }

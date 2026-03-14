@@ -40,6 +40,11 @@ mod parser;
 mod connector;
 mod websocket;
 
+/// Hand-written prost protobuf message types for dYdX v4 order placement
+/// and cancellation.  Only compiled when the `grpc` feature is enabled.
+#[cfg(feature = "grpc")]
+pub mod proto;
+
 pub use endpoints::{DydxEndpoint, DydxUrls};
 pub use auth::DydxAuth;
 pub use parser::DydxParser;

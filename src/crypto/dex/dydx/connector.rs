@@ -39,6 +39,16 @@ use super::endpoints::{DydxUrls, DydxEndpoint, format_symbol, map_kline_interval
 use super::auth::DydxAuth;
 use super::parser::DydxParser;
 
+#[cfg(feature = "grpc")]
+use super::proto::dydxprotocol::{
+    BroadcastTxRequest, BroadcastTxResponse,
+    BroadcastMode,
+};
+#[cfg(feature = "grpc")]
+use tonic::codec::ProstCodec;
+#[cfg(feature = "grpc")]
+use tonic::transport::Channel;
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -55,6 +65,13 @@ pub struct DydxConnector {
     testnet: bool,
     /// Rate limiter (conservative guard: 100 req/10s)
     rate_limiter: Arc<Mutex<SimpleRateLimiter>>,
+    /// Optional gRPC channel to a dYdX validator node.
+    ///
+    /// When present, `place_order` and `cancel_order` broadcast signed
+    /// `TxRaw` bytes via `cosmos.tx.v1beta1.Service/BroadcastTx`.
+    /// Absent by default — the connector operates in read-only REST mode.
+    #[cfg(feature = "grpc")]
+    grpc_channel: Option<Channel>,
 }
 
 impl DydxConnector {
@@ -80,6 +97,8 @@ impl DydxConnector {
             urls,
             testnet,
             rate_limiter,
+            #[cfg(feature = "grpc")]
+            grpc_channel: None,
         })
     }
 
@@ -148,6 +167,154 @@ impl DydxConnector {
     /// Извлечь data field или вернуть весь response
     fn _unwrap_response(&self, response: Value) -> Value {
         response
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // gRPC CHANNEL BUILDER
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Attach a gRPC channel to this connector, enabling order placement and
+    /// cancellation via the dYdX validator node.
+    ///
+    /// Call [`crate::core::grpc::GrpcClient::connect`] to obtain a channel,
+    /// then pass `grpc_client.channel()` here.
+    ///
+    /// ```rust,no_run
+    /// # #[cfg(feature = "grpc")]
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// use digdigdig3::core::grpc::GrpcClient;
+    /// use digdigdig3::crypto::dex::dydx::DydxConnector;
+    ///
+    /// let grpc = GrpcClient::connect("https://dydx-ops-grpc.kingnodes.com:443").await?;
+    /// let connector = DydxConnector::public(false).await?
+    ///     .with_grpc_channel(grpc.channel());
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg(feature = "grpc")]
+    pub fn with_grpc_channel(mut self, channel: Channel) -> Self {
+        self.grpc_channel = Some(channel);
+        self
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // gRPC HELPERS — PLACE / CANCEL
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Broadcast a pre-signed `TxRaw` that wraps a `MsgPlaceOrder` to the
+    /// dYdX validator node via `cosmos.tx.v1beta1.Service/BroadcastTx`.
+    ///
+    /// ## Parameters
+    ///
+    /// - `tx_raw_bytes` — protobuf-serialised `TxRaw` (body_bytes +
+    ///   auth_info_bytes + signatures).  The caller is responsible for
+    ///   constructing and signing the Cosmos SDK transaction (e.g. via
+    ///   `cosmrs`).
+    ///
+    /// ## Returns
+    ///
+    /// The raw `BroadcastTxResponse` on success.  The caller should inspect
+    /// `response.tx_response.code` — `0` means accepted.
+    ///
+    /// ## Errors
+    ///
+    /// Returns [`ExchangeError::Network`] if there is no gRPC channel attached
+    /// (call [`Self::with_grpc_channel`] first) or if the RPC call fails.
+    #[cfg(feature = "grpc")]
+    pub async fn place_order_grpc(
+        &self,
+        tx_raw_bytes: Vec<u8>,
+    ) -> ExchangeResult<BroadcastTxResponse> {
+        let channel = self.grpc_channel.as_ref().ok_or_else(|| {
+            ExchangeError::Network(
+                "No gRPC channel attached. Call DydxConnector::with_grpc_channel() \
+                 with a channel connected to a dYdX validator node."
+                    .to_string(),
+            )
+        })?;
+
+        let request = BroadcastTxRequest {
+            tx_bytes: tx_raw_bytes,
+            mode: BroadcastMode::Sync as i32,
+        };
+
+        self.broadcast_tx(channel.clone(), request).await
+    }
+
+    /// Broadcast a pre-signed `TxRaw` that wraps a `MsgCancelOrder` to the
+    /// dYdX validator node via `cosmos.tx.v1beta1.Service/BroadcastTx`.
+    ///
+    /// ## Parameters
+    ///
+    /// - `tx_raw_bytes` — protobuf-serialised `TxRaw` containing a signed
+    ///   `MsgCancelOrder`.
+    ///
+    /// ## Returns
+    ///
+    /// The raw `BroadcastTxResponse` on success.
+    ///
+    /// ## Errors
+    ///
+    /// Returns [`ExchangeError::Network`] if there is no gRPC channel or the
+    /// RPC call fails.
+    #[cfg(feature = "grpc")]
+    pub async fn cancel_order_grpc(
+        &self,
+        tx_raw_bytes: Vec<u8>,
+    ) -> ExchangeResult<BroadcastTxResponse> {
+        // Cancel orders are also broadcast via the same BroadcastTx endpoint;
+        // the difference is only in the message type embedded in TxRaw.
+        let channel = self.grpc_channel.as_ref().ok_or_else(|| {
+            ExchangeError::Network(
+                "No gRPC channel attached. Call DydxConnector::with_grpc_channel() \
+                 with a channel connected to a dYdX validator node."
+                    .to_string(),
+            )
+        })?;
+
+        let request = BroadcastTxRequest {
+            tx_bytes: tx_raw_bytes,
+            mode: BroadcastMode::Sync as i32,
+        };
+
+        self.broadcast_tx(channel.clone(), request).await
+    }
+
+    /// Internal helper: send a `BroadcastTxRequest` to the Cosmos
+    /// `cosmos.tx.v1beta1.Service/BroadcastTx` endpoint using the raw tonic
+    /// `Grpc` client (no generated service stub required).
+    #[cfg(feature = "grpc")]
+    async fn broadcast_tx(
+        &self,
+        channel: Channel,
+        request: BroadcastTxRequest,
+    ) -> ExchangeResult<BroadcastTxResponse> {
+        use tonic::client::Grpc;
+        use tonic::IntoRequest;
+
+        let mut grpc: Grpc<Channel> = Grpc::new(channel);
+
+        // Wait until the channel is ready before sending.
+        grpc.ready().await.map_err(|e| {
+            ExchangeError::Network(format!("gRPC channel not ready: {}", e))
+        })?;
+
+        // Full gRPC method path for BroadcastTx.
+        let path = tonic::codegen::http::uri::PathAndQuery::from_static(
+            "/cosmos.tx.v1beta1.Service/BroadcastTx",
+        );
+
+        let codec: ProstCodec<BroadcastTxRequest, BroadcastTxResponse> =
+            ProstCodec::default();
+
+        let response = grpc
+            .unary(request.into_request(), path, codec)
+            .await
+            .map_err(|e| {
+                ExchangeError::Network(format!("BroadcastTx gRPC error: {}", e))
+            })?;
+
+        Ok(response.into_inner())
     }
 }
 
@@ -497,20 +664,51 @@ impl Trading for DydxConnector {
         // dYdX v4 order placement requires Cosmos SDK gRPC (MsgPlaceOrder).
         // The Indexer REST API is read-only; write operations go through validator
         // nodes via gRPC/Protobuf and require a signed Cosmos transaction.
-        // This is beyond the REST-only scope of this connector.
+        //
+        // When the `grpc` feature is enabled and a channel has been attached via
+        // `DydxConnector::with_grpc_channel`, callers can use the low-level
+        // `place_order_grpc(tx_raw_bytes)` helper directly after constructing and
+        // signing the Cosmos SDK transaction externally (e.g. via `cosmrs`).
         let _ = req;
+
+        #[cfg(feature = "grpc")]
+        if self.grpc_channel.is_some() {
+            return Err(ExchangeError::UnsupportedOperation(
+                "dYdX v4 order placement via gRPC: use `place_order_grpc(tx_raw_bytes)` \
+                 directly. Build and sign the Cosmos SDK TxRaw externally (e.g. with \
+                 `cosmrs`), then pass the serialised bytes to that method."
+                    .to_string(),
+            ));
+        }
+
         Err(ExchangeError::UnsupportedOperation(
             "dYdX v4 order placement requires Cosmos gRPC (Node API). \
-             The Indexer REST API is read-only. Implement via gRPC MsgPlaceOrder.".to_string()
+             Enable the `grpc` feature, connect a validator channel via \
+             `DydxConnector::with_grpc_channel`, and call `place_order_grpc(tx_raw_bytes)`."
+                .to_string(),
         ))
     }
 
     async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         // dYdX v4 order cancellation also requires Node gRPC (MsgCancelOrder).
+        // See the doc comment on `place_order` for the full flow.
         let _ = req;
+
+        #[cfg(feature = "grpc")]
+        if self.grpc_channel.is_some() {
+            return Err(ExchangeError::UnsupportedOperation(
+                "dYdX v4 order cancellation via gRPC: use `cancel_order_grpc(tx_raw_bytes)` \
+                 directly. Build and sign the Cosmos SDK TxRaw externally (e.g. with \
+                 `cosmrs`), then pass the serialised bytes to that method."
+                    .to_string(),
+            ));
+        }
+
         Err(ExchangeError::UnsupportedOperation(
             "dYdX v4 order cancellation requires Cosmos gRPC (Node API). \
-             The Indexer REST API is read-only.".to_string()
+             Enable the `grpc` feature, connect a validator channel via \
+             `DydxConnector::with_grpc_channel`, and call `cancel_order_grpc(tx_raw_bytes)`."
+                .to_string(),
         ))
     }
 

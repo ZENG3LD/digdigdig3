@@ -25,45 +25,46 @@ Complete unfinished DEX/swap connectors — wire existing endpoints, fix bugs, i
 Trading trait is mandatory (CoreConnector supertrait) — AMMs return UnsupportedOperation by design.
 Real swap execution lives in struct methods + optional on-chain features.
 
-### GMX — stubs that should be real (data exists in API/Subsquid)
-- [ ] Fix `get_funding_rate` — wrongly stubbed, `/markets/info` returns `fundingRateLong/Short`
-- [ ] Implement `get_positions` via Subsquid GraphQL (`positions` entity)
-- [ ] Implement `get_open_orders` via Subsquid or `Reader.getAccountOrders()` on-chain
-- [ ] Implement `get_order_history` via Subsquid `TradeAction` entity
-- [ ] Implement `get_order` via Subsquid single-item lookup
-- [ ] Wire ERC-20 `balanceOf` into `get_balance` (token addresses already in connector)
-- [ ] Verify ExchangeRouter address (discrepancy: `onchain.rs` vs research doc)
+### GMX (DONE)
+- [x] Fix `get_funding_rate` — was wrongly stubbed, now parses `/markets/info` fundingFactorPerSecond
+- [x] Implement `get_positions` via Subsquid GraphQL
+- [x] Implement `get_open_orders` via Subsquid GraphQL
+- [x] Implement `get_order_history` via Subsquid GraphQL
+- [x] Implement `get_order` via Subsquid single-item lookup
+- [x] Wire ERC-20 `balanceOf` into `get_balance` via EvmProvider
+- [x] Fix ExchangeRouter address (0x7C68→0x87d6)
 
-### Jupiter — swap APIs not wired
-- [ ] Fix Ultra Swap bug: wrong HTTP method (POST→GET) + missing `requestId` in execute
-- [ ] Update `get_ultra_balances` endpoint (deprecated `/balances` → `/holdings/{address}`)
-- [ ] Wire `get_ultra_balances` into Account trait `get_balance`
-- [ ] Implement Trigger API (limit orders): create, cancel, execute, query orders
-- [ ] Implement Recurring API (DCA orders): create, cancel, query
-- [ ] Add token search/trending/category wrapper methods
+### Jupiter (DONE)
+- [x] Fix Ultra Swap bug: correct HTTP method (GET) + requestId wiring
+- [x] Update deprecated balances → `/holdings/{address}` endpoint
+- [x] Wire holdings into Account trait `get_balance`
+- [x] Implement Trigger API (limit orders): create, cancel, bulk cancel, query
+- [x] Implement Recurring API (DCA orders): create, cancel, query
+- [x] Add token search/trending/category/recent wrapper methods
 
-### Raydium — swap pipeline missing wrappers
-- [ ] Implement `get_swap_quote()` wrapper over `SwapQuoteBaseIn/Out` endpoints
-- [ ] Implement `build_swap_transaction()` wrapper over `SwapTransactionBaseIn/Out` endpoints
-- [ ] Fix WebSocket: dynamic pool lookup (currently only SOL/USDC hardcoded)
-- [ ] Fix WebSocket race condition: broadcast channel init before `event_stream()`
-- [ ] Add missing wrappers: token list, farm list, pool list, recommended RPCs, priority fees
+### Raydium (DONE)
+- [x] Implement `get_swap_quote()` wrapper over SwapQuoteBaseIn/Out
+- [x] Implement `build_swap_transaction()` wrapper over SwapTransactionBaseIn/Out
+- [x] Fix WebSocket: dynamic pool lookup via REST fallback + cache
+- [x] Fix WebSocket race condition: broadcast channel init in new()
+- [x] Add 8 missing wrappers: token list, farm, pool, RPCs, priority fees
 
-### Uniswap — swap flow 80% done, needs final wiring
-- [ ] Wire `POST /swap` → `parse_swap_transaction()` (both exist, not connected)
-- [ ] Fix WebSocket prices: add decimal scaling (raw wei → human-readable)
-- [ ] Fix `get_token_balance()`: dynamic decimals query instead of hardcoded 18
-- [ ] Fix `volume_24h` in ticker: currently lifetime volume, not 24h
-- [ ] Surface TVL from pool queries (fetched but silently dropped)
-- [ ] Wire `POST /approval` endpoint (defined, not called)
+### Uniswap (DONE)
+- [x] Wire `POST /swap` → `parse_swap_transaction()` (typed SwapTransaction struct)
+- [x] Fix WebSocket prices: decimal scaling (raw wei → human-readable)
+- [x] Fix `get_token_balance()`: dynamic decimals query
+- [x] Fix `volume_24h` in ticker: now queries poolDayDatas
+- [x] Surface TVL from pool queries
+- [x] Wire `POST /approval` endpoint
 
-### dYdX — small gaps in order types
-- [ ] Wire TakeProfit conditional orders (`OrderConditionType::TakeProfit`)
-- [ ] Wire long-term orders via `TimeInForce::GoodTilTime` → `build_place_long_term_order_tx`
-- [ ] Implement cancel-all helper (loop `get_open_orders` + serial cancel with sequence tracking)
+### dYdX (DONE)
+- [x] Wire TakeProfit conditional orders via ConditionalPlan + TriggerDirection
+- [x] Wire long-term orders via TimeInForce::Gtd → build_place_long_term_order_tx
+- [x] Implement cancel_all_orders helper (serial cancel with sequence tracking)
 
-### Lighter — blocked on cryptography
-- [ ] Port ECgFp5+Poseidon2 signing from TypeScript SDK to Rust (unblocks all write operations)
+### Lighter — blocked on cryptography (LAST — requires research)
+- [ ] Research ECgFp5+Poseidon2 from Lighter TypeScript SDK source
+- [ ] Port signing to Rust (unblocks all write operations)
 - [ ] Fix `get_order` for active orders (currently only scans inactive history)
 - [ ] Wire auth token into authenticated read endpoints
 

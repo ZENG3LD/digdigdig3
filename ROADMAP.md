@@ -15,8 +15,9 @@ f64 → Decimal conversion at Trading trait boundary. Prevents IEEE-754 drift fr
 - [x] 23 parsers extract real tick_size from exchange APIs
 - [x] PrecisionCache wired into all 19 CEX connectors (place_order, amend_order, batch_orders)
 - [x] 17 unit tests for precision functions + cache
-- [ ] DEX connectors: wire PrecisionCache into Lighter, GMX, Paradex, dYdX, Jupiter, Raydium
-- [ ] Non-crypto trading connectors: OANDA, Alpaca, Zerodha (have tick_size but not wired to PrecisionCache)
+- [x] Broker/DEX connectors: Paradex, OANDA, Alpaca, Zerodha wired to PrecisionCache
+- [x] DEX with own precision systems: dYdX (MarketConfigCache), GMX (U256 on-chain), Lighter ({:.8} fixed)
+- [x] Stubs skipped: Jupiter, Raydium (place_order → UnsupportedOperation)
 
 ## Phase 1: Crypto CEX/DEX Execution Testing (Priority: HIGH)
 

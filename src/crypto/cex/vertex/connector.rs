@@ -1,3 +1,4 @@
+// NOTE: Vertex Protocol shut down August 14, 2025. This connector is deprecated.
 //! # Vertex Protocol Connector
 //!
 //! ⚠️ **IMPORTANT: SERVICE PERMANENTLY SHUT DOWN** ⚠️

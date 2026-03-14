@@ -36,7 +36,7 @@ use crate::core::{
 };
 
 #[cfg(feature = "starknet")]
-use starknet_crypto::{sign, get_public_key, FieldElement};
+use starknet_crypto::{sign, get_public_key, rfc6979_generate_k, FieldElement};
 
 /// JWT lifetime in seconds (Paradex tokens expire after 5 minutes)
 const JWT_LIFETIME_SECS: u64 = 300;
@@ -266,11 +266,12 @@ impl ParadexAuth {
     /// - `PARADEX-STARKNET-SIGNATURE: [{r_hex}, {s_hex}]`
     /// - `PARADEX-TIMESTAMP: {timestamp_secs}`
     ///
-    /// # Warning on nonce `k`
+    /// # Nonce generation
     ///
-    /// This implementation uses a fixed `k = 1` for demonstration only.
-    /// Production code must use RFC 6979 deterministic nonce generation to
-    /// avoid catastrophic private key leakage from nonce reuse.
+    /// Uses RFC 6979 deterministic nonce derivation via `rfc6979_generate_k`.
+    /// This produces a unique, unpredictable `k` per (private_key, message) pair
+    /// without requiring an external RNG, eliminating the private key leakage risk
+    /// that a reused or predictable `k` would cause.
     #[cfg(feature = "starknet")]
     pub fn sign_auth_request(&self, timestamp: u64) -> ExchangeResult<(String, String)> {
         let private_key_hex = self.private_key.as_ref().ok_or_else(|| {
@@ -290,9 +291,13 @@ impl ParadexAuth {
         // Build the message to sign (timestamp-based)
         let message = FieldElement::from(timestamp);
 
-        // Sign with StarkNet ECDSA
-        // WARNING: k = 1 is NOT safe for production — use RFC 6979 deterministic nonces.
-        let k = FieldElement::from(1u64);
+        // Generate a secure deterministic nonce using RFC 6979.
+        // This derives k from (private_key, message_hash) deterministically,
+        // so k is unique per message and never requires a random source.
+        // Passing `None` as seed uses the standard RFC 6979 derivation.
+        let k = rfc6979_generate_k(&message, &private_key, None);
+
+        // Sign with StarkNet ECDSA using the RFC 6979 nonce
         let signature = sign(&private_key, &message, &k)
             .map_err(|e| ExchangeError::Auth(format!("StarkNet sign failed: {}", e)))?;
 

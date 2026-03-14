@@ -20,11 +20,24 @@
 //! - **EC Private Key**: PEM-encoded EC private key (not simple API secret)
 //! - **2-minute expiration**: JWTs expire after 120 seconds
 //! - **Nonce required**: Random 16-byte hex string for replay protection
+//!
+//! ## Manual JWT construction
+//!
+//! `jsonwebtoken::Header` does not support arbitrary custom fields, so the nonce
+//! cannot be inserted via that API.  Instead the JWT is built by hand:
+//!
+//! 1. Serialise the header (including `nonce`) to JSON, then base64url-encode.
+//! 2. Serialise the claims to JSON, then base64url-encode.
+//! 3. Sign `header_b64 + "." + claims_b64` with ECDSA P-256 / SHA-256 via `ring`.
+//! 4. Concatenate all three parts with `.` separators.
 
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use base64::engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD};
+use base64::Engine as _;
+use ring::rand::SystemRandom;
+use ring::signature::{EcdsaKeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
 use serde::{Deserialize, Serialize};
 use rand::Rng;
 
@@ -35,24 +48,21 @@ use crate::core::Credentials;
 pub struct CoinbaseAuth {
     /// API key name (e.g., "organizations/{org_id}/apiKeys/{key_id}")
     api_key_name: String,
-    /// EC private key (PEM format)
-    _private_key_pem: String,
-    /// Encoding key for JWT signing
-    encoding_key: EncodingKey,
+    /// Raw PKCS#8 DER bytes of the EC private key (used by `ring` for signing)
+    pkcs8_der: Vec<u8>,
 }
 
-/// JWT header claims for Coinbase
+/// JWT header for Coinbase — includes `nonce` which `jsonwebtoken::Header` cannot carry
 #[derive(Debug, Serialize, Deserialize)]
-#[allow(dead_code)]
-struct JwtHeader {
-    /// Algorithm (always "ES256")
-    alg: String,
-    /// Token type (always "JWT")
-    typ: String,
+struct CoinbaseJwtHeader<'a> {
+    /// Algorithm — always "ES256"
+    alg: &'a str,
+    /// Token type — always "JWT"
+    typ: &'a str,
     /// API key identifier
-    kid: String,
-    /// Random nonce (16 bytes hex)
-    nonce: String,
+    kid: &'a str,
+    /// Random nonce (16 bytes as lowercase hex) for replay protection
+    nonce: &'a str,
 }
 
 /// JWT payload claims for Coinbase
@@ -77,23 +87,45 @@ impl CoinbaseAuth {
     ///
     /// * `credentials` - Credentials with:
     ///   - `api_key`: API key name (e.g., "organizations/{org_id}/apiKeys/{key_id}")
-    ///   - `api_secret`: EC private key in PEM format
+    ///   - `api_secret`: EC private key in PEM format (PKCS#8)
     ///
     /// # Errors
     ///
-    /// Returns error if private key is invalid or cannot be loaded
+    /// Returns error if private key is invalid or cannot be parsed.
     pub fn new(credentials: &Credentials) -> Result<Self, String> {
-        let encoding_key = EncodingKey::from_ec_pem(credentials.api_secret.as_bytes())
-            .map_err(|e| format!("Invalid EC private key: {}", e))?;
+        // Decode PKCS#8 DER from PEM manually — strip the BEGIN/END header lines,
+        // concatenate the base64-encoded body, then standard-base64-decode.
+        // This avoids relying on jsonwebtoken::EncodingKey::inner() which is pub(crate).
+        let pkcs8_der = Self::pem_to_der(credentials.api_secret.as_str())?;
+
+        // Validate that ring can load the key before storing it.
+        let rng = SystemRandom::new();
+        EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &pkcs8_der, &rng)
+            .map_err(|e| format!("Invalid EC private key (ring): {}", e))?;
 
         Ok(Self {
             api_key_name: credentials.api_key.clone(),
-            _private_key_pem: credentials.api_secret.clone(),
-            encoding_key,
+            pkcs8_der,
         })
     }
 
-    /// Generate random 16-byte nonce
+    /// Decode a PEM-encoded key to raw DER bytes.
+    ///
+    /// Supports "PRIVATE KEY" (PKCS#8) and "EC PRIVATE KEY" (SEC1/PKCS#1 EC).
+    /// Strips the `-----BEGIN ...-----` / `-----END ...-----` lines and
+    /// base64-decodes the body.
+    fn pem_to_der(pem: &str) -> Result<Vec<u8>, String> {
+        let body: String = pem
+            .lines()
+            .filter(|l| !l.starts_with("-----"))
+            .collect::<Vec<_>>()
+            .join("");
+        BASE64_STANDARD
+            .decode(body.as_bytes())
+            .map_err(|e| format!("Failed to decode PEM body: {}", e))
+    }
+
+    /// Generate random 16-byte nonce as lowercase hex
     fn generate_nonce() -> String {
         let mut rng = rand::thread_rng();
         let bytes: Vec<u8> = (0..16).map(|_| rng.gen()).collect();
@@ -108,67 +140,75 @@ impl CoinbaseAuth {
             .as_secs()
     }
 
-    /// Build JWT for request
+    /// Build a Coinbase JWT manually so that `nonce` is present in the header.
+    ///
+    /// The `jsonwebtoken` crate's `Header` struct does not support arbitrary
+    /// extra fields, so we construct the three JWT segments by hand:
+    ///
+    /// ```text
+    /// jwt = base64url(header_json) + "." + base64url(claims_json) + "." + base64url(sig)
+    /// ```
+    ///
+    /// The signature covers `header_b64 + "." + claims_b64` and is produced with
+    /// ECDSA P-256 + SHA-256 via the `ring` crate.
     ///
     /// # Arguments
     ///
     /// * `method` - HTTP method ("GET", "POST", etc.)
-    /// * `host` - API hostname (e.g., "api.coinbase.com")
-    /// * `path` - Request path (e.g., "/api/v3/brokerage/accounts")
+    /// * `host`   - API hostname (e.g., "api.coinbase.com")
+    /// * `path`   - Request path (e.g., "/api/v3/brokerage/accounts")
     ///
     /// # URI Format
     ///
-    /// The URI field in JWT payload is formatted as:
-    /// `"{METHOD} {HOST}{PATH}"`
-    ///
-    /// **Important**: No "https://" prefix, no query string
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let jwt = auth.build_jwt("GET", "api.coinbase.com", "/api/v3/brokerage/accounts")?;
-    /// // URI will be: "GET api.coinbase.com/api/v3/brokerage/accounts"
-    /// ```
+    /// `"{METHOD} {HOST}{PATH}"` — no scheme, no query string.
     pub fn build_jwt(&self, method: &str, host: &str, path: &str) -> Result<String, String> {
         let now = Self::current_timestamp();
         let nonce = Self::generate_nonce();
 
-        // Build JWT header
-        let mut header = Header::new(Algorithm::ES256);
-        header.kid = Some(self.api_key_name.clone());
-        header.typ = Some("JWT".to_string());
+        // --- 1. Header (with nonce) ---
+        let header = CoinbaseJwtHeader {
+            alg: "ES256",
+            typ: "JWT",
+            kid: &self.api_key_name,
+            nonce: &nonce,
+        };
+        let header_json = serde_json::to_vec(&header)
+            .map_err(|e| format!("Failed to serialise JWT header: {}", e))?;
+        let header_b64 = URL_SAFE_NO_PAD.encode(&header_json);
 
-        // Add nonce to header (custom field)
-        // Note: jsonwebtoken crate doesn't directly support custom header fields,
-        // so we'll use a workaround with serde_json
-        let header_json = serde_json::json!({
-            "alg": "ES256",
-            "typ": "JWT",
-            "kid": self.api_key_name.clone(),
-            "nonce": nonce,
-        });
-
-        // Build JWT payload
+        // --- 2. Claims ---
         let uri = format!("{} {}{}", method.to_uppercase(), host, path);
         let claims = JwtClaims {
             sub: self.api_key_name.clone(),
             iss: "cdp".to_string(),
             nbf: now,
-            exp: now + 120, // 2 minutes expiration
+            exp: now + 120,
             uri,
         };
+        let claims_json = serde_json::to_vec(&claims)
+            .map_err(|e| format!("Failed to serialise JWT claims: {}", e))?;
+        let claims_b64 = URL_SAFE_NO_PAD.encode(&claims_json);
 
-        // Note: jsonwebtoken doesn't support custom header fields (like nonce)
-        // Coinbase requires nonce in header, so we encode the standard way
-        // The nonce is generated but not added to the JWT for now
-        // If Coinbase strictly requires it, we'll need manual JWT construction
-        let token = encode(&header, &claims, &self.encoding_key)
-            .map_err(|e| format!("Failed to encode JWT: {}", e))?;
+        // --- 3. Signing input ---
+        let signing_input = format!("{}.{}", header_b64, claims_b64);
 
-        // Suppress unused variable warning
-        let _ = header_json;
+        // --- 4. ECDSA P-256 / SHA-256 signature via ring ---
+        let rng = SystemRandom::new();
+        let key_pair = EcdsaKeyPair::from_pkcs8(
+            &ECDSA_P256_SHA256_FIXED_SIGNING,
+            &self.pkcs8_der,
+            &rng,
+        )
+        .map_err(|e| format!("Failed to load signing key: {}", e))?;
 
-        Ok(token)
+        let signature = key_pair
+            .sign(&rng, signing_input.as_bytes())
+            .map_err(|e| format!("ECDSA signing failed: {}", e))?;
+
+        let sig_b64 = URL_SAFE_NO_PAD.encode(signature.as_ref());
+
+        // --- 5. Assemble ---
+        Ok(format!("{}.{}", signing_input, sig_b64))
     }
 
     /// Build JWT for WebSocket connection
@@ -232,19 +272,6 @@ impl CoinbaseAuth {
     }
 }
 
-// Note: Manual JWT construction with nonce in header
-//
-// If the jsonwebtoken crate doesn't properly support custom header fields,
-// we may need to manually construct the JWT. Here's the approach:
-//
-// 1. Encode header JSON with nonce: base64url(header_json)
-// 2. Encode payload JSON: base64url(payload_json)
-// 3. Create signing input: header_b64 + "." + payload_b64
-// 4. Sign with ES256: signature = ECDSA_sign(signing_input, private_key)
-// 5. Encode signature: signature_b64 = base64url(signature)
-// 6. Final JWT: header_b64 + "." + payload_b64 + "." + signature_b64
-//
-// This will be implemented if the standard approach fails during testing.
 
 #[cfg(test)]
 mod tests {

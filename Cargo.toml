@@ -72,6 +72,9 @@ urlencoding = "2.1"
 
 # JWT (for Coinbase authentication)
 jsonwebtoken = "9.3"
+# ring: explicit dep for manual JWT signing (Coinbase nonce-in-header);
+# already a transitive dep via jsonwebtoken, pinned to the same major version
+ring = "0.17"
 rand = "0.8"
 
 # Base58 encoding (for Raydium pubkey parsing)

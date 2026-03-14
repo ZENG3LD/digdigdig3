@@ -15,7 +15,12 @@
 //! - 65 bytes: r (32) + s (32) + v (1)
 //! - v = recovery_id + 27
 
+// NOTE: Vertex Protocol shut down August 14, 2025. This connector is deprecated.
+// The ethers imports are gated behind the non-existent `vertex-legacy` feature so
+// the module compiles cleanly without the ethers crate.
+#[cfg(feature = "vertex-legacy")]
 use ethers::signers::{LocalWallet, Signer};
+#[cfg(feature = "vertex-legacy")]
 use ethers::types::transaction::eip712::{Eip712, TypedData};
 use serde_json::{json, Value};
 

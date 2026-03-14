@@ -70,6 +70,7 @@ mod auth;
 mod parser;
 mod connector;
 mod websocket;
+pub mod crypto;
 
 pub use endpoints::{LighterEndpoint, LighterUrls, format_symbol, normalize_symbol, map_kline_interval};
 pub use auth::LighterAuth;

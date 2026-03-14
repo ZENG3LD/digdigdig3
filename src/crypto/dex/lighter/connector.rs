@@ -18,9 +18,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-#[cfg(feature = "k256-signing")]
-use hex;
-
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -170,8 +167,7 @@ impl LighterConnector {
         Ok(response)
     }
 
-    /// POST request (used by trading methods — called from `#[cfg(feature = "k256-signing")]` code)
-    #[cfg_attr(not(feature = "k256-signing"), allow(dead_code))]
+    /// POST request (used by authenticated trading methods)
     async fn post(
         &self,
         endpoint: LighterEndpoint,
@@ -200,7 +196,6 @@ impl LighterConnector {
     /// Lighter requires a unique, monotonically increasing nonce per transaction.
     /// The nonce is obtained from `GET /api/v1/nextNonce` and must be passed in
     /// the transaction payload before signing.
-    #[cfg_attr(not(feature = "k256-signing"), allow(dead_code))]
     async fn fetch_next_nonce(&self, account_index: u64) -> ExchangeResult<u64> {
         let mut params = HashMap::new();
         params.insert("account_index".to_string(), account_index.to_string());
@@ -433,35 +428,11 @@ impl MarketData for LighterConnector {
 #[async_trait]
 impl Trading for LighterConnector {
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
-        #[cfg(feature = "k256-signing")]
-        {
-            return self.place_order_signed(req).await;
-        }
-
-        #[cfg(not(feature = "k256-signing"))]
-        {
-            let _ = req;
-            Err(ExchangeError::UnsupportedOperation(
-                "Lighter order placement requires ECDSA transaction signing. \
-                 Enable the 'k256-signing' feature flag to activate this.".to_string()
-            ))
-        }
+        self.place_order_signed(req).await
     }
 
     async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
-        #[cfg(feature = "k256-signing")]
-        {
-            return self.cancel_order_signed(req).await;
-        }
-
-        #[cfg(not(feature = "k256-signing"))]
-        {
-            let _ = req;
-            Err(ExchangeError::UnsupportedOperation(
-                "Lighter order cancellation requires ECDSA transaction signing. \
-                 Enable the 'k256-signing' feature flag to activate this.".to_string()
-            ))
-        }
+        self.cancel_order_signed(req).await
     }
 
     async fn get_order(
@@ -470,21 +441,32 @@ impl Trading for LighterConnector {
         order_id: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Order> {
-        // Lighter does not have a GET-by-order-id endpoint for active orders.
-        // Inactive (filled/cancelled) orders can be queried via accountInactiveOrders,
-        // but that endpoint requires account_index and returns a list, not a single order.
-        // For now, query all inactive orders and find by id.
+        // Lighter has no single-order GET endpoint.  We search both active and
+        // inactive lists and return the first match.
         let account_index = self._auth.as_ref()
             .and_then(|a| a.account_index())
             .ok_or_else(|| ExchangeError::Auth(
                 "Lighter get_order requires account_index in credentials passphrase JSON.".to_string()
             ))?;
 
-        let mut params = HashMap::new();
-        params.insert("account_index".to_string(), account_index.to_string());
-        params.insert("limit".to_string(), "100".to_string());
+        // --- Check active orders first (usually the hot path) ---
+        let mut active_params = HashMap::new();
+        active_params.insert("account_index".to_string(), account_index.to_string());
 
-        let response = self.get(LighterEndpoint::AccountInactiveOrders, params, 100).await?;
+        if let Ok(response) = self.get(LighterEndpoint::AccountActiveOrders, active_params, 300).await {
+            if let Ok(active_orders) = LighterParser::parse_open_orders(&response) {
+                if let Some(order) = active_orders.into_iter().find(|o| o.id == order_id) {
+                    return Ok(order);
+                }
+            }
+        }
+
+        // --- Fall back to inactive (filled / cancelled) orders ---
+        let mut inactive_params = HashMap::new();
+        inactive_params.insert("account_index".to_string(), account_index.to_string());
+        inactive_params.insert("limit".to_string(), "100".to_string());
+
+        let response = self.get(LighterEndpoint::AccountInactiveOrders, inactive_params, 100).await?;
         let orders = LighterParser::parse_orders(&response)?;
 
         orders.into_iter()
@@ -513,11 +495,8 @@ impl Trading for LighterConnector {
             }
         }
 
-        // Auth token is currently optional on the server side per Lighter API docs
-        // (both `auth` query param and `Authorization` header are `required: false`).
-        // TODO: pass auth token once ECgFp5+Poseidon2 signing is implemented.
-
-        let response = self.get(LighterEndpoint::AccountActiveOrders, params, 300).await?;
+        // Attach auth token when available (improves rate-limit tier on the server).
+        let response = self.get_authenticated(LighterEndpoint::AccountActiveOrders, params, 300).await?;
         let orders = LighterParser::parse_open_orders(&response)?;
         Ok(orders)
     }
@@ -942,30 +921,20 @@ impl LighterConnector {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// SIGNED TRADING METHODS (k256-signing feature)
+// SIGNED TRADING METHODS (ECgFp5 + Poseidon2 native signing)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[cfg(feature = "k256-signing")]
 impl LighterConnector {
-    /// Place an order on Lighter using secp256k1 ECDSA signing (tx_type = 14).
+    /// Place an order on Lighter using ECgFp5+Poseidon2 Schnorr signing (tx_type = 14).
     ///
     /// # Flow
     ///
     /// 1. Resolve account_index and market_id from credentials / symbol.
     /// 2. Fetch the next nonce from `GET /api/v1/nextNonce`.
-    /// 3. Build the L2CreateOrder tx fields.
-    /// 4. Compute a deterministic 32-byte hash over the canonical tx payload.
-    /// 5. Sign the hash with the API key private key (secp256k1 ECDSA via k256).
-    /// 6. POST the signed payload to `POST /api/v1/sendTx`.
-    /// 7. Parse the response and return a `PlaceOrderResponse::Simple`.
-    ///
-    /// # Signing Note
-    ///
-    /// Lighter's native L2 protocol uses ECgFp5+Poseidon2 over the Goldilocks
-    /// field, not secp256k1 ECDSA. This implementation uses secp256k1 signing
-    /// as a bridge for testing and EVM-compatible tooling. The hash construction
-    /// (`build_create_order_hash`) is SHA-256 based — production use requires
-    /// porting the ECgFp5/Poseidon2 primitives from the Lighter TypeScript SDK.
+    /// 3. Build the L2CreateOrder tx fields and compute a Poseidon2 hash.
+    /// 4. Sign the 40-byte hash with the ECgFp5 Schnorr scheme.
+    /// 5. POST the signed JSON payload to `POST /api/v1/sendTx`.
+    /// 6. Parse the response and return a `PlaceOrderResponse::Simple`.
     pub(crate) async fn place_order_signed(
         &self,
         req: OrderRequest,
@@ -973,7 +942,7 @@ impl LighterConnector {
         let auth = self._auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth(
                 "Authentication required for place_order. \
-                 Provide credentials with api_key_index, account_index, and api_secret.".to_string()
+                 Provide credentials with api_key_index, account_index, and api_secret (hex 40 bytes).".to_string()
             ))?;
 
         let account_index = auth.account_index()
@@ -982,31 +951,32 @@ impl LighterConnector {
                  Example: Credentials::new(\"\", \"<private_key_hex>\").with_passphrase(r#\"{\"account_index\": 1, \"api_key_index\": 0}\"#)".to_string()
             ))?;
 
-        // Resolve market_id from the order symbol
+        // Resolve market_id (i16) from the order symbol
         let symbol_str = format_symbol(&req.symbol.base, &req.symbol.quote, req.account_type);
-        let market_id = self.get_market_id(&symbol_str, req.account_type).await?;
+        let market_id_u16 = self.get_market_id(&symbol_str, req.account_type).await?;
+        let market_index = market_id_u16 as i16;
 
-        // Fetch nonce
-        let nonce = self.fetch_next_nonce(account_index).await?;
+        // Fetch next nonce
+        let nonce = self.fetch_next_nonce(account_index).await? as i64;
 
-        // Determine order direction (Lighter: is_ask = true for sells)
+        // Determine direction
         let is_ask = matches!(req.side, crate::core::OrderSide::Sell);
 
-        // Extract price and quantity from the order type
-        let (price_str, order_type_code) = match &req.order_type {
+        // Decode order type → (price_tick: u32, order_type_code: u8)
+        // Lighter price ticks: price_tick = (f64_price * 1e8) as u32 (8 decimal places)
+        let (price_tick, order_type_code) = match &req.order_type {
             crate::core::OrderType::Limit { price } => {
-                (format!("{:.8}", price), 0u8) // 0 = limit
+                ((*price * 1e8) as u32, 0u8)   // 0 = LIMIT
             }
             crate::core::OrderType::Market => {
-                // Market orders use price = 0 on Lighter
-                ("0".to_string(), 1u8) // 1 = market
+                (0u32, 1u8)                    // 1 = MARKET
             }
             crate::core::OrderType::PostOnly { price } => {
-                (format!("{:.8}", price), 2u8) // 2 = post-only
+                ((*price * 1e8) as u32, 0u8)   // POST_ONLY is limit + TIF flag
             }
             crate::core::OrderType::Ioc { price } => {
                 let p = price.unwrap_or(0.0);
-                (format!("{:.8}", p), 3u8) // 3 = IOC
+                ((p * 1e8) as u32, 0u8)        // IOC is limit + TIF flag
             }
             _ => {
                 return Err(ExchangeError::UnsupportedOperation(
@@ -1015,43 +985,62 @@ impl LighterConnector {
             }
         };
 
-        let base_amount_str = format!("{:.8}", req.quantity);
+        // Encode base_amount as signed integer (quantity * 1e8 = units)
+        let base_amount = (req.quantity * 1e8) as i64;
 
-        // Time-in-force code (Lighter: 0=GTC, 1=IOC, 2=FOK, 3=GTB)
-        let tif_code: u8 = match req.time_in_force {
-            crate::core::TimeInForce::Gtc => 0,
-            crate::core::TimeInForce::Ioc => 1,
-            crate::core::TimeInForce::Fok => 2,
-            crate::core::TimeInForce::GoodTilBlock { .. } => 3,
-            _ => 0,
+        // Time-in-force code (Lighter: 0=IOC, 1=GTT, 2=POST_ONLY)
+        let tif_code: u8 = match &req.order_type {
+            crate::core::OrderType::PostOnly { .. } => 2,
+            crate::core::OrderType::Ioc { .. } => 0,
+            _ => match req.time_in_force {
+                crate::core::TimeInForce::Gtc => 1,
+                crate::core::TimeInForce::Ioc => 0,
+                crate::core::TimeInForce::Fok => 0,
+                _ => 1,
+            },
         };
 
-        // Build hash and sign
-        let tx_hash = auth.build_create_order_hash(
-            account_index,
-            market_id,
-            is_ask,
-            &base_amount_str,
-            &price_str,
+        // Token and order expiry timestamps in milliseconds
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+
+        let expired_at_ms = now_ms + 3_600_000;           // tx auth window: +1h
+        let order_expiry_ms = now_ms + 28 * 86_400_000;   // order GTT expiry: +28d
+
+        // Sign the create order transaction
+        let signature_b64 = auth.sign_create_order(
+            market_index,
             nonce,
+            expired_at_ms,
+            base_amount,
+            price_tick,
+            is_ask,
             order_type_code,
             tif_code,
-        );
+            false,  // reduce_only
+            0,      // trigger_price
+            order_expiry_ms,
+            None,   // client_order_index
+        )?;
 
-        let signature_bytes = auth.sign_l2_transaction(&tx_hash)?;
-        let signature_hex = hex::encode(&signature_bytes);
-
-        // Build the tx_info payload
+        // Build JSON payload
         let tx_info = serde_json::json!({
             "account_index": account_index,
-            "market_id": market_id,
+            "market_index": market_index,
             "is_ask": is_ask,
-            "base_amount": base_amount_str,
-            "price": price_str,
+            "base_amount": base_amount.to_string(),
+            "price": price_tick,
             "nonce": nonce,
+            "expired_at": expired_at_ms,
             "order_type": order_type_code,
             "time_in_force": tif_code,
-            "signature": signature_hex,
+            "reduce_only": false,
+            "trigger_price": 0,
+            "order_expiry": order_expiry_ms,
+            "client_order_index": serde_json::Value::Null,
+            "signature": signature_b64,
         });
 
         let body = serde_json::json!({
@@ -1061,15 +1050,10 @@ impl LighterConnector {
 
         let response = self.post(LighterEndpoint::SendTx, body, 100).await?;
 
-        // Parse the returned order from the response
+        // Parse the returned order_index
         let order_index = response.get("order_index")
             .and_then(|v| v.as_i64())
             .unwrap_or(0);
-
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64;
 
         let order_type_parsed = match &req.order_type {
             crate::core::OrderType::Limit { price } => crate::core::OrderType::Limit { price: *price },
@@ -1106,19 +1090,18 @@ impl LighterConnector {
         Ok(PlaceOrderResponse::Simple(order))
     }
 
-    /// Cancel an order on Lighter using secp256k1 ECDSA signing (tx_type = 15).
+    /// Cancel an order on Lighter using ECgFp5+Poseidon2 Schnorr signing (tx_type = 15).
     ///
     /// # Flow
     ///
     /// 1. Extract order_index from `CancelScope::Single { order_id }`.
     /// 2. Resolve account_index and market_id.
     /// 3. Fetch the next nonce.
-    /// 4. Build hash and sign the L2CancelOrder transaction.
+    /// 4. Sign the L2CancelOrder transaction.
     /// 5. POST to `POST /api/v1/sendTx`.
     ///
-    /// Only `CancelScope::Single` is supported — Lighter cancels one order per
-    /// signed transaction. For bulk cancellation, use `cancel_order` in a loop
-    /// or use the batch endpoint via `POST /api/v1/sendTxBatch`.
+    /// Only `CancelScope::Single` is supported — each Lighter cancel requires
+    /// one signed transaction per order.
     pub(crate) async fn cancel_order_signed(
         &self,
         req: CancelRequest,
@@ -1147,14 +1130,14 @@ impl LighterConnector {
             }
         };
 
-        let order_index: u64 = order_id_str.parse().map_err(|_| {
+        let order_index: i64 = order_id_str.parse().map_err(|_| {
             ExchangeError::InvalidRequest(format!(
                 "Lighter order_id must be a numeric order_index, got '{}'", order_id_str
             ))
         })?;
 
         // Resolve market_id from optional symbol hint
-        let market_id = if let Some(sym) = &req.symbol {
+        let market_id_u16 = if let Some(sym) = &req.symbol {
             let sym_str = format_symbol(&sym.base, &sym.quote, req.account_type);
             self.get_market_id(&sym_str, req.account_type).await?
         } else {
@@ -1164,20 +1147,33 @@ impl LighterConnector {
             ));
         };
 
-        // Fetch nonce
-        let nonce = self.fetch_next_nonce(account_index).await?;
+        let market_index = market_id_u16 as i16;
 
-        // Build hash and sign
-        let tx_hash = auth.build_cancel_order_hash(account_index, market_id, order_index, nonce);
-        let signature_bytes = auth.sign_l2_transaction(&tx_hash)?;
-        let signature_hex = hex::encode(&signature_bytes);
+        // Fetch nonce
+        let nonce = self.fetch_next_nonce(account_index).await? as i64;
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+
+        let expired_at_ms = now_ms + 3_600_000;
+
+        // Sign the cancel order transaction
+        let signature_b64 = auth.sign_cancel_order(
+            market_index,
+            nonce,
+            expired_at_ms,
+            order_index,
+        )?;
 
         let tx_info = serde_json::json!({
             "account_index": account_index,
-            "market_id": market_id,
+            "market_index": market_index,
             "order_index": order_index,
             "nonce": nonce,
-            "signature": signature_hex,
+            "expired_at": expired_at_ms,
+            "signature": signature_b64,
         });
 
         let body = serde_json::json!({
@@ -1186,11 +1182,6 @@ impl LighterConnector {
         });
 
         let _response = self.post(LighterEndpoint::SendTx, body, 100).await?;
-
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64;
 
         let symbol_str = req.symbol
             .as_ref()
@@ -1215,6 +1206,41 @@ impl LighterConnector {
             updated_at: Some(now_ms),
             time_in_force: crate::core::TimeInForce::Gtc,
         })
+    }
+
+    /// GET request with optional Authorization header.
+    ///
+    /// Generates a 1-hour auth token if credentials are available, then
+    /// makes the same GET call as the public `get()` helper.
+    async fn get_authenticated(
+        &self,
+        endpoint: LighterEndpoint,
+        params: HashMap<String, String>,
+        weight: u32,
+    ) -> ExchangeResult<Value> {
+        self.rate_limit_wait(weight).await;
+
+        let base_url = self.urls.rest_url();
+        let path = endpoint.path();
+
+        let query = if params.is_empty() {
+            String::new()
+        } else {
+            let qs: Vec<String> = params.iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect();
+            format!("?{}", qs.join("&"))
+        };
+
+        let url = format!("{}{}{}", base_url, path, query);
+
+        let headers = self._auth.as_ref()
+            .map(|a| a.make_auth_headers())
+            .unwrap_or_default();
+
+        let response = self.http.get_with_headers(&url, &HashMap::new(), &headers).await?;
+        self.check_response(&response)?;
+        Ok(response)
     }
 }
 

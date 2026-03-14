@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::core::{
-    HttpClient,
+    HttpClient, GraphQlClient,
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
@@ -45,8 +45,10 @@ use super::parser::GmxParser;
 
 /// GMX connector
 pub struct GmxConnector {
-    /// HTTP client
+    /// HTTP client for REST endpoints
     http: HttpClient,
+    /// GraphQL client for The Graph subgraph historical data queries
+    subgraph: GraphQlClient,
     /// Authentication (no-op for public REST endpoints)
     #[allow(dead_code)]
     auth: GmxAuth,
@@ -69,6 +71,15 @@ impl GmxConnector {
         let http = HttpClient::new(30_000)?; // 30 sec timeout
         let auth = GmxAuth::public();
 
+        // Build GraphQL client for The Graph subgraph (historical data).
+        // Endpoint is resolved per-chain at construction time; chain does not
+        // change after construction so a single fixed-endpoint client is fine.
+        let subgraph_url = urls.subgraph_url(&chain);
+        let subgraph = GraphQlClient::new(
+            HttpClient::new(30_000)?,
+            subgraph_url,
+        );
+
         // Conservative: 12 requests per 60 seconds (~1 req/5s)
         let rate_limiter = Arc::new(Mutex::new(
             SimpleRateLimiter::new(12, Duration::from_secs(60))
@@ -76,6 +87,7 @@ impl GmxConnector {
 
         Ok(Self {
             http,
+            subgraph,
             auth,
             urls,
             chain,
@@ -175,6 +187,40 @@ impl GmxConnector {
         }
 
         Ok(response)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SUBGRAPH QUERIES (The Graph — historical data)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Query the GMX V2 The Graph subgraph for historical on-chain data.
+    ///
+    /// The subgraph endpoint is chosen at construction time based on the chain
+    /// (`arbitrum` or `avalanche`).  All GMX subgraph queries are public —
+    /// no API key is required.
+    ///
+    /// # Parameters
+    /// - `query`     — GraphQL query string
+    /// - `variables` — optional variables object
+    ///
+    /// # Example
+    /// ```ignore
+    /// let connector = GmxConnector::arbitrum().await?;
+    ///
+    /// let result = connector.query_subgraph(
+    ///     r#"{ orders(first: 10, orderBy: createdTxn__timestamp, orderDirection: desc) {
+    ///         id account market sizeDeltaUsd
+    ///     }}"#,
+    ///     None,
+    /// ).await?;
+    /// ```
+    pub async fn query_subgraph(
+        &self,
+        query: &str,
+        variables: Option<Value>,
+    ) -> ExchangeResult<Value> {
+        self.rate_limit_wait().await;
+        self.subgraph.query(query, variables).await
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

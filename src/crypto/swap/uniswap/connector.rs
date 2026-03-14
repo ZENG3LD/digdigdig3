@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::core::{
-    HttpClient, Credentials,
+    HttpClient, GraphQlClient, Credentials,
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
@@ -43,8 +43,10 @@ use super::parser::UniswapParser;
 
 /// Uniswap DEX connector
 pub struct UniswapConnector {
-    /// HTTP client
+    /// HTTP client (REST + JSON-RPC)
     http: HttpClient,
+    /// GraphQL client for The Graph subgraph queries
+    graphql: GraphQlClient,
     /// Authentication (optional for public endpoints)
     auth: UniswapAuth,
     /// URLs (mainnet/testnet)
@@ -72,6 +74,16 @@ impl UniswapConnector {
             UniswapAuth::public()
         };
 
+        // Build GraphQL client for The Graph subgraph.
+        // The base subgraph URL is the public gateway; when an API key is set,
+        // `auth.subgraph_url()` returns a key-injected URL used at query time.
+        // We use the public base URL here so the GraphQlClient can be constructed
+        // once; per-query URL override goes via `query_subgraph()`.
+        let graphql = GraphQlClient::new(
+            HttpClient::new(30_000)?,
+            urls.subgraph_v3,
+        );
+
         // Initialize rate limiter: 720 requests per 60 seconds
         let rate_limiter = Arc::new(Mutex::new(
             WeightRateLimiter::new(720, Duration::from_secs(60))
@@ -79,6 +91,7 @@ impl UniswapConnector {
 
         Ok(Self {
             http,
+            graphql,
             auth,
             urls,
             testnet,
@@ -136,19 +149,45 @@ impl UniswapConnector {
         Ok(response)
     }
 
-    /// POST GraphQL query to The Graph Subgraph
+    /// POST GraphQL query to The Graph Subgraph via `GraphQlClient`.
+    ///
+    /// Uses the pre-built `self.graphql` client (pointing at the public base URL).
+    /// When a The Graph API key is configured in `self.auth`, use
+    /// `query_subgraph()` instead — it resolves the key-injected URL per call.
     async fn post_subgraph_query(&self, query: &str) -> ExchangeResult<Value> {
         self.rate_limit_wait(1).await;
 
-        let base_url = self.auth.subgraph_url(self.urls.subgraph_v3)?;
+        let headers = UniswapAuth::public_headers();
+        let response = self.graphql.query_with_headers(query, None, headers).await?;
+        UniswapParser::check_response(&response)?;
 
-        let body = json!({
-            "query": query
-        });
+        Ok(response)
+    }
 
+    /// Query The Graph subgraph with optional GraphQL variables.
+    ///
+    /// Resolves the subgraph URL at call time so that a configured The Graph
+    /// API key is injected into the URL path.  Falls back to the public
+    /// gateway when no key is set.
+    ///
+    /// Prefer this over `post_subgraph_query` when using GraphQL variables.
+    pub async fn query_subgraph(
+        &self,
+        query: &str,
+        variables: Option<Value>,
+    ) -> ExchangeResult<Value> {
+        self.rate_limit_wait(1).await;
+
+        // Resolve endpoint with optional API key injected into the URL
+        let endpoint = self.auth.subgraph_url(self.urls.subgraph_v3)?;
         let headers = UniswapAuth::public_headers();
 
-        let response = self.http.post(&base_url, &body, &headers).await?;
+        // Temporarily delegate through HttpClient to hit the key-injected URL
+        let body = json!({
+            "query": query,
+            "variables": variables.unwrap_or(serde_json::json!({}))
+        });
+        let response = self.http.post(&endpoint, &body, &headers).await?;
         UniswapParser::check_response(&response)?;
 
         Ok(response)

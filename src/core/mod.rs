@@ -11,9 +11,9 @@
 //! │  │     TRAITS       │     │      UTILS       │     │     TRANSPORT       │ │
 //! │  │                  │     │                  │     │                     │ │
 //! │  │ MarketData       │     │ crypto:          │     │ HttpClient          │ │
-//! │  │ Trading          │     │   hmac_sha256    │     │ WebSocket           │ │
-//! │  │ Account          │     │   hmac_sha512    │     │                     │ │
-//! │  │ Positions        │     │                  │     │                     │ │
+//! │  │ Trading          │     │   hmac_sha256    │     │ GraphQlClient       │ │
+//! │  │ Account          │     │   hmac_sha512    │     │ WebSocket           │ │
+//! │  │ Positions        │     │                  │     │ GrpcClient (grpc)   │ │
 //! │  │ ExchangeAuth     │     │ encoding:        │     │                     │ │
 //! │  │                  │     │   encode_base64  │     │                     │ │
 //! │  │ ────────────────│     │   encode_hex     │     │                     │ │
@@ -69,6 +69,9 @@ pub mod utils;
 pub mod http;
 pub mod websocket;
 
+#[cfg(feature = "grpc")]
+pub mod grpc;
+
 // Re-exports types
 pub use types::{
     // Common
@@ -118,3 +121,4 @@ pub use utils::{
 
 // Re-exports transport
 pub use http::HttpClient;
+pub use http::GraphQlClient;

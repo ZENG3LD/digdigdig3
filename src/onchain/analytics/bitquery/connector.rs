@@ -20,10 +20,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::core::{
-    HttpClient, Credentials,
+    HttpClient, GraphQlClient, Credentials,
     ExchangeId, AccountType, Symbol,
     ExchangeError, ExchangeResult,
     Price, Quantity, Kline, Ticker, OrderBook,
@@ -55,8 +55,11 @@ use super::parser::{
 
 /// Bitquery connector
 pub struct BitqueryConnector {
-    /// HTTP client
+    /// HTTP client (kept for potential future REST endpoints)
+    #[allow(dead_code)]
     http: HttpClient,
+    /// GraphQL client — primary transport for all Bitquery queries
+    graphql: GraphQlClient,
     /// Authentication
     auth: BitqueryAuth,
     /// URLs
@@ -86,6 +89,14 @@ impl BitqueryConnector {
         let urls = BitqueryUrls::default();
         let http = HttpClient::new(30_000)?; // 30 sec timeout
 
+        // Build GraphQL client for Bitquery streaming endpoint.
+        // Auth headers are injected per-query via `query_with_headers` because
+        // OAuth tokens may be refreshed without rebuilding the connector.
+        let graphql = GraphQlClient::new(
+            HttpClient::new(30_000)?,
+            urls.graphql,
+        );
+
         // Initialize rate limiter: 10 requests per 60 seconds (free tier)
         let rate_limiter = Arc::new(Mutex::new(
             SimpleRateLimiter::new(10, Duration::from_secs(60))
@@ -93,6 +104,7 @@ impl BitqueryConnector {
 
         Ok(Self {
             http,
+            graphql,
             auth,
             urls,
             rate_limiter,
@@ -136,25 +148,21 @@ impl BitqueryConnector {
         }
     }
 
-    /// Execute GraphQL query
+    /// Execute GraphQL query via `GraphQlClient`.
+    ///
+    /// Auth headers (`Authorization: Bearer …`) are built from `self.auth`
+    /// and merged per-request so that OAuth token rotation does not require
+    /// rebuilding the connector.
     async fn execute_query(&self, query: &str) -> ExchangeResult<Value> {
         // Wait for rate limit
         self.rate_limit_wait().await;
 
-        let url = self.urls.graphql;
-
-        // Add auth headers
+        // Build auth headers for this request
         let mut headers = HashMap::new();
         self.auth.sign_headers(&mut headers);
 
-        // Build request body
-        let body = json!({
-            "query": query
-        });
-
-        let response = self.http.post(url, &body, &headers).await?;
-
-        Ok(response)
+        // Delegate to GraphQlClient — handles body envelope and retry logic
+        self.graphql.query_with_headers(query, None, headers).await
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

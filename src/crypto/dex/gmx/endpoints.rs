@@ -17,6 +17,10 @@ pub struct GmxUrls {
     pub avalanche_rest: &'static str,
     pub avalanche_fallback1: &'static str,
     pub avalanche_fallback2: &'static str,
+    /// The Graph subgraph for GMX V2 on Arbitrum (historical data)
+    pub arbitrum_subgraph: &'static str,
+    /// The Graph subgraph for GMX V2 on Avalanche (historical data)
+    pub avalanche_subgraph: &'static str,
 }
 
 impl GmxUrls {
@@ -28,6 +32,9 @@ impl GmxUrls {
         avalanche_rest: "https://avalanche-api.gmxinfra.io",
         avalanche_fallback1: "https://avalanche-api-fallback.gmxinfra.io",
         avalanche_fallback2: "https://avalanche-api-fallback2.gmxinfra.io",
+        // GMX V2 subgraphs on The Graph (public, no API key required)
+        arbitrum_subgraph: "https://subgraph.satsuma-prod.com/3b2ced13c8d9/gmx/synthetics-arbitrum-stats/api",
+        avalanche_subgraph: "https://subgraph.satsuma-prod.com/3b2ced13c8d9/gmx/synthetics-avalanche-stats/api",
     };
 
     /// Get REST base URL for chain
@@ -36,6 +43,17 @@ impl GmxUrls {
             "arbitrum" | "arb" => self.arbitrum_rest,
             "avalanche" | "avax" => self.avalanche_rest,
             _ => self.arbitrum_rest, // Default to Arbitrum
+        }
+    }
+
+    /// Get The Graph subgraph URL for chain
+    ///
+    /// Returns the GraphQL endpoint for historical GMX V2 data on the given chain.
+    pub fn subgraph_url(&self, chain: &str) -> &str {
+        match chain.to_lowercase().as_str() {
+            "arbitrum" | "arb" => self.arbitrum_subgraph,
+            "avalanche" | "avax" => self.avalanche_subgraph,
+            _ => self.arbitrum_subgraph, // Default to Arbitrum
         }
     }
 

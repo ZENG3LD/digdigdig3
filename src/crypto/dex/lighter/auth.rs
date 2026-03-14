@@ -34,6 +34,9 @@ use crate::core::{
     Credentials, ExchangeResult, ExchangeError,
 };
 
+#[cfg(feature = "k256-signing")]
+use k256::ecdsa::{SigningKey, Signature, signature::Signer};
+
 /// Lighter authentication handler
 #[derive(Clone)]
 pub struct LighterAuth {
@@ -141,6 +144,41 @@ impl LighterAuth {
              ECgFp5 signing from the Lighter TypeScript SDK."
                 .to_string(),
         ))
+    }
+
+    /// Sign a transaction hash using secp256k1 ECDSA (`k256-signing` feature).
+    ///
+    /// # Note on Lighter's actual cryptographic stack
+    ///
+    /// Lighter's native signing uses **ECgFp5 + Poseidon2** over the Goldilocks field,
+    /// which is incompatible with standard secp256k1 ECDSA. This method provides
+    /// secp256k1 signing infrastructure for potential L1/EVM compatibility layers
+    /// or tooling that bridges Lighter via an Ethereum-compatible intermediary.
+    ///
+    /// For production Lighter L2 order signing (`tx_type = 14/15`), use
+    /// `sign_transaction()` once a compatible ECgFp5 backend is integrated.
+    ///
+    /// # Arguments
+    ///
+    /// * `tx_hash` — 32-byte hash to sign (must be the pre-hashed message)
+    ///
+    /// # Returns
+    ///
+    /// Fixed-size secp256k1 ECDSA signature bytes (64 bytes, r||s compact form).
+    #[cfg(feature = "k256-signing")]
+    pub fn sign_l2_transaction(&self, tx_hash: &[u8; 32]) -> ExchangeResult<Vec<u8>> {
+        let private_key_hex = self._api_key_private.as_ref().ok_or_else(|| {
+            ExchangeError::Auth("No private key configured for secp256k1 signing".to_string())
+        })?;
+
+        let private_key_bytes = hex::decode(private_key_hex)
+            .map_err(|e| ExchangeError::Auth(format!("Invalid private key hex: {}", e)))?;
+
+        let signing_key = SigningKey::from_bytes((&private_key_bytes[..]).into())
+            .map_err(|e| ExchangeError::Auth(format!("Invalid secp256k1 key: {}", e)))?;
+
+        let signature: Signature = signing_key.sign(tx_hash);
+        Ok(signature.to_bytes().to_vec())
     }
 
     /// Get account index

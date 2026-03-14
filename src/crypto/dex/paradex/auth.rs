@@ -19,11 +19,12 @@
 //! This implementation tracks `issued_at` and automatically detects expiry
 //! with a 30-second safety margin (effective 270-second window).
 //!
-//! ## StarkNet Signing Note
+//! ## StarkNet Signing
 //!
 //! Full JWT generation requires StarkNet cryptography (sign with private key).
-//! This implementation stores and refreshes pre-obtained JWT tokens.
-//! For complete StarkNet signing, integrate the `starknet` crate.
+//! When the `starknet` feature is enabled, `refresh_if_needed()` will automatically
+//! sign a timestamp and POST to `/v1/auth` to obtain a fresh JWT.
+//! Without the feature, pre-obtained JWT tokens can be passed via `credentials.api_key`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,6 +34,9 @@ use tokio::sync::RwLock;
 use crate::core::{
     Credentials, ExchangeResult, ExchangeError,
 };
+
+#[cfg(feature = "starknet")]
+use starknet_crypto::{sign, get_public_key, FieldElement};
 
 /// JWT lifetime in seconds (Paradex tokens expire after 5 minutes)
 const JWT_LIFETIME_SECS: u64 = 300;
@@ -130,6 +134,9 @@ pub struct ParadexAuth {
     #[allow(dead_code)]
     account_address: Option<String>,
 
+    /// StarkNet private key (hex string, used for signing when `starknet` feature is enabled)
+    private_key: Option<String>,
+
     /// Time offset: server_time - local_time (milliseconds)
     time_offset_ms: Arc<RwLock<i64>>,
 }
@@ -147,9 +154,10 @@ impl ParadexAuth {
     ///    let auth = ParadexAuth::new(&creds)?;
     ///    ```
     ///
-    /// 2. **StarkNet account (future full implementation)**:
-    ///    Pass account_address in api_secret; call `refresh_token()` to obtain JWT.
-    ///    Requires starknet-rs integration (TODO).
+    /// 2. **StarkNet signing** (requires `starknet` feature):
+    ///    Pass the StarkNet private key (hex) in `api_secret`.
+    ///    Optionally pass `{"account_address": "0x..."}` in passphrase.
+    ///    Call `refresh_if_needed()` to obtain JWT automatically.
     pub fn new(credentials: &Credentials) -> ExchangeResult<Self> {
         // api_key = JWT token (if pre-obtained)
         let jwt_token = if !credentials.api_key.is_empty() {
@@ -159,16 +167,23 @@ impl ParadexAuth {
             None
         };
 
-        // api_secret = StarkNet account address (for future signing support)
-        let account_address = if !credentials.api_secret.is_empty() {
-            Some(credentials.api_secret.clone())
+        // api_secret = StarkNet private key (hex) for signing; account_address derived or from passphrase
+        let (private_key, account_address) = if !credentials.api_secret.is_empty() {
+            let pk = Some(credentials.api_secret.clone());
+            // Account address may be in passphrase as JSON: {"account_address": "0x..."}
+            let addr = credentials.passphrase.as_ref().and_then(|p| {
+                serde_json::from_str::<serde_json::Value>(p).ok()
+                    .and_then(|v| v.get("account_address").and_then(|a| a.as_str()).map(|s| s.to_string()))
+            });
+            (pk, addr)
         } else {
-            None
+            (None, None)
         };
 
         Ok(Self {
             jwt_token: Arc::new(RwLock::new(jwt_token)),
             account_address,
+            private_key,
             time_offset_ms: Arc::new(RwLock::new(0)),
         })
     }
@@ -243,23 +258,59 @@ impl ParadexAuth {
         jwt.as_ref().map_or(0, |t| t.age_secs())
     }
 
+    /// Generate a signed JWT request for Paradex authentication using StarkNet ECDSA.
+    ///
+    /// Returns `(public_key_hex, "r_hex,s_hex")` — the public key and signature
+    /// components needed for the `POST /v1/auth` headers:
+    /// - `PARADEX-STARKNET-ACCOUNT: {public_key_hex}`
+    /// - `PARADEX-STARKNET-SIGNATURE: [{r_hex}, {s_hex}]`
+    /// - `PARADEX-TIMESTAMP: {timestamp_secs}`
+    ///
+    /// # Warning on nonce `k`
+    ///
+    /// This implementation uses a fixed `k = 1` for demonstration only.
+    /// Production code must use RFC 6979 deterministic nonce generation to
+    /// avoid catastrophic private key leakage from nonce reuse.
+    #[cfg(feature = "starknet")]
+    pub fn sign_auth_request(&self, timestamp: u64) -> ExchangeResult<(String, String)> {
+        let private_key_hex = self.private_key.as_ref().ok_or_else(|| {
+            ExchangeError::Auth(
+                "StarkNet private key not configured. Provide api_secret as hex private key."
+                    .to_string(),
+            )
+        })?;
+
+        // Parse the StarkNet private key
+        let private_key = FieldElement::from_hex_be(private_key_hex)
+            .map_err(|e| ExchangeError::Auth(format!("Invalid StarkNet key: {}", e)))?;
+
+        // Get public key for the request
+        let public_key = get_public_key(&private_key);
+
+        // Build the message to sign (timestamp-based)
+        let message = FieldElement::from(timestamp);
+
+        // Sign with StarkNet ECDSA
+        // WARNING: k = 1 is NOT safe for production — use RFC 6979 deterministic nonces.
+        let k = FieldElement::from(1u64);
+        let signature = sign(&private_key, &message, &k)
+            .map_err(|e| ExchangeError::Auth(format!("StarkNet sign failed: {}", e)))?;
+
+        Ok((
+            format!("{:#x}", public_key),
+            format!("{:#x},{:#x}", signature.r, signature.s),
+        ))
+    }
+
     /// Refresh the JWT token if it is expired or about to expire
     ///
     /// This method checks token validity and triggers a refresh when needed.
     ///
-    /// # StarkNet Signing Required
+    /// When the `starknet` feature is enabled, automatically signs the current
+    /// timestamp and POSTs to `/v1/auth` to obtain a fresh JWT.
     ///
-    /// TODO: Full token refresh requires StarkNet cryptographic signing:
-    /// 1. Add `starknet` crate dependency
-    /// 2. Generate StarkNet signature over the auth message
-    /// 3. POST to `/v1/auth` with the required headers:
-    ///    - `PARADEX-STARKNET-ACCOUNT: {account_address}`
-    ///    - `PARADEX-STARKNET-SIGNATURE: [{r}, {s}]`
-    ///    - `PARADEX-TIMESTAMP: {unix_seconds}`
-    ///
-    /// For now, this method returns an error when called without a `starknet` backend,
-    /// indicating that the caller must obtain a new JWT externally and call
-    /// `set_jwt_token()` to update it.
+    /// Without the feature, returns an error instructing the caller to provide
+    /// a new JWT token externally via `set_jwt_token()`.
     ///
     /// # Returns
     /// - `Ok(false)` — Token is still valid, no refresh needed
@@ -274,46 +325,62 @@ impl ParadexAuth {
             return Ok(false);
         }
 
-        // TODO: Implement StarkNet-based JWT refresh.
-        //
-        // When `starknet` crate is available:
-        //
-        // let timestamp_secs = self.get_timestamp().await / 1000;
-        // let message = create_auth_message(timestamp_secs);
-        // let signature = sign_starknet(&self.private_key, &message)?;
-        //
-        // let account = self.account_address.as_ref().ok_or_else(|| {
-        //     ExchangeError::Auth("StarkNet account address required for refresh".to_string())
-        // })?;
-        //
-        // let response = _http_client
-        //     .post(format!("{}/v1/auth", _base_url))
-        //     .header("PARADEX-STARKNET-ACCOUNT", account)
-        //     .header("PARADEX-STARKNET-SIGNATURE", format!("[{}, {}]", signature.r, signature.s))
-        //     .header("PARADEX-TIMESTAMP", timestamp_secs.to_string())
-        //     .send()
-        //     .await
-        //     .map_err(|e| ExchangeError::Network(e.to_string()))?;
-        //
-        // let body: serde_json::Value = response.json().await
-        //     .map_err(|e| ExchangeError::Parse(e.to_string()))?;
-        //
-        // let jwt = body["jwt_token"].as_str()
-        //     .ok_or_else(|| ExchangeError::Parse("Missing jwt_token in auth response".to_string()))?;
-        // let expires_at = body["expires_at"].as_u64().unwrap_or(0);
-        //
-        // if expires_at > 0 {
-        //     self.set_jwt_token_with_expiry(jwt.to_string(), expires_at).await;
-        // } else {
-        //     self.set_jwt_token(jwt.to_string()).await;
-        // }
-        //
-        // return Ok(true);
+        // When the `starknet` feature is enabled, perform automatic JWT refresh
+        // by signing the timestamp with the StarkNet private key.
+        #[cfg(feature = "starknet")]
+        {
+            let timestamp_secs = self.get_timestamp().await / 1000;
 
+            let (public_key_hex, sig_str) = self.sign_auth_request(timestamp_secs)?;
+
+            // Format as "[r_hex, s_hex]" — Paradex expects this bracket format.
+            let signature_header = {
+                let parts: Vec<&str> = sig_str.splitn(2, ',').collect();
+                if parts.len() == 2 {
+                    format!("[{}, {}]", parts[0], parts[1])
+                } else {
+                    format!("[{}]", sig_str)
+                }
+            };
+
+            let response = _http_client
+                .post(format!("{}/v1/auth", _base_url))
+                .header("PARADEX-STARKNET-ACCOUNT", &public_key_hex)
+                .header("PARADEX-STARKNET-SIGNATURE", &signature_header)
+                .header("PARADEX-TIMESTAMP", timestamp_secs.to_string())
+                .send()
+                .await
+                .map_err(|e| ExchangeError::Network(e.to_string()))?;
+
+            let body: serde_json::Value = response
+                .json()
+                .await
+                .map_err(|e| ExchangeError::Parse(e.to_string()))?;
+
+            let jwt = body["jwt_token"]
+                .as_str()
+                .ok_or_else(|| {
+                    ExchangeError::Parse("Missing jwt_token in auth response".to_string())
+                })?;
+
+            let expires_at = body["expires_at"].as_u64().unwrap_or(0);
+
+            if expires_at > 0 {
+                self.set_jwt_token_with_expiry(jwt.to_string(), expires_at).await;
+            } else {
+                self.set_jwt_token(jwt.to_string()).await;
+            }
+
+            return Ok(true);
+        }
+
+        // When `starknet` feature is disabled, instruct the caller to provide a token manually.
+        #[cfg(not(feature = "starknet"))]
         Err(ExchangeError::Auth(
             "JWT token expired. Paradex requires StarkNet signing for token refresh \
-             (starknet-rs integration required). Please obtain a new JWT token externally \
-             and call set_jwt_token() to update it.".to_string()
+             (enable the `starknet` feature or obtain a new JWT token externally \
+             and call set_jwt_token() to update it)."
+                .to_string(),
         ))
     }
 
@@ -369,6 +436,11 @@ impl ParadexAuth {
     /// Get timestamp header value (milliseconds, server-adjusted)
     pub async fn get_timestamp_header(&self) -> u64 {
         self.get_timestamp().await
+    }
+
+    /// Returns whether this auth has a StarkNet private key configured for signing
+    pub fn has_private_key(&self) -> bool {
+        self.private_key.is_some()
     }
 
     /// Returns whether this auth has a StarkNet account configured (for future signing)

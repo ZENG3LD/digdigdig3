@@ -15,6 +15,9 @@ categories = ["api-bindings", "asynchronous", "web-programming"]
 default = ["onchain-ethereum"]
 websocket = []
 onchain-ethereum = ["dep:alloy"]
+grpc = ["dep:tonic", "dep:prost"]
+k256-signing = ["dep:k256"]
+starknet = ["dep:starknet-crypto"]
 
 [dependencies]
 # Serialization
@@ -81,3 +84,11 @@ totp-rs = "5.6"
 
 # Concurrent hashmap (for ConnectorPool)
 dashmap = "5.5"
+
+# gRPC transport (feature-gated behind `grpc`)
+tonic = { version = "0.12", features = ["tls", "tls-native-roots"], optional = true }
+prost = { version = "0.13", optional = true }
+
+# Cryptographic signing (feature-gated)
+k256 = { version = "0.13", features = ["ecdsa-core", "ecdsa"], optional = true }
+starknet-crypto = { version = "0.6", optional = true }

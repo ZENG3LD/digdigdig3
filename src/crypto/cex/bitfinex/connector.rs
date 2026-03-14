@@ -42,6 +42,7 @@ use crate::core::types::{
     SubAccountOperation, SubAccountResult, SubAccount,
 };
 use crate::core::utils::SimpleRateLimiter;
+use crate::core::utils::PrecisionCache;
 
 use super::endpoints::{BitfinexUrls, BitfinexEndpoint, format_symbol, build_candle_key};
 use super::auth::BitfinexAuth;
@@ -61,6 +62,8 @@ pub struct BitfinexConnector {
     urls: BitfinexUrls,
     /// Rate limiter (conservative: 10 requests per 60 seconds)
     rate_limiter: Arc<Mutex<SimpleRateLimiter>>,
+    /// Per-symbol precision cache for safe price/qty formatting
+    precision: PrecisionCache,
 }
 
 impl BitfinexConnector {
@@ -84,6 +87,7 @@ impl BitfinexConnector {
             auth,
             urls,
             rate_limiter,
+            precision: PrecisionCache::new(),
         })
     }
 
@@ -394,7 +398,9 @@ impl MarketData for BitfinexConnector {
         self.rate_limit_wait().await;
         let url = "https://api.bitfinex.com/v1/symbols_details";
         let response = self.http.get(url, &HashMap::new()).await?;
-        BitfinexParser::parse_exchange_info(&response)
+        let info = BitfinexParser::parse_exchange_info(&response)?;
+        self.precision.load_from_symbols(&info);
+        Ok(info)
     }
 }
 
@@ -412,10 +418,11 @@ impl Trading for BitfinexConnector {
         let formatted_symbol = Self::fmt_symbol(&symbol, account_type);
         let prefix = Self::order_type_prefix(account_type);
 
-        // Amount: positive=buy, negative=sell
-        let amount = match side {
-            OrderSide::Buy => quantity,
-            OrderSide::Sell => -quantity,
+        // Amount: positive=buy, negative=sell (apply qty precision to absolute value then re-sign)
+        let qty_str = self.precision.qty(&formatted_symbol, quantity);
+        let amount_str = match side {
+            OrderSide::Buy => qty_str,
+            OrderSide::Sell => format!("-{}", qty_str),
         };
 
         match req.order_type {
@@ -423,7 +430,7 @@ impl Trading for BitfinexConnector {
                 let body = json!({
                     "type": format!("{}MARKET", prefix),
                     "symbol": formatted_symbol,
-                    "amount": amount.to_string(),
+                    "amount": amount_str,
                 });
                 let response = self.post(BitfinexEndpoint::SubmitOrder, &[], body).await?;
                 BitfinexParser::parse_submit_order(&response).map(PlaceOrderResponse::Simple)
@@ -433,8 +440,8 @@ impl Trading for BitfinexConnector {
                 let body = json!({
                     "type": format!("{}LIMIT", prefix),
                     "symbol": formatted_symbol,
-                    "amount": amount.to_string(),
-                    "price": price.to_string(),
+                    "amount": amount_str,
+                    "price": self.precision.price(&formatted_symbol, price),
                 });
                 let response = self.post(BitfinexEndpoint::SubmitOrder, &[], body).await?;
                 BitfinexParser::parse_submit_order(&response).map(PlaceOrderResponse::Simple)
@@ -445,8 +452,8 @@ impl Trading for BitfinexConnector {
                 let body = json!({
                     "type": format!("{}STOP", prefix),
                     "symbol": formatted_symbol,
-                    "amount": amount.to_string(),
-                    "price": stop_price.to_string(),
+                    "amount": amount_str,
+                    "price": self.precision.price(&formatted_symbol, stop_price),
                 });
                 let response = self.post(BitfinexEndpoint::SubmitOrder, &[], body).await?;
                 BitfinexParser::parse_submit_order(&response).map(PlaceOrderResponse::Simple)
@@ -457,9 +464,9 @@ impl Trading for BitfinexConnector {
                 let body = json!({
                     "type": format!("{}STOP LIMIT", prefix),
                     "symbol": formatted_symbol,
-                    "amount": amount.to_string(),
-                    "price": limit_price.to_string(),
-                    "price_aux_limit": stop_price.to_string(),
+                    "amount": amount_str,
+                    "price": self.precision.price(&formatted_symbol, limit_price),
+                    "price_aux_limit": self.precision.price(&formatted_symbol, stop_price),
                 });
                 let response = self.post(BitfinexEndpoint::SubmitOrder, &[], body).await?;
                 BitfinexParser::parse_submit_order(&response).map(PlaceOrderResponse::Simple)
@@ -471,7 +478,7 @@ impl Trading for BitfinexConnector {
                 let body = json!({
                     "type": format!("{}TRAILING STOP", prefix),
                     "symbol": formatted_symbol,
-                    "amount": amount.to_string(),
+                    "amount": amount_str,
                     "price": callback_rate.to_string(), // trail distance as % string
                 });
                 let response = self.post(BitfinexEndpoint::SubmitOrder, &[], body).await?;
@@ -483,8 +490,8 @@ impl Trading for BitfinexConnector {
                 let body = json!({
                     "type": format!("{}LIMIT", prefix),
                     "symbol": formatted_symbol,
-                    "amount": amount.to_string(),
-                    "price": price.to_string(),
+                    "amount": amount_str,
+                    "price": self.precision.price(&formatted_symbol, price),
                     "flags": 4096,
                 });
                 let response = self.post(BitfinexEndpoint::SubmitOrder, &[], body).await?;
@@ -497,8 +504,8 @@ impl Trading for BitfinexConnector {
                 let body = json!({
                     "type": format!("{}IOC", prefix),
                     "symbol": formatted_symbol,
-                    "amount": amount.to_string(),
-                    "price": price_val.to_string(),
+                    "amount": amount_str,
+                    "price": self.precision.price(&formatted_symbol, price_val),
                 });
                 let response = self.post(BitfinexEndpoint::SubmitOrder, &[], body).await?;
                 BitfinexParser::parse_submit_order(&response).map(PlaceOrderResponse::Simple)
@@ -509,8 +516,8 @@ impl Trading for BitfinexConnector {
                 let body = json!({
                     "type": format!("{}FOK", prefix),
                     "symbol": formatted_symbol,
-                    "amount": amount.to_string(),
-                    "price": price.to_string(),
+                    "amount": amount_str,
+                    "price": self.precision.price(&formatted_symbol, price),
                 });
                 let response = self.post(BitfinexEndpoint::SubmitOrder, &[], body).await?;
                 BitfinexParser::parse_submit_order(&response).map(PlaceOrderResponse::Simple)
@@ -521,10 +528,10 @@ impl Trading for BitfinexConnector {
                 let body = json!({
                     "type": format!("{}LIMIT", prefix),
                     "symbol": formatted_symbol,
-                    "amount": amount.to_string(),
-                    "price": price.to_string(),
+                    "amount": amount_str,
+                    "price": self.precision.price(&formatted_symbol, price),
                     "meta": {
-                        "max_show": display_quantity.to_string(),
+                        "max_show": self.precision.qty(&formatted_symbol, display_quantity),
                     },
                     "flags": 64, // Hidden flag
                 });
@@ -543,11 +550,11 @@ impl Trading for BitfinexConnector {
                 let mut body = json!({
                     "type": order_type_str,
                     "symbol": formatted_symbol,
-                    "amount": amount.to_string(),
+                    "amount": amount_str,
                     "flags": 1024, // REDUCE_ONLY flag
                 });
                 if let Some(p) = price {
-                    body["price"] = json!(p.to_string());
+                    body["price"] = json!(self.precision.price(&formatted_symbol, p));
                 }
                 let response = self.post(BitfinexEndpoint::SubmitOrder, &[], body).await?;
                 BitfinexParser::parse_submit_order(&response).map(PlaceOrderResponse::Simple)
@@ -898,17 +905,20 @@ impl AmendOrder for BitfinexConnector {
         let id = req.order_id.parse::<i64>()
             .map_err(|_| ExchangeError::InvalidRequest("Invalid order ID".to_string()))?;
 
+        let symbol = &req.symbol;
+        let formatted_symbol = Self::fmt_symbol(symbol, req.account_type);
+
         let mut body = json!({ "id": id });
 
         if let Some(price) = req.fields.price {
-            body["price"] = json!(price.to_string());
+            body["price"] = json!(self.precision.price(&formatted_symbol, price));
         }
         if let Some(qty) = req.fields.quantity {
             // For Bitfinex, amount sign determines buy/sell — preserve original sign
-            body["amount"] = json!(qty.to_string());
+            body["amount"] = json!(self.precision.qty(&formatted_symbol, qty));
         }
         if let Some(stop_price) = req.fields.trigger_price {
-            body["price_aux_limit"] = json!(stop_price.to_string());
+            body["price_aux_limit"] = json!(self.precision.price(&formatted_symbol, stop_price));
         }
 
         let response = self.post(BitfinexEndpoint::UpdateOrder, &[], body).await?;
@@ -940,9 +950,10 @@ impl BatchOrders for BitfinexConnector {
             let formatted_symbol = Self::fmt_symbol(&req.symbol, account_type);
             let prefix = Self::order_type_prefix(account_type);
 
-            let amount = match req.side {
-                OrderSide::Buy => req.quantity,
-                OrderSide::Sell => -req.quantity,
+            let qty_str = self.precision.qty(&formatted_symbol, req.quantity);
+            let amount_str = match req.side {
+                OrderSide::Buy => qty_str,
+                OrderSide::Sell => format!("-{}", qty_str),
             };
 
             let (order_type_str, price, price_aux) = match &req.order_type {
@@ -963,14 +974,14 @@ impl BatchOrders for BitfinexConnector {
             let mut order_obj = json!({
                 "type": order_type_str,
                 "symbol": formatted_symbol,
-                "amount": amount.to_string(),
+                "amount": amount_str,
             });
 
             if let Some(p) = price {
-                order_obj["price"] = json!(p.to_string());
+                order_obj["price"] = json!(self.precision.price(&formatted_symbol, p));
             }
             if let Some(aux) = price_aux {
-                order_obj["price_aux_limit"] = json!(aux.to_string());
+                order_obj["price_aux_limit"] = json!(self.precision.price(&formatted_symbol, aux));
             }
 
             // PostOnly flag

@@ -63,6 +63,8 @@ pub struct OkxConnector {
     testnet: bool,
     /// Rate limiter (10 requests per 2 seconds = 5 rps)
     rate_limiter: Arc<Mutex<SimpleRateLimiter>>,
+    /// Per-symbol precision cache for safe price/qty formatting
+    precision: crate::core::utils::precision::PrecisionCache,
 }
 
 impl OkxConnector {
@@ -92,6 +94,7 @@ impl OkxConnector {
             urls,
             testnet,
             rate_limiter,
+            precision: crate::core::utils::precision::PrecisionCache::new(),
         })
     }
 
@@ -537,7 +540,9 @@ impl MarketData for OkxConnector {
 
     /// Получить информацию о всех торговых символах биржи
     async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
-        self.get_instruments(account_type).await
+        let symbols = self.get_instruments(account_type).await?;
+        self.precision.load_from_symbols(&symbols);
+        Ok(symbols)
     }
 }
 
@@ -566,7 +571,7 @@ impl Trading for OkxConnector {
                     "tdMode": td_mode,
                     "side": side_str,
                     "ordType": "market",
-                    "sz": quantity.to_string(),
+                    "sz": self.precision.qty(&inst_id, quantity),
                     "clOrdId": cl_ord_id,
                 })
             }
@@ -582,8 +587,8 @@ impl Trading for OkxConnector {
                     "tdMode": td_mode,
                     "side": side_str,
                     "ordType": tif,
-                    "px": price.to_string(),
-                    "sz": quantity.to_string(),
+                    "px": self.precision.price(&inst_id, price),
+                    "sz": self.precision.qty(&inst_id, quantity),
                     "clOrdId": cl_ord_id,
                 })
             }
@@ -593,20 +598,20 @@ impl Trading for OkxConnector {
                     "tdMode": td_mode,
                     "side": side_str,
                     "ordType": "post_only",
-                    "px": price.to_string(),
-                    "sz": quantity.to_string(),
+                    "px": self.precision.price(&inst_id, price),
+                    "sz": self.precision.qty(&inst_id, quantity),
                     "clOrdId": cl_ord_id,
                 })
             }
             OrderType::Ioc { price } => {
-                let px_str = price.map(|p| p.to_string()).unwrap_or_else(|| "-1".to_string());
+                let px_str = price.map(|p| self.precision.price(&inst_id, p)).unwrap_or_else(|| "-1".to_string());
                 json!({
                     "instId": inst_id,
                     "tdMode": td_mode,
                     "side": side_str,
                     "ordType": "optimal_limit_ioc",
                     "px": px_str,
-                    "sz": quantity.to_string(),
+                    "sz": self.precision.qty(&inst_id, quantity),
                     "clOrdId": cl_ord_id,
                 })
             }
@@ -616,8 +621,8 @@ impl Trading for OkxConnector {
                     "tdMode": td_mode,
                     "side": side_str,
                     "ordType": "fok",
-                    "px": price.to_string(),
-                    "sz": quantity.to_string(),
+                    "px": self.precision.price(&inst_id, price),
+                    "sz": self.precision.qty(&inst_id, quantity),
                     "clOrdId": cl_ord_id,
                 })
             }
@@ -629,8 +634,8 @@ impl Trading for OkxConnector {
                     "tdMode": td_mode,
                     "side": side_str,
                     "ordType": "conditional",
-                    "sz": quantity.to_string(),
-                    "triggerPx": stop_price.to_string(),
+                    "sz": self.precision.qty(&inst_id, quantity),
+                    "triggerPx": self.precision.price(&inst_id, stop_price),
                     "orderPx": "-1",  // -1 = market order after trigger
                     "clAlgoId": cl_ord_id,
                 });
@@ -646,9 +651,9 @@ impl Trading for OkxConnector {
                     "tdMode": td_mode,
                     "side": side_str,
                     "ordType": "conditional",
-                    "sz": quantity.to_string(),
-                    "triggerPx": stop_price.to_string(),
-                    "orderPx": limit_price.to_string(),
+                    "sz": self.precision.qty(&inst_id, quantity),
+                    "triggerPx": self.precision.price(&inst_id, stop_price),
+                    "orderPx": self.precision.price(&inst_id, limit_price),
                     "clAlgoId": cl_ord_id,
                 });
                 let response = self.post(OkxEndpoint::AlgoOrder, algo_body).await?;
@@ -663,12 +668,12 @@ impl Trading for OkxConnector {
                     "tdMode": td_mode,
                     "side": side_str,
                     "ordType": "move_order_stop",
-                    "sz": quantity.to_string(),
+                    "sz": self.precision.qty(&inst_id, quantity),
                     "callbackRatio": (callback_rate / 100.0).to_string(),
                     "clAlgoId": cl_ord_id,
                 });
                 if let Some(act_px) = activation_price {
-                    algo_body["activePx"] = json!(act_px.to_string());
+                    algo_body["activePx"] = json!(self.precision.price(&inst_id, act_px));
                 }
                 let response = self.post(OkxEndpoint::AlgoOrder, algo_body).await?;
                 let algo_resp = OkxParser::parse_algo_order_response(&response)?;
@@ -677,19 +682,19 @@ impl Trading for OkxConnector {
             OrderType::Oco { price, stop_price, stop_limit_price } => {
                 // OKX OCO: POST /api/v5/trade/order-algo with ordType="oco"
                 // tp side = limit leg (price), sl side = stop leg (stop_price)
-                let tp_ord_px = price.to_string();
+                let tp_ord_px = self.precision.price(&inst_id, price);
                 let sl_ord_px = stop_limit_price
-                    .map(|p| p.to_string())
+                    .map(|p| self.precision.price(&inst_id, p))
                     .unwrap_or_else(|| "-1".to_string()); // -1 = market if no stop_limit_price
                 let algo_body = json!({
                     "instId": inst_id,
                     "tdMode": td_mode,
                     "side": side_str,
                     "ordType": "oco",
-                    "sz": quantity.to_string(),
-                    "tpTriggerPx": price.to_string(),
+                    "sz": self.precision.qty(&inst_id, quantity),
+                    "tpTriggerPx": self.precision.price(&inst_id, price),
                     "tpOrdPx": tp_ord_px,
-                    "slTriggerPx": stop_price.to_string(),
+                    "slTriggerPx": self.precision.price(&inst_id, stop_price),
                     "slOrdPx": sl_ord_px,
                     "clAlgoId": cl_ord_id,
                 });
@@ -712,9 +717,9 @@ impl Trading for OkxConnector {
                     "tdMode": td_mode,
                     "side": side_str,
                     "ordType": "twap",
-                    "sz": quantity.to_string(),
+                    "sz": self.precision.qty(&inst_id, quantity),
                     "pxVar": "0.01",           // 1% price variance per sub-order
-                    "szLimit": quantity.to_string(),
+                    "szLimit": self.precision.qty(&inst_id, quantity),
                     "pxLimit": "0",             // no hard price limit
                     "timeInterval": time_interval.to_string(),
                     "tgtCcy": "base_ccy",       // quantity in base currency
@@ -733,10 +738,10 @@ impl Trading for OkxConnector {
                     "tdMode": td_mode,
                     "side": side_str,
                     "ordType": "iceberg",
-                    "sz": quantity.to_string(),
+                    "sz": self.precision.qty(&inst_id, quantity),
                     "pxSpread": "0.01",   // 1% price spread for slices
-                    "szLimit": display_quantity.to_string(),
-                    "pxLimit": price.to_string(),
+                    "szLimit": self.precision.qty(&inst_id, display_quantity),
+                    "pxLimit": self.precision.price(&inst_id, price),
                     "clAlgoId": cl_ord_id,
                 });
                 let response = self.post(OkxEndpoint::AlgoOrder, algo_body).await?;
@@ -750,12 +755,12 @@ impl Trading for OkxConnector {
                     "tdMode": td_mode,
                     "side": side_str,
                     "ordType": ord_type,
-                    "sz": quantity.to_string(),
+                    "sz": self.precision.qty(&inst_id, quantity),
                     "reduceOnly": true,
                     "clOrdId": cl_ord_id,
                 });
                 if let Some(px) = price {
-                    body["px"] = json!(px.to_string());
+                    body["px"] = json!(self.precision.price(&inst_id, px));
                 }
                 body
             }
@@ -1339,19 +1344,20 @@ impl AmendOrder for OkxConnector {
         }
 
         let account_type = req.account_type;
+        let symbol_str = format_symbol(&req.symbol.base, &req.symbol.quote, account_type);
         let mut body = json!({
-            "instId": format_symbol(&req.symbol.base, &req.symbol.quote, account_type),
+            "instId": symbol_str,
             "ordId": req.order_id,
         });
 
         if let Some(price) = req.fields.price {
-            body["newPx"] = json!(price.to_string());
+            body["newPx"] = json!(self.precision.price(&symbol_str, price));
         }
         if let Some(qty) = req.fields.quantity {
-            body["newSz"] = json!(qty.to_string());
+            body["newSz"] = json!(self.precision.qty(&symbol_str, qty));
         }
         if let Some(trigger_price) = req.fields.trigger_price {
-            body["newStopPx"] = json!(trigger_price.to_string());
+            body["newStopPx"] = json!(self.precision.price(&symbol_str, trigger_price));
         }
 
         let response = self.post(OkxEndpoint::AmendOrder, body).await?;
@@ -1384,8 +1390,9 @@ impl BatchOrders for OkxConnector {
 
         let order_list: Vec<serde_json::Value> = orders.iter().map(|req| {
             let account_type = req.account_type;
+            let inst_id = format_symbol(&req.symbol.base, &req.symbol.quote, account_type);
             let mut obj = serde_json::Map::new();
-            obj.insert("instId".to_string(), json!(format_symbol(&req.symbol.base, &req.symbol.quote, account_type)));
+            obj.insert("instId".to_string(), json!(inst_id.clone()));
             obj.insert("tdMode".to_string(), json!(get_trade_mode(account_type)));
             obj.insert("side".to_string(), json!(match req.side {
                 OrderSide::Buy => "buy",
@@ -1395,16 +1402,16 @@ impl BatchOrders for OkxConnector {
             match &req.order_type {
                 OrderType::Market => {
                     obj.insert("ordType".to_string(), json!("market"));
-                    obj.insert("sz".to_string(), json!(req.quantity.to_string()));
+                    obj.insert("sz".to_string(), json!(self.precision.qty(&inst_id, req.quantity)));
                 }
                 OrderType::Limit { price } => {
                     obj.insert("ordType".to_string(), json!("limit"));
-                    obj.insert("sz".to_string(), json!(req.quantity.to_string()));
-                    obj.insert("px".to_string(), json!(price.to_string()));
+                    obj.insert("sz".to_string(), json!(self.precision.qty(&inst_id, req.quantity)));
+                    obj.insert("px".to_string(), json!(self.precision.price(&inst_id, *price)));
                 }
                 _ => {
                     obj.insert("ordType".to_string(), json!("market"));
-                    obj.insert("sz".to_string(), json!(req.quantity.to_string()));
+                    obj.insert("sz".to_string(), json!(self.precision.qty(&inst_id, req.quantity)));
                 }
             }
 

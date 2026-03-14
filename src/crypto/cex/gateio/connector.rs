@@ -41,6 +41,7 @@ use crate::core::types::{
     SubAccount, ConnectorStats,
 };
 use crate::core::utils::WeightRateLimiter;
+use crate::core::utils::precision::PrecisionCache;
 
 use super::endpoints::{GateioUrls, GateioEndpoint, format_symbol, map_kline_interval};
 use super::auth::GateioAuth;
@@ -64,6 +65,8 @@ pub struct GateioConnector {
     spot_rate_limiter: Arc<Mutex<WeightRateLimiter>>,
     /// Rate limiter for futures orders (100 requests per second)
     futures_rate_limiter: Arc<Mutex<WeightRateLimiter>>,
+    /// Per-symbol precision cache (populated after get_exchange_info)
+    precision: PrecisionCache,
 }
 
 impl GateioConnector {
@@ -110,6 +113,7 @@ impl GateioConnector {
             testnet,
             spot_rate_limiter,
             futures_rate_limiter,
+            precision: PrecisionCache::new(),
         })
     }
 
@@ -535,7 +539,9 @@ impl MarketData for GateioConnector {
 
     async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<crate::core::types::SymbolInfo>> {
         let response = self.get_symbols(account_type).await?;
-        GateioParser::parse_exchange_info(&response)
+        let symbols = GateioParser::parse_exchange_info(&response)?;
+        self.precision.load_from_symbols(&symbols);
+        Ok(symbols)
     }
 }
 
@@ -559,6 +565,7 @@ impl Trading for GateioConnector {
             .unwrap_or_else(|| format!("cc_{}", crate::core::timestamp_millis()));
         let formatted_symbol = format_symbol(&symbol.base, &symbol.quote, account_type);
         let side_str = match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" };
+        let sym = &formatted_symbol;
 
         let body = match req.order_type {
             OrderType::Market => {
@@ -567,7 +574,7 @@ impl Trading for GateioConnector {
                         json!({
                             "currency_pair": formatted_symbol,
                             "side": side_str,
-                            "amount": quantity.to_string(),
+                            "amount": self.precision.qty(sym, quantity),
                             "type": "market",
                             "text": text,
                         })
@@ -589,8 +596,8 @@ impl Trading for GateioConnector {
                         json!({
                             "currency_pair": formatted_symbol,
                             "side": side_str,
-                            "amount": quantity.to_string(),
-                            "price": price.to_string(),
+                            "amount": self.precision.qty(sym, quantity),
+                            "price": self.precision.price(sym, price),
                             "type": "limit",
                             "time_in_force": tif,
                             "text": text,
@@ -603,7 +610,7 @@ impl Trading for GateioConnector {
                             crate::core::TimeInForce::Fok => "poc",
                             _ => "gtc",
                         };
-                        json!({ "contract": formatted_symbol, "size": size, "price": price.to_string(), "tif": tif, "text": text })
+                        json!({ "contract": formatted_symbol, "size": size, "price": self.precision.price(sym, price), "tif": tif, "text": text })
                     }
                 }
             }
@@ -615,8 +622,8 @@ impl Trading for GateioConnector {
                         json!({
                             "currency_pair": formatted_symbol,
                             "side": side_str,
-                            "amount": quantity.to_string(),
-                            "price": price.to_string(),
+                            "amount": self.precision.qty(sym, quantity),
+                            "price": self.precision.price(sym, price),
                             "type": "limit",
                             "time_in_force": "poc",
                             "text": text,
@@ -624,18 +631,18 @@ impl Trading for GateioConnector {
                     }
                     _ => {
                         let size = match side { OrderSide::Buy => quantity as i64, OrderSide::Sell => -(quantity as i64) };
-                        json!({ "contract": formatted_symbol, "size": size, "price": price.to_string(), "tif": "poc", "text": text })
+                        json!({ "contract": formatted_symbol, "size": size, "price": self.precision.price(sym, price), "tif": "poc", "text": text })
                     }
                 }
             }
             OrderType::Ioc { price } => {
-                let px_str = price.map(|p| p.to_string()).unwrap_or_else(|| "0".to_string());
+                let px_str = price.map(|p| self.precision.price(sym, p)).unwrap_or_else(|| "0".to_string());
                 match account_type {
                     AccountType::Spot | AccountType::Margin => {
                         json!({
                             "currency_pair": formatted_symbol,
                             "side": side_str,
-                            "amount": quantity.to_string(),
+                            "amount": self.precision.qty(sym, quantity),
                             "price": px_str,
                             "type": "limit",
                             "time_in_force": "ioc",
@@ -654,8 +661,8 @@ impl Trading for GateioConnector {
                         json!({
                             "currency_pair": formatted_symbol,
                             "side": side_str,
-                            "amount": quantity.to_string(),
-                            "price": price.to_string(),
+                            "amount": self.precision.qty(sym, quantity),
+                            "price": self.precision.price(sym, price),
                             "type": "limit",
                             "time_in_force": "poc",
                             "text": text,
@@ -663,7 +670,7 @@ impl Trading for GateioConnector {
                     }
                     _ => {
                         let size = match side { OrderSide::Buy => quantity as i64, OrderSide::Sell => -(quantity as i64) };
-                        json!({ "contract": formatted_symbol, "size": size, "price": price.to_string(), "tif": "poc", "text": text })
+                        json!({ "contract": formatted_symbol, "size": size, "price": self.precision.price(sym, price), "tif": "poc", "text": text })
                     }
                 }
             }
@@ -676,7 +683,7 @@ impl Trading for GateioConnector {
                     }
                     _ => {}
                 }
-                let ord_price = price.map(|p| p.to_string()).unwrap_or_else(|| "0".to_string());
+                let ord_price = price.map(|p| self.precision.price(sym, p)).unwrap_or_else(|| "0".to_string());
                 let tif = if price.is_some() { "gtc" } else { "ioc" };
                 let size = match side { OrderSide::Buy => quantity as i64, OrderSide::Sell => -(quantity as i64) };
                 json!({
@@ -699,14 +706,14 @@ impl Trading for GateioConnector {
                         };
                         let body = json!({
                             "trigger": {
-                                "price": stop_price.to_string(),
+                                "price": self.precision.price(sym, stop_price),
                                 "rule": trigger_rule,
                                 "expiration": 86400,  // 24h expiration
                             },
                             "put": {
                                 "type": "market",
                                 "side": side_str,
-                                "amount": quantity.to_string(),
+                                "amount": self.precision.qty(sym, quantity),
                                 "account": "spot",
                             },
                             "market": formatted_symbol,
@@ -727,7 +734,7 @@ impl Trading for GateioConnector {
                             "trigger": {
                                 "strategy_type": 0,
                                 "price_type": 0,
-                                "price": stop_price.to_string(),
+                                "price": self.precision.price(sym, stop_price),
                                 "rule": 1,  // 1 = >= for buy, 2 = <= for sell
                                 "expiration": 86400,
                             },
@@ -765,15 +772,15 @@ impl Trading for GateioConnector {
                         };
                         let body = json!({
                             "trigger": {
-                                "price": stop_price.to_string(),
+                                "price": self.precision.price(sym, stop_price),
                                 "rule": trigger_rule,
                                 "expiration": 86400,
                             },
                             "put": {
                                 "type": "limit",
                                 "side": side_str,
-                                "amount": quantity.to_string(),
-                                "price": limit_price.to_string(),
+                                "amount": self.precision.qty(sym, quantity),
+                                "price": self.precision.price(sym, limit_price),
                                 "account": "spot",
                                 "time_in_force": "gtc",
                             },
@@ -791,14 +798,14 @@ impl Trading for GateioConnector {
                             "trigger": {
                                 "strategy_type": 0,
                                 "price_type": 0,
-                                "price": stop_price.to_string(),
+                                "price": self.precision.price(sym, stop_price),
                                 "rule": 1,
                                 "expiration": 86400,
                             },
                             "initial": {
                                 "contract": formatted_symbol,
                                 "size": size,
-                                "price": limit_price.to_string(),
+                                "price": self.precision.price(sym, limit_price),
                                 "tif": "gtc",
                                 "text": text.clone(),
                             },
@@ -826,11 +833,11 @@ impl Trading for GateioConnector {
                         json!({
                             "currency_pair": formatted_symbol,
                             "side": side_str,
-                            "amount": quantity.to_string(),
-                            "price": price.to_string(),
+                            "amount": self.precision.qty(sym, quantity),
+                            "price": self.precision.price(sym, price),
                             "type": "limit",
                             "time_in_force": "gtc",
-                            "iceberg": display_quantity.to_string(),
+                            "iceberg": self.precision.qty(sym, display_quantity),
                             "text": text,
                         })
                     }
@@ -839,7 +846,7 @@ impl Trading for GateioConnector {
                         json!({
                             "contract": formatted_symbol,
                             "size": size,
-                            "price": price.to_string(),
+                            "price": self.precision.price(sym, price),
                             "tif": "gtc",
                             "iceberg": display_quantity as i64,
                             "text": text,
@@ -1534,11 +1541,11 @@ impl AmendOrder for GateioConnector {
                     "currency_pair": symbol_str,
                 });
                 if let Some(price) = req.fields.price {
-                    body["price"] = json!(price.to_string());
+                    body["price"] = json!(self.precision.price(&symbol_str, price));
                 }
                 if let Some(qty) = req.fields.quantity {
                     // Spot uses `amount` for quantity
-                    body["amount"] = json!(qty.to_string());
+                    body["amount"] = json!(self.precision.qty(&symbol_str, qty));
                 }
                 let response = self.patch(&path, body, account_type).await?;
                 GateioParser::parse_amend_order(&response, &symbol_str)
@@ -1550,7 +1557,7 @@ impl AmendOrder for GateioConnector {
 
                 let mut body = json!({});
                 if let Some(price) = req.fields.price {
-                    body["price"] = json!(price.to_string());
+                    body["price"] = json!(self.precision.price(&symbol_str, price));
                 }
                 if let Some(qty) = req.fields.quantity {
                     // Gate.io futures uses integer size
@@ -1606,12 +1613,12 @@ impl BatchOrders for GateioConnector {
                         "currency_pair": formatted,
                         "type": "limit",
                         "side": side_str,
-                        "amount": req.quantity.to_string(),
+                        "amount": self.precision.qty(&formatted, req.quantity),
                     });
                     if let OrderType::Market = req.order_type {
                         obj["type"] = json!("market");
                     } else if let OrderType::Limit { price } = req.order_type {
-                        obj["price"] = json!(price.to_string());
+                        obj["price"] = json!(self.precision.price(&formatted, price));
                     }
                     if let Some(ref cid) = req.client_order_id {
                         obj["text"] = json!(format!("t-{}", cid));
@@ -1630,7 +1637,7 @@ impl BatchOrders for GateioConnector {
                             obj["tif"] = json!("ioc");
                         }
                         OrderType::Limit { price } => {
-                            obj["price"] = json!(price.to_string());
+                            obj["price"] = json!(self.precision.price(&formatted, price));
                         }
                         _ => {
                             obj["price"] = json!("0");

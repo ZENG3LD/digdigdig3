@@ -37,6 +37,7 @@ use crate::core::types::{
 use crate::core::types::{SymbolInfo, OrderResult};
 use crate::core::types::ConnectorStats;
 use crate::core::utils::SimpleRateLimiter;
+use crate::core::utils::PrecisionCache;
 
 use super::endpoints::{CryptoComUrls, CryptoComEndpoint, format_symbol, account_type_to_instrument, map_kline_interval};
 use super::auth::CryptoComAuth;
@@ -60,6 +61,8 @@ pub struct CryptoComConnector {
     rate_limiter: Arc<Mutex<SimpleRateLimiter>>,
     /// Request ID counter
     request_id: Arc<AtomicI64>,
+    /// Per-symbol precision cache for safe price/qty formatting
+    precision: PrecisionCache,
 }
 
 impl CryptoComConnector {
@@ -90,6 +93,7 @@ impl CryptoComConnector {
             testnet,
             rate_limiter,
             request_id: Arc::new(AtomicI64::new(1)),
+            precision: PrecisionCache::new(),
         })
     }
 
@@ -330,7 +334,9 @@ impl MarketData for CryptoComConnector {
 
     async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let response = self.request(CryptoComEndpoint::GetInstruments, json!({})).await?;
-        CryptoComParser::parse_exchange_info(&response)
+        let info = CryptoComParser::parse_exchange_info(&response)?;
+        self.precision.load_from_symbols(&info);
+        Ok(info)
     }
 }
 
@@ -359,7 +365,7 @@ impl Trading for CryptoComConnector {
                     "instrument_name": instrument_name,
                     "side": side_str,
                     "type": "MARKET",
-                    "quantity": quantity.to_string(),
+                    "quantity": self.precision.qty(&instrument_name, quantity),
                 });
 
                 let response = self.request(CryptoComEndpoint::CreateOrder, params).await?;
@@ -390,8 +396,8 @@ impl Trading for CryptoComConnector {
                     "instrument_name": instrument_name,
                     "side": side_str,
                     "type": "LIMIT",
-                    "quantity": quantity.to_string(),
-                    "price": price.to_string(),
+                    "quantity": self.precision.qty(&instrument_name, quantity),
+                    "price": self.precision.price(&instrument_name, price),
                     "time_in_force": "GOOD_TILL_CANCEL",
                 });
 
@@ -426,8 +432,8 @@ impl Trading for CryptoComConnector {
                     "instrument_name": instrument_name,
                     "side": side_str,
                     "type": "STOP_LOSS",
-                    "quantity": quantity.to_string(),
-                    "ref_price": stop_price.to_string(),
+                    "quantity": self.precision.qty(&instrument_name, quantity),
+                    "ref_price": self.precision.price(&instrument_name, stop_price),
                 });
 
                 let response = self.request(CryptoComEndpoint::AdvancedCreateOrder, params).await?;
@@ -460,9 +466,9 @@ impl Trading for CryptoComConnector {
                     "instrument_name": instrument_name,
                     "side": side_str,
                     "type": "STOP_LIMIT",
-                    "quantity": quantity.to_string(),
-                    "price": limit_price.to_string(),
-                    "ref_price": stop_price.to_string(),
+                    "quantity": self.precision.qty(&instrument_name, quantity),
+                    "price": self.precision.price(&instrument_name, limit_price),
+                    "ref_price": self.precision.price(&instrument_name, stop_price),
                     "time_in_force": "GOOD_TILL_CANCEL",
                 });
 
@@ -495,8 +501,8 @@ impl Trading for CryptoComConnector {
                     "instrument_name": instrument_name,
                     "side": side_str,
                     "type": "LIMIT",
-                    "quantity": quantity.to_string(),
-                    "price": price.to_string(),
+                    "quantity": self.precision.qty(&instrument_name, quantity),
+                    "price": self.precision.price(&instrument_name, price),
                     "exec_inst": "POST_ONLY",
                     "time_in_force": "GOOD_TILL_CANCEL",
                 });
@@ -535,12 +541,12 @@ impl Trading for CryptoComConnector {
                     "instrument_name": instrument_name,
                     "side": side_str,
                     "type": order_type_str,
-                    "quantity": quantity.to_string(),
+                    "quantity": self.precision.qty(&instrument_name, quantity),
                     "time_in_force": "IMMEDIATE_OR_CANCEL",
                 });
 
                 if let Some(p) = price_field {
-                    params["price"] = json!(p.to_string());
+                    params["price"] = json!(self.precision.price(&instrument_name, p));
                 }
 
                 let response = self.request(CryptoComEndpoint::CreateOrder, params).await?;
@@ -572,8 +578,8 @@ impl Trading for CryptoComConnector {
                     "instrument_name": instrument_name,
                     "side": side_str,
                     "type": "LIMIT",
-                    "quantity": quantity.to_string(),
-                    "price": price.to_string(),
+                    "quantity": self.precision.qty(&instrument_name, quantity),
+                    "price": self.precision.price(&instrument_name, price),
                     "time_in_force": "FILL_OR_KILL",
                 });
 
@@ -619,19 +625,19 @@ impl Trading for CryptoComConnector {
                     "instrument_name": instrument_name,
                     "side": side_str,
                     "type": leg2_type,
-                    "quantity": quantity.to_string(),
-                    "ref_price": stop_price.to_string(),
+                    "quantity": self.precision.qty(&instrument_name, quantity),
+                    "ref_price": self.precision.price(&instrument_name, stop_price),
                 });
                 if let Some(lp) = leg2_price {
-                    leg2["price"] = json!(lp.to_string());
+                    leg2["price"] = json!(self.precision.price(&instrument_name, lp));
                 }
                 let params = json!({
                     "instrument_name": instrument_name,
                     "side": side_str,
-                    "price": price.to_string(),
-                    "quantity": quantity.to_string(),
+                    "price": self.precision.price(&instrument_name, price),
+                    "quantity": self.precision.qty(&instrument_name, quantity),
                     "stop_side": side_str,
-                    "ref_price": stop_price.to_string(),
+                    "ref_price": self.precision.price(&instrument_name, stop_price),
                     "ref_price_type": "MARK_PRICE",
                     "contingency_type": "OCO",
                 });
@@ -947,16 +953,16 @@ impl AmendOrder for CryptoComConnector {
         });
 
         if let Some(price) = req.fields.price {
-            params["price"] = json!(price.to_string());
+            params["price"] = json!(self.precision.price(&instrument_name, price));
         }
 
         if let Some(qty) = req.fields.quantity {
-            params["quantity"] = json!(qty.to_string());
+            params["quantity"] = json!(self.precision.qty(&instrument_name, qty));
         }
 
         // trigger_price maps to ref_price for stop orders
         if let Some(trigger) = req.fields.trigger_price {
-            params["ref_price"] = json!(trigger.to_string());
+            params["ref_price"] = json!(self.precision.price(&instrument_name, trigger));
         }
 
         let response = self.request(CryptoComEndpoint::AmendOrder, params).await?;
@@ -1214,22 +1220,22 @@ impl BatchOrders for CryptoComConnector {
                     "instrument_name": instrument_name,
                     "side": side_str,
                     "type": "MARKET",
-                    "quantity": req.quantity.to_string(),
+                    "quantity": self.precision.qty(&instrument_name, req.quantity),
                 }),
                 OrderType::Limit { price } => json!({
                     "instrument_name": instrument_name,
                     "side": side_str,
                     "type": "LIMIT",
-                    "quantity": req.quantity.to_string(),
-                    "price": price.to_string(),
+                    "quantity": self.precision.qty(&instrument_name, req.quantity),
+                    "price": self.precision.price(&instrument_name, *price),
                     "time_in_force": "GOOD_TILL_CANCEL",
                 }),
                 OrderType::PostOnly { price } => json!({
                     "instrument_name": instrument_name,
                     "side": side_str,
                     "type": "LIMIT",
-                    "quantity": req.quantity.to_string(),
-                    "price": price.to_string(),
+                    "quantity": self.precision.qty(&instrument_name, req.quantity),
+                    "price": self.precision.price(&instrument_name, *price),
                     "exec_inst": "POST_ONLY",
                     "time_in_force": "GOOD_TILL_CANCEL",
                 }),
@@ -1241,7 +1247,7 @@ impl BatchOrders for CryptoComConnector {
                     "instrument_name": instrument_name,
                     "side": side_str,
                     "type": "MARKET",
-                    "quantity": req.quantity.to_string(),
+                    "quantity": self.precision.qty(&instrument_name, req.quantity),
                 }),
             }
         }).collect();

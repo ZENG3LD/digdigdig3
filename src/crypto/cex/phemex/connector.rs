@@ -43,6 +43,7 @@ use crate::core::types::{
 use crate::core::types::SymbolInfo;
 use crate::core::types::ConnectorStats;
 use crate::core::utils::GroupRateLimiter;
+use crate::core::utils::PrecisionCache;
 
 use super::endpoints::{PhemexUrls, PhemexEndpoint, format_symbol, map_kline_interval, scale_price, scale_value};
 use super::auth::PhemexAuth;
@@ -68,6 +69,8 @@ pub struct PhemexConnector {
     default_price_scale: u8,
     /// Default value scale
     default_value_scale: u8,
+    /// Per-symbol precision cache for safe price/qty formatting
+    precision: PrecisionCache,
 }
 
 impl PhemexConnector {
@@ -101,6 +104,7 @@ impl PhemexConnector {
             rate_limiter,
             default_price_scale: 4, // BTCUSD default
             default_value_scale: 8, // BTC default
+            precision: PrecisionCache::new(),
         })
     }
 
@@ -482,7 +486,9 @@ impl MarketData for PhemexConnector {
 
     async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let response = self.get(PhemexEndpoint::Products, HashMap::new(), AccountType::Spot).await?;
-        PhemexParser::parse_exchange_info(&response)
+        let info = PhemexParser::parse_exchange_info(&response)?;
+        self.precision.load_from_symbols(&info);
+        Ok(info)
     }
 }
 

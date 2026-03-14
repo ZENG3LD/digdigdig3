@@ -65,6 +65,8 @@ pub struct BybitConnector {
     testnet: bool,
     /// Rate limiter (120 requests per second)
     rate_limiter: Arc<Mutex<WeightRateLimiter>>,
+    /// Per-symbol precision cache (populated from get_exchange_info)
+    precision: crate::core::utils::precision::PrecisionCache,
 }
 
 impl BybitConnector {
@@ -101,6 +103,7 @@ impl BybitConnector {
             auth,
             testnet,
             rate_limiter,
+            precision: crate::core::utils::precision::PrecisionCache::new(),
         })
     }
 
@@ -617,7 +620,9 @@ impl MarketData for BybitConnector {
 
     async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<crate::core::types::SymbolInfo>> {
         let response = self.get_symbols(account_type).await?;
-        BybitParser::parse_exchange_info(&response)
+        let symbols = BybitParser::parse_exchange_info(&response)?;
+        self.precision.load_from_symbols(&symbols);
+        Ok(symbols)
     }
 }
 
@@ -632,6 +637,7 @@ impl Trading for BybitConnector {
         let side = req.side;
         let quantity = req.quantity;
         let account_type = req.account_type;
+        let symbol_str = format_symbol(&symbol, account_type);
 
         match req.order_type {
             OrderType::Market => {
@@ -645,7 +651,7 @@ impl Trading for BybitConnector {
                                 OrderSide::Sell => "Sell",
                             },
                             "orderType": "Market",
-                            "qty": quantity.to_string(),
+                            "qty": self.precision.qty(&symbol_str, quantity),
                             "orderLinkId": order_link_id,
                         });
                 
@@ -699,8 +705,8 @@ impl Trading for BybitConnector {
                         OrderSide::Sell => "Sell",
                     },
                     "orderType": "Limit",
-                    "qty": quantity.to_string(),
-                    "price": price.to_string(),
+                    "qty": self.precision.qty(&symbol_str, quantity),
+                    "price": self.precision.price(&symbol_str, price),
                     "timeInForce": tif,
                     "orderLinkId": order_link_id,
                 });
@@ -749,8 +755,8 @@ impl Trading for BybitConnector {
                         OrderSide::Sell => "Sell",
                     },
                     "orderType": "Market",
-                    "qty": quantity.to_string(),
-                    "triggerPrice": stop_price.to_string(),
+                    "qty": self.precision.qty(&symbol_str, quantity),
+                    "triggerPrice": self.precision.price(&symbol_str, stop_price),
                     "triggerBy": "MarkPrice",
                     "orderLinkId": order_link_id,
                 });
@@ -797,9 +803,9 @@ impl Trading for BybitConnector {
                         OrderSide::Sell => "Sell",
                     },
                     "orderType": "Limit",
-                    "qty": quantity.to_string(),
-                    "price": limit_price.to_string(),
-                    "triggerPrice": stop_price.to_string(),
+                    "qty": self.precision.qty(&symbol_str, quantity),
+                    "price": self.precision.price(&symbol_str, limit_price),
+                    "triggerPrice": self.precision.price(&symbol_str, stop_price),
                     "triggerBy": "MarkPrice",
                     "orderLinkId": order_link_id,
                 });
@@ -856,12 +862,12 @@ impl Trading for BybitConnector {
                         OrderSide::Sell => "Sell",
                     },
                     "orderType": "Market",
-                    "qty": quantity.to_string(),
+                    "qty": self.precision.qty(&symbol_str, quantity),
                     "trailingStop": callback_rate.to_string(),
                     "orderLinkId": order_link_id,
                 });
                 if let Some(ap) = activation_price {
-                    body["activePrice"] = json!(ap.to_string());
+                    body["activePrice"] = json!(self.precision.price(&symbol_str, ap));
                 }
                 if req.reduce_only {
                     body["reduceOnly"] = json!(true);
@@ -906,8 +912,8 @@ impl Trading for BybitConnector {
                         OrderSide::Sell => "Sell",
                     },
                     "orderType": "Limit",
-                    "qty": quantity.to_string(),
-                    "price": price.to_string(),
+                    "qty": self.precision.qty(&symbol_str, quantity),
+                    "price": self.precision.price(&symbol_str, price),
                     "timeInForce": "PostOnly",
                     "orderLinkId": order_link_id,
                 });
@@ -951,8 +957,8 @@ impl Trading for BybitConnector {
                         OrderSide::Sell => "Sell",
                     },
                     "orderType": if price.is_some() { "Limit" } else { "Market" },
-                    "qty": quantity.to_string(),
-                    "price": price.map(|p| p.to_string()).unwrap_or_default(),
+                    "qty": self.precision.qty(&symbol_str, quantity),
+                    "price": price.map(|p| self.precision.price(&symbol_str, p)).unwrap_or_default(),
                     "timeInForce": "IOC",
                     "orderLinkId": order_link_id,
                 });
@@ -996,8 +1002,8 @@ impl Trading for BybitConnector {
                         OrderSide::Sell => "Sell",
                     },
                     "orderType": "Limit",
-                    "qty": quantity.to_string(),
-                    "price": price.to_string(),
+                    "qty": self.precision.qty(&symbol_str, quantity),
+                    "price": self.precision.price(&symbol_str, price),
                     "timeInForce": "FOK",
                     "orderLinkId": order_link_id,
                 });
@@ -1058,8 +1064,8 @@ impl Trading for BybitConnector {
                         OrderSide::Sell => "Sell",
                     },
                     "orderType": if price.is_some() { "Limit" } else { "Market" },
-                    "qty": quantity.to_string(),
-                    "price": price.map(|p| p.to_string()).unwrap_or_default(),
+                    "qty": self.precision.qty(&symbol_str, quantity),
+                    "price": price.map(|p| self.precision.price(&symbol_str, p)).unwrap_or_default(),
                     "reduceOnly": true,
                     "orderLinkId": order_link_id,
                 });
@@ -1106,10 +1112,10 @@ impl Trading for BybitConnector {
                         OrderSide::Sell => "Sell",
                     },
                     "orderType": "Limit",
-                    "qty": quantity.to_string(),
-                    "price": price.to_string(),
+                    "qty": self.precision.qty(&symbol_str, quantity),
+                    "price": self.precision.price(&symbol_str, price),
                     "timeInForce": "GTC",
-                    "peakOrderQty": display_quantity.to_string(),
+                    "peakOrderQty": self.precision.qty(&symbol_str, display_quantity),
                     "orderLinkId": order_link_id,
                 });
 
@@ -1843,20 +1849,21 @@ impl AmendOrder for BybitConnector {
         }
 
         let account_type = req.account_type;
+        let amend_symbol_str = format_symbol(&req.symbol, account_type);
         let mut body = json!({
             "category": account_type_to_category(account_type),
-            "symbol": format_symbol(&req.symbol, account_type),
+            "symbol": amend_symbol_str.clone(),
             "orderId": req.order_id,
         });
 
         if let Some(price) = req.fields.price {
-            body["price"] = json!(price.to_string());
+            body["price"] = json!(self.precision.price(&amend_symbol_str, price));
         }
         if let Some(qty) = req.fields.quantity {
-            body["qty"] = json!(qty.to_string());
+            body["qty"] = json!(self.precision.qty(&amend_symbol_str, qty));
         }
         if let Some(trigger_price) = req.fields.trigger_price {
-            body["triggerPrice"] = json!(trigger_price.to_string());
+            body["triggerPrice"] = json!(self.precision.price(&amend_symbol_str, trigger_price));
         }
 
         let response = self.post(BybitEndpoint::AmendOrder, body).await?;
@@ -1900,20 +1907,21 @@ impl BatchOrders for BybitConnector {
                 OrderSide::Sell => "Sell",
             }));
 
+            let batch_sym_str = format_symbol(&req.symbol, req.account_type);
             match &req.order_type {
                 OrderType::Market => {
                     obj.insert("orderType".to_string(), json!("Market"));
-                    obj.insert("qty".to_string(), json!(req.quantity.to_string()));
+                    obj.insert("qty".to_string(), json!(self.precision.qty(&batch_sym_str, req.quantity)));
                 }
                 OrderType::Limit { price } => {
                     obj.insert("orderType".to_string(), json!("Limit"));
-                    obj.insert("qty".to_string(), json!(req.quantity.to_string()));
-                    obj.insert("price".to_string(), json!(price.to_string()));
+                    obj.insert("qty".to_string(), json!(self.precision.qty(&batch_sym_str, req.quantity)));
+                    obj.insert("price".to_string(), json!(self.precision.price(&batch_sym_str, *price)));
                     obj.insert("timeInForce".to_string(), json!("GTC"));
                 }
                 _ => {
                     obj.insert("orderType".to_string(), json!("Market"));
-                    obj.insert("qty".to_string(), json!(req.quantity.to_string()));
+                    obj.insert("qty".to_string(), json!(self.precision.qty(&batch_sym_str, req.quantity)));
                 }
             }
 

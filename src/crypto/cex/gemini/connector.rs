@@ -39,6 +39,7 @@ use crate::core::traits::{
 use crate::core::types::ConnectorStats;
 use crate::core::types::{WithdrawRequest, FundsHistoryFilter, FundsRecordType};
 use crate::core::utils::SimpleRateLimiter;
+use crate::core::utils::PrecisionCache;
 
 use super::endpoints::{GeminiUrls, GeminiEndpoint, format_symbol, normalize_symbol, map_kline_interval};
 use super::auth::GeminiAuth;
@@ -62,6 +63,8 @@ pub struct GeminiConnector {
     public_limiter: Arc<Mutex<SimpleRateLimiter>>,
     /// Private rate limiter (600 req/min = 10 req/sec)
     private_limiter: Arc<Mutex<SimpleRateLimiter>>,
+    /// Per-symbol precision cache for safe price/qty formatting
+    precision: PrecisionCache,
 }
 
 impl GeminiConnector {
@@ -95,6 +98,7 @@ impl GeminiConnector {
             testnet,
             public_limiter,
             private_limiter,
+            precision: PrecisionCache::new(),
         })
     }
 
@@ -338,6 +342,7 @@ impl MarketData for GeminiConnector {
             }
         }
 
+        self.precision.load_from_symbols(&result);
         Ok(result)
     }
 }
@@ -359,7 +364,7 @@ impl Trading for GeminiConnector {
             OrderType::Market => {
                 let mut params = HashMap::new();
                 params.insert("symbol".to_string(), json!(symbol_str));
-                params.insert("amount".to_string(), json!(quantity.to_string()));
+                params.insert("amount".to_string(), json!(self.precision.qty(&symbol_str, quantity)));
                 params.insert("side".to_string(), json!(match side {
                     OrderSide::Buy => "buy",
                     OrderSide::Sell => "sell",
@@ -372,8 +377,8 @@ impl Trading for GeminiConnector {
             OrderType::Limit { price } => {
                 let mut params = HashMap::new();
                 params.insert("symbol".to_string(), json!(symbol_str));
-                params.insert("amount".to_string(), json!(quantity.to_string()));
-                params.insert("price".to_string(), json!(price.to_string()));
+                params.insert("amount".to_string(), json!(self.precision.qty(&symbol_str, quantity)));
+                params.insert("price".to_string(), json!(self.precision.price(&symbol_str, price)));
                 params.insert("side".to_string(), json!(match side {
                     OrderSide::Buy => "buy",
                     OrderSide::Sell => "sell",
@@ -387,9 +392,9 @@ impl Trading for GeminiConnector {
                 // Gemini: type="exchange stop limit", stop_price=trigger, price=limit
                 let mut params = HashMap::new();
                 params.insert("symbol".to_string(), json!(symbol_str));
-                params.insert("amount".to_string(), json!(quantity.to_string()));
-                params.insert("price".to_string(), json!(limit_price.to_string()));
-                params.insert("stop_price".to_string(), json!(stop_price.to_string()));
+                params.insert("amount".to_string(), json!(self.precision.qty(&symbol_str, quantity)));
+                params.insert("price".to_string(), json!(self.precision.price(&symbol_str, limit_price)));
+                params.insert("stop_price".to_string(), json!(self.precision.price(&symbol_str, stop_price)));
                 params.insert("side".to_string(), json!(match side {
                     OrderSide::Buy => "buy",
                     OrderSide::Sell => "sell",
@@ -403,8 +408,8 @@ impl Trading for GeminiConnector {
                 // Gemini: type="exchange limit" with options=["maker-or-cancel"]
                 let mut params = HashMap::new();
                 params.insert("symbol".to_string(), json!(symbol_str));
-                params.insert("amount".to_string(), json!(quantity.to_string()));
-                params.insert("price".to_string(), json!(price.to_string()));
+                params.insert("amount".to_string(), json!(self.precision.qty(&symbol_str, quantity)));
+                params.insert("price".to_string(), json!(self.precision.price(&symbol_str, price)));
                 params.insert("side".to_string(), json!(match side {
                     OrderSide::Buy => "buy",
                     OrderSide::Sell => "sell",
@@ -420,8 +425,8 @@ impl Trading for GeminiConnector {
                 let limit_price = price.unwrap_or(0.0);
                 let mut params = HashMap::new();
                 params.insert("symbol".to_string(), json!(symbol_str));
-                params.insert("amount".to_string(), json!(quantity.to_string()));
-                params.insert("price".to_string(), json!(limit_price.to_string()));
+                params.insert("amount".to_string(), json!(self.precision.qty(&symbol_str, quantity)));
+                params.insert("price".to_string(), json!(self.precision.price(&symbol_str, limit_price)));
                 params.insert("side".to_string(), json!(match side {
                     OrderSide::Buy => "buy",
                     OrderSide::Sell => "sell",
@@ -436,8 +441,8 @@ impl Trading for GeminiConnector {
                 // Gemini: type="exchange limit" with options=["fill-or-kill"]
                 let mut params = HashMap::new();
                 params.insert("symbol".to_string(), json!(symbol_str));
-                params.insert("amount".to_string(), json!(quantity.to_string()));
-                params.insert("price".to_string(), json!(price.to_string()));
+                params.insert("amount".to_string(), json!(self.precision.qty(&symbol_str, quantity)));
+                params.insert("price".to_string(), json!(self.precision.price(&symbol_str, price)));
                 params.insert("side".to_string(), json!(match side {
                     OrderSide::Buy => "buy",
                     OrderSide::Sell => "sell",

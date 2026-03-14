@@ -78,6 +78,8 @@ pub struct BinanceConnector {
     testnet: bool,
     /// Weight-based rate limiter (6000 weight per minute)
     weight_limiter: Arc<Mutex<WeightRateLimiter>>,
+    /// Per-symbol precision cache (populated from get_exchange_info)
+    precision: crate::core::utils::precision::PrecisionCache,
 }
 
 impl BinanceConnector {
@@ -120,6 +122,7 @@ impl BinanceConnector {
             urls,
             testnet,
             weight_limiter,
+            precision: crate::core::utils::precision::PrecisionCache::new(),
         })
     }
 
@@ -740,7 +743,9 @@ impl MarketData for BinanceConnector {
             _ => BinanceEndpoint::FuturesExchangeInfo,
         };
         let response = self.get(endpoint, HashMap::new(), account_type).await?;
-        BinanceParser::parse_exchange_info(&response)
+        let symbols = BinanceParser::parse_exchange_info(&response)?;
+        self.precision.load_from_symbols(&symbols);
+        Ok(symbols)
     }
 }
 
@@ -755,6 +760,7 @@ impl Trading for BinanceConnector {
         let side = req.side;
         let quantity = req.quantity;
         let account_type = req.account_type;
+        let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
 
         match req.order_type {
             OrderType::Market => {
@@ -770,7 +776,7 @@ impl Trading for BinanceConnector {
                     OrderSide::Sell => "SELL".to_string(),
                 });
                 params.insert("type".to_string(), "MARKET".to_string());
-                params.insert("quantity".to_string(), quantity.to_string());
+                params.insert("quantity".to_string(), self.precision.qty(&symbol_str, quantity));
 
                 let response = self.post(endpoint, params, account_type).await?;
                 let order = BinanceParser::parse_order(&response, &symbol.to_string())?;
@@ -786,8 +792,8 @@ impl Trading for BinanceConnector {
                 params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
                 params.insert("side".to_string(), side.as_str().to_string());
                 params.insert("type".to_string(), "LIMIT".to_string());
-                params.insert("quantity".to_string(), quantity.to_string());
-                params.insert("price".to_string(), price.to_string());
+                params.insert("quantity".to_string(), self.precision.qty(&symbol_str, quantity));
+                params.insert("price".to_string(), self.precision.price(&symbol_str, price));
                 params.insert("timeInForce".to_string(), "GTC".to_string());
 
                 if let Some(cid) = &req.client_order_id {
@@ -815,8 +821,8 @@ impl Trading for BinanceConnector {
                 params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
                 params.insert("side".to_string(), side.as_str().to_string());
                 params.insert("type".to_string(), "STOP_MARKET".to_string());
-                params.insert("quantity".to_string(), quantity.to_string());
-                params.insert("stopPrice".to_string(), stop_price.to_string());
+                params.insert("quantity".to_string(), self.precision.qty(&symbol_str, quantity));
+                params.insert("stopPrice".to_string(), self.precision.price(&symbol_str, stop_price));
 
                 if req.reduce_only {
                     params.insert("reduceOnly".to_string(), "true".to_string());
@@ -834,9 +840,9 @@ impl Trading for BinanceConnector {
                 let mut params = HashMap::new();
                 params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
                 params.insert("side".to_string(), side.as_str().to_string());
-                params.insert("quantity".to_string(), quantity.to_string());
-                params.insert("stopPrice".to_string(), stop_price.to_string());
-                params.insert("price".to_string(), limit_price.to_string());
+                params.insert("quantity".to_string(), self.precision.qty(&symbol_str, quantity));
+                params.insert("stopPrice".to_string(), self.precision.price(&symbol_str, stop_price));
+                params.insert("price".to_string(), self.precision.price(&symbol_str, limit_price));
 
                 // Spot uses STOP_LOSS_LIMIT on /api/v3/order (unchanged).
                 // Futures: post-2025-12-09 STOP type moved to /fapi/v1/order/algo.
@@ -881,7 +887,7 @@ impl Trading for BinanceConnector {
                 params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
                 params.insert("side".to_string(), side.as_str().to_string());
                 params.insert("type".to_string(), "TRAILING_STOP_MARKET".to_string());
-                params.insert("quantity".to_string(), quantity.to_string());
+                params.insert("quantity".to_string(), self.precision.qty(&symbol_str, quantity));
                 params.insert("callbackRate".to_string(), callback_rate.to_string());
 
                 if let Some(ap) = activation_price {
@@ -913,12 +919,12 @@ impl Trading for BinanceConnector {
                 let mut params = HashMap::new();
                 params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
                 params.insert("side".to_string(), side.as_str().to_string());
-                params.insert("quantity".to_string(), quantity.to_string());
-                params.insert("price".to_string(), price.to_string());
-                params.insert("stopPrice".to_string(), stop_price.to_string());
+                params.insert("quantity".to_string(), self.precision.qty(&symbol_str, quantity));
+                params.insert("price".to_string(), self.precision.price(&symbol_str, price));
+                params.insert("stopPrice".to_string(), self.precision.price(&symbol_str, stop_price));
 
                 if let Some(slp) = stop_limit_price {
-                    params.insert("stopLimitPrice".to_string(), slp.to_string());
+                    params.insert("stopLimitPrice".to_string(), self.precision.price(&symbol_str, slp));
                     params.insert("stopLimitTimeInForce".to_string(), "GTC".to_string());
                 }
                 if let Some(cid) = &req.client_order_id {
@@ -944,17 +950,17 @@ impl Trading for BinanceConnector {
                         let mut params = HashMap::new();
                         params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
                         params.insert("side".to_string(), side.as_str().to_string());
-                        params.insert("quantity".to_string(), quantity.to_string());
+                        params.insert("quantity".to_string(), self.precision.qty(&symbol_str, quantity));
                         // Working leg: LIMIT entry
                         params.insert("workingType".to_string(), "LIMIT".to_string());
-                        params.insert("workingPrice".to_string(), entry_price.to_string());
+                        params.insert("workingPrice".to_string(), self.precision.price(&symbol_str, entry_price));
                         params.insert("workingTimeInForce".to_string(), "GTC".to_string());
                         // Pending above leg: take-profit limit order (above entry for buy)
                         params.insert("pendingAboveType".to_string(), "LIMIT_MAKER".to_string());
-                        params.insert("pendingAbovePrice".to_string(), take_profit.to_string());
+                        params.insert("pendingAbovePrice".to_string(), self.precision.price(&symbol_str, take_profit));
                         // Pending below leg: stop-loss stop order (below entry for buy)
                         params.insert("pendingBelowType".to_string(), "STOP_LOSS".to_string());
-                        params.insert("pendingBelowStopPrice".to_string(), stop_loss.to_string());
+                        params.insert("pendingBelowStopPrice".to_string(), self.precision.price(&symbol_str, stop_loss));
 
                         if let Some(cid) = &req.client_order_id {
                             params.insert("listClientOrderId".to_string(), cid.clone());
@@ -987,9 +993,9 @@ impl Trading for BinanceConnector {
                 params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
                 params.insert("side".to_string(), side.as_str().to_string());
                 params.insert("type".to_string(), "LIMIT".to_string());
-                params.insert("quantity".to_string(), quantity.to_string());
-                params.insert("price".to_string(), price.to_string());
-                params.insert("icebergQty".to_string(), display_quantity.to_string());
+                params.insert("quantity".to_string(), self.precision.qty(&symbol_str, quantity));
+                params.insert("price".to_string(), self.precision.price(&symbol_str, price));
+                params.insert("icebergQty".to_string(), self.precision.qty(&symbol_str, display_quantity));
                 params.insert("timeInForce".to_string(), "GTC".to_string());
 
                 if let Some(cid) = &req.client_order_id {
@@ -1025,7 +1031,7 @@ impl Trading for BinanceConnector {
                 let mut params = HashMap::new();
                 params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
                 params.insert("side".to_string(), side.as_str().to_string());
-                params.insert("quantity".to_string(), quantity.to_string());
+                params.insert("quantity".to_string(), self.precision.qty(&symbol_str, quantity));
                 params.insert("duration".to_string(), duration_seconds.to_string());
 
                 if let Some(cid) = &req.client_order_id {
@@ -1050,8 +1056,8 @@ impl Trading for BinanceConnector {
                 params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
                 params.insert("side".to_string(), side.as_str().to_string());
                 params.insert("type".to_string(), "LIMIT".to_string());
-                params.insert("quantity".to_string(), quantity.to_string());
-                params.insert("price".to_string(), price.to_string());
+                params.insert("quantity".to_string(), self.precision.qty(&symbol_str, quantity));
+                params.insert("price".to_string(), self.precision.price(&symbol_str, price));
                 // GTX = Post-Only on Binance (Good Till Crossing)
                 params.insert("timeInForce".to_string(), "GTX".to_string());
 
@@ -1074,12 +1080,12 @@ impl Trading for BinanceConnector {
                 params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
                 params.insert("side".to_string(), side.as_str().to_string());
                 params.insert("type".to_string(), "LIMIT".to_string());
-                params.insert("quantity".to_string(), quantity.to_string());
+                params.insert("quantity".to_string(), self.precision.qty(&symbol_str, quantity));
                 params.insert("timeInForce".to_string(), "IOC".to_string());
 
                 // Use the provided price, or fall back to a limit order at market
                 if let Some(p) = price {
-                    params.insert("price".to_string(), p.to_string());
+                    params.insert("price".to_string(), self.precision.price(&symbol_str, p));
                 } else {
                     // IOC with no price — use MARKET type instead
                     params.insert("type".to_string(), "MARKET".to_string());
@@ -1105,8 +1111,8 @@ impl Trading for BinanceConnector {
                 params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
                 params.insert("side".to_string(), side.as_str().to_string());
                 params.insert("type".to_string(), "LIMIT".to_string());
-                params.insert("quantity".to_string(), quantity.to_string());
-                params.insert("price".to_string(), price.to_string());
+                params.insert("quantity".to_string(), self.precision.qty(&symbol_str, quantity));
+                params.insert("price".to_string(), self.precision.price(&symbol_str, price));
                 params.insert("timeInForce".to_string(), "FOK".to_string());
 
                 if let Some(cid) = &req.client_order_id {
@@ -1144,8 +1150,8 @@ impl Trading for BinanceConnector {
                 params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
                 params.insert("side".to_string(), side.as_str().to_string());
                 params.insert("type".to_string(), "LIMIT".to_string());
-                params.insert("quantity".to_string(), quantity.to_string());
-                params.insert("price".to_string(), price.to_string());
+                params.insert("quantity".to_string(), self.precision.qty(&symbol_str, quantity));
+                params.insert("price".to_string(), self.precision.price(&symbol_str, price));
                 params.insert("timeInForce".to_string(), "GTD".to_string());
                 params.insert("goodTillDate".to_string(), expire_time.to_string());
 
@@ -1176,11 +1182,11 @@ impl Trading for BinanceConnector {
                 params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
                 params.insert("side".to_string(), side.as_str().to_string());
                 params.insert("reduceOnly".to_string(), "true".to_string());
-                params.insert("quantity".to_string(), quantity.to_string());
+                params.insert("quantity".to_string(), self.precision.qty(&symbol_str, quantity));
 
                 if let Some(p) = price {
                     params.insert("type".to_string(), "LIMIT".to_string());
-                    params.insert("price".to_string(), p.to_string());
+                    params.insert("price".to_string(), self.precision.price(&symbol_str, p));
                     params.insert("timeInForce".to_string(), "GTC".to_string());
                 } else {
                     params.insert("type".to_string(), "MARKET".to_string());
@@ -1729,18 +1735,19 @@ impl AmendOrder for BinanceConnector {
         }
 
         let account_type = req.account_type;
+        let amend_symbol_str = format_symbol(&req.symbol.base, &req.symbol.quote, account_type);
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&req.symbol.base, &req.symbol.quote, account_type));
+        params.insert("symbol".to_string(), amend_symbol_str.clone());
         params.insert("orderId".to_string(), req.order_id.clone());
 
         if let Some(price) = req.fields.price {
-            params.insert("price".to_string(), price.to_string());
+            params.insert("price".to_string(), self.precision.price(&amend_symbol_str, price));
         }
         if let Some(quantity) = req.fields.quantity {
-            params.insert("quantity".to_string(), quantity.to_string());
+            params.insert("quantity".to_string(), self.precision.qty(&amend_symbol_str, quantity));
         }
         if let Some(stop_price) = req.fields.trigger_price {
-            params.insert("stopPrice".to_string(), stop_price.to_string());
+            params.insert("stopPrice".to_string(), self.precision.price(&amend_symbol_str, stop_price));
         }
 
         let response = self.put(BinanceEndpoint::FuturesAmendOrder, params, account_type).await?;
@@ -1790,21 +1797,22 @@ impl BatchOrders for BinanceConnector {
             obj.insert("symbol".to_string(), json!(format_symbol(&req.symbol.base, &req.symbol.quote, account_type)));
             obj.insert("side".to_string(), json!(req.side.as_str()));
 
+            let batch_sym_str = format_symbol(&req.symbol.base, &req.symbol.quote, account_type);
             match &req.order_type {
                 OrderType::Market => {
                     obj.insert("type".to_string(), json!("MARKET"));
-                    obj.insert("quantity".to_string(), json!(req.quantity.to_string()));
+                    obj.insert("quantity".to_string(), json!(self.precision.qty(&batch_sym_str, req.quantity)));
                 }
                 OrderType::Limit { price } => {
                     obj.insert("type".to_string(), json!("LIMIT"));
-                    obj.insert("quantity".to_string(), json!(req.quantity.to_string()));
-                    obj.insert("price".to_string(), json!(price.to_string()));
+                    obj.insert("quantity".to_string(), json!(self.precision.qty(&batch_sym_str, req.quantity)));
+                    obj.insert("price".to_string(), json!(self.precision.price(&batch_sym_str, *price)));
                     obj.insert("timeInForce".to_string(), json!("GTC"));
                 }
                 _ => {
                     // For other types, encode as MARKET (best-effort fallback)
                     obj.insert("type".to_string(), json!("MARKET"));
-                    obj.insert("quantity".to_string(), json!(req.quantity.to_string()));
+                    obj.insert("quantity".to_string(), json!(self.precision.qty(&batch_sym_str, req.quantity)));
                 }
             }
 

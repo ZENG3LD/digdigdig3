@@ -62,6 +62,8 @@ pub struct HtxConnector {
     rate_limiter: Arc<Mutex<WeightRateLimiter>>,
     /// Cached account ID for spot trading
     account_id: Arc<Mutex<Option<i64>>>,
+    /// Per-symbol precision cache for safe price/qty formatting
+    precision: crate::core::utils::precision::PrecisionCache,
 }
 
 impl HtxConnector {
@@ -97,6 +99,7 @@ impl HtxConnector {
             testnet,
             rate_limiter,
             account_id: Arc::new(Mutex::new(None)),
+            precision: crate::core::utils::precision::PrecisionCache::new(),
         })
     }
 
@@ -499,7 +502,9 @@ impl MarketData for HtxConnector {
 
     async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<crate::core::types::SymbolInfo>> {
         let response = self.get_symbols().await?;
-        HtxParser::parse_exchange_info(&response)
+        let symbols = HtxParser::parse_exchange_info(&response)?;
+        self.precision.load_from_symbols(&symbols);
+        Ok(symbols)
     }
 }
 
@@ -517,6 +522,7 @@ impl Trading for HtxConnector {
         let account_id = self.get_account_id().await?;
         let client_order_id = format!("cc_{}", crate::core::timestamp_millis());
         let htx_symbol = format_symbol(&symbol, account_type);
+        let qty_str = self.precision.qty(&htx_symbol, quantity);
 
         // Helper to map side to HTX order type prefix
         let side_str = match side {
@@ -531,7 +537,7 @@ impl Trading for HtxConnector {
                     "account-id": account_id.to_string(),
                     "symbol": htx_symbol,
                     "type": order_type,
-                    "amount": quantity.to_string(),
+                    "amount": qty_str,
                     "client-order-id": client_order_id,
                 });
 
@@ -564,8 +570,8 @@ impl Trading for HtxConnector {
                     "account-id": account_id.to_string(),
                     "symbol": htx_symbol,
                     "type": order_type,
-                    "amount": quantity.to_string(),
-                    "price": price.to_string(),
+                    "amount": qty_str,
+                    "price": self.precision.price(&htx_symbol, price),
                     "client-order-id": client_order_id,
                 });
 
@@ -606,9 +612,9 @@ impl Trading for HtxConnector {
                     "account-id": account_id.to_string(),
                     "symbol": htx_symbol,
                     "type": order_type,
-                    "amount": quantity.to_string(),
-                    "stop-price": stop_price.to_string(),
-                    "price": limit_price.to_string(),
+                    "amount": qty_str,
+                    "stop-price": self.precision.price(&htx_symbol, stop_price),
+                    "price": self.precision.price(&htx_symbol, limit_price),
                     "operator": operator,
                     "client-order-id": client_order_id,
                 });
@@ -643,8 +649,8 @@ impl Trading for HtxConnector {
                     "account-id": account_id.to_string(),
                     "symbol": htx_symbol,
                     "type": order_type,
-                    "amount": quantity.to_string(),
-                    "price": price.to_string(),
+                    "amount": qty_str,
+                    "price": self.precision.price(&htx_symbol, price),
                     "client-order-id": client_order_id,
                 });
 
@@ -679,8 +685,8 @@ impl Trading for HtxConnector {
                     "account-id": account_id.to_string(),
                     "symbol": htx_symbol,
                     "type": order_type,
-                    "amount": quantity.to_string(),
-                    "price": price_val.to_string(),
+                    "amount": qty_str,
+                    "price": self.precision.price(&htx_symbol, price_val),
                     "client-order-id": client_order_id,
                 });
 
@@ -714,8 +720,8 @@ impl Trading for HtxConnector {
                     "account-id": account_id.to_string(),
                     "symbol": htx_symbol,
                     "type": order_type,
-                    "amount": quantity.to_string(),
-                    "price": price.to_string(),
+                    "amount": qty_str,
+                    "price": self.precision.price(&htx_symbol, price),
                     "client-order-id": client_order_id,
                 });
 
@@ -751,13 +757,13 @@ impl Trading for HtxConnector {
                     "accountId": account_id.to_string(),
                     "symbol": htx_symbol,
                     "orderSide": side_str,
-                    "orderSize": quantity.to_string(),
+                    "orderSize": qty_str,
                     "orderType": "trailing-stop-order",
                     // trailingRate must be > 0 and <= 5 (as percentage string)
                     "trailingRate": format!("{:.4}", callback_rate.clamp(0.0001, 5.0)),
                     // activationPrice is optional
                     "activationPrice": activation_price
-                        .map(|p| p.to_string())
+                        .map(|p| self.precision.price(&htx_symbol, p))
                         .unwrap_or_default(),
                 });
 

@@ -39,6 +39,7 @@ use crate::core::traits::{
 };
 use crate::core::{CancelAll, AmendOrder};
 use crate::core::utils::DecayingRateLimiter;
+use crate::core::utils::PrecisionCache;
 
 use super::endpoints::{DeribitUrls, DeribitMethod, format_symbol};
 use super::auth::DeribitAuth;
@@ -62,6 +63,8 @@ pub struct DeribitConnector {
     request_id: Arc<Mutex<u64>>,
     /// Rate limiter (Deribit credit system: max 10000 credits, refill 10000/s, cost 500/request)
     rate_limiter: Arc<Mutex<DecayingRateLimiter>>,
+    /// Per-symbol precision cache for safe price/qty formatting
+    precision: PrecisionCache,
 }
 
 impl DeribitConnector {
@@ -92,6 +95,7 @@ impl DeribitConnector {
             testnet,
             request_id: Arc::new(Mutex::new(1)),
             rate_limiter,
+            precision: PrecisionCache::new(),
         };
 
         // Authenticate if we have credentials
@@ -467,6 +471,7 @@ impl MarketData for DeribitConnector {
             }
         }
 
+        self.precision.load_from_symbols(&all_symbols);
         Ok(all_symbols)
     }
 }

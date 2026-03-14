@@ -69,6 +69,8 @@ pub struct BitgetConnector {
     market_limiter: Arc<Mutex<SimpleRateLimiter>>,
     /// Rate limiter для trading (10 req/sec)
     trading_limiter: Arc<Mutex<SimpleRateLimiter>>,
+    /// Per-symbol precision cache for safe price/qty formatting
+    precision: crate::core::utils::precision::PrecisionCache,
 }
 
 impl BitgetConnector {
@@ -114,6 +116,7 @@ impl BitgetConnector {
             urls,
             market_limiter,
             trading_limiter,
+            precision: crate::core::utils::precision::PrecisionCache::new(),
         })
     }
 
@@ -525,7 +528,9 @@ impl MarketData for BitgetConnector {
 
     async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<crate::core::types::SymbolInfo>> {
         let response = self.get_symbols(account_type).await?;
-        BitgetParser::parse_exchange_info(&response)
+        let symbols = BitgetParser::parse_exchange_info(&response)?;
+        self.precision.load_from_symbols(&symbols);
+        Ok(symbols)
     }
 }
 
@@ -547,6 +552,7 @@ impl Trading for BitgetConnector {
             AccountType::FuturesIsolated => "isolated",
             _ => "crossed",
         };
+        let qty_str = self.precision.qty(&formatted_symbol, quantity);
 
         let (endpoint, body) = match req.order_type {
             OrderType::Market => {
@@ -557,7 +563,7 @@ impl Trading for BitgetConnector {
                         "productType": get_product_type(&symbol.quote),
                         "marginMode": margin_mode,
                         "marginCoin": symbol.quote.to_uppercase(),
-                        "size": quantity.to_string(),
+                        "size": qty_str,
                         "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
                         "orderType": "market",
                         "force": "gtc",
@@ -569,7 +575,7 @@ impl Trading for BitgetConnector {
                         "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
                         "orderType": "market",
                         "force": "gtc",
-                        "size": quantity.to_string(),
+                        "size": qty_str,
                         "clientOid": client_oid,
                     })
                 };
@@ -584,8 +590,8 @@ impl Trading for BitgetConnector {
                         "productType": get_product_type(&symbol.quote),
                         "marginMode": margin_mode,
                         "marginCoin": symbol.quote.to_uppercase(),
-                        "size": quantity.to_string(),
-                        "price": price.to_string(),
+                        "size": qty_str,
+                        "price": self.precision.price(&formatted_symbol, price),
                         "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
                         "orderType": "limit",
                         "force": "gtc",
@@ -597,8 +603,8 @@ impl Trading for BitgetConnector {
                         "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
                         "orderType": "limit",
                         "force": "gtc",
-                        "price": price.to_string(),
-                        "size": quantity.to_string(),
+                        "price": self.precision.price(&formatted_symbol, price),
+                        "size": qty_str,
                         "clientOid": client_oid,
                     })
                 };
@@ -614,8 +620,8 @@ impl Trading for BitgetConnector {
                         "productType": get_product_type(&symbol.quote),
                         "marginMode": margin_mode,
                         "marginCoin": symbol.quote.to_uppercase(),
-                        "size": quantity.to_string(),
-                        "price": price.to_string(),
+                        "size": qty_str,
+                        "price": self.precision.price(&formatted_symbol, price),
                         "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
                         "orderType": "limit",
                         "force": "post_only",
@@ -627,8 +633,8 @@ impl Trading for BitgetConnector {
                         "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
                         "orderType": "limit",
                         "force": "post_only",
-                        "price": price.to_string(),
-                        "size": quantity.to_string(),
+                        "price": self.precision.price(&formatted_symbol, price),
+                        "size": qty_str,
                         "clientOid": client_oid,
                     })
                 };
@@ -645,8 +651,8 @@ impl Trading for BitgetConnector {
                         "productType": get_product_type(&symbol.quote),
                         "marginMode": margin_mode,
                         "marginCoin": symbol.quote.to_uppercase(),
-                        "size": quantity.to_string(),
-                        "price": price_val.to_string(),
+                        "size": qty_str,
+                        "price": self.precision.price(&formatted_symbol, price_val),
                         "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
                         "orderType": "limit",
                         "force": "ioc",
@@ -658,8 +664,8 @@ impl Trading for BitgetConnector {
                         "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
                         "orderType": "limit",
                         "force": "ioc",
-                        "price": price_val.to_string(),
-                        "size": quantity.to_string(),
+                        "price": self.precision.price(&formatted_symbol, price_val),
+                        "size": qty_str,
                         "clientOid": client_oid,
                     })
                 };
@@ -675,8 +681,8 @@ impl Trading for BitgetConnector {
                         "productType": get_product_type(&symbol.quote),
                         "marginMode": margin_mode,
                         "marginCoin": symbol.quote.to_uppercase(),
-                        "size": quantity.to_string(),
-                        "price": price.to_string(),
+                        "size": qty_str,
+                        "price": self.precision.price(&formatted_symbol, price),
                         "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
                         "orderType": "limit",
                         "force": "fok",
@@ -688,8 +694,8 @@ impl Trading for BitgetConnector {
                         "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
                         "orderType": "limit",
                         "force": "fok",
-                        "price": price.to_string(),
-                        "size": quantity.to_string(),
+                        "price": self.precision.price(&formatted_symbol, price),
+                        "size": qty_str,
                         "clientOid": client_oid,
                     })
                 };
@@ -710,8 +716,8 @@ impl Trading for BitgetConnector {
                         "productType": get_product_type(&symbol.quote),
                         "marginMode": margin_mode,
                         "marginCoin": symbol.quote.to_uppercase(),
-                        "size": quantity.to_string(),
-                        "price": price.to_string(),
+                        "size": qty_str,
+                        "price": self.precision.price(&formatted_symbol, price),
                         "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
                         "orderType": "limit",
                         "force": "gtc",
@@ -723,8 +729,8 @@ impl Trading for BitgetConnector {
                         "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
                         "orderType": "limit",
                         "force": "gtc",
-                        "price": price.to_string(),
-                        "size": quantity.to_string(),
+                        "price": self.precision.price(&formatted_symbol, price),
+                        "size": qty_str,
                         "clientOid": client_oid,
                     })
                 };
@@ -748,7 +754,7 @@ impl Trading for BitgetConnector {
                     "productType": get_product_type(&symbol.quote),
                     "marginMode": margin_mode,
                     "marginCoin": symbol.quote.to_uppercase(),
-                    "size": quantity.to_string(),
+                    "size": qty_str,
                     "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
                     "orderType": order_type_str,
                     "force": "gtc",
@@ -756,7 +762,7 @@ impl Trading for BitgetConnector {
                     "clientOid": client_oid,
                 });
                 if let Some(p) = price_field {
-                    body_obj["price"] = json!(p.to_string());
+                    body_obj["price"] = json!(self.precision.price(&formatted_symbol, p));
                 }
                 (BitgetEndpoint::FuturesCreateOrder, body_obj)
             }
@@ -773,8 +779,8 @@ impl Trading for BitgetConnector {
                     "productType": get_product_type(&symbol.quote),
                     "marginMode": margin_mode,
                     "marginCoin": symbol.quote.to_uppercase(),
-                    "size": quantity.to_string(),
-                    "triggerPrice": stop_price.to_string(),
+                    "size": qty_str,
+                    "triggerPrice": self.precision.price(&formatted_symbol, stop_price),
                     "triggerType": "mark_price",
                     "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
                     "orderType": "market",
@@ -796,9 +802,9 @@ impl Trading for BitgetConnector {
                     "productType": get_product_type(&symbol.quote),
                     "marginMode": margin_mode,
                     "marginCoin": symbol.quote.to_uppercase(),
-                    "size": quantity.to_string(),
-                    "price": limit_price.to_string(),
-                    "triggerPrice": stop_price.to_string(),
+                    "size": qty_str,
+                    "price": self.precision.price(&formatted_symbol, limit_price),
+                    "triggerPrice": self.precision.price(&formatted_symbol, stop_price),
                     "triggerType": "mark_price",
                     "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
                     "orderType": "limit",
@@ -820,7 +826,7 @@ impl Trading for BitgetConnector {
                     "productType": get_product_type(&symbol.quote),
                     "marginMode": margin_mode,
                     "marginCoin": symbol.quote.to_uppercase(),
-                    "size": quantity.to_string(),
+                    "size": qty_str,
                     "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
                     "orderType": "market",
                     "planType": "track_plan",
@@ -828,7 +834,7 @@ impl Trading for BitgetConnector {
                     "clientOid": client_oid,
                 });
                 if let Some(act_price) = activation_price {
-                    body["triggerPrice"] = json!(act_price.to_string());
+                    body["triggerPrice"] = json!(self.precision.price(&formatted_symbol, act_price));
                     body["triggerType"] = json!("mark_price");
                 }
                 (BitgetEndpoint::FuturesPlanOrder, body)
@@ -851,16 +857,16 @@ impl Trading for BitgetConnector {
                     "productType": get_product_type(&symbol.quote),
                     "marginMode": margin_mode,
                     "marginCoin": symbol.quote.to_uppercase(),
-                    "size": quantity.to_string(),
+                    "size": qty_str,
                     "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
                     "orderType": order_type_str,
                     "force": "gtc",
-                    "presetStopSurplusPrice": take_profit.to_string(),
-                    "presetStopLossPrice": stop_loss.to_string(),
+                    "presetStopSurplusPrice": self.precision.price(&formatted_symbol, take_profit),
+                    "presetStopLossPrice": self.precision.price(&formatted_symbol, stop_loss),
                     "clientOid": client_oid,
                 });
                 if let Some(p) = price_field {
-                    body_obj["price"] = json!(p.to_string());
+                    body_obj["price"] = json!(self.precision.price(&formatted_symbol, p));
                 }
                 let order_id = {
                     let response = self.post(BitgetEndpoint::FuturesCreateOrder, body_obj, account_type).await?;
@@ -884,7 +890,7 @@ impl Trading for BitgetConnector {
                     "productType": get_product_type(&symbol.quote),
                     "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
                     "tradeSide": "open",
-                    "totalQuantity": quantity.to_string(),
+                    "totalQuantity": qty_str,
                     // timeInterval in seconds between each sub-order execution
                     "timeInterval": interval_seconds.unwrap_or(60).to_string(),
                     // priceType: "market" = TWAP at market; "limit" = limit TWAP
@@ -895,8 +901,8 @@ impl Trading for BitgetConnector {
                 let interval = interval_seconds.unwrap_or(60);
                 let num_slices = (duration_seconds / interval).max(1);
                 let slice_qty = quantity / num_slices as f64;
-                body["executeQuantity"] = json!(slice_qty.to_string());
-                body["size"] = json!(quantity.to_string());
+                body["executeQuantity"] = json!(self.precision.qty(&formatted_symbol, slice_qty));
+                body["size"] = json!(qty_str);
 
                 let response = self.post(BitgetEndpoint::FuturesTwapOrder, body, account_type).await?;
                 let algo_id = response
@@ -925,13 +931,13 @@ impl Trading for BitgetConnector {
                     "productType": get_product_type(&symbol.quote),
                     "marginMode": margin_mode,
                     "marginCoin": symbol.quote.to_uppercase(),
-                    "size": quantity.to_string(),
-                    "price": price.to_string(),
+                    "size": qty_str,
+                    "price": self.precision.price(&formatted_symbol, price),
                     "side": match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
                     "orderType": "limit",
                     "force": "gtc",
                     // Bitget iceberg param — display quantity of each visible slice
-                    "icebergQuantity": display_quantity.to_string(),
+                    "icebergQuantity": self.precision.qty(&formatted_symbol, display_quantity),
                     "clientOid": client_oid,
                 });
                 (BitgetEndpoint::FuturesCreateOrder, body)
@@ -1627,13 +1633,13 @@ impl AmendOrder for BitgetConnector {
                 "orderId": req.order_id,
             });
             if let Some(new_price) = req.fields.price {
-                body["newPrice"] = json!(new_price.to_string());
+                body["newPrice"] = json!(self.precision.price(&formatted_symbol, new_price));
             }
             if let Some(new_qty) = req.fields.quantity {
-                body["newSize"] = json!(new_qty.to_string());
+                body["newSize"] = json!(self.precision.qty(&formatted_symbol, new_qty));
             }
             if let Some(trigger) = req.fields.trigger_price {
-                body["presetStopSurplusPrice"] = json!(trigger.to_string());
+                body["presetStopSurplusPrice"] = json!(self.precision.price(&formatted_symbol, trigger));
             }
             let response = self.post(BitgetEndpoint::FuturesModifyOrder, body, account_type).await?;
             // Fetch updated order
@@ -1650,10 +1656,10 @@ impl AmendOrder for BitgetConnector {
                 "orderId": req.order_id,
             });
             if let Some(new_price) = req.fields.price {
-                body["newPrice"] = json!(new_price.to_string());
+                body["newPrice"] = json!(self.precision.price(&formatted_symbol, new_price));
             }
             if let Some(new_qty) = req.fields.quantity {
-                body["newSize"] = json!(new_qty.to_string());
+                body["newSize"] = json!(self.precision.qty(&formatted_symbol, new_qty));
             }
             let response = self.post(BitgetEndpoint::SpotModifyOrder, body, account_type).await?;
             let order_id = response.get("data")
@@ -1695,6 +1701,7 @@ impl BatchOrders for BitgetConnector {
 
         if is_futures {
             let order_list: Vec<Value> = orders.iter().map(|o| {
+                let o_sym = format_symbol(&o.symbol.base, &o.symbol.quote, account_type);
                 let price_f = match &o.order_type {
                     OrderType::Limit { price } | OrderType::PostOnly { price } | OrderType::Fok { price } => Some(*price),
                     OrderType::Ioc { price } => *price,
@@ -1710,14 +1717,14 @@ impl BatchOrders for BitgetConnector {
                 };
                 let mut item = json!({
                     "marginMode": match account_type { AccountType::FuturesIsolated => "isolated", _ => "crossed" },
-                    "size": o.quantity.to_string(),
+                    "size": self.precision.qty(&o_sym, o.quantity),
                     "side": match o.side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
                     "orderType": ot_str,
                     "force": force_str,
                     "clientOid": format!("cc_{}", crate::core::timestamp_millis()),
                 });
                 if let Some(p) = price_f {
-                    item["price"] = json!(p.to_string());
+                    item["price"] = json!(self.precision.price(&o_sym, p));
                 }
                 item
             }).collect();
@@ -1765,6 +1772,7 @@ impl BatchOrders for BitgetConnector {
         } else {
             // Spot batch orders — same symbol, up to 50
             let order_list: Vec<Value> = orders.iter().map(|o| {
+                let o_sym = format_symbol(&o.symbol.base, &o.symbol.quote, account_type);
                 let price_f = match &o.order_type {
                     OrderType::Limit { price } | OrderType::PostOnly { price } | OrderType::Fok { price } => Some(*price),
                     OrderType::Ioc { price } => *price,
@@ -1782,11 +1790,11 @@ impl BatchOrders for BitgetConnector {
                     "side": match o.side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" },
                     "orderType": ot_str,
                     "force": force_str,
-                    "size": o.quantity.to_string(),
+                    "size": self.precision.qty(&o_sym, o.quantity),
                     "clientOid": format!("cc_{}", crate::core::timestamp_millis()),
                 });
                 if let Some(p) = price_f {
-                    item["price"] = json!(p.to_string());
+                    item["price"] = json!(self.precision.price(&o_sym, p));
                 }
                 item
             }).collect();

@@ -38,6 +38,7 @@ use crate::core::types::{WithdrawRequest, FundsHistoryFilter, FundsRecordType};
 use crate::core::types::SymbolInfo;
 use crate::core::types::ConnectorStats;
 use crate::core::utils::GroupRateLimiter;
+use crate::core::utils::PrecisionCache;
 
 use super::endpoints::{UpbitUrls, UpbitEndpoint, format_symbol, map_kline_interval};
 use super::auth::{UpbitAuth, json_to_query_string};
@@ -57,6 +58,8 @@ pub struct UpbitConnector {
     urls: UpbitUrls,
     /// Rate limiter with groups: market (10/s), account (30/s), order (8/s)
     rate_limiter: Arc<Mutex<GroupRateLimiter>>,
+    /// Per-symbol precision cache for safe price/qty formatting
+    precision: PrecisionCache,
 }
 
 impl UpbitConnector {
@@ -90,6 +93,7 @@ impl UpbitConnector {
             auth,
             urls,
             rate_limiter,
+            precision: PrecisionCache::new(),
         })
     }
 
@@ -463,7 +467,9 @@ impl MarketData for UpbitConnector {
     async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         // GET /v1/market/all returns all markets
         let response = self.get(UpbitEndpoint::TradingPairs, HashMap::new(), AccountType::Spot).await?;
-        UpbitParser::parse_exchange_info(&response)
+        let info = UpbitParser::parse_exchange_info(&response)?;
+        self.precision.load_from_symbols(&info);
+        Ok(info)
     }
 }
 
@@ -499,10 +505,10 @@ impl Trading for UpbitConnector {
                         // Market sell: quantity is volume to sell
                         match side {
                             OrderSide::Buy => {
-                                body["price"] = json!(quantity.to_string());
+                                body["price"] = json!(self.precision.qty(&upbit_symbol, quantity));
                             },
                             OrderSide::Sell => {
-                                body["volume"] = json!(quantity.to_string());
+                                body["volume"] = json!(self.precision.qty(&upbit_symbol, quantity));
                             },
                         }
                 
@@ -515,20 +521,20 @@ impl Trading for UpbitConnector {
                         } else {
                             format_symbol(&symbol.base, &symbol.quote, account_type)
                         };
-                
+
                         let side_str = match side {
                             OrderSide::Buy => "bid",
                             OrderSide::Sell => "ask",
                         };
-                
+
                         let body = json!({
                             "market": upbit_symbol,
                             "side": side_str,
                             "ord_type": "limit",
-                            "volume": quantity.to_string(),
-                            "price": price.to_string(),
+                            "volume": self.precision.qty(&upbit_symbol, quantity),
+                            "price": self.precision.price(&upbit_symbol, price),
                         });
-                
+
                         let response = self.post(UpbitEndpoint::CreateOrder, body, account_type).await?;
                         UpbitParser::parse_order(&response, &upbit_symbol).map(PlaceOrderResponse::Simple)
             }
@@ -1000,10 +1006,10 @@ impl AmendOrder for UpbitConnector {
         }
 
         if let Some(new_price) = req.fields.price {
-            body["price"] = serde_json::json!(new_price.to_string());
+            body["price"] = serde_json::json!(self.precision.price(&upbit_symbol, new_price));
         }
         if let Some(new_qty) = req.fields.quantity {
-            body["volume"] = serde_json::json!(new_qty.to_string());
+            body["volume"] = serde_json::json!(self.precision.qty(&upbit_symbol, new_qty));
         }
 
         // Upbit cancel_and_new requires ord_type; default to "limit" since amend

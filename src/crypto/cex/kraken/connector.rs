@@ -40,6 +40,7 @@ use crate::core::traits::{
 };
 use crate::core::types::ConnectorStats;
 use crate::core::utils::DecayingRateLimiter;
+use crate::core::utils::precision::PrecisionCache;
 
 use super::endpoints::{KrakenUrls, KrakenEndpoint, format_symbol, map_ohlc_interval};
 use super::auth::KrakenAuth;
@@ -61,6 +62,8 @@ pub struct KrakenConnector {
     testnet: bool,
     /// Rate limiter (Kraken Spot Starter tier: max=15, decay=0.33/s)
     rate_limiter: Arc<Mutex<DecayingRateLimiter>>,
+    /// Per-symbol precision cache (populated after get_exchange_info)
+    precision: PrecisionCache,
 }
 
 impl KrakenConnector {
@@ -90,6 +93,7 @@ impl KrakenConnector {
             urls,
             testnet,
             rate_limiter,
+            precision: PrecisionCache::new(),
         })
     }
 
@@ -397,7 +401,9 @@ impl MarketData for KrakenConnector {
 
     async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let response = self.get_asset_pairs().await?;
-        KrakenParser::parse_exchange_info(&response)
+        let symbols = KrakenParser::parse_exchange_info(&response)?;
+        self.precision.load_from_symbols(&symbols);
+        Ok(symbols)
     }
 }
 
@@ -415,6 +421,7 @@ impl Trading for KrakenConnector {
 
         let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
         let side_str = match side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" };
+        let sym = &formatted;
 
         // Futures endpoint selection
         let endpoint = match account_type {
@@ -428,7 +435,7 @@ impl Trading for KrakenConnector {
                 p.insert("pair".to_string(), formatted.clone());
                 p.insert("type".to_string(), side_str.to_string());
                 p.insert("ordertype".to_string(), "market".to_string());
-                p.insert("volume".to_string(), quantity.to_string());
+                p.insert("volume".to_string(), self.precision.qty(sym, quantity));
                 (p, OrderType::Market, None, None, crate::core::TimeInForce::Gtc)
             }
             OrderType::Limit { price } => {
@@ -436,8 +443,8 @@ impl Trading for KrakenConnector {
                 p.insert("pair".to_string(), formatted.clone());
                 p.insert("type".to_string(), side_str.to_string());
                 p.insert("ordertype".to_string(), "limit".to_string());
-                p.insert("price".to_string(), price.to_string());
-                p.insert("volume".to_string(), quantity.to_string());
+                p.insert("price".to_string(), self.precision.price(sym, price));
+                p.insert("volume".to_string(), self.precision.qty(sym, quantity));
                 (p, OrderType::Limit { price }, Some(price), None, crate::core::TimeInForce::Gtc)
             }
             OrderType::PostOnly { price } => {
@@ -445,8 +452,8 @@ impl Trading for KrakenConnector {
                 p.insert("pair".to_string(), formatted.clone());
                 p.insert("type".to_string(), side_str.to_string());
                 p.insert("ordertype".to_string(), "limit".to_string());
-                p.insert("price".to_string(), price.to_string());
-                p.insert("volume".to_string(), quantity.to_string());
+                p.insert("price".to_string(), self.precision.price(sym, price));
+                p.insert("volume".to_string(), self.precision.qty(sym, quantity));
                 p.insert("oflags".to_string(), "post".to_string());
                 (p, OrderType::PostOnly { price }, Some(price), None, crate::core::TimeInForce::Gtc)
             }
@@ -456,8 +463,8 @@ impl Trading for KrakenConnector {
                 p.insert("pair".to_string(), formatted.clone());
                 p.insert("type".to_string(), side_str.to_string());
                 p.insert("ordertype".to_string(), "limit".to_string());
-                p.insert("price".to_string(), px_val.to_string());
-                p.insert("volume".to_string(), quantity.to_string());
+                p.insert("price".to_string(), self.precision.price(sym, px_val));
+                p.insert("volume".to_string(), self.precision.qty(sym, quantity));
                 p.insert("timeinforce".to_string(), "IOC".to_string());
                 (p, OrderType::Ioc { price }, price, None, crate::core::TimeInForce::Ioc)
             }
@@ -467,8 +474,8 @@ impl Trading for KrakenConnector {
                 p.insert("pair".to_string(), formatted.clone());
                 p.insert("type".to_string(), side_str.to_string());
                 p.insert("ordertype".to_string(), "limit".to_string());
-                p.insert("price".to_string(), price.to_string());
-                p.insert("volume".to_string(), quantity.to_string());
+                p.insert("price".to_string(), self.precision.price(sym, price));
+                p.insert("volume".to_string(), self.precision.qty(sym, quantity));
                 p.insert("timeinforce".to_string(), "IOC".to_string());
                 (p, OrderType::Fok { price }, Some(price), None, crate::core::TimeInForce::Fok)
             }
@@ -478,8 +485,8 @@ impl Trading for KrakenConnector {
                 p.insert("pair".to_string(), formatted.clone());
                 p.insert("type".to_string(), side_str.to_string());
                 p.insert("ordertype".to_string(), "stop-loss".to_string());
-                p.insert("price".to_string(), stop_price.to_string());
-                p.insert("volume".to_string(), quantity.to_string());
+                p.insert("price".to_string(), self.precision.price(sym, stop_price));
+                p.insert("volume".to_string(), self.precision.qty(sym, quantity));
                 (p, OrderType::StopMarket { stop_price }, None, Some(stop_price), crate::core::TimeInForce::Gtc)
             }
             OrderType::StopLimit { stop_price, limit_price } => {
@@ -488,9 +495,9 @@ impl Trading for KrakenConnector {
                 p.insert("pair".to_string(), formatted.clone());
                 p.insert("type".to_string(), side_str.to_string());
                 p.insert("ordertype".to_string(), "stop-loss-limit".to_string());
-                p.insert("price".to_string(), stop_price.to_string());
-                p.insert("price2".to_string(), limit_price.to_string());
-                p.insert("volume".to_string(), quantity.to_string());
+                p.insert("price".to_string(), self.precision.price(sym, stop_price));
+                p.insert("price2".to_string(), self.precision.price(sym, limit_price));
+                p.insert("volume".to_string(), self.precision.qty(sym, quantity));
                 (p, OrderType::StopLimit { stop_price, limit_price }, Some(limit_price), Some(stop_price), crate::core::TimeInForce::Gtc)
             }
             OrderType::Gtd { price, expire_time } => {
@@ -498,8 +505,8 @@ impl Trading for KrakenConnector {
                 p.insert("pair".to_string(), formatted.clone());
                 p.insert("type".to_string(), side_str.to_string());
                 p.insert("ordertype".to_string(), "limit".to_string());
-                p.insert("price".to_string(), price.to_string());
-                p.insert("volume".to_string(), quantity.to_string());
+                p.insert("price".to_string(), self.precision.price(sym, price));
+                p.insert("volume".to_string(), self.precision.qty(sym, quantity));
                 // Kraken GTD: timeinforce=GTD + expiretm = Unix timestamp or +<seconds>
                 p.insert("timeinforce".to_string(), "GTD".to_string());
                 p.insert("expiretm".to_string(), (expire_time / 1000).to_string());
@@ -520,10 +527,10 @@ impl Trading for KrakenConnector {
                 p.insert("symbol".to_string(), formatted.clone());
                 p.insert("side".to_string(), side_str.to_string());
                 p.insert("orderType".to_string(), ord_type.to_string());
-                p.insert("size".to_string(), quantity.to_string());
+                p.insert("size".to_string(), self.precision.qty(sym, quantity));
                 p.insert("reduceOnly".to_string(), "true".to_string());
                 if let Some(px) = price {
-                    p.insert("limitPrice".to_string(), px.to_string());
+                    p.insert("limitPrice".to_string(), self.precision.price(sym, px));
                 }
                 (p, OrderType::ReduceOnly { price }, price, None, crate::core::TimeInForce::Gtc)
             }
@@ -533,9 +540,9 @@ impl Trading for KrakenConnector {
                 p.insert("pair".to_string(), formatted.clone());
                 p.insert("type".to_string(), side_str.to_string());
                 p.insert("ordertype".to_string(), "iceberg".to_string());
-                p.insert("price".to_string(), price.to_string());
-                p.insert("volume".to_string(), quantity.to_string());
-                p.insert("displayvol".to_string(), display_quantity.to_string());
+                p.insert("price".to_string(), self.precision.price(sym, price));
+                p.insert("volume".to_string(), self.precision.qty(sym, quantity));
+                p.insert("displayvol".to_string(), self.precision.qty(sym, display_quantity));
                 (p, OrderType::Iceberg { price, display_quantity }, Some(price), None, crate::core::TimeInForce::Gtc)
             }
             OrderType::TrailingStop { .. } | OrderType::Oco { .. } | OrderType::Bracket { .. }
@@ -1084,13 +1091,13 @@ impl AmendOrder for KrakenConnector {
                 // Kraken Spot EditOrder: POST /0/private/EditOrder
                 let mut params = HashMap::new();
                 params.insert("txid".to_string(), req.order_id.clone());
-                params.insert("pair".to_string(), formatted);
+                params.insert("pair".to_string(), formatted.clone());
 
                 if let Some(price) = req.fields.price {
-                    params.insert("price".to_string(), price.to_string());
+                    params.insert("price".to_string(), self.precision.price(&formatted, price));
                 }
                 if let Some(qty) = req.fields.quantity {
-                    params.insert("volume".to_string(), qty.to_string());
+                    params.insert("volume".to_string(), self.precision.qty(&formatted, qty));
                 }
 
                 let response = self.post(KrakenEndpoint::SpotEditOrder, params, account_type).await?;
@@ -1100,13 +1107,13 @@ impl AmendOrder for KrakenConnector {
                 // Kraken Futures editorder
                 let mut params = HashMap::new();
                 params.insert("orderId".to_string(), req.order_id.clone());
-                params.insert("symbol".to_string(), formatted);
+                params.insert("symbol".to_string(), formatted.clone());
 
                 if let Some(price) = req.fields.price {
-                    params.insert("limitPrice".to_string(), price.to_string());
+                    params.insert("limitPrice".to_string(), self.precision.price(&formatted, price));
                 }
                 if let Some(qty) = req.fields.quantity {
-                    params.insert("size".to_string(), qty.to_string());
+                    params.insert("size".to_string(), self.precision.qty(&formatted, qty));
                 }
 
                 let response = self.post(KrakenEndpoint::FuturesEditOrder, params, account_type).await?;
@@ -1168,7 +1175,7 @@ impl BatchOrders for KrakenConnector {
                 }
                 OrderType::Limit { price } => {
                     obj["orderType"] = json!("lmt");
-                    obj["limitPrice"] = json!(price);
+                    obj["limitPrice"] = json!(self.precision.price(&formatted, price));
                 }
                 _ => {
                     obj["orderType"] = json!("mkt");

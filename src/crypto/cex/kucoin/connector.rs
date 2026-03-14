@@ -76,6 +76,8 @@ pub struct KuCoinConnector {
     testnet: bool,
     /// Rate limiter (4000 weight per 30 seconds)
     rate_limiter: Arc<Mutex<WeightRateLimiter>>,
+    /// Per-symbol precision cache for safe price/qty formatting
+    precision: crate::core::utils::precision::PrecisionCache,
 }
 
 impl KuCoinConnector {
@@ -118,6 +120,7 @@ impl KuCoinConnector {
             urls,
             testnet,
             rate_limiter,
+            precision: crate::core::utils::precision::PrecisionCache::new(),
         })
     }
 
@@ -765,7 +768,9 @@ impl MarketData for KuCoinConnector {
 
     async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<crate::core::types::SymbolInfo>> {
         let response = self.get_symbols(account_type).await?;
-        KuCoinParser::parse_exchange_info(&response)
+        let symbols = KuCoinParser::parse_exchange_info(&response)?;
+        self.precision.load_from_symbols(&symbols);
+        Ok(symbols)
     }
 }
 
@@ -797,7 +802,7 @@ impl Trading for KuCoinConnector {
                     "symbol": formatted_symbol,
                     "side": side_str,
                     "type": "market",
-                    "size": quantity.to_string(),
+                    "size": self.precision.qty(&formatted_symbol, quantity),
                 });
                 (body, OrderType::Market, None, None, crate::core::TimeInForce::Gtc)
             }
@@ -814,8 +819,8 @@ impl Trading for KuCoinConnector {
                     "symbol": formatted_symbol,
                     "side": side_str,
                     "type": "limit",
-                    "size": quantity.to_string(),
-                    "price": price.to_string(),
+                    "size": self.precision.qty(&formatted_symbol, quantity),
+                    "price": self.precision.price(&formatted_symbol, price),
                     "timeInForce": tif,
                     "postOnly": post_only,
                 });
@@ -827,8 +832,8 @@ impl Trading for KuCoinConnector {
                     "symbol": formatted_symbol,
                     "side": side_str,
                     "type": "limit",
-                    "size": quantity.to_string(),
-                    "price": price.to_string(),
+                    "size": self.precision.qty(&formatted_symbol, quantity),
+                    "price": self.precision.price(&formatted_symbol, price),
                     "postOnly": true,
                 });
                 (body, OrderType::PostOnly { price }, Some(price), None, crate::core::TimeInForce::Gtc)
@@ -840,8 +845,8 @@ impl Trading for KuCoinConnector {
                     "symbol": formatted_symbol,
                     "side": side_str,
                     "type": "limit",
-                    "size": quantity.to_string(),
-                    "price": px.to_string(),
+                    "size": self.precision.qty(&formatted_symbol, quantity),
+                    "price": self.precision.price(&formatted_symbol, px),
                     "timeInForce": "IOC",
                 });
                 (body, OrderType::Ioc { price }, price, None, crate::core::TimeInForce::Ioc)
@@ -852,8 +857,8 @@ impl Trading for KuCoinConnector {
                     "symbol": formatted_symbol,
                     "side": side_str,
                     "type": "limit",
-                    "size": quantity.to_string(),
-                    "price": price.to_string(),
+                    "size": self.precision.qty(&formatted_symbol, quantity),
+                    "price": self.precision.price(&formatted_symbol, price),
                     "timeInForce": "FOK",
                 });
                 (body, OrderType::Fok { price }, Some(price), None, crate::core::TimeInForce::Fok)
@@ -869,9 +874,9 @@ impl Trading for KuCoinConnector {
                     "symbol": formatted_symbol,
                     "side": side_str,
                     "type": "market",
-                    "size": quantity.to_string(),
+                    "size": self.precision.qty(&formatted_symbol, quantity),
                     "stop": stop_dir,
-                    "stopPrice": stop_price.to_string(),
+                    "stopPrice": self.precision.price(&formatted_symbol, stop_price),
                     "stopPriceType": "TP",  // trade price
                 });
                 (body, OrderType::StopMarket { stop_price }, None, Some(stop_price), crate::core::TimeInForce::Gtc)
@@ -886,10 +891,10 @@ impl Trading for KuCoinConnector {
                     "symbol": formatted_symbol,
                     "side": side_str,
                     "type": "limit",
-                    "size": quantity.to_string(),
-                    "price": limit_price.to_string(),
+                    "size": self.precision.qty(&formatted_symbol, quantity),
+                    "price": self.precision.price(&formatted_symbol, limit_price),
                     "stop": stop_dir,
-                    "stopPrice": stop_price.to_string(),
+                    "stopPrice": self.precision.price(&formatted_symbol, stop_price),
                     "stopPriceType": "TP",
                 });
                 (body, OrderType::StopLimit { stop_price, limit_price }, Some(limit_price), Some(stop_price), crate::core::TimeInForce::Gtc)
@@ -910,11 +915,11 @@ impl Trading for KuCoinConnector {
                     "symbol": formatted_symbol,
                     "side": side_str,
                     "type": ord_type,
-                    "size": quantity.to_string(),
+                    "size": self.precision.qty(&formatted_symbol, quantity),
                     "reduceOnly": true,
                 });
                 if let Some(px) = price {
-                    body["price"] = json!(px.to_string());
+                    body["price"] = json!(self.precision.price(&formatted_symbol, px));
                 }
                 (body, OrderType::ReduceOnly { price }, price, None, crate::core::TimeInForce::Gtc)
             }
@@ -926,8 +931,8 @@ impl Trading for KuCoinConnector {
                     "symbol": formatted_symbol,
                     "side": side_str,
                     "type": "limit",
-                    "size": quantity.to_string(),
-                    "price": price.to_string(),
+                    "size": self.precision.qty(&formatted_symbol, quantity),
+                    "price": self.precision.price(&formatted_symbol, price),
                     "timeInForce": "GTC",
                 });
                 (body, OrderType::Gtd { price, expire_time }, Some(price), None, crate::core::TimeInForce::Gtc)
@@ -947,10 +952,10 @@ impl Trading for KuCoinConnector {
                     "clientOid": client_oid,
                     "symbol": formatted_symbol,
                     "side": side_str,
-                    "price": price.to_string(),
-                    "size": quantity.to_string(),
-                    "stopPrice": stop_price.to_string(),
-                    "limitPrice": limit_price.to_string(),
+                    "price": self.precision.price(&formatted_symbol, price),
+                    "size": self.precision.qty(&formatted_symbol, quantity),
+                    "stopPrice": self.precision.price(&formatted_symbol, stop_price),
+                    "limitPrice": self.precision.price(&formatted_symbol, limit_price),
                     "tradeType": "TRADE",
                 });
                 let base_url = self.urls.rest_url(account_type);
@@ -995,11 +1000,11 @@ impl Trading for KuCoinConnector {
                     "symbol": formatted_symbol,
                     "side": side_str,
                     "type": "limit",
-                    "size": quantity.to_string(),
-                    "price": price.to_string(),
+                    "size": self.precision.qty(&formatted_symbol, quantity),
+                    "price": self.precision.price(&formatted_symbol, price),
                     "timeInForce": tif,
                     "iceberg": true,
-                    "visibleSize": display_quantity.to_string(),
+                    "visibleSize": self.precision.qty(&formatted_symbol, display_quantity),
                 });
                 // Use the standard create order endpoint — KuCoin HF supports iceberg flag
                 let response = self.post(endpoint, iceberg_body, account_type).await?;
@@ -1701,7 +1706,7 @@ impl BatchOrders for KuCoinConnector {
             AccountType::Spot | AccountType::Margin => {
                 // Spot HF batch: all orders must be for the same symbol, limit only
                 let batch: Vec<Value> = orders.iter().map(|req| {
-                    let symbol = format_symbol(&req.symbol.base, &req.symbol.quote, account_type);
+                    let sym = format_symbol(&req.symbol.base, &req.symbol.quote, account_type);
                     let side_str = match req.side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" };
                     let client_oid = req.client_order_id.clone()
                         .unwrap_or_else(|| format!("cc_{}", crate::core::timestamp_millis()));
@@ -1712,14 +1717,14 @@ impl BatchOrders for KuCoinConnector {
                     };
                     let mut obj = json!({
                         "clientOid": client_oid,
-                        "symbol": symbol,
+                        "symbol": sym,
                         "side": side_str,
                         "type": "limit",
                         "timeInForce": tif,
-                        "size": req.quantity.to_string(),
+                        "size": self.precision.qty(&sym, req.quantity),
                     });
                     if let OrderType::Limit { price } = req.order_type {
-                        obj["price"] = json!(price.to_string());
+                        obj["price"] = json!(self.precision.price(&sym, price));
                     }
                     obj
                 }).collect();
@@ -1728,15 +1733,15 @@ impl BatchOrders for KuCoinConnector {
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
                 // Futures batch: supports limit, market, stop orders
                 let batch: Vec<Value> = orders.iter().map(|req| {
-                    let symbol = format_symbol(&req.symbol.base, &req.symbol.quote, account_type);
+                    let sym = format_symbol(&req.symbol.base, &req.symbol.quote, account_type);
                     let side_str = match req.side { OrderSide::Buy => "buy", OrderSide::Sell => "sell" };
                     let client_oid = req.client_order_id.clone()
                         .unwrap_or_else(|| format!("cc_{}", crate::core::timestamp_millis()));
                     let mut obj = json!({
                         "clientOid": client_oid,
-                        "symbol": symbol,
+                        "symbol": sym,
                         "side": side_str,
-                        "size": req.quantity.to_string(),
+                        "size": self.precision.qty(&sym, req.quantity),
                     });
                     match req.order_type {
                         OrderType::Market => {
@@ -1744,7 +1749,7 @@ impl BatchOrders for KuCoinConnector {
                         }
                         OrderType::Limit { price } => {
                             obj["type"] = json!("limit");
-                            obj["price"] = json!(price.to_string());
+                            obj["price"] = json!(self.precision.price(&sym, price));
                         }
                         _ => {
                             obj["type"] = json!("market");
@@ -1818,6 +1823,7 @@ impl AmendOrder for KuCoinConnector {
         }
 
         let account_type = req.account_type;
+        let symbol_str = format_symbol(&req.symbol.base, &req.symbol.quote, account_type);
         let base_url = self.urls.rest_url(account_type);
         // Substitute orderId in the path
         let path = KuCoinEndpoint::FuturesAmendOrder.path()
@@ -1826,7 +1832,7 @@ impl AmendOrder for KuCoinConnector {
 
         let mut body = json!({});
         if let Some(price) = req.fields.price {
-            body["price"] = json!(price.to_string());
+            body["price"] = json!(self.precision.price(&symbol_str, price));
         }
         if let Some(qty) = req.fields.quantity {
             body["size"] = json!(qty as i64);

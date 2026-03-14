@@ -36,6 +36,7 @@ use crate::core::{
 use crate::core::traits::{Trading, Account, Positions, AmendOrder, BatchOrders, CancelAll, AccountTransfers};
 use crate::core::types::{ConnectorStats, SymbolInfo, AlgoOrderResponse, TransferRequest, TransferHistoryFilter, TransferResponse};
 use crate::core::utils::WeightRateLimiter;
+use crate::core::utils::PrecisionCache;
 
 use super::{HyperliquidUrls, HyperliquidAuth, HyperliquidParser, HyperliquidEndpoint};
 use super::endpoints::InfoType;
@@ -53,6 +54,8 @@ pub struct HyperliquidConnector {
     is_testnet: bool,
     /// Rate limiter (1200 weight/min)
     rate_limiter: Arc<Mutex<WeightRateLimiter>>,
+    /// Per-symbol precision cache for safe price/qty formatting
+    precision: PrecisionCache,
 }
 
 impl HyperliquidConnector {
@@ -88,6 +91,7 @@ impl HyperliquidConnector {
             auth,
             is_testnet,
             rate_limiter,
+            precision: PrecisionCache::new(),
         })
     }
 
@@ -533,16 +537,18 @@ impl MarketData for HyperliquidConnector {
     }
 
     async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
-        match account_type {
+        let info = match account_type {
             AccountType::Spot => {
                 let response = self.get_spot_metadata().await?;
-                HyperliquidParser::parse_spot_exchange_info(&response)
+                HyperliquidParser::parse_spot_exchange_info(&response)?
             }
             _ => {
                 let response = self.get_metadata().await?;
-                HyperliquidParser::parse_perp_exchange_info(&response)
+                HyperliquidParser::parse_perp_exchange_info(&response)?
             }
-        }
+        };
+        self.precision.load_from_symbols(&info);
+        Ok(info)
     }
 }
 

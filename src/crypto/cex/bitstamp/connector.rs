@@ -37,6 +37,7 @@ use crate::core::types::SymbolInfo;
 use crate::core::types::ConnectorStats;
 use crate::core::types::{WithdrawRequest, FundsHistoryFilter, FundsRecordType};
 use crate::core::utils::SimpleRateLimiter;
+use crate::core::utils::PrecisionCache;
 
 use super::endpoints::{BitstampUrls, BitstampEndpoint, format_symbol, map_kline_interval};
 use super::auth::BitstampAuth;
@@ -56,6 +57,8 @@ pub struct BitstampConnector {
     auth: Option<BitstampAuth>,
     /// Rate limiter (~167 requests per second sustained, 10000/10min)
     rate_limiter: Arc<Mutex<SimpleRateLimiter>>,
+    /// Per-symbol precision cache for safe price/qty formatting
+    precision: PrecisionCache,
 }
 
 impl BitstampConnector {
@@ -80,6 +83,7 @@ impl BitstampConnector {
             reqwest_client,
             auth,
             rate_limiter,
+            precision: PrecisionCache::new(),
         })
     }
 
@@ -433,7 +437,9 @@ impl MarketData for BitstampConnector {
         self.rate_limit_wait().await;
         let url = format!("{}/api/v2/trading-pairs-info/", BitstampUrls::base_url());
         let response = self.http.get(&url, &HashMap::new()).await?;
-        BitstampParser::parse_exchange_info(&response)
+        let info = BitstampParser::parse_exchange_info(&response)?;
+        self.precision.load_from_symbols(&info);
+        Ok(info)
     }
 }
 
@@ -452,30 +458,30 @@ impl Trading for BitstampConnector {
         match req.order_type {
             OrderType::Market => {
                 let pair = format_symbol(&symbol, account_type);
-                
+
                         let mut params = HashMap::new();
-                        params.insert("amount".to_string(), quantity.to_string());
-                
+                        params.insert("amount".to_string(), self.precision.qty(&pair, quantity));
+
                         let endpoint = match side {
                             OrderSide::Buy => BitstampEndpoint::BuyMarket,
                             OrderSide::Sell => BitstampEndpoint::SellMarket,
                         };
-                
+
                         let response = self.post(endpoint, Some(&pair), params).await?;
                         BitstampParser::parse_order(&response).map(PlaceOrderResponse::Simple)
             }
             OrderType::Limit { price } => {
                 let pair = format_symbol(&symbol, account_type);
-                
+
                         let mut params = HashMap::new();
-                        params.insert("amount".to_string(), quantity.to_string());
-                        params.insert("price".to_string(), price.to_string());
-                
+                        params.insert("amount".to_string(), self.precision.qty(&pair, quantity));
+                        params.insert("price".to_string(), self.precision.price(&pair, price));
+
                         let endpoint = match side {
                             OrderSide::Buy => BitstampEndpoint::BuyLimit,
                             OrderSide::Sell => BitstampEndpoint::SellLimit,
                         };
-                
+
                         let response = self.post(endpoint, Some(&pair), params).await?;
                         BitstampParser::parse_order(&response).map(PlaceOrderResponse::Simple)
             }
@@ -490,9 +496,9 @@ impl Trading for BitstampConnector {
 
                 let pair = format_symbol(&symbol, account_type);
                 let mut params = HashMap::new();
-                params.insert("amount".to_string(), quantity.to_string());
-                params.insert("stop_price".to_string(), stop_price.to_string());
-                params.insert("limit_price".to_string(), limit_price.to_string());
+                params.insert("amount".to_string(), self.precision.qty(&pair, quantity));
+                params.insert("stop_price".to_string(), self.precision.price(&pair, stop_price));
+                params.insert("limit_price".to_string(), self.precision.price(&pair, limit_price));
 
                 let response = self.post(BitstampEndpoint::SellStopLimit, Some(&pair), params).await?;
                 BitstampParser::parse_order(&response).map(PlaceOrderResponse::Simple)
@@ -667,11 +673,12 @@ impl AmendOrder for BitstampConnector {
         let mut params = HashMap::new();
         params.insert("id".to_string(), req.order_id.clone());
 
+        let symbol_str = format_symbol(&req.symbol, req.account_type);
         if let Some(new_price) = req.fields.price {
-            params.insert("price".to_string(), new_price.to_string());
+            params.insert("price".to_string(), self.precision.price(&symbol_str, new_price));
         }
         if let Some(new_qty) = req.fields.quantity {
-            params.insert("amount".to_string(), new_qty.to_string());
+            params.insert("amount".to_string(), self.precision.qty(&symbol_str, new_qty));
         }
 
         let response = self.post(BitstampEndpoint::ReplaceOrder, None, params).await?;
@@ -933,6 +940,7 @@ mod tests {
             reqwest_client,
             auth: None,
             rate_limiter,
+            precision: PrecisionCache::new(),
         };
 
         assert_eq!(connector.exchange_id(), ExchangeId::Bitstamp);

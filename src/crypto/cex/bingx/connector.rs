@@ -44,6 +44,7 @@ use crate::core::types::{
     SubAccountOperation, SubAccountResult, SubAccount,
 };
 use crate::core::utils::SimpleRateLimiter;
+use crate::core::utils::PrecisionCache;
 
 use super::endpoints::{BingxUrls, BingxEndpoint, format_symbol, map_kline_interval};
 use super::auth::BingxAuth;
@@ -63,6 +64,8 @@ pub struct BingxConnector {
     urls: BingxUrls,
     /// Rate limiter для market data (100 req/10s)
     market_limiter: Arc<Mutex<SimpleRateLimiter>>,
+    /// Per-symbol precision cache for safe price/qty formatting
+    precision: PrecisionCache,
 }
 
 impl BingxConnector {
@@ -87,6 +90,7 @@ impl BingxConnector {
             auth,
             urls,
             market_limiter,
+            precision: PrecisionCache::new(),
         })
     }
 
@@ -400,16 +404,18 @@ impl MarketData for BingxConnector {
     }
 
     async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
-        match account_type {
+        let info = match account_type {
             AccountType::Spot | AccountType::Margin => {
                 let response = self.get(BingxEndpoint::SpotSymbols, HashMap::new(), AccountType::Spot).await?;
-                BingxParser::parse_spot_exchange_info(&response)
+                BingxParser::parse_spot_exchange_info(&response)?
             }
             _ => {
                 let response = self.get(BingxEndpoint::SwapContracts, HashMap::new(), AccountType::FuturesCross).await?;
-                BingxParser::parse_swap_exchange_info(&response)
+                BingxParser::parse_swap_exchange_info(&response)?
             }
-        }
+        };
+        self.precision.load_from_symbols(&info);
+        Ok(info)
     }
 }
 
@@ -431,22 +437,22 @@ impl Trading for BingxConnector {
         let side_str = match side { OrderSide::Buy => "BUY", OrderSide::Sell => "SELL" };
 
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), formatted_symbol);
+        params.insert("symbol".to_string(), formatted_symbol.clone());
         params.insert("side".to_string(), side_str.to_string());
 
         match req.order_type {
             OrderType::Market => {
                 params.insert("type".to_string(), "MARKET".to_string());
                 if is_futures {
-                    params.insert("quantity".to_string(), quantity.to_string());
+                    params.insert("quantity".to_string(), self.precision.qty(&formatted_symbol, quantity));
                 } else {
                     // BingX Spot: buy uses quoteOrderQty, sell uses quantity
                     match side {
                         OrderSide::Buy => {
-                            params.insert("quoteOrderQty".to_string(), quantity.to_string());
+                            params.insert("quoteOrderQty".to_string(), self.precision.qty(&formatted_symbol, quantity));
                         }
                         OrderSide::Sell => {
-                            params.insert("quantity".to_string(), quantity.to_string());
+                            params.insert("quantity".to_string(), self.precision.qty(&formatted_symbol, quantity));
                         }
                     }
                 }
@@ -454,8 +460,8 @@ impl Trading for BingxConnector {
 
             OrderType::Limit { price } => {
                 params.insert("type".to_string(), "LIMIT".to_string());
-                params.insert("quantity".to_string(), quantity.to_string());
-                params.insert("price".to_string(), price.to_string());
+                params.insert("quantity".to_string(), self.precision.qty(&formatted_symbol, quantity));
+                params.insert("price".to_string(), self.precision.price(&formatted_symbol, price));
                 if is_futures {
                     params.insert("timeInForce".to_string(), "GTC".to_string());
                 }
@@ -468,24 +474,24 @@ impl Trading for BingxConnector {
                     ));
                 }
                 params.insert("type".to_string(), "LIMIT".to_string());
-                params.insert("quantity".to_string(), quantity.to_string());
-                params.insert("price".to_string(), price.to_string());
+                params.insert("quantity".to_string(), self.precision.qty(&formatted_symbol, quantity));
+                params.insert("price".to_string(), self.precision.price(&formatted_symbol, price));
                 params.insert("timeInForce".to_string(), "PostOnly".to_string());
             }
 
             OrderType::Ioc { price } => {
                 params.insert("type".to_string(), "LIMIT".to_string());
-                params.insert("quantity".to_string(), quantity.to_string());
+                params.insert("quantity".to_string(), self.precision.qty(&formatted_symbol, quantity));
                 if let Some(p) = price {
-                    params.insert("price".to_string(), p.to_string());
+                    params.insert("price".to_string(), self.precision.price(&formatted_symbol, p));
                 }
                 params.insert("timeInForce".to_string(), "IOC".to_string());
             }
 
             OrderType::Fok { price } => {
                 params.insert("type".to_string(), "LIMIT".to_string());
-                params.insert("quantity".to_string(), quantity.to_string());
-                params.insert("price".to_string(), price.to_string());
+                params.insert("quantity".to_string(), self.precision.qty(&formatted_symbol, quantity));
+                params.insert("price".to_string(), self.precision.price(&formatted_symbol, price));
                 params.insert("timeInForce".to_string(), "FOK".to_string());
             }
 
@@ -496,8 +502,8 @@ impl Trading for BingxConnector {
                     ));
                 }
                 params.insert("type".to_string(), "STOP_MARKET".to_string());
-                params.insert("quantity".to_string(), quantity.to_string());
-                params.insert("stopPrice".to_string(), stop_price.to_string());
+                params.insert("quantity".to_string(), self.precision.qty(&formatted_symbol, quantity));
+                params.insert("stopPrice".to_string(), self.precision.price(&formatted_symbol, stop_price));
             }
 
             OrderType::StopLimit { stop_price, limit_price } => {
@@ -507,9 +513,9 @@ impl Trading for BingxConnector {
                     ));
                 }
                 params.insert("type".to_string(), "STOP".to_string());
-                params.insert("quantity".to_string(), quantity.to_string());
-                params.insert("price".to_string(), limit_price.to_string());
-                params.insert("stopPrice".to_string(), stop_price.to_string());
+                params.insert("quantity".to_string(), self.precision.qty(&formatted_symbol, quantity));
+                params.insert("price".to_string(), self.precision.price(&formatted_symbol, limit_price));
+                params.insert("stopPrice".to_string(), self.precision.price(&formatted_symbol, stop_price));
                 params.insert("timeInForce".to_string(), "GTC".to_string());
             }
 
@@ -520,11 +526,11 @@ impl Trading for BingxConnector {
                     ));
                 }
                 params.insert("type".to_string(), "TRAILING_STOP_MARKET".to_string());
-                params.insert("quantity".to_string(), quantity.to_string());
+                params.insert("quantity".to_string(), self.precision.qty(&formatted_symbol, quantity));
                 // priceRate is the trailing distance as a percentage
                 params.insert("priceRate".to_string(), callback_rate.to_string());
                 if let Some(act_price) = activation_price {
-                    params.insert("activationPrice".to_string(), act_price.to_string());
+                    params.insert("activationPrice".to_string(), self.precision.price(&formatted_symbol, act_price));
                 }
             }
 
@@ -540,10 +546,10 @@ impl Trading for BingxConnector {
                     ("MARKET", None)
                 };
                 params.insert("type".to_string(), type_str.to_string());
-                params.insert("quantity".to_string(), quantity.to_string());
+                params.insert("quantity".to_string(), self.precision.qty(&formatted_symbol, quantity));
                 params.insert("reduceOnly".to_string(), "true".to_string());
                 if let Some(p) = price_val {
-                    params.insert("price".to_string(), p.to_string());
+                    params.insert("price".to_string(), self.precision.price(&formatted_symbol, p));
                     params.insert("timeInForce".to_string(), "GTC".to_string());
                 }
             }
@@ -560,21 +566,21 @@ impl Trading for BingxConnector {
                 // For bracket orders we use a limit/market entry with embedded TP/SL.
                 let type_str = if price.is_some() { "LIMIT" } else { "MARKET" };
                 params.insert("type".to_string(), type_str.to_string());
-                params.insert("quantity".to_string(), quantity.to_string());
+                params.insert("quantity".to_string(), self.precision.qty(&formatted_symbol, quantity));
                 if let Some(p) = price {
-                    params.insert("price".to_string(), p.to_string());
+                    params.insert("price".to_string(), self.precision.price(&formatted_symbol, p));
                     params.insert("timeInForce".to_string(), "GTC".to_string());
                 }
                 // Encode TP/SL as JSON params — BingX accepts these as JSON-encoded strings
                 let tp_json = json!({
                     "type": "TAKE_PROFIT_MARKET",
-                    "stopPrice": take_profit.to_string(),
+                    "stopPrice": self.precision.price(&formatted_symbol, take_profit),
                     "price": "0",
                     "workingType": "MARK_PRICE"
                 });
                 let sl_json = json!({
                     "type": "STOP_MARKET",
-                    "stopPrice": stop_loss.to_string(),
+                    "stopPrice": self.precision.price(&formatted_symbol, stop_loss),
                     "price": "0",
                     "workingType": "MARK_PRICE"
                 });
@@ -1274,18 +1280,19 @@ impl AmendOrder for BingxConnector {
         }
 
         // POST /openApi/swap/v1/trade/amend
+        let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("symbol".to_string(), symbol_str.clone());
         params.insert("orderId".to_string(), req.order_id.clone());
 
         if let Some(new_price) = req.fields.price {
-            params.insert("price".to_string(), new_price.to_string());
+            params.insert("price".to_string(), self.precision.price(&symbol_str, new_price));
         }
         if let Some(new_qty) = req.fields.quantity {
-            params.insert("quantity".to_string(), new_qty.to_string());
+            params.insert("quantity".to_string(), self.precision.qty(&symbol_str, new_qty));
         }
         if let Some(trigger) = req.fields.trigger_price {
-            params.insert("stopPrice".to_string(), trigger.to_string());
+            params.insert("stopPrice".to_string(), self.precision.price(&symbol_str, trigger));
         }
 
         let response = self.post(BingxEndpoint::SwapAmend, params, account_type).await?;

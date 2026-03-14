@@ -84,6 +84,7 @@ use crate::core::traits::{
 use crate::core::types::{CancelAllResponse, OrderResult};
 use crate::core::types::ConnectorStats;
 use crate::core::utils::WeightRateLimiter;
+use crate::core::utils::precision::PrecisionCache;
 
 use super::endpoints::{CoinbaseUrls, CoinbaseEndpoint, format_symbol, map_kline_interval};
 use super::auth::CoinbaseAuth;
@@ -101,6 +102,8 @@ pub struct CoinbaseConnector {
     auth: Option<CoinbaseAuth>,
     /// Rate limiter (30 requests per second for private, 10 for public)
     rate_limiter: Arc<Mutex<WeightRateLimiter>>,
+    /// Per-symbol precision cache (populated after get_exchange_info)
+    precision: PrecisionCache,
 }
 
 impl CoinbaseConnector {
@@ -124,6 +127,7 @@ impl CoinbaseConnector {
             http,
             auth,
             rate_limiter,
+            precision: PrecisionCache::new(),
         })
     }
 
@@ -547,7 +551,9 @@ impl MarketData for CoinbaseConnector {
         // GET /market/products (public) returns products list
         let params = HashMap::new();
         let response = self.get(CoinbaseEndpoint::Products, params).await?;
-        CoinbaseParser::parse_exchange_info(&response)
+        let symbols = CoinbaseParser::parse_exchange_info(&response)?;
+        self.precision.load_from_symbols(&symbols);
+        Ok(symbols)
     }
 }
 
@@ -567,6 +573,7 @@ impl Trading for CoinbaseConnector {
         let side_str = match side { OrderSide::Buy => "BUY", OrderSide::Sell => "SELL" };
         let client_order_id = req.client_order_id.clone()
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let sym = &product_id;
 
         let order_config = match req.order_type {
             OrderType::Market => {
@@ -575,7 +582,7 @@ impl Trading for CoinbaseConnector {
                     OrderSide::Buy => "quote_size",
                     OrderSide::Sell => "base_size",
                 };
-                json!({ "market_market_ioc": { size_field: quantity.to_string() } })
+                json!({ "market_market_ioc": { size_field: self.precision.qty(sym, quantity) } })
             }
             OrderType::Limit { price } => {
                 let post_only = matches!(req.time_in_force, crate::core::TimeInForce::PostOnly);
@@ -587,8 +594,8 @@ impl Trading for CoinbaseConnector {
                 };
                 json!({
                     tif_key: {
-                        "base_size": quantity.to_string(),
-                        "limit_price": price.to_string(),
+                        "base_size": self.precision.qty(sym, quantity),
+                        "limit_price": self.precision.price(sym, price),
                         "post_only": post_only,
                     }
                 })
@@ -596,17 +603,17 @@ impl Trading for CoinbaseConnector {
             OrderType::PostOnly { price } => {
                 json!({
                     "limit_limit_gtc": {
-                        "base_size": quantity.to_string(),
-                        "limit_price": price.to_string(),
+                        "base_size": self.precision.qty(sym, quantity),
+                        "limit_price": self.precision.price(sym, price),
                         "post_only": true,
                     }
                 })
             }
             OrderType::Ioc { price } => {
-                let px_str = price.map(|p| p.to_string()).unwrap_or_else(|| "0".to_string());
+                let px_str = price.map(|p| self.precision.price(sym, p)).unwrap_or_else(|| "0".to_string());
                 json!({
                     "limit_limit_ioc": {
-                        "base_size": quantity.to_string(),
+                        "base_size": self.precision.qty(sym, quantity),
                         "limit_price": px_str,
                         "post_only": false,
                     }
@@ -615,8 +622,8 @@ impl Trading for CoinbaseConnector {
             OrderType::Fok { price } => {
                 json!({
                     "limit_limit_fok": {
-                        "base_size": quantity.to_string(),
-                        "limit_price": price.to_string(),
+                        "base_size": self.precision.qty(sym, quantity),
+                        "limit_price": self.precision.price(sym, price),
                         "post_only": false,
                     }
                 })
@@ -624,9 +631,9 @@ impl Trading for CoinbaseConnector {
             OrderType::StopMarket { stop_price } => {
                 json!({
                     "stop_limit_stop_limit_gtc": {
-                        "base_size": quantity.to_string(),
-                        "limit_price": stop_price.to_string(),
-                        "stop_price": stop_price.to_string(),
+                        "base_size": self.precision.qty(sym, quantity),
+                        "limit_price": self.precision.price(sym, stop_price),
+                        "stop_price": self.precision.price(sym, stop_price),
                         "stop_direction": match side {
                             OrderSide::Buy => "STOP_DIRECTION_STOP_UP",
                             OrderSide::Sell => "STOP_DIRECTION_STOP_DOWN",
@@ -637,9 +644,9 @@ impl Trading for CoinbaseConnector {
             OrderType::StopLimit { stop_price, limit_price } => {
                 json!({
                     "stop_limit_stop_limit_gtc": {
-                        "base_size": quantity.to_string(),
-                        "limit_price": limit_price.to_string(),
-                        "stop_price": stop_price.to_string(),
+                        "base_size": self.precision.qty(sym, quantity),
+                        "limit_price": self.precision.price(sym, limit_price),
+                        "stop_price": self.precision.price(sym, stop_price),
                         "stop_direction": match side {
                             OrderSide::Buy => "STOP_DIRECTION_STOP_UP",
                             OrderSide::Sell => "STOP_DIRECTION_STOP_DOWN",
@@ -654,8 +661,8 @@ impl Trading for CoinbaseConnector {
                     .unwrap_or_default();
                 json!({
                     "limit_limit_gtd": {
-                        "base_size": quantity.to_string(),
-                        "limit_price": price.to_string(),
+                        "base_size": self.precision.qty(sym, quantity),
+                        "limit_price": self.precision.price(sym, price),
                         "end_time": end_time,
                         "post_only": false,
                     }
@@ -665,20 +672,20 @@ impl Trading for CoinbaseConnector {
                 // Coinbase supports bracket orders: trigger_bracket_gtc
                 json!({
                     "trigger_bracket_gtc": {
-                        "base_size": quantity.to_string(),
-                        "limit_price": price.to_string(),
-                        "stop_trigger_price": stop_price.to_string(),
+                        "base_size": self.precision.qty(sym, quantity),
+                        "limit_price": self.precision.price(sym, price),
+                        "stop_trigger_price": self.precision.price(sym, stop_price),
                     }
                 })
             }
             OrderType::Bracket { price, take_profit, stop_loss } => {
-                let px_str = price.map(|p| p.to_string()).unwrap_or_else(|| "0".to_string());
+                let px_str = price.map(|p| self.precision.price(sym, p)).unwrap_or_else(|| "0".to_string());
                 let _ = take_profit;
                 json!({
                     "trigger_bracket_gtc": {
-                        "base_size": quantity.to_string(),
+                        "base_size": self.precision.qty(sym, quantity),
                         "limit_price": px_str,
-                        "stop_trigger_price": stop_loss.to_string(),
+                        "stop_trigger_price": self.precision.price(sym, stop_loss),
                     }
                 })
             }

@@ -57,6 +57,8 @@ pub struct MexcConnector {
     auth: Option<MexcAuth>,
     /// Rate limiter (500 weight per 10 seconds)
     rate_limiter: Arc<Mutex<WeightRateLimiter>>,
+    /// Per-symbol precision cache for safe price/qty formatting
+    precision: crate::core::utils::precision::PrecisionCache,
 }
 
 impl MexcConnector {
@@ -90,6 +92,7 @@ impl MexcConnector {
             http,
             auth,
             rate_limiter,
+            precision: crate::core::utils::precision::PrecisionCache::new(),
         })
     }
 
@@ -515,7 +518,9 @@ impl MarketData for MexcConnector {
 
     async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<crate::core::types::SymbolInfo>> {
         let response = self.get(MexcEndpoint::ExchangeInfo, HashMap::new()).await?;
-        MexcParser::parse_exchange_info(&response)
+        let symbols = MexcParser::parse_exchange_info(&response)?;
+        self.precision.load_from_symbols(&symbols);
+        Ok(symbols)
     }
 }
 
@@ -531,6 +536,8 @@ impl Trading for MexcConnector {
         let quantity = req.quantity;
         let account_type = req.account_type;
         let client_order_id = format!("cc_{}", crate::core::timestamp_millis());
+        let symbol_str = format_symbol(&symbol, account_type);
+        let qty_str = self.precision.qty(&symbol_str, quantity);
 
         let side_str = match side {
             OrderSide::Buy => "BUY",
@@ -540,10 +547,10 @@ impl Trading for MexcConnector {
         match req.order_type {
             OrderType::Market => {
                 let mut params = HashMap::new();
-                params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
+                params.insert("symbol".to_string(), symbol_str.clone());
                 params.insert("side".to_string(), side_str.to_string());
                 params.insert("type".to_string(), "MARKET".to_string());
-                params.insert("quantity".to_string(), quantity.to_string());
+                params.insert("quantity".to_string(), qty_str.clone());
                 params.insert("newClientOrderId".to_string(), client_order_id.clone());
 
                 let response = self.post(MexcEndpoint::PlaceOrder, params).await?;
@@ -574,11 +581,11 @@ impl Trading for MexcConnector {
 
             OrderType::Limit { price } => {
                 let mut params = HashMap::new();
-                params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
+                params.insert("symbol".to_string(), symbol_str.clone());
                 params.insert("side".to_string(), side_str.to_string());
                 params.insert("type".to_string(), "LIMIT".to_string());
-                params.insert("quantity".to_string(), quantity.to_string());
-                params.insert("price".to_string(), price.to_string());
+                params.insert("quantity".to_string(), qty_str.clone());
+                params.insert("price".to_string(), self.precision.price(&symbol_str, price));
                 params.insert("newClientOrderId".to_string(), client_order_id.clone());
 
                 let response = self.post(MexcEndpoint::PlaceOrder, params).await?;
@@ -610,11 +617,11 @@ impl Trading for MexcConnector {
             OrderType::PostOnly { price } => {
                 // MEXC: LIMIT_MAKER (post-only limit order)
                 let mut params = HashMap::new();
-                params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
+                params.insert("symbol".to_string(), symbol_str.clone());
                 params.insert("side".to_string(), side_str.to_string());
                 params.insert("type".to_string(), "LIMIT_MAKER".to_string());
-                params.insert("quantity".to_string(), quantity.to_string());
-                params.insert("price".to_string(), price.to_string());
+                params.insert("quantity".to_string(), qty_str.clone());
+                params.insert("price".to_string(), self.precision.price(&symbol_str, price));
                 params.insert("newClientOrderId".to_string(), client_order_id.clone());
 
                 let response = self.post(MexcEndpoint::PlaceOrder, params).await?;
@@ -647,12 +654,12 @@ impl Trading for MexcConnector {
                 // MEXC: LIMIT with timeInForce=IOC
                 let price_val = price.unwrap_or(0.0);
                 let mut params = HashMap::new();
-                params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
+                params.insert("symbol".to_string(), symbol_str.clone());
                 params.insert("side".to_string(), side_str.to_string());
                 params.insert("type".to_string(), "LIMIT".to_string());
                 params.insert("timeInForce".to_string(), "IOC".to_string());
-                params.insert("quantity".to_string(), quantity.to_string());
-                params.insert("price".to_string(), price_val.to_string());
+                params.insert("quantity".to_string(), qty_str.clone());
+                params.insert("price".to_string(), self.precision.price(&symbol_str, price_val));
                 params.insert("newClientOrderId".to_string(), client_order_id.clone());
 
                 let response = self.post(MexcEndpoint::PlaceOrder, params).await?;
@@ -684,12 +691,12 @@ impl Trading for MexcConnector {
             OrderType::Fok { price } => {
                 // MEXC: LIMIT with timeInForce=FOK
                 let mut params = HashMap::new();
-                params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
+                params.insert("symbol".to_string(), symbol_str.clone());
                 params.insert("side".to_string(), side_str.to_string());
                 params.insert("type".to_string(), "LIMIT".to_string());
                 params.insert("timeInForce".to_string(), "FOK".to_string());
-                params.insert("quantity".to_string(), quantity.to_string());
-                params.insert("price".to_string(), price.to_string());
+                params.insert("quantity".to_string(), qty_str.clone());
+                params.insert("price".to_string(), self.precision.price(&symbol_str, price));
                 params.insert("newClientOrderId".to_string(), client_order_id.clone());
 
                 let response = self.post(MexcEndpoint::PlaceOrder, params).await?;
@@ -976,6 +983,7 @@ impl BatchOrders for MexcConnector {
         // MEXC: POST /api/v3/batchOrders — max 20 orders
         // Build batch order array
         let batch_orders: Vec<Value> = orders.iter().map(|req| {
+            let o_sym = format_symbol(&req.symbol, req.account_type);
             let side_str = match req.side {
                 OrderSide::Buy => "BUY",
                 OrderSide::Sell => "SELL",
@@ -988,14 +996,14 @@ impl BatchOrders for MexcConnector {
             };
 
             let mut order_obj = json!({
-                "symbol": format_symbol(&req.symbol, req.account_type),
+                "symbol": o_sym,
                 "side": side_str,
                 "type": order_type,
-                "quantity": req.quantity.to_string(),
+                "quantity": self.precision.qty(&o_sym, req.quantity),
             });
 
             if let Some(p) = price {
-                order_obj["price"] = json!(p.to_string());
+                order_obj["price"] = json!(self.precision.price(&o_sym, p));
             }
 
             order_obj

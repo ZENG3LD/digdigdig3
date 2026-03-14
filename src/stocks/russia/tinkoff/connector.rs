@@ -11,6 +11,27 @@ use super::endpoints::*;
 use super::auth::*;
 use super::parser::*;
 
+#[cfg(feature = "grpc")]
+use super::proto::tinkoff::{
+    self as tinkoff_proto,
+    GetCandlesRequest, GetCandlesResponse,
+    GetOrderBookRequest, GetOrderBookResponse,
+    GetLastPricesRequest, GetLastPricesResponse,
+    GetTradingStatusRequest, GetTradingStatusResponse,
+    PostOrderRequest, PostOrderResponse,
+    CancelOrderRequest, CancelOrderResponse,
+    GetOrdersRequest, GetOrdersResponse,
+    GetOrderStateRequest, OrderState,
+    PortfolioRequest, PortfolioResponse,
+    PositionsRequest, PositionsResponse,
+    Timestamp,
+    paths,
+};
+#[cfg(feature = "grpc")]
+use tonic::codec::ProstCodec;
+#[cfg(feature = "grpc")]
+use tonic::transport::Channel;
+
 /// Tinkoff Invest connector
 ///
 /// Russian broker with full trading support for MOEX (Moscow Exchange).
@@ -32,6 +53,13 @@ pub struct TinkoffConnector {
     testnet: bool,
     /// Account ID to use for operations (set after GetAccounts)
     account_id: Option<String>,
+    /// Optional gRPC channel to the Tinkoff Invest gRPC endpoint.
+    ///
+    /// When present, gRPC methods become available (get_candles_grpc,
+    /// place_order_grpc, etc.).  Absent by default — the connector operates
+    /// via the REST proxy.
+    #[cfg(feature = "grpc")]
+    grpc_channel: Option<Channel>,
 }
 
 impl TinkoffConnector {
@@ -53,6 +81,8 @@ impl TinkoffConnector {
             endpoints,
             testnet,
             account_id: None,
+            #[cfg(feature = "grpc")]
+            grpc_channel: None,
         }
     }
 
@@ -902,4 +932,400 @@ fn price_to_quotation(price: f64) -> (i64, i32) {
     let units = price.floor() as i64;
     let nano = ((price - units as f64) * 1_000_000_000.0).round() as i32;
     (units, nano)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// gRPC SUPPORT
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(feature = "grpc")]
+impl TinkoffConnector {
+    // ─────────────────────────────────────────────────────────────────────
+    // Builder
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Attach a gRPC channel, enabling direct gRPC calls to the Tinkoff API.
+    ///
+    /// Use [`crate::core::grpc::GrpcClient::connect`] to obtain a channel,
+    /// connecting to [`tinkoff_proto::GRPC_ENDPOINT`] (`https://invest-public-api.tinkoff.ru:443`).
+    ///
+    /// ```rust,no_run
+    /// # #[cfg(feature = "grpc")]
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// use digdigdig3::core::grpc::GrpcClient;
+    /// use digdigdig3::stocks::russia::tinkoff::TinkoffConnector;
+    ///
+    /// let grpc = GrpcClient::connect("https://invest-public-api.tinkoff.ru:443").await?;
+    /// let connector = TinkoffConnector::from_env()
+    ///     .with_grpc_channel(grpc.channel());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_grpc_channel(mut self, channel: Channel) -> Self {
+        self.grpc_channel = Some(channel);
+        self
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Internal gRPC helper
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Require an attached gRPC channel or return `ExchangeError::Network`.
+    fn require_channel(&self) -> ExchangeResult<Channel> {
+        self.grpc_channel.clone().ok_or_else(|| {
+            ExchangeError::Network(
+                "No gRPC channel attached. Call TinkoffConnector::with_grpc_channel() \
+                 with a channel connected to invest-public-api.tinkoff.ru:443."
+                    .to_string(),
+            )
+        })
+    }
+
+    /// Build a tonic metadata value with the Bearer token for auth.
+    fn bearer_metadata(&self) -> ExchangeResult<tonic::metadata::MetadataValue<tonic::metadata::Ascii>> {
+        let val = format!("Bearer {}", self.auth.token);
+        tonic::metadata::MetadataValue::try_from(val.as_str())
+            .map_err(|e| ExchangeError::Auth(format!("Invalid token for gRPC metadata: {}", e)))
+    }
+
+    /// Perform a unary gRPC call with Bearer auth, returning the decoded response.
+    async fn grpc_unary<Req, Resp>(
+        &self,
+        request: Req,
+        path: &'static str,
+    ) -> ExchangeResult<Resp>
+    where
+        Req: prost::Message + 'static,
+        Resp: prost::Message + Default + 'static,
+    {
+        use tonic::client::Grpc;
+        use tonic::IntoRequest;
+
+        let channel = self.require_channel()?;
+        let mut grpc: Grpc<Channel> = Grpc::new(channel);
+
+        grpc.ready().await.map_err(|e| {
+            ExchangeError::Network(format!("gRPC channel not ready: {}", e))
+        })?;
+
+        let path = tonic::codegen::http::uri::PathAndQuery::try_from(path)
+            .map_err(|e| ExchangeError::Network(format!("Invalid gRPC path '{}': {}", path, e)))?;
+
+        let codec: ProstCodec<Req, Resp> = ProstCodec::default();
+
+        // Attach Bearer auth in request metadata.
+        let mut req = request.into_request();
+        let auth_value = self.bearer_metadata()?;
+        req.metadata_mut().insert("authorization", auth_value);
+
+        grpc.unary(req, path, codec)
+            .await
+            .map(|r| r.into_inner())
+            .map_err(|status| {
+                ExchangeError::Network(format!(
+                    "gRPC call failed [{}]: {}",
+                    status.code(),
+                    status.message()
+                ))
+            })
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // MarketDataService
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Fetch historical candles via gRPC `MarketDataService/GetCandles`.
+    ///
+    /// # Parameters
+    /// - `figi`     — FIGI of the instrument (e.g. `"BBG004730N88"` for SBER)
+    /// - `from_sec` — Range start as UTC epoch seconds
+    /// - `to_sec`   — Range end as UTC epoch seconds
+    /// - `interval` — [`tinkoff_proto::CandleInterval`] enum value (as i32)
+    ///
+    /// # Returns
+    /// The raw [`GetCandlesResponse`] containing a `candles` vec of
+    /// [`tinkoff_proto::HistoricCandle`].
+    pub async fn get_candles_grpc(
+        &self,
+        figi: &str,
+        from_sec: i64,
+        to_sec: i64,
+        interval: tinkoff_proto::CandleInterval,
+    ) -> ExchangeResult<GetCandlesResponse> {
+        let request = GetCandlesRequest {
+            figi: figi.to_string(),
+            from: Some(Timestamp { seconds: from_sec, nanos: 0 }),
+            to: Some(Timestamp { seconds: to_sec, nanos: 0 }),
+            interval: interval as i32,
+            instrument_id: String::new(),
+        };
+
+        self.grpc_unary::<GetCandlesRequest, GetCandlesResponse>(
+            request,
+            paths::GET_CANDLES,
+        )
+        .await
+    }
+
+    /// Fetch order book snapshot via gRPC `MarketDataService/GetOrderBook`.
+    ///
+    /// # Parameters
+    /// - `figi`  — FIGI of the instrument
+    /// - `depth` — Order book depth: 1, 10, 20, 30, 40, or 50
+    ///
+    /// # Returns
+    /// The raw [`GetOrderBookResponse`] containing bids, asks, and last price.
+    pub async fn get_order_book_grpc(
+        &self,
+        figi: &str,
+        depth: i32,
+    ) -> ExchangeResult<GetOrderBookResponse> {
+        let request = GetOrderBookRequest {
+            figi: figi.to_string(),
+            depth,
+            instrument_id: String::new(),
+        };
+
+        self.grpc_unary::<GetOrderBookRequest, GetOrderBookResponse>(
+            request,
+            paths::GET_ORDER_BOOK,
+        )
+        .await
+    }
+
+    /// Fetch last trade prices via gRPC `MarketDataService/GetLastPrices`.
+    ///
+    /// # Parameters
+    /// - `figis` — Slice of FIGI strings to query
+    ///
+    /// # Returns
+    /// The raw [`GetLastPricesResponse`] containing a `last_prices` vec.
+    pub async fn get_last_prices_grpc(
+        &self,
+        figis: &[&str],
+    ) -> ExchangeResult<GetLastPricesResponse> {
+        let request = GetLastPricesRequest {
+            figi: figis.iter().map(|s| s.to_string()).collect(),
+            instrument_id: Vec::new(),
+        };
+
+        self.grpc_unary::<GetLastPricesRequest, GetLastPricesResponse>(
+            request,
+            paths::GET_LAST_PRICES,
+        )
+        .await
+    }
+
+    /// Fetch trading status via gRPC `MarketDataService/GetTradingStatus`.
+    ///
+    /// # Parameters
+    /// - `figi` — FIGI of the instrument
+    ///
+    /// # Returns
+    /// The raw [`GetTradingStatusResponse`] with status flags.
+    pub async fn get_trading_status_grpc(
+        &self,
+        figi: &str,
+    ) -> ExchangeResult<GetTradingStatusResponse> {
+        let request = GetTradingStatusRequest {
+            figi: figi.to_string(),
+            instrument_id: String::new(),
+        };
+
+        self.grpc_unary::<GetTradingStatusRequest, GetTradingStatusResponse>(
+            request,
+            paths::GET_TRADING_STATUS,
+        )
+        .await
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // OrdersService
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Place an order via gRPC `OrdersService/PostOrder`.
+    ///
+    /// Requires `account_id` to be set (call [`Self::set_account_id`] or
+    /// [`Self::initialize_account`] first).
+    ///
+    /// # Parameters
+    /// - `figi`       — FIGI of the instrument
+    /// - `quantity`   — Number of lots
+    /// - `direction`  — [`tinkoff_proto::OrderDirection`] (Buy or Sell)
+    /// - `order_type` — [`tinkoff_proto::OrderType`] (Limit or Market)
+    /// - `limit_price`— Optional limit price; `None` for market orders
+    /// - `order_id`   — Client idempotency key (UUID recommended)
+    ///
+    /// # Returns
+    /// The raw [`PostOrderResponse`] with the server-assigned order ID and status.
+    pub async fn place_order_grpc(
+        &self,
+        figi: &str,
+        quantity: i64,
+        direction: tinkoff_proto::OrderDirection,
+        order_type: tinkoff_proto::OrderType,
+        limit_price: Option<f64>,
+        order_id: &str,
+    ) -> ExchangeResult<PostOrderResponse> {
+        let account_id = self.account_id.as_ref()
+            .ok_or_else(|| ExchangeError::InvalidRequest(
+                "Account ID not set. Call initialize_account() first.".to_string()
+            ))?;
+
+        let price = limit_price.map(|p| {
+            let units = p.floor() as i64;
+            let nano = ((p - units as f64) * 1_000_000_000.0).round() as i32;
+            tinkoff_proto::Quotation { units, nano }
+        });
+
+        let request = PostOrderRequest {
+            figi: figi.to_string(),
+            quantity,
+            price,
+            direction: direction as i32,
+            account_id: account_id.clone(),
+            order_type: order_type as i32,
+            order_id: order_id.to_string(),
+            instrument_id: String::new(),
+        };
+
+        self.grpc_unary::<PostOrderRequest, PostOrderResponse>(
+            request,
+            paths::POST_ORDER,
+        )
+        .await
+    }
+
+    /// Cancel an active order via gRPC `OrdersService/CancelOrder`.
+    ///
+    /// Requires `account_id` to be set.
+    ///
+    /// # Parameters
+    /// - `order_id` — Server-assigned order ID to cancel
+    ///
+    /// # Returns
+    /// The raw [`CancelOrderResponse`] with the cancellation timestamp.
+    pub async fn cancel_order_grpc(
+        &self,
+        order_id: &str,
+    ) -> ExchangeResult<CancelOrderResponse> {
+        let account_id = self.account_id.as_ref()
+            .ok_or_else(|| ExchangeError::InvalidRequest(
+                "Account ID not set. Call initialize_account() first.".to_string()
+            ))?;
+
+        let request = CancelOrderRequest {
+            account_id: account_id.clone(),
+            order_id: order_id.to_string(),
+        };
+
+        self.grpc_unary::<CancelOrderRequest, CancelOrderResponse>(
+            request,
+            paths::CANCEL_ORDER,
+        )
+        .await
+    }
+
+    /// Fetch active orders via gRPC `OrdersService/GetOrders`.
+    ///
+    /// Requires `account_id` to be set.
+    ///
+    /// # Returns
+    /// The raw [`GetOrdersResponse`] with a vec of active [`OrderState`]s.
+    pub async fn get_orders_grpc(&self) -> ExchangeResult<GetOrdersResponse> {
+        let account_id = self.account_id.as_ref()
+            .ok_or_else(|| ExchangeError::InvalidRequest(
+                "Account ID not set. Call initialize_account() first.".to_string()
+            ))?;
+
+        let request = GetOrdersRequest {
+            account_id: account_id.clone(),
+        };
+
+        self.grpc_unary::<GetOrdersRequest, GetOrdersResponse>(
+            request,
+            paths::GET_ORDERS,
+        )
+        .await
+    }
+
+    /// Fetch a single order state via gRPC `OrdersService/GetOrderState`.
+    ///
+    /// Requires `account_id` to be set.
+    ///
+    /// # Parameters
+    /// - `order_id` — Server-assigned order ID to query
+    ///
+    /// # Returns
+    /// The raw [`OrderState`] for the requested order.
+    pub async fn get_order_state_grpc(
+        &self,
+        order_id: &str,
+    ) -> ExchangeResult<OrderState> {
+        let account_id = self.account_id.as_ref()
+            .ok_or_else(|| ExchangeError::InvalidRequest(
+                "Account ID not set. Call initialize_account() first.".to_string()
+            ))?;
+
+        let request = GetOrderStateRequest {
+            account_id: account_id.clone(),
+            order_id: order_id.to_string(),
+        };
+
+        self.grpc_unary::<GetOrderStateRequest, OrderState>(
+            request,
+            paths::GET_ORDER_STATE,
+        )
+        .await
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // OperationsService
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Fetch the full portfolio via gRPC `OperationsService/GetPortfolio`.
+    ///
+    /// Requires `account_id` to be set.
+    ///
+    /// # Returns
+    /// The raw [`PortfolioResponse`] with totals and per-position data.
+    pub async fn get_portfolio_grpc(&self) -> ExchangeResult<PortfolioResponse> {
+        let account_id = self.account_id.as_ref()
+            .ok_or_else(|| ExchangeError::InvalidRequest(
+                "Account ID not set. Call initialize_account() first.".to_string()
+            ))?;
+
+        let request = PortfolioRequest {
+            account_id: account_id.clone(),
+        };
+
+        self.grpc_unary::<PortfolioRequest, PortfolioResponse>(
+            request,
+            paths::GET_PORTFOLIO,
+        )
+        .await
+    }
+
+    /// Fetch current positions via gRPC `OperationsService/GetPositions`.
+    ///
+    /// Requires `account_id` to be set.
+    ///
+    /// # Returns
+    /// The raw [`PositionsResponse`] with cash, securities, and futures positions.
+    pub async fn get_positions_grpc(&self) -> ExchangeResult<PositionsResponse> {
+        let account_id = self.account_id.as_ref()
+            .ok_or_else(|| ExchangeError::InvalidRequest(
+                "Account ID not set. Call initialize_account() first.".to_string()
+            ))?;
+
+        let request = PositionsRequest {
+            account_id: account_id.clone(),
+        };
+
+        self.grpc_unary::<PositionsRequest, PositionsResponse>(
+            request,
+            paths::GET_POSITIONS,
+        )
+        .await
+    }
 }

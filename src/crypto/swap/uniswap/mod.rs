@@ -95,6 +95,8 @@ mod auth;
 mod parser;
 mod connector;
 mod websocket;
+#[cfg(feature = "onchain-ethereum")]
+pub mod onchain;
 
 pub use endpoints::{
     UniswapEndpoint, UniswapUrls, FeeTier, PoolMetadata,
@@ -104,3 +106,6 @@ pub use auth::UniswapAuth;
 pub use parser::UniswapParser;
 pub use connector::UniswapConnector;
 pub use websocket::{UniswapWebSocket, UniswapEvent, SwapData, MintData, BurnData};
+
+#[cfg(feature = "onchain-ethereum")]
+pub use onchain::{UniswapOnchain, ExactInputSingleParams, SwapTxResult};

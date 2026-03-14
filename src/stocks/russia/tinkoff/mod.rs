@@ -84,6 +84,9 @@ mod auth;
 mod parser;
 mod connector;
 
+#[cfg(feature = "grpc")]
+pub mod proto;
+
 #[cfg(test)]
 mod tests;
 

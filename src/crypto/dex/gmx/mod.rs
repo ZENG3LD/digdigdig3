@@ -32,9 +32,17 @@ mod auth;
 mod parser;
 mod connector;
 mod websocket;
+#[cfg(feature = "onchain-ethereum")]
+pub mod onchain;
 
 pub use endpoints::{GmxEndpoint, GmxUrls};
 pub use auth::GmxAuth;
 pub use parser::GmxParser;
 pub use connector::GmxConnector;
 pub use websocket::GmxWebSocket;
+
+#[cfg(feature = "onchain-ethereum")]
+pub use onchain::{
+    GmxOnchain, GmxOrderType, GmxPositionSide,
+    CreatePositionParams, ClosePositionParams,
+};

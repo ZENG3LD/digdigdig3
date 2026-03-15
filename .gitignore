@@ -10,3 +10,8 @@ Cargo.lock
 
 # Ralph test artifacts
 ralph-test/
+
+# Internal research docs (keep locally, not in repo)
+docs/research/
+**/research/
+ROADMAP.md

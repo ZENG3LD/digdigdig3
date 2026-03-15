@@ -2,7 +2,7 @@
 
 Multi-exchange connector library — unified async Rust API for 140 connectors spanning crypto exchanges, stock brokers, forex providers, intelligence feeds, and on-chain blockchain providers.
 
-**Version:** 0.1.5
+**Version:** 0.1.6
 **Edition:** Rust 2021
 **License:** MIT OR Apache-2.0
 **Repository:** https://github.com/ZENG3LD/digdigdig3
@@ -35,14 +35,14 @@ digdigdig3 is organized around capability levels. Each level describes what a co
 [dependencies]
 digdigdig3 = { path = "../digdigdig3" }
 # or
-digdigdig3 = { git = "https://github.com/ZENG3LD/digdigdig3", tag = "v0.1.5" }
+digdigdig3 = { git = "https://github.com/ZENG3LD/digdigdig3", tag = "v0.1.6" }
 ```
 
 With specific feature flags:
 
 ```toml
 [dependencies]
-digdigdig3 = { version = "0.1.5", features = ["grpc", "k256-signing"] }
+digdigdig3 = { version = "0.1.6", features = ["grpc", "k256-signing"] }
 ```
 
 ---

@@ -1,6 +1,6 @@
 //! # AnyConnector Enum
 //!
-//! Unified enum wrapper for all 51 active connectors.
+//! Unified enum wrapper for all 52 active connectors.
 //!
 //! ## Architecture
 //!
@@ -8,7 +8,7 @@
 //! AnyConnector (enum)
 //!   ├── Binance(Arc<BinanceConnector>)
 //!   ├── KuCoin(Arc<KuCoinConnector>)
-//!   └── ... (51 variants)
+//!   └── ... (52 variants)
 //! ```
 //!
 //! Each variant wraps a connector in Arc for cheap cloning.
@@ -117,10 +117,19 @@ use crate::aggregators::cryptocompare::CryptoCompareConnector;
 use crate::aggregators::defillama::DefiLlamaConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// CONNECTOR IMPORTS - INTELLIGENCE FEEDS / ON-CHAIN
+// ═══════════════════════════════════════════════════════════════════════════════
+
+use crate::intelligence_feeds::crypto::coinglass::CoinglassConnector;
+use crate::intelligence_feeds::economic::fred::FredConnector;
+use crate::onchain::analytics::whale_alert::WhaleAlertConnector;
+use crate::onchain::analytics::bitquery::BitqueryConnector;
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // ANYCONNECTOR ENUM
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Unified connector enum wrapping all 48 active connectors
+/// Unified connector enum wrapping all 52 active connectors
 ///
 /// Each variant wraps the connector in Arc for cheap cloning.
 /// All core traits are delegated to the underlying connector.
@@ -212,6 +221,14 @@ pub enum AnyConnector {
     YahooFinance(Arc<YahooFinanceConnector>),
     CryptoCompare(Arc<CryptoCompareConnector>),
     DefiLlama(Arc<DefiLlamaConnector>),
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INTELLIGENCE FEEDS / ON-CHAIN ANALYTICS (4)
+    // ═══════════════════════════════════════════════════════════════════════════
+    Coinglass(Arc<CoinglassConnector>),
+    Fred(Arc<FredConnector>),
+    WhaleAlert(Arc<WhaleAlertConnector>),
+    Bitquery(Arc<BitqueryConnector>),
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -288,6 +305,12 @@ impl AnyConnector {
             Self::YahooFinance(_) => ExchangeId::YahooFinance,
             Self::CryptoCompare(_) => ExchangeId::CryptoCompare,
             Self::DefiLlama(_) => ExchangeId::DefiLlama,
+
+            // Intelligence feeds / on-chain
+            Self::Coinglass(_) => ExchangeId::Coinglass,
+            Self::Fred(_) => ExchangeId::Fred,
+            Self::WhaleAlert(_) => ExchangeId::WhaleAlert,
+            Self::Bitquery(_) => ExchangeId::Bitquery,
         }
     }
 
@@ -360,6 +383,12 @@ impl AnyConnector {
             Self::YahooFinance(c) => c.metrics(),
             Self::CryptoCompare(c) => c.metrics(),
             Self::DefiLlama(c) => c.metrics(),
+
+            // Intelligence feeds / on-chain
+            Self::Coinglass(c) => c.metrics(),
+            Self::Fred(c) => c.metrics(),
+            Self::WhaleAlert(c) => c.metrics(),
+            Self::Bitquery(c) => c.metrics(),
         }
     }
 }
@@ -440,6 +469,12 @@ impl ExchangeIdentity for AnyConnector {
             Self::YahooFinance(c) => c.is_testnet(),
             Self::CryptoCompare(c) => c.is_testnet(),
             Self::DefiLlama(c) => c.is_testnet(),
+
+            // Intelligence feeds / on-chain
+            Self::Coinglass(c) => c.is_testnet(),
+            Self::Fred(c) => c.is_testnet(),
+            Self::WhaleAlert(c) => c.is_testnet(),
+            Self::Bitquery(c) => c.is_testnet(),
         }
     }
 
@@ -508,6 +543,12 @@ impl ExchangeIdentity for AnyConnector {
             Self::YahooFinance(c) => c.supported_account_types(),
             Self::CryptoCompare(c) => c.supported_account_types(),
             Self::DefiLlama(c) => c.supported_account_types(),
+
+            // Intelligence feeds / on-chain
+            Self::Coinglass(c) => c.supported_account_types(),
+            Self::Fred(c) => c.supported_account_types(),
+            Self::WhaleAlert(c) => c.supported_account_types(),
+            Self::Bitquery(c) => c.supported_account_types(),
         }
     }
 }
@@ -585,6 +626,12 @@ impl MarketData for AnyConnector {
             Self::YahooFinance(c) => c.get_price(symbol, account_type).await,
             Self::CryptoCompare(c) => c.get_price(symbol, account_type).await,
             Self::DefiLlama(c) => c.get_price(symbol, account_type).await,
+
+            // Intelligence feeds / on-chain
+            Self::Coinglass(c) => c.get_price(symbol, account_type).await,
+            Self::Fred(c) => c.get_price(symbol, account_type).await,
+            Self::WhaleAlert(c) => c.get_price(symbol, account_type).await,
+            Self::Bitquery(c) => c.get_price(symbol, account_type).await,
         }
     }
 
@@ -658,6 +705,12 @@ impl MarketData for AnyConnector {
             Self::YahooFinance(c) => c.get_orderbook(symbol, depth, account_type).await,
             Self::CryptoCompare(c) => c.get_orderbook(symbol, depth, account_type).await,
             Self::DefiLlama(c) => c.get_orderbook(symbol, depth, account_type).await,
+
+            // Intelligence feeds / on-chain
+            Self::Coinglass(c) => c.get_orderbook(symbol, depth, account_type).await,
+            Self::Fred(c) => c.get_orderbook(symbol, depth, account_type).await,
+            Self::WhaleAlert(c) => c.get_orderbook(symbol, depth, account_type).await,
+            Self::Bitquery(c) => c.get_orderbook(symbol, depth, account_type).await,
         }
     }
 
@@ -733,6 +786,12 @@ impl MarketData for AnyConnector {
             Self::YahooFinance(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
             Self::CryptoCompare(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
             Self::DefiLlama(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
+
+            // Intelligence feeds / on-chain
+            Self::Coinglass(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
+            Self::Fred(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
+            Self::WhaleAlert(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
+            Self::Bitquery(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
         }
     }
 
@@ -805,6 +864,12 @@ impl MarketData for AnyConnector {
             Self::YahooFinance(c) => c.get_ticker(symbol, account_type).await,
             Self::CryptoCompare(c) => c.get_ticker(symbol, account_type).await,
             Self::DefiLlama(c) => c.get_ticker(symbol, account_type).await,
+
+            // Intelligence feeds / on-chain
+            Self::Coinglass(c) => c.get_ticker(symbol, account_type).await,
+            Self::Fred(c) => c.get_ticker(symbol, account_type).await,
+            Self::WhaleAlert(c) => c.get_ticker(symbol, account_type).await,
+            Self::Bitquery(c) => c.get_ticker(symbol, account_type).await,
         }
     }
 
@@ -873,6 +938,12 @@ impl MarketData for AnyConnector {
             Self::YahooFinance(c) => c.ping().await,
             Self::CryptoCompare(c) => c.ping().await,
             Self::DefiLlama(c) => c.ping().await,
+
+            // Intelligence feeds / on-chain
+            Self::Coinglass(c) => c.ping().await,
+            Self::Fred(c) => c.ping().await,
+            Self::WhaleAlert(c) => c.ping().await,
+            Self::Bitquery(c) => c.ping().await,
         }
     }
 
@@ -941,6 +1012,12 @@ impl MarketData for AnyConnector {
             Self::YahooFinance(c) => c.get_exchange_info(account_type).await,
             Self::CryptoCompare(c) => c.get_exchange_info(account_type).await,
             Self::DefiLlama(c) => c.get_exchange_info(account_type).await,
+
+            // Intelligence feeds / on-chain
+            Self::Coinglass(c) => c.get_exchange_info(account_type).await,
+            Self::Fred(c) => c.get_exchange_info(account_type).await,
+            Self::WhaleAlert(c) => c.get_exchange_info(account_type).await,
+            Self::Bitquery(c) => c.get_exchange_info(account_type).await,
         }
     }
 }
@@ -953,13 +1030,13 @@ impl MarketData for AnyConnector {
 mod tests {
     use super::*;
 
-    /// Test that AnyConnector has exactly 51 variants (compile-time check via exhaustive match)
+    /// Test that AnyConnector has exactly 52 variants (compile-time check via exhaustive match)
     /// This test verifies that all enum variants are handled in the id() method
     #[test]
     fn test_any_connector_variant_count() {
         // This is a compile-time test
         // If a new variant is added without updating id(), this will fail to compile
-        // The actual count is verified by the registry tests (51 connectors)
+        // The actual count is verified by the registry tests (52 connectors)
     }
 
     /// Test that AnyConnector has reasonable memory size due to Arc wrapping
@@ -1018,10 +1095,10 @@ mod tests {
     }
 
     /// Test exhaustive match coverage in id() method
-    /// This ensures all 51 variants are handled
+    /// This ensures all 52 variants are handled
     #[test]
     fn test_id_method_exhaustive() {
-        // The id() method has a match statement with 51 arms
+        // The id() method has a match statement with 52 arms
         // If a variant is missing, this won't compile
 
         // Verify different categories return different IDs via const assertions
@@ -1034,7 +1111,7 @@ mod tests {
     /// Test that all trait implementations delegate correctly to underlying connectors
     #[test]
     fn test_trait_delegation_pattern() {
-        // The delegation macros generate 51-arm match statements
+        // The delegation macros generate 52-arm match statements
         // for each trait method. This test verifies the pattern compiles.
 
         // ExchangeIdentity methods: exchange_id(), is_testnet(), supported_account_types()
@@ -1096,6 +1173,6 @@ mod tests {
     fn test_aggregator_variants_exist() {
         // Expected aggregator connectors:
         // IB, YahooFinance, CryptoCompare, DefiLlama (4)
-        // Total: 19 + 7 + 14 + 3 + 1 + 4 = 48 connectors
+        // Total: 19 + 7 + 14 + 3 + 1 + 4 + 4 = 52 connectors
     }
 }

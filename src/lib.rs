@@ -47,6 +47,7 @@ pub mod aggregators;
 pub mod intelligence_feeds;
 pub mod prediction;
 pub mod connector_manager;
+pub mod testing;
 
 // Re-exports для удобства
 pub use core::{

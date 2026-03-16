@@ -140,6 +140,15 @@ use crate::aggregators::cryptocompare::CryptoCompareConnector;
 use crate::aggregators::defillama::DefiLlamaConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// CONNECTOR IMPORTS - INTELLIGENCE FEEDS / ON-CHAIN
+// ═══════════════════════════════════════════════════════════════════════════════
+
+use crate::intelligence_feeds::crypto::coinglass::CoinglassConnector;
+use crate::intelligence_feeds::economic::fred::{FredConnector, FredAuth};
+use crate::onchain::analytics::whale_alert::{WhaleAlertConnector, WhaleAlertAuth};
+use crate::onchain::analytics::bitquery::BitqueryConnector;
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR FACTORY
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -441,26 +450,27 @@ impl ConnectorFactory {
             }
 
             // ═══════════════════════════════════════════════════════════════════════
-            // REMOVED CONNECTORS - Kept as ExchangeId variants but removed from factory
+            // INTELLIGENCE FEEDS - Require API Key
             // ═══════════════════════════════════════════════════════════════════════
             ExchangeId::Coinglass => {
-                Err(ExchangeError::UnsupportedOperation(
-                    "Coinglass connector has been removed from the factory - use intelligence_feeds directly".into()
+                Err(ExchangeError::Auth(
+                    "Coinglass requires API key".into()
                 ))
             }
             ExchangeId::WhaleAlert => {
-                Err(ExchangeError::UnsupportedOperation(
-                    "WhaleAlert connector has been removed from the factory - use intelligence_feeds directly".into()
-                ))
+                // WhaleAlert can work without API key at reduced rate limits (v1 API)
+                let auth = WhaleAlertAuth::none();
+                let c = WhaleAlertConnector::new(auth);
+                Ok(Arc::new(AnyConnector::WhaleAlert(Arc::new(c))))
             }
             ExchangeId::Fred => {
-                Err(ExchangeError::UnsupportedOperation(
-                    "Fred connector has been removed from the factory - use intelligence_feeds directly".into()
-                ))
+                // FRED can work without API key (25 queries/day)
+                let c = FredConnector::from_env();
+                Ok(Arc::new(AnyConnector::Fred(Arc::new(c))))
             }
             ExchangeId::Bitquery => {
-                Err(ExchangeError::UnsupportedOperation(
-                    "Bitquery connector has been removed from the factory - use intelligence_feeds directly".into()
+                Err(ExchangeError::Auth(
+                    "Bitquery requires OAuth token (use create_authenticated with api_key in Credentials)".into()
                 ))
             }
 
@@ -800,31 +810,30 @@ impl ConnectorFactory {
             }
 
             // ═══════════════════════════════════════════════════════════════════════
-            // REMOVED CONNECTORS - Kept as ExchangeId variants but removed from factory
+            // INTELLIGENCE FEEDS - Authenticated
             // ═══════════════════════════════════════════════════════════════════════
             ExchangeId::Coinglass => {
-                Err(ExchangeError::UnsupportedOperation(
-                    "Coinglass connector has been removed from the factory - use intelligence_feeds directly".into()
-                ))
+                // CoinglassConnector::new_with_default_limit creates its own auth internally
+                let c = CoinglassConnector::new_with_default_limit(credentials).await?;
+                Ok(Arc::new(AnyConnector::Coinglass(Arc::new(c))))
             }
             ExchangeId::WhaleAlert => {
-                Err(ExchangeError::UnsupportedOperation(
-                    "WhaleAlert connector has been removed from the factory - use intelligence_feeds directly".into()
-                ))
+                let auth = WhaleAlertAuth::new(credentials.api_key);
+                let c = WhaleAlertConnector::new(auth);
+                Ok(Arc::new(AnyConnector::WhaleAlert(Arc::new(c))))
             }
             ExchangeId::Fred => {
-                Err(ExchangeError::UnsupportedOperation(
-                    "Fred connector has been removed from the factory - use intelligence_feeds directly".into()
-                ))
+                let auth = FredAuth::new(credentials.api_key);
+                let c = FredConnector::new(auth);
+                Ok(Arc::new(AnyConnector::Fred(Arc::new(c))))
             }
             ExchangeId::Bitquery => {
-                Err(ExchangeError::UnsupportedOperation(
-                    "Bitquery connector has been removed from the factory - use intelligence_feeds directly".into()
-                ))
+                let c = BitqueryConnector::new(credentials).await?;
+                Ok(Arc::new(AnyConnector::Bitquery(Arc::new(c))))
             }
             ExchangeId::Bls => {
                 Err(ExchangeError::UnsupportedOperation(
-                    "BLS is a data feed - use BlsConnector directly".into()
+                    "BLS is a data feed without standard connector traits - use BlsConnector directly".into()
                 ))
             }
 

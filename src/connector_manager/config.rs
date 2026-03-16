@@ -455,6 +455,8 @@ impl ConnectorConfigManager {
             ExchangeId::Moex,
             ExchangeId::Krx,
             ExchangeId::Fred,
+            ExchangeId::Futu,
+            ExchangeId::Bitquery,
             ExchangeId::YahooFinance,
         ];
 

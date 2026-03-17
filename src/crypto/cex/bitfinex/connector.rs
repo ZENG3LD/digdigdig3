@@ -58,8 +58,13 @@ pub struct BitfinexConnector {
     http: HttpClient,
     /// Authentication (None for public methods only)
     auth: Option<BitfinexAuth>,
-    /// URLs (mainnet)
+    /// URLs (mainnet — Bitfinex has no separate testnet URLs)
     urls: BitfinexUrls,
+    /// Paper-trading mode flag.
+    /// Bitfinex has no dedicated testnet; paper trading uses prefixed symbols
+    /// (e.g., tTESTBTC:TESTUSD) on the same mainnet endpoints.
+    /// Stored here for future paper trading symbol routing support.
+    testnet: bool,
     /// Rate limiter (conservative: 10 requests per 60 seconds)
     rate_limiter: Arc<Mutex<SimpleRateLimiter>>,
     /// Per-symbol precision cache for safe price/qty formatting
@@ -68,7 +73,11 @@ pub struct BitfinexConnector {
 
 impl BitfinexConnector {
     /// Create new connector
-    pub async fn new(credentials: Option<Credentials>, _testnet: bool) -> ExchangeResult<Self> {
+    ///
+    /// Note: Bitfinex has no separate testnet URLs. When `testnet` is `true`
+    /// the connector still connects to the same mainnet endpoints; paper trading
+    /// requires using prefixed symbols like `tTESTBTC:TESTUSD`.
+    pub async fn new(credentials: Option<Credentials>, testnet: bool) -> ExchangeResult<Self> {
         let urls = BitfinexUrls::MAINNET;
         let http = HttpClient::new(30_000)?; // 30 sec timeout
 
@@ -86,14 +95,15 @@ impl BitfinexConnector {
             http,
             auth,
             urls,
+            testnet,
             rate_limiter,
             precision: PrecisionCache::new(),
         })
     }
 
     /// Create connector for public methods only
-    pub async fn public(_testnet: bool) -> ExchangeResult<Self> {
-        Self::new(None, _testnet).await
+    pub async fn public(testnet: bool) -> ExchangeResult<Self> {
+        Self::new(None, testnet).await
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -268,7 +278,8 @@ impl ExchangeIdentity for BitfinexConnector {
     }
 
     fn is_testnet(&self) -> bool {
-        false // Bitfinex doesn't have a public testnet
+        // Bitfinex has no separate testnet URLs; this flag enables paper trading symbol routing
+        self.testnet
     }
 
     fn supported_account_types(&self) -> Vec<AccountType> {

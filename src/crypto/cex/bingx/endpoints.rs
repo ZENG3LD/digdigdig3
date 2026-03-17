@@ -9,6 +9,12 @@ use crate::core::types::AccountType;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// URL'ы для BingX API
+///
+/// # Testnet / Paper Trading
+///
+/// BingX has no dedicated testnet URLs. "Testnet" mode uses VST (Virtual Simulated Trading)
+/// pairs on the same mainnet endpoints. VST pairs have "-VST" suffix (e.g., BTC-USDT-VST).
+/// The testnet bool is stored for future VST pair routing support.
 #[derive(Debug, Clone)]
 pub struct BingxUrls {
     pub base_rest: &'static str,

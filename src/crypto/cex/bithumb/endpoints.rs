@@ -24,8 +24,12 @@ impl BithumbUrls {
         ws: "wss://global-api.bithumb.pro/message/realtime",
     };
 
-    /// Note: Bithumb Pro does not have a documented testnet
-    /// Using mainnet URLs for both environments
+    /// Bithumb does not offer a testnet/sandbox environment.
+    ///
+    /// This constant is kept as an alias of `MAINNET` for compatibility only.
+    /// Connectors should return `ExchangeError::UnsupportedOperation` when
+    /// `testnet = true` is requested rather than silently connecting to mainnet.
+    #[deprecated(note = "Bithumb has no testnet. Use MAINNET and reject testnet requests explicitly.")]
     pub const TESTNET: Self = Self {
         spot_rest: "https://global-openapi.bithumb.pro/openapi/v1",
         futures_rest: "https://bithumbfutures.com/api/pro/v1",

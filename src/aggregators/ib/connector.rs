@@ -65,6 +65,56 @@ impl IBConnector {
         Ok(connector)
     }
 
+    /// Create new IB connector for paper trading (IB paper account via Gateway).
+    ///
+    /// IB uses port-based separation:
+    /// - Live trading Gateway: port 4001 (live) / 4002 (IB Gateway)
+    /// - Paper trading Gateway: port 4003 (paper TWS) / 4004 (paper IB Gateway)
+    ///
+    /// This constructor connects to port 4004 (paper IB Gateway) by default.
+    /// Pass a custom `base_url` to override (e.g., `"https://localhost:4003/v1/api"`).
+    ///
+    /// # Arguments
+    /// * `account_id` - IB paper account ID (e.g., "DU12345")
+    /// * `base_url` - Optional custom Gateway URL; defaults to `https://localhost:4004/v1/api`
+    pub async fn paper(
+        account_id: impl Into<String>,
+        base_url: Option<impl Into<String>>,
+    ) -> ExchangeResult<Self> {
+        let url = base_url
+            .map(|u| u.into())
+            .unwrap_or_else(|| "https://localhost:4004/v1/api".to_string());
+
+        let auth = IBAuth::new(account_id);
+
+        let client = Client::builder()
+            .danger_accept_invalid_certs(true) // For Gateway self-signed cert
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| ExchangeError::Network(format!("Failed to create HTTP client: {}", e)))?;
+
+        let connector = Self {
+            client,
+            auth,
+            endpoints: IBEndpoints::custom(url, None::<String>),
+            testnet: true,
+            symbol_cache: Arc::new(RwLock::new(HashMap::new())),
+        };
+
+        connector.check_auth().await?;
+
+        Ok(connector)
+    }
+
+    /// Builder method — set testnet flag after construction.
+    ///
+    /// Useful when you already have a connector built with `from_gateway` and
+    /// want to mark it as paper/testnet without reconstructing it.
+    pub fn with_testnet(mut self, testnet: bool) -> Self {
+        self.testnet = testnet;
+        self
+    }
+
     /// Create new IB connector for production OAuth
     ///
     /// # Note

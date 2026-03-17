@@ -195,7 +195,8 @@ impl ExchangeIdentity for DefiLlamaConnector {
     }
 
     fn is_testnet(&self) -> bool {
-        false // DefiLlama has no testnet
+        // DefiLlama has no testnet; return the stored flag as passed by the caller
+        self._testnet
     }
 
     fn supported_account_types(&self) -> Vec<AccountType> {

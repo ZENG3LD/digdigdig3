@@ -9,6 +9,12 @@ use crate::core::types::AccountType;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// URL's for Bitfinex API
+///
+/// # Testnet / Paper Trading
+///
+/// Bitfinex has no dedicated testnet. Paper trading uses prefixed symbols
+/// (e.g., tTESTBTC:TESTUSD) on the same mainnet endpoints.
+/// The testnet bool is stored for future paper trading symbol routing.
 #[derive(Debug, Clone)]
 pub struct BitfinexUrls {
     pub public_rest: &'static str,

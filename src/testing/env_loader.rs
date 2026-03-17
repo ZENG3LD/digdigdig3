@@ -51,6 +51,13 @@ pub fn load_credentials() -> HashMap<ExchangeId, Credentials> {
             }
         }
 
+        let testnet_var = format!("{}_TESTNET", prefix);
+        if let Some(val) = env_vars.get(&testnet_var) {
+            if val.eq_ignore_ascii_case("true") || val == "1" {
+                creds = creds.with_testnet(true);
+            }
+        }
+
         result.insert(id, creds);
     }
 

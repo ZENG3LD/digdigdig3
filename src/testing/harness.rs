@@ -60,8 +60,10 @@ impl TestHarness {
     }
 
     /// Create a public (unauthenticated) connector for `id`.
-    pub async fn create_public(&self, id: ExchangeId) -> ExchangeResult<Arc<AnyConnector>> {
-        ConnectorFactory::create_public(id).await
+    ///
+    /// Pass `testnet: true` to use the exchange's testnet/sandbox environment.
+    pub async fn create_public(&self, id: ExchangeId, testnet: bool) -> ExchangeResult<Arc<AnyConnector>> {
+        ConnectorFactory::create_public(id, testnet).await
     }
 
     /// Create an authenticated connector for `id`, if credentials are available.

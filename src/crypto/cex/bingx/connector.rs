@@ -62,6 +62,11 @@ pub struct BingxConnector {
     auth: Option<BingxAuth>,
     /// URL'ы
     urls: BingxUrls,
+    /// Testnet / VST mode flag.
+    /// BingX has no separate testnet URLs; VST (Virtual Simulated Trading) uses
+    /// the same mainnet endpoints with "-VST" pair suffixes (e.g., BTC-USDT-VST).
+    /// Stored here for future VST pair routing support.
+    testnet: bool,
     /// Rate limiter для market data (100 req/10s)
     market_limiter: Arc<Mutex<SimpleRateLimiter>>,
     /// Per-symbol precision cache for safe price/qty formatting
@@ -70,8 +75,13 @@ pub struct BingxConnector {
 
 impl BingxConnector {
     /// Создать новый коннектор
-    pub async fn new(credentials: Option<Credentials>, _testnet: bool) -> ExchangeResult<Self> {
-        // BingX doesn't have a public testnet, always use mainnet
+    ///
+    /// Note: BingX has no separate testnet URLs. When `testnet` is `true` the
+    /// connector still connects to the same mainnet endpoints; VST
+    /// (Virtual Simulated Trading) pairs use a "-VST" suffix on the symbol
+    /// level (e.g. "BTC-USDT-VST") rather than a different base URL.
+    pub async fn new(credentials: Option<Credentials>, testnet: bool) -> ExchangeResult<Self> {
+        // BingX uses the same base URL for both mainnet and VST mode
         let urls = BingxUrls::MAINNET;
         let http = HttpClient::new(30_000)?; // 30 sec timeout
 
@@ -89,14 +99,15 @@ impl BingxConnector {
             http,
             auth,
             urls,
+            testnet,
             market_limiter,
             precision: PrecisionCache::new(),
         })
     }
 
     /// Создать коннектор только для публичных методов
-    pub async fn public(_testnet: bool) -> ExchangeResult<Self> {
-        Self::new(None, false).await
+    pub async fn public(testnet: bool) -> ExchangeResult<Self> {
+        Self::new(None, testnet).await
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -291,7 +302,8 @@ impl ExchangeIdentity for BingxConnector {
     }
 
     fn is_testnet(&self) -> bool {
-        false // BingX doesn't have public testnet
+        // BingX has no separate testnet URLs; this flag enables VST pair routing
+        self.testnet
     }
 
     fn supported_account_types(&self) -> Vec<AccountType> {

@@ -63,8 +63,12 @@ pub struct BitgetConnector {
     http: HttpClient,
     /// Аутентификация (None для публичных методов)
     auth: Option<BitgetAuth>,
-    /// URL'ы (mainnet only for Bitget)
+    /// URL'ы (mainnet or demo/paper)
     urls: BitgetUrls,
+    /// Demo/paper trading mode.
+    /// When `true`, WebSocket connects to `wspap.bitget.com` and all
+    /// authenticated REST requests include the `X-CHANNEL-API-CODE: paptrading` header.
+    testnet: bool,
     /// Rate limiter для market data (20 req/sec)
     market_limiter: Arc<Mutex<SimpleRateLimiter>>,
     /// Rate limiter для trading (10 req/sec)
@@ -75,8 +79,17 @@ pub struct BitgetConnector {
 
 impl BitgetConnector {
     /// Создать новый коннектор
-    pub async fn new(credentials: Option<Credentials>, _testnet: bool) -> ExchangeResult<Self> {
-        let urls = BitgetUrls::MAINNET;
+    ///
+    /// When `testnet` is `true` the connector operates in Bitget Demo Trading
+    /// (paper trading) mode: WebSocket connects to `wspap.bitget.com` and the
+    /// `X-CHANNEL-API-CODE: paptrading` header is added to every authenticated
+    /// REST request.  The REST base URL remains the same as mainnet.
+    pub async fn new(credentials: Option<Credentials>, testnet: bool) -> ExchangeResult<Self> {
+        let urls = if testnet {
+            BitgetUrls::TESTNET
+        } else {
+            BitgetUrls::MAINNET
+        };
 
         let http = HttpClient::new(30_000)?; // 30 sec timeout
 
@@ -114,6 +127,7 @@ impl BitgetConnector {
             http,
             auth,
             urls,
+            testnet,
             market_limiter,
             trading_limiter,
             precision: crate::core::utils::precision::PrecisionCache::new(),
@@ -162,6 +176,16 @@ impl BitgetConnector {
         }
     }
 
+    /// Inject the Bitget demo-trading channel header when `self.testnet` is `true`.
+    ///
+    /// Bitget paper/demo trading requires `X-CHANNEL-API-CODE: paptrading` on
+    /// every authenticated request.  The REST base URL is the same as mainnet.
+    fn inject_demo_header(&self, headers: &mut HashMap<String, String>) {
+        if self.testnet {
+            headers.insert("X-CHANNEL-API-CODE".to_string(), "paptrading".to_string());
+        }
+    }
+
     /// GET запрос
     async fn get(
         &self,
@@ -188,13 +212,18 @@ impl BitgetConnector {
         let url = format!("{}{}{}", base_url, path, query);
 
         // Add auth headers if needed
-        let headers = if endpoint.requires_auth() {
+        let mut headers = if endpoint.requires_auth() {
             let auth = self.auth.as_ref()
                 .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
             auth.sign_request("GET", path, &query, "")
         } else {
             HashMap::new()
         };
+
+        // Add demo-trading header for paper mode
+        if endpoint.requires_auth() {
+            self.inject_demo_header(&mut headers);
+        }
 
         let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &headers).await?;
         self.update_rate_from_headers(&resp_headers, endpoint.requires_auth());
@@ -220,7 +249,10 @@ impl BitgetConnector {
         let auth = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
         let body_str = body.to_string();
-        let headers = auth.sign_request("POST", path, "", &body_str);
+        let mut headers = auth.sign_request("POST", path, "", &body_str);
+
+        // Add demo-trading header for paper mode
+        self.inject_demo_header(&mut headers);
 
         let (response, resp_headers) = self.http.post_with_response_headers(&url, &body, &headers).await?;
         self.update_rate_from_headers(&resp_headers, true);
@@ -367,7 +399,7 @@ impl ExchangeIdentity for BitgetConnector {
     }
 
     fn is_testnet(&self) -> bool {
-        false // Bitget doesn't have testnet in this implementation
+        self.testnet
     }
 
     fn supported_account_types(&self) -> Vec<AccountType> {

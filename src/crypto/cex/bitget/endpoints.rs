@@ -26,7 +26,12 @@ impl BitgetUrls {
         ws_private: "wss://ws.bitget.com/v2/ws/private",
     };
 
-    /// Testnet URLs
+    /// Demo / paper-trading URLs.
+    ///
+    /// Bitget demo trading ("simulated trading") uses the same REST base URLs
+    /// as mainnet.  Authenticated REST requests must include the header
+    /// `X-CHANNEL-API-CODE: paptrading`.  WebSocket connections use the
+    /// dedicated `wspap.bitget.com` domain.
     pub const TESTNET: Self = Self {
         spot_rest: "https://api.bitget.com",
         futures_rest: "https://api.bitget.com",

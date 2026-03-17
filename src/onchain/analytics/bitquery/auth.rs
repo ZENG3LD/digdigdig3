@@ -82,6 +82,7 @@ impl BitqueryAuth {
             api_key: token,
             api_secret: String::new(),
             passphrase: None,
+            testnet: false,
         };
 
         Self::new(&credentials)
@@ -134,6 +135,7 @@ mod tests {
             api_key: "ory_at_test_token_12345".to_string(),
             api_secret: String::new(),
             passphrase: None,
+            testnet: false,
         };
 
         let auth = BitqueryAuth::new(&credentials).unwrap();
@@ -146,6 +148,7 @@ mod tests {
             api_key: "invalid_token_format".to_string(),
             api_secret: String::new(),
             passphrase: None,
+            testnet: false,
         };
 
         let result = BitqueryAuth::new(&credentials);
@@ -159,6 +162,7 @@ mod tests {
             api_key: String::new(),
             api_secret: String::new(),
             passphrase: None,
+            testnet: false,
         };
 
         let result = BitqueryAuth::new(&credentials);
@@ -172,6 +176,7 @@ mod tests {
             api_key: "ory_at_test_token".to_string(),
             api_secret: String::new(),
             passphrase: None,
+            testnet: false,
         };
 
         let auth = BitqueryAuth::new(&credentials).unwrap();
@@ -194,6 +199,7 @@ mod tests {
             api_key: "ory_at_test_token".to_string(),
             api_secret: String::new(),
             passphrase: None,
+            testnet: false,
         };
 
         let auth = BitqueryAuth::new(&credentials).unwrap();

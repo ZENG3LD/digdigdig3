@@ -20,19 +20,24 @@ impl AngelOneUrls {
         ws_base: "wss://smartapisocket.angelone.in/smart-stream",
     };
 
-    /// Angel One does not provide testnet/sandbox
+    /// Angel One does not provide a testnet or sandbox environment.
+    ///
+    /// This constant is kept as an alias of `MAINNET` for compatibility only.
+    /// Connectors should return `ExchangeError::UnsupportedOperation` when
+    /// `testnet = true` is requested rather than silently connecting to production.
+    #[deprecated(note = "Angel One has no testnet. Reject testnet requests with UnsupportedOperation.")]
     pub const TESTNET: Self = Self {
-        rest_base: "https://apiconnect.angelone.in", // Same as production
+        rest_base: "https://apiconnect.angelone.in", // Same as production — no testnet exists
         ws_base: "wss://smartapisocket.angelone.in/smart-stream",
     };
 
-    /// Get appropriate URL set based on testnet flag
-    pub fn get(testnet: bool) -> Self {
-        if testnet {
-            Self::TESTNET
-        } else {
-            Self::MAINNET
-        }
+    /// Get appropriate URL set based on testnet flag.
+    ///
+    /// Note: since Angel One has no testnet, both branches return MAINNET URLs.
+    /// Callers that need to reject testnet requests should do so before calling this.
+    pub fn get(_testnet: bool) -> Self {
+        // Angel One has no testnet environment; always return mainnet URLs
+        Self::MAINNET
     }
 }
 

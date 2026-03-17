@@ -26,7 +26,12 @@ impl DhanUrls {
         ws_depth_200: "wss://full-depth-api.dhan.co/twohundreddepth",
     };
 
-    /// Sandbox URLs (same as production, differentiated by account type)
+    /// Sandbox / paper-trading URLs.
+    ///
+    /// Dhan sandbox uses the **same URLs** as production. Sandbox mode is
+    /// determined entirely by the **access token type** provided at authentication
+    /// time (sandbox token vs. production token) — not by a different base URL.
+    /// The `TESTNET` URLs are intentionally identical to `MAINNET` URLs.
     pub const TESTNET: Self = Self {
         rest: "https://api.dhan.co",
         ws_live_feed: "wss://api-feed.dhan.co",

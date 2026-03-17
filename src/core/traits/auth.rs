@@ -28,6 +28,10 @@ pub struct Credentials {
     pub api_key: String,
     pub api_secret: String,
     pub passphrase: Option<String>,
+    /// Whether to connect to the exchange's testnet/sandbox environment.
+    ///
+    /// Defaults to `false` (production). Set to `true` to use testnet endpoints.
+    pub testnet: bool,
 }
 
 impl Credentials {
@@ -36,11 +40,20 @@ impl Credentials {
             api_key: api_key.into(),
             api_secret: api_secret.into(),
             passphrase: None,
+            testnet: false,
         }
     }
 
     pub fn with_passphrase(mut self, passphrase: impl Into<String>) -> Self {
         self.passphrase = Some(passphrase.into());
+        self
+    }
+
+    /// Set testnet mode.
+    ///
+    /// When `true`, the connector will use the exchange's testnet/sandbox endpoints.
+    pub fn with_testnet(mut self, testnet: bool) -> Self {
+        self.testnet = testnet;
         self
     }
 }

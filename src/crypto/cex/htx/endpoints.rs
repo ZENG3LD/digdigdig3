@@ -9,12 +9,21 @@ use crate::core::types::{AccountType, Symbol};
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// URL endpoints for HTX API
+///
+/// # Testnet
+///
+/// HTX (formerly Huobi) does not provide a public testnet for most APIs.
+/// Contract testing endpoints exist but are not publicly accessible.
+/// The `testnet` parameter is accepted and stored for future use if HTX
+/// opens testnet access, but all methods return mainnet URLs regardless.
 pub struct HtxUrls;
 
 impl HtxUrls {
-    /// Get REST API base URL for spot trading
+    /// Get REST API base URL for spot trading.
+    ///
+    /// Note: `testnet` is accepted for API compatibility but ignored — HTX has
+    /// no public testnet. The flag is stored at connector level for future use.
     pub fn base_url(_testnet: bool) -> &'static str {
-        // HTX doesn't have a dedicated testnet, use main
         "https://api.huobi.pro"
     }
 

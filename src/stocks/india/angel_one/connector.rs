@@ -71,7 +71,10 @@ impl AngelOneConnector {
     /// - `client_code` - Angel One client code (account ID)
     /// - `pin` - Account PIN/password
     /// - `totp_secret` - TOTP secret for 2FA
-    /// - `testnet` - Testnet flag (no effect, Angel One has no testnet)
+    /// - `testnet` - Must be `false`; Angel One has no testnet or sandbox environment.
+    ///
+    /// # Errors
+    /// Returns `ExchangeError::UnsupportedOperation` when `testnet = true`.
     pub async fn new(
         api_key: String,
         client_code: String,
@@ -79,6 +82,11 @@ impl AngelOneConnector {
         totp_secret: String,
         testnet: bool,
     ) -> ExchangeResult<Self> {
+        if testnet {
+            return Err(ExchangeError::UnsupportedOperation(
+                "Angel One does not support testnet mode — no sandbox environment is available.".to_string(),
+            ));
+        }
         let urls = AngelOneUrls::get(testnet);
         let http = HttpClient::new(30_000)?; // 30 sec timeout
 

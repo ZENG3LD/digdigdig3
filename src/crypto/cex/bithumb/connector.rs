@@ -61,12 +61,16 @@ pub struct BithumbConnector {
 
 impl BithumbConnector {
     /// Создать новый коннектор
+    ///
+    /// Returns `ExchangeError::UnsupportedOperation` when `testnet = true` because
+    /// Bithumb does not offer a testnet or sandbox environment.
     pub async fn new(credentials: Option<Credentials>, testnet: bool) -> ExchangeResult<Self> {
-        let urls = if testnet {
-            BithumbUrls::TESTNET
-        } else {
-            BithumbUrls::MAINNET
-        };
+        if testnet {
+            return Err(ExchangeError::UnsupportedOperation(
+                "Bithumb does not support testnet mode — no sandbox environment is available.".to_string(),
+            ));
+        }
+        let urls = BithumbUrls::MAINNET;
 
         // Bithumb API имеет известные проблемы с инфраструктурой (~20% запросов получают 504 Gateway Timeout)
         // Используем специальную конфигурацию retry с:

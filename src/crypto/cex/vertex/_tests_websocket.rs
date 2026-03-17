@@ -71,6 +71,7 @@ fn load_credentials() -> Option<Credentials> {
         api_key,
         api_secret: secret_key,
         passphrase: None,
+        testnet: false,
     })
 }
 

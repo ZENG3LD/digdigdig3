@@ -65,6 +65,7 @@ mod tests {
             api_key: "test_key_123".to_string(),
             api_secret: String::new(),
             passphrase: None,
+            testnet: false,
         };
 
         let auth = CoinglassAuth::new(&credentials).unwrap();
@@ -77,6 +78,7 @@ mod tests {
             api_key: "test_key_123".to_string(),
             api_secret: String::new(),
             passphrase: None,
+            testnet: false,
         };
 
         let auth = CoinglassAuth::new(&credentials).unwrap();
@@ -92,6 +94,7 @@ mod tests {
             api_key: "test_key_123".to_string(),
             api_secret: String::new(),
             passphrase: None,
+            testnet: false,
         };
 
         let auth = CoinglassAuth::new(&credentials).unwrap();
@@ -106,6 +109,7 @@ mod tests {
             api_key: String::new(),
             api_secret: String::new(),
             passphrase: None,
+            testnet: false,
         };
 
         let result = CoinglassAuth::new(&credentials);

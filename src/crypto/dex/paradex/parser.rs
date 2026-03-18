@@ -11,7 +11,7 @@ use crate::core::types::{
     FundingRate, PublicTrade, StreamEvent, TradeSide,
     OrderUpdateEvent, BalanceUpdateEvent, PositionUpdateEvent,
     BalanceChangeReason, PositionChangeReason,
-    UserTrade,
+    UserTrade, FundingPayment,
 };
 
 /// Парсер ответов Paradex API
@@ -778,6 +778,62 @@ impl ParadexParser {
         };
 
         Ok(StreamEvent::OrderUpdate(event))
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FUNDING HISTORY
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse historical funding payments from `GET /v1/funding/payments`.
+    ///
+    /// Response:
+    /// ```json
+    /// {"results":[
+    ///   {"market":"BTC-USD-PERP","funding_rate":"0.0001","payment":"-0.01",
+    ///    "size":"0.1","created_at":1672531200000}
+    /// ]}
+    /// ```
+    pub fn parse_funding_payments(response: &Value) -> ExchangeResult<Vec<FundingPayment>> {
+        let list = response.get("results")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse(
+                "Missing 'results' in funding payments response".to_string(),
+            ))?;
+
+        let mut payments = Vec::with_capacity(list.len());
+        for item in list {
+            let symbol = Self::get_str(item, "market")
+                .unwrap_or("")
+                .to_string();
+
+            let funding_rate = Self::get_str(item, "funding_rate")
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+
+            let position_size = Self::get_str(item, "size")
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+
+            let payment = Self::get_str(item, "payment")
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+
+            // Paradex perpetuals settle in USDC
+            let asset = "USDC".to_string();
+
+            // created_at is milliseconds
+            let timestamp = Self::get_i64(item, "created_at").unwrap_or(0);
+
+            payments.push(FundingPayment {
+                symbol,
+                funding_rate,
+                position_size,
+                payment,
+                asset,
+                timestamp,
+            });
+        }
+        Ok(payments)
     }
 }
 

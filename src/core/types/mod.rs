@@ -21,4 +21,6 @@ pub use responses::{
     MarginBorrowResponse, MarginRepayResponse, MarginInterestRecord,
     EarnProduct, EarnPosition, ConvertQuote,
     ClosedPnlRecord, LongShortRatio,
+    FundingPayment, FundingFilter,
+    LedgerEntry, LedgerEntryType, LedgerFilter,
 };

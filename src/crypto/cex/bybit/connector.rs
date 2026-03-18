@@ -44,8 +44,13 @@ use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
     CancelAll, AmendOrder, BatchOrders,
     AccountTransfers, CustodialFunds, SubAccounts,
+    FundingHistory, AccountLedger,
 };
-use crate::core::types::ConnectorStats;
+use crate::core::types::{
+    ConnectorStats,
+    FundingPayment, FundingFilter,
+    LedgerEntry, LedgerFilter,
+};
 use crate::core::utils::WeightRateLimiter;
 
 use super::endpoints::{BybitUrls, BybitEndpoint, format_symbol, account_type_to_category, account_type_to_transfer_type, map_kline_interval};
@@ -2299,5 +2304,88 @@ impl SubAccounts for BybitConnector {
                 BybitParser::parse_sub_account_balance(&response)
             }
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FUNDING HISTORY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Funding payment history via `GET /v5/account/transaction-log?type=SETTLEMENT`
+#[async_trait]
+impl FundingHistory for BybitConnector {
+    async fn get_funding_payments(
+        &self,
+        filter: FundingFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<FundingPayment>> {
+        let mut params: HashMap<String, String> = HashMap::new();
+        params.insert("type".to_string(), "SETTLEMENT".to_string());
+
+        let acct_type_str = match account_type {
+            AccountType::Spot => "SPOT",
+            _ => "UNIFIED",
+        };
+        params.insert("accountType".to_string(), acct_type_str.to_string());
+
+        if let Some(symbol) = &filter.symbol {
+            params.insert("symbol".to_string(), symbol.to_uppercase());
+        }
+        if let Some(start) = filter.start_time {
+            params.insert("startTime".to_string(), start.to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("endTime".to_string(), end.to_string());
+        }
+        if let Some(limit) = filter.limit {
+            params.insert("limit".to_string(), limit.min(50).to_string());
+        }
+
+        let response = self.get(BybitEndpoint::TransactionLog, params).await?;
+        BybitParser::parse_funding_payments(&response)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT LEDGER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Full account ledger via `GET /v5/account/transaction-log` (all types).
+#[async_trait]
+impl AccountLedger for BybitConnector {
+    async fn get_ledger(
+        &self,
+        filter: LedgerFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<LedgerEntry>> {
+        let mut params: HashMap<String, String> = HashMap::new();
+
+        let acct_type_str = match account_type {
+            AccountType::Spot => "SPOT",
+            _ => "UNIFIED",
+        };
+        params.insert("accountType".to_string(), acct_type_str.to_string());
+
+        if let Some(asset) = &filter.asset {
+            params.insert("currency".to_string(), asset.to_uppercase());
+        }
+        if let Some(start) = filter.start_time {
+            params.insert("startTime".to_string(), start.to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("endTime".to_string(), end.to_string());
+        }
+        if let Some(limit) = filter.limit {
+            params.insert("limit".to_string(), limit.min(50).to_string());
+        }
+
+        let response = self.get(BybitEndpoint::TransactionLog, params).await?;
+        let mut entries = BybitParser::parse_ledger(&response)?;
+
+        if let Some(ref type_filter) = filter.entry_type {
+            entries.retain(|e| &e.entry_type == type_filter);
+        }
+
+        Ok(entries)
     }
 }

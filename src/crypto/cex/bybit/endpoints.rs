@@ -129,6 +129,10 @@ pub enum BybitEndpoint {
     ListSubMembers,        // GET  /v5/user/query-sub-members
     UniversalTransfer,     // POST /v5/asset/transfer/universal-transfer
     SubAccountBalance,     // GET  /v5/asset/transfer/query-account-coins-balance
+
+    // === ACCOUNT LEDGER / FUNDING HISTORY ===
+    /// GET /v5/account/transaction-log — full ledger (all types incl. SETTLEMENT)
+    TransactionLog,
 }
 
 impl BybitEndpoint {
@@ -198,6 +202,9 @@ impl BybitEndpoint {
             Self::ListSubMembers => "/v5/user/query-sub-members",
             Self::UniversalTransfer => "/v5/asset/transfer/universal-transfer",
             Self::SubAccountBalance => "/v5/asset/transfer/query-account-coins-balance",
+
+            // Account Ledger / Funding History
+            Self::TransactionLog => "/v5/account/transaction-log",
         }
     }
 

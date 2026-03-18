@@ -20,6 +20,7 @@ use crate::core::types::{
     BalanceChangeReason, PositionChangeReason,
     CancelAllResponse, OrderResult,
     UserTrade,
+    FundingPayment, LedgerEntry, LedgerEntryType,
 };
 
 /// Parser for Gate.io API responses
@@ -861,6 +862,107 @@ impl GateioParser {
                 },
             }
         }).collect())
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FUNDING HISTORY
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse funding payment history from `GET /api/v4/futures/{settle}/funding_payments`.
+    ///
+    /// Gate.io returns a direct array:
+    /// ```json
+    /// [{ "contract": "BTC_USDT", "time": 1234567890, "amount": "-10.5" }]
+    /// ```
+    /// No `funding_rate` field is available in payment history.
+    pub fn parse_funding_payments(response: &Value) -> ExchangeResult<Vec<FundingPayment>> {
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array for funding payments".to_string()))?;
+
+        let mut result = Vec::with_capacity(arr.len());
+        for item in arr {
+            let symbol = Self::get_str(item, "contract").unwrap_or("").to_string();
+            let payment = Self::get_f64(item, "amount").unwrap_or(0.0);
+            // Gate.io time is integer seconds
+            let timestamp = item.get("time")
+                .and_then(|t| t.as_i64())
+                .map(|t| t * 1000)
+                .unwrap_or(0);
+
+            result.push(FundingPayment {
+                symbol,
+                funding_rate: 0.0, // Not provided in payment history
+                position_size: 0.0,
+                payment,
+                asset: "USDT".to_string(),
+                timestamp,
+            });
+        }
+
+        Ok(result)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ACCOUNT LEDGER
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse account ledger from `GET /api/v4/wallet/ledger` or
+    /// `GET /api/v4/futures/{settle}/account_book`.
+    ///
+    /// Gate.io returns a direct array:
+    /// ```json
+    /// [{ "id": "123", "currency": "USDT", "change": "100.5",
+    ///   "balance": "1000.5", "type": "deposit", "time": 1234567890 }]
+    /// ```
+    pub fn parse_ledger(response: &Value) -> ExchangeResult<Vec<LedgerEntry>> {
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array for ledger".to_string()))?;
+
+        let mut result = Vec::with_capacity(arr.len());
+        for item in arr {
+            let id = Self::get_str(item, "id").unwrap_or("").to_string();
+            let asset = Self::get_str(item, "currency").unwrap_or("").to_string();
+            let amount = Self::get_f64(item, "change").unwrap_or(0.0);
+            let balance = Self::get_f64(item, "balance");
+            let type_str = Self::get_str(item, "type").unwrap_or("");
+            let entry_type = Self::map_gateio_ledger_type(type_str);
+            let description = type_str.to_string();
+            // Gate.io time can be int seconds or string
+            let timestamp = item.get("time")
+                .and_then(|t| {
+                    t.as_i64().map(|s| s * 1000)
+                        .or_else(|| t.as_str().and_then(|s| s.parse::<i64>().ok()).map(|s| s * 1000))
+                })
+                .unwrap_or(0);
+
+            result.push(LedgerEntry {
+                id,
+                asset,
+                amount,
+                balance,
+                entry_type,
+                description,
+                ref_id: None,
+                timestamp,
+            });
+        }
+
+        Ok(result)
+    }
+
+    fn map_gateio_ledger_type(type_str: &str) -> LedgerEntryType {
+        match type_str {
+            "trade" | "order_close" => LedgerEntryType::Trade,
+            "deposit" => LedgerEntryType::Deposit,
+            "withdrawal" | "withdraw" => LedgerEntryType::Withdrawal,
+            "funding" | "fee_refund" => LedgerEntryType::Funding,
+            "fee" | "trade_fee" => LedgerEntryType::Fee,
+            "rebate" => LedgerEntryType::Rebate,
+            "transfer" => LedgerEntryType::Transfer,
+            "liq_order" | "liquidation" => LedgerEntryType::Liquidation,
+            "set_collateral" | "pnl" => LedgerEntryType::Settlement,
+            other => LedgerEntryType::Other(other.to_string()),
+        }
     }
 }
 

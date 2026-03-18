@@ -123,6 +123,10 @@ pub enum DeribitMethod {
     GetUserTradesByCurrencyTime,
     /// private/get_trigger_order_history (signed)
     GetTriggerOrderHistory,
+
+    // === TRANSACTION LOG ===
+    /// private/get_transaction_log (signed)
+    GetTransactionLog,
 }
 
 impl DeribitMethod {
@@ -191,6 +195,9 @@ impl DeribitMethod {
             Self::GetOrderHistoryByInstrument => "private/get_order_history_by_instrument",
             Self::GetUserTradesByCurrencyTime => "private/get_user_trades_by_currency_and_time",
             Self::GetTriggerOrderHistory => "private/get_trigger_order_history",
+
+            // Transaction Log
+            Self::GetTransactionLog => "private/get_transaction_log",
         }
     }
 

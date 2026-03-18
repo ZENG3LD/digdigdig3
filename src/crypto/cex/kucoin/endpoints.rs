@@ -181,6 +181,14 @@ pub enum KuCoinEndpoint {
     WithdrawalCancel,
     /// GET /api/v1/withdrawals/quotas — query withdrawal quota for an asset/chain
     WithdrawalQuotas,
+
+    // === FUNDING HISTORY ===
+    /// GET /api/v1/funding-history — personal funding payment records (futures domain)
+    FuturesFundingHistory,
+
+    // === ACCOUNT LEDGER ===
+    /// GET /api/v1/accounts/ledgers — spot/main account ledger (paginated)
+    SpotLedger,
 }
 
 impl KuCoinEndpoint {
@@ -286,6 +294,12 @@ impl KuCoinEndpoint {
             Self::TransferQuotas => "/api/v1/accounts/transferable",
             Self::WithdrawalCancel => "/api/v1/withdrawals/{withdrawalId}",
             Self::WithdrawalQuotas => "/api/v1/withdrawals/quotas",
+
+            // Funding History
+            Self::FuturesFundingHistory => "/api/v1/funding-history",
+
+            // Account Ledger
+            Self::SpotLedger => "/api/v1/accounts/ledgers",
         }
     }
 

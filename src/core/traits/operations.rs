@@ -31,6 +31,8 @@ use crate::core::types::{
     FundsHistoryFilter, SubAccountOperation, SubAccountResult,
     MarginBorrowResponse, MarginRepayResponse, MarginInterestRecord,
     EarnProduct, EarnPosition, ConvertQuote,
+    FundingPayment, FundingFilter,
+    LedgerEntry, LedgerFilter,
 };
 
 use super::{Trading, Account};
@@ -722,6 +724,69 @@ pub trait PredictionMarket: Send + Sync {
     async fn get_prediction_positions(&self) -> ExchangeResult<Vec<Value>> {
         Err(crate::core::types::ExchangeError::UnsupportedOperation(
             "get_prediction_positions".to_string(),
+        ))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FUNDING HISTORY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Historical funding payment records for perpetual futures positions.
+///
+/// ~16/24: all perpetual futures exchanges — Binance, Bybit, OKX, KuCoin,
+/// GateIO, Bitget, BingX, Phemex, MEXC, HTX, CryptoCom, Deribit,
+/// HyperLiquid, Paradex, dYdX, Lighter.
+///
+/// Default implementation returns `UnsupportedOperation`.
+/// Connectors that expose a native funding payment history endpoint override
+/// `get_funding_payments`.
+#[async_trait]
+pub trait FundingHistory: Send + Sync {
+    /// Get historical funding payments for the account.
+    ///
+    /// `filter.symbol = None` returns payments across all symbols (if the
+    /// exchange supports global queries). `account_type` selects the futures
+    /// account tier (FuturesCross, FuturesIsolated).
+    async fn get_funding_payments(
+        &self,
+        filter: FundingFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<FundingPayment>> {
+        let _ = (filter, account_type);
+        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+            "get_funding_payments not implemented".into(),
+        ))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT LEDGER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Full account ledger — chronological log of all balance changes.
+///
+/// ~14/24: Binance, Bybit, OKX, KuCoin, Kraken, GateIO, Bitfinex, Bitget,
+/// BingX, Phemex, Deribit, HyperLiquid, Paradex, dYdX.
+///
+/// Default implementation returns `UnsupportedOperation`.
+/// Connectors that expose a native ledger/transaction-log endpoint override
+/// `get_ledger`.
+#[async_trait]
+pub trait AccountLedger: Send + Sync {
+    /// Get the account ledger — all balance change entries matching the filter.
+    ///
+    /// `filter.asset = None` returns entries for all assets.
+    /// `filter.entry_type = None` returns all entry types.
+    /// `account_type` selects which account sub-type to query.
+    async fn get_ledger(
+        &self,
+        filter: LedgerFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<LedgerEntry>> {
+        let _ = (filter, account_type);
+        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+            "get_ledger not implemented".into(),
         ))
     }
 }

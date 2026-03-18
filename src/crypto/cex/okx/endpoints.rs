@@ -130,6 +130,12 @@ pub enum OkxEndpoint {
     /// GET /api/v5/asset/bills
     AssetBills,
 
+    // === ACCOUNT LEDGER / FUNDING HISTORY ===
+    /// GET /api/v5/account/bills — account trading bills (last 7 days)
+    AccountBills,
+    /// GET /api/v5/account/bills-archive — account trading bills archive (up to 3 months)
+    AccountBillsArchive,
+
     // === CUSTODIAL FUNDS ===
     /// GET /api/v5/asset/deposit-address
     DepositAddress,
@@ -214,6 +220,10 @@ impl OkxEndpoint {
             Self::AssetTransfer => "/api/v5/asset/transfer",
             Self::TransferState => "/api/v5/asset/transfer-state",
             Self::AssetBills => "/api/v5/asset/bills",
+
+            // Account Ledger / Funding History
+            Self::AccountBills => "/api/v5/account/bills",
+            Self::AccountBillsArchive => "/api/v5/account/bills-archive",
 
             // Custodial Funds
             Self::DepositAddress => "/api/v5/asset/deposit-address",

@@ -987,6 +987,89 @@ impl BybitParser {
 
         Ok((topic.to_string(), msg_type.to_string(), data))
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FUNDING HISTORY
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse funding payments from `GET /v5/account/transaction-log?type=SETTLEMENT`
+    pub fn parse_funding_payments(response: &Value) -> ExchangeResult<Vec<FundingPayment>> {
+        let result = Self::extract_result(response)?;
+        let list = result.get("list")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'list' in transaction-log result".to_string()))?;
+
+        let mut payments = Vec::with_capacity(list.len());
+        for item in list {
+            let symbol = item.get("symbol").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let payment: f64 = item.get("cashFlow")
+                .and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            let position_size: f64 = item.get("qty")
+                .and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            let asset = item.get("currency").and_then(|v| v.as_str()).unwrap_or("USDT").to_string();
+            let timestamp: i64 = item.get("transactionTime")
+                .and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0);
+            payments.push(FundingPayment {
+                symbol,
+                funding_rate: 0.0,
+                position_size,
+                payment,
+                asset,
+                timestamp,
+            });
+        }
+        Ok(payments)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ACCOUNT LEDGER
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse ledger from `GET /v5/account/transaction-log` (all types).
+    ///
+    /// Maps Bybit `type` field to `LedgerEntryType`.
+    pub fn parse_ledger(response: &Value) -> ExchangeResult<Vec<LedgerEntry>> {
+        let result = Self::extract_result(response)?;
+        let list = result.get("list")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'list' in transaction-log result".to_string()))?;
+
+        let mut entries = Vec::with_capacity(list.len());
+        for item in list {
+            let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let symbol = item.get("symbol").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let tx_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("OTHER");
+            let amount: f64 = item.get("cashFlow")
+                .and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            let balance: Option<f64> = item.get("cashBalance")
+                .and_then(|v| v.as_str()).and_then(|s| s.parse().ok());
+            let asset = item.get("currency").and_then(|v| v.as_str()).unwrap_or("USDT").to_string();
+            let timestamp: i64 = item.get("transactionTime")
+                .and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0);
+            let entry_type = match tx_type {
+                "TRADE" => LedgerEntryType::Trade,
+                "SETTLEMENT" => LedgerEntryType::Funding,
+                "DELIVERY" => LedgerEntryType::Settlement,
+                "TRANSFER" | "AIRDROP" => LedgerEntryType::Transfer,
+                "CASHBACK" | "REBATE" => LedgerEntryType::Rebate,
+                "LIQUIDATION" => LedgerEntryType::Liquidation,
+                "DEPOSIT" => LedgerEntryType::Deposit,
+                "WITHDRAWAL" => LedgerEntryType::Withdrawal,
+                other => LedgerEntryType::Other(other.to_string()),
+            };
+            entries.push(LedgerEntry {
+                id,
+                asset,
+                amount,
+                balance,
+                entry_type,
+                description: format!("{} {}", tx_type, symbol),
+                ref_id: None,
+                timestamp,
+            });
+        }
+        Ok(entries)
+    }
 }
 
 // Balance type conversion helper - removed, use core Balance directly

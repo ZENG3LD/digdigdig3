@@ -93,6 +93,8 @@ pub use types::{
     PlaceOrderResponse, OrderResult, CancelAllResponse,
     FeeInfo, TransferResponse, DepositAddress, WithdrawResponse, FundsRecord,
     ClosedPnlRecord, LongShortRatio,
+    FundingPayment, FundingFilter,
+    LedgerEntry, LedgerEntryType, LedgerFilter,
     // WebSocket
     ConnectionStatus, StreamType, SubscriptionRequest, StreamEvent,
     OrderUpdateEvent, BalanceUpdateEvent, PositionUpdateEvent,
@@ -110,6 +112,7 @@ pub use traits::{
     // Optional operation traits
     CancelAll, AmendOrder, BatchOrders,
     AccountTransfers, CustodialFunds, SubAccounts,
+    FundingHistory, AccountLedger,
 };
 
 // Re-exports utils

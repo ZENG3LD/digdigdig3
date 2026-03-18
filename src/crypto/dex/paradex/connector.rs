@@ -37,11 +37,11 @@ use crate::core::{AmendRequest, CancelAllResponse, OrderResult};
 use crate::core::types::AlgoOrderResponse;
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
-    CancelAll, AmendOrder, BatchOrders,
+    CancelAll, AmendOrder, BatchOrders, FundingHistory,
 };
 use crate::core::utils::GroupRateLimiter;
 use crate::core::utils::precision::PrecisionCache;
-use crate::core::types::{ConnectorStats, SymbolInfo};
+use crate::core::types::{ConnectorStats, SymbolInfo, FundingPayment, FundingFilter};
 
 use super::endpoints::{ParadexUrls, ParadexEndpoint, format_symbol, map_kline_resolution};
 use super::auth::ParadexAuth;
@@ -1443,6 +1443,34 @@ impl BatchOrders for ParadexConnector {
 
     fn max_batch_cancel_size(&self) -> usize {
         100 // Paradex batch cancel accepts up to 100 IDs
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FUNDING HISTORY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl FundingHistory for ParadexConnector {
+    /// Get historical funding payments from `GET /v1/funding/payments`.
+    ///
+    /// Requires JWT auth. Params: `market` (optional), `cursor`, `page_size`.
+    async fn get_funding_payments(
+        &self,
+        filter: FundingFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<FundingPayment>> {
+        let mut params = HashMap::new();
+
+        if let Some(sym) = &filter.symbol {
+            params.insert("market".to_string(), sym.clone());
+        }
+        if let Some(limit) = filter.limit {
+            params.insert("page_size".to_string(), limit.to_string());
+        }
+
+        let response = self.get(ParadexEndpoint::FundingPayments, params).await?;
+        ParadexParser::parse_funding_payments(&response)
     }
 }
 

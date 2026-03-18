@@ -31,6 +31,7 @@ use crate::core::types::{
     DepositAddress, WithdrawResponse, FundsRecord,
     SubAccountResult, SubAccount,
     UserTrade,
+    FundingPayment, LedgerEntry, LedgerEntryType,
 };
 
 /// Parser for Kraken API responses
@@ -1172,6 +1173,142 @@ impl KrakenParser {
         }
 
         pair.to_string()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FUNDING HISTORY
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse funding payment history from `POST /0/private/Ledgers` (type=rollover).
+    ///
+    /// Kraken ledger response:
+    /// ```json
+    /// { "result": { "ledger": { "LXXX": { "asset": "XXBT", "type": "rollover",
+    ///   "time": 1234567890.5, "amount": "-0.0001", "balance": "1.0" } } } }
+    /// ```
+    pub fn parse_funding_payments(response: &Value) -> ExchangeResult<Vec<FundingPayment>> {
+        let result = Self::extract_result(response)?;
+        let ledger = result.get("ledger")
+            .and_then(|v| v.as_object())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'ledger' object".to_string()))?;
+
+        let mut payments = Vec::new();
+        for (id, entry) in ledger {
+            // Only rollover entries are funding payments
+            let entry_type = Self::get_str(entry, "type").unwrap_or("");
+            if entry_type != "rollover" {
+                continue;
+            }
+
+            let asset_raw = Self::get_str(entry, "asset").unwrap_or("");
+            let asset = Self::normalize_kraken_asset(asset_raw);
+            let amount = Self::get_f64(entry, "amount").unwrap_or(0.0);
+            // Kraken time is float seconds
+            let timestamp = entry.get("time")
+                .and_then(|t| t.as_f64())
+                .map(|t| (t * 1000.0) as i64)
+                .unwrap_or(0);
+
+            payments.push(FundingPayment {
+                symbol: id.clone(),
+                funding_rate: 0.0, // Kraken doesn't expose rate in ledger entries
+                position_size: 0.0,
+                payment: amount,
+                asset,
+                timestamp,
+            });
+        }
+
+        // Sort by timestamp ascending
+        payments.sort_by_key(|p| p.timestamp);
+        Ok(payments)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ACCOUNT LEDGER
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse account ledger from `POST /0/private/Ledgers`.
+    ///
+    /// Kraken ledger response:
+    /// ```json
+    /// { "result": { "ledger": { "LXXX": { "asset": "ZUSD", "type": "trade",
+    ///   "time": 1234567890.5, "amount": "100.0", "balance": "1000.0",
+    ///   "refid": "TXXX", "fee": "0.25" } } } }
+    /// ```
+    pub fn parse_ledger(response: &Value) -> ExchangeResult<Vec<LedgerEntry>> {
+        let result = Self::extract_result(response)?;
+        let ledger = result.get("ledger")
+            .and_then(|v| v.as_object())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'ledger' object".to_string()))?;
+
+        let mut entries = Vec::new();
+        for (id, entry) in ledger {
+            let asset_raw = Self::get_str(entry, "asset").unwrap_or("");
+            let asset = Self::normalize_kraken_asset(asset_raw);
+            let amount = Self::get_f64(entry, "amount").unwrap_or(0.0);
+            let balance = Self::get_f64(entry, "balance");
+            let type_str = Self::get_str(entry, "type").unwrap_or("");
+            let entry_type = Self::map_kraken_ledger_type(type_str);
+            let description = type_str.to_string();
+            let ref_id = Self::get_str(entry, "refid").map(String::from);
+            let timestamp = entry.get("time")
+                .and_then(|t| t.as_f64())
+                .map(|t| (t * 1000.0) as i64)
+                .unwrap_or(0);
+
+            entries.push(LedgerEntry {
+                id: id.clone(),
+                asset,
+                amount,
+                balance,
+                entry_type,
+                description,
+                ref_id,
+                timestamp,
+            });
+        }
+
+        // Sort by timestamp ascending
+        entries.sort_by_key(|e| e.timestamp);
+        Ok(entries)
+    }
+
+    fn map_kraken_ledger_type(type_str: &str) -> LedgerEntryType {
+        match type_str {
+            "trade" => LedgerEntryType::Trade,
+            "deposit" => LedgerEntryType::Deposit,
+            "withdrawal" => LedgerEntryType::Withdrawal,
+            "rollover" => LedgerEntryType::Funding,
+            "fee" => LedgerEntryType::Fee,
+            "rebate" => LedgerEntryType::Rebate,
+            "transfer" => LedgerEntryType::Transfer,
+            "margin" => LedgerEntryType::Trade,
+            "settlement" => LedgerEntryType::Settlement,
+            "adjustment" => LedgerEntryType::Other("adjustment".to_string()),
+            other => LedgerEntryType::Other(other.to_string()),
+        }
+    }
+
+    /// Normalize Kraken asset names by stripping X/Z prefixes.
+    ///
+    /// - XXBT → XBT
+    /// - ZUSD → USD
+    /// - XETH → ETH
+    fn normalize_kraken_asset(asset: &str) -> String {
+        // XXBT is a special case: strip one X → XBT
+        if asset.starts_with("XX") {
+            return asset[1..].to_string();
+        }
+        // XETH, XLTC, XXRP: strip leading X for crypto
+        if asset.len() == 4 && asset.starts_with('X') {
+            return asset[1..].to_string();
+        }
+        // ZUSD, ZEUR, ZGBP, ZCAD, ZJPY: strip leading Z for fiat
+        if asset.len() == 4 && asset.starts_with('Z') {
+            return asset[1..].to_string();
+        }
+        asset.to_string()
     }
 }
 

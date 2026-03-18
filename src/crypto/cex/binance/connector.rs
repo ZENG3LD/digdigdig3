@@ -41,6 +41,11 @@ use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
     CancelAll, AmendOrder, BatchOrders,
     AccountTransfers, CustodialFunds, SubAccounts,
+    FundingHistory, AccountLedger,
+};
+use crate::core::types::{
+    FundingPayment, FundingFilter,
+    LedgerEntry, LedgerFilter,
 };
 use crate::core::utils::WeightRateLimiter;
 
@@ -2182,5 +2187,98 @@ impl SubAccounts for BinanceConnector {
                 BinanceParser::parse_sub_account_assets(&response)
             }
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FUNDING HISTORY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Funding payment history via `GET /fapi/v1/income?incomeType=FUNDING_FEE`
+///
+/// Only available for futures account types. Spot returns `UnsupportedOperation`.
+#[async_trait]
+impl FundingHistory for BinanceConnector {
+    async fn get_funding_payments(
+        &self,
+        filter: FundingFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<FundingPayment>> {
+        match account_type {
+            AccountType::FuturesCross | AccountType::FuturesIsolated => {}
+            _ => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Binance funding payments are futures-only".to_string(),
+                ))
+            }
+        }
+
+        let mut params: HashMap<String, String> = HashMap::new();
+        params.insert("incomeType".to_string(), "FUNDING_FEE".to_string());
+
+        if let Some(symbol) = &filter.symbol {
+            params.insert("symbol".to_string(), symbol.to_uppercase());
+        }
+        if let Some(start) = filter.start_time {
+            params.insert("startTime".to_string(), start.to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("endTime".to_string(), end.to_string());
+        }
+        let limit = filter.limit.unwrap_or(500).min(1000);
+        params.insert("limit".to_string(), limit.to_string());
+
+        let response = self.get(BinanceEndpoint::FuturesIncomeHistory, params, account_type).await?;
+        BinanceParser::parse_funding_payments(&response)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT LEDGER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Full account ledger via `GET /fapi/v1/income` (all income types).
+///
+/// Only available for futures account types.
+#[async_trait]
+impl AccountLedger for BinanceConnector {
+    async fn get_ledger(
+        &self,
+        filter: LedgerFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<LedgerEntry>> {
+        match account_type {
+            AccountType::FuturesCross | AccountType::FuturesIsolated => {}
+            _ => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Binance income ledger is futures-only".to_string(),
+                ))
+            }
+        }
+
+        let mut params: HashMap<String, String> = HashMap::new();
+
+        if let Some(start) = filter.start_time {
+            params.insert("startTime".to_string(), start.to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("endTime".to_string(), end.to_string());
+        }
+        let limit = filter.limit.unwrap_or(500).min(1000);
+        params.insert("limit".to_string(), limit.to_string());
+
+        let response = self.get(BinanceEndpoint::FuturesIncomeHistory, params, account_type).await?;
+        let mut entries = BinanceParser::parse_ledger(&response)?;
+
+        // Apply client-side filters that Binance does not natively support
+        if let Some(ref type_filter) = filter.entry_type {
+            entries.retain(|e| &e.entry_type == type_filter);
+        }
+        if let Some(ref asset_filter) = filter.asset {
+            let asset_upper = asset_filter.to_uppercase();
+            entries.retain(|e| e.asset.to_uppercase() == asset_upper);
+        }
+
+        Ok(entries)
     }
 }

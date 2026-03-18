@@ -622,4 +622,147 @@ impl AlpacaParser {
             timestamp,
         })
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // ACCOUNT LEDGER
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Parse `GET /v2/account/activities` response into `LedgerEntry` items.
+    ///
+    /// Alpaca returns a flat JSON array. Each element's `activity_type` field
+    /// drives the `LedgerEntryType` mapping.
+    pub fn parse_ledger(response: &Value) -> ExchangeResult<Vec<LedgerEntry>> {
+        let arr = response.as_array().ok_or_else(|| {
+            ExchangeError::Parse(
+                "Expected a JSON array for /v2/account/activities".to_string(),
+            )
+        })?;
+
+        let mut entries = Vec::with_capacity(arr.len());
+
+        for item in arr {
+            let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let activity_type = item
+                .get("activity_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("UNKNOWN");
+
+            let (entry_type, asset, amount, description) =
+                Self::map_activity(item, activity_type);
+
+            let timestamp = item
+                .get("transaction_time")
+                .and_then(|v| Self::parse_timestamp(v))
+                .or_else(|| item.get("date").and_then(|v| Self::parse_timestamp(v)))
+                .unwrap_or(0);
+
+            let ref_id = item
+                .get("order_id")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+
+            entries.push(LedgerEntry {
+                id,
+                asset,
+                amount,
+                balance: None,
+                entry_type,
+                description,
+                ref_id,
+                timestamp,
+            });
+        }
+
+        Ok(entries)
+    }
+
+    /// Map a single Alpaca activity JSON object to ledger fields.
+    ///
+    /// Returns `(entry_type, asset, amount, description)`.
+    fn map_activity(
+        item: &Value,
+        activity_type: &str,
+    ) -> (LedgerEntryType, String, f64, String) {
+        let get_str = |key: &str| -> Option<&str> { item.get(key).and_then(|v| v.as_str()) };
+        let get_f64 = |key: &str| -> Option<f64> {
+            item.get(key).and_then(|v| {
+                v.as_str()
+                    .and_then(|s| s.parse().ok())
+                    .or_else(|| v.as_f64())
+            })
+        };
+
+        match activity_type {
+            "FILL" => {
+                let symbol = get_str("symbol").unwrap_or("").to_string();
+                let qty = get_f64("qty").unwrap_or(0.0);
+                let price = get_f64("price").unwrap_or(0.0);
+                let side = get_str("side").unwrap_or("buy");
+                // Positive = received asset (buy), negative = gave asset (sell)
+                let signed_qty = if side.eq_ignore_ascii_case("sell")
+                    || side.eq_ignore_ascii_case("sell_short")
+                {
+                    -qty
+                } else {
+                    qty
+                };
+                let desc = format!("{} {} @ {}", side.to_uppercase(), symbol, price);
+                (LedgerEntryType::Trade, symbol, signed_qty, desc)
+            }
+            "CSD" | "CSW_COMPLETE" => {
+                let net = get_f64("net_amount")
+                    .or_else(|| get_f64("amount"))
+                    .unwrap_or(0.0);
+                (
+                    LedgerEntryType::Deposit,
+                    "USD".to_string(),
+                    net.abs(),
+                    "Cash deposit".to_string(),
+                )
+            }
+            "CSW" => {
+                let net = get_f64("net_amount")
+                    .or_else(|| get_f64("amount"))
+                    .unwrap_or(0.0);
+                (
+                    LedgerEntryType::Withdrawal,
+                    "USD".to_string(),
+                    -net.abs(),
+                    "Cash withdrawal".to_string(),
+                )
+            }
+            "FEE" => {
+                let net = get_f64("net_amount")
+                    .or_else(|| get_f64("amount"))
+                    .unwrap_or(0.0);
+                (
+                    LedgerEntryType::Fee,
+                    "USD".to_string(),
+                    -net.abs(),
+                    "Fee".to_string(),
+                )
+            }
+            "ACATC" | "ACATS" | "JNLC" | "JNLS" => {
+                let net = get_f64("net_amount")
+                    .or_else(|| get_f64("amount"))
+                    .unwrap_or(0.0);
+                let symbol = get_str("symbol").unwrap_or("USD").to_string();
+                let desc = format!("{} transfer", activity_type);
+                (LedgerEntryType::Transfer, symbol, net, desc)
+            }
+            other => {
+                let net = get_f64("net_amount")
+                    .or_else(|| get_f64("amount"))
+                    .unwrap_or(0.0);
+                let symbol = get_str("symbol").unwrap_or("USD").to_string();
+                let desc = format!("{} activity", other);
+                (
+                    LedgerEntryType::Other(other.to_string()),
+                    symbol,
+                    net,
+                    desc,
+                )
+            }
+        }
+    }
 }

@@ -35,8 +35,13 @@ use crate::core::{
 use crate::core::types::{WithdrawRequest, FundsHistoryFilter};
 use crate::core::types::{ConnectorStats, SymbolInfo, CancelAllResponse, AmendRequest};
 use crate::core::types::{UserTrade, UserTradeFilter};
+use crate::core::types::{
+    FundingPayment, FundingFilter,
+    LedgerEntry, LedgerEntryType, LedgerFilter,
+};
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
+    FundingHistory, AccountLedger,
 };
 use crate::core::{CancelAll, AmendOrder};
 use crate::core::utils::DecayingRateLimiter;
@@ -1456,6 +1461,226 @@ impl DeribitConnector {
             params.insert("count".to_string(), serde_json::json!(c.min(10000)));
         }
         self.rpc_call(DeribitMethod::GetTriggerOrderHistory, params).await
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FUNDING HISTORY (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl FundingHistory for DeribitConnector {
+    /// Get historical funding payments for the account.
+    ///
+    /// Uses `GET /api/v2/private/get_transaction_log` with `query=funding`.
+    /// `filter.symbol` is treated as the Deribit currency (e.g. "BTC", "ETH").
+    /// When `None`, defaults to "BTC".
+    async fn get_funding_payments(
+        &self,
+        filter: FundingFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<FundingPayment>> {
+        // Deribit requires a currency (e.g. "BTC", "ETH", "USDC")
+        let currency = filter.symbol
+            .as_deref()
+            .map(|s| {
+                // Symbol may be "BTC-PERPETUAL" — extract the currency prefix
+                s.split(&['-', '_'][..]).next().unwrap_or(s).to_uppercase()
+            })
+            .unwrap_or_else(|| "BTC".to_string());
+
+        let mut params = HashMap::new();
+        params.insert("currency".to_string(), json!(currency));
+        params.insert("query".to_string(), json!("funding"));
+
+        if let Some(start) = filter.start_time {
+            params.insert("start_timestamp".to_string(), json!(start));
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("end_timestamp".to_string(), json!(end));
+        }
+        if let Some(limit) = filter.limit {
+            params.insert("count".to_string(), json!(limit.min(100)));
+        }
+
+        let response = self.rpc_call(DeribitMethod::GetTransactionLog, params).await?;
+
+        // Response: {"result": {"logs": [{...}, ...], "continuation": ...}}
+        let result = response.get("result")
+            .ok_or_else(|| ExchangeError::Parse("Missing result in transaction log response".to_string()))?;
+
+        let logs = result.get("logs")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing logs array in transaction log response".to_string()))?;
+
+        let payments = logs.iter().filter_map(|entry| {
+            let timestamp = entry.get("timestamp")?.as_i64()?;
+            let amount = entry.get("amount")
+                .or_else(|| entry.get("change"))
+                .and_then(|v| v.as_f64())?;
+            let asset = entry.get("currency")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&currency)
+                .to_string();
+            let instrument = entry.get("instrument_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            Some(FundingPayment {
+                symbol: instrument,
+                // Deribit transaction log doesn't include the rate directly
+                funding_rate: 0.0,
+                // Position size not carried in the log entry
+                position_size: 0.0,
+                payment: amount,
+                asset,
+                timestamp,
+            })
+        }).collect();
+
+        Ok(payments)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT LEDGER (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AccountLedger for DeribitConnector {
+    /// Get account ledger entries.
+    ///
+    /// Uses `GET /api/v2/private/get_transaction_log`.
+    /// `filter.asset` is used as the Deribit currency (e.g. "BTC", "ETH").
+    /// When `None`, defaults to "BTC".
+    ///
+    /// Deribit transaction log `type` values:
+    /// - `"trade"` — fill from a trade
+    /// - `"deposit"` — on-chain deposit
+    /// - `"withdrawal"` — withdrawal
+    /// - `"funding"` — perpetual funding payment
+    /// - `"settlement"` — options/futures settlement
+    /// - `"transfer"` — internal transfer
+    /// - `"fee"` — fee charge
+    /// - `"delivery"` — futures delivery
+    async fn get_ledger(
+        &self,
+        filter: LedgerFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<LedgerEntry>> {
+        let currency = filter.asset
+            .as_deref()
+            .unwrap_or("BTC")
+            .to_uppercase();
+
+        let mut params = HashMap::new();
+        params.insert("currency".to_string(), json!(currency));
+
+        // Map entry_type filter to Deribit query string
+        if let Some(entry_type) = &filter.entry_type {
+            let query = match entry_type {
+                LedgerEntryType::Trade      => "trade",
+                LedgerEntryType::Deposit    => "deposit",
+                LedgerEntryType::Withdrawal => "withdrawal",
+                LedgerEntryType::Funding    => "funding",
+                LedgerEntryType::Fee        => "fee",
+                LedgerEntryType::Rebate     => "rebate",
+                LedgerEntryType::Transfer   => "transfer",
+                LedgerEntryType::Liquidation => "liquidation",
+                LedgerEntryType::Settlement  => "settlement",
+                LedgerEntryType::Other(s)   => s.as_str(),
+            };
+            params.insert("query".to_string(), json!(query));
+        }
+
+        if let Some(start) = filter.start_time {
+            params.insert("start_timestamp".to_string(), json!(start));
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("end_timestamp".to_string(), json!(end));
+        }
+        if let Some(limit) = filter.limit {
+            params.insert("count".to_string(), json!(limit.min(100)));
+        }
+
+        let response = self.rpc_call(DeribitMethod::GetTransactionLog, params).await?;
+
+        // Response: {"result": {"logs": [{...}], "continuation": ...}}
+        let result = response.get("result")
+            .ok_or_else(|| ExchangeError::Parse("Missing result in transaction log response".to_string()))?;
+
+        let logs = result.get("logs")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing logs array in transaction log response".to_string()))?;
+
+        let entries: Vec<LedgerEntry> = logs.iter().filter_map(|item| {
+            let timestamp = item.get("timestamp")?.as_i64()?;
+
+            let id = item.get("id")
+                .and_then(|v| v.as_i64())
+                .map(|n| n.to_string())
+                .or_else(|| item.get("trade_id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                .unwrap_or_else(|| timestamp.to_string());
+
+            let asset = item.get("currency")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&currency)
+                .to_string();
+
+            let amount = item.get("change")
+                .or_else(|| item.get("amount"))
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+
+            let balance = item.get("balance").and_then(|v| v.as_f64());
+
+            let type_str = item.get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            let entry_type = classify_deribit_entry_type(type_str);
+
+            let description = item.get("info")
+                .or_else(|| item.get("note"))
+                .and_then(|v| v.as_str())
+                .unwrap_or(type_str)
+                .to_string();
+
+            let ref_id = item.get("trade_id")
+                .or_else(|| item.get("order_id"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            Some(LedgerEntry {
+                id,
+                asset,
+                amount,
+                balance,
+                entry_type,
+                description,
+                ref_id,
+                timestamp,
+            })
+        }).collect();
+
+        Ok(entries)
+    }
+}
+
+/// Classify a Deribit transaction log entry type from its `type` field.
+fn classify_deribit_entry_type(type_str: &str) -> LedgerEntryType {
+    match type_str {
+        "trade"      => LedgerEntryType::Trade,
+        "deposit"    => LedgerEntryType::Deposit,
+        "withdrawal" => LedgerEntryType::Withdrawal,
+        "funding"    => LedgerEntryType::Funding,
+        "fee"        => LedgerEntryType::Fee,
+        "rebate"     => LedgerEntryType::Rebate,
+        "transfer"   => LedgerEntryType::Transfer,
+        "liquidation" => LedgerEntryType::Liquidation,
+        "settlement" | "delivery" => LedgerEntryType::Settlement,
+        other        => LedgerEntryType::Other(other.to_string()),
     }
 }
 

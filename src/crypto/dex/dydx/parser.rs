@@ -10,7 +10,7 @@ use crate::core::types::{
     Kline, OrderBook, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, PublicTrade, StreamEvent, TradeSide,
-    UserTrade,
+    UserTrade, FundingPayment,
 };
 
 /// Парсер ответов dYdX v4 Indexer API
@@ -574,6 +574,70 @@ impl DydxParser {
         };
 
         Ok(StreamEvent::Kline(kline))
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FUNDING HISTORY
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse historical funding payments from `GET /v4/fundingPayments`.
+    ///
+    /// Response:
+    /// ```json
+    /// {"fundingPayments":[
+    ///   {"market":"BTC-USD","payment":"-0.01","rate":"0.0001",
+    ///    "positionSize":"0.1","effectiveAt":"2024-01-01T00:00:00Z"}
+    /// ]}
+    /// ```
+    pub fn parse_funding_payments(response: &Value) -> ExchangeResult<Vec<FundingPayment>> {
+        let list = response.get("fundingPayments")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse(
+                "Missing 'fundingPayments' in response".to_string(),
+            ))?;
+
+        let mut payments = Vec::with_capacity(list.len());
+        for item in list {
+            let symbol = item.get("market")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let funding_rate = item.get("rate")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+
+            let position_size = item.get("positionSize")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+
+            let payment = item.get("payment")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+
+            // dYdX perpetuals always settle in USDC
+            let asset = "USDC".to_string();
+
+            // effectiveAt is ISO-8601 string → parse to unix ms
+            let timestamp = item.get("effectiveAt")
+                .and_then(|v| v.as_str())
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.timestamp_millis())
+                .unwrap_or(0);
+
+            payments.push(FundingPayment {
+                symbol,
+                funding_rate,
+                position_size,
+                payment,
+                asset,
+                timestamp,
+            });
+        }
+        Ok(payments)
     }
 }
 

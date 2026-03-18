@@ -33,9 +33,10 @@ use crate::core::{
     AmendRequest,
     DepositAddress, WithdrawResponse, FundsRecord,
 };
+use crate::core::traits::AccountLedger;
 use crate::core::types::SymbolInfo;
 use crate::core::types::ConnectorStats;
-use crate::core::types::{WithdrawRequest, FundsHistoryFilter, FundsRecordType};
+use crate::core::types::{WithdrawRequest, FundsHistoryFilter, FundsRecordType, LedgerEntry, LedgerFilter};
 use crate::core::types::{UserTrade, UserTradeFilter};
 use crate::core::utils::SimpleRateLimiter;
 use crate::core::utils::PrecisionCache;
@@ -948,6 +949,47 @@ impl BitstampConnector {
         params.insert("currency".to_string(), currency.to_string());
         params.insert("subAccount".to_string(), sub_account.to_string());
         self.post(BitstampEndpoint::SubAccountTransfer, None, params).await
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT LEDGER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AccountLedger for BitstampConnector {
+    /// Get account ledger from `POST /api/v2/user_transactions/`.
+    ///
+    /// Bitstamp returns all transaction types (deposits, withdrawals, trades,
+    /// sub-account transfers) via this endpoint.
+    ///
+    /// Params: `offset`, `limit` (max 1000), `sort` (asc/desc).
+    async fn get_ledger(
+        &self,
+        filter: LedgerFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<LedgerEntry>> {
+        let mut params = HashMap::new();
+
+        params.insert("offset".to_string(), "0".to_string());
+
+        if let Some(limit) = filter.limit {
+            // Bitstamp max is 1000
+            params.insert("limit".to_string(), limit.min(1000).to_string());
+        } else {
+            params.insert("limit".to_string(), "100".to_string());
+        }
+
+        // Default to descending (newest first)
+        params.insert("sort".to_string(), "desc".to_string());
+
+        let response = self.post(
+            BitstampEndpoint::UserTransactions,
+            None,
+            params,
+        ).await?;
+
+        BitstampParser::parse_ledger(&response)
     }
 }
 

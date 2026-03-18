@@ -8,7 +8,7 @@ use crate::core::types::{
     ExchangeError, ExchangeResult,
     Kline, OrderBook, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
-    FundingRate, UserTrade,
+    FundingRate, UserTrade, LedgerEntry, LedgerEntryType,
 };
 
 /// Парсер ответов Bitget API
@@ -967,6 +967,95 @@ impl BitgetParser {
                 })
             })
             .collect()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ACCOUNT LEDGER
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse spot account bill/ledger records from `GET /api/v2/spot/account/bills`.
+    ///
+    /// Response:
+    /// ```json
+    /// {"data":[
+    ///   {"billId":"123","coin":"USDT","groupType":"transfer","businessType":"deposit",
+    ///    "size":"100","fee":"0","balance":"1000","cTime":"1672531200000"}
+    /// ]}
+    /// ```
+    pub fn parse_ledger(response: &Value) -> ExchangeResult<Vec<LedgerEntry>> {
+        let data = Self::extract_data(response)?;
+        let list = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse(
+                "Expected array for bills response data".to_string(),
+            ))?;
+
+        let mut entries = Vec::with_capacity(list.len());
+        for item in list {
+            let id = Self::get_str(item, "billId")
+                .unwrap_or("")
+                .to_string();
+
+            let asset = Self::get_str(item, "coin")
+                .unwrap_or("")
+                .to_string();
+
+            // size is always positive; direction is encoded in groupType
+            let raw_size = Self::get_str(item, "size")
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+
+            let fee = Self::get_str(item, "fee")
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+
+            // Determine sign from groupType: "receive" / "buy" = positive, "send" / "sell" = negative
+            let group_type = Self::get_str(item, "groupType").unwrap_or("");
+            let amount = match group_type {
+                "send" | "withdraw" => -(raw_size + fee.abs()),
+                _ => raw_size,
+            };
+
+            let balance = Self::get_str(item, "balance")
+                .and_then(|s| s.parse::<f64>().ok());
+
+            let business_type = Self::get_str(item, "businessType").unwrap_or("");
+            let entry_type = Self::map_bitget_business_type(business_type);
+            let description = business_type.to_string();
+
+            let timestamp = Self::get_str(item, "cTime")
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(0);
+
+            entries.push(LedgerEntry {
+                id,
+                asset,
+                amount,
+                balance,
+                entry_type,
+                description,
+                ref_id: None,
+                timestamp,
+            });
+        }
+        Ok(entries)
+    }
+
+    /// Map Bitget `businessType` string to `LedgerEntryType`.
+    fn map_bitget_business_type(business_type: &str) -> LedgerEntryType {
+        // Bitget businessType values (from API docs): deposit, withdraw, trade, fee,
+        // transfer, funding_fee, liquidation, settlement, rebate, etc.
+        match business_type {
+            "trade" | "buy" | "sell" => LedgerEntryType::Trade,
+            "deposit" => LedgerEntryType::Deposit,
+            "withdraw" => LedgerEntryType::Withdrawal,
+            "funding_fee" | "funding" => LedgerEntryType::Funding,
+            "fee" => LedgerEntryType::Fee,
+            "rebate" | "maker_rebate" => LedgerEntryType::Rebate,
+            "transfer" | "internal_transfer" => LedgerEntryType::Transfer,
+            "liquidation" | "force_liquidation" => LedgerEntryType::Liquidation,
+            "settlement" | "delivery" => LedgerEntryType::Settlement,
+            other => LedgerEntryType::Other(other.to_string()),
+        }
     }
 }
 

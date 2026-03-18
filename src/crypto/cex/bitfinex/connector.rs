@@ -33,6 +33,7 @@ use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
 };
 use crate::core::{CancelAll, AmendOrder, BatchOrders, AccountTransfers, CustodialFunds, SubAccounts};
+use crate::core::traits::{FundingHistory, AccountLedger};
 use crate::core::types::{
     ConnectorStats, CancelAllResponse, OrderResult, AmendRequest,
     TransferRequest, TransferHistoryFilter, TransferResponse,
@@ -41,6 +42,10 @@ use crate::core::types::{
 use crate::core::types::{
     WithdrawRequest, FundsHistoryFilter, FundsRecordType,
     SubAccountOperation, SubAccountResult, SubAccount,
+};
+use crate::core::types::{
+    FundingPayment, FundingFilter,
+    LedgerEntry, LedgerEntryType, LedgerFilter,
 };
 use crate::core::utils::SimpleRateLimiter;
 use crate::core::utils::PrecisionCache;
@@ -1508,5 +1513,222 @@ impl SubAccounts for BitfinexConnector {
                 ))
             }
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FUNDING HISTORY (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl FundingHistory for BitfinexConnector {
+    /// Get historical funding payments for the account.
+    ///
+    /// Uses `POST /v2/auth/r/ledgers/{currency}/hist` with `{"category": 28}`.
+    /// Category 28 = funding charges/payments on perpetual positions.
+    ///
+    /// `filter.symbol` is treated as the settlement currency (e.g. "UST", "BTC").
+    /// When `None`, defaults to "UST" (Bitfinex perpetual settlement asset).
+    async fn get_funding_payments(
+        &self,
+        filter: FundingFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<FundingPayment>> {
+        // Bitfinex uses currency-level ledger queries; derive currency from symbol or use UST
+        let currency = filter.symbol
+            .as_deref()
+            .map(|s| {
+                // Symbol may be like "tBTCF0:USTF0" — extract the settlement currency
+                if let Some(idx) = s.rfind(':') {
+                    // e.g. "USTF0" → strip "F0"
+                    s[idx + 1..].trim_end_matches("F0").to_uppercase()
+                } else {
+                    s.to_uppercase()
+                }
+            })
+            .unwrap_or_else(|| "UST".to_string());
+
+        // Build POST body: category 28 = funding charges
+        let mut body = json!({"category": 28});
+
+        if let Some(start) = filter.start_time {
+            body["start"] = json!(start);
+        }
+        if let Some(end) = filter.end_time {
+            body["end"] = json!(end);
+        }
+        if let Some(limit) = filter.limit {
+            body["limit"] = json!(limit.min(500));
+        }
+
+        let response = self.post(
+            BitfinexEndpoint::LedgerHist,
+            &[("currency", &currency)],
+            body,
+        ).await?;
+
+        // Response: array of arrays [[ID, CURRENCY, null, MTS, null, AMOUNT, BALANCE, null, DESCRIPTION], ...]
+        let entries = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array for ledger response".to_string()))?;
+
+        let payments = entries.iter().filter_map(|row| {
+            let arr = row.as_array()?;
+
+            let id = arr.first()?.as_i64()?.to_string();
+            let asset = arr.get(1)?.as_str()?.to_string();
+            let timestamp = arr.get(3)?.as_i64()?;
+            let amount = arr.get(5)?.as_f64()?;
+            let balance = arr.get(6).and_then(|v| v.as_f64());
+            let description = arr.get(8)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            // Derive symbol from the description when possible (Bitfinex includes it)
+            // Description format: "Margin funding payment on wallet margin for BTC/USD @ 0.001"
+            // Use id as ref; payment amount is the actual funding payment
+            let _ = (id, balance, description);
+
+            Some(FundingPayment {
+                // Bitfinex ledger doesn't carry per-entry symbol/instrument info directly
+                symbol: currency.clone(),
+                // Funding rate is not returned in ledger entries (only in separate funding data)
+                funding_rate: 0.0,
+                // Position size not available in ledger entries
+                position_size: 0.0,
+                payment: amount,
+                asset,
+                timestamp,
+            })
+        }).collect();
+
+        Ok(payments)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT LEDGER (optional trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AccountLedger for BitfinexConnector {
+    /// Get account ledger entries.
+    ///
+    /// Uses `POST /v2/auth/r/ledgers/{currency}/hist`.
+    /// When `filter.asset` is `None`, queries with currency "USD" as default.
+    /// To fetch all currencies, callers should query per currency.
+    ///
+    /// Bitfinex ledger categories:
+    /// - 1  = deposit
+    /// - 2  = withdrawal
+    /// - 4  = exchange
+    /// - 5  = margin (trade)
+    /// - 28 = funding (perpetual interest)
+    /// - 68 = affiliates earning
+    async fn get_ledger(
+        &self,
+        filter: LedgerFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<LedgerEntry>> {
+        let currency = filter.asset
+            .as_deref()
+            .unwrap_or("USD")
+            .to_uppercase();
+
+        // Map entry_type filter to Bitfinex category
+        let category: Option<i32> = filter.entry_type.as_ref().map(|t| match t {
+            LedgerEntryType::Deposit   => 1,
+            LedgerEntryType::Withdrawal => 2,
+            LedgerEntryType::Trade     => 5,
+            LedgerEntryType::Funding   => 28,
+            LedgerEntryType::Fee       => 4,
+            LedgerEntryType::Rebate    => 4,
+            LedgerEntryType::Transfer  => 2,
+            LedgerEntryType::Liquidation => 5,
+            LedgerEntryType::Settlement  => 5,
+            LedgerEntryType::Other(_)    => -1, // -1 = no category filter
+        });
+
+        let mut body = json!({});
+        if let Some(cat) = category {
+            if cat >= 0 {
+                body["category"] = json!(cat);
+            }
+        }
+        if let Some(start) = filter.start_time {
+            body["start"] = json!(start);
+        }
+        if let Some(end) = filter.end_time {
+            body["end"] = json!(end);
+        }
+        if let Some(limit) = filter.limit {
+            body["limit"] = json!(limit.min(500));
+        }
+
+        let response = self.post(
+            BitfinexEndpoint::LedgerHist,
+            &[("currency", &currency)],
+            body,
+        ).await?;
+
+        // Response: [[ID, CURRENCY, null, MTS, null, AMOUNT, BALANCE, null, DESCRIPTION], ...]
+        let entries = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array for ledger response".to_string()))?;
+
+        let ledger: Vec<LedgerEntry> = entries.iter().filter_map(|row| {
+            let arr = row.as_array()?;
+
+            let id = arr.first()?.as_i64()?.to_string();
+            let asset = arr.get(1)?.as_str().unwrap_or(&currency).to_string();
+            let timestamp = arr.get(3)?.as_i64()?;
+            let amount = arr.get(5)?.as_f64()?;
+            let balance = arr.get(6).and_then(|v| v.as_f64());
+            let description = arr.get(8)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            // Classify the entry type from description keywords
+            let entry_type = classify_bitfinex_ledger_entry(&description);
+
+            Some(LedgerEntry {
+                id,
+                asset,
+                amount,
+                balance,
+                entry_type,
+                description,
+                ref_id: None,
+                timestamp,
+            })
+        }).collect();
+
+        Ok(ledger)
+    }
+}
+
+/// Classify a Bitfinex ledger entry type from its description string.
+fn classify_bitfinex_ledger_entry(description: &str) -> LedgerEntryType {
+    let lower = description.to_lowercase();
+    if lower.contains("deposit") || lower.contains("crypto deposit") {
+        LedgerEntryType::Deposit
+    } else if lower.contains("withdraw") {
+        LedgerEntryType::Withdrawal
+    } else if lower.contains("transfer") {
+        LedgerEntryType::Transfer
+    } else if lower.contains("margin funding") || lower.contains("funding payment") {
+        LedgerEntryType::Funding
+    } else if lower.contains("trading fee") || lower.contains("taker fee") || lower.contains("maker fee") {
+        LedgerEntryType::Fee
+    } else if lower.contains("rebate") {
+        LedgerEntryType::Rebate
+    } else if lower.contains("liquidat") {
+        LedgerEntryType::Liquidation
+    } else if lower.contains("settlement") || lower.contains("settle") {
+        LedgerEntryType::Settlement
+    } else if lower.contains("trade") || lower.contains("exchange") || lower.contains("order") {
+        LedgerEntryType::Trade
+    } else {
+        LedgerEntryType::Other(description.to_string())
     }
 }

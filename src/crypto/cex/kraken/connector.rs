@@ -33,11 +33,13 @@ use crate::core::types::{
     FundsHistoryFilter, FundsRecord, FundsRecordType,
     SubAccountOperation, SubAccountResult,
     UserTrade, UserTradeFilter,
+    FundingPayment, FundingFilter, LedgerEntry, LedgerFilter,
 };
 use crate::core::types::SymbolInfo;
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
     CancelAll, AmendOrder, BatchOrders, CustodialFunds, SubAccounts,
+    FundingHistory, AccountLedger,
 };
 use crate::core::types::ConnectorStats;
 use crate::core::utils::DecayingRateLimiter;
@@ -1549,5 +1551,64 @@ impl KrakenConnector {
         }
 
         result
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FUNDING HISTORY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl FundingHistory for KrakenConnector {
+    async fn get_funding_payments(
+        &self,
+        filter: FundingFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<FundingPayment>> {
+        let mut params = HashMap::new();
+        params.insert("type".to_string(), "rollover".to_string());
+        if let Some(start) = filter.start_time {
+            // Kraken expects seconds
+            params.insert("start".to_string(), (start / 1000).to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("end".to_string(), (end / 1000).to_string());
+        }
+
+        let response = self
+            .post(KrakenEndpoint::SpotLedgers, params, AccountType::Spot)
+            .await?;
+        KrakenParser::parse_funding_payments(&response)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT LEDGER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AccountLedger for KrakenConnector {
+    async fn get_ledger(
+        &self,
+        filter: LedgerFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<LedgerEntry>> {
+        let mut params = HashMap::new();
+        if let Some(asset) = &filter.asset {
+            params.insert("asset".to_string(), asset.clone());
+        }
+        if let Some(start) = filter.start_time {
+            params.insert("start".to_string(), (start / 1000).to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("end".to_string(), (end / 1000).to_string());
+        }
+        // Pagination offset
+        params.insert("ofs".to_string(), "0".to_string());
+
+        let response = self
+            .post(KrakenEndpoint::SpotLedgers, params, AccountType::Spot)
+            .await?;
+        KrakenParser::parse_ledger(&response)
     }
 }

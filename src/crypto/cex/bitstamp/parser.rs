@@ -839,6 +839,115 @@ impl BitstampParser {
 
         Ok(symbols)
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ACCOUNT LEDGER
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse Bitstamp user_transactions response as `LedgerEntry` records.
+    ///
+    /// `POST /api/v2/user_transactions/` returns an array of transaction objects.
+    /// Each object has a `type` field: 0=deposit, 1=withdrawal, 2=trade, 14=sub-account transfer.
+    ///
+    /// The amount fields are currency-keyed (e.g. `"usd"`, `"btc"`). We pick the
+    /// first non-zero numeric field as the amount and derive the asset name from it.
+    ///
+    /// Response:
+    /// ```json
+    /// [{"id":123,"type":"2","datetime":"2024-01-01 00:00:00","usd":"-50.00",
+    ///   "btc":"0.001","btc_usd":"50000","fee":"0.50","order_id":456}]
+    /// ```
+    pub fn parse_ledger(response: &Value) -> ExchangeResult<Vec<LedgerEntry>> {
+        let list = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse(
+                "Expected array for user_transactions ledger".to_string(),
+            ))?;
+
+        // Known currency fields (lowercase) that can carry balances
+        const CURRENCY_FIELDS: &[&str] = &[
+            "usd", "eur", "gbp", "btc", "eth", "xrp", "ltc", "bch", "xlm",
+            "link", "omg", "usdt", "usdc", "matic", "dai", "wbtc", "aave", "bat", "mkr",
+            "uni", "crv", "comp", "zrx", "algo", "audio", "axs", "chz", "enj", "grt",
+            "mana", "sand", "shib", "snx", "sushi", "yfi",
+        ];
+
+        let mut entries = Vec::with_capacity(list.len());
+        for item in list {
+            let id = item.get("id")
+                .map(|v| v.to_string())
+                .unwrap_or_default();
+
+            let tx_type_str = item.get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let tx_type: i32 = tx_type_str.parse().unwrap_or(-1);
+
+            let entry_type = match tx_type {
+                0 => LedgerEntryType::Deposit,
+                1 => LedgerEntryType::Withdrawal,
+                2 => LedgerEntryType::Trade,
+                14 => LedgerEntryType::Transfer,
+                _ => LedgerEntryType::Other(tx_type_str.to_string()),
+            };
+
+            // Find the primary currency and amount
+            // Trade entries have two currency fields; pick the non-USD one for asset
+            // and use the USD field for amount if available, else the other field.
+            let mut asset = "USD".to_string();
+            let mut amount = 0.0_f64;
+            let balance: Option<f64> = None;
+
+            // Try to find amount from currency fields
+            for &field in CURRENCY_FIELDS {
+                if let Some(val) = item.get(field) {
+                    let num = match val {
+                        Value::String(s) => s.parse::<f64>().unwrap_or(0.0),
+                        Value::Number(n) => n.as_f64().unwrap_or(0.0),
+                        _ => 0.0,
+                    };
+                    if num != 0.0 {
+                        asset = field.to_uppercase();
+                        amount = num;
+                        break;
+                    }
+                }
+            }
+
+            // Fee (deducted separately, add to description)
+            let fee = item.get("fee")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+
+            // Parse timestamp from "datetime" field ("2024-01-01 00:00:00" format)
+            let timestamp = item.get("datetime")
+                .and_then(|v| v.as_str())
+                .and_then(|s| {
+                    // Replace space with 'T' and append 'Z' for RFC3339 parsing
+                    let iso = format!("{}Z", s.replace(' ', "T"));
+                    chrono::DateTime::parse_from_rfc3339(&iso).ok()
+                })
+                .map(|dt| dt.timestamp_millis())
+                .unwrap_or(0);
+
+            let description = format!("type={} fee={}", tx_type_str, fee);
+            let ref_id = item.get("order_id")
+                .filter(|v| !v.is_null())
+                .map(|v| v.to_string());
+
+            entries.push(LedgerEntry {
+                id,
+                asset,
+                amount,
+                balance,
+                entry_type,
+                description,
+                ref_id,
+                timestamp,
+            });
+        }
+        Ok(entries)
+    }
 }
 
 #[cfg(test)]

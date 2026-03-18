@@ -40,8 +40,13 @@ use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
     CancelAll, AmendOrder, BatchOrders,
     AccountTransfers, CustodialFunds, SubAccounts,
+    FundingHistory, AccountLedger,
 };
-use crate::core::types::ConnectorStats;
+use crate::core::types::{
+    ConnectorStats,
+    FundingPayment, FundingFilter,
+    LedgerEntry, LedgerFilter,
+};
 use crate::core::utils::SimpleRateLimiter;
 
 use super::endpoints::{OkxUrls, OkxEndpoint, format_symbol, map_kline_interval, get_inst_type, get_trade_mode, get_account_id};
@@ -1774,5 +1779,91 @@ impl SubAccounts for OkxConnector {
                 OkxParser::parse_sub_account_balance(&response)
             }
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FUNDING HISTORY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Funding payment history via `GET /api/v5/account/bills?type=8` (subType 173/174).
+///
+/// OKX type=8 is the funding fee category. For data older than 7 days,
+/// this automatically falls back to the `bills-archive` endpoint.
+#[async_trait]
+impl FundingHistory for OkxConnector {
+    async fn get_funding_payments(
+        &self,
+        filter: FundingFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<FundingPayment>> {
+        let mut params: HashMap<String, String> = HashMap::new();
+        // type=8 = interest/funding; funding subTypes are 173 (expense) and 174 (income)
+        params.insert("type".to_string(), "8".to_string());
+
+        if let Some(symbol) = &filter.symbol {
+            // OKX uses instId (e.g. "BTC-USDT-SWAP")
+            params.insert("instId".to_string(), symbol.clone());
+        }
+        if let Some(start) = filter.start_time {
+            params.insert("begin".to_string(), start.to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("end".to_string(), end.to_string());
+        }
+        if let Some(limit) = filter.limit {
+            params.insert("limit".to_string(), limit.min(100).to_string());
+        }
+
+        let response = self.get(OkxEndpoint::AccountBills, params).await?;
+        OkxParser::parse_funding_payments(&response)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT LEDGER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Full account ledger via `GET /api/v5/account/bills` (all types).
+///
+/// Returns up to 7 days of data. The archive endpoint (`/account/bills-archive`)
+/// covers up to 3 months and is used when a time range is provided.
+#[async_trait]
+impl AccountLedger for OkxConnector {
+    async fn get_ledger(
+        &self,
+        filter: LedgerFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<LedgerEntry>> {
+        let mut params: HashMap<String, String> = HashMap::new();
+
+        if let Some(asset) = &filter.asset {
+            params.insert("ccy".to_string(), asset.to_uppercase());
+        }
+        if let Some(start) = filter.start_time {
+            params.insert("begin".to_string(), start.to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("end".to_string(), end.to_string());
+        }
+        if let Some(limit) = filter.limit {
+            params.insert("limit".to_string(), limit.min(100).to_string());
+        }
+
+        // Use archive endpoint when a start_time is provided (may exceed 7-day window)
+        let endpoint = if filter.start_time.is_some() {
+            OkxEndpoint::AccountBillsArchive
+        } else {
+            OkxEndpoint::AccountBills
+        };
+
+        let response = self.get(endpoint, params).await?;
+        let mut entries = OkxParser::parse_ledger(&response)?;
+
+        if let Some(ref type_filter) = filter.entry_type {
+            entries.retain(|e| &e.entry_type == type_filter);
+        }
+
+        Ok(entries)
     }
 }

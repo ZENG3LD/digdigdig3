@@ -119,6 +119,10 @@ pub enum KrakenEndpoint {
     SpotListSubaccounts,        // POST /0/private/ListSubaccounts
     SpotTransferToSubaccount,   // POST /0/private/TransferToSubaccount
     SpotTransferFromSubaccount, // POST /0/private/TransferFromSubaccount
+
+    // === LEDGER (Spot) ===
+    /// POST /0/private/Ledgers — full account ledger (funding + all types)
+    SpotLedgers,
 }
 
 impl KrakenEndpoint {
@@ -183,6 +187,9 @@ impl KrakenEndpoint {
             Self::SpotListSubaccounts => "/0/private/ListSubaccounts",
             Self::SpotTransferToSubaccount => "/0/private/TransferToSubaccount",
             Self::SpotTransferFromSubaccount => "/0/private/TransferFromSubaccount",
+
+            // Ledger
+            Self::SpotLedgers => "/0/private/Ledgers",
         }
     }
 
@@ -231,7 +238,8 @@ impl KrakenEndpoint {
             | Self::SpotListSubaccounts
             | Self::SpotTransferToSubaccount
             | Self::SpotTransferFromSubaccount
-            | Self::TradesHistory => "POST",
+            | Self::TradesHistory
+            | Self::SpotLedgers => "POST",
 
             // GET endpoints
             _ => "GET",

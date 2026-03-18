@@ -35,11 +35,13 @@ use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
     CancelAll, AmendOrder, BatchOrders,
     AccountTransfers, CustodialFunds, SubAccounts,
+    FundingHistory, AccountLedger,
 };
 use crate::core::types::{
     TransferRequest, TransferHistoryFilter, WithdrawRequest,
     FundsHistoryFilter, FundsRecordType, SubAccountOperation, SubAccountResult,
     SubAccount, ConnectorStats,
+    FundingPayment, FundingFilter, LedgerEntry, LedgerFilter,
 };
 use crate::core::utils::WeightRateLimiter;
 use crate::core::utils::precision::PrecisionCache;
@@ -2405,5 +2407,77 @@ impl GateioConnector {
             params.insert("limit".to_string(), l.to_string());
         }
         self.get(GateioEndpoint::FuturesFundingRateHistory, params, AccountType::FuturesCross).await
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FUNDING HISTORY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl FundingHistory for GateioConnector {
+    async fn get_funding_payments(
+        &self,
+        filter: FundingFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<FundingPayment>> {
+        let mut params = HashMap::new();
+        if let Some(symbol) = &filter.symbol {
+            params.insert("contract".to_string(), symbol.clone());
+        }
+        if let Some(start) = filter.start_time {
+            // Gate.io expects seconds
+            params.insert("from".to_string(), (start / 1000).to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("to".to_string(), (end / 1000).to_string());
+        }
+        if let Some(limit) = filter.limit {
+            params.insert("limit".to_string(), limit.min(1000).to_string());
+        }
+
+        let response = self
+            .get(GateioEndpoint::FuturesFundingPayments, params, AccountType::FuturesCross)
+            .await?;
+        GateioParser::parse_funding_payments(&response)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT LEDGER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AccountLedger for GateioConnector {
+    async fn get_ledger(
+        &self,
+        filter: LedgerFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<LedgerEntry>> {
+        let mut params = HashMap::new();
+        if let Some(asset) = &filter.asset {
+            params.insert("currency".to_string(), asset.clone());
+        }
+        if let Some(start) = filter.start_time {
+            params.insert("from".to_string(), (start / 1000).to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("to".to_string(), (end / 1000).to_string());
+        }
+        if let Some(limit) = filter.limit {
+            params.insert("limit".to_string(), limit.min(1000).to_string());
+        }
+
+        let (endpoint, effective_account_type) = match account_type {
+            AccountType::FuturesCross | AccountType::FuturesIsolated => {
+                (GateioEndpoint::FuturesAccountBook, account_type)
+            }
+            _ => (GateioEndpoint::WalletLedger, AccountType::Spot),
+        };
+
+        let response = self
+            .get(endpoint, params, effective_account_type)
+            .await?;
+        GateioParser::parse_ledger(&response)
     }
 }

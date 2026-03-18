@@ -121,6 +121,7 @@ pub enum InfoType {
     UserFees,               // Get user fee tier
     UserRateLimit,          // Get rate limit status
     HistoricalOrders,       // Get historical orders
+    UserFunding,            // Get historical funding payments for the account
 }
 
 impl InfoType {
@@ -144,6 +145,7 @@ impl InfoType {
             Self::UserFees => "userFees",
             Self::UserRateLimit => "userRateLimit",
             Self::HistoricalOrders => "historicalOrders",
+            Self::UserFunding => "userFunding",
         }
     }
 }

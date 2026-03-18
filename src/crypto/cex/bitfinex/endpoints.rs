@@ -88,6 +88,10 @@ pub enum BitfinexEndpoint {
     // === SUB ACCOUNTS ===
     SubAccountList,
     SubAccountTransfer,
+
+    // === LEDGER ===
+    /// POST /auth/r/ledgers/{currency}/hist  (or /auth/r/ledgers/hist for all)
+    LedgerHist,
 }
 
 impl BitfinexEndpoint {
@@ -137,6 +141,9 @@ impl BitfinexEndpoint {
             // Sub Accounts
             Self::SubAccountList => "/auth/r/sub_accounts/list",
             Self::SubAccountTransfer => "/auth/w/sub_account/transfer",
+
+            // Ledger
+            Self::LedgerHist => "/auth/r/ledgers/{currency}/hist",
         }
     }
 
@@ -181,7 +188,8 @@ impl BitfinexEndpoint {
             | Self::Withdraw
             | Self::Movements
             | Self::SubAccountList
-            | Self::SubAccountTransfer => "POST",
+            | Self::SubAccountTransfer
+            | Self::LedgerHist => "POST",
 
             // GET for all public endpoints
             _ => "GET",

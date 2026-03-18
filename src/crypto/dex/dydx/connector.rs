@@ -33,9 +33,10 @@ use crate::core::{
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
+    FundingHistory,
 };
 use crate::core::utils::SimpleRateLimiter;
-use crate::core::types::{ConnectorStats, SymbolInfo};
+use crate::core::types::{ConnectorStats, SymbolInfo, FundingPayment, FundingFilter};
 
 use super::endpoints::{DydxUrls, DydxEndpoint, format_symbol, map_kline_interval};
 use super::auth::DydxAuth;
@@ -1732,6 +1733,47 @@ impl DydxConnector {
         }
 
         Ok(cancelled)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FUNDING HISTORY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl FundingHistory for DydxConnector {
+    /// Get historical funding payments from `GET /v4/fundingPayments`.
+    ///
+    /// dYdX Indexer API is public — no auth headers required. The account
+    /// address is read from credentials (stored in `auth`).
+    ///
+    /// Params: `address`, `subaccountNumber` (0), optionally `market`, `limit`,
+    /// `effectiveBeforeOrAtHeight`.
+    async fn get_funding_payments(
+        &self,
+        filter: FundingFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<FundingPayment>> {
+        let address = self.auth.address().ok_or_else(|| {
+            ExchangeError::Auth(
+                "dYdX get_funding_payments requires a dYdX address in credentials.".to_string(),
+            )
+        })?;
+
+        let mut params = HashMap::new();
+        params.insert("address".to_string(), address.to_string());
+        params.insert("subaccountNumber".to_string(), "0".to_string());
+
+        if let Some(sym) = &filter.symbol {
+            // dYdX market format is e.g. "BTC-USD"
+            params.insert("market".to_string(), sym.clone());
+        }
+        if let Some(limit) = filter.limit {
+            params.insert("limit".to_string(), limit.to_string());
+        }
+
+        let response = self.get(DydxEndpoint::FundingPayments, params).await?;
+        DydxParser::parse_funding_payments(&response)
     }
 }
 

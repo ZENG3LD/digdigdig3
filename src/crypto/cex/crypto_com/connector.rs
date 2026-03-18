@@ -29,6 +29,7 @@ use crate::core::{
     CancelAllResponse, AmendRequest, MarginType,
     ExchangeIdentity, MarketData, Trading, Account, Positions,
     CancelAll, AmendOrder, BatchOrders, CustodialFunds, SubAccounts,
+    AccountLedger, LedgerEntry, LedgerFilter, LedgerEntryType,
     UserTrade, UserTradeFilter,
 };
 use crate::core::types::{
@@ -1721,5 +1722,68 @@ impl SubAccounts for CryptoComConnector {
                 })
             }
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT LEDGER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AccountLedger for CryptoComConnector {
+    /// Get account transaction ledger from `private/get-transactions`.
+    ///
+    /// Supports filtering by:
+    /// - `journal_type` — mapped from `filter.entry_type`
+    /// - `instrument_name` — passed verbatim from `filter.asset` (Crypto.com
+    ///   uses instrument names like "BTC_USDT" rather than raw currencies)
+    /// - `start_ts` / `end_ts` — millisecond timestamps
+    /// - `page_size` — capped at 100 per the API limit
+    async fn get_ledger(
+        &self,
+        filter: LedgerFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<LedgerEntry>> {
+        let mut params = json!({});
+
+        // Map entry_type filter to Crypto.com journal_type
+        if let Some(ref entry_type) = filter.entry_type {
+            let journal_type: Option<&str> = match entry_type {
+                LedgerEntryType::Trade => Some("TRADING"),
+                LedgerEntryType::Funding => Some("FUNDING"),
+                LedgerEntryType::Fee | LedgerEntryType::Rebate => Some("FEE_AND_REBATE"),
+                LedgerEntryType::Withdrawal => Some("WITHDRAW"),
+                LedgerEntryType::Deposit => Some("DEPOSIT"),
+                LedgerEntryType::Transfer => Some("TRANSFER"),
+                LedgerEntryType::Liquidation => Some("LIQUIDATION"),
+                LedgerEntryType::Settlement => Some("SETTLEMENT"),
+                LedgerEntryType::Other(s) => {
+                    params["journal_type"] = json!(s);
+                    None
+                }
+            };
+            if let Some(jt) = journal_type {
+                params["journal_type"] = json!(jt);
+            }
+        }
+
+        if let Some(ref asset) = filter.asset {
+            params["instrument_name"] = json!(asset);
+        }
+
+        if let Some(start_ts) = filter.start_time {
+            params["start_ts"] = json!(start_ts);
+        }
+
+        if let Some(end_ts) = filter.end_time {
+            params["end_ts"] = json!(end_ts);
+        }
+
+        if let Some(limit) = filter.limit {
+            params["page_size"] = json!(limit.min(100));
+        }
+
+        let response = self.request(CryptoComEndpoint::GetTransactions, params).await?;
+        CryptoComParser::parse_ledger(&response)
     }
 }

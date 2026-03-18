@@ -1294,3 +1294,116 @@ impl AlpacaConnector {
         self.get_market_data(AlpacaEndpoint::News, params).await
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ACCOUNT LEDGER
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AccountLedger for AlpacaConnector {
+    /// Get account activity history from `GET /v2/account/activities`.
+    ///
+    /// Alpaca activities include:
+    /// - `FILL` → Trade fills (stocks and crypto)
+    /// - `CSD` / `CSW` → Cash deposit / withdrawal
+    /// - `FEE` → Fees
+    /// - `DIV`, `INT` → Dividends, interest
+    /// - `JNLC`, `JNLS`, `ACATC`, `ACATS` → Transfers
+    ///
+    /// Filter mapping:
+    /// - `filter.entry_type` → `activity_types` query param
+    /// - `filter.start_time` → `after` (RFC3339 UTC)
+    /// - `filter.end_time`   → `until` (RFC3339 UTC)
+    /// - `filter.limit`      → `page_size` (max 100)
+    /// - `filter.asset`      → client-side filter by symbol after fetch
+    async fn get_ledger(
+        &self,
+        filter: LedgerFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<LedgerEntry>> {
+        let mut params = HashMap::new();
+
+        // Map LedgerEntryType to Alpaca activity_types
+        if let Some(ref entry_type) = filter.entry_type {
+            let types_str = match entry_type {
+                LedgerEntryType::Trade => "FILL",
+                LedgerEntryType::Deposit => "CSD",
+                LedgerEntryType::Withdrawal => "CSW",
+                LedgerEntryType::Fee => "FEE",
+                LedgerEntryType::Transfer => "JNLC,JNLS,ACATC,ACATS",
+                LedgerEntryType::Other(s) => s.as_str(),
+                _ => "",
+            };
+            if !types_str.is_empty() {
+                params.insert("activity_types".to_string(), types_str.to_string());
+            }
+        }
+
+        // Alpaca uses RFC3339 timestamps
+        if let Some(start_ms) = filter.start_time {
+            if let Some(ts) = ms_to_rfc3339(start_ms) {
+                params.insert("after".to_string(), ts);
+            }
+        }
+
+        if let Some(end_ms) = filter.end_time {
+            if let Some(ts) = ms_to_rfc3339(end_ms) {
+                params.insert("until".to_string(), ts);
+            }
+        }
+
+        if let Some(limit) = filter.limit {
+            params.insert("page_size".to_string(), limit.min(100).to_string());
+        }
+
+        let response = self.get_trading(AlpacaEndpoint::AccountActivities, params).await?;
+        let mut entries = AlpacaParser::parse_ledger(&response)?;
+
+        // Client-side filter by asset (symbol) when requested.
+        // Alpaca has no server-side asset filter on the activities endpoint.
+        if let Some(ref asset) = filter.asset {
+            let upper = asset.to_uppercase();
+            entries.retain(|e| e.asset.to_uppercase() == upper);
+        }
+
+        Ok(entries)
+    }
+}
+
+/// Convert Unix milliseconds to RFC3339 UTC string without external dependencies.
+///
+/// Output format: `YYYY-MM-DDTHH:MM:SS.mmmZ`
+fn ms_to_rfc3339(unix_ms: u64) -> Option<String> {
+    let secs = unix_ms / 1000;
+    let millis = unix_ms % 1000;
+
+    let days_since_epoch = secs / 86400;
+    let secs_in_day = secs % 86400;
+    let hh = secs_in_day / 3600;
+    let mm = (secs_in_day % 3600) / 60;
+    let ss = secs_in_day % 60;
+
+    let (year, month, day) = days_to_date(days_since_epoch)?;
+
+    Some(format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        year, month, day, hh, mm, ss, millis
+    ))
+}
+
+/// Convert days since Unix epoch (1970-01-01) to `(year, month, day)`.
+///
+/// Uses the algorithm from http://howardhinnant.github.io/date_algorithms.html
+fn days_to_date(days: u64) -> Option<(u64, u64, u64)> {
+    let z = days + 719468;
+    let era = z / 146097;
+    let doe = z % 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    Some((y, m, d))
+}

@@ -34,8 +34,8 @@ use crate::core::{
     CancelAllResponse,
     UserTrade, UserTradeFilter,
 };
-use crate::core::traits::{Trading, Account, Positions, AmendOrder, BatchOrders, CancelAll, AccountTransfers};
-use crate::core::types::{ConnectorStats, SymbolInfo, AlgoOrderResponse, TransferRequest, TransferHistoryFilter, TransferResponse};
+use crate::core::traits::{Trading, Account, Positions, AmendOrder, BatchOrders, CancelAll, AccountTransfers, FundingHistory};
+use crate::core::types::{ConnectorStats, SymbolInfo, AlgoOrderResponse, TransferRequest, TransferHistoryFilter, TransferResponse, FundingPayment, FundingFilter};
 use crate::core::utils::WeightRateLimiter;
 use crate::core::utils::PrecisionCache;
 
@@ -1737,5 +1737,37 @@ impl AccountTransfers for HyperliquidConnector {
         _filter: TransferHistoryFilter,
     ) -> ExchangeResult<Vec<TransferResponse>> {
         Ok(Vec::new())
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FUNDING HISTORY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl FundingHistory for HyperliquidConnector {
+    /// Get historical funding payments from `POST /info` with `type: userFunding`.
+    ///
+    /// The wallet address is taken from credentials (`api_key`). No cryptographic
+    /// signature is required for this endpoint — only the address in the request body.
+    async fn get_funding_payments(
+        &self,
+        filter: FundingFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<FundingPayment>> {
+        let auth = self.require_auth()?;
+        let user_addr = auth.wallet_address();
+
+        let mut params = serde_json::json!({ "user": user_addr });
+
+        if let Some(start) = filter.start_time {
+            params["startTime"] = serde_json::Value::from(start);
+        }
+        if let Some(end) = filter.end_time {
+            params["endTime"] = serde_json::Value::from(end);
+        }
+
+        let response = self.info_request(InfoType::UserFunding, params).await?;
+        HyperliquidParser::parse_funding_payments(&response)
     }
 }

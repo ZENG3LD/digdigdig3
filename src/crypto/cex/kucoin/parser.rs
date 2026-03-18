@@ -13,6 +13,7 @@ use crate::core::types::{
     BalanceChangeReason, PositionChangeReason,
     CancelAllResponse, OrderResult,
     UserTrade,
+    FundingPayment, LedgerEntry, LedgerEntryType,
 };
 
 /// Парсер ответов KuCoin API
@@ -978,6 +979,108 @@ impl KuCoinParser {
         }
 
         Ok(trades)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FUNDING HISTORY
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse funding payment history from `GET /api/v1/funding-history`.
+    ///
+    /// KuCoin response:
+    /// ```json
+    /// { "data": { "dataList": [{ "id": "...", "symbol": "...", "timePoint": 1234567890000,
+    ///   "fundingRate": 0.0001, "positionQty": 100, "funding": -10.5, "settleCurrency": "USDT" }] } }
+    /// ```
+    pub fn parse_funding_payments(response: &Value) -> ExchangeResult<Vec<FundingPayment>> {
+        let data = Self::extract_data(response)?;
+        let list = data.get("dataList")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'dataList'".to_string()))?;
+
+        let mut result = Vec::with_capacity(list.len());
+        for item in list {
+            let symbol = Self::get_str(item, "symbol").unwrap_or("").to_string();
+            let funding_rate = Self::get_f64(item, "fundingRate").unwrap_or(0.0);
+            let position_size = Self::get_f64(item, "positionQty").unwrap_or(0.0);
+            let payment = Self::get_f64(item, "funding").unwrap_or(0.0);
+            let asset = Self::get_str(item, "settleCurrency").unwrap_or("USDT").to_string();
+            let timestamp = item.get("timePoint").and_then(|t| t.as_i64()).unwrap_or(0);
+
+            result.push(FundingPayment {
+                symbol,
+                funding_rate,
+                position_size,
+                payment,
+                asset,
+                timestamp,
+            });
+        }
+
+        Ok(result)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ACCOUNT LEDGER
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse account ledger from `GET /api/v1/accounts/ledgers`.
+    ///
+    /// KuCoin response:
+    /// ```json
+    /// { "data": { "items": [{ "id": "...", "currency": "USDT", "amount": "10.5",
+    ///   "direction": "in", "balance": "100.5", "bizType": "TRANSFER", "createdAt": 1234567890000 }] } }
+    /// ```
+    pub fn parse_ledger(response: &Value) -> ExchangeResult<Vec<LedgerEntry>> {
+        let data = Self::extract_data(response)?;
+        let items = data.get("items")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'items'".to_string()))?;
+
+        let mut result = Vec::with_capacity(items.len());
+        for item in items {
+            let id = Self::get_str(item, "id").unwrap_or("").to_string();
+            let asset = Self::get_str(item, "currency").unwrap_or("").to_string();
+
+            // Amount sign: "in" = positive, "out" = negative
+            let raw_amount = Self::get_f64(item, "amount").unwrap_or(0.0);
+            let direction = Self::get_str(item, "direction").unwrap_or("in");
+            let amount = if direction == "out" { -raw_amount } else { raw_amount };
+
+            let balance = Self::get_f64(item, "balance");
+            let biz_type = Self::get_str(item, "bizType").unwrap_or("");
+            let entry_type = Self::map_kucoin_biz_type(biz_type);
+            let description = biz_type.to_string();
+            let timestamp = item.get("createdAt").and_then(|t| t.as_i64()).unwrap_or(0);
+
+            result.push(LedgerEntry {
+                id,
+                asset,
+                amount,
+                balance,
+                entry_type,
+                description,
+                ref_id: None,
+                timestamp,
+            });
+        }
+
+        Ok(result)
+    }
+
+    fn map_kucoin_biz_type(biz_type: &str) -> LedgerEntryType {
+        match biz_type.to_uppercase().as_str() {
+            "TRADE" | "SPOT_TRADE" | "FUTURES_TRADE" => LedgerEntryType::Trade,
+            "DEPOSIT" => LedgerEntryType::Deposit,
+            "WITHDRAWAL" => LedgerEntryType::Withdrawal,
+            "FUNDING_FEE" | "FUNDING" => LedgerEntryType::Funding,
+            "FEE" | "TRADE_FEE" => LedgerEntryType::Fee,
+            "REBATE" | "KCS_REWARDS" => LedgerEntryType::Rebate,
+            "TRANSFER" | "INTERNAL_TRANSFER" => LedgerEntryType::Transfer,
+            "LIQUIDATION" => LedgerEntryType::Liquidation,
+            "SETTLEMENT" | "ADL" => LedgerEntryType::Settlement,
+            other => LedgerEntryType::Other(other.to_string()),
+        }
     }
 }
 

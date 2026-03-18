@@ -32,7 +32,7 @@ use crate::core::types::{
     Kline, OrderBook, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, PublicTrade, TradeSide, SymbolInfo,
-    UserTrade,
+    UserTrade, FundingPayment,
 };
 
 /// Parser for Hyperliquid API responses
@@ -877,6 +877,59 @@ impl HyperliquidParser {
         }
 
         Ok(symbols)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FUNDING HISTORY
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse historical funding payments from `POST /info` with `type: userFunding`.
+    ///
+    /// Response:
+    /// ```json
+    /// [
+    ///   {"time":1672531200000,"coin":"BTC","fundingRate":"0.0001",
+    ///    "payment":"-0.01","positionSize":"0.1"}
+    /// ]
+    /// ```
+    /// All numbers are returned as strings.
+    pub fn parse_funding_payments(response: &Value) -> ExchangeResult<Vec<FundingPayment>> {
+        let list = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse(
+                "Expected array for userFunding response".to_string(),
+            ))?;
+
+        let mut payments = Vec::with_capacity(list.len());
+        for item in list {
+            let symbol = item.get("coin")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let funding_rate = Self::get_f64(item, "fundingRate").unwrap_or(0.0);
+
+            let position_size = Self::get_f64(item, "positionSize").unwrap_or(0.0);
+
+            let payment = Self::get_f64(item, "payment").unwrap_or(0.0);
+
+            // HyperLiquid perps settle in USDC
+            let asset = "USDC".to_string();
+
+            // time is already milliseconds
+            let timestamp = item.get("time")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+
+            payments.push(FundingPayment {
+                symbol,
+                funding_rate,
+                position_size,
+                payment,
+                asset,
+                timestamp,
+            });
+        }
+        Ok(payments)
     }
 }
 

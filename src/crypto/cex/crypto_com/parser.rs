@@ -16,6 +16,7 @@ use crate::core::types::{
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, PublicTrade, TradeSide, SymbolInfo,
     UserTrade,
+    LedgerEntry, LedgerEntryType,
 };
 
 /// Parser for Crypto.com API responses
@@ -578,6 +579,151 @@ impl CryptoComParser {
         }
 
         Ok(symbols)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ACCOUNT LEDGER
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse `private/get-transactions` response into ledger entries.
+    ///
+    /// Response shape:
+    /// `{ "code": 0, "result": { "data": [ { "journal_id": "...",
+    ///   "journal_type": "TRADING", "instrument_name": "BTC_USDT",
+    ///   "event_type": "trade", "amount": "0.001", "fee": "0.01",
+    ///   "currency": "BTC", "create_time": 1672531200000 } ] } }`
+    pub fn parse_ledger(response: &Value) -> ExchangeResult<Vec<LedgerEntry>> {
+        Self::check_response(response)?;
+        let result = Self::extract_result(response)?;
+
+        let data = result
+            .get("data")
+            .and_then(|d| d.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut entries = Vec::with_capacity(data.len());
+
+        for item in &data {
+            let id = item
+                .get("journal_id")
+                .and_then(|v| {
+                    v.as_str()
+                        .map(String::from)
+                        .or_else(|| v.as_i64().map(|n| n.to_string()))
+                })
+                .unwrap_or_default();
+
+            let asset = item
+                .get("currency")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let amount = Self::get_f64(item, "amount").unwrap_or(0.0);
+            let fee = Self::get_f64(item, "fee").unwrap_or(0.0);
+
+            let journal_type = item
+                .get("journal_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            let event_type = item
+                .get("event_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            let (entry_type, net_amount, description) =
+                Self::classify_ledger_entry(journal_type, event_type, amount, fee);
+
+            let timestamp = item
+                .get("create_time")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+
+            let instrument = item
+                .get("instrument_name")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+
+            let desc = if description.is_empty() {
+                instrument
+                    .clone()
+                    .unwrap_or_else(|| journal_type.to_string())
+            } else {
+                description
+            };
+
+            entries.push(LedgerEntry {
+                id,
+                asset,
+                amount: net_amount,
+                balance: None,
+                entry_type,
+                description: desc,
+                ref_id: instrument,
+                timestamp,
+            });
+        }
+
+        Ok(entries)
+    }
+
+    /// Map Crypto.com `journal_type` + `event_type` to `LedgerEntryType` and compute net amount.
+    ///
+    /// Returns `(entry_type, signed_amount, description)`.
+    fn classify_ledger_entry(
+        journal_type: &str,
+        event_type: &str,
+        amount: f64,
+        fee: f64,
+    ) -> (LedgerEntryType, f64, String) {
+        match journal_type {
+            "TRADING" => {
+                let desc = format!("Trade ({})", event_type);
+                (LedgerEntryType::Trade, amount, desc)
+            }
+            "FUNDING" => (
+                LedgerEntryType::Funding,
+                amount,
+                "Funding payment".to_string(),
+            ),
+            "FEE_AND_REBATE" => {
+                if amount >= 0.0 {
+                    (LedgerEntryType::Rebate, amount, "Fee rebate".to_string())
+                } else {
+                    (LedgerEntryType::Fee, amount, "Trading fee".to_string())
+                }
+            }
+            "WITHDRAW" => {
+                let net = if amount > 0.0 { -amount } else { amount };
+                let net = net - fee.abs();
+                (LedgerEntryType::Withdrawal, net, "Withdrawal".to_string())
+            }
+            "DEPOSIT" => {
+                let net = if amount < 0.0 { -amount } else { amount };
+                (LedgerEntryType::Deposit, net, "Deposit".to_string())
+            }
+            "TRANSFER" => (
+                LedgerEntryType::Transfer,
+                amount,
+                "Internal transfer".to_string(),
+            ),
+            "LIQUIDATION" => (
+                LedgerEntryType::Liquidation,
+                amount,
+                "Liquidation".to_string(),
+            ),
+            "SETTLEMENT" => (
+                LedgerEntryType::Settlement,
+                amount,
+                "Settlement".to_string(),
+            ),
+            other => {
+                let desc = format!("{} ({})", other, event_type);
+                (LedgerEntryType::Other(other.to_string()), amount, desc)
+            }
+        }
     }
 }
 

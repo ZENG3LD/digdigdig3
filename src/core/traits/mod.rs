@@ -62,6 +62,7 @@ pub use operations::{
     MarginTrading, EarnStaking, ConvertSwap, CopyTrading,
     LiquidityProvider, VaultManager, StakingDelegation, BlockTradeOtc,
     MarketMakerProtection, TriggerOrders, PredictionMarket,
+    FundingHistory, AccountLedger,
 };
 pub use event_stream::{EventProducer, EventFilter};
 

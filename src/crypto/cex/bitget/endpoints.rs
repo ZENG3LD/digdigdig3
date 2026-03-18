@@ -164,6 +164,8 @@ pub enum BitgetEndpoint {
     FuturesFundingRateHistory,
     /// GET /api/v2/mix/market/symbol-price — futures mark/index price
     FuturesSymbolPrice,
+    /// GET /api/v2/spot/account/bills — spot account bill/ledger records
+    SpotBills,
 }
 
 impl BitgetEndpoint {
@@ -261,6 +263,7 @@ impl BitgetEndpoint {
             Self::FuturesOpenInterest => "/api/v2/mix/market/open-interest",
             Self::FuturesFundingRateHistory => "/api/v2/mix/market/history-fund-rate",
             Self::FuturesSymbolPrice => "/api/v2/mix/market/symbol-price",
+            Self::SpotBills => "/api/v2/spot/account/bills",
         }
     }
 

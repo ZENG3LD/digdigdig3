@@ -27,6 +27,7 @@ use crate::core::types::{
     OrderUpdateEvent, BalanceUpdateEvent, PositionUpdateEvent,
     SymbolInfo, CancelAllResponse, OrderResult,
     UserTrade,
+    FundingPayment, LedgerEntry, LedgerEntryType,
 };
 use crate::core::types::AlgoOrderResponse;
 use crate::core::types::{
@@ -1209,6 +1210,96 @@ impl OkxParser {
             .collect::<Vec<_>>();
 
         Ok(trades)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FUNDING HISTORY
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse funding payments from `GET /api/v5/account/bills?type=8` (subType 173/174).
+    ///
+    /// subType 173 = funding fee expense, 174 = funding fee income.
+    pub fn parse_funding_payments(response: &Value) -> ExchangeResult<Vec<FundingPayment>> {
+        let data = Self::extract_data(response)?;
+        let arr = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array in account/bills data".to_string()))?;
+
+        let mut payments = Vec::with_capacity(arr.len());
+        for item in arr {
+            let symbol = item.get("instId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let payment: f64 = item.get("balChg")
+                .and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            let position_size: f64 = item.get("sz")
+                .and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            let asset = item.get("ccy").and_then(|v| v.as_str()).unwrap_or("USDT").to_string();
+            let timestamp: i64 = item.get("ts")
+                .and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0);
+            payments.push(FundingPayment {
+                symbol,
+                funding_rate: 0.0,
+                position_size,
+                payment,
+                asset,
+                timestamp,
+            });
+        }
+        Ok(payments)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ACCOUNT LEDGER
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse ledger entries from `GET /api/v5/account/bills` (all types).
+    ///
+    /// OKX `type` values: 1=transfer, 2=trade, 3=delivery, 5=forced-liquidation,
+    /// 7=funding-fee, 8=interest, 9=rebate, 13=borrowing-fee, 20=deposit, 21=withdrawal.
+    pub fn parse_ledger(response: &Value) -> ExchangeResult<Vec<LedgerEntry>> {
+        let data = Self::extract_data(response)?;
+        let arr = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array in account/bills data".to_string()))?;
+
+        let mut entries = Vec::with_capacity(arr.len());
+        for item in arr {
+            let id = item.get("billId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let inst_id = item.get("instId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let bill_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("0");
+            let sub_type = item.get("subType").and_then(|v| v.as_str()).unwrap_or("0");
+            let amount: f64 = item.get("balChg")
+                .and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            let balance: Option<f64> = item.get("bal")
+                .and_then(|v| v.as_str()).and_then(|s| s.parse().ok());
+            let asset = item.get("ccy").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let timestamp: i64 = item.get("ts")
+                .and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0);
+            let entry_type = match bill_type {
+                "1" => LedgerEntryType::Transfer,
+                "2" => LedgerEntryType::Trade,
+                "3" => LedgerEntryType::Settlement,
+                "5" | "14" => LedgerEntryType::Liquidation,
+                "7" | "170" | "173" | "174" => LedgerEntryType::Funding,
+                "9" | "12" => LedgerEntryType::Rebate,
+                "8" | "13" => LedgerEntryType::Fee,
+                "20" => LedgerEntryType::Deposit,
+                "21" => LedgerEntryType::Withdrawal,
+                _ => LedgerEntryType::Other(format!("type={} subType={}", bill_type, sub_type)),
+            };
+            let ref_id = item.get("ordId")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty() && *s != "0")
+                .map(|s| s.to_string());
+            entries.push(LedgerEntry {
+                id,
+                asset,
+                amount,
+                balance,
+                entry_type,
+                description: format!("type={} subType={} {}", bill_type, sub_type, inst_id),
+                ref_id,
+                timestamp,
+            });
+        }
+        Ok(entries)
     }
 }
 

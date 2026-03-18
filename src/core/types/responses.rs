@@ -413,3 +413,115 @@ pub struct LongShortRatio {
     /// Unix timestamp (ms) of the snapshot.
     pub timestamp: u64,
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FUNDING PAYMENT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// A single funding payment record from `FundingHistory::get_funding_payments`.
+///
+/// Funding payments occur periodically on perpetual futures positions.
+/// Negative `payment` means the user paid; positive means the user received.
+///
+/// ~16/24: all perpetual futures exchanges (Binance, Bybit, OKX, KuCoin,
+/// GateIO, Bitget, BingX, Phemex, MEXC, HTX, CryptoCom, Deribit,
+/// HyperLiquid, Paradex, dYdX, Lighter).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FundingPayment {
+    /// Trading pair (e.g. "BTCUSDT").
+    pub symbol: String,
+    /// Funding rate applied at settlement time.
+    pub funding_rate: f64,
+    /// Position size at the time of settlement (in base asset units).
+    pub position_size: f64,
+    /// Payment amount — negative = paid by user, positive = received by user.
+    pub payment: f64,
+    /// Settlement currency (e.g. "USDT", "BTC").
+    pub asset: String,
+    /// Unix timestamp (ms) of the funding settlement.
+    pub timestamp: Timestamp,
+}
+
+/// Filter for `FundingHistory::get_funding_payments`.
+#[derive(Debug, Clone, Default)]
+pub struct FundingFilter {
+    /// Optional symbol filter. `None` = all symbols.
+    pub symbol: Option<String>,
+    /// Start of time range (Unix ms). `None` = exchange default.
+    pub start_time: Option<u64>,
+    /// End of time range (Unix ms). `None` = now.
+    pub end_time: Option<u64>,
+    /// Maximum number of records to return. `None` = exchange default.
+    pub limit: Option<u32>,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LEDGER ENTRY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Category of a ledger entry.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum LedgerEntryType {
+    /// Entry from a trade execution (fill).
+    Trade,
+    /// On-chain or external deposit credited to the account.
+    Deposit,
+    /// Withdrawal deducted from the account.
+    Withdrawal,
+    /// Funding payment (perpetual futures).
+    Funding,
+    /// Trading fee charged.
+    Fee,
+    /// Fee rebate credited (maker/VIP rebate).
+    Rebate,
+    /// Internal transfer between account types.
+    Transfer,
+    /// Forced liquidation.
+    Liquidation,
+    /// Settlement (options/futures expiry).
+    Settlement,
+    /// Any other entry type not covered above.
+    Other(String),
+}
+
+/// A single entry in the account ledger from `AccountLedger::get_ledger`.
+///
+/// The ledger is a chronological log of all balance changes for an account.
+/// Positive `amount` = credit (balance increased); negative = debit.
+///
+/// ~14/24: Binance, Bybit, OKX, KuCoin, Kraken, GateIO, Bitfinex, Bitget,
+/// BingX, Phemex, Deribit, HyperLiquid, Paradex, dYdX.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LedgerEntry {
+    /// Exchange-assigned ledger entry ID.
+    pub id: String,
+    /// Asset affected (e.g. "USDT", "BTC").
+    pub asset: String,
+    /// Amount of change — positive = credit, negative = debit.
+    pub amount: f64,
+    /// Account balance after this entry (if provided by the exchange).
+    pub balance: Option<f64>,
+    /// Type of this ledger entry.
+    pub entry_type: LedgerEntryType,
+    /// Human-readable description of the entry.
+    pub description: String,
+    /// Related order, trade, or transfer ID (if available).
+    pub ref_id: Option<String>,
+    /// Unix timestamp (ms) of the entry.
+    pub timestamp: Timestamp,
+}
+
+/// Filter for `AccountLedger::get_ledger`.
+#[derive(Debug, Clone, Default)]
+pub struct LedgerFilter {
+    /// Optional asset filter. `None` = all assets.
+    pub asset: Option<String>,
+    /// Optional entry type filter. `None` = all entry types.
+    pub entry_type: Option<LedgerEntryType>,
+    /// Start of time range (Unix ms). `None` = exchange default.
+    pub start_time: Option<u64>,
+    /// End of time range (Unix ms). `None` = now.
+    pub end_time: Option<u64>,
+    /// Maximum number of records to return. `None` = exchange default.
+    pub limit: Option<u32>,
+}

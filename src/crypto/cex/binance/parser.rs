@@ -14,6 +14,7 @@ use crate::core::types::{
     TransferResponse, DepositAddress, WithdrawResponse, FundsRecord,
     SubAccountResult, SubAccount,
     UserTrade,
+    FundingPayment, LedgerEntry, LedgerEntryType,
 };
 
 /// Парсер ответов Binance API
@@ -1201,6 +1202,86 @@ impl BinanceParser {
             take_profit: None,
             stop_loss: None,
         })
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FUNDING HISTORY
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse funding payments from `GET /fapi/v1/income?incomeType=FUNDING_FEE`
+    ///
+    /// Response array item: `{"symbol":"BTCUSDT","incomeType":"FUNDING_FEE","income":"-0.01","asset":"USDT","time":1672531200000}`
+    pub fn parse_funding_payments(response: &Value) -> ExchangeResult<Vec<FundingPayment>> {
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array for income history".to_string()))?;
+
+        let mut payments = Vec::with_capacity(arr.len());
+        for item in arr {
+            let symbol = Self::get_str(item, "symbol")
+                .ok_or_else(|| ExchangeError::Parse("Missing 'symbol' in income record".to_string()))?
+                .to_string();
+            let payment: f64 = item.get("income")
+                .and_then(|v| v.as_str()).and_then(|s| s.parse().ok())
+                .or_else(|| item.get("income").and_then(|v| v.as_f64()))
+                .unwrap_or(0.0);
+            let asset = Self::get_str(item, "asset").unwrap_or("USDT").to_string();
+            let timestamp = item.get("time").and_then(|v| v.as_i64()).unwrap_or(0);
+            payments.push(FundingPayment {
+                symbol,
+                funding_rate: 0.0,
+                position_size: 0.0,
+                payment,
+                asset,
+                timestamp,
+            });
+        }
+        Ok(payments)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ACCOUNT LEDGER
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse ledger entries from `GET /fapi/v1/income` (all incomeTypes).
+    ///
+    /// Maps Binance `incomeType` to `LedgerEntryType`.
+    pub fn parse_ledger(response: &Value) -> ExchangeResult<Vec<LedgerEntry>> {
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array for income history".to_string()))?;
+
+        let mut entries = Vec::with_capacity(arr.len());
+        for item in arr {
+            let symbol = Self::get_str(item, "symbol").unwrap_or("").to_string();
+            let income_type = Self::get_str(item, "incomeType").unwrap_or("OTHER");
+            let amount: f64 = item.get("income")
+                .and_then(|v| v.as_str()).and_then(|s| s.parse().ok())
+                .or_else(|| item.get("income").and_then(|v| v.as_f64()))
+                .unwrap_or(0.0);
+            let asset = Self::get_str(item, "asset").unwrap_or("USDT").to_string();
+            let timestamp = item.get("time").and_then(|v| v.as_i64()).unwrap_or(0);
+            let entry_type = match income_type {
+                "REALIZED_PNL" => LedgerEntryType::Trade,
+                "FUNDING_FEE" => LedgerEntryType::Funding,
+                "COMMISSION" => LedgerEntryType::Fee,
+                "COMMISSION_REBATE" => LedgerEntryType::Rebate,
+                "TRANSFER" => LedgerEntryType::Transfer,
+                "LIQUIDATION_FEE" => LedgerEntryType::Liquidation,
+                "DELIVERY_SETTLEMENT" => LedgerEntryType::Settlement,
+                other => LedgerEntryType::Other(other.to_string()),
+            };
+            let id = format!("{}-{}-{}", timestamp, income_type, symbol);
+            entries.push(LedgerEntry {
+                id,
+                asset,
+                amount,
+                balance: None,
+                entry_type,
+                description: format!("{} {}", income_type, symbol),
+                ref_id: None,
+                timestamp,
+            });
+        }
+        Ok(entries)
     }
 }
 

@@ -35,7 +35,7 @@ use crate::core::{
     TimeInForce, UserTrade, UserTradeFilter,
 };
 use crate::core::traits::{
-    ExchangeIdentity, MarketData, Trading, Account, Positions,
+    ExchangeIdentity, MarketData, Trading, Account, Positions, AccountLedger,
 };
 use crate::core::{CancelAll, AmendOrder, BatchOrders, AccountTransfers, CustodialFunds, SubAccounts};
 use crate::core::types::{
@@ -43,6 +43,7 @@ use crate::core::types::{
     TransferRequest, TransferHistoryFilter, TransferResponse,
     DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord, FundsHistoryFilter, FundsRecordType,
     SubAccountOperation, SubAccountResult, SubAccount,
+    LedgerEntry, LedgerFilter,
 };
 use crate::core::utils::SimpleRateLimiter;
 
@@ -2581,6 +2582,47 @@ impl BitgetConnector {
         params.insert("symbol".to_string(), symbol.to_string());
         params.insert("productType".to_string(), product_type.to_string());
         self.get(BitgetEndpoint::FuturesSymbolPrice, params, AccountType::FuturesCross).await
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT LEDGER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AccountLedger for BitgetConnector {
+    /// Get spot account bill/ledger records from `GET /api/v2/spot/account/bills`.
+    ///
+    /// Params: `coin` (optional), `groupType`, `businessType`, `startTime` (ms),
+    /// `endTime` (ms), `limit` (max 500), `idLessThan` (for pagination).
+    async fn get_ledger(
+        &self,
+        filter: LedgerFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<LedgerEntry>> {
+        let mut params = HashMap::new();
+
+        if let Some(asset) = &filter.asset {
+            params.insert("coin".to_string(), asset.clone());
+        }
+        if let Some(start) = filter.start_time {
+            params.insert("startTime".to_string(), start.to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("endTime".to_string(), end.to_string());
+        }
+        if let Some(limit) = filter.limit {
+            // Bitget max is 500
+            params.insert("limit".to_string(), limit.min(500).to_string());
+        }
+
+        let response = self.get(
+            BitgetEndpoint::SpotBills,
+            params,
+            AccountType::Spot,
+        ).await?;
+
+        BitgetParser::parse_ledger(&response)
     }
 }
 

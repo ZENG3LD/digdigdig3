@@ -20,6 +20,7 @@ use crate::core::types::{
     Kline, OrderBook, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, SymbolInfo, BracketResponse, UserTrade,
+    FundingPayment,
 };
 
 use super::endpoints::{unscale_price, unscale_value};
@@ -783,6 +784,77 @@ impl PhemexParser {
         }
 
         Ok(symbols)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FUNDING HISTORY
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse historical funding payments from `GET /api-data/futures/funding-fees`.
+    ///
+    /// Response:
+    /// ```json
+    /// {"code":0,"data":{"rows":[
+    ///   {"symbol":"BTCUSD","currency":"BTC","execFeeEv":-100,"fundingRateEr":10000,
+    ///    "side":"Buy","size":1,"transactTimeNs":1620000000000000000}
+    /// ],"total":1}}
+    /// ```
+    /// `execFeeEv` — Ev (scale 8). `fundingRateEr` — Er (scale 8).
+    /// `transactTimeNs` — nanoseconds → milliseconds.
+    pub fn parse_funding_payments(response: &Value) -> ExchangeResult<Vec<FundingPayment>> {
+        let data = Self::extract_data(response)?;
+        let rows = data.get("rows")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse(
+                "Missing 'rows' in funding-fees response".to_string(),
+            ))?;
+
+        // Phemex ratio/value scale is 8 (Er / Ev format)
+        const SCALE: u8 = 8;
+
+        let mut payments = Vec::with_capacity(rows.len());
+        for item in rows {
+            let symbol = item.get("symbol")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let funding_rate_er = item.get("fundingRateEr")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let funding_rate = unscale_value(funding_rate_er, SCALE);
+
+            let position_size = item.get("size")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+
+            // execFeeEv: negative = paid by user, positive = received
+            let exec_fee_ev = item.get("execFeeEv")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let payment = unscale_value(exec_fee_ev, SCALE);
+
+            let asset = item.get("currency")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            // transactTimeNs is nanoseconds — convert to milliseconds
+            let transact_ns = item.get("transactTimeNs")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let timestamp = transact_ns / 1_000_000;
+
+            payments.push(FundingPayment {
+                symbol,
+                funding_rate,
+                position_size,
+                payment,
+                asset,
+                timestamp,
+            });
+        }
+        Ok(payments)
     }
 }
 

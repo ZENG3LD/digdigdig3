@@ -38,11 +38,13 @@ use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
     CancelAll, AmendOrder, BatchOrders,
     AccountTransfers, CustodialFunds, SubAccounts,
+    FundingHistory, AccountLedger,
 };
 use crate::core::types::{
     TransferRequest, TransferHistoryFilter, WithdrawRequest,
     FundsHistoryFilter, FundsRecordType, SubAccountOperation, SubAccountResult,
     SubAccount, ConnectorStats,
+    FundingPayment, FundingFilter, LedgerEntry, LedgerFilter,
 };
 use crate::core::utils::WeightRateLimiter;
 
@@ -2455,5 +2457,74 @@ impl KuCoinConnector {
             params.insert("chain".to_string(), c.to_string());
         }
         self.get(KuCoinEndpoint::WithdrawalQuotas, params, AccountType::Spot).await
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FUNDING HISTORY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl FundingHistory for KuCoinConnector {
+    async fn get_funding_payments(
+        &self,
+        filter: FundingFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<FundingPayment>> {
+        let symbol = filter.symbol.ok_or_else(|| {
+            ExchangeError::UnsupportedOperation(
+                "KuCoin funding history requires a symbol".to_string(),
+            )
+        })?;
+
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol);
+        if let Some(start) = filter.start_time {
+            params.insert("startAt".to_string(), start.to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("endAt".to_string(), end.to_string());
+        }
+        if let Some(limit) = filter.limit {
+            params.insert("maxCount".to_string(), limit.min(100).to_string());
+        }
+
+        let response = self
+            .get(KuCoinEndpoint::FuturesFundingHistory, params, AccountType::FuturesCross)
+            .await?;
+        KuCoinParser::parse_funding_payments(&response)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT LEDGER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl AccountLedger for KuCoinConnector {
+    async fn get_ledger(
+        &self,
+        filter: LedgerFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<LedgerEntry>> {
+        let mut params = HashMap::new();
+        if let Some(asset) = &filter.asset {
+            params.insert("currency".to_string(), asset.clone());
+        }
+        if let Some(start) = filter.start_time {
+            params.insert("startAt".to_string(), start.to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("endAt".to_string(), end.to_string());
+        }
+        if let Some(limit) = filter.limit {
+            params.insert("pageSize".to_string(), limit.min(500).to_string());
+        }
+        params.insert("currentPage".to_string(), "1".to_string());
+
+        let response = self
+            .get(KuCoinEndpoint::SpotLedger, params, AccountType::Spot)
+            .await?;
+        KuCoinParser::parse_ledger(&response)
     }
 }

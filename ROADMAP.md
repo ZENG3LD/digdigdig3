@@ -140,6 +140,53 @@ is available for dig3x3 to wrap as a thin parser layer.
 
 ---
 
+## Phase 0.96: Implement `FundingHistory` + `AccountLedger` traits (DONE)
+
+Two new traits added to core — funding rate payment history and full account ledger/transaction log.
+Researched per-exchange endpoints individually, not copy-pasted from Binance.
+
+### Core types added
+- `FundingPayment` — symbol, funding_rate, position_size, payment, asset, timestamp
+- `FundingFilter` — symbol, start_time, end_time, limit
+- `LedgerEntry` — id, asset, amount, balance, entry_type, description, ref_id, timestamp
+- `LedgerEntryType` — Trade, Deposit, Withdrawal, Funding, Fee, Rebate, Transfer, Liquidation, Settlement, Other
+- `LedgerFilter` — asset, entry_type, start_time, end_time, limit
+
+### FundingHistory implementations (12 connectors)
+- [x] **Binance** — `GET /fapi/v1/income` (type=FUNDING)
+- [x] **Bybit** — `GET /v5/account/transaction-log` (type=SETTLEMENT)
+- [x] **OKX** — `GET /api/v5/account/bills` (instType=SWAP, type=8)
+- [x] **KuCoin** — `GET /api/v1/funding-history`
+- [x] **Kraken** — `POST /0/private/Ledgers` (type=rollover)
+- [x] **Gate.io** — `GET /api/v4/futures/{settle}/funding_payments`
+- [x] **Bitfinex** — `POST /v2/auth/r/ledgers/hist` (category=28 funding)
+- [x] **Deribit** — `GET /api/v2/private/get_transaction_log` (type=delivery)
+- [x] **Phemex** — funding-fees endpoint
+- [x] **HyperLiquid** — `POST /info` action=`userFunding`
+- [x] **dYdX v4** — `GET /v4/historicalFunding`
+- [x] **Paradex** — `GET /v1/funding-payments`
+
+### AccountLedger implementations (12 connectors)
+- [x] **Binance** — `GET /fapi/v1/income` (all types)
+- [x] **Bybit** — `GET /v5/account/transaction-log`
+- [x] **OKX** — `GET /api/v5/account/bills` + `GET /api/v5/account/bills-archive`
+- [x] **KuCoin** — `GET /api/v1/accounts/ledgers`
+- [x] **Kraken** — `POST /0/private/Ledgers`
+- [x] **Gate.io** — `GET /api/v4/wallet/ledger`
+- [x] **Bitfinex** — `POST /v2/auth/r/ledgers/hist`
+- [x] **Deribit** — `GET /api/v2/private/get_transaction_log`
+- [x] **Bitget** — `GET /api/v2/spot/account/bills`
+- [x] **Bitstamp** — `POST /api/v2/user_transactions/`
+- [x] **Crypto.com** — `POST private/get-transactions`
+- [x] **Alpaca** — `GET /v2/account/activities`
+
+### Not applicable (default UnsupportedOperation)
+- GMX, Lighter — no funding history endpoint (on-chain settlement only)
+- BingX, HTX, MEXC, Upbit, Coinbase, Gemini — no ledger/funding endpoint in public API
+- Tinkoff, OANDA, IB, Dukascopy — broker connectors, deferred
+
+---
+
 ## Phase 1: Crypto CEX/DEX Execution Testing
 
 Testing order placement, cancellation, account queries on real exchanges.

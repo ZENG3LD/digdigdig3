@@ -31,6 +31,7 @@ use crate::core::{
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     TimeInForce, AmendRequest,
+    UserTrade, UserTradeFilter,
 };
 use crate::core::types::SymbolInfo;
 use crate::core::traits::{
@@ -758,6 +759,60 @@ impl Trading for BingxConnector {
             }
             let response = self.get(BingxEndpoint::SpotHistoryOrders, params, account_type).await?;
             BingxParser::parse_orders(&response)
+        }
+    }
+
+    async fn get_user_trades(
+        &self,
+        filter: UserTradeFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<UserTrade>> {
+        let is_futures = matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated);
+
+        let mut params = HashMap::new();
+
+        if is_futures {
+            // Swap fill history: symbol required, uses startTs/endTs
+            let sym = filter.symbol
+                .ok_or_else(|| ExchangeError::InvalidRequest(
+                    "BingX swap user trades requires a symbol".to_string()
+                ))?;
+            params.insert("symbol".to_string(), sym);
+            if let Some(oid) = filter.order_id {
+                params.insert("orderId".to_string(), oid);
+            }
+            if let Some(start) = filter.start_time {
+                params.insert("startTs".to_string(), start.to_string());
+            }
+            if let Some(end) = filter.end_time {
+                params.insert("endTs".to_string(), end.to_string());
+            }
+            if let Some(limit) = filter.limit {
+                params.insert("limit".to_string(), limit.min(100).to_string());
+            }
+            let response = self.get(BingxEndpoint::SwapFillHistory, params, account_type).await?;
+            BingxParser::parse_user_trades(&response, true)
+        } else {
+            // Spot my trades: symbol required
+            let sym = filter.symbol
+                .ok_or_else(|| ExchangeError::InvalidRequest(
+                    "BingX spot user trades requires a symbol".to_string()
+                ))?;
+            params.insert("symbol".to_string(), sym);
+            if let Some(oid) = filter.order_id {
+                params.insert("orderId".to_string(), oid);
+            }
+            if let Some(start) = filter.start_time {
+                params.insert("startTime".to_string(), start.to_string());
+            }
+            if let Some(end) = filter.end_time {
+                params.insert("endTime".to_string(), end.to_string());
+            }
+            if let Some(limit) = filter.limit {
+                params.insert("limit".to_string(), limit.min(100).to_string());
+            }
+            let response = self.get(BingxEndpoint::SpotMyTrades, params, account_type).await?;
+            BingxParser::parse_user_trades(&response, false)
         }
     }
 }

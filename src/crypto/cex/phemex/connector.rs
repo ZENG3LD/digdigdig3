@@ -34,6 +34,7 @@ use crate::core::{
     CancelAllResponse, AmendRequest, MarginType,
     ExchangeIdentity, MarketData, Trading, Account, Positions,
     CancelAll, AmendOrder, AccountTransfers, CustodialFunds, SubAccounts,
+    UserTrade, UserTradeFilter,
 };
 use crate::core::types::{
     TransferRequest, TransferHistoryFilter, TransferResponse,
@@ -958,6 +959,44 @@ impl Trading for PhemexConnector {
 
         let response = self.get(PhemexEndpoint::ContractClosedOrders, params, account_type).await?;
         PhemexParser::parse_orders(&response, self.default_price_scale)
+    }
+
+    async fn get_user_trades(
+        &self,
+        filter: UserTradeFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<UserTrade>> {
+        let mut params = HashMap::new();
+
+        if let Some(sym) = &filter.symbol {
+            // Accept "BTC/USDT" slash-separated or already formatted "BTCUSDT"
+            let formatted = if sym.contains('/') {
+                let parts: Vec<&str> = sym.split('/').collect();
+                if parts.len() == 2 {
+                    format_symbol(parts[0], parts[1], account_type)
+                } else {
+                    sym.to_uppercase()
+                }
+            } else {
+                sym.to_uppercase()
+            };
+            params.insert("symbol".to_string(), formatted);
+        }
+
+        // Phemex expects seconds for start/end, not milliseconds
+        if let Some(start_ms) = filter.start_time {
+            params.insert("start".to_string(), (start_ms / 1000).to_string());
+        }
+        if let Some(end_ms) = filter.end_time {
+            params.insert("end".to_string(), (end_ms / 1000).to_string());
+        }
+        if let Some(lim) = filter.limit {
+            params.insert("limit".to_string(), lim.min(200).to_string());
+        }
+
+        // Use the dedicated trade history endpoint
+        let response = self.get(PhemexEndpoint::TradeHistory, params, account_type).await?;
+        PhemexParser::parse_user_trades(&response, self.default_price_scale)
     }
 }
 

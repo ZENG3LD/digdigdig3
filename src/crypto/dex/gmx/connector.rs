@@ -38,6 +38,7 @@ use crate::core::types::{
     OrderRequest, CancelRequest, Order, OrderHistoryFilter, PlaceOrderResponse,
     BalanceQuery, Balance, AccountInfo, FeeInfo,
     PositionQuery, Position, FundingRate, PositionModification,
+    UserTrade, UserTradeFilter,
 };
 use crate::core::utils::SimpleRateLimiter;
 use crate::core::types::{ConnectorStats, SymbolInfo};
@@ -1149,6 +1150,84 @@ impl Trading for GmxConnector {
 
         let response = self.query_subsquid(&gql, None).await?;
         GmxParser::parse_orders(&response)
+    }
+
+    /// Get user trade history from Subsquid `tradeActions`.
+    ///
+    /// Requires a wallet address (set via `with_onchain()`). Returns an empty
+    /// Vec when no wallet is configured rather than an error, consistent with
+    /// the behaviour of `get_open_orders` and `get_order_history`.
+    ///
+    /// GMX has no traditional fills — each position increase/decrease is modelled
+    /// as a trade action on-chain. These are returned as `UserTrade` records.
+    async fn get_user_trades(
+        &self,
+        filter: UserTradeFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<UserTrade>> {
+        let account = match self.wallet_address_str() {
+            Some(addr) => addr,
+            None => return Ok(Vec::new()),
+        };
+
+        // Optional symbol filter on indexTokenSymbol
+        let symbol_filter = match &filter.symbol {
+            Some(sym) => {
+                let base = sym.split('/').next().unwrap_or(sym).to_uppercase();
+                format!(", indexTokenSymbol_eq: \"{}\"", base)
+            }
+            None => String::new(),
+        };
+
+        // Optional order key filter
+        let order_key_filter = match &filter.order_id {
+            Some(key) => format!(", orderKey_eq: \"{}\"", key),
+            None => String::new(),
+        };
+
+        // Time range — Subsquid uses Unix seconds (stored as string)
+        let start_filter = match filter.start_time {
+            Some(ms) => format!(", timestamp_gte: \"{}\"", ms / 1000),
+            None => String::new(),
+        };
+        let end_filter = match filter.end_time {
+            Some(ms) => format!(", timestamp_lte: \"{}\"", ms / 1000),
+            None => String::new(),
+        };
+
+        // Limit
+        let limit_clause = match filter.limit {
+            Some(n) => format!(", limit: {}", n.min(1000)),
+            None => String::new(),
+        };
+
+        let gql = format!(
+            r#"query {{
+                tradeActions(
+                    where: {{ account_eq: "{account}"{symbol_filter}{order_key_filter}{start_filter}{end_filter} }}
+                    orderBy: timestamp_DESC{limit_clause}
+                ) {{
+                    id
+                    orderKey
+                    marketAddress
+                    indexTokenSymbol
+                    sizeDeltaUsd
+                    executionPrice
+                    isLong
+                    orderType
+                    timestamp
+                }}
+            }}"#,
+            account = account,
+            symbol_filter = symbol_filter,
+            order_key_filter = order_key_filter,
+            start_filter = start_filter,
+            end_filter = end_filter,
+            limit_clause = limit_clause,
+        );
+
+        let response = self.query_subsquid(&gql, None).await?;
+        GmxParser::parse_trade_actions(&response)
     }
 }
 

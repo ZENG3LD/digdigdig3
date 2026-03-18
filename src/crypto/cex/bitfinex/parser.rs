@@ -14,7 +14,7 @@ use serde_json::Value;
 use crate::core::types::{
     ExchangeError, ExchangeResult,
     Kline, OrderBook, Ticker, Order, Balance, Position, PublicTrade, TradeSide,
-    OrderSide, OrderType, OrderStatus, PositionSide, SymbolInfo,
+    OrderSide, OrderType, OrderStatus, PositionSide, SymbolInfo, UserTrade,
 };
 
 /// Parser for Bitfinex API v2 responses
@@ -406,6 +406,87 @@ impl BitfinexParser {
             take_profit: None,
             stop_loss: None,
         })
+    }
+
+    /// Parse user trades (fills) from `/auth/r/trades/hist` or `/auth/r/trades/{symbol}/hist`
+    ///
+    /// Response format (array of arrays):
+    /// `[[ID, PAIR, MTS_CREATE, ORDER_ID, EXEC_AMOUNT, EXEC_PRICE, ORDER_TYPE, ORDER_PRICE, MAKER, FEE, FEE_CURRENCY, ...]]`
+    ///
+    /// - [0]  ID            — trade ID
+    /// - [1]  PAIR          — symbol (e.g. "tBTCUSD")
+    /// - [2]  MTS_CREATE    — timestamp in milliseconds
+    /// - [3]  ORDER_ID      — linked order ID
+    /// - [4]  EXEC_AMOUNT   — executed amount (positive=buy, negative=sell)
+    /// - [5]  EXEC_PRICE    — execution price
+    /// - [8]  MAKER         — 1 if maker, -1 if taker
+    /// - [9]  FEE           — fee amount (negative value)
+    /// - [10] FEE_CURRENCY  — fee currency
+    pub fn parse_user_trades(response: &Value) -> ExchangeResult<Vec<UserTrade>> {
+        Self::check_error(response)?;
+
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array of trades".to_string()))?;
+
+        let mut trades = Vec::with_capacity(arr.len());
+
+        for item in arr {
+            let trade_arr = match item.as_array() {
+                Some(a) if a.len() >= 11 => a,
+                _ => continue,
+            };
+
+            let id = Self::get_i64(trade_arr, 0)
+                .ok_or_else(|| ExchangeError::Parse("Missing trade ID at index 0".to_string()))?
+                .to_string();
+
+            let symbol = Self::get_str(trade_arr, 1)
+                .unwrap_or("")
+                .to_string();
+
+            let timestamp = Self::get_i64(trade_arr, 2).unwrap_or(0);
+
+            let order_id = Self::get_i64(trade_arr, 3)
+                .unwrap_or(0)
+                .to_string();
+
+            // EXEC_AMOUNT: positive = buy, negative = sell
+            let exec_amount = Self::get_f64(trade_arr, 4).unwrap_or(0.0);
+            let side = if exec_amount >= 0.0 {
+                OrderSide::Buy
+            } else {
+                OrderSide::Sell
+            };
+            let quantity = exec_amount.abs();
+
+            let price = Self::get_f64(trade_arr, 5).unwrap_or(0.0);
+
+            // MAKER: 1 = maker, -1 = taker
+            let maker_flag = Self::get_i64(trade_arr, 8).unwrap_or(-1);
+            let is_maker = maker_flag == 1;
+
+            // FEE is a negative value; take abs
+            let commission = Self::get_f64(trade_arr, 9).map(|f| f.abs()).unwrap_or(0.0);
+
+            let commission_asset = Self::get_str(trade_arr, 10)
+                .unwrap_or("")
+                .to_string();
+
+            trades.push(UserTrade {
+                id,
+                order_id,
+                symbol,
+                side,
+                price,
+                quantity,
+                commission,
+                commission_asset,
+                is_maker,
+                timestamp,
+            });
+        }
+
+        Ok(trades)
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

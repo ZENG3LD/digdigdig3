@@ -72,6 +72,7 @@ use crate::core::{
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
+    UserTrade, UserTradeFilter,
 };
 use crate::core::types::{
     WithdrawRequest, WithdrawResponse, DepositAddress,
@@ -1013,7 +1014,57 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
             .collect();
 
         Ok(orders)
-    
+    }
+
+    async fn get_user_trades(
+        &self,
+        filter: UserTradeFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<UserTrade>> {
+        // GET /orders/historical/fills — cursor-based pagination, fetch first page
+        let mut params: Vec<String> = Vec::new();
+
+        if let Some(ref product_id) = filter.symbol {
+            params.push(format!("product_id={}", product_id));
+        }
+
+        if let Some(ref order_id) = filter.order_id {
+            params.push(format!("order_id={}", order_id));
+        }
+
+        if let Some(start) = filter.start_time {
+            if let Some(dt) = chrono::DateTime::from_timestamp((start / 1000) as i64, 0) {
+                params.push(format!("start_sequence_timestamp={}", dt.to_rfc3339()));
+            }
+        }
+
+        if let Some(end) = filter.end_time {
+            if let Some(dt) = chrono::DateTime::from_timestamp((end / 1000) as i64, 0) {
+                params.push(format!("end_sequence_timestamp={}", dt.to_rfc3339()));
+            }
+        }
+
+        // Coinbase fills endpoint max is 100 per page
+        let limit = filter.limit.unwrap_or(100).min(100);
+        params.push(format!("limit={}", limit));
+
+        let query_str = if params.is_empty() {
+            String::new()
+        } else {
+            format!("?{}", params.join("&"))
+        };
+
+        let path = format!("{}{}", CoinbaseEndpoint::ListFills.path(), query_str);
+        let url = format!("{}{}", CoinbaseUrls::base_url(), path);
+
+        let headers = self.auth.as_ref()
+            .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?
+            .sign_request("GET", &path)
+            .map_err(ExchangeError::Auth)?;
+
+        let response = self.http.get_with_headers(&url, &HashMap::new(), &headers).await?;
+
+        CoinbaseParser::parse_fills(&response)
     }
 }
 

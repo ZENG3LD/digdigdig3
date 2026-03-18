@@ -30,6 +30,7 @@ use crate::core::types::{
     CancelAllResponse, OrderResult,
     DepositAddress, WithdrawResponse, FundsRecord,
     SubAccountResult, SubAccount,
+    UserTrade,
 };
 
 /// Parser for Kraken API responses
@@ -1056,6 +1057,121 @@ impl KrakenParser {
             accounts: vec![],
             transaction_id,
         })
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // USER TRADES (FILLS / TRADE HISTORY)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse personal trade fills from `POST /0/private/TradesHistory`.
+    ///
+    /// Response format:
+    /// ```json
+    /// {
+    ///   "result": {
+    ///     "trades": {
+    ///       "TXID1": {
+    ///         "ordertxid": "ORDER1",
+    ///         "pair": "XXBTZUSD",
+    ///         "type": "buy",
+    ///         "price": "50000.0",
+    ///         "vol": "0.001",
+    ///         "fee": "0.01",
+    ///         "time": 1672531200.123,
+    ///         "misc": "",
+    ///         "maker": true
+    ///       }
+    ///     },
+    ///     "count": 100
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Notes:
+    /// - `time` is float Unix seconds — converted to milliseconds for `timestamp`.
+    /// - Trade ID is the key of the `trades` object (e.g. `TXID1`).
+    /// - `fee` is in the quote currency of the pair.
+    /// - `maker` field indicates maker vs taker.
+    pub fn parse_trades_history(response: &Value) -> ExchangeResult<Vec<UserTrade>> {
+        let result = Self::extract_result(response)?;
+
+        let trades_obj = result.get("trades")
+            .and_then(|t| t.as_object())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'trades' object in TradesHistory response".to_string()))?;
+
+        let mut trades = Vec::with_capacity(trades_obj.len());
+
+        for (trade_id, data) in trades_obj {
+            let order_id = Self::get_str(data, "ordertxid")
+                .unwrap_or("")
+                .to_string();
+
+            let symbol = Self::get_str(data, "pair")
+                .unwrap_or("")
+                .to_string();
+
+            let side = match Self::get_str(data, "type").unwrap_or("buy") {
+                "sell" => OrderSide::Sell,
+                _ => OrderSide::Buy,
+            };
+
+            let price = Self::require_f64(data, "price")?;
+            let quantity = Self::require_f64(data, "vol")?;
+            let commission = Self::get_f64(data, "fee").unwrap_or(0.0);
+
+            // Quote currency of the pair is the commission asset.
+            // Kraken fee is always in the quote currency for spot trades.
+            // We extract the quote from the pair string (e.g. XXBTZUSD → USD).
+            let commission_asset = Self::extract_quote_from_pair(&symbol);
+
+            // `time` is float Unix seconds; convert to integer milliseconds.
+            let timestamp = data.get("time")
+                .and_then(Self::parse_f64)
+                .map(|t| (t * 1000.0) as i64)
+                .unwrap_or(0);
+
+            // `maker` is a boolean field; absent means taker.
+            let is_maker = data.get("maker")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            trades.push(UserTrade {
+                id: trade_id.clone(),
+                order_id,
+                symbol,
+                side,
+                price,
+                quantity,
+                commission,
+                commission_asset,
+                is_maker,
+                timestamp,
+            });
+        }
+
+        Ok(trades)
+    }
+
+    /// Extract the quote currency from a Kraken pair string.
+    ///
+    /// Kraken response pairs use full ISO format (XXBTZUSD, XETHZUSD).
+    /// We strip the Z-prefixed fiat suffix and return the clean currency name.
+    ///
+    /// Falls back to the last 3 characters of the pair if no known suffix matches.
+    fn extract_quote_from_pair(pair: &str) -> String {
+        // Known fiat suffixes with Z prefix
+        for fiat in &["ZUSD", "ZEUR", "ZGBP", "ZJPY", "ZCAD", "ZCHF"] {
+            if pair.ends_with(fiat) {
+                return fiat.strip_prefix('Z').unwrap_or(fiat).to_string();
+            }
+        }
+
+        // Crypto quote pairs (e.g., XETHXXBT → XBT)
+        if pair.len() >= 3 {
+            return pair[pair.len() - 3..].to_string();
+        }
+
+        pair.to_string()
     }
 }
 

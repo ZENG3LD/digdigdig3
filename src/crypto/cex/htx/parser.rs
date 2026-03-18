@@ -32,7 +32,7 @@
 
 use serde_json::Value;
 use crate::core::types::*;
-use crate::core::types::{ExchangeResult, ExchangeError};
+use crate::core::types::{ExchangeResult, ExchangeError, UserTrade};
 
 pub struct HtxParser;
 
@@ -500,6 +500,85 @@ impl HtxParser {
             .collect();
 
         Ok(symbols)
+    }
+
+    /// Parse user trades (fills) from `GET /v1/order/matchresults`
+    ///
+    /// Response: `{"status":"ok","data":[{"id":123,"order-id":456,"symbol":"btcusdt",
+    /// "type":"buy-market","price":"50000","filled-amount":"0.001",
+    /// "filled-fees":"0.01","fee-currency":"usdt","role":"maker","created-at":1672531200000}]}`
+    ///
+    /// - `type`:         side prefix — "buy-…" or "sell-…"
+    /// - `role`:         "maker" or "taker"
+    /// - `filled-fees`:  fee amount (string)
+    /// - `fee-currency`: fee asset
+    /// - `created-at`:   timestamp in milliseconds
+    pub fn parse_user_trades(json: &Value) -> ExchangeResult<Vec<UserTrade>> {
+        let data = Self::extract_result_v1(json)?;
+        let list = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Data is not an array".into()))?;
+
+        let mut trades = Vec::with_capacity(list.len());
+
+        for item in list {
+            let id = item["id"].as_i64()
+                .ok_or_else(|| ExchangeError::Parse("Missing 'id' in trade".into()))?
+                .to_string();
+
+            let order_id = item["order-id"].as_i64()
+                .unwrap_or(0)
+                .to_string();
+
+            let symbol = item["symbol"].as_str()
+                .unwrap_or("")
+                .to_string();
+
+            // "type" is "buy-market", "sell-limit", etc. — take prefix before '-'
+            let type_str = item["type"].as_str().unwrap_or("buy-market");
+            let side = if type_str.starts_with("buy") {
+                OrderSide::Buy
+            } else {
+                OrderSide::Sell
+            };
+
+            let price = item["price"].as_str()
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+
+            let quantity = item["filled-amount"].as_str()
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+
+            let commission = item["filled-fees"].as_str()
+                .and_then(|s| s.parse::<f64>().ok())
+                .map(|f| f.abs())
+                .unwrap_or(0.0);
+
+            let commission_asset = item["fee-currency"].as_str()
+                .unwrap_or("")
+                .to_uppercase();
+
+            let is_maker = item["role"].as_str()
+                .map(|r| r == "maker")
+                .unwrap_or(false);
+
+            let timestamp = item["created-at"].as_i64().unwrap_or(0);
+
+            trades.push(UserTrade {
+                id,
+                order_id,
+                symbol,
+                side,
+                price,
+                quantity,
+                commission,
+                commission_asset,
+                is_maker,
+                timestamp,
+            });
+        }
+
+        Ok(trades)
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════

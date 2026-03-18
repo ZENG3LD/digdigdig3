@@ -894,6 +894,82 @@ impl BybitParser {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════
+    // USER TRADE PARSER
+    // ═══════════════════════════════════════════════════════════════════════════════
+
+    /// Parse a single execution (fill) from `result.list[]` of GET /v5/execution/list
+    ///
+    /// Each list item:
+    /// ```json
+    /// {
+    ///   "execId": "...",
+    ///   "orderId": "...",
+    ///   "symbol": "BTCUSDT",
+    ///   "side": "Buy",
+    ///   "execPrice": "50000",
+    ///   "execQty": "0.001",
+    ///   "execFee": "0.00001",
+    ///   "feeCurrency": "USDT",
+    ///   "isMaker": false,
+    ///   "execTime": "1672531200000"
+    /// }
+    /// ```
+    pub fn parse_user_trade(item: &Value) -> ExchangeResult<UserTrade> {
+        let id = item["execId"].as_str()
+            .ok_or_else(|| ExchangeError::Parse("Missing execId".to_string()))?
+            .to_string();
+
+        let order_id = item["orderId"].as_str()
+            .unwrap_or("")
+            .to_string();
+
+        let symbol = item["symbol"].as_str()
+            .ok_or_else(|| ExchangeError::Parse("Missing symbol".to_string()))?
+            .to_string();
+
+        let side = match item["side"].as_str().unwrap_or("Buy") {
+            "Sell" => OrderSide::Sell,
+            _ => OrderSide::Buy,
+        };
+
+        let price = item["execPrice"].as_str()
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+
+        let quantity = item["execQty"].as_str()
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+
+        let commission = item["execFee"].as_str()
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+
+        let commission_asset = item["feeCurrency"].as_str()
+            .unwrap_or("")
+            .to_string();
+
+        let is_maker = item["isMaker"].as_bool().unwrap_or(false);
+
+        // execTime is a string in milliseconds
+        let timestamp = item["execTime"].as_str()
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
+
+        Ok(UserTrade {
+            id,
+            order_id,
+            symbol,
+            side,
+            price,
+            quantity,
+            commission,
+            commission_asset,
+            is_maker,
+            timestamp,
+        })
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════
     // WEBSOCKET PARSERS
     // ═══════════════════════════════════════════════════════════════════════════════
 

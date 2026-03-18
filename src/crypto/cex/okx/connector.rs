@@ -27,6 +27,7 @@ use crate::core::{
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     AmendRequest, CancelAllResponse, OrderResult,
+    UserTrade, UserTradeFilter,
 };
 use crate::core::types::{
     TransferRequest, TransferHistoryFilter, TransferResponse,
@@ -825,6 +826,43 @@ impl Trading for OkxConnector {
 
         let response = self.get(OkxEndpoint::OrderHistory, params).await?;
         OkxParser::parse_orders(&response)
+    }
+
+    async fn get_user_trades(
+        &self,
+        filter: UserTradeFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<UserTrade>> {
+        let mut params = HashMap::new();
+        params.insert("instType".to_string(), get_inst_type(account_type).to_string());
+
+        // instId: filter.symbol is a raw string like "BTC-USDT" or "BTC/USDT"
+        // OKX uses dash-separated format, normalise by replacing '/' with '-'
+        if let Some(ref sym) = filter.symbol {
+            let inst_id = sym.replace('/', "-").to_uppercase();
+            params.insert("instId".to_string(), inst_id);
+        }
+
+        if let Some(ref order_id) = filter.order_id {
+            params.insert("ordId".to_string(), order_id.clone());
+        }
+
+        if let Some(start) = filter.start_time {
+            params.insert("begin".to_string(), start.to_string());
+        }
+
+        if let Some(end) = filter.end_time {
+            params.insert("end".to_string(), end.to_string());
+        }
+
+        if let Some(limit) = filter.limit {
+            // OKX fills endpoint maximum is 100
+            params.insert("limit".to_string(), limit.min(100).to_string());
+        }
+
+        // Use /api/v5/trade/fills (last 3 days, 60 req/2s) as primary endpoint
+        let response = self.get(OkxEndpoint::FillsHistory, params).await?;
+        OkxParser::parse_fills(&response)
     }
 
 async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {

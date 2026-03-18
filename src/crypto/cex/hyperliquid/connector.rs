@@ -32,6 +32,7 @@ use crate::core::{
     OrderHistoryFilter, FeeInfo,
     AmendRequest, OrderResult,
     CancelAllResponse,
+    UserTrade, UserTradeFilter,
 };
 use crate::core::traits::{Trading, Account, Positions, AmendOrder, BatchOrders, CancelAll, AccountTransfers};
 use crate::core::types::{ConnectorStats, SymbolInfo, AlgoOrderResponse, TransferRequest, TransferHistoryFilter, TransferResponse};
@@ -889,6 +890,58 @@ impl Trading for HyperliquidConnector {
         }
 
         Ok(orders)
+    }
+
+    /// Fetch trade fills for the authenticated wallet address.
+    ///
+    /// Uses `userFillsByTime` when a time range is specified, otherwise
+    /// falls back to `userFills` (returns up to the last 2000 fills).
+    /// No authentication signature needed — only the wallet address.
+    async fn get_user_trades(
+        &self,
+        filter: UserTradeFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<UserTrade>> {
+        let wallet = self.wallet_address()?;
+
+        let response = if filter.start_time.is_some() || filter.end_time.is_some() {
+            let mut params = serde_json::json!({
+                "user": wallet,
+                "aggregateByTime": false,
+            });
+            if let Some(start) = filter.start_time {
+                params["startTime"] = serde_json::json!(start);
+            }
+            if let Some(end) = filter.end_time {
+                params["endTime"] = serde_json::json!(end);
+            }
+            self.info_request(InfoType::UserFillsByTime, params).await?
+        } else {
+            let params = serde_json::json!({
+                "user": wallet,
+                "aggregateByTime": false,
+            });
+            self.info_request(InfoType::UserFills, params).await?
+        };
+
+        let mut trades = HyperliquidParser::parse_user_fills(&response)?;
+
+        // Apply symbol filter (HyperLiquid uses coin name, not base/quote pair)
+        if let Some(sym) = &filter.symbol {
+            trades.retain(|t| t.symbol.eq_ignore_ascii_case(sym));
+        }
+
+        // Apply order_id filter
+        if let Some(oid) = &filter.order_id {
+            trades.retain(|t| &t.order_id == oid);
+        }
+
+        // Apply limit
+        if let Some(limit) = filter.limit {
+            trades.truncate(limit as usize);
+        }
+
+        Ok(trades)
     }
 }
 

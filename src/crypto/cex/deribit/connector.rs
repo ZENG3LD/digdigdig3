@@ -34,6 +34,7 @@ use crate::core::{
 };
 use crate::core::types::{WithdrawRequest, FundsHistoryFilter};
 use crate::core::types::{ConnectorStats, SymbolInfo, CancelAllResponse, AmendRequest};
+use crate::core::types::{UserTrade, UserTradeFilter};
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
 };
@@ -788,6 +789,60 @@ impl Trading for DeribitConnector {
             // Get all open orders (no specific instrument)
             let response = self.rpc_call(DeribitMethod::GetOpenOrders, params).await?;
             DeribitParser::parse_orders(&response)
+        }
+    }
+
+    async fn get_user_trades(
+        &self,
+        filter: UserTradeFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<UserTrade>> {
+        let mut params = HashMap::new();
+
+        if let Some(ref symbol_str) = filter.symbol {
+            // Use instrument-specific endpoint when symbol is provided.
+            // symbol_str may be in "BTC/USD" or "BTC-PERPETUAL" format.
+            let instrument_name = if symbol_str.contains('/') {
+                let parts: Vec<&str> = symbol_str.splitn(2, '/').collect();
+                let sym = crate::core::Symbol::new(parts[0], *parts.get(1).unwrap_or(&"USD"));
+                Self::instrument_from_symbol(&sym, account_type)
+            } else {
+                symbol_str.clone()
+            };
+            params.insert("instrument_name".to_string(), json!(instrument_name));
+
+            if let Some(lim) = filter.limit {
+                params.insert("count".to_string(), json!(lim.min(100)));
+            }
+            if let Some(st) = filter.start_time {
+                params.insert("start_timestamp".to_string(), json!(st));
+            }
+            if let Some(et) = filter.end_time {
+                params.insert("end_timestamp".to_string(), json!(et));
+            }
+            params.insert("sorting".to_string(), json!("desc"));
+
+            let response = self.rpc_call(DeribitMethod::GetUserTradesByInstrument, params).await?;
+            DeribitParser::parse_user_trades(&response)
+        } else {
+            // No symbol: use currency endpoint, defaulting to BTC.
+            // Extract currency from filter symbol or fall back to "BTC".
+            let currency = "BTC";
+            params.insert("currency".to_string(), json!(currency));
+
+            if let Some(lim) = filter.limit {
+                params.insert("count".to_string(), json!(lim.min(100)));
+            }
+            if let Some(st) = filter.start_time {
+                params.insert("start_timestamp".to_string(), json!(st));
+            }
+            if let Some(et) = filter.end_time {
+                params.insert("end_timestamp".to_string(), json!(et));
+            }
+            params.insert("sorting".to_string(), json!("desc"));
+
+            let response = self.rpc_call(DeribitMethod::GetUserTradesByCurrency, params).await?;
+            DeribitParser::parse_user_trades(&response)
         }
     }
 }

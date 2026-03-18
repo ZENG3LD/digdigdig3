@@ -32,6 +32,7 @@ use crate::core::types::{
     Kline, OrderBook, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, PublicTrade, TradeSide, SymbolInfo,
+    UserTrade,
 };
 
 /// Parser for Hyperliquid API responses
@@ -747,6 +748,59 @@ impl HyperliquidParser {
     /// ```json
     /// {"universe":[{"tokens":[0,1],"name":"@0","index":0,"isCanonical":true},...],"tokens":[{"name":"PURR","szDecimals":0,"weiDecimals":0,"index":0,"tokenId":"0x...","isCanonical":true},...],"universe":[...]}
     /// ```
+    /// Parse user fills (trades) from a `userFills` or `userFillsByTime` response.
+    ///
+    /// Each fill element format:
+    /// ```json
+    /// {"tid":123,"oid":456,"coin":"BTC","side":"B","px":"50000","sz":"0.001",
+    ///  "fee":"0.01","feeToken":"USDC","time":1672531200000,"crossed":true}
+    /// ```
+    /// `side`: "B" = buy, "A" = sell. `crossed`: true = taker, false = maker.
+    pub fn parse_user_fills(response: &Value) -> ExchangeResult<Vec<UserTrade>> {
+        let fills = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array of fills".to_string()))?;
+
+        fills.iter().map(|fill| {
+            let id = fill.get("tid")
+                .map(|v| v.to_string())
+                .unwrap_or_default();
+            let order_id = fill.get("oid")
+                .map(|v| v.to_string())
+                .unwrap_or_default();
+            let symbol = Self::get_str(fill, "coin").unwrap_or("").to_string();
+            let side = match Self::get_str(fill, "side").unwrap_or("B") {
+                "A" => OrderSide::Sell,
+                _ => OrderSide::Buy,
+            };
+            let price = Self::get_f64(fill, "px").unwrap_or(0.0);
+            let quantity = Self::get_f64(fill, "sz").unwrap_or(0.0);
+            let commission = Self::get_f64(fill, "fee").unwrap_or(0.0).abs();
+            let commission_asset = Self::get_str(fill, "feeToken")
+                .unwrap_or("USDC")
+                .to_string();
+            // crossed: true = taker (not maker), false = maker
+            let is_maker = !fill.get("crossed")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let timestamp = fill.get("time")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+
+            Ok(UserTrade {
+                id,
+                order_id,
+                symbol,
+                side,
+                price,
+                quantity,
+                commission,
+                commission_asset,
+                is_maker,
+                timestamp,
+            })
+        }).collect()
+    }
+
     pub fn parse_spot_exchange_info(response: &Value) -> ExchangeResult<Vec<SymbolInfo>> {
         // spotMeta response has a different structure
         let universe = match response.get("universe").and_then(|u| u.as_array()) {

@@ -38,6 +38,7 @@ use crate::core::traits::{
 };
 use crate::core::types::ConnectorStats;
 use crate::core::types::{WithdrawRequest, FundsHistoryFilter, FundsRecordType};
+use crate::core::types::{UserTrade, UserTradeFilter};
 use crate::core::utils::SimpleRateLimiter;
 use crate::core::utils::PrecisionCache;
 
@@ -521,6 +522,37 @@ impl Trading for GeminiConnector {
     ) -> ExchangeResult<Vec<Order>> {
         let response = self.post(GeminiEndpoint::ActiveOrders, HashMap::new(), &[]).await?;
         GeminiParser::parse_orders(&response)
+    }
+
+    async fn get_user_trades(
+        &self,
+        filter: UserTradeFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<UserTrade>> {
+        let mut params = HashMap::new();
+
+        // Symbol is required for Gemini /v1/mytrades.
+        // If not provided, we attempt with no symbol (Gemini accepts it for some account types).
+        if let Some(ref symbol_str) = filter.symbol {
+            let sym_normalized = if symbol_str.contains('/') {
+                let parts: Vec<&str> = symbol_str.splitn(2, '/').collect();
+                normalize_symbol(&format_symbol(parts[0], parts.get(1).unwrap_or(&"USD"), account_type))
+            } else {
+                normalize_symbol(symbol_str)
+            };
+            params.insert("symbol".to_string(), json!(sym_normalized));
+        }
+
+        let limit = filter.limit.unwrap_or(50).min(500);
+        params.insert("limit_trades".to_string(), json!(limit));
+
+        // Gemini uses Unix timestamp in **seconds** for the `timestamp` param
+        if let Some(st) = filter.start_time {
+            params.insert("timestamp".to_string(), json!(st / 1000));
+        }
+
+        let response = self.post(GeminiEndpoint::PastTrades, params, &[]).await?;
+        GeminiParser::parse_user_trades(&response, filter.end_time)
     }
 }
 

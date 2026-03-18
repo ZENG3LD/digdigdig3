@@ -33,6 +33,7 @@ use crate::core::{
     CancelAll, AmendOrder, CustodialFunds,
     AmendRequest,
     DepositAddress, WithdrawResponse, FundsRecord,
+    UserTrade, UserTradeFilter,
 };
 use crate::core::types::{WithdrawRequest, FundsHistoryFilter, FundsRecordType};
 use crate::core::types::SymbolInfo;
@@ -635,6 +636,27 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
 
         let response = self.get(UpbitEndpoint::ListOrders, params, account_type).await?;
         UpbitParser::parse_orders(&response)
+    }
+
+    async fn get_user_trades(
+        &self,
+        filter: UserTradeFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<UserTrade>> {
+        // Upbit has no bulk fills/trades endpoint.
+        // The only way to retrieve fills is via a single order's detail response,
+        // which embeds a `trades` array.
+        let order_id = filter.order_id.as_deref().ok_or_else(|| {
+            ExchangeError::UnsupportedOperation(
+                "Upbit requires order_id for get_user_trades (no bulk fills endpoint)".to_string(),
+            )
+        })?;
+
+        let mut params = HashMap::new();
+        params.insert("uuid".to_string(), order_id.to_string());
+
+        let response = self.get(UpbitEndpoint::GetOrder, params, account_type).await?;
+        UpbitParser::parse_order_trades(&response)
     }
 }
 

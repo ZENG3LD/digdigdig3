@@ -571,6 +571,198 @@ impl BitstampParser {
         Ok(orders)
     }
 
+    /// Parse user trade fills from Bitstamp `POST /api/v2/user_transactions/{pair}/`.
+    ///
+    /// Response: array of transaction objects.
+    /// `type=2` = trade (0=deposit, 1=withdrawal, 2=trade).
+    ///
+    /// For a BTC/USD trade the object looks like:
+    /// ```json
+    /// {"id":123,"order_id":456,"type":"2","datetime":"2024-01-01 00:00:00.123456",
+    ///  "btc":"0.001","usd":"-50.00","btc_usd":"50000.00","fee":"0.50"}
+    /// ```
+    /// Base amount is positive for buy, negative for sell.
+    /// Fee is always in quote currency.
+    pub fn parse_user_trades(
+        json: &Value,
+        symbol_hint: Option<&str>,
+        start_time_ms: Option<u64>,
+        end_time_ms: Option<u64>,
+    ) -> ExchangeResult<Vec<crate::core::types::UserTrade>> {
+        Self::check_error(json)?;
+
+        let items = json.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array for user_transactions".to_string()))?;
+
+        let mut trades = Vec::new();
+
+        for item in items {
+            // Only process trades (type = 2)
+            let tx_type = item.get("type")
+                .and_then(|v| {
+                    v.as_str()
+                        .and_then(|s| s.parse::<i64>().ok())
+                        .or_else(|| v.as_i64())
+                })
+                .unwrap_or(-1);
+
+            if tx_type != 2 {
+                continue;
+            }
+
+            // Parse datetime → timestamp ms
+            let timestamp_ms = item.get("datetime")
+                .and_then(|v| v.as_str())
+                .and_then(|s| {
+                    // Bitstamp datetime: "2024-01-01 00:00:00.123456" (space-separated, UTC)
+                    // Try with microseconds, then without
+                    let normalized = s.replace(' ', "T");
+                    let with_z = format!("{}Z", normalized);
+                    chrono::DateTime::parse_from_rfc3339(&with_z)
+                        .ok()
+                        .map(|dt| dt.timestamp_millis())
+                        .or_else(|| {
+                            // Fall back: strip sub-seconds and try again
+                            let dot_pos = normalized.find('.').unwrap_or(normalized.len());
+                            let trimmed = format!("{}Z", &normalized[..dot_pos]);
+                            chrono::DateTime::parse_from_rfc3339(&trimmed).ok()
+                                .map(|dt| dt.timestamp_millis())
+                        })
+                })
+                .unwrap_or(0);
+
+            // Apply time range filter
+            if let Some(st) = start_time_ms {
+                if (timestamp_ms as u64) < st {
+                    continue;
+                }
+            }
+            if let Some(et) = end_time_ms {
+                if (timestamp_ms as u64) > et {
+                    continue;
+                }
+            }
+
+            // Trade ID
+            let id = item.get("id")
+                .and_then(|v| v.as_i64().map(|n| n.to_string())
+                    .or_else(|| v.as_str().map(String::from)))
+                .unwrap_or_default();
+
+            // Order ID
+            let order_id = item.get("order_id")
+                .and_then(|v| v.as_i64().map(|n| n.to_string())
+                    .or_else(|| v.as_str().map(String::from)))
+                .unwrap_or_default();
+
+            // Determine symbol and side by scanning numeric fields.
+            // For BTC/USD: "btc" (base amount) and "usd" (quote amount).
+            // The base amount is positive for a buy, negative for a sell.
+            // We try to detect the pair from known currency keys.
+            let symbol = symbol_hint
+                .unwrap_or("")
+                .to_string();
+
+            // Find the base currency amount: look for non-fee positive/negative numeric fields.
+            // Bitstamp response contains keys like "btc", "usd", "eth", "eur", "btc_usd", "fee".
+            // The base amount key matches the symbol's base currency (lowercase).
+            // If we can't detect it, fall back to 0.
+            let (quantity, side, commission_asset) = {
+                // Collect all numeric (non-fee, non-price) fields
+                let mut base_amount: Option<f64> = None;
+                let mut fee_currency = "USD".to_string();
+
+                // Scan for the base currency field by looking at the symbol hint or finding
+                // a field with a small absolute value (typical base amounts vs quote amounts).
+                // The pair field (e.g. "btc_usd") holds the price.
+                // We iterate all object keys looking for currency-like amounts.
+                if let Some(obj) = item.as_object() {
+                    for (key, val) in obj {
+                        // Skip known non-amount fields
+                        if matches!(key.as_str(), "type" | "id" | "order_id" | "datetime" | "fee" | "market") {
+                            continue;
+                        }
+                        // Skip price fields (contain "_" — e.g. "btc_usd")
+                        if key.contains('_') {
+                            continue;
+                        }
+                        // Skip USD/EUR/USDT quote amounts when we have a symbol hint
+                        if let Some(sym) = symbol_hint {
+                            let sym_lower = sym.to_lowercase();
+                            // If key matches the base part of symbol hint, this is our base amount
+                            if sym_lower.starts_with(key.as_str()) {
+                                if let Some(amount) = Self::parse_f64(val) {
+                                    base_amount = Some(amount);
+                                    // Fee is in quote currency (the remaining currency key)
+                                    let quote_part = &sym_lower[key.len()..];
+                                    fee_currency = quote_part.to_uppercase();
+                                    break;
+                                }
+                            }
+                        } else if let Some(amount) = Self::parse_f64(val) {
+                            // No hint: use first non-zero numeric field as base
+                            if base_amount.is_none() && amount.abs() > 0.0 {
+                                base_amount = Some(amount);
+                                fee_currency = "USD".to_string();
+                            }
+                        }
+                    }
+                }
+
+                let qty = base_amount.unwrap_or(0.0).abs();
+                let trade_side = if base_amount.unwrap_or(1.0) >= 0.0 {
+                    crate::core::types::OrderSide::Buy
+                } else {
+                    crate::core::types::OrderSide::Sell
+                };
+
+                (qty, trade_side, fee_currency)
+            };
+
+            // Price: look for price field (e.g. "btc_usd" field holds the execution price)
+            let price = {
+                let mut p = 0.0f64;
+                if let Some(obj) = item.as_object() {
+                    for (key, val) in obj {
+                        if key.contains('_') && !key.ends_with("_usd") {
+                            // skip non-price underscore fields
+                            continue;
+                        }
+                        if key.contains('_') {
+                            if let Some(v) = Self::parse_f64(val) {
+                                p = v.abs();
+                                break;
+                            }
+                        }
+                    }
+                }
+                p
+            };
+
+            let commission = item.get("fee")
+                .and_then(|v| Self::parse_f64(v))
+                .unwrap_or(0.0);
+
+            // Bitstamp does not report maker/taker in user_transactions
+            let is_maker = false;
+
+            trades.push(crate::core::types::UserTrade {
+                id,
+                order_id,
+                symbol,
+                side,
+                price,
+                quantity,
+                commission,
+                commission_asset,
+                is_maker,
+                timestamp: timestamp_ms,
+            });
+        }
+
+        Ok(trades)
+    }
+
     /// Parse exchange info from Bitstamp trading-pairs-info response.
     ///
     /// Response format:

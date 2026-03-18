@@ -998,6 +998,53 @@ impl Trading for AlpacaConnector {
         let response = self.get_trading(AlpacaEndpoint::Orders, params).await?;
         AlpacaParser::parse_orders(&response)
     }
+
+    /// Get user fill history via `GET /v2/account/activities/FILL`.
+    ///
+    /// Alpaca models each executed order-fill as an "account activity" of type
+    /// `FILL`. The endpoint returns a time-ordered array of fill records.
+    ///
+    /// Pagination: controlled by `page_size` (max 100) and `page_token`
+    /// (cursor). This implementation fetches a single page limited by
+    /// `filter.limit` (default 100).
+    async fn get_user_trades(
+        &self,
+        filter: UserTradeFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<UserTrade>> {
+        let mut params = HashMap::new();
+
+        // Symbol filter — Alpaca accepts "symbols" (comma-separated) for activities
+        if let Some(sym) = &filter.symbol {
+            params.insert("symbols".to_string(), sym.to_uppercase());
+        }
+
+        // Time range — RFC-3339 datetime strings
+        if let Some(start_ms) = filter.start_time {
+            let dt = chrono::DateTime::from_timestamp_millis(start_ms as i64)
+                .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.into());
+            params.insert("after".to_string(), dt.to_rfc3339());
+        }
+        if let Some(end_ms) = filter.end_time {
+            let dt = chrono::DateTime::from_timestamp_millis(end_ms as i64)
+                .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.into());
+            params.insert("until".to_string(), dt.to_rfc3339());
+        }
+
+        // Page size (max 100)
+        let page_size = filter.limit.unwrap_or(100).min(100);
+        params.insert("page_size".to_string(), page_size.to_string());
+
+        // Newest first
+        params.insert("direction".to_string(), "desc".to_string());
+
+        let response = self.get_trading(
+            AlpacaEndpoint::AccountActivitiesByType("FILL".to_string()),
+            params,
+        ).await?;
+
+        AlpacaParser::parse_activities(&response)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

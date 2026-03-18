@@ -29,6 +29,7 @@ use crate::core::{
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
+    UserTrade, UserTradeFilter,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
@@ -509,6 +510,46 @@ impl MarketData for HtxConnector {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Convert a Unix timestamp (seconds) to an HTX date string "YYYY-MM-DD".
+///
+/// HTX matchresults endpoint accepts `start-date` / `end-date` in this format.
+fn millis_to_date_str(unix_secs: i64) -> String {
+    // Simple manual conversion without external date crates
+    // Days since Unix epoch (1970-01-01)
+    let days = unix_secs / 86400;
+    let mut y = 1970i64;
+    let mut remaining_days = days;
+
+    loop {
+        let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+        let days_in_year = if leap { 366 } else { 365 };
+        if remaining_days < days_in_year {
+            break;
+        }
+        remaining_days -= days_in_year;
+        y += 1;
+    }
+
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let days_per_month: [i64; 12] = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+    let mut m = 1i64;
+    for &dim in &days_per_month {
+        if remaining_days < dim {
+            break;
+        }
+        remaining_days -= dim;
+        m += 1;
+    }
+
+    let d = remaining_days + 1;
+    format!("{:04}-{:02}-{:02}", y, m, d)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -961,6 +1002,50 @@ impl Trading for HtxConnector {
             .collect();
 
         Ok(orders)
+    }
+
+    async fn get_user_trades(
+        &self,
+        filter: UserTradeFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<UserTrade>> {
+        let mut params = HashMap::new();
+
+        if let Some(sym) = &filter.symbol {
+            // Accept "BTC/USDT" or raw "btcusdt"
+            let htx_symbol = if sym.contains('/') {
+                let parts: Vec<&str> = sym.split('/').collect();
+                if parts.len() == 2 {
+                    let s = Symbol::new(parts[0], parts[1]);
+                    format_symbol(&s, account_type)
+                } else {
+                    sym.to_lowercase()
+                }
+            } else {
+                sym.to_lowercase()
+            };
+            params.insert("symbol".to_string(), htx_symbol);
+        }
+
+        if let Some(lim) = filter.limit {
+            params.insert("size".to_string(), lim.min(500).to_string());
+        }
+
+        // HTX matchresults uses date strings (YYYY-MM-DD), not ms timestamps.
+        // When ms timestamps are provided, convert to date strings.
+        if let Some(start_ms) = filter.start_time {
+            let start_secs = (start_ms / 1000) as i64;
+            let date = millis_to_date_str(start_secs);
+            params.insert("start-date".to_string(), date);
+        }
+        if let Some(end_ms) = filter.end_time {
+            let end_secs = (end_ms / 1000) as i64;
+            let date = millis_to_date_str(end_secs);
+            params.insert("end-date".to_string(), date);
+        }
+
+        let response = self.get(HtxEndpoint::MatchResults, params).await?;
+        HtxParser::parse_user_trades(&response)
     }
 }
 

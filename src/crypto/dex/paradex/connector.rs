@@ -31,6 +31,7 @@ use crate::core::{
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
+    UserTrade, UserTradeFilter,
 };
 use crate::core::{AmendRequest, CancelAllResponse, OrderResult};
 use crate::core::types::AlgoOrderResponse;
@@ -940,6 +941,52 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
 
         let response = self.get(ParadexEndpoint::OpenOrders, params).await?;
         ParadexParser::parse_orders(&response)
+    }
+
+    /// Get user fill history via `GET /v1/fills`.
+    ///
+    /// Paradex fills are individual trade executions. Supports filtering by
+    /// market, time range, and result page size (max 100 per page).
+    async fn get_user_trades(
+        &self,
+        filter: UserTradeFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<UserTrade>> {
+        let mut params = HashMap::new();
+
+        // Market filter (Paradex symbol format: BTC-USD-PERP)
+        if let Some(sym) = &filter.symbol {
+            // Accept both raw market names ("BTC-USD-PERP") and slash-separated
+            // ("BTC/USD"). If the caller passes slash-separated we convert.
+            let market = if sym.contains('/') {
+                let parts: Vec<&str> = sym.splitn(2, '/').collect();
+                format!("{}-{}-PERP", parts[0].to_uppercase(), parts[1].to_uppercase())
+            } else {
+                sym.clone()
+            };
+            params.insert("market".to_string(), market);
+        }
+
+        // Order ID filter
+        if let Some(order_id) = &filter.order_id {
+            params.insert("order_id".to_string(), order_id.clone());
+        }
+
+        // Time range — Paradex uses Unix seconds for start/end
+        if let Some(start_ms) = filter.start_time {
+            params.insert("start_unix_timestamp".to_string(), (start_ms / 1000).to_string());
+        }
+        if let Some(end_ms) = filter.end_time {
+            params.insert("end_unix_timestamp".to_string(), (end_ms / 1000).to_string());
+        }
+
+        // Page size (max 100)
+        if let Some(limit) = filter.limit {
+            params.insert("page_size".to_string(), limit.min(100).to_string());
+        }
+
+        let response = self.get(ParadexEndpoint::Fills, params).await?;
+        ParadexParser::parse_fills(&response)
     }
 }
 

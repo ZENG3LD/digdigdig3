@@ -26,6 +26,7 @@ use crate::core::{
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
+    UserTrade, UserTradeFilter,
 };
 use crate::core::types::SymbolInfo;
 use crate::core::traits::{
@@ -724,6 +725,51 @@ impl Trading for BitfinexConnector {
         };
 
         BitfinexParser::parse_orders(&response)
+    }
+
+    async fn get_user_trades(
+        &self,
+        filter: UserTradeFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<UserTrade>> {
+        // Build request body — Bitfinex uses POST with JSON body for authenticated endpoints
+        let mut body = json!({ "sort": -1 });
+
+        if let Some(start) = filter.start_time {
+            body["start"] = json!(start);
+        }
+        if let Some(end) = filter.end_time {
+            body["end"] = json!(end);
+        }
+        if let Some(lim) = filter.limit {
+            body["limit"] = json!(lim.min(250));
+        }
+
+        // Use symbol-scoped endpoint when symbol is provided
+        let response = if let Some(sym_raw) = &filter.symbol {
+            // Parse symbol string "BTC/USDT" or raw "tBTCUSD"
+            let formatted = if sym_raw.starts_with('t') || sym_raw.starts_with('f') {
+                // Already in Bitfinex format
+                sym_raw.clone()
+            } else {
+                let parts: Vec<&str> = sym_raw.split('/').collect();
+                if parts.len() == 2 {
+                    let s = Symbol::new(parts[0], parts[1]);
+                    Self::fmt_symbol(&s, account_type)
+                } else {
+                    format!("t{}", sym_raw.to_uppercase())
+                }
+            };
+            self.post(
+                BitfinexEndpoint::TradeHistoryBySymbol,
+                &[("symbol", &formatted)],
+                body,
+            ).await?
+        } else {
+            self.post(BitfinexEndpoint::TradeHistory, &[], body).await?
+        };
+
+        BitfinexParser::parse_user_trades(&response)
     }
 }
 

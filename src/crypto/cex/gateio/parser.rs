@@ -19,6 +19,7 @@ use crate::core::types::{
     OrderUpdateEvent, BalanceUpdateEvent, PositionUpdateEvent,
     BalanceChangeReason, PositionChangeReason,
     CancelAllResponse, OrderResult,
+    UserTrade,
 };
 
 /// Parser for Gate.io API responses
@@ -417,6 +418,124 @@ impl GateioParser {
 
         arr.iter()
             .map(|item| Self::parse_order_data(item, ""))
+            .collect()
+    }
+
+    /// Parse user trade fills from `/spot/my_trades` (spot) or
+    /// `/futures/{settle}/my_trades` (futures).
+    ///
+    /// Spot response fields: id (string), order_id (string), currency_pair,
+    ///   side ("buy"/"sell"), role ("maker"/"taker"), amount, price,
+    ///   fee, fee_currency, create_time (seconds string), create_time_ms.
+    ///
+    /// Futures response fields: id (integer), order_id (string), contract,
+    ///   size (integer, negative = sell), price, role ("maker"/"taker"),
+    ///   fee (string, negative = rebate), create_time (float seconds).
+    pub fn parse_user_trades(response: &Value, is_futures: bool) -> ExchangeResult<Vec<UserTrade>> {
+        Self::check_error(response)?;
+
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array of user trades".to_string()))?;
+
+        arr.iter()
+            .map(|item| {
+                // Trade ID: spot = string, futures = integer
+                let id = item.get("id")
+                    .map(|v| {
+                        v.as_str()
+                            .map(String::from)
+                            .or_else(|| v.as_i64().map(|n| n.to_string()))
+                            .unwrap_or_default()
+                    })
+                    .ok_or_else(|| ExchangeError::Parse("Missing 'id' in trade".to_string()))?;
+
+                // Order ID: string on both
+                let order_id = Self::get_str(item, "order_id")
+                    .unwrap_or("")
+                    .to_string();
+
+                // Symbol: spot = currency_pair, futures = contract
+                let symbol = Self::get_str(item, "currency_pair")
+                    .or_else(|| Self::get_str(item, "contract"))
+                    .unwrap_or("")
+                    .to_string();
+
+                // Side
+                let side = if is_futures {
+                    // Futures: derive from size sign (positive = buy, negative = sell)
+                    let size = item.get("size")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(1);
+                    if size < 0 { OrderSide::Sell } else { OrderSide::Buy }
+                } else {
+                    // Spot: "side" field ("buy"/"sell")
+                    match Self::get_str(item, "side").unwrap_or("buy") {
+                        "sell" => OrderSide::Sell,
+                        _ => OrderSide::Buy,
+                    }
+                };
+
+                // Price
+                let price = Self::require_f64(item, "price")?;
+
+                // Quantity: spot = "amount" (string), futures = abs("size") (integer)
+                let quantity = if is_futures {
+                    item.get("size")
+                        .and_then(|v| v.as_i64())
+                        .map(|s| s.unsigned_abs() as f64)
+                        .unwrap_or(0.0)
+                } else {
+                    Self::get_f64(item, "amount").unwrap_or(0.0)
+                };
+
+                // Commission: may be negative (rebate) on futures — take absolute value
+                let commission = Self::get_f64(item, "fee")
+                    .map(|f| f.abs())
+                    .unwrap_or(0.0);
+
+                // Commission asset: spot = fee_currency, futures = settle currency
+                let commission_asset = Self::get_str(item, "fee_currency")
+                    .or_else(|| Self::get_str(item, "currency"))
+                    .unwrap_or("USDT")
+                    .to_string();
+
+                // Maker flag: "role" = "maker" | "taker"
+                let is_maker = Self::get_str(item, "role")
+                    .map(|r| r == "maker")
+                    .unwrap_or(false);
+
+                // Timestamp: prefer milliseconds field, fall back to seconds * 1000
+                let timestamp = item.get("create_time_ms")
+                    .and_then(|v| {
+                        v.as_str()
+                            .and_then(|s| s.parse::<i64>().ok())
+                            .or_else(|| v.as_i64())
+                    })
+                    .unwrap_or_else(|| {
+                        // create_time may be string (spot) or float (futures)
+                        let secs = item.get("create_time")
+                            .and_then(|v| {
+                                v.as_str()
+                                    .and_then(|s| s.parse::<f64>().ok())
+                                    .or_else(|| v.as_f64())
+                            })
+                            .unwrap_or(0.0);
+                        (secs * 1000.0) as i64
+                    });
+
+                Ok(UserTrade {
+                    id,
+                    order_id,
+                    symbol,
+                    side,
+                    price,
+                    quantity,
+                    commission,
+                    commission_asset,
+                    is_maker,
+                    timestamp,
+                })
+            })
             .collect()
     }
 

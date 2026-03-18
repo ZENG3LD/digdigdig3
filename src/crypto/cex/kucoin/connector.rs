@@ -31,6 +31,7 @@ use crate::core::{
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     AmendRequest, CancelAllResponse, OrderResult,
+    UserTrade, UserTradeFilter,
     TransferResponse, DepositAddress, WithdrawResponse, FundsRecord,
 };
 use crate::core::traits::{
@@ -1255,7 +1256,54 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
 
         let response = self.get(endpoint, params, account_type).await?;
         KuCoinParser::parse_orders(&response)
-    
+
+    }
+
+    async fn get_user_trades(
+        &self,
+        filter: UserTradeFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<UserTrade>> {
+        // Spot uses SpotFills (/api/v1/fills on spot base URL)
+        // Futures uses FuturesFills (/api/v1/fills on futures base URL)
+        let endpoint = match account_type {
+            AccountType::Spot | AccountType::Margin => KuCoinEndpoint::SpotFills,
+            _ => KuCoinEndpoint::FuturesFills,
+        };
+
+        let mut params = HashMap::new();
+
+        if let Some(ref symbol) = filter.symbol {
+            // symbol filter accepts KuCoin-formatted symbol (e.g. "BTC-USDT")
+            // If the caller passes "BTC/USDT" we convert it; raw KuCoin symbols are passed as-is
+            let formatted = if symbol.contains('/') {
+                let parts: Vec<&str> = symbol.splitn(2, '/').collect();
+                format_symbol(parts[0], parts[1], account_type)
+            } else {
+                symbol.clone()
+            };
+            params.insert("symbol".to_string(), formatted);
+        }
+
+        if let Some(ref order_id) = filter.order_id {
+            params.insert("orderId".to_string(), order_id.clone());
+        }
+
+        if let Some(start) = filter.start_time {
+            params.insert("startAt".to_string(), start.to_string());
+        }
+
+        if let Some(end) = filter.end_time {
+            params.insert("endAt".to_string(), end.to_string());
+        }
+
+        // KuCoin max pageSize = 500
+        if let Some(limit) = filter.limit {
+            params.insert("pageSize".to_string(), limit.min(500).to_string());
+        }
+
+        let response = self.get(endpoint, params, account_type).await?;
+        KuCoinParser::parse_fills(&response)
     }
 }
 

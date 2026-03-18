@@ -16,6 +16,7 @@ use crate::core::types::{
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, PublicTrade, StreamEvent, TradeSide,
     OrderUpdateEvent, SymbolInfo, Kline, BracketResponse,
+    UserTrade,
 };
 
 /// Parser for Deribit JSON-RPC responses
@@ -346,6 +347,73 @@ impl DeribitParser {
         let order_data = result.get("order").unwrap_or(result);
 
         Self::require_str(order_data, "order_id").map(String::from)
+    }
+
+    /// Parse user trade fills from `private/get_user_trades_by_instrument` or
+    /// `private/get_user_trades_by_currency`.
+    ///
+    /// Response format:
+    /// ```json
+    /// {"result":{"trades":[{"trade_id":"123","order_id":"456","instrument_name":"BTC-PERPETUAL",
+    ///   "direction":"buy","price":50000.0,"amount":0.001,"fee":0.00001,
+    ///   "fee_currency":"BTC","liquidity":"M","timestamp":1672531200000}]}}
+    /// ```
+    /// `liquidity`: "M" = maker, "T" = taker.
+    pub fn parse_user_trades(response: &Value) -> ExchangeResult<Vec<UserTrade>> {
+        let result = Self::extract_result(response)?;
+
+        // Result contains a `trades` array
+        let trades_arr = result.get("trades")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'trades' array in user trades response".to_string()))?;
+
+        trades_arr.iter().map(|item| {
+            let id = Self::get_str(item, "trade_id")
+                .map(|s| s.to_string())
+                .ok_or_else(|| ExchangeError::Parse("Missing 'trade_id'".to_string()))?;
+
+            let order_id = Self::get_str(item, "order_id")
+                .unwrap_or("")
+                .to_string();
+
+            let symbol = Self::get_str(item, "instrument_name")
+                .unwrap_or("")
+                .to_string();
+
+            let direction = Self::get_str(item, "direction").unwrap_or("buy");
+            let side = match direction {
+                "sell" => OrderSide::Sell,
+                _ => OrderSide::Buy,
+            };
+
+            let price = Self::get_f64(item, "price").unwrap_or(0.0);
+            let quantity = Self::get_f64(item, "amount").unwrap_or(0.0);
+
+            let commission = Self::get_f64(item, "fee").unwrap_or(0.0);
+            let commission_asset = Self::get_str(item, "fee_currency")
+                .unwrap_or("")
+                .to_string();
+
+            // "M" = maker, "T" = taker
+            let is_maker = Self::get_str(item, "liquidity")
+                .map(|l| l == "M")
+                .unwrap_or(false);
+
+            let timestamp = Self::get_i64(item, "timestamp").unwrap_or(0);
+
+            Ok(UserTrade {
+                id,
+                order_id,
+                symbol,
+                side,
+                price,
+                quantity,
+                commission,
+                commission_asset,
+                is_maker,
+                timestamp,
+            })
+        }).collect()
     }
 
     /// Parse OTOCO (Bracket) response from Deribit `private/buy` / `private/sell`

@@ -28,6 +28,7 @@ use crate::core::{
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
+    UserTrade, UserTradeFilter,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account,
@@ -822,6 +823,47 @@ impl Trading for MexcConnector {
 
         let response = self.get(MexcEndpoint::OpenOrders, params).await?;
         MexcParser::parse_orders(&response)
+    }
+
+    async fn get_user_trades(
+        &self,
+        filter: UserTradeFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<UserTrade>> {
+        // MEXC GET /api/v3/myTrades — symbol is required
+        let symbol_str = filter.symbol
+            .ok_or_else(|| ExchangeError::InvalidRequest(
+                "Symbol required for get_user_trades on MEXC".to_string()
+            ))?;
+
+        // Parse raw symbol string into Symbol struct for format_symbol
+        let sym = {
+            let parts: Vec<&str> = symbol_str.splitn(2, '/').collect();
+            if parts.len() == 2 {
+                crate::core::Symbol::new(parts[0], parts[1])
+            } else {
+                crate::core::Symbol { base: symbol_str.clone(), quote: String::new(), raw: Some(symbol_str.clone()) }
+            }
+        };
+
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), format_symbol(&sym, crate::core::AccountType::Spot));
+
+        if let Some(oid) = filter.order_id {
+            params.insert("orderId".to_string(), oid);
+        }
+        if let Some(start) = filter.start_time {
+            params.insert("startTime".to_string(), start.to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("endTime".to_string(), end.to_string());
+        }
+        if let Some(limit) = filter.limit {
+            params.insert("limit".to_string(), limit.min(1000).to_string());
+        }
+
+        let response = self.get(MexcEndpoint::MyTrades, params).await?;
+        MexcParser::parse_user_trades(&response)
     }
 }
 

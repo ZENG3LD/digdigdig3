@@ -26,6 +26,7 @@ use crate::core::types::{
     FundingRate, PublicTrade, TradeSide,
     OrderUpdateEvent, BalanceUpdateEvent, PositionUpdateEvent,
     SymbolInfo, CancelAllResponse, OrderResult,
+    UserTrade,
 };
 use crate::core::types::AlgoOrderResponse;
 use crate::core::types::{
@@ -1131,6 +1132,83 @@ impl OkxParser {
             .collect();
 
         Ok(results)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FILLS / USER TRADES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse a single fill record from the `data` array of `/api/v5/trade/fills`
+    /// or `/api/v5/trade/fills-history`.
+    ///
+    /// OKX fill fields:
+    /// - `tradeId`  — fill ID
+    /// - `ordId`    — parent order ID
+    /// - `instId`   — instrument (e.g. "BTC-USDT")
+    /// - `side`     — "buy" | "sell"
+    /// - `fillPx`   — fill price (string)
+    /// - `fillSz`   — fill quantity (string)
+    /// - `fee`      — fee amount; negative means cost (string)
+    /// - `feeCcy`   — fee currency
+    /// - `execType` — "M" (maker) | "T" (taker)
+    /// - `ts`       — Unix timestamp in ms (string)
+    fn parse_fill_data(data: &Value) -> ExchangeResult<UserTrade> {
+        let side = match Self::get_str(data, "side").unwrap_or("buy").to_lowercase().as_str() {
+            "sell" => OrderSide::Sell,
+            _ => OrderSide::Buy,
+        };
+
+        let price = Self::get_f64(data, "fillPx")
+            .ok_or_else(|| ExchangeError::Parse("Missing 'fillPx' in fill".to_string()))?;
+
+        let quantity = Self::get_f64(data, "fillSz")
+            .ok_or_else(|| ExchangeError::Parse("Missing 'fillSz' in fill".to_string()))?;
+
+        // `fee` is negative (a cost). Store the absolute value.
+        let commission = Self::get_f64(data, "fee")
+            .unwrap_or(0.0)
+            .abs();
+
+        let commission_asset = Self::get_str(data, "feeCcy")
+            .unwrap_or("")
+            .to_string();
+
+        // "M" = maker, anything else = taker
+        let is_maker = Self::get_str(data, "execType")
+            .map(|s| s.eq_ignore_ascii_case("M"))
+            .unwrap_or(false);
+
+        let timestamp = data.get("ts")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
+
+        Ok(UserTrade {
+            id: Self::get_str(data, "tradeId").unwrap_or("").to_string(),
+            order_id: Self::get_str(data, "ordId").unwrap_or("").to_string(),
+            symbol: Self::get_str(data, "instId").unwrap_or("").to_string(),
+            side,
+            price,
+            quantity,
+            commission,
+            commission_asset,
+            is_maker,
+            timestamp,
+        })
+    }
+
+    /// Parse the full response from `/api/v5/trade/fills` or
+    /// `/api/v5/trade/fills-history` into a `Vec<UserTrade>`.
+    pub fn parse_fills(response: &Value) -> ExchangeResult<Vec<UserTrade>> {
+        let data = Self::extract_data(response)?;
+        let arr = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("'data' is not an array in fills response".to_string()))?;
+
+        let trades = arr.iter()
+            .filter_map(|item| Self::parse_fill_data(item).ok())
+            .collect::<Vec<_>>();
+
+        Ok(trades)
     }
 }
 

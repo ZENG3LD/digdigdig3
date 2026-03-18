@@ -29,6 +29,7 @@ use crate::core::{
     CancelAllResponse, AmendRequest, MarginType,
     ExchangeIdentity, MarketData, Trading, Account, Positions,
     CancelAll, AmendOrder, BatchOrders, CustodialFunds, SubAccounts,
+    UserTrade, UserTradeFilter,
 };
 use crate::core::types::{
     DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord, FundsHistoryFilter, FundsRecordType,
@@ -889,6 +890,46 @@ impl Trading for CryptoComConnector {
 
         let response = self.request(CryptoComEndpoint::GetOrderHistory, params).await?;
         CryptoComParser::parse_orders(&response)
+    }
+
+    async fn get_user_trades(
+        &self,
+        filter: UserTradeFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<UserTrade>> {
+        let mut params = json!({});
+
+        if let Some(ref sym) = filter.symbol {
+            let instrument_type = account_type_to_instrument(account_type);
+            // Accept both "BTC/USDT" (split on '/') and already-formatted "BTC_USDT"
+            let resolved = if sym.contains('/') {
+                let parts: Vec<&str> = sym.splitn(2, '/').collect();
+                if parts.len() == 2 {
+                    format_symbol(parts[0], parts[1], instrument_type)
+                } else {
+                    sym.clone()
+                }
+            } else {
+                sym.clone()
+            };
+            params["instrument_name"] = json!(resolved);
+        }
+
+        if let Some(start) = filter.start_time {
+            params["start_ts"] = json!(start);
+        }
+
+        if let Some(end) = filter.end_time {
+            params["end_ts"] = json!(end);
+        }
+
+        if let Some(lim) = filter.limit {
+            // Crypto.com max page_size for get-trades is 100
+            params["page_size"] = json!(lim.min(100));
+        }
+
+        let response = self.request(CryptoComEndpoint::GetUserTrades, params).await?;
+        CryptoComParser::parse_user_trades(&response)
     }
 }
 

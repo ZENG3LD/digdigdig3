@@ -110,6 +110,8 @@ pub enum BingxEndpoint {
     // === SWAP TRADE HISTORY & DERIVATIVES ===
     /// GET /openApi/swap/v2/trade/allFillOrders (signed)
     SwapAllFillOrders,
+    /// GET /openApi/swap/v2/trade/fillHistory (signed) — paginated fill history
+    SwapFillHistory,
     /// GET /openApi/swap/v2/quote/openInterest
     SwapOpenInterest,
     /// GET /openApi/swap/v2/quote/fundingRateHistory
@@ -190,6 +192,7 @@ impl BingxEndpoint {
 
             // Swap Trade History & Derivatives
             Self::SwapAllFillOrders => "/openApi/swap/v2/trade/allFillOrders",
+            Self::SwapFillHistory => "/openApi/swap/v2/trade/fillHistory",
             Self::SwapOpenInterest => "/openApi/swap/v2/quote/openInterest",
             Self::SwapFundingRateHistory => "/openApi/swap/v2/quote/fundingRateHistory",
             Self::SwapPremiumIndex => "/openApi/swap/v2/quote/premiumIndex",

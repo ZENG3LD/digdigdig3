@@ -12,6 +12,7 @@ use crate::core::types::{
     OrderUpdateEvent, BalanceUpdateEvent, PositionUpdateEvent,
     BalanceChangeReason, PositionChangeReason,
     CancelAllResponse, OrderResult,
+    UserTrade,
 };
 
 /// Парсер ответов KuCoin API
@@ -916,6 +917,67 @@ impl KuCoinParser {
         }).collect();
 
         Ok(results)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // USER TRADES (FILLS)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse filled trades from `GET /api/v1/fills` (spot or futures).
+    ///
+    /// Both spot and futures responses share the same paginated envelope:
+    /// `{ "data": { "items": [...], "currentPage": 1, "pageSize": 50, "totalNum": 100, "totalPage": 2 } }`
+    pub fn parse_fills(response: &Value) -> ExchangeResult<Vec<UserTrade>> {
+        let data = Self::extract_data(response)?;
+
+        // KuCoin wraps paginated results in a nested object under "data"
+        let items = data
+            .get("items")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'data.items' array".to_string()))?;
+
+        let mut trades = Vec::with_capacity(items.len());
+
+        for item in items {
+            let id = Self::require_str(item, "tradeId")?.to_string();
+            let order_id = Self::require_str(item, "orderId")?.to_string();
+            let symbol = Self::require_str(item, "symbol")?.to_string();
+
+            let side = match Self::require_str(item, "side")? {
+                "buy" => OrderSide::Buy,
+                _ => OrderSide::Sell,
+            };
+
+            let price = Self::require_f64(item, "price")?;
+            let quantity = Self::require_f64(item, "size")?;
+            let commission = Self::require_f64(item, "fee")?;
+            let commission_asset = Self::require_str(item, "feeCurrency")?.to_string();
+
+            let is_maker = Self::get_str(item, "liquidity")
+                .map(|l| l == "maker")
+                .unwrap_or(false);
+
+            // "createdAt" is Unix milliseconds
+            let timestamp = item
+                .get("createdAt")
+                .and_then(|v| v.as_i64())
+                .ok_or_else(|| ExchangeError::Parse("Missing 'createdAt'".to_string()))?;
+
+            trades.push(UserTrade {
+                id,
+                order_id,
+                symbol,
+                side,
+                price,
+                quantity,
+                commission,
+                commission_asset,
+                is_maker,
+                timestamp,
+            });
+        }
+
+        Ok(trades)
     }
 }
 

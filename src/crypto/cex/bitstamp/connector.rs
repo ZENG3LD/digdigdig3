@@ -36,6 +36,7 @@ use crate::core::{
 use crate::core::types::SymbolInfo;
 use crate::core::types::ConnectorStats;
 use crate::core::types::{WithdrawRequest, FundsHistoryFilter, FundsRecordType};
+use crate::core::types::{UserTrade, UserTradeFilter};
 use crate::core::utils::SimpleRateLimiter;
 use crate::core::utils::PrecisionCache;
 
@@ -588,7 +589,42 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
 
         let response = self.post(BitstampEndpoint::OpenOrders, None, HashMap::new()).await?;
         BitstampParser::parse_orders(&response)
-    
+
+    }
+
+    async fn get_user_trades(
+        &self,
+        filter: UserTradeFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<UserTrade>> {
+        let mut params = HashMap::new();
+        params.insert("sort".to_string(), "desc".to_string());
+
+        if let Some(lim) = filter.limit {
+            params.insert("limit".to_string(), lim.min(1000).to_string());
+        }
+
+        // Bitstamp user_transactions supports `offset` but not a direct time filter.
+        // We fetch and filter by timestamp client-side when start_time is specified.
+
+        let response = if let Some(ref symbol_str) = filter.symbol {
+            // Symbol can be "BTC/USD" or "btcusd" — normalise to lowercase pair.
+            let pair = if symbol_str.contains('/') {
+                let parts: Vec<&str> = symbol_str.splitn(2, '/').collect();
+                let base = parts[0].to_lowercase();
+                let quote = parts.get(1).unwrap_or(&"usd").to_lowercase();
+                format!("{}{}", base, quote)
+            } else {
+                symbol_str.to_lowercase()
+            };
+            let path = format!("/api/v2/user_transactions/{}/", pair);
+            self.post_path(&path, params).await?
+        } else {
+            // No symbol — fetch all transactions
+            self.post(BitstampEndpoint::UserTransactions, None, params).await?
+        };
+
+        BitstampParser::parse_user_trades(&response, filter.symbol.as_deref(), filter.start_time, filter.end_time)
     }
 }
 

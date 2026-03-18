@@ -8,6 +8,7 @@ use crate::core::types::{
     ExchangeError, ExchangeResult,
     Kline, OrderBook, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide, SymbolInfo,
+    UserTrade,
 };
 
 /// Парсер ответов BingX API
@@ -893,6 +894,99 @@ impl BingxParser {
         }
 
         Ok(symbols)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // USER TRADES (FILLS)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse user trade fills from BingX.
+    ///
+    /// Spot response (`/openApi/spot/v1/trade/myTrades`):
+    /// `{"data":{"list":[{"tradeId":"123","orderId":"456","symbol":"BTC-USDT","side":"BUY","price":"50000","qty":"0.001","commission":"0.01","commissionAsset":"USDT","isMaker":false,"time":1672531200000}]}}`
+    ///
+    /// Swap response (`/openApi/swap/v2/trade/fillHistory`):
+    /// `{"data":{"fills":[{"filledTm":"123","symbol":"BTC-USDT","side":"BUY","price":"50000","qty":"0.001","commission":"0.01","commissionAsset":"USDT","role":"MAKER","orderId":"456","tradeId":"789"}]}}`
+    pub fn parse_user_trades(response: &Value, is_futures: bool) -> ExchangeResult<Vec<UserTrade>> {
+        let data = Self::extract_data(response)?;
+
+        // Spot wraps in data.list; swap wraps in data.fills
+        let arr = if is_futures {
+            data.get("fills")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| ExchangeError::Parse("Missing 'fills' array in swap trade response".to_string()))?
+        } else {
+            data.get("list")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| ExchangeError::Parse("Missing 'list' array in spot trade response".to_string()))?
+        };
+
+        arr.iter()
+            .map(|item| {
+                let id = item.get("tradeId")
+                    .and_then(|v| v.as_str().map(|s| s.to_string())
+                        .or_else(|| v.as_i64().map(|n| n.to_string())))
+                    .ok_or_else(|| ExchangeError::Parse("Missing 'tradeId' in trade".to_string()))?;
+
+                let order_id = item.get("orderId")
+                    .and_then(|v| v.as_str().map(|s| s.to_string())
+                        .or_else(|| v.as_i64().map(|n| n.to_string())))
+                    .unwrap_or_default();
+
+                let symbol = Self::get_str(item, "symbol")
+                    .unwrap_or("")
+                    .to_string();
+
+                let side = match Self::get_str(item, "side").unwrap_or("BUY").to_uppercase().as_str() {
+                    "SELL" | "SHORT" => OrderSide::Sell,
+                    _ => OrderSide::Buy,
+                };
+
+                let price = Self::require_f64(item, "price")?;
+                let quantity = Self::require_f64(item, "qty")?;
+
+                let commission = Self::get_f64(item, "commission").unwrap_or(0.0).abs();
+                let commission_asset = Self::get_str(item, "commissionAsset")
+                    .unwrap_or("")
+                    .to_string();
+
+                // Spot: isMaker bool; Swap: role string "MAKER"/"TAKER"
+                let is_maker = if is_futures {
+                    Self::get_str(item, "role")
+                        .map(|r| r.to_uppercase() == "MAKER")
+                        .unwrap_or(false)
+                } else {
+                    item.get("isMaker")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                };
+
+                // Spot: "time" ms; Swap: "filledTm" ms (string or number)
+                let timestamp = if is_futures {
+                    item.get("filledTm")
+                        .and_then(|v| v.as_str().and_then(|s| s.parse::<i64>().ok())
+                            .or_else(|| v.as_i64()))
+                        .unwrap_or(0)
+                } else {
+                    item.get("time")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0)
+                };
+
+                Ok(UserTrade {
+                    id,
+                    order_id,
+                    symbol,
+                    side,
+                    price,
+                    quantity,
+                    commission,
+                    commission_asset,
+                    is_maker,
+                    timestamp,
+                })
+            })
+            .collect()
     }
 }
 

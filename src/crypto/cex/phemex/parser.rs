@@ -19,7 +19,7 @@ use crate::core::types::{
     ExchangeError, ExchangeResult, AccountType,
     Kline, OrderBook, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
-    FundingRate, SymbolInfo, BracketResponse,
+    FundingRate, SymbolInfo, BracketResponse, UserTrade,
 };
 
 use super::endpoints::{unscale_price, unscale_value};
@@ -600,6 +600,95 @@ impl PhemexParser {
             take_profit: None,
             stop_loss: None,
         })
+    }
+
+    /// Parse user trades from `GET /api-data/g-orders/tradeHistory`
+    ///
+    /// Response:
+    /// ```json
+    /// {"data":{"rows":[{"tradeId":"123","orderId":"456","symbol":"BTCUSDT",
+    /// "side":"Buy","priceEp":5000000000,"qtyEp":10000,"execFeeEp":1000,
+    /// "feeRateEp":60000,"execStatus":"MakerFill","transactTimeNs":1672531200000000000}]}}
+    /// ```
+    ///
+    /// All scaled fields use the caller-supplied `price_scale` for unscaling.
+    /// `transactTimeNs` is in nanoseconds — divide by 1_000_000 for milliseconds.
+    /// `execStatus`: "MakerFill" = maker, "TakerFill" = taker.
+    pub fn parse_user_trades(response: &Value, price_scale: u8) -> ExchangeResult<Vec<UserTrade>> {
+        let data = Self::extract_data(response)?;
+
+        let rows = data.get("rows")
+            .and_then(|r| r.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'rows' in trade history".to_string()))?;
+
+        let mut trades = Vec::with_capacity(rows.len());
+
+        for item in rows {
+            let id = Self::get_str(item, "tradeId")
+                .unwrap_or("")
+                .to_string();
+
+            let order_id = Self::get_str(item, "orderId")
+                .unwrap_or("")
+                .to_string();
+
+            let symbol = Self::get_str(item, "symbol")
+                .unwrap_or("")
+                .to_string();
+
+            let side = match Self::get_str(item, "side").unwrap_or("Buy") {
+                "Sell" => OrderSide::Sell,
+                _ => OrderSide::Buy,
+            };
+
+            // priceEp: scaled integer price
+            let price_ep = Self::get_i64(item, "priceEp").unwrap_or(0);
+            let price = unscale_price(price_ep, price_scale);
+
+            // qtyEp: scaled integer quantity (same scale as value, typically 8)
+            let qty_ep = Self::get_i64(item, "qtyEp").unwrap_or(0);
+            let quantity = unscale_value(qty_ep, 8);
+
+            // execFeeEp: fee in scaled integer (same value scale)
+            let fee_ep = Self::get_i64(item, "execFeeEp").unwrap_or(0);
+            let commission = unscale_value(fee_ep.abs(), 8);
+
+            // Fee currency not in trade row — infer from symbol quote
+            let commission_asset = {
+                // For contracts, fee is usually in USD/USDT; default to quote portion of symbol
+                if symbol.ends_with("USD") {
+                    "USD".to_string()
+                } else if symbol.ends_with("USDT") {
+                    "USDT".to_string()
+                } else {
+                    "USD".to_string()
+                }
+            };
+
+            // execStatus: "MakerFill" = maker, "TakerFill" = taker
+            let is_maker = Self::get_str(item, "execStatus")
+                .map(|s| s == "MakerFill")
+                .unwrap_or(false);
+
+            // transactTimeNs is nanoseconds — convert to milliseconds
+            let timestamp_ns = Self::get_i64(item, "transactTimeNs").unwrap_or(0);
+            let timestamp = timestamp_ns / 1_000_000;
+
+            trades.push(UserTrade {
+                id,
+                order_id,
+                symbol,
+                side,
+                price,
+                quantity,
+                commission,
+                commission_asset,
+                is_maker,
+                timestamp,
+            });
+        }
+
+        Ok(trades)
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

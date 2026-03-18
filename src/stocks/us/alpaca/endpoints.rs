@@ -58,6 +58,8 @@ pub enum AlpacaEndpoint {
     Account,
     AccountPortfolioHistory,
     AccountActivities,
+    /// GET /v2/account/activities/{activity_type}
+    AccountActivitiesByType(String),
 
     // ═══════════════════════════════════════════════════════════════════════
     // TRADING API - Orders
@@ -172,6 +174,7 @@ impl AlpacaEndpoint {
             Self::Account => ("/v2/account".to_string(), EndpointBase::Trading),
             Self::AccountPortfolioHistory => ("/v2/account/portfolio/history".to_string(), EndpointBase::Trading),
             Self::AccountActivities => ("/v2/account/activities".to_string(), EndpointBase::Trading),
+            Self::AccountActivitiesByType(activity_type) => (format!("/v2/account/activities/{}", activity_type), EndpointBase::Trading),
 
             Self::Orders => ("/v2/orders".to_string(), EndpointBase::Trading),
             Self::OrderById(id) => (format!("/v2/orders/{}", id), EndpointBase::Trading),

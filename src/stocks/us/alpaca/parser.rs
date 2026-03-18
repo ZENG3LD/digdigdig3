@@ -540,4 +540,86 @@ impl AlpacaParser {
 
         None
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // USER TRADES (Account Activities — FILL type)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Parse account activities of type FILL into `UserTrade` records.
+    ///
+    /// Alpaca endpoint: `GET /v2/account/activities/FILL`
+    ///
+    /// Response is a JSON array:
+    /// ```json
+    /// [
+    ///   {"id":"123","order_id":"456","symbol":"AAPL","side":"buy",
+    ///    "price":"150.00","qty":"10","commission":"0",
+    ///    "transaction_time":"2024-01-01T00:00:00Z","liquidity":"M"}
+    /// ]
+    /// ```
+    ///
+    /// `liquidity`: "M" = maker (limit order), "T" = taker (market order).
+    pub fn parse_activities(response: &Value) -> ExchangeResult<Vec<UserTrade>> {
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse(
+                "Account activities: expected a JSON array".to_string()
+            ))?;
+
+        arr.iter()
+            .map(Self::parse_activity_item)
+            .collect()
+    }
+
+    /// Parse a single FILL activity item into a `UserTrade`.
+    fn parse_activity_item(data: &Value) -> ExchangeResult<UserTrade> {
+        let get_str = |key: &str| -> Option<&str> {
+            data.get(key).and_then(|v| v.as_str())
+        };
+        let get_f64 = |key: &str| -> Option<f64> {
+            data.get(key).and_then(|v| {
+                v.as_str().and_then(|s| s.parse().ok())
+                    .or_else(|| v.as_f64())
+            })
+        };
+
+        let id = get_str("id").unwrap_or("").to_string();
+        let order_id = get_str("order_id").unwrap_or("").to_string();
+        let symbol = get_str("symbol").unwrap_or("").to_string();
+
+        let side_str = get_str("side").unwrap_or("buy");
+        let side = match side_str.to_lowercase().as_str() {
+            "sell" | "sell_short" => OrderSide::Sell,
+            _ => OrderSide::Buy,
+        };
+
+        let price = get_f64("price").unwrap_or(0.0);
+
+        // "qty" is base-asset quantity; "leaves_qty" is remainder (ignore)
+        let quantity = get_f64("qty").unwrap_or(0.0);
+
+        // Commission — Alpaca is commission-free for US stocks; may be 0
+        let commission = get_f64("commission").unwrap_or(0.0);
+        let commission_asset = "USD".to_string();
+
+        // "M" = maker (limit), "T" = taker (market)
+        let liquidity = get_str("liquidity").unwrap_or("T");
+        let is_maker = liquidity.eq_ignore_ascii_case("M");
+
+        let timestamp = data.get("transaction_time")
+            .and_then(|v| Self::parse_timestamp(v))
+            .unwrap_or(0);
+
+        Ok(UserTrade {
+            id,
+            order_id,
+            symbol,
+            side,
+            price,
+            quantity,
+            commission,
+            commission_asset,
+            is_maker,
+            timestamp,
+        })
+    }
 }

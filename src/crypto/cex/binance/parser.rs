@@ -13,6 +13,7 @@ use crate::core::types::{
     AlgoOrderResponse, BracketResponse,
     TransferResponse, DepositAddress, WithdrawResponse, FundsRecord,
     SubAccountResult, SubAccount,
+    UserTrade,
 };
 
 /// Парсер ответов Binance API
@@ -294,6 +295,91 @@ impl BinanceParser {
 
         arr.iter()
             .map(Self::parse_order_data)
+            .collect()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FILLS / USER TRADES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse a list of user trade fills from `/api/v3/myTrades` (spot) or
+    /// `/fapi/v1/userTrades` (futures).
+    ///
+    /// Spot uses `isBuyer: bool` to determine side; futures uses `side: "BUY"/"SELL"`.
+    /// Both are handled transparently — whichever field is present wins.
+    pub fn parse_user_trades(response: &Value, is_futures: bool) -> ExchangeResult<Vec<UserTrade>> {
+        Self::check_error(response)?;
+
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array of user trades".to_string()))?;
+
+        arr.iter()
+            .map(|item| {
+                // Determine side.
+                // Futures: "side" field ("BUY" / "SELL").
+                // Spot:    "isBuyer" bool field (true = Buy, false = Sell).
+                let side = if is_futures {
+                    match Self::get_str(item, "side").unwrap_or("BUY").to_uppercase().as_str() {
+                        "SELL" => OrderSide::Sell,
+                        _ => OrderSide::Buy,
+                    }
+                } else {
+                    let is_buyer = item.get("isBuyer")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true);
+                    if is_buyer { OrderSide::Buy } else { OrderSide::Sell }
+                };
+
+                // Trade id — numeric on both endpoints.
+                let id = item.get("id")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v.to_string())
+                    .ok_or_else(|| ExchangeError::Parse("Missing 'id' in trade".to_string()))?;
+
+                // Order id — numeric on both endpoints.
+                let order_id = item.get("orderId")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v.to_string())
+                    .ok_or_else(|| ExchangeError::Parse("Missing 'orderId' in trade".to_string()))?;
+
+                let symbol = Self::get_str(item, "symbol")
+                    .unwrap_or("")
+                    .to_string();
+
+                let price = Self::require_f64(item, "price")?;
+
+                // Spot uses "qty", futures uses "qty" as well (both consistent).
+                let quantity = Self::require_f64(item, "qty")?;
+
+                let commission = Self::get_f64(item, "commission").unwrap_or(0.0);
+
+                let commission_asset = Self::get_str(item, "commissionAsset")
+                    .unwrap_or("")
+                    .to_string();
+
+                // is_maker: spot uses "isMaker", futures uses "maker".
+                let is_maker = item.get("isMaker")
+                    .or_else(|| item.get("maker"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                let timestamp = item.get("time")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+
+                Ok(UserTrade {
+                    id,
+                    order_id,
+                    symbol,
+                    side,
+                    price,
+                    quantity,
+                    commission,
+                    commission_asset,
+                    is_maker,
+                    timestamp,
+                })
+            })
             .collect()
     }
 

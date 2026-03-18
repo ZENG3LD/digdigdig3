@@ -31,6 +31,7 @@ use crate::core::{
     OrderRequest, CancelRequest,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
+    UserTrade, UserTradeFilter,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
@@ -539,6 +540,53 @@ impl Trading for LighterConnector {
         }
 
         Ok(orders)
+    }
+
+    /// Fetch user trades (fills) from `GET /api/v1/trades`.
+    ///
+    /// Requires `account_index` from credentials passphrase JSON.
+    /// Optionally filters by market (derived from symbol), limit, and time range.
+    async fn get_user_trades(
+        &self,
+        filter: UserTradeFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<UserTrade>> {
+        let account_index = self._auth.as_ref()
+            .and_then(|a| a.account_index())
+            .ok_or_else(|| ExchangeError::Auth(
+                "Lighter get_user_trades requires account_index in credentials passphrase JSON.".to_string()
+            ))?;
+
+        let mut params = HashMap::new();
+        params.insert("account_index".to_string(), account_index.to_string());
+
+        if let Some(limit) = filter.limit {
+            params.insert("limit".to_string(), limit.min(100).to_string());
+        }
+
+        if let Some(start) = filter.start_time {
+            params.insert("start_time".to_string(), start.to_string());
+        }
+        if let Some(end) = filter.end_time {
+            params.insert("end_time".to_string(), end.to_string());
+        }
+
+        // Resolve market filter from symbol
+        if let Some(sym) = &filter.symbol {
+            if let Ok(market_id) = self.get_market_id(sym.as_str(), account_type).await {
+                params.insert("market_id".to_string(), market_id.to_string());
+            }
+        }
+
+        let response = self.get(LighterEndpoint::Trades, params, 100).await?;
+        let mut trades = LighterParser::parse_user_trades(&response)?;
+
+        // Apply order_id filter (not a supported query param)
+        if let Some(oid) = &filter.order_id {
+            trades.retain(|t| &t.order_id == oid);
+        }
+
+        Ok(trades)
     }
 }
 

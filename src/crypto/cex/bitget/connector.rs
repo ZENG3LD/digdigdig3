@@ -32,7 +32,7 @@ use crate::core::{
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
-    TimeInForce,
+    TimeInForce, UserTrade, UserTradeFilter,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
@@ -1199,6 +1199,66 @@ impl Trading for BitgetConnector {
 
         let response = self.get(endpoint, params, account_type).await?;
         BitgetParser::parse_orders(&response)
+    }
+
+    async fn get_user_trades(
+        &self,
+        filter: UserTradeFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<UserTrade>> {
+        let is_futures = matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated);
+
+        let mut params = HashMap::new();
+
+        if is_futures {
+            // Futures fill history: productType required
+            let product_type = filter.symbol.as_deref()
+                .and_then(|s| {
+                    // Extract quote from raw symbol like "BTCUSDT" or "BTC/USDT"
+                    if s.contains("USDC") { Some("USDC-FUTURES") }
+                    else if s.contains("USD") && !s.contains("USDT") { Some("COIN-FUTURES") }
+                    else { Some("USDT-FUTURES") }
+                })
+                .unwrap_or("USDT-FUTURES");
+            params.insert("productType".to_string(), product_type.to_string());
+
+            if let Some(ref sym) = filter.symbol {
+                params.insert("symbol".to_string(), sym.clone());
+            }
+            if let Some(oid) = filter.order_id {
+                params.insert("orderId".to_string(), oid);
+            }
+            if let Some(start) = filter.start_time {
+                params.insert("startTime".to_string(), start.to_string());
+            }
+            if let Some(end) = filter.end_time {
+                params.insert("endTime".to_string(), end.to_string());
+            }
+            if let Some(limit) = filter.limit {
+                params.insert("limit".to_string(), limit.min(100).to_string());
+            }
+            let response = self.get(BitgetEndpoint::FuturesFillHistory, params, account_type).await?;
+            BitgetParser::parse_user_trades(&response)
+        } else {
+            // Spot fill history
+            if let Some(ref sym) = filter.symbol {
+                params.insert("symbol".to_string(), sym.clone());
+            }
+            if let Some(oid) = filter.order_id {
+                params.insert("orderId".to_string(), oid);
+            }
+            if let Some(start) = filter.start_time {
+                params.insert("startTime".to_string(), start.to_string());
+            }
+            if let Some(end) = filter.end_time {
+                params.insert("endTime".to_string(), end.to_string());
+            }
+            if let Some(limit) = filter.limit {
+                params.insert("limit".to_string(), limit.min(100).to_string());
+            }
+            let response = self.get(BitgetEndpoint::SpotFills, params, account_type).await?;
+            BitgetParser::parse_user_trades(&response)
+        }
     }
 }
 

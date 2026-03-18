@@ -8,7 +8,7 @@ use crate::core::types::{
     ExchangeError, ExchangeResult,
     Kline, OrderBook, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
-    FundingRate,
+    FundingRate, UserTrade,
 };
 
 /// Парсер ответов Bitget API
@@ -887,6 +887,86 @@ impl BitgetParser {
             reason: None, // Not provided
             timestamp: Self::get_i64(pos_data, "uTime").unwrap_or(0),
         })
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // USER TRADES (FILLS)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse user trade fills from Bitget V2 API.
+    ///
+    /// Spot (`/api/v2/spot/trade/fills`) and Futures (`/api/v2/mix/order/fills`)
+    /// share the same `{"data":[...]}` wrapper format.
+    ///
+    /// Response item fields:
+    /// - `tradeId` / `fillId` — trade identifier
+    /// - `orderId` — parent order id
+    /// - `symbol` — trading pair
+    /// - `side` — "buy" / "sell"
+    /// - `priceAvg` — fill price
+    /// - `size` — fill quantity
+    /// - `fee` — negative means paid commission
+    /// - `feeCcy` — commission asset
+    /// - `role` — "maker" / "taker"
+    /// - `cTime` — creation timestamp ms
+    pub fn parse_user_trades(response: &Value) -> ExchangeResult<Vec<UserTrade>> {
+        let data = Self::extract_data(response)?;
+
+        let arr = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array in 'data' for user trades".to_string()))?;
+
+        arr.iter()
+            .map(|item| {
+                // tradeId field (spot), fillId field (some futures endpoints)
+                let id = item.get("tradeId")
+                    .or_else(|| item.get("fillId"))
+                    .and_then(|v| v.as_str().map(|s| s.to_string())
+                        .or_else(|| v.as_i64().map(|n| n.to_string())))
+                    .ok_or_else(|| ExchangeError::Parse("Missing 'tradeId'/'fillId' in trade".to_string()))?;
+
+                let order_id = item.get("orderId")
+                    .and_then(|v| v.as_str().map(|s| s.to_string())
+                        .or_else(|| v.as_i64().map(|n| n.to_string())))
+                    .unwrap_or_default();
+
+                let symbol = Self::get_str(item, "symbol")
+                    .unwrap_or("")
+                    .to_string();
+
+                let side = match Self::get_str(item, "side").unwrap_or("buy").to_lowercase().as_str() {
+                    "sell" | "close_long" | "open_short" => OrderSide::Sell,
+                    _ => OrderSide::Buy,
+                };
+
+                let price = Self::require_f64(item, "priceAvg")?;
+                let quantity = Self::require_f64(item, "size")?;
+
+                // fee is negative (e.g. "-0.01"), take abs value
+                let commission = Self::get_f64(item, "fee").unwrap_or(0.0).abs();
+                let commission_asset = Self::get_str(item, "feeCcy")
+                    .unwrap_or("")
+                    .to_string();
+
+                let is_maker = Self::get_str(item, "role")
+                    .map(|r| r.to_lowercase() == "maker")
+                    .unwrap_or(false);
+
+                let timestamp = Self::get_i64(item, "cTime").unwrap_or(0);
+
+                Ok(UserTrade {
+                    id,
+                    order_id,
+                    symbol,
+                    side,
+                    price,
+                    quantity,
+                    commission,
+                    commission_asset,
+                    is_maker,
+                    timestamp,
+                })
+            })
+            .collect()
     }
 }
 

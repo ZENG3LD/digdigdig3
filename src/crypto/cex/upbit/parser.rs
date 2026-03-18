@@ -14,6 +14,7 @@ use crate::core::types::{
     ExchangeError, ExchangeResult,
     Kline, OrderBook, Ticker, Order, Balance, PublicTrade,
     OrderSide, OrderType, OrderStatus, TradeSide, SymbolInfo,
+    UserTrade,
 };
 
 /// Парсер ответов Upbit API
@@ -377,6 +378,97 @@ impl UpbitParser {
     pub fn parse_order_id(response: &Value) -> ExchangeResult<String> {
         Self::check_error(response)?;
         Self::require_str(response, "uuid").map(String::from)
+    }
+
+    /// Extract fills (`trades` array) from a single order detail response.
+    ///
+    /// Upbit's `GET /v1/order?uuid=...` returns an order object that includes
+    /// a `trades` array when the order has been (partially) filled.
+    ///
+    /// Each trade element looks like:
+    /// ```json
+    /// {"market":"KRW-BTC","uuid":"trade-uuid","price":"50000000","volume":"0.001",
+    ///  "funds":"50000","side":"bid","created_at":"2024-01-01T00:00:00+09:00"}
+    /// ```
+    pub fn parse_order_trades(response: &Value) -> ExchangeResult<Vec<UserTrade>> {
+        Self::check_error(response)?;
+
+        let order_id = Self::get_str(response, "uuid").unwrap_or("").to_string();
+        let symbol = Self::get_str(response, "market").unwrap_or("").to_string();
+
+        // Fee information is on the order level, not per-trade in Upbit
+        let paid_fee: f64 = response.get("paid_fee")
+            .and_then(|v| {
+                v.as_str()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .or_else(|| v.as_f64())
+            })
+            .unwrap_or(0.0);
+
+        let reserved_fee_currency = Self::get_str(response, "market")
+            .and_then(|m| m.split('-').next())
+            .unwrap_or("")
+            .to_string();
+
+        let trades_arr = match response.get("trades").and_then(|v| v.as_array()) {
+            Some(arr) => arr,
+            None => return Ok(vec![]),
+        };
+
+        let trade_count = trades_arr.len();
+        // Distribute fee evenly across trades (Upbit does not give per-trade fee)
+        let fee_per_trade = if trade_count > 0 {
+            paid_fee / trade_count as f64
+        } else {
+            0.0
+        };
+
+        let mut trades = Vec::with_capacity(trade_count);
+
+        for item in trades_arr {
+            let side = match Self::get_str(item, "side") {
+                Some("ask") => OrderSide::Sell,
+                _ => OrderSide::Buy,
+            };
+
+            let price: f64 = item.get("price")
+                .and_then(|v| {
+                    v.as_str()
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .or_else(|| v.as_f64())
+                })
+                .unwrap_or(0.0);
+
+            let volume: f64 = item.get("volume")
+                .and_then(|v| {
+                    v.as_str()
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .or_else(|| v.as_f64())
+                })
+                .unwrap_or(0.0);
+
+            let timestamp = item.get("created_at")
+                .and_then(|v| v.as_str())
+                .and_then(Self::parse_iso_timestamp)
+                .unwrap_or(0);
+
+            let trade_id = Self::get_str(item, "uuid").unwrap_or("").to_string();
+
+            trades.push(UserTrade {
+                id: trade_id,
+                order_id: order_id.clone(),
+                symbol: symbol.clone(),
+                side,
+                price,
+                quantity: volume,
+                commission: fee_per_trade,
+                commission_asset: reserved_fee_currency.clone(),
+                is_maker: false, // Upbit does not expose maker/taker per fill
+                timestamp,
+            });
+        }
+
+        Ok(trades)
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════

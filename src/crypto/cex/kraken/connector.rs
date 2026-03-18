@@ -32,6 +32,7 @@ use crate::core::types::{
     WithdrawRequest, WithdrawResponse, DepositAddress,
     FundsHistoryFilter, FundsRecord, FundsRecordType,
     SubAccountOperation, SubAccountResult,
+    UserTrade, UserTradeFilter,
 };
 use crate::core::types::SymbolInfo;
 use crate::core::traits::{
@@ -815,7 +816,81 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         let params = HashMap::new();
         let response = self.post(KrakenEndpoint::SpotOpenOrders, params, account_type).await?;
         KrakenParser::parse_open_orders(&response)
-    
+
+    }
+
+    /// Get personal trade fills from Kraken.
+    ///
+    /// Uses `POST /0/private/TradesHistory` for Spot/Margin.
+    /// Futures fills use `GET /derivatives/api/v3/fills` — returns
+    /// `UnsupportedOperation` since the Futures fills endpoint returns
+    /// orders (not `UserTrade` format) and is already covered by
+    /// `get_order_history`.
+    ///
+    /// Offset-based pagination: Kraken returns up to 50 records per request.
+    /// When `filter.limit` exceeds 50, multiple pages are fetched automatically
+    /// until the requested limit is reached or no more records exist.
+    async fn get_user_trades(
+        &self,
+        filter: UserTradeFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<UserTrade>> {
+        match account_type {
+            AccountType::FuturesCross | AccountType::FuturesIsolated => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "get_user_trades is not supported for Kraken Futures (use get_order_history)".to_string(),
+                ));
+            }
+            _ => {}
+        }
+
+        // Kraken returns up to 50 trades per page; paginate to satisfy `limit`.
+        let page_size: u32 = 50;
+        let max_trades = filter.limit.unwrap_or(page_size);
+
+        // Convert ms timestamps to Unix seconds for Kraken API.
+        let start_secs = filter.start_time.map(|ms| ms / 1000);
+        let end_secs = filter.end_time.map(|ms| ms / 1000);
+
+        let mut all_trades: Vec<UserTrade> = Vec::new();
+        let mut offset: u32 = 0;
+
+        loop {
+            let response = self.get_trades_history(
+                None,
+                start_secs.map(|s| s as i64),
+                end_secs.map(|s| s as i64),
+                if offset > 0 { Some(offset) } else { None },
+            ).await?;
+
+            let mut page = KrakenParser::parse_trades_history(&response)?;
+
+            // Apply order_id filter (Kraken has no server-side filter for this).
+            if let Some(ref oid) = filter.order_id {
+                page.retain(|t| &t.order_id == oid);
+            }
+
+            // Apply symbol filter (Kraken has no server-side symbol filter for TradesHistory).
+            if let Some(ref sym) = filter.symbol {
+                let sym_upper = sym.to_uppercase();
+                page.retain(|t| t.symbol.to_uppercase().contains(&sym_upper));
+            }
+
+            let page_len = page.len() as u32;
+            all_trades.extend(page);
+
+            // Stop if we have enough records or this page was smaller than a full page.
+            if all_trades.len() as u32 >= max_trades || page_len < page_size {
+                break;
+            }
+
+            offset += page_size;
+        }
+
+        // Truncate to requested limit.
+        all_trades.truncate(max_trades as usize);
+
+        Ok(all_trades)
     }
 }
 

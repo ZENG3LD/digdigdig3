@@ -29,6 +29,7 @@ use crate::core::{
     Order, OrderRequest, CancelRequest,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
+    UserTrade, UserTradeFilter,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
@@ -1319,6 +1320,59 @@ impl Trading for DydxConnector {
         }
 
         Ok(orders)
+    }
+
+    /// Fetch trade fills from `GET /v4/fills`.
+    ///
+    /// Requires a dYdX chain address stored in `credentials.api_key`.
+    /// No cryptographic signature is needed — the Indexer API is public
+    /// and keyed only by address.
+    async fn get_user_trades(
+        &self,
+        filter: UserTradeFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<UserTrade>> {
+        let address = self.auth.address()
+            .ok_or_else(|| ExchangeError::Auth(
+                "dYdX get_user_trades requires a dYdX address in credentials.api_key.".to_string()
+            ))?;
+
+        let mut params = HashMap::new();
+        params.insert("address".to_string(), address.to_string());
+        params.insert("subaccountNumber".to_string(), "0".to_string());
+
+        if let Some(sym) = &filter.symbol {
+            // dYdX market format: "BTC-USD". Accept "BTC" or "BTC-USD".
+            let market = if sym.contains('-') {
+                sym.clone()
+            } else {
+                format!("{}-USD", sym.to_uppercase())
+            };
+            params.insert("market".to_string(), market);
+            params.insert("marketType".to_string(), "PERPETUAL".to_string());
+        }
+
+        if let Some(limit) = filter.limit {
+            params.insert("limit".to_string(), limit.min(100).to_string());
+        }
+
+        let response = self.get(DydxEndpoint::Fills, params).await?;
+        let mut trades = DydxParser::parse_fills(&response)?;
+
+        // Apply order_id filter (not supported as a query param)
+        if let Some(oid) = &filter.order_id {
+            trades.retain(|t| &t.order_id == oid);
+        }
+
+        // Apply time filters (filter values are u64 ms; timestamp is i64 ms)
+        if let Some(start) = filter.start_time {
+            trades.retain(|t| t.timestamp >= start as i64);
+        }
+        if let Some(end) = filter.end_time {
+            trades.retain(|t| t.timestamp <= end as i64);
+        }
+
+        Ok(trades)
     }
 }
 

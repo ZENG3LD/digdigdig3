@@ -15,6 +15,7 @@ use crate::core::types::{
     Kline, OrderBook, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, PublicTrade, TradeSide, SymbolInfo,
+    UserTrade,
 };
 
 /// Parser for Crypto.com API responses
@@ -290,6 +291,52 @@ impl CryptoComParser {
         order_list.iter()
             .map(Self::parse_order_data)
             .collect()
+    }
+
+    /// Parse user trades (fills) from `private/get-trades` response.
+    ///
+    /// Response format:
+    /// ```json
+    /// {"result":{"data":[{"trade_id":"123","order_id":"456","instrument_name":"BTC_USDT",
+    ///   "side":"BUY","price":"50000","quantity":"0.001","fee":"0.01",
+    ///   "fee_currency":"USDT","liquidity_indicator":"MAKER","create_time":1672531200000}]}}
+    /// ```
+    pub fn parse_user_trades(response: &Value) -> ExchangeResult<Vec<UserTrade>> {
+        Self::check_response(response)?;
+        let result = Self::extract_result(response)?;
+
+        let data = result.get("data")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Expected 'data' array in get-trades response".to_string()))?;
+
+        let mut trades = Vec::with_capacity(data.len());
+
+        for item in data {
+            let side = match Self::get_str(item, "side").unwrap_or("BUY") {
+                "SELL" => OrderSide::Sell,
+                _ => OrderSide::Buy,
+            };
+
+            let is_maker = matches!(
+                Self::get_str(item, "liquidity_indicator"),
+                Some("MAKER")
+            );
+
+            trades.push(UserTrade {
+                id: Self::get_str(item, "trade_id").unwrap_or("").to_string(),
+                order_id: Self::get_str(item, "order_id").unwrap_or("").to_string(),
+                symbol: Self::get_str(item, "instrument_name").unwrap_or("").to_string(),
+                side,
+                price: Self::get_f64(item, "price").unwrap_or(0.0),
+                quantity: Self::get_f64(item, "quantity").unwrap_or(0.0),
+                commission: Self::get_f64(item, "fee").unwrap_or(0.0),
+                commission_asset: Self::get_str(item, "fee_currency").unwrap_or("").to_string(),
+                is_maker,
+                timestamp: Self::get_i64(item, "create_time").unwrap_or(0),
+            });
+        }
+
+        Ok(trades)
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

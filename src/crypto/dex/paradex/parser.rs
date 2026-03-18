@@ -11,6 +11,7 @@ use crate::core::types::{
     FundingRate, PublicTrade, StreamEvent, TradeSide,
     OrderUpdateEvent, BalanceUpdateEvent, PositionUpdateEvent,
     BalanceChangeReason, PositionChangeReason,
+    UserTrade,
 };
 
 /// Парсер ответов Paradex API
@@ -372,6 +373,64 @@ impl ParadexParser {
             margin: Self::get_f64(data, "cost"),
             take_profit: None,
             stop_loss: None,
+        })
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FILLS / USER TRADES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse a list of fills from `GET /v1/fills` response.
+    ///
+    /// Paradex response shape:
+    /// ```json
+    /// {"results": [{"id":"123","order_id":"456","market":"BTC-USD-PERP","side":"BUY",
+    ///               "price":"50000","size":"0.001","fee":"0.01","fee_currency":"USDC",
+    ///               "liquidity":"MAKER","created_at":1672531200000}]}
+    /// ```
+    pub fn parse_fills(response: &Value) -> ExchangeResult<Vec<UserTrade>> {
+        let results = Self::extract_results(response)?;
+        let arr = results.as_array()
+            .ok_or_else(|| ExchangeError::Parse("'results' is not an array".to_string()))?;
+
+        arr.iter()
+            .map(Self::parse_fill_item)
+            .collect()
+    }
+
+    /// Parse a single fill item into a `UserTrade`.
+    fn parse_fill_item(data: &Value) -> ExchangeResult<UserTrade> {
+        let id = Self::require_str(data, "id")?.to_string();
+        let order_id = Self::get_str(data, "order_id").unwrap_or("").to_string();
+        let symbol = Self::require_str(data, "market")?.to_string();
+
+        let side_str = Self::require_str(data, "side")?;
+        let side = Self::parse_order_side(side_str);
+
+        let price = Self::require_f64(data, "price")?;
+        let quantity = Self::require_f64(data, "size")?;
+        let commission = Self::get_f64(data, "fee").unwrap_or(0.0);
+        let commission_asset = Self::get_str(data, "fee_currency")
+            .unwrap_or("USDC")
+            .to_string();
+
+        // "MAKER" → is_maker = true; "TAKER" → false
+        let liquidity = Self::get_str(data, "liquidity").unwrap_or("TAKER");
+        let is_maker = liquidity.eq_ignore_ascii_case("MAKER");
+
+        let timestamp = Self::get_i64(data, "created_at").unwrap_or(0);
+
+        Ok(UserTrade {
+            id,
+            order_id,
+            symbol,
+            side,
+            price,
+            quantity,
+            commission,
+            commission_asset,
+            is_maker,
+            timestamp,
         })
     }
 

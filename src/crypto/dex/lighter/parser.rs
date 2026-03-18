@@ -7,6 +7,7 @@ use serde_json::Value;
 use crate::core::types::{
     ExchangeError, ExchangeResult,
     Kline, OrderBook, Ticker, PublicTrade, FundingRate,
+    OrderSide, UserTrade,
 };
 
 /// Parser for Lighter API responses
@@ -516,6 +517,63 @@ impl LighterParser {
         }).collect();
 
         Ok(orders)
+    }
+
+    /// Parse user trades (fills) from a `GET /api/v1/trades` response.
+    ///
+    /// Expected shape:
+    /// ```json
+    /// {"code":200,"trades":[{"id":"123","order_id":"456","market":"BTCUSDC_Market",
+    ///   "side":"buy","price":"50000","amount":"0.001","fee":"0.01",
+    ///   "is_maker":true,"timestamp":1672531200000}]}
+    /// ```
+    pub fn parse_user_trades(response: &Value) -> ExchangeResult<Vec<UserTrade>> {
+        Self::check_success(response)?;
+
+        let trades_raw = response.get("trades")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'trades' array".to_string()))?;
+
+        trades_raw.iter().map(|trade| {
+            let id = Self::get_str(trade, "id").unwrap_or("").to_string();
+            let order_id = Self::get_str(trade, "order_id").unwrap_or("").to_string();
+            // market field e.g. "BTCUSDC_Market" — strip suffix for readability
+            let market_raw = Self::get_str(trade, "market").unwrap_or("");
+            let symbol = market_raw
+                .trim_end_matches("_Market")
+                .to_string();
+            let side_str = Self::get_str(trade, "side").unwrap_or("buy");
+            let side = if side_str.eq_ignore_ascii_case("sell") {
+                OrderSide::Sell
+            } else {
+                OrderSide::Buy
+            };
+            let price = Self::get_f64(trade, "price").unwrap_or(0.0);
+            // Lighter uses "amount" for base quantity
+            let quantity = Self::get_f64(trade, "amount").unwrap_or(0.0);
+            let commission = Self::get_f64(trade, "fee").unwrap_or(0.0).abs();
+            // Lighter fees are paid in USDC
+            let commission_asset = "USDC".to_string();
+            let is_maker = trade.get("is_maker")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let timestamp = trade.get("timestamp")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+
+            Ok(UserTrade {
+                id,
+                order_id,
+                symbol,
+                side,
+                price,
+                quantity,
+                commission,
+                commission_asset,
+                is_maker,
+                timestamp,
+            })
+        }).collect()
     }
 
     /// Parse orders from `/api/v1/accountInactiveOrders` response.

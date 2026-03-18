@@ -29,6 +29,7 @@ use crate::core::{
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     AmendRequest, CancelAllResponse, OrderResult,
     TransferResponse, DepositAddress, WithdrawResponse, FundsRecord,
+    UserTrade, UserTradeFilter,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
@@ -1084,7 +1085,55 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
 
         let response = self.get(endpoint, params, account_type).await?;
         GateioParser::parse_orders(&response)
-    
+
+    }
+
+    async fn get_user_trades(
+        &self,
+        filter: UserTradeFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<UserTrade>> {
+        let is_futures = matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated);
+
+        let endpoint = if is_futures {
+            GateioEndpoint::FuturesMyTrades
+        } else {
+            GateioEndpoint::SpotMyTrades
+        };
+
+        let mut params = HashMap::new();
+
+        if let Some(ref sym) = filter.symbol {
+            // Gate.io uses underscore-separated pairs (BTC_USDT)
+            // filter.symbol may arrive as "BTC/USDT" or already "BTC_USDT"
+            let formatted = if sym.contains('/') {
+                sym.replace('/', "_").to_uppercase()
+            } else {
+                sym.to_uppercase()
+            };
+            let key = if is_futures { "contract" } else { "currency_pair" };
+            params.insert(key.to_string(), formatted);
+        }
+
+        if let Some(ref oid) = filter.order_id {
+            let key = if is_futures { "order" } else { "order_id" };
+            params.insert(key.to_string(), oid.clone());
+        }
+
+        // Gate.io time params are in seconds; filter provides milliseconds
+        if let Some(st) = filter.start_time {
+            params.insert("from".to_string(), (st / 1000).to_string());
+        }
+        if let Some(et) = filter.end_time {
+            params.insert("to".to_string(), (et / 1000).to_string());
+        }
+
+        if let Some(lim) = filter.limit {
+            params.insert("limit".to_string(), lim.min(1000).to_string());
+        }
+
+        let response = self.get(endpoint, params, account_type).await?;
+        GateioParser::parse_user_trades(&response, is_futures)
     }
 }
 

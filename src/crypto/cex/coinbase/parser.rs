@@ -787,6 +787,94 @@ impl CoinbaseParser {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // TRADING PARSERS — FILLS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse fills (user trades) from `GET /api/v3/brokerage/orders/historical/fills`
+    ///
+    /// Response:
+    /// ```json
+    /// {
+    ///   "fills": [{
+    ///     "entry_id": "123",
+    ///     "trade_id": "456",
+    ///     "order_id": "789",
+    ///     "product_id": "BTC-USD",
+    ///     "side": "BUY",
+    ///     "price": "50000.00",
+    ///     "size": "0.001",
+    ///     "commission": "0.50",
+    ///     "trade_time": "2024-01-01T00:00:00Z",
+    ///     "liquidity_indicator": "MAKER"
+    ///   }],
+    ///   "cursor": "next_page_token"
+    /// }
+    /// ```
+    ///
+    /// Commission asset is always the quote currency extracted from `product_id`.
+    pub fn parse_fills(json: &Value) -> ExchangeResult<Vec<UserTrade>> {
+        Self::check_error(json)?;
+
+        let fills = json.get("fills")
+            .and_then(|f| f.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing fills array".into()))?;
+
+        let trades = fills.iter()
+            .filter_map(|fill| {
+                let id = fill.get("entry_id")?.as_str()?.to_string();
+                let order_id = fill.get("order_id")?.as_str()?.to_string();
+                let product_id = fill.get("product_id")?.as_str()?;
+
+                // Commission asset is the quote currency (e.g. "USD" from "BTC-USD")
+                let commission_asset = product_id
+                    .split('-')
+                    .nth(1)
+                    .unwrap_or(product_id)
+                    .to_string();
+
+                let side_str = fill.get("side")?.as_str()?;
+                let side = match side_str {
+                    "BUY" => OrderSide::Buy,
+                    "SELL" => OrderSide::Sell,
+                    _ => return None,
+                };
+
+                let price = fill.get("price")?.as_str()?.parse::<f64>().ok()?;
+                let quantity = fill.get("size")?.as_str()?.parse::<f64>().ok()?;
+                let commission = fill.get("commission")
+                    .and_then(|c| c.as_str())
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+
+                let liquidity = fill.get("liquidity_indicator")
+                    .and_then(|l| l.as_str())
+                    .unwrap_or("TAKER");
+                let is_maker = liquidity == "MAKER";
+
+                let timestamp = fill.get("trade_time")
+                    .and_then(|t| t.as_str())
+                    .and_then(Self::parse_rfc3339_to_millis)
+                    .unwrap_or(0);
+
+                Some(UserTrade {
+                    id,
+                    order_id,
+                    symbol: product_id.to_string(),
+                    side,
+                    price,
+                    quantity,
+                    commission,
+                    commission_asset,
+                    is_maker,
+                    timestamp,
+                })
+            })
+            .collect();
+
+        Ok(trades)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // CUSTODIAL FUNDS
     // ═══════════════════════════════════════════════════════════════════════════
 

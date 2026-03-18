@@ -10,6 +10,7 @@ use crate::core::types::{
     Kline, OrderBook, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, PublicTrade, StreamEvent, TradeSide,
+    UserTrade,
 };
 
 /// Парсер ответов dYdX v4 Indexer API
@@ -261,6 +262,57 @@ impl DydxParser {
             updated_at,
             time_in_force: crate::core::TimeInForce::Gtc,
         })
+    }
+
+    /// Parse fills (user trades) from a `GET /v4/fills` response.
+    ///
+    /// Expected response shape:
+    /// ```json
+    /// {"fills":[{"id":"123","orderId":"456","market":"BTC-USD","side":"BUY",
+    ///   "price":"50000","size":"0.001","fee":"0.01","liquidity":"MAKER",
+    ///   "createdAt":"2024-01-01T00:00:00Z"}]}
+    /// ```
+    /// `liquidity`: "MAKER" or "TAKER".
+    pub fn parse_fills(response: &Value) -> ExchangeResult<Vec<UserTrade>> {
+        let fills = response.get("fills")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'fills' array".to_string()))?;
+
+        fills.iter().map(|fill| {
+            let id = Self::get_str(fill, "id").unwrap_or("").to_string();
+            let order_id = Self::get_str(fill, "orderId").unwrap_or("").to_string();
+            // market is "BTC-USD" — use as-is for the symbol
+            let symbol = Self::get_str(fill, "market").unwrap_or("").to_string();
+            let side_str = Self::get_str(fill, "side").unwrap_or("BUY");
+            let side = if side_str.eq_ignore_ascii_case("SELL") {
+                OrderSide::Sell
+            } else {
+                OrderSide::Buy
+            };
+            let price = Self::get_f64(fill, "price").unwrap_or(0.0);
+            let quantity = Self::get_f64(fill, "size").unwrap_or(0.0);
+            let commission = Self::get_f64(fill, "fee").unwrap_or(0.0).abs();
+            // dYdX fees are always in USDC
+            let commission_asset = "USDC".to_string();
+            let liquidity = Self::get_str(fill, "liquidity").unwrap_or("TAKER");
+            let is_maker = liquidity.eq_ignore_ascii_case("MAKER");
+            let timestamp = Self::get_str(fill, "createdAt")
+                .and_then(Self::parse_iso_timestamp)
+                .unwrap_or(0);
+
+            Ok(UserTrade {
+                id,
+                order_id,
+                symbol,
+                side,
+                price,
+                quantity,
+                commission,
+                commission_asset,
+                is_maker,
+                timestamp,
+            })
+        }).collect()
     }
 
     /// Парсить список ордеров

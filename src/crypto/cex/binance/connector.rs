@@ -28,6 +28,7 @@ use crate::core::{
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     AmendRequest, CancelAllResponse, OrderResult,
     MarginType,
+    UserTrade, UserTradeFilter,
 };
 use crate::core::types::{
     ConnectorStats, SymbolInfo,
@@ -1333,6 +1334,45 @@ impl Trading for BinanceConnector {
 
         let response = self.get(endpoint, params, account_type).await?;
         BinanceParser::parse_orders(&response)
+    }
+
+    async fn get_user_trades(
+        &self,
+        filter: UserTradeFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<UserTrade>> {
+        // Binance requires a symbol for both myTrades endpoints.
+        let symbol_raw = filter.symbol.as_deref()
+            .ok_or_else(|| ExchangeError::InvalidRequest(
+                "Symbol is required for get_user_trades on Binance".to_string()
+            ))?;
+
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
+
+        let endpoint = if is_futures {
+            BinanceEndpoint::FuturesMyTrades
+        } else {
+            BinanceEndpoint::SpotMyTrades
+        };
+
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol_raw.to_string());
+
+        if let Some(oid) = filter.order_id {
+            params.insert("orderId".to_string(), oid);
+        }
+        if let Some(st) = filter.start_time {
+            params.insert("startTime".to_string(), st.to_string());
+        }
+        if let Some(et) = filter.end_time {
+            params.insert("endTime".to_string(), et.to_string());
+        }
+        if let Some(lim) = filter.limit {
+            params.insert("limit".to_string(), lim.min(1000).to_string());
+        }
+
+        let response = self.get(endpoint, params, account_type).await?;
+        BinanceParser::parse_user_trades(&response, is_futures)
     }
 }
 

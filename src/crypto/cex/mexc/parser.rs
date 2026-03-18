@@ -1037,6 +1037,95 @@ impl MexcParser {
             timestamp,
         })
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // USER TRADES (FILLS)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse user trade fills from MEXC `/api/v3/myTrades`.
+    ///
+    /// Response is a direct JSON array (no wrapper):
+    /// ```json
+    /// [{"id":"123","orderId":"456","symbol":"BTCUSDT","side":"BUY","price":"50000",
+    ///   "qty":"0.001","commission":"0.01","commissionAsset":"USDT","isMaker":false,"time":1672531200000}]
+    /// ```
+    pub fn parse_user_trades(response: &Value) -> ExchangeResult<Vec<UserTrade>> {
+        Self::check_error(response)?;
+
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array of user trades from MEXC".to_string()))?;
+
+        arr.iter()
+            .map(|item| {
+                let id = item.get("id")
+                    .and_then(|v| v.as_str().map(|s| s.to_string())
+                        .or_else(|| v.as_i64().map(|n| n.to_string())))
+                    .ok_or_else(|| ExchangeError::Parse("Missing 'id' in trade".to_string()))?;
+
+                let order_id = item.get("orderId")
+                    .and_then(|v| v.as_str().map(|s| s.to_string())
+                        .or_else(|| v.as_i64().map(|n| n.to_string())))
+                    .unwrap_or_default();
+
+                let symbol = item.get("symbol")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                let side = match item.get("side")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("BUY")
+                    .to_uppercase()
+                    .as_str()
+                {
+                    "SELL" => OrderSide::Sell,
+                    _ => OrderSide::Buy,
+                };
+
+                let price = item.get("price")
+                    .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok())
+                        .or_else(|| v.as_f64()))
+                    .ok_or_else(|| ExchangeError::Parse("Missing 'price' in trade".to_string()))?;
+
+                let quantity = item.get("qty")
+                    .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok())
+                        .or_else(|| v.as_f64()))
+                    .ok_or_else(|| ExchangeError::Parse("Missing 'qty' in trade".to_string()))?;
+
+                let commission = item.get("commission")
+                    .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok())
+                        .or_else(|| v.as_f64()))
+                    .unwrap_or(0.0)
+                    .abs();
+
+                let commission_asset = item.get("commissionAsset")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                let is_maker = item.get("isMaker")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                let timestamp = item.get("time")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+
+                Ok(UserTrade {
+                    id,
+                    order_id,
+                    symbol,
+                    side,
+                    price,
+                    quantity,
+                    commission,
+                    commission_asset,
+                    is_maker,
+                    timestamp,
+                })
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]

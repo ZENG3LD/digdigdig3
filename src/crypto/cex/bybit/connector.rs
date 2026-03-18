@@ -30,6 +30,7 @@ use crate::core::{
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
+    UserTrade, UserTradeFilter,
     MarginType,
     AmendRequest, CancelAllResponse, OrderResult,
     TransferResponse, DepositAddress, WithdrawResponse, FundsRecord,
@@ -1394,7 +1395,47 @@ impl Trading for BybitConnector {
         }
 
         Ok(orders)
-    
+
+    }
+
+    async fn get_user_trades(
+        &self,
+        filter: UserTradeFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<UserTrade>> {
+        let mut params = HashMap::new();
+        params.insert("category".to_string(), account_type_to_category(account_type).to_string());
+
+        if let Some(ref s) = filter.symbol {
+            params.insert("symbol".to_string(), s.clone());
+        }
+        if let Some(ref oid) = filter.order_id {
+            params.insert("orderId".to_string(), oid.clone());
+        }
+        if let Some(st) = filter.start_time {
+            params.insert("startTime".to_string(), st.to_string());
+        }
+        if let Some(et) = filter.end_time {
+            params.insert("endTime".to_string(), et.to_string());
+        }
+        if let Some(lim) = filter.limit {
+            params.insert("limit".to_string(), lim.min(100).to_string());
+        }
+
+        let response = self.get(BybitEndpoint::MyTrades, params).await?;
+
+        let result = response.get("result")
+            .ok_or_else(|| ExchangeError::Parse("Missing result".to_string()))?;
+        let list = result.get("list")
+            .and_then(|l| l.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing list".to_string()))?;
+
+        let trades = list
+            .iter()
+            .filter_map(|item| BybitParser::parse_user_trade(item).ok())
+            .collect();
+
+        Ok(trades)
     }
 }
 

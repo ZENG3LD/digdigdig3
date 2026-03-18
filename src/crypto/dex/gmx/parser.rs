@@ -13,6 +13,7 @@ use crate::core::types::{
     ExchangeError, ExchangeResult,
     Kline, OrderBook, Ticker,
     FundingRate, Position, PositionSide, MarginType, Order, OrderSide, OrderStatus, OrderType, TimeInForce,
+    UserTrade,
 };
 
 /// Parser for GMX API responses
@@ -764,6 +765,112 @@ impl GmxParser {
             "frozen" | "frozen-order" => OrderStatus::Open, // frozen = paused, still live
             _ => OrderStatus::Open,
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // USER TRADES (tradeActions from Subsquid)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse a list of trade actions from Subsquid `data.tradeActions`.
+    ///
+    /// GMX has no traditional fill records — every position increase/decrease is
+    /// a "trade action". We map each one to a `UserTrade` by treating the
+    /// `sizeDeltaUsd` (30-decimal) as the notional and inferring buy/sell from
+    /// `isLong` + action type.
+    ///
+    /// Expected Subsquid shape:
+    /// ```json
+    /// {"data": {"tradeActions": [
+    ///   {"id":"…","orderKey":"…","marketAddress":"…",
+    ///    "indexTokenSymbol":"ETH","sizeDeltaUsd":"1500000…","executionPrice":"2946…",
+    ///    "isLong":true,"orderType":"MarketIncrease","timestamp":"1700000000"}
+    /// ]}}
+    /// ```
+    pub fn parse_trade_actions(response: &Value) -> ExchangeResult<Vec<UserTrade>> {
+        let arr = response
+            .get("data")
+            .and_then(|d| d.get("tradeActions"))
+            .and_then(|t| t.as_array())
+            .ok_or_else(|| ExchangeError::Parse(
+                "Subsquid tradeActions: missing data.tradeActions array".to_string()
+            ))?;
+
+        let mut trades = Vec::with_capacity(arr.len());
+
+        for item in arr {
+            let id = Self::get_str(item, "id").unwrap_or("").to_string();
+
+            // order_id comes from orderKey (on-chain key hash)
+            let order_id = Self::get_str(item, "orderKey").unwrap_or("").to_string();
+
+            // Symbol: use indexTokenSymbol if available, else parse marketAddress
+            let token_symbol = Self::get_str(item, "indexTokenSymbol").unwrap_or("UNKNOWN");
+            let symbol = format!("{}/USD", token_symbol.to_uppercase());
+
+            // Execution price (30-decimal USD string)
+            let price = item.get("executionPrice")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .map(|raw| {
+                    let dec = Self::get_token_decimals(token_symbol);
+                    raw / 10_f64.powi((30 - dec) as i32)
+                })
+                .unwrap_or(0.0);
+
+            // Size in USD (30-decimal) → convert to base-asset quantity using price
+            let size_usd = item.get("sizeDeltaUsd")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .map(|raw| raw / 1e30)
+                .unwrap_or(0.0);
+
+            let quantity = if price > 0.0 { size_usd / price } else { 0.0 };
+
+            // Side: "Increase" with isLong=true → Buy (opening long)
+            //       "Increase" with isLong=false → Sell (opening short)
+            //       "Decrease" with isLong=true → Sell (closing long)
+            //       "Decrease" with isLong=false → Buy (closing short)
+            let is_long = item.get("isLong").and_then(|v| v.as_bool()).unwrap_or(true);
+            let order_type_str = Self::get_str(item, "orderType").unwrap_or("");
+            let is_increase = order_type_str.to_lowercase().contains("increase");
+            let side = match (is_long, is_increase) {
+                (true, true) | (false, false) => OrderSide::Buy,
+                _ => OrderSide::Sell,
+            };
+
+            // Timestamp: Subsquid returns Unix seconds as string
+            let timestamp = item.get("timestamp")
+                .and_then(|v| {
+                    v.as_str()
+                        .and_then(|s| s.parse::<i64>().ok())
+                        .or_else(|| v.as_i64())
+                })
+                .map(|s| s * 1000) // seconds → ms
+                .unwrap_or(0);
+
+            // GMX does not expose fee per trade action in the tradeActions query.
+            // Fees are embedded in sizeDeltaUsd adjustments; we set 0.0 here.
+            let commission = 0.0;
+            let commission_asset = "USDC".to_string();
+
+            // On-chain execution — always taker (no maker concept in GMX)
+            let is_maker = false;
+
+            trades.push(UserTrade {
+                id,
+                order_id,
+                symbol,
+                side,
+                price,
+                quantity,
+                commission,
+                commission_asset,
+                is_maker,
+                timestamp,
+            });
+        }
+
+        Ok(trades)
     }
 }
 

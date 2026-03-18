@@ -12,6 +12,7 @@ use crate::core::types::{
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, PublicTrade, StreamEvent, TradeSide,
     OrderUpdateEvent, SymbolInfo, FeeInfo,
+    UserTrade,
 };
 
 /// Парсер ответов Gemini API
@@ -785,6 +786,88 @@ impl GeminiParser {
         }
 
         Ok(orders)
+    }
+
+    /// Parse user trade fills from Gemini `POST /v1/mytrades`.
+    ///
+    /// Response: array of trade fill objects.
+    /// `timestamp` is in **seconds**; `timestampms` is in milliseconds.
+    ///
+    /// ```json
+    /// [{"tid":123,"order_id":"456","symbol":"btcusd","type":"Buy",
+    ///   "price":"50000.00","amount":"0.001","fee_amount":"0.50",
+    ///   "fee_currency":"USD","is_maker":true,"timestamp":1672531200,
+    ///   "timestampms":1672531200000}]
+    /// ```
+    pub fn parse_user_trades(response: &Value, end_time_ms: Option<u64>) -> ExchangeResult<Vec<UserTrade>> {
+        Self::check_error(response)?;
+
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array of user trades".to_string()))?;
+
+        let mut trades = Vec::with_capacity(arr.len());
+
+        for item in arr {
+            // Gemini timestamp is in seconds; timestampms in ms
+            let timestamp_ms = Self::get_i64(item, "timestampms")
+                .unwrap_or_else(|| {
+                    Self::get_i64(item, "timestamp")
+                        .map(|s| s * 1000)
+                        .unwrap_or(0)
+                });
+
+            // Apply end_time filter (start_time is filtered server-side via the `timestamp` param)
+            if let Some(et) = end_time_ms {
+                if (timestamp_ms as u64) > et {
+                    continue;
+                }
+            }
+
+            let id = item.get("tid")
+                .and_then(|v| v.as_i64().map(|n| n.to_string()))
+                .or_else(|| Self::get_str(item, "tid").map(String::from))
+                .unwrap_or_default();
+
+            let order_id = Self::get_str(item, "order_id")
+                .unwrap_or("")
+                .to_string();
+
+            let symbol = Self::get_str(item, "symbol")
+                .unwrap_or("")
+                .to_string();
+
+            // "type": "Buy" or "Sell"
+            let side = match Self::get_str(item, "type").unwrap_or("Buy").to_lowercase().as_str() {
+                "sell" => OrderSide::Sell,
+                _ => OrderSide::Buy,
+            };
+
+            let price = Self::get_f64(item, "price").unwrap_or(0.0);
+            let quantity = Self::get_f64(item, "amount").unwrap_or(0.0);
+            let commission = Self::get_f64(item, "fee_amount").unwrap_or(0.0);
+            let commission_asset = Self::get_str(item, "fee_currency")
+                .unwrap_or("USD")
+                .to_string();
+
+            let is_maker = item.get("is_maker")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            trades.push(UserTrade {
+                id,
+                order_id,
+                symbol,
+                side,
+                price,
+                quantity,
+                commission,
+                commission_asset,
+                is_maker,
+                timestamp: timestamp_ms,
+            });
+        }
+
+        Ok(trades)
     }
 
     /// Parse notional volume response from /v1/notionalvolume for fee rates.

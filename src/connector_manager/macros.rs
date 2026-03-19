@@ -103,10 +103,8 @@ macro_rules! impl_sync_method {
                 Self::Dukascopy(c) => c.$method($($param_name),*),
                 Self::AlphaVantage(c) => c.$method($($param_name),*),
 
-                // Data Feeds (4)
+                // On-chain Analytics (2)
                 Self::WhaleAlert(c) => c.$method($($param_name),*),
-                Self::Fred(c) => c.$method($($param_name),*),
-                Self::Coinglass(c) => c.$method($($param_name),*),
                 Self::Bitquery(c) => c.$method($($param_name),*),
 
                 // Aggregators (4)
@@ -195,10 +193,8 @@ macro_rules! impl_async_method {
                 Self::Dukascopy(c) => c.$method($($param_name),*).await,
                 Self::AlphaVantage(c) => c.$method($($param_name),*).await,
 
-                // Data Feeds (4)
+                // On-chain Analytics (2)
                 Self::WhaleAlert(c) => c.$method($($param_name),*).await,
-                Self::Fred(c) => c.$method($($param_name),*).await,
-                Self::Coinglass(c) => c.$method($($param_name),*).await,
                 Self::Bitquery(c) => c.$method($($param_name),*).await,
 
                 // Aggregators (4)

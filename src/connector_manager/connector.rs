@@ -117,11 +117,9 @@ use crate::aggregators::cryptocompare::CryptoCompareConnector;
 use crate::aggregators::defillama::DefiLlamaConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// CONNECTOR IMPORTS - INTELLIGENCE FEEDS / ON-CHAIN
+// CONNECTOR IMPORTS - ON-CHAIN ANALYTICS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-use crate::intelligence_feeds::crypto::coinglass::CoinglassConnector;
-use crate::intelligence_feeds::economic::fred::FredConnector;
 use crate::onchain::analytics::whale_alert::WhaleAlertConnector;
 use crate::onchain::analytics::bitquery::BitqueryConnector;
 
@@ -223,10 +221,8 @@ pub enum AnyConnector {
     DefiLlama(Arc<DefiLlamaConnector>),
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // INTELLIGENCE FEEDS / ON-CHAIN ANALYTICS (4)
+    // ON-CHAIN ANALYTICS (2)
     // ═══════════════════════════════════════════════════════════════════════════
-    Coinglass(Arc<CoinglassConnector>),
-    Fred(Arc<FredConnector>),
     WhaleAlert(Arc<WhaleAlertConnector>),
     Bitquery(Arc<BitqueryConnector>),
 }
@@ -306,9 +302,7 @@ impl AnyConnector {
             Self::CryptoCompare(_) => ExchangeId::CryptoCompare,
             Self::DefiLlama(_) => ExchangeId::DefiLlama,
 
-            // Intelligence feeds / on-chain
-            Self::Coinglass(_) => ExchangeId::Coinglass,
-            Self::Fred(_) => ExchangeId::Fred,
+            // On-chain analytics
             Self::WhaleAlert(_) => ExchangeId::WhaleAlert,
             Self::Bitquery(_) => ExchangeId::Bitquery,
         }
@@ -384,9 +378,7 @@ impl AnyConnector {
             Self::CryptoCompare(c) => c.metrics(),
             Self::DefiLlama(c) => c.metrics(),
 
-            // Intelligence feeds / on-chain
-            Self::Coinglass(c) => c.metrics(),
-            Self::Fred(c) => c.metrics(),
+            // On-chain analytics
             Self::WhaleAlert(c) => c.metrics(),
             Self::Bitquery(c) => c.metrics(),
         }
@@ -470,9 +462,7 @@ impl ExchangeIdentity for AnyConnector {
             Self::CryptoCompare(c) => c.is_testnet(),
             Self::DefiLlama(c) => c.is_testnet(),
 
-            // Intelligence feeds / on-chain
-            Self::Coinglass(c) => c.is_testnet(),
-            Self::Fred(c) => c.is_testnet(),
+            // On-chain analytics
             Self::WhaleAlert(c) => c.is_testnet(),
             Self::Bitquery(c) => c.is_testnet(),
         }
@@ -544,9 +534,7 @@ impl ExchangeIdentity for AnyConnector {
             Self::CryptoCompare(c) => c.supported_account_types(),
             Self::DefiLlama(c) => c.supported_account_types(),
 
-            // Intelligence feeds / on-chain
-            Self::Coinglass(c) => c.supported_account_types(),
-            Self::Fred(c) => c.supported_account_types(),
+            // On-chain analytics
             Self::WhaleAlert(c) => c.supported_account_types(),
             Self::Bitquery(c) => c.supported_account_types(),
         }
@@ -627,9 +615,7 @@ impl MarketData for AnyConnector {
             Self::CryptoCompare(c) => c.get_price(symbol, account_type).await,
             Self::DefiLlama(c) => c.get_price(symbol, account_type).await,
 
-            // Intelligence feeds / on-chain
-            Self::Coinglass(c) => c.get_price(symbol, account_type).await,
-            Self::Fred(c) => c.get_price(symbol, account_type).await,
+            // On-chain analytics
             Self::WhaleAlert(c) => c.get_price(symbol, account_type).await,
             Self::Bitquery(c) => c.get_price(symbol, account_type).await,
         }
@@ -706,9 +692,7 @@ impl MarketData for AnyConnector {
             Self::CryptoCompare(c) => c.get_orderbook(symbol, depth, account_type).await,
             Self::DefiLlama(c) => c.get_orderbook(symbol, depth, account_type).await,
 
-            // Intelligence feeds / on-chain
-            Self::Coinglass(c) => c.get_orderbook(symbol, depth, account_type).await,
-            Self::Fred(c) => c.get_orderbook(symbol, depth, account_type).await,
+            // On-chain analytics
             Self::WhaleAlert(c) => c.get_orderbook(symbol, depth, account_type).await,
             Self::Bitquery(c) => c.get_orderbook(symbol, depth, account_type).await,
         }
@@ -787,9 +771,7 @@ impl MarketData for AnyConnector {
             Self::CryptoCompare(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
             Self::DefiLlama(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
 
-            // Intelligence feeds / on-chain
-            Self::Coinglass(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
-            Self::Fred(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
+            // On-chain analytics
             Self::WhaleAlert(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
             Self::Bitquery(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
         }
@@ -865,9 +847,7 @@ impl MarketData for AnyConnector {
             Self::CryptoCompare(c) => c.get_ticker(symbol, account_type).await,
             Self::DefiLlama(c) => c.get_ticker(symbol, account_type).await,
 
-            // Intelligence feeds / on-chain
-            Self::Coinglass(c) => c.get_ticker(symbol, account_type).await,
-            Self::Fred(c) => c.get_ticker(symbol, account_type).await,
+            // On-chain analytics
             Self::WhaleAlert(c) => c.get_ticker(symbol, account_type).await,
             Self::Bitquery(c) => c.get_ticker(symbol, account_type).await,
         }
@@ -939,9 +919,7 @@ impl MarketData for AnyConnector {
             Self::CryptoCompare(c) => c.ping().await,
             Self::DefiLlama(c) => c.ping().await,
 
-            // Intelligence feeds / on-chain
-            Self::Coinglass(c) => c.ping().await,
-            Self::Fred(c) => c.ping().await,
+            // On-chain analytics
             Self::WhaleAlert(c) => c.ping().await,
             Self::Bitquery(c) => c.ping().await,
         }
@@ -1013,9 +991,7 @@ impl MarketData for AnyConnector {
             Self::CryptoCompare(c) => c.get_exchange_info(account_type).await,
             Self::DefiLlama(c) => c.get_exchange_info(account_type).await,
 
-            // Intelligence feeds / on-chain
-            Self::Coinglass(c) => c.get_exchange_info(account_type).await,
-            Self::Fred(c) => c.get_exchange_info(account_type).await,
+            // On-chain analytics
             Self::WhaleAlert(c) => c.get_exchange_info(account_type).await,
             Self::Bitquery(c) => c.get_exchange_info(account_type).await,
         }

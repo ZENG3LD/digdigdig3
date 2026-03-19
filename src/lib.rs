@@ -44,7 +44,6 @@ pub mod onchain;
 pub mod stocks;
 pub mod forex;
 pub mod aggregators;
-pub mod intelligence_feeds;
 pub mod prediction;
 pub mod connector_manager;
 pub mod testing;

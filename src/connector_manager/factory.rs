@@ -38,19 +38,15 @@
 //! - Simpler constructors without testnet parameter
 //!
 //! ### Pattern C: `::new()` (sync)
-//! - Data feeds: AlphaVantage (with auth), Fred, etc.
+//! - Data feeds: AlphaVantage (with auth), etc.
 //! - Lightweight connectors that don't need async setup
 //!
 //! ### Pattern D: `::new(api_key)` (async)
 //! - DEX: Jupiter (requires API key since Oct 2025)
 //! - Special cases requiring specific parameters
 //!
-//! ### Pattern E: `::new(credentials, rate_limit)` (async)
-//! - Data feeds: Coinglass
-//! - Require both credentials and rate limit configuration
-//!
 //! ### Pattern F: `::from_env()` (sync)
-//! - Data feeds: Fred, Alpaca
+//! - Data feeds: Alpaca
 //! - Load credentials from environment variables
 
 use std::sync::Arc;
@@ -140,11 +136,9 @@ use crate::aggregators::cryptocompare::CryptoCompareConnector;
 use crate::aggregators::defillama::DefiLlamaConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// CONNECTOR IMPORTS - INTELLIGENCE FEEDS / ON-CHAIN
+// CONNECTOR IMPORTS - ON-CHAIN ANALYTICS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-use crate::intelligence_feeds::crypto::coinglass::CoinglassConnector;
-use crate::intelligence_feeds::economic::fred::{FredConnector, FredAuth};
 use crate::onchain::analytics::whale_alert::{WhaleAlertConnector, WhaleAlertAuth};
 use crate::onchain::analytics::bitquery::BitqueryConnector;
 
@@ -450,7 +444,7 @@ impl ConnectorFactory {
             }
 
             // ═══════════════════════════════════════════════════════════════════════
-            // INTELLIGENCE FEEDS - Require API Key
+            // ON-CHAIN ANALYTICS
             // ═══════════════════════════════════════════════════════════════════════
             ExchangeId::Coinglass => {
                 Err(ExchangeError::Auth(
@@ -464,9 +458,9 @@ impl ConnectorFactory {
                 Ok(Arc::new(AnyConnector::WhaleAlert(Arc::new(c))))
             }
             ExchangeId::Fred => {
-                // FRED can work without API key (25 queries/day)
-                let c = FredConnector::from_env();
-                Ok(Arc::new(AnyConnector::Fred(Arc::new(c))))
+                Err(ExchangeError::Auth(
+                    "Fred connector has been removed - intelligence_feeds module is no longer available".into()
+                ))
             }
             ExchangeId::Bitquery => {
                 Err(ExchangeError::Auth(
@@ -811,12 +805,12 @@ impl ConnectorFactory {
             }
 
             // ═══════════════════════════════════════════════════════════════════════
-            // INTELLIGENCE FEEDS - Authenticated
+            // ON-CHAIN ANALYTICS - Authenticated
             // ═══════════════════════════════════════════════════════════════════════
             ExchangeId::Coinglass => {
-                // CoinglassConnector::new_with_default_limit creates its own auth internally
-                let c = CoinglassConnector::new_with_default_limit(credentials).await?;
-                Ok(Arc::new(AnyConnector::Coinglass(Arc::new(c))))
+                Err(ExchangeError::Auth(
+                    "Coinglass connector has been removed - intelligence_feeds module is no longer available".into()
+                ))
             }
             ExchangeId::WhaleAlert => {
                 let auth = WhaleAlertAuth::new(credentials.api_key);
@@ -824,9 +818,9 @@ impl ConnectorFactory {
                 Ok(Arc::new(AnyConnector::WhaleAlert(Arc::new(c))))
             }
             ExchangeId::Fred => {
-                let auth = FredAuth::new(credentials.api_key);
-                let c = FredConnector::new(auth);
-                Ok(Arc::new(AnyConnector::Fred(Arc::new(c))))
+                Err(ExchangeError::Auth(
+                    "Fred connector has been removed - intelligence_feeds module is no longer available".into()
+                ))
             }
             ExchangeId::Bitquery => {
                 let c = BitqueryConnector::new(credentials).await?;

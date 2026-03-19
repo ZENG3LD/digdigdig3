@@ -107,11 +107,10 @@ macro_rules! impl_sync_method {
                 Self::WhaleAlert(c) => c.$method($($param_name),*),
                 Self::Bitquery(c) => c.$method($($param_name),*),
 
-                // Aggregators (4)
+                // Brokers (1) + Data Feeds (2)
                 Self::IB(c) => c.$method($($param_name),*),
                 Self::YahooFinance(c) => c.$method($($param_name),*),
                 Self::CryptoCompare(c) => c.$method($($param_name),*),
-                Self::DefiLlama(c) => c.$method($($param_name),*),
             }
         }
     };
@@ -197,11 +196,10 @@ macro_rules! impl_async_method {
                 Self::WhaleAlert(c) => c.$method($($param_name),*).await,
                 Self::Bitquery(c) => c.$method($($param_name),*).await,
 
-                // Aggregators (4)
+                // Brokers (1) + Data Feeds (2)
                 Self::IB(c) => c.$method($($param_name),*).await,
                 Self::YahooFinance(c) => c.$method($($param_name),*).await,
                 Self::CryptoCompare(c) => c.$method($($param_name),*).await,
-                Self::DefiLlama(c) => c.$method($($param_name),*).await,
             }
         }
     };

@@ -128,12 +128,11 @@ use crate::forex::alphavantage::{AlphaVantageConnector, AlphaVantageAuth};
 use crate::prediction::polymarket::PolymarketConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// CONNECTOR IMPORTS - AGGREGATORS
+// CONNECTOR IMPORTS - DATA FEEDS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-use crate::aggregators::yahoo::YahooFinanceConnector;
-use crate::aggregators::cryptocompare::CryptoCompareConnector;
-use crate::aggregators::defillama::DefiLlamaConnector;
+use crate::data_feeds::yahoo::YahooFinanceConnector;
+use crate::data_feeds::cryptocompare::CryptoCompareConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR IMPORTS - ON-CHAIN ANALYTICS
@@ -332,8 +331,9 @@ impl ConnectorFactory {
                 Ok(Arc::new(AnyConnector::YahooFinance(Arc::new(c))))
             }
             ExchangeId::DefiLlama => {
-                let c = DefiLlamaConnector::new(None, false).await?;
-                Ok(Arc::new(AnyConnector::DefiLlama(Arc::new(c))))
+                Err(ExchangeError::UnsupportedOperation(
+                    "DefiLlama has moved to dig2feed crate".into()
+                ))
             }
             ExchangeId::Polymarket => {
                 let c = PolymarketConnector::public();
@@ -643,7 +643,7 @@ impl ConnectorFactory {
             // ═══════════════════════════════════════════════════════════════════════
             ExchangeId::CryptoCompare => {
                 // CryptoCompare constructor is sync and needs CryptoCompareAuth
-                let auth = crate::aggregators::cryptocompare::CryptoCompareAuth::new(credentials.api_key);
+                let auth = crate::data_feeds::cryptocompare::CryptoCompareAuth::new(credentials.api_key);
                 let c = CryptoCompareConnector::new(auth);
                 Ok(Arc::new(AnyConnector::CryptoCompare(Arc::new(c))))
             }
@@ -773,12 +773,16 @@ impl ConnectorFactory {
             }
 
             // ═══════════════════════════════════════════════════════════════════════
-            // AGGREGATORS - No auth required
+            // DATA FEEDS - No auth required
             // ═══════════════════════════════════════════════════════════════════════
-            ExchangeId::YahooFinance |
-            ExchangeId::DefiLlama => {
-                // These don't need authentication, use public connector
+            ExchangeId::YahooFinance => {
+                // YahooFinance doesn't need authentication, use public connector
                 Self::create_public(id, testnet).await
+            }
+            ExchangeId::DefiLlama => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "DefiLlama has moved to dig2feed crate".into()
+                ))
             }
 
             // ═══════════════════════════════════════════════════════════════════════

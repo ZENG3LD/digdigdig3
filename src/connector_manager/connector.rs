@@ -108,13 +108,17 @@ use crate::forex::alphavantage::AlphaVantageConnector;
 use crate::prediction::polymarket::PolymarketConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// CONNECTOR IMPORTS - AGGREGATORS
+// CONNECTOR IMPORTS - BROKERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-use crate::aggregators::ib::IBConnector;
-use crate::aggregators::yahoo::YahooFinanceConnector;
-use crate::aggregators::cryptocompare::CryptoCompareConnector;
-use crate::aggregators::defillama::DefiLlamaConnector;
+use crate::brokers::ib::IBConnector;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CONNECTOR IMPORTS - DATA FEEDS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+use crate::data_feeds::yahoo::YahooFinanceConnector;
+use crate::data_feeds::cryptocompare::CryptoCompareConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR IMPORTS - ON-CHAIN ANALYTICS
@@ -213,12 +217,15 @@ pub enum AnyConnector {
     Polymarket(Arc<PolymarketConnector>),
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // AGGREGATORS (4)
+    // BROKERS (1)
     // ═══════════════════════════════════════════════════════════════════════════
     IB(Arc<IBConnector>),
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // DATA FEEDS (2)
+    // ═══════════════════════════════════════════════════════════════════════════
     YahooFinance(Arc<YahooFinanceConnector>),
     CryptoCompare(Arc<CryptoCompareConnector>),
-    DefiLlama(Arc<DefiLlamaConnector>),
 
     // ═══════════════════════════════════════════════════════════════════════════
     // ON-CHAIN ANALYTICS (2)
@@ -300,7 +307,6 @@ impl AnyConnector {
             Self::IB(_) => ExchangeId::Ib,
             Self::YahooFinance(_) => ExchangeId::YahooFinance,
             Self::CryptoCompare(_) => ExchangeId::CryptoCompare,
-            Self::DefiLlama(_) => ExchangeId::DefiLlama,
 
             // On-chain analytics
             Self::WhaleAlert(_) => ExchangeId::WhaleAlert,
@@ -376,7 +382,6 @@ impl AnyConnector {
             Self::IB(c) => c.metrics(),
             Self::YahooFinance(c) => c.metrics(),
             Self::CryptoCompare(c) => c.metrics(),
-            Self::DefiLlama(c) => c.metrics(),
 
             // On-chain analytics
             Self::WhaleAlert(c) => c.metrics(),
@@ -460,7 +465,6 @@ impl ExchangeIdentity for AnyConnector {
             Self::IB(c) => c.is_testnet(),
             Self::YahooFinance(c) => c.is_testnet(),
             Self::CryptoCompare(c) => c.is_testnet(),
-            Self::DefiLlama(c) => c.is_testnet(),
 
             // On-chain analytics
             Self::WhaleAlert(c) => c.is_testnet(),
@@ -532,7 +536,6 @@ impl ExchangeIdentity for AnyConnector {
             Self::IB(c) => c.supported_account_types(),
             Self::YahooFinance(c) => c.supported_account_types(),
             Self::CryptoCompare(c) => c.supported_account_types(),
-            Self::DefiLlama(c) => c.supported_account_types(),
 
             // On-chain analytics
             Self::WhaleAlert(c) => c.supported_account_types(),
@@ -613,7 +616,6 @@ impl MarketData for AnyConnector {
             Self::IB(c) => c.get_price(symbol, account_type).await,
             Self::YahooFinance(c) => c.get_price(symbol, account_type).await,
             Self::CryptoCompare(c) => c.get_price(symbol, account_type).await,
-            Self::DefiLlama(c) => c.get_price(symbol, account_type).await,
 
             // On-chain analytics
             Self::WhaleAlert(c) => c.get_price(symbol, account_type).await,
@@ -690,7 +692,6 @@ impl MarketData for AnyConnector {
             Self::IB(c) => c.get_orderbook(symbol, depth, account_type).await,
             Self::YahooFinance(c) => c.get_orderbook(symbol, depth, account_type).await,
             Self::CryptoCompare(c) => c.get_orderbook(symbol, depth, account_type).await,
-            Self::DefiLlama(c) => c.get_orderbook(symbol, depth, account_type).await,
 
             // On-chain analytics
             Self::WhaleAlert(c) => c.get_orderbook(symbol, depth, account_type).await,
@@ -769,7 +770,6 @@ impl MarketData for AnyConnector {
             Self::IB(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
             Self::YahooFinance(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
             Self::CryptoCompare(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
-            Self::DefiLlama(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
 
             // On-chain analytics
             Self::WhaleAlert(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
@@ -845,7 +845,6 @@ impl MarketData for AnyConnector {
             Self::IB(c) => c.get_ticker(symbol, account_type).await,
             Self::YahooFinance(c) => c.get_ticker(symbol, account_type).await,
             Self::CryptoCompare(c) => c.get_ticker(symbol, account_type).await,
-            Self::DefiLlama(c) => c.get_ticker(symbol, account_type).await,
 
             // On-chain analytics
             Self::WhaleAlert(c) => c.get_ticker(symbol, account_type).await,
@@ -917,7 +916,6 @@ impl MarketData for AnyConnector {
             Self::IB(c) => c.ping().await,
             Self::YahooFinance(c) => c.ping().await,
             Self::CryptoCompare(c) => c.ping().await,
-            Self::DefiLlama(c) => c.ping().await,
 
             // On-chain analytics
             Self::WhaleAlert(c) => c.ping().await,
@@ -989,7 +987,6 @@ impl MarketData for AnyConnector {
             Self::IB(c) => c.get_exchange_info(account_type).await,
             Self::YahooFinance(c) => c.get_exchange_info(account_type).await,
             Self::CryptoCompare(c) => c.get_exchange_info(account_type).await,
-            Self::DefiLlama(c) => c.get_exchange_info(account_type).await,
 
             // On-chain analytics
             Self::WhaleAlert(c) => c.get_exchange_info(account_type).await,
@@ -1147,8 +1144,8 @@ mod tests {
     /// Test that Aggregator variants exist
     #[test]
     fn test_aggregator_variants_exist() {
-        // Expected aggregator connectors:
-        // IB, YahooFinance, CryptoCompare, DefiLlama (4)
-        // Total: 19 + 7 + 14 + 3 + 1 + 4 + 4 = 52 connectors
+        // Expected connector categories:
+        // CEX: 19, DEX: 7, Stocks: 14, Forex: 3, Prediction: 1, Brokers: 1, DataFeeds: 2, OnChain: 2
+        // Total: 49 connectors
     }
 }

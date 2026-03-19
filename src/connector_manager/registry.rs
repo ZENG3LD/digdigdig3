@@ -32,8 +32,10 @@ pub enum ConnectorCategory {
     Forex,
     /// Specialized data feed (WhaleAlert, Fred, Coinglass, etc.)
     DataFeed,
-    /// Multi-market aggregator (IB, YahooFinance, CryptoCompare, DefiLlama)
-    Aggregator,
+    /// Multi-asset broker (IB)
+    Broker,
+    /// Read-only market data provider (YahooFinance, CryptoCompare)
+    DataProvider,
 }
 
 /// Supported features for a connector
@@ -1869,7 +1871,7 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
         id: ExchangeId::Ib,
         name: "Interactive Brokers",
         exchange_type: ExchangeType::Broker,
-        category: ConnectorCategory::Aggregator,
+        category: ConnectorCategory::Broker,
         supported_features: Features {
             market_data: true,
             trading: true,
@@ -1905,7 +1907,7 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
         id: ExchangeId::YahooFinance,
         name: "Yahoo Finance",
         exchange_type: ExchangeType::DataProvider,
-        category: ConnectorCategory::Aggregator,
+        category: ConnectorCategory::DataProvider,
         supported_features: Features::data_only(),
         authentication: AuthType::None,
         rate_limits: RateLimits::standard(5, 100),
@@ -1920,7 +1922,7 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
         id: ExchangeId::CryptoCompare,
         name: "CryptoCompare",
         exchange_type: ExchangeType::DataProvider,
-        category: ConnectorCategory::Aggregator,
+        category: ConnectorCategory::DataProvider,
         supported_features: Features::data_with_ws(),
         authentication: AuthType::ApiKey,
         rate_limits: RateLimits::standard(10, 250000),
@@ -1928,21 +1930,6 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
         websocket_url: Some("wss://streamer.cryptocompare.com/v2"),
         documentation_url: Some("https://min-api.cryptocompare.com/documentation"),
         requires_api_key_for_data: true,
-        requires_api_key_for_trading: false,
-        free_tier: true,
-    },
-    ConnectorMetadata {
-        id: ExchangeId::DefiLlama,
-        name: "DefiLlama",
-        exchange_type: ExchangeType::DataProvider,
-        category: ConnectorCategory::Aggregator,
-        supported_features: Features::data_only(),
-        authentication: AuthType::None,
-        rate_limits: RateLimits::standard(10, 300),
-        base_url: "https://api.llama.fi",
-        websocket_url: None,
-        documentation_url: Some("https://defillama.com/docs/api"),
-        requires_api_key_for_data: false,
         requires_api_key_for_trading: false,
         free_tier: true,
     },
@@ -2312,10 +2299,11 @@ mod tests {
         assert!(categories.contains(&ConnectorCategory::StockMarketRussia));
         assert!(categories.contains(&ConnectorCategory::Forex));
         assert!(categories.contains(&ConnectorCategory::DataFeed));
-        assert!(categories.contains(&ConnectorCategory::Aggregator));
+        assert!(categories.contains(&ConnectorCategory::Broker));
+        assert!(categories.contains(&ConnectorCategory::DataProvider));
 
-        // Should have exactly 10 categories
-        assert_eq!(categories.len(), 10, "Should use all 10 ConnectorCategory variants");
+        // Should have exactly 11 categories
+        assert_eq!(categories.len(), 11, "Should use all 11 ConnectorCategory variants");
     }
 
     /// Test that there are no duplicate ExchangeIds

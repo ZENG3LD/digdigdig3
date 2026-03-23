@@ -4,7 +4,7 @@
 //!
 //! ## Overview
 //!
-//! This module provides a unified factory interface for creating any of the 48
+//! This module provides a unified factory interface for creating any of the 45
 //! supported connectors. It handles all constructor variations across different
 //! exchanges and categories.
 //!
@@ -40,10 +40,6 @@
 //! ### Pattern C: `::new()` (sync)
 //! - Data feeds: AlphaVantage (with auth), etc.
 //! - Lightweight connectors that don't need async setup
-//!
-//! ### Pattern D: `::new(api_key)` (async)
-//! - DEX: Jupiter (requires API key since Oct 2025)
-//! - Special cases requiring specific parameters
 //!
 //! ### Pattern F: `::from_env()` (sync)
 //! - Data feeds: Alpaca
@@ -83,10 +79,7 @@ use crate::crypto::cex::hyperliquid::HyperliquidConnector;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 use crate::crypto::dex::lighter::LighterConnector;
-#[cfg(feature = "onchain-evm")]
-use crate::crypto::swap::uniswap::UniswapConnector;
-use crate::crypto::dex::jupiter::JupiterConnector;
-use crate::crypto::swap::raydium::RaydiumConnector;
+// Jupiter, Raydium, Uniswap → extracted to dig2swap crate
 use crate::crypto::dex::gmx::GmxConnector;
 use crate::crypto::dex::paradex::ParadexConnector;
 use crate::crypto::dex::dydx::DydxConnector;
@@ -292,26 +285,15 @@ impl ConnectorFactory {
                 let c = LighterConnector::public(testnet).await?;
                 Ok(Arc::new(AnyConnector::Lighter(Arc::new(c))))
             }
-            ExchangeId::Uniswap => {
-                let c = UniswapConnector::public(testnet).await?;
-                Ok(Arc::new(AnyConnector::Uniswap(Arc::new(c))))
-            }
-            ExchangeId::Raydium => {
-                let c = RaydiumConnector::new(testnet).await?;
-                Ok(Arc::new(AnyConnector::Raydium(Arc::new(c))))
+            // Jupiter, Raydium, Uniswap → extracted to dig2swap crate
+            ExchangeId::Jupiter | ExchangeId::Raydium | ExchangeId::Uniswap => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "Jupiter, Raydium, and Uniswap have been extracted to the dig2swap crate".into()
+                ))
             }
             ExchangeId::Gmx => {
                 let c = GmxConnector::arbitrum().await?;
                 Ok(Arc::new(AnyConnector::Gmx(Arc::new(c))))
-            }
-
-            // ═══════════════════════════════════════════════════════════════════════
-            // DEX - Special: Jupiter requires API key
-            // ═══════════════════════════════════════════════════════════════════════
-            ExchangeId::Jupiter => {
-                Err(ExchangeError::Auth(
-                    "Jupiter requires API key (use create_authenticated with api_key in Credentials)".into()
-                ))
             }
 
             // ═══════════════════════════════════════════════════════════════════════
@@ -610,20 +592,17 @@ impl ConnectorFactory {
                 Ok(Arc::new(AnyConnector::Paradex(Arc::new(c))))
             }
 
-            // ═══════════════════════════════════════════════════════════════════════
-            // DEX - Pattern: ::new(api_key)
-            // ═══════════════════════════════════════════════════════════════════════
-            ExchangeId::Jupiter => {
-                let c = JupiterConnector::new(credentials.api_key).await?;
-                Ok(Arc::new(AnyConnector::Jupiter(Arc::new(c))))
+            // Jupiter, Raydium, Uniswap → extracted to dig2swap crate
+            ExchangeId::Jupiter | ExchangeId::Raydium | ExchangeId::Uniswap => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "Jupiter, Raydium, and Uniswap have been extracted to the dig2swap crate".into()
+                ))
             }
 
             // ═══════════════════════════════════════════════════════════════════════
             // DEX - No auth supported (public only)
             // ═══════════════════════════════════════════════════════════════════════
             ExchangeId::Lighter |
-            ExchangeId::Uniswap |
-            ExchangeId::Raydium |
             ExchangeId::Gmx => {
                 // These DEXs don't support authentication, use public connector
                 Self::create_public(id, testnet).await
@@ -863,19 +842,6 @@ mod tests {
 
         let connector = result.unwrap();
         assert_eq!(connector.id(), ExchangeId::Binance);
-    }
-
-    /// Test that exchanges requiring auth return appropriate error
-    #[tokio::test]
-    async fn test_create_public_requires_auth() {
-        let result = ConnectorFactory::create_public(ExchangeId::Jupiter, false).await;
-        assert!(result.is_err(), "Jupiter requires API key");
-
-        if let Err(ExchangeError::Auth(msg)) = result {
-            assert!(msg.contains("Jupiter"), "Error message should mention Jupiter");
-        } else {
-            panic!("Expected Auth error");
-        }
     }
 
     /// Test creating authenticated connector

@@ -1,6 +1,6 @@
 //! # AnyConnector Enum
 //!
-//! Unified enum wrapper for all 52 active connectors.
+//! Unified enum wrapper for all 49 active connectors.
 //!
 //! ## Architecture
 //!
@@ -8,7 +8,7 @@
 //! AnyConnector (enum)
 //!   ├── Binance(Arc<BinanceConnector>)
 //!   ├── KuCoin(Arc<KuCoinConnector>)
-//!   └── ... (52 variants)
+//!   └── ... (49 variants)
 //! ```
 //!
 //! Each variant wraps a connector in Arc for cheap cloning.
@@ -56,10 +56,7 @@ use crate::crypto::cex::hyperliquid::HyperliquidConnector;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 use crate::crypto::dex::lighter::LighterConnector;
-#[cfg(feature = "onchain-evm")]
-use crate::crypto::swap::uniswap::UniswapConnector;
-use crate::crypto::dex::jupiter::JupiterConnector;
-use crate::crypto::swap::raydium::RaydiumConnector;
+// Jupiter, Raydium, Uniswap → extracted to dig2swap crate
 use crate::crypto::dex::gmx::GmxConnector;
 use crate::crypto::dex::paradex::ParadexConnector;
 use crate::crypto::dex::dydx::DydxConnector;
@@ -131,7 +128,7 @@ use crate::onchain::analytics::bitquery::BitqueryConnector;
 // ANYCONNECTOR ENUM
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Unified connector enum wrapping all 52 active connectors
+/// Unified connector enum wrapping all 49 active connectors
 ///
 /// Each variant wraps the connector in Arc for cheap cloning.
 /// All core traits are delegated to the underlying connector.
@@ -167,13 +164,9 @@ pub enum AnyConnector {
     HyperLiquid(Arc<HyperliquidConnector>),
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // DEX - Decentralized Exchanges (7)
+    // DEX - Decentralized Exchanges (4) — Jupiter, Raydium, Uniswap extracted to dig2swap crate
     // ═══════════════════════════════════════════════════════════════════════════
     Lighter(Arc<LighterConnector>),
-    #[cfg(feature = "onchain-evm")]
-    Uniswap(Arc<UniswapConnector>),
-    Jupiter(Arc<JupiterConnector>),
-    Raydium(Arc<RaydiumConnector>),
     Gmx(Arc<GmxConnector>),
     Paradex(Arc<ParadexConnector>),
     Dydx(Arc<DydxConnector>),
@@ -268,9 +261,6 @@ impl AnyConnector {
 
             // DEX
             Self::Lighter(_) => ExchangeId::Lighter,
-            Self::Uniswap(_) => ExchangeId::Uniswap,
-            Self::Jupiter(_) => ExchangeId::Jupiter,
-            Self::Raydium(_) => ExchangeId::Raydium,
             Self::Gmx(_) => ExchangeId::Gmx,
             Self::Paradex(_) => ExchangeId::Paradex,
             Self::Dydx(_) => ExchangeId::Dydx,
@@ -343,9 +333,6 @@ impl AnyConnector {
 
             // DEX
             Self::Lighter(c) => c.metrics(),
-            Self::Uniswap(c) => c.metrics(),
-            Self::Jupiter(c) => c.metrics(),
-            Self::Raydium(c) => c.metrics(),
             Self::Gmx(c) => c.metrics(),
             Self::Paradex(c) => c.metrics(),
             Self::Dydx(c) => c.metrics(),
@@ -426,9 +413,6 @@ impl ExchangeIdentity for AnyConnector {
 
             // DEX
             Self::Lighter(c) => c.is_testnet(),
-            Self::Uniswap(c) => c.is_testnet(),
-            Self::Jupiter(c) => c.is_testnet(),
-            Self::Raydium(c) => c.is_testnet(),
             Self::Gmx(c) => c.is_testnet(),
             Self::Paradex(c) => c.is_testnet(),
             Self::Dydx(c) => c.is_testnet(),
@@ -497,9 +481,6 @@ impl ExchangeIdentity for AnyConnector {
 
             // DEX
             Self::Lighter(c) => c.supported_account_types(),
-            Self::Uniswap(c) => c.supported_account_types(),
-            Self::Jupiter(c) => c.supported_account_types(),
-            Self::Raydium(c) => c.supported_account_types(),
             Self::Gmx(c) => c.supported_account_types(),
             Self::Paradex(c) => c.supported_account_types(),
             Self::Dydx(c) => c.supported_account_types(),
@@ -577,9 +558,6 @@ impl MarketData for AnyConnector {
 
             // DEX
             Self::Lighter(c) => c.get_price(symbol, account_type).await,
-            Self::Uniswap(c) => c.get_price(symbol, account_type).await,
-            Self::Jupiter(c) => c.get_price(symbol, account_type).await,
-            Self::Raydium(c) => c.get_price(symbol, account_type).await,
             Self::Gmx(c) => c.get_price(symbol, account_type).await,
             Self::Paradex(c) => c.get_price(symbol, account_type).await,
             Self::Dydx(c) => c.get_price(symbol, account_type).await,
@@ -653,9 +631,6 @@ impl MarketData for AnyConnector {
 
             // DEX
             Self::Lighter(c) => c.get_orderbook(symbol, depth, account_type).await,
-            Self::Uniswap(c) => c.get_orderbook(symbol, depth, account_type).await,
-            Self::Jupiter(c) => c.get_orderbook(symbol, depth, account_type).await,
-            Self::Raydium(c) => c.get_orderbook(symbol, depth, account_type).await,
             Self::Gmx(c) => c.get_orderbook(symbol, depth, account_type).await,
             Self::Paradex(c) => c.get_orderbook(symbol, depth, account_type).await,
             Self::Dydx(c) => c.get_orderbook(symbol, depth, account_type).await,
@@ -731,9 +706,6 @@ impl MarketData for AnyConnector {
 
             // DEX
             Self::Lighter(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
-            Self::Uniswap(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
-            Self::Jupiter(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
-            Self::Raydium(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
             Self::Gmx(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
             Self::Paradex(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
             Self::Dydx(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
@@ -806,9 +778,6 @@ impl MarketData for AnyConnector {
 
             // DEX
             Self::Lighter(c) => c.get_ticker(symbol, account_type).await,
-            Self::Uniswap(c) => c.get_ticker(symbol, account_type).await,
-            Self::Jupiter(c) => c.get_ticker(symbol, account_type).await,
-            Self::Raydium(c) => c.get_ticker(symbol, account_type).await,
             Self::Gmx(c) => c.get_ticker(symbol, account_type).await,
             Self::Paradex(c) => c.get_ticker(symbol, account_type).await,
             Self::Dydx(c) => c.get_ticker(symbol, account_type).await,
@@ -877,9 +846,6 @@ impl MarketData for AnyConnector {
 
             // DEX
             Self::Lighter(c) => c.ping().await,
-            Self::Uniswap(c) => c.ping().await,
-            Self::Jupiter(c) => c.ping().await,
-            Self::Raydium(c) => c.ping().await,
             Self::Gmx(c) => c.ping().await,
             Self::Paradex(c) => c.ping().await,
             Self::Dydx(c) => c.ping().await,
@@ -948,9 +914,6 @@ impl MarketData for AnyConnector {
 
             // DEX
             Self::Lighter(c) => c.get_exchange_info(account_type).await,
-            Self::Uniswap(c) => c.get_exchange_info(account_type).await,
-            Self::Jupiter(c) => c.get_exchange_info(account_type).await,
-            Self::Raydium(c) => c.get_exchange_info(account_type).await,
             Self::Gmx(c) => c.get_exchange_info(account_type).await,
             Self::Paradex(c) => c.get_exchange_info(account_type).await,
             Self::Dydx(c) => c.get_exchange_info(account_type).await,
@@ -1003,13 +966,13 @@ impl MarketData for AnyConnector {
 mod tests {
     use super::*;
 
-    /// Test that AnyConnector has exactly 52 variants (compile-time check via exhaustive match)
+    /// Test that AnyConnector has exactly 49 variants (compile-time check via exhaustive match)
     /// This test verifies that all enum variants are handled in the id() method
     #[test]
     fn test_any_connector_variant_count() {
         // This is a compile-time test
         // If a new variant is added without updating id(), this will fail to compile
-        // The actual count is verified by the registry tests (52 connectors)
+        // The actual count is verified by the registry tests (49 connectors)
     }
 
     /// Test that AnyConnector has reasonable memory size due to Arc wrapping
@@ -1111,8 +1074,9 @@ mod tests {
         // This is a compile-time test
         // All DEX variants should be accessible
 
-        // Expected 7 DEX connectors:
-        // Lighter, Uniswap, Jupiter, Raydium, Gmx, Paradex, Dydx
+        // Expected 4 DEX connectors:
+        // Lighter, Gmx, Paradex, Dydx
+        // Jupiter, Raydium, Uniswap → extracted to dig2swap crate
     }
 
     /// Test that all Stock market variants exist
@@ -1145,7 +1109,7 @@ mod tests {
     #[test]
     fn test_aggregator_variants_exist() {
         // Expected connector categories:
-        // CEX: 19, DEX: 7, Stocks: 14, Forex: 3, Prediction: 1, Brokers: 1, DataFeeds: 2, OnChain: 2
-        // Total: 49 connectors
+        // CEX: 19, DEX: 4 (Jupiter/Raydium/Uniswap extracted to dig2swap), Stocks: 14, Forex: 3, Prediction: 1, Brokers: 1, DataFeeds: 2, OnChain: 2
+        // Total: 46 connectors
     }
 }

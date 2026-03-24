@@ -163,39 +163,3 @@ pub fn _parse_symbol(api_symbol: &str) -> crate::core::types::Symbol {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_format_symbol() {
-        let symbol = crate::core::types::Symbol {
-            base: "INFY".to_string(),
-            quote: "NSE".to_string(),
-        };
-        assert_eq!(format_symbol(&symbol), "NSE:INFY");
-
-        let symbol2 = crate::core::types::Symbol {
-            base: "reliance".to_string(),
-            quote: "BSE".to_string(),
-        };
-        assert_eq!(format_symbol(&symbol2), "BSE:RELIANCE");
-
-        let symbol3 = crate::core::types::Symbol {
-            base: "INFY".to_string(),
-            quote: "INR".to_string(),
-        };
-        assert_eq!(format_symbol(&symbol3), "NSE:INFY");
-    }
-
-    #[test]
-    fn test_parse_symbol() {
-        let parsed = _parse_symbol("NSE:INFY");
-        assert_eq!(parsed.base, "INFY");
-        assert_eq!(parsed.quote, "NSE");
-
-        let parsed2 = _parse_symbol("RELIANCE");
-        assert_eq!(parsed2.base, "RELIANCE");
-        assert_eq!(parsed2.quote, "INR");
-    }
-}

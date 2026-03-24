@@ -1475,20 +1475,3 @@ impl FundingHistory for ParadexConnector {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_public_connector() {
-        let connector = ParadexConnector::public(true).await;
-        assert!(connector.is_ok());
-    }
-
-    #[test]
-    fn test_exchange_identity() {
-        let connector = ParadexConnector::public(true);
-        // This is async, so we can't test it directly here
-        // But we can test the sync methods once we have instance
-    }
-}

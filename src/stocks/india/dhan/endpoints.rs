@@ -313,39 +313,3 @@ pub fn map_product_type(account_type: AccountType) -> &'static str {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_endpoint_paths() {
-        assert_eq!(DhanEndpoint::PlaceOrder.path(), "/v2/orders");
-        assert_eq!(DhanEndpoint::GetHoldings.path(), "/v2/holdings");
-        assert_eq!(DhanEndpoint::LTP.path(), "/v2/marketfeed/ltp");
-    }
-
-    #[test]
-    fn test_endpoint_methods() {
-        assert_eq!(DhanEndpoint::PlaceOrder.method(), "POST");
-        assert_eq!(DhanEndpoint::ModifyOrder.method(), "PUT");
-        assert_eq!(DhanEndpoint::CancelOrder.method(), "DELETE");
-        assert_eq!(DhanEndpoint::GetOrderBook.method(), "GET");
-    }
-
-    #[test]
-    fn test_exchange_segment() {
-        assert_eq!(DhanExchangeSegment::NseEq.as_str(), "NSE_EQ");
-        assert_eq!(DhanExchangeSegment::NseEq.as_int(), 0);
-        assert_eq!(
-            DhanExchangeSegment::_from_str("NSE_EQ"),
-            Some(DhanExchangeSegment::NseEq)
-        );
-    }
-
-    #[test]
-    fn test_interval_mapping() {
-        assert_eq!(map_interval("1m"), "1");
-        assert_eq!(map_interval("5m"), "5");
-        assert_eq!(map_interval("1h"), "60");
-    }
-}

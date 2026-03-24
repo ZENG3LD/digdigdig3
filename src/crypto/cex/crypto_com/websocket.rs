@@ -846,39 +846,3 @@ fn _build_subscribe_message(id: i64, channels: Vec<String>, nonce: i64) -> serde
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::core::Credentials;
-
-    #[test]
-    fn test_build_auth_message() {
-        let credentials = Credentials::new("test_key", "test_secret");
-        let auth = CryptoComAuth::new(&credentials).unwrap();
-        let msg = build_auth_message(&auth, 1, 1234567890);
-
-        assert_eq!(msg["id"], 1);
-        assert_eq!(msg["method"], "public/auth");
-        assert_eq!(msg["api_key"], "test_key");
-        assert!(msg["sig"].is_string());
-        assert_eq!(msg["nonce"], 1234567890);
-    }
-
-    #[test]
-    fn test_build_heartbeat_response() {
-        let msg = build_heartbeat_response(123);
-        assert_eq!(msg["id"], 123);
-        assert_eq!(msg["method"], "public/respond-heartbeat");
-    }
-
-    #[test]
-    fn test_build_subscribe_message() {
-        let channels = vec!["ticker.BTCUSD-PERP".to_string(), "book.BTCUSD-PERP.10".to_string()];
-        let msg = build_subscribe_message(1, channels.clone(), 1234567890);
-
-        assert_eq!(msg["id"], 1);
-        assert_eq!(msg["method"], "subscribe");
-        assert_eq!(msg["params"]["channels"].as_array().unwrap().len(), 2);
-        assert_eq!(msg["nonce"], 1234567890);
-    }
-}

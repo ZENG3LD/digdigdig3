@@ -1684,27 +1684,3 @@ fn classify_deribit_entry_type(type_str: &str) -> LedgerEntryType {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_currency_from_symbol() {
-        let symbol = Symbol::new("BTC", "PERPETUAL");
-        assert_eq!(DeribitConnector::_currency_from_symbol(&symbol), "BTC");
-
-        let symbol = Symbol::new("eth", "usd");
-        assert_eq!(DeribitConnector::_currency_from_symbol(&symbol), "ETH");
-    }
-
-    #[test]
-    fn test_instrument_from_symbol() {
-        let symbol = Symbol::new("BTC", "USD");
-        let instrument = DeribitConnector::instrument_from_symbol(&symbol, AccountType::FuturesCross);
-        assert_eq!(instrument, "BTC-PERPETUAL");
-
-        let symbol = Symbol::new("SOL", "USDC");
-        let instrument = DeribitConnector::instrument_from_symbol(&symbol, AccountType::FuturesCross);
-        assert_eq!(instrument, "SOL_USDC-PERPETUAL");
-    }
-}

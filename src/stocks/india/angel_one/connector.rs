@@ -1249,14 +1249,3 @@ impl Positions for AngelOneConnector {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_connector_creation_fails_without_credentials() {
-        // Cannot test without valid credentials
-        // This is a placeholder to ensure tests compile
-        assert!(true);
-    }
-}

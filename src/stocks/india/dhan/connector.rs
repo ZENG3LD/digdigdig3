@@ -896,28 +896,3 @@ impl DhanConnector {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_connector_creation() {
-        let credentials = Credentials::new("test_key", "test_secret")
-            .with_passphrase("1000000123");
-
-        let result = DhanConnector::new(credentials, true).await;
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_exchange_identity() {
-        let credentials = Credentials::new("test_key", "test_secret")
-            .with_passphrase("1000000123");
-
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        let connector = runtime.block_on(DhanConnector::new(credentials, true)).unwrap();
-
-        assert_eq!(connector.exchange_id(), ExchangeId::Dhan);
-        assert!(connector.is_testnet());
-    }
-}

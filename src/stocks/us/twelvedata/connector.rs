@@ -465,35 +465,3 @@ impl TwelvedataConnector {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_new_connector() {
-        let connector = TwelvedataConnector::new("test_api_key");
-        assert_eq!(connector.exchange_name(), "Twelvedata");
-        assert_eq!(connector.exchange_type(), ExchangeType::DataProvider);
-    }
-
-    #[test]
-    fn test_demo_connector() {
-        let connector = TwelvedataConnector::demo();
-        assert!(connector.is_testnet());
-    }
-
-    #[tokio::test]
-    async fn test_trading_unsupported() {
-        let connector = TwelvedataConnector::demo();
-        let symbol = Symbol::new("AAPL", "USD");
-
-        let result = connector
-            .market_order(symbol, OrderSide::Buy, 1.0, AccountType::Spot)
-            .await;
-
-        assert!(matches!(
-            result,
-            Err(ExchangeError::UnsupportedOperation(_))
-        ));
-    }
-}

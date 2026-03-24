@@ -1,31 +1,30 @@
 # digdigdig3
 
-Multi-exchange connector library — unified async Rust API for 140 connectors spanning crypto exchanges, stock brokers, forex providers, intelligence feeds, and on-chain blockchain providers.
+Multi-exchange connector library — unified async Rust API for crypto exchanges, stock brokers, forex providers, intelligence feeds, and DEX/on-chain query providers.
 
-**Version:** 0.1.6
+**Version:** 0.1.8
 **Edition:** Rust 2021
 **License:** MIT OR Apache-2.0
 **Repository:** https://github.com/ZENG3LD/digdigdig3
+
+> **Note:** On-chain monitoring (Solana, Bitcoin, TON, Sui, Aptos chain watchers, `OnChainEvent` types, `EventProducer` trait, and all transaction builders) was extracted to the [dig2chain](https://github.com/ZENG3LD/dig2chain) workspace. digdigdig3 retains only the on-chain providers needed by DEX connectors for query and signing (EVM via alloy, Cosmos via cosmrs, StarkNet via starknet-crypto).
 
 ---
 
 ## Overview
 
-digdigdig3 is organized around capability levels. Each level describes what a connector can do and what it requires (credentials, chain infrastructure, etc.).
+digdigdig3 is organized around capability levels. Each level describes what a connector can do and what it requires.
 
 | Level | Description | Auth Required | Count |
 |-------|-------------|--------------|-------|
-| 1a | Market data feed — klines, orderbook, ticker, trades | No | 21 crypto + 6 other |
-| 1b | Extended data feed — intelligence, aggregators, analytics | No or API key | 95 |
+| 1a | Market data feed — klines, orderbook, ticker, trades | No | 15 CEX + 7 DEX/other |
+| 1b | Extended data feed — intelligence, aggregators, analytics | No or API key | ~95 |
 | 2 | Authenticated data feed — order history, account info, positions | Yes | ~50 |
 | 3 | Execution — place/cancel orders, manage positions | Yes | ~30 |
-| 4a | On-chain transport — signing and submitting transactions for DEX connectors | Yes (private key) | 5 |
-| 4b | On-chain monitoring — direct blockchain data extraction | No | 8 chains |
+| 4a | On-chain transport — signing and submitting transactions for DEX connectors | Yes (private key) | 3 providers |
 
-**Total connectors:** 140
-**Total source files (.rs):** 846
-**Lines of code (src/):** ~258,000
-**Blockchain chains supported:** 8 (EVM, Solana, Cosmos, Bitcoin, Aptos, StarkNet, Sui, TON)
+**Total connectors:** ~120+
+**Blockchain chain monitoring:** moved to dig2chain
 
 ---
 
@@ -35,14 +34,14 @@ digdigdig3 is organized around capability levels. Each level describes what a co
 [dependencies]
 digdigdig3 = { path = "../digdigdig3" }
 # or
-digdigdig3 = { git = "https://github.com/ZENG3LD/digdigdig3", tag = "v0.1.6" }
+digdigdig3 = { git = "https://github.com/ZENG3LD/digdigdig3", tag = "v0.1.8" }
 ```
 
 With specific feature flags:
 
 ```toml
 [dependencies]
-digdigdig3 = { version = "0.1.6", features = ["grpc", "k256-signing"] }
+digdigdig3 = { version = "0.1.8", features = ["grpc", "k256-signing"] }
 ```
 
 ---
@@ -51,11 +50,9 @@ digdigdig3 = { version = "0.1.6", features = ["grpc", "k256-signing"] }
 
 Public endpoints — price, orderbook, klines, ticker, trades. No credentials needed.
 
-These connectors implement `ExchangeIdentity` + `MarketData` + `WebSocketConnector`. All public streams (ticker, orderbook, klines, trades) are available without an API key.
+These connectors implement `ExchangeIdentity` + `MarketData` + `WebSocketConnector`.
 
 ### Crypto CEX — Tested on real data via live bridge
-
-The following 21 connectors were validated against live exchange data in production use.
 
 **Legend:**
 - **Tested** — data flowed through the live bridge in production
@@ -71,8 +68,6 @@ The following 21 connectors were validated against live exchange data in product
 | Kraken | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
 | Coinbase | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
 | Gate.io | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
-| Bitfinex | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
-| Bitstamp | Tested | Tested (poll/30s) | Untested | N/A | Tested | Tested | Untested | Untested |
 | Gemini | Tested | Tested (poll/15s) | Untested | N/A | Tested | Tested | Untested | Untested |
 | MEXC | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
 | HTX | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
@@ -80,24 +75,37 @@ The following 21 connectors were validated against live exchange data in product
 | BingX | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
 | Crypto.com | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
 | Upbit | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
-| Deribit | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
-| HyperLiquid | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
-| dYdX v4 | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
-| Lighter | Tested | Untested | Untested | Untested | Tested | Tested | Untested | Untested |
-| MOEX ISS | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
+| Phemex | Untested | Untested | Untested | N/A | Untested | Untested | Untested | Untested |
 
 Notes:
-- Bitstamp and Gemini supplement WebSocket ticker with a REST poll fallback (30s and 15s intervals respectively). That REST `get_ticker` call was exercised in production.
+- Gemini supplements WebSocket ticker with a REST poll fallback (15s interval). That REST `get_ticker` call was exercised in production.
 - `get_recent_trades` (REST trades column) is implemented only for Lighter. All other connectors return `UnsupportedOperation` and are marked N/A.
 - WS orderbook and WS klines channels exist in code for most connectors but were never subscribed to in a live session.
+- Phemex: HTTP 403 on WebSocket upgrade from some regions. REST may work. Code retained.
 
-### Crypto CEX — Implemented, NOT tested on real data
+### Crypto CEX — Disabled
 
-| Exchange | REST | WebSocket | Status |
-|----------|------|-----------|--------|
-| Phemex | Yes | Yes (code exists) | HTTP 403 on WebSocket upgrade from some regions. REST may work |
-| Bithumb | Yes | Yes | Disabled — SSL timeouts and geo-blocking. 26 test files exist but are disabled |
-| Vertex | Yes | Yes | Permanently disabled — exchange shut down 2025-08-14. Code retained for reference |
+| Exchange | Issue | Status |
+|----------|-------|--------|
+| Bithumb | SSL timeouts and HTTP 403 geo-blocking. 26 test files exist but are disabled | Temporarily disabled |
+| Vertex | Exchange shut down 2025-08-14. 20 test files disabled | Permanently disabled — code retained for reference |
+
+### DEX / On-Chain Connectors
+
+| Connector | Chain | Feature Flag | Notes |
+|-----------|-------|-------------|-------|
+| Uniswap | EVM | `onchain-evm` | Swap via Trading API + on-chain `exactInputSingle` |
+| GMX | EVM | `onchain-evm` | Positions/orders via Subsquid GraphQL, funding rates from REST |
+| dYdX v4 | Cosmos | `onchain-cosmos` + `grpc` | Full trading trait via Cosmos gRPC |
+| Paradex | StarkNet | `onchain-starknet` | Full trading trait, StarkNet ECDSA signing |
+| Jupiter | Solana | (no extra feature) | Swap via Ultra API + Trigger + Recurring. No klines/orderbook (AMM) |
+| Raydium | Solana | (no extra feature) | Swap quote + transaction builder. No klines/orderbook (AMM) |
+| Lighter.xyz | Custom | — | Full trading trait, native ECgFp5+Poseidon2+Schnorr signing (zero third-party crates) |
+
+Notes:
+- GMX WebSocket removed from live watchlist (no real-time WS API — internally polls REST).
+- Paradex WebSocket removed from live watchlist (per-symbol attribution unreliable — exchange uses a global channel).
+- Jupiter and Raydium `get_klines` / `get_orderbook` return `UnsupportedOperation` by design — these are AMM aggregators with no historical data endpoint.
 
 ---
 
@@ -112,7 +120,8 @@ These connectors expose data that does not fit the standard klines/orderbook/tic
 | Provider | Domain Methods | Auth |
 |----------|----------------|------|
 | CoinGecko | Market cap, coin details, trending, global stats | API key optional |
-| Coinglass | Liquidation data, open interest, long/short ratios, funding rates, fear and greed — ~50 endpoints | API key optional (rate limits differ) |
+| CoinMarketCap | Price ranking, listings, metadata | API key |
+| Coinglass | Liquidation data, open interest, long/short ratios, funding rates, fear and greed | API key optional |
 | CryptoCompare | Multi-exchange price aggregation, historical OHLCV, social stats | API key |
 | DeFiLlama | TVL by protocol/chain, yield pools, stablecoin data | No auth (public) |
 
@@ -141,10 +150,10 @@ These connectors expose data that does not fit the standard klines/orderbook/tic
 | Finnhub | US | Yes | Yes | Yes | API key |
 | Tiingo | US | Yes | Yes | Yes | Bearer token |
 | TwelveData | US | Yes | Yes | Yes | API key |
+| Alpha Vantage | Forex/US | Yes | No | No | API key |
 | J-Quants | Japan | Yes | Yes | No | Refresh/ID token |
 | KRX | Korea | Yes | Yes | No | API key |
 | Dukascopy | Forex | Yes | Yes | No | No auth (public) |
-| Alpha Vantage | Forex/US | Yes | No | No | API key |
 
 Polygon, Finnhub, Tiingo, TwelveData, J-Quants, and KRX implement the trading trait interface but all trading methods return `UnsupportedOperation` — they are data providers, not brokers.
 
@@ -184,7 +193,7 @@ No connector in this category was tested against real credentials. All implement
 
 ### Crypto CEX (auth-required read methods)
 
-All 19 active CEX connectors listed in Level 1a also implement these authenticated read methods:
+All 15 active CEX connectors listed in Level 1a also implement these authenticated read methods:
 
 - `get_open_orders()` — open orders for symbol or all symbols
 - `get_order_history()` — historical orders with filters
@@ -235,7 +244,7 @@ Futu requires the OpenD binary running locally. All methods return `UnsupportedO
 | Bithumb | 26 tests | Disabled (geo-block) |
 | Vertex | 20 tests | Disabled (shut down) |
 
-All 19 active CEX connectors have zero test files. This is the primary quality gap.
+All 15 active CEX connectors have zero test files. This is the primary quality gap.
 
 ---
 
@@ -271,14 +280,10 @@ All CEX connectors and most broker connectors implement:
 | HTX | Yes | No | Yes | Yes | Yes | Yes |
 | Crypto.com | Yes | Yes | Yes | No | Yes | Yes |
 | MEXC | Yes | No | Yes | Yes | Yes | Yes |
-| HyperLiquid | Yes | Yes | Yes | Yes | No | No |
 | Kraken | Yes | Yes | No | No | Yes | Yes |
-| Bitfinex | Yes | Yes | Yes | Yes | Yes | No |
 | Coinbase | Yes | No | No | No | Yes | No |
-| Deribit | Yes | Yes | No | No | Yes | No |
 | Gemini | Yes | No | No | No | Yes | No |
 | Upbit | Yes | Yes | No | No | Yes | No |
-| Bitstamp | Yes | Yes | No | No | Yes | No |
 | Phemex | Yes | Yes | No | Yes | Yes | Yes |
 
 ### DEX Execution
@@ -286,8 +291,8 @@ All CEX connectors and most broker connectors implement:
 | Connector | Execution Notes |
 |-----------|----------------|
 | dYdX v4 | Order placement via Cosmos gRPC — full trading trait implemented |
-| Lighter | Full trading trait — native ECgFp5+Poseidon2+Schnorr signing (2850 lines, zero third-party crates) |
-| Paradex | Full trading trait implemented, StarkNet signing via `onchain-starknet` feature |
+| Lighter | Full trading trait — native ECgFp5+Poseidon2+Schnorr signing (zero third-party crates) |
+| Paradex | Full trading trait, StarkNet signing via `onchain-starknet` feature |
 | GMX | Trading trait + positions/orders via Subsquid GraphQL, funding rates from REST, ERC-20 balances |
 | Jupiter | Swap via Ultra API + Trigger API (limit orders) + Recurring API (DCA). Trading trait stubs by design (AMM) |
 | Raydium | Swap quote + transaction builder. Trading trait stubs by design (AMM) |
@@ -315,7 +320,7 @@ These traits exist in `src/core/traits/operations.rs` with default `UnsupportedO
 - `ConvertSwap` — convert quotes, dust conversion
 - `CopyTrading` — follow/unfollow traders, copy positions
 - `LiquidityProvider` — LP position management (Uniswap/Raydium/Jupiter)
-- `VaultManager` — vault deposit/withdraw (GMX/Paradex/dYdX/HyperLiquid)
+- `VaultManager` — vault deposit/withdraw (GMX/Paradex/dYdX)
 - `StakingDelegation` — delegate/undelegate, claim rewards
 - `BlockTradeOtc` — OTC block trade creation and execution
 - `MarketMakerProtection` — MMP config, mass quoting
@@ -323,61 +328,19 @@ These traits exist in `src/core/traits/operations.rs` with default `UnsupportedO
 
 ---
 
-## Level 4: On-Chain Providers
+## Level 4a: On-Chain Transport for DEX Connectors
 
-Direct blockchain connectivity layer. Two distinct purposes.
+Chain providers used internally by DEX connectors for transaction signing and query submission. These are **not** standalone chain monitors — for full blockchain event streaming, use [dig2chain](https://github.com/ZENG3LD/dig2chain).
 
-### 4a: Transport and Auth for DEX Connectors
-
-Chain providers used by DEX/swap connectors for transaction signing and submission.
-
-| Provider | Chain | Feature Flag | Used By | Status |
-|----------|-------|-------------|---------|--------|
-| `EvmProvider` | Ethereum/EVM | `onchain-evm` (default) | GMX (not wired), Uniswap | Code exists; not attached to GMX connector |
-| `SolanaProvider` | Solana | `onchain-solana` | Jupiter, Raydium | Wired in both connectors |
-| `CosmosProvider` | Cosmos | `onchain-cosmos` | dYdX | Wired via gRPC channel |
-| `StarkNetProvider` | StarkNet | `onchain-starknet` | Paradex | Optional feature, wired |
+| Provider | Chain | Feature Flag | Used By |
+|----------|-------|-------------|---------|
+| `EvmProvider` | Ethereum/EVM | `onchain-evm` (default) | Uniswap, GMX |
+| `CosmosProvider` | Cosmos | `onchain-cosmos` | dYdX |
+| `StarkNetProvider` | StarkNet | `onchain-starknet` | Paradex |
 
 None of these have been tested end-to-end with real transaction submission.
 
-### 4b: On-Chain Monitoring
-
-Direct chain data extraction — read blockchain state, subscribe to events, decode transactions without going through an exchange API.
-
-8 chain providers implemented:
-
-| Provider | Feature Flag | Lines | Capabilities |
-|----------|-------------|-------|-------------|
-| `EvmProvider` | `onchain-evm` | 467 | Log subscriptions, eth_call, pending tx mempool, block data |
-| `SolanaProvider` | `onchain-solana` | 410 | Transaction subscriptions, account monitoring, program interactions |
-| `CosmosProvider` | `onchain-cosmos` | 1,410 | Tendermint WebSocket, IBC transfers, governance events, staking |
-| `BitcoinProvider` | `onchain-bitcoin` | 672 | Block scanning, mempool, UTXO analysis, coinbase tx detection |
-| `AptosProvider` | `onchain-aptos` | 851 | Module events, resource queries, coin transfers |
-| `StarkNetProvider` | `onchain-starknet` | 604 | Contract calls, event monitoring, transaction signing |
-| `SuiProvider` | `onchain-sui` | 923 | Move event subscriptions, object ownership, DeepBook events |
-| `TonProvider` | `onchain-ton` | 929 | Jetton transfers, message parsing, DEX op-code detection |
-
-4 transaction decoders:
-
-| Decoder | File | Decodes |
-|---------|------|---------|
-| `EvmDecoder` | `src/core/chain/decoders/evm_decoder.rs` | ERC-20 transfers, Uniswap V2/V3 swaps, liquidity events |
-| `SolanaDecoder` | `src/core/chain/decoders/solana_decoder.rs` | SPL token transfers, Raydium/Jupiter swap logs |
-| `CosmosDecoder` | `src/core/chain/decoders/cosmos_decoder.rs` | IBC packets, governance events, staking operations |
-| `BitcoinDecoder` | `src/core/chain/decoders/bitcoin_decoder.rs` | UTXO analysis, coinbase tx identification, OP_RETURN parsing |
-
-The `OnChainEvent` enum with 17 event types is defined in `src/core/types/onchain.rs`:
-
-```
-LargeTransfer, DexSwap, LiquidityChange, ExchangeFlow, MempoolAlert,
-BridgeTransfer, NewTokenLaunch, GovernanceEvent, ValidatorAlert,
-StakingEvent, NftTransfer, ContractCall, GasAlert, BlockProduced,
-MempoolCongestion, ChainReorg, SlashingEvent
-```
-
-The `EventProducer` trait is defined in `src/core/traits/event_stream.rs` with `get_events()` and `poll_events()` methods. No connector currently implements this trait — the infrastructure is in place but nothing is wired to it.
-
-**Status: None of the on-chain providers have been tested. The provider and decoder layer compiles but has not been run against live nodes.**
+Note: Solana chain interaction (Jupiter, Raydium) is implemented via raw WebSocket + tokio-tungstenite against the Solana RPC — no `solana-sdk` dependency needed.
 
 ---
 
@@ -406,10 +369,6 @@ Optional advanced traits (default UnsupportedOperation, override per-connector):
 WebSocket:
     WebSocketConnector (connect, subscribe, event_stream, active_subscriptions)
     WebSocketExt (convenience blanket: subscribe_ticker, subscribe_klines, etc.)
-
-On-chain:
-    EventProducer (chain_id, get_events, poll_events) — defined, 0 implementations
-    ChainProvider (abstract provider trait)
 ```
 
 ### Precision Guard (f64 → Decimal at Execution Boundary)
@@ -426,28 +385,23 @@ Execution: place_order(price: f64, qty: f64)
            Exchange API receives exact string
 ```
 
-**How it works:**
-- `safe_price(f64, tick)` — converts via `Decimal::from_str(price.to_string())`, rounds to nearest tick (like CCXT)
+- `safe_price(f64, tick)` — converts via `Decimal::from_str(price.to_string())`, rounds to nearest tick
 - `safe_qty(f64, step)` — same conversion, floors to step_size (never exceeds available quantity)
 - `PrecisionCache` — per-symbol HashMap loaded from `get_exchange_info()`, stores tick/step per symbol
-- Fallback: raw `f64::to_string()` if symbol not in cache (backwards compatible)
-
-**Why not just f64::to_string()?** — `100.05_f64` is stored as `100.04999...` in IEEE-754. With floor rounding, this loses a full tick. The string-path via Ryu shortest-round-trip eliminates this drift.
-
-**tick_size sources:** 23 parsers extract real tick_size from exchange APIs (Binance PRICE_FILTER, Bybit priceFilter, OKX tickSz, etc.). Remaining connectors fall back to `price_precision` integer digits.
+- Fallback: raw `f64::to_string()` if symbol not in cache
 
 ### Connector Manager
 
 The connector manager (`src/connector_manager/`) provides a runtime pool for managing multiple connectors simultaneously:
 
-| Component | Lines | Purpose |
-|-----------|-------|---------|
-| `ConnectorHandle` | 1,101 | Unified dynamic dispatch wrapper for any connector |
-| `ConnectorRegistry` | 1,946 | Maps `ExchangeId` to connector instances |
-| `ConnectorFactory` | 1,002 | Builds connectors from `ConnectorConfig` |
-| `ConnectorConfig` | 1,039 | Per-exchange config structs |
-| `ConnectorPool` | 685 | DashMap-based concurrent pool |
-| `ConnectorAggregator` | 844 | Multi-exchange data fan-out |
+| Component | Purpose |
+|-----------|---------|
+| `ConnectorHandle` | Unified dynamic dispatch wrapper for any connector |
+| `ConnectorRegistry` | Maps `ExchangeId` to connector instances |
+| `ConnectorFactory` | Builds connectors from `ConnectorConfig` |
+| `ConnectorConfig` | Per-exchange config structs |
+| `ConnectorPool` | DashMap-based concurrent pool |
+| `ConnectorAggregator` | Multi-exchange data fan-out |
 
 ### Module Structure (per connector)
 
@@ -471,12 +425,11 @@ Reference implementation: `src/crypto/cex/kucoin/` — most complete example wit
 
 | Transport | Feature Flag | Used By |
 |-----------|-------------|---------|
-| REST (reqwest) | default | All 140 connectors |
-| WebSocket | `websocket` | All 21 CEX + DEX + major stock brokers |
+| REST (reqwest) | default | All connectors |
+| WebSocket | `websocket` | CEX + DEX + major stock brokers |
 | gRPC (tonic) | `grpc` | dYdX (Cosmos gRPC), Tinkoff Invest |
 | GraphQL | default | BitQuery |
 | On-chain EVM RPC | `onchain-evm` | GMX, Uniswap |
-| On-chain Solana RPC | `onchain-solana` | Jupiter, Raydium |
 | On-chain Cosmos gRPC | `onchain-cosmos` | dYdX |
 | On-chain StarkNet | `onchain-starknet` | Paradex |
 
@@ -490,14 +443,14 @@ WebSocket base: `src/core/websocket/base_websocket.rs` — handles reconnect, pi
 
 | Method | Connectors |
 |--------|-----------|
-| HMAC-SHA256 | Binance, Bybit, OKX, KuCoin, Gate.io, Bitget, BingX, MEXC, HTX, Bitstamp, Deribit, Crypto.com, Phemex |
-| HMAC-SHA384 | Bitfinex, Gemini |
+| HMAC-SHA256 | Binance, Bybit, OKX, KuCoin, Gate.io, Bitget, BingX, MEXC, HTX, Crypto.com, Phemex |
+| HMAC-SHA384 | Gemini |
 | HMAC-SHA512 | Kraken |
 | HMAC + passphrase | OKX, KuCoin, Bitget (additional passphrase layer on top of HMAC) |
 | JWT ES256 (EC P-256) | Coinbase, Upbit, Tinkoff, Dhan, J-Quants |
 | JWT + TOTP | Angel One |
 | OAuth2 / Bearer token | Upstox, Fyers, Zerodha, BitQuery, Whale Alert, OANDA, IB |
-| EIP-712 (Ethereum typed data) | HyperLiquid, Uniswap, GMX |
+| EIP-712 (Ethereum typed data) | Uniswap, GMX |
 | Ed25519 / Solana keypair | Raydium, Lighter |
 | Cosmos SDK wallet | dYdX |
 | StarkNet ECDSA (STARK key) | Paradex |
@@ -510,42 +463,17 @@ WebSocket base: `src/core/websocket/base_websocket.rs` — handles reconnect, pi
 
 | Feature | Dependencies Enabled | Notes |
 |---------|---------------------|-------|
-| `default` | `onchain-evm` | EVM provider is included by default |
-| `onchain-evm` | `alloy` (provider-ws, rpc-types) | Ethereum/EVM chain providers |
+| `default` | `onchain-evm` | EVM provider included by default |
+| `onchain-evm` | `alloy` (provider-ws, rpc-types) | EVM chain provider for Uniswap/GMX |
 | `onchain-ethereum` | `onchain-evm` | Backward-compat alias |
-| `onchain-solana` | `solana-sdk`, `solana-client`, `solana-account-decoder` | Solana chain |
-| `onchain-cosmos` | `cosmrs` (bip32) | Cosmos ecosystem (dYdX, Osmosis) |
-| `onchain-starknet` | `starknet-crypto` | StarkNet chain |
-| `onchain-bitcoin` | `bitcoin` v0.32 (serde, std) | Bitcoin JSON-RPC |
-| `onchain-sui` | none (pure reqwest REST) | Sui JSON-RPC |
-| `onchain-ton` | none (pure reqwest REST) | TON REST — no C++ FFI |
-| `onchain-aptos` | none (pure reqwest REST) | Aptos REST — avoids tokio_unstable |
+| `onchain-cosmos` | `cosmrs` (bip32) | Cosmos provider for dYdX |
+| `onchain-starknet` | `starknet-crypto` | StarkNet provider for Paradex |
 | `starknet` | `onchain-starknet` | Legacy alias |
 | `websocket` | — | WebSocket enablement flag |
 | `grpc` | `tonic` (tls, tls-native-roots), `prost` | gRPC transport |
 | `k256-signing` | `k256` (ecdsa-core, ecdsa) | k256 ECDSA signing |
 
----
-
-## Statistics
-
-| Category | Count |
-|----------|-------|
-| CEX connectors | 21 (19 active, 2 disabled) |
-| DEX connectors | 5 (3 active, 2 WS-disabled) |
-| Swap protocols | 2 |
-| Stock brokers/providers | 15 |
-| Forex providers | 3 |
-| Aggregators | 4 |
-| Intelligence feed connectors | 85 |
-| On-chain analytics connectors | 3 |
-| Prediction markets | 1 |
-| **Total** | **139** |
-| Total .rs source files | 846 |
-| Lines of code (src/) | ~258,000 |
-| Blockchain chains | 8 |
-| Core traits | 13 |
-| Connectors with zero test coverage | ~120 |
+Removed features (extracted to dig2chain): `onchain-solana`, `onchain-bitcoin`, `onchain-sui`, `onchain-ton`, `onchain-aptos`.
 
 ---
 
@@ -553,34 +481,15 @@ WebSocket base: `src/core/websocket/base_websocket.rs` — handles reconnect, pi
 
 | Connector | Issue | Status |
 |-----------|-------|--------|
-| Vertex | Exchange shut down 2025-08-14, acquired by Ink Foundation | Permanently disabled. Code retained as reference. 20 test files exist but are disabled |
-| Bithumb | SSL handshake timeouts and HTTP 403 geo-blocking | Temporarily disabled. Code complete. 26 test files disabled. Re-enable when access resolves |
-| Phemex | HTTP 403 on WebSocket upgrade from restricted regions | REST may still work. WebSocket removed from live watchlist. Code retained |
+| Vertex | Exchange shut down 2025-08-14, acquired by Ink Foundation | Permanently disabled. Code retained as reference |
+| Bithumb | SSL handshake timeouts and HTTP 403 geo-blocking | Temporarily disabled. Code complete. Re-enable when access resolves |
+| Phemex | HTTP 403 on WebSocket upgrade from restricted regions | REST may still work. WebSocket removed from live watchlist |
 | GMX | No real-time WebSocket API — websocket.rs does REST polling internally | Removed from live watchlist. REST data works |
 | Paradex | Per-symbol WebSocket attribution is unreliable (exchange uses a global channel) | WebSocket removed from live watchlist. REST works |
-| Jupiter | Klines and orderbook impossible by design (aggregator, no historical data) | Swap APIs (Ultra, Trigger, Recurring) fully wired. Trading trait stubs are correct |
+| Jupiter | Klines and orderbook impossible by design (aggregator, no historical data) | Swap APIs (Ultra, Trigger, Recurring) fully wired |
 | GMX | `EvmProvider` not wired — trading requires EVM wallet but provider not attached | Positions/orders via Subsquid work. On-chain trading needs EvmProvider attachment |
 | Futu | Requires OpenD local daemon | All methods return `UnsupportedOperation` until OpenD binary is running |
 
 ---
 
-## Roadmap and Known Gaps
-
-Testing is the main gap. 19 active CEX connectors and 85 intelligence feed connectors have zero test files.
-
-| Priority | Item |
-|----------|------|
-| High | Add unit tests for the 19 active CEX connectors (Binance first, then Bybit/OKX) |
-| High | Wire `EvmProvider` to GMX connector for actual transaction submission |
-| High | Implement `get_recent_trades` for the 18 CEX connectors missing it |
-| Medium | Add WebSocket implementations for India stock brokers (Zerodha, Upstox, Angel One, Fyers) |
-| Medium | Implement `EventProducer` for at least EVM and Solana providers |
-| Medium | Complete Jupiter — klines, orderbook, and trading need real implementation |
-| Low | Add missing CEX connectors: AscendEX, BigONE, ProBit, BitMart, CoinEx, DigiFinex, WOO X, XT.com, LBank, HashKey, WhiteBIT, BTSE |
-| Low | Interactive Brokers proper brokerage integration (currently only aggregator/Web API mode) |
-| Low | Override optional operation traits (MarginTrading, EarnStaking, ConvertSwap, etc.) for exchanges that support them |
-| Low | Test on-chain providers against live nodes |
-
----
-
-*Audit date: 2026-03-14. When adding a connector, update `src/LIBRARY_INVENTORY.md` and `src/MATURITY_MATRIX.md` accordingly.*
+*Audit date: 2026-03-25. On-chain monitoring extracted to dig2chain. Version bumped to 0.1.8.*

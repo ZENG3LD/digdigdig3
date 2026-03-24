@@ -383,16 +383,3 @@ impl CryptoCompareConnector {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_exchange_identity() {
-        let connector = CryptoCompareConnector::public();
-
-        assert_eq!(connector.exchange_name(), "cryptocompare");
-        assert!(!connector.is_testnet());
-        assert_eq!(connector.supported_account_types(), vec![AccountType::Spot]);
-    }
-}

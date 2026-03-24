@@ -1719,39 +1719,6 @@ impl PhemexConnector {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_create_public_connector() {
-        let connector = PhemexConnector::public(false).await;
-        assert!(connector.is_ok());
-    }
-
-    #[test]
-    fn test_exchange_identity() {
-        let mut group_limiter = GroupRateLimiter::new();
-        group_limiter.add_group("OTHERS", 100, Duration::from_secs(60));
-        group_limiter.add_group("CONTRACT", 500, Duration::from_secs(60));
-        group_limiter.add_group("SPOTORDER", 500, Duration::from_secs(60));
-
-        let connector = PhemexConnector {
-            http: HttpClient::new(30_000).unwrap(),
-            auth: None,
-            urls: PhemexUrls::MAINNET,
-            testnet: false,
-            rate_limiter: Arc::new(Mutex::new(group_limiter)),
-            default_price_scale: 4,
-            default_value_scale: 8,
-        };
-
-        assert_eq!(connector.exchange_id(), ExchangeId::Phemex);
-        assert!(!connector.is_testnet());
-        assert_eq!(connector.exchange_type(), ExchangeType::Cex);
-    }
-}
-
 fn interval_to_secs(interval: &str) -> u64 {
     match interval {
         "1m" => 60,

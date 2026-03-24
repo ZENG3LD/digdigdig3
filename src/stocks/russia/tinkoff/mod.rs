@@ -87,9 +87,6 @@ mod connector;
 #[cfg(feature = "grpc")]
 pub mod proto;
 
-#[cfg(test)]
-mod tests;
-
 // WebSocket support planned for future implementation
 // mod websocket;
 

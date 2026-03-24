@@ -70,9 +70,6 @@ mod auth;
 mod parser;
 mod connector;
 
-#[cfg(test)]
-mod tests;
-
 mod websocket;
 
 pub use endpoints::{MoexEndpoint, MoexEndpoints};

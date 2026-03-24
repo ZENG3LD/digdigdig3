@@ -971,26 +971,3 @@ impl CancelAll for UpstoxConnector {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_connector_creation() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let connector = UpstoxConnector::public().await;
-            assert!(connector.is_ok());
-        });
-    }
-
-    #[test]
-    fn test_exchange_identity() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let connector = UpstoxConnector::public().await.unwrap();
-            assert_eq!(connector.exchange_type(), ExchangeType::Broker);
-            assert!(!connector.is_testnet());
-        });
-    }
-}

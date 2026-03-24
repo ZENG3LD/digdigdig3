@@ -17,16 +17,8 @@ default = ["onchain-evm"]
 websocket = []
 # Canonical on-chain feature flags
 onchain-evm = ["dep:alloy"]
-onchain-solana = ["dep:solana-sdk", "dep:solana-client", "dep:solana-account-decoder"]
 onchain-cosmos = ["dep:cosmrs"]
 onchain-starknet = ["dep:starknet-crypto"]
-onchain-bitcoin = ["dep:bitcoin"]
-# Sui — pure reqwest JSON-RPC, no extra deps needed
-onchain-sui = []
-# TON (Telegram Open Network) — pure reqwest REST, no tonlib-rs / C++ FFI
-onchain-ton = []
-# Aptos L1 — pure reqwest REST, no aptos-sdk (avoids tokio_unstable requirement)
-onchain-aptos = []
 # Backward-compat alias — onchain-ethereum is now onchain-evm
 onchain-ethereum = ["onchain-evm"]
 grpc = ["dep:tonic", "dep:prost"]
@@ -110,17 +102,6 @@ prost = { version = "0.13", optional = true }
 # Cryptographic signing (feature-gated)
 k256 = { version = "0.13", features = ["ecdsa-core", "ecdsa"], optional = true }
 starknet-crypto = { version = "0.6", optional = true }
-
-# Bitcoin on-chain provider (raw JSON-RPC via reqwest)
-bitcoin = { version = "0.32", optional = true, default-features = false, features = ["serde", "std"] }
-
-# Solana on-chain SDK — gated behind onchain-solana feature
-# default-features = false minimises compile-time
-# nonblocking RPC is a built-in module in solana-client v2 (not a cargo feature)
-solana-sdk = { version = "2", optional = true, default-features = false }
-solana-client = { version = "2", optional = true, default-features = false }
-# Provides UiAccountData for decoded account parsing (token balances etc.)
-solana-account-decoder = { version = "2", optional = true, default-features = false }
 
 # Cosmos SDK transaction builder + signer (for dYdX, Osmosis, etc.)
 cosmrs = { version = "0.22", optional = true, default-features = false, features = ["bip32"] }

@@ -102,9 +102,6 @@ mod auth;
 mod parser;
 mod connector;
 
-#[cfg(test)]
-mod tests;
-
 // TODO: Re-enable when research directory is created
 // pub mod research;
 

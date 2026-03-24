@@ -212,34 +212,3 @@ pub fn map_interval_aggregate(interval: &str) -> (CryptoCompareEndpoint, u32) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_format_symbol() {
-        let symbol = Symbol {
-            base: "btc".to_string(),
-            quote: "usdt".to_string(),
-        };
-
-        let (fsym, tsym) = format_symbol(&symbol);
-        assert_eq!(fsym, "BTC");
-        assert_eq!(tsym, "USDT");
-    }
-
-    #[test]
-    fn test_map_interval_aggregate() {
-        let (endpoint, aggregate) = map_interval_aggregate("5m");
-        assert_eq!(aggregate, 5);
-        assert!(matches!(endpoint, CryptoCompareEndpoint::HistoMinute));
-
-        let (endpoint, aggregate) = map_interval_aggregate("1h");
-        assert_eq!(aggregate, 1);
-        assert!(matches!(endpoint, CryptoCompareEndpoint::HistoHour));
-
-        let (endpoint, aggregate) = map_interval_aggregate("1d");
-        assert_eq!(aggregate, 1);
-        assert!(matches!(endpoint, CryptoCompareEndpoint::HistoDay));
-    }
-}

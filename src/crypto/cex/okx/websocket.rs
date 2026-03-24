@@ -449,8 +449,9 @@ impl WebSocketConnector for OkxWebSocket {
             crate::core::StreamType::PositionUpdate => "positions",
         };
 
-        // For OKX the instId also depends on account type; default to FuturesCross.
-        let account_type = AccountType::FuturesCross;
+        // For OKX the instId depends on account type.
+        // Default to Spot for live-data subscriptions (chart + watchlist).
+        let account_type = AccountType::Spot;
         let inst_id = format_symbol(&request.symbol.base, &request.symbol.quote, account_type);
 
         let sub_msg = json!({

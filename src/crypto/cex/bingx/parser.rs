@@ -729,7 +729,7 @@ impl BingxParser {
     /// ```json
     /// {"code":0,"msg":"","data":[{"symbol":"BTC-USDT","currency":"USDT","asset":"BTC","size":0.0001,"tickSize":0.1,"tradeMinLimit":1,"maxLongLeverage":150,"maxShortLeverage":150,"status":1},...],"timestamp":...}
     /// ```
-    pub fn parse_swap_exchange_info(response: &Value) -> ExchangeResult<Vec<SymbolInfo>> {
+    pub fn parse_swap_exchange_info(response: &Value, account_type: crate::core::AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let data = Self::extract_data(response)?;
 
         let items = data.as_array()
@@ -799,7 +799,7 @@ impl BingxParser {
                 tick_size,
                 step_size,
                 min_notional: None,
-                account_type: Default::default(),
+                account_type,
             });
         }
 
@@ -812,7 +812,7 @@ impl BingxParser {
     /// ```json
     /// {"code":0,"msg":"","data":{"symbols":[{"symbol":"BTC-USDT","minQty":"0.00001","maxQty":"9000","stepSize":"0.00001","tickSize":"0.01","minNotional":"1","status":1},...]}}
     /// ```
-    pub fn parse_spot_exchange_info(response: &Value) -> ExchangeResult<Vec<SymbolInfo>> {
+    pub fn parse_spot_exchange_info(response: &Value, account_type: crate::core::AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let data = Self::extract_data(response)?;
 
         let symbols_arr = data.get("symbols")
@@ -891,7 +891,7 @@ impl BingxParser {
                 tick_size,
                 step_size,
                 min_notional,
-                account_type: Default::default(),
+                account_type,
             });
         }
 

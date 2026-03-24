@@ -485,9 +485,9 @@ impl MarketData for PhemexConnector {
         Ok(())
     }
 
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let response = self.get(PhemexEndpoint::Products, HashMap::new(), AccountType::Spot).await?;
-        let info = PhemexParser::parse_exchange_info(&response)?;
+        let info = PhemexParser::parse_exchange_info(&response, account_type)?;
         self.precision.load_from_symbols(&info);
         Ok(info)
     }

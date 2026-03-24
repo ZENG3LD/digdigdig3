@@ -12,7 +12,7 @@
 use serde_json::Value;
 
 use crate::core::types::{
-    ExchangeError, ExchangeResult, OrderBook, Ticker, Order, Balance, Position,
+    ExchangeError, ExchangeResult, AccountType, OrderBook, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, PublicTrade, StreamEvent, TradeSide,
     OrderUpdateEvent, SymbolInfo, Kline, BracketResponse,
@@ -750,7 +750,7 @@ impl DeribitParser {
     /// ```json
     /// {"jsonrpc":"2.0","result":[{"instrument_name":"BTC-PERPETUAL","base_currency":"BTC","quote_currency":"USD","tick_size":0.5,"min_trade_amount":10,"is_active":true,...},...],"id":1}
     /// ```
-    pub fn parse_exchange_info(response: &Value) -> ExchangeResult<Vec<SymbolInfo>> {
+    pub fn parse_exchange_info(response: &Value, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let result = Self::extract_result(response)?;
 
         let items = result.as_array()
@@ -814,7 +814,7 @@ impl DeribitParser {
                 tick_size: raw_tick_size,
                 step_size,
                 min_notional: None,
-                account_type: Default::default(),
+                account_type,
             });
         }
 

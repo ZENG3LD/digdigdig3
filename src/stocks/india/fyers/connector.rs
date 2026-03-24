@@ -322,7 +322,7 @@ impl MarketData for FyersConnector {
     }
 
     /// Get exchange info — returns NSE equity instruments from Fyers SymbolMaster
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         // SymbolMaster returns a CSV file: fytoken,symbol,exchange,segment,description,lot_size,tick_size,...
         let base_url = self.urls.rest_url(true); // data endpoint
         let url = format!(
@@ -391,7 +391,7 @@ impl MarketData for FyersConnector {
                 tick_size,
                 step_size: Some(1.0),
                 min_notional: None,
-                account_type: Default::default(),
+                account_type,
             });
         }
 

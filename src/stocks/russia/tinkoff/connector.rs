@@ -411,7 +411,7 @@ impl MarketData for TinkoffConnector {
     }
 
     /// Get exchange info — returns list of available MOEX shares from Tinkoff
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let body = serde_json::json!({
             "instrumentStatus": "INSTRUMENT_STATUS_BASE",
         });
@@ -431,7 +431,7 @@ impl MarketData for TinkoffConnector {
             tick_size: None,
             step_size: Some(1.0),
             min_notional: None,
-            account_type: Default::default(),
+            account_type,
         }).collect();
 
         Ok(infos)

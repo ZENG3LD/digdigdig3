@@ -422,6 +422,7 @@ mod tests {
                 min_quantity: None,
                 max_quantity: None,
                 min_notional: None,
+                account_type: Default::default(),
             },
         ];
         cache.load_from_symbols(&symbols);
@@ -458,6 +459,7 @@ mod tests {
                 min_quantity: None,
                 max_quantity: None,
                 min_notional: None,
+                account_type: Default::default(),
             },
         ];
         cache.load_from_symbols(&symbols);
@@ -483,6 +485,7 @@ mod tests {
                 min_quantity: None,
                 max_quantity: None,
                 min_notional: None,
+                account_type: Default::default(),
             },
         ];
         cache.load_from_symbols(&symbols);

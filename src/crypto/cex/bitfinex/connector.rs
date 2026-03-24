@@ -409,13 +409,13 @@ impl MarketData for BitfinexConnector {
         Err(ExchangeError::Network("Platform in maintenance".to_string()))
     }
 
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         // Use Bitfinex v1 symbols_details endpoint (returns array with pair info)
         // Note: v1 is still supported and returns more detail than v2 conf endpoints
         self.rate_limit_wait().await;
         let url = "https://api.bitfinex.com/v1/symbols_details";
         let response = self.http.get(url, &HashMap::new()).await?;
-        let info = BitfinexParser::parse_exchange_info(&response)?;
+        let info = BitfinexParser::parse_exchange_info(&response, account_type)?;
         self.precision.load_from_symbols(&info);
         Ok(info)
     }

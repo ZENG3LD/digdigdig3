@@ -466,14 +466,14 @@ impl MarketData for PolymarketConnector {
     /// Returns up to 500 active markets by default.
     async fn get_exchange_info(
         &self,
-        _account_type: AccountType,
+        account_type: AccountType,
     ) -> ExchangeResult<Vec<SymbolInfo>> {
         // Fetch active markets from CLOB API
         let markets = self.get_active_markets(Some(500)).await?;
 
         let symbols = markets
             .iter()
-            .map(clob_market_to_symbol_info)
+            .map(|m| clob_market_to_symbol_info(m, account_type))
             .collect();
 
         Ok(symbols)

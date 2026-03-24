@@ -9,6 +9,7 @@ use crate::core::types::{
     Kline, OrderBook, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, UserTrade, LedgerEntry, LedgerEntryType,
+    AccountType,
 };
 
 /// Парсер ответов Bitget API
@@ -235,7 +236,7 @@ impl BitgetParser {
     ///                    minTradeNum, maxTradeNum }]
     ///
     /// Filters to active symbols only (status == "online" for spot, "normal" for futures).
-    pub fn parse_exchange_info(response: &Value) -> ExchangeResult<Vec<crate::core::types::SymbolInfo>> {
+    pub fn parse_exchange_info(response: &Value, account_type: AccountType) -> ExchangeResult<Vec<crate::core::types::SymbolInfo>> {
         let data = Self::extract_data(response)?;
         let arr = data.as_array()
             .ok_or_else(|| ExchangeError::Parse("Expected array of symbols".to_string()))?;
@@ -324,7 +325,7 @@ impl BitgetParser {
                     tick_size,
                     step_size,
                     min_notional: None,
-                    account_type: Default::default(),
+                    account_type,
                 })
             })
             .collect();

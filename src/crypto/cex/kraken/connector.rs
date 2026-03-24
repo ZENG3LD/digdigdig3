@@ -402,9 +402,9 @@ impl MarketData for KrakenConnector {
         Ok(())
     }
 
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let response = self.get_asset_pairs().await?;
-        let symbols = KrakenParser::parse_exchange_info(&response)?;
+        let symbols = KrakenParser::parse_exchange_info(&response, account_type)?;
         self.precision.load_from_symbols(&symbols);
         Ok(symbols)
     }

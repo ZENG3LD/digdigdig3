@@ -548,11 +548,11 @@ impl MarketData for CoinbaseConnector {
         Ok(())
     }
 
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         // GET /market/products (public) returns products list
         let params = HashMap::new();
         let response = self.get(CoinbaseEndpoint::Products, params).await?;
-        let symbols = CoinbaseParser::parse_exchange_info(&response)?;
+        let symbols = CoinbaseParser::parse_exchange_info(&response, account_type)?;
         self.precision.load_from_symbols(&symbols);
         Ok(symbols)
     }

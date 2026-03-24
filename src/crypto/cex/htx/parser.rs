@@ -431,7 +431,7 @@ impl HtxParser {
     ///
     /// Note: all field names use dashes (e.g. "base-currency"), symbols are lowercase.
     /// Filters to state == "online" symbols only.
-    pub fn parse_exchange_info(json: &Value) -> ExchangeResult<Vec<crate::core::types::SymbolInfo>> {
+    pub fn parse_exchange_info(json: &Value, account_type: AccountType) -> ExchangeResult<Vec<crate::core::types::SymbolInfo>> {
         let data = Self::extract_result_v1(json)?;
         let list = data.as_array()
             .ok_or_else(|| ExchangeError::Parse("Data is not an array".into()))?;
@@ -495,7 +495,7 @@ impl HtxParser {
                     tick_size,
                     step_size,
                     min_notional,
-                    account_type: Default::default(),
+                    account_type,
                 })
             })
             .collect();

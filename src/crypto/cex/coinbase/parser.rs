@@ -702,7 +702,7 @@ impl CoinbaseParser {
     /// ```json
     /// {"products":[{"product_id":"BTC-USD","base_currency_id":"BTC","quote_currency_id":"USD","status":"online","base_increment":"0.00000001","quote_increment":"0.01","base_min_size":"0.00000001","base_max_size":"1000","quote_min_size":"1",...},...]}
     /// ```
-    pub fn parse_exchange_info(response: &Value) -> ExchangeResult<Vec<SymbolInfo>> {
+    pub fn parse_exchange_info(response: &Value, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let products = response.get("products")
             .and_then(|p| p.as_array())
             .ok_or_else(|| ExchangeError::Parse("Missing 'products' array".to_string()))?;
@@ -780,7 +780,7 @@ impl CoinbaseParser {
                 tick_size,
                 step_size,
                 min_notional,
-                account_type: Default::default(),
+                account_type,
             });
         }
 

@@ -23,7 +23,7 @@
 use serde_json::Value;
 
 use crate::core::types::{
-    ExchangeError, ExchangeResult,
+    ExchangeError, ExchangeResult, AccountType,
     Kline, OrderBook, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, SymbolInfo,
@@ -562,7 +562,7 @@ impl KrakenParser {
     /// ```json
     /// {"error":[],"result":{"XXBTZUSD":{"wsname":"XBT/USD","base":"XXBT","quote":"ZUSD","pair_decimals":1,"lot_decimals":8,...},...}}
     /// ```
-    pub fn parse_exchange_info(response: &Value) -> ExchangeResult<Vec<SymbolInfo>> {
+    pub fn parse_exchange_info(response: &Value, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let result = Self::extract_result(response)?;
 
         let pairs = result.as_object()
@@ -648,7 +648,7 @@ impl KrakenParser {
                 tick_size,
                 step_size,
                 min_notional: None,
-                account_type: Default::default(),
+                account_type,
             });
         }
 

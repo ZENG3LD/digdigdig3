@@ -15,6 +15,7 @@ use crate::core::types::{
     SubAccountResult, SubAccount,
     UserTrade,
     FundingPayment, LedgerEntry, LedgerEntryType,
+    AccountType,
 };
 
 /// Парсер ответов Binance API
@@ -484,7 +485,7 @@ impl BinanceParser {
     /// Парсить список торговых символов из exchangeInfo
     ///
     /// Возвращает только символы со статусом `TRADING`.
-    pub fn parse_exchange_info(response: &serde_json::Value) -> ExchangeResult<Vec<SymbolInfo>> {
+    pub fn parse_exchange_info(response: &serde_json::Value, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let symbols = response["symbols"].as_array()
             .ok_or_else(|| ExchangeError::Parse("missing symbols array".into()))?;
 
@@ -537,7 +538,7 @@ impl BinanceParser {
                 tick_size,
                 step_size,
                 min_notional,
-                account_type: Default::default(),
+                account_type,
             });
         }
         Ok(result)

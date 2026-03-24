@@ -702,7 +702,7 @@ impl PhemexParser {
     /// ```json
     /// {"code":0,"msg":"OK","data":{"products":[{"symbol":"BTCUSD","type":"Perpetual","baseCurrency":"BTC","quoteCurrency":"USD","settlementCurrency":"BTC","maxOrderQty":1000000,"maxPriceEp":10000000000,"minOrderValue":1,"priceScale":4,"ratioScale":8,"valueScale":8,"defaultLeverage":100,"status":"Listed"},...],"perpProductsV2":[...]}}
     /// ```
-    pub fn parse_exchange_info(response: &Value) -> ExchangeResult<Vec<SymbolInfo>> {
+    pub fn parse_exchange_info(response: &Value, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let data = response.get("data")
             .ok_or_else(|| ExchangeError::Parse("Missing 'data' field".to_string()))?;
 
@@ -778,7 +778,7 @@ impl PhemexParser {
                         tick_size,
                         step_size,
                         min_notional,
-                        account_type: Default::default(),
+                        account_type,
                     });
                 }
             }

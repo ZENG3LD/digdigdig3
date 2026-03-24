@@ -769,7 +769,7 @@ impl BitstampParser {
     /// ```json
     /// [{"name":"BTC/USD","url_symbol":"btcusd","base_decimals":8,"counter_decimals":2,"instant_and_market_orders":"Enabled","minimum_order":"25 USD","trading":"Enabled","description":"Bitcoin / US Dollar"},...]
     /// ```
-    pub fn parse_exchange_info(response: &Value) -> ExchangeResult<Vec<SymbolInfo>> {
+    pub fn parse_exchange_info(response: &Value, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let items = response.as_array()
             .ok_or_else(|| ExchangeError::Parse("Expected array response".to_string()))?;
 
@@ -834,7 +834,7 @@ impl BitstampParser {
                 tick_size,
                 step_size,
                 min_notional,
-                account_type: Default::default(),
+                account_type,
             });
         }
 

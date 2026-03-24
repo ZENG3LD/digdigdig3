@@ -456,7 +456,7 @@ impl MarketData for DeribitConnector {
         Ok(())
     }
 
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         // Fetch instruments for major currencies: BTC, ETH, SOL, USDC
         let currencies = ["BTC", "ETH", "SOL", "USDC"];
         let mut all_symbols = Vec::new();
@@ -468,7 +468,7 @@ impl MarketData for DeribitConnector {
 
             match self.rpc_call(DeribitMethod::GetInstruments, params).await {
                 Ok(response) => {
-                    match DeribitParser::parse_exchange_info(&response) {
+                    match DeribitParser::parse_exchange_info(&response, account_type) {
                         Ok(mut symbols) => all_symbols.append(&mut symbols),
                         Err(_) => continue,
                     }

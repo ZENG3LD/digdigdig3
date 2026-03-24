@@ -246,7 +246,7 @@ impl OkxConnector {
         params.insert("instType".to_string(), get_inst_type(account_type).to_string());
 
         let response = self.get(OkxEndpoint::Instruments, params).await?;
-        OkxParser::parse_symbols(&response)
+        OkxParser::parse_symbols(&response, account_type)
     }
 
     /// Получить список символов (алиас для get_instruments для совместимости с тестами)

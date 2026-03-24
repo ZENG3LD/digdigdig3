@@ -749,7 +749,7 @@ impl MarketData for BinanceConnector {
             _ => BinanceEndpoint::FuturesExchangeInfo,
         };
         let response = self.get(endpoint, HashMap::new(), account_type).await?;
-        let symbols = BinanceParser::parse_exchange_info(&response)?;
+        let symbols = BinanceParser::parse_exchange_info(&response, account_type)?;
         self.precision.load_from_symbols(&symbols);
         Ok(symbols)
     }

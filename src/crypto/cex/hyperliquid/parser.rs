@@ -28,7 +28,7 @@
 use serde_json::Value;
 
 use crate::core::types::{
-    ExchangeError, ExchangeResult,
+    ExchangeError, ExchangeResult, AccountType,
     Kline, OrderBook, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, PublicTrade, TradeSide, SymbolInfo,
@@ -695,7 +695,7 @@ impl HyperliquidParser {
     /// ```json
     /// {"universe":[{"name":"BTC","szDecimals":5,"maxLeverage":40,"onlyIsolated":false},...],"tokens":[...]}
     /// ```
-    pub fn parse_perp_exchange_info(response: &Value) -> ExchangeResult<Vec<SymbolInfo>> {
+    pub fn parse_perp_exchange_info(response: &Value, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let universe = response.get("universe")
             .and_then(|u| u.as_array())
             .ok_or_else(|| ExchangeError::Parse("Missing 'universe' array in meta response".to_string()))?;
@@ -736,7 +736,7 @@ impl HyperliquidParser {
                 tick_size: None,
                 step_size,
                 min_notional: None,
-                account_type: Default::default(),
+                account_type,
             });
         }
 
@@ -802,7 +802,7 @@ impl HyperliquidParser {
         }).collect()
     }
 
-    pub fn parse_spot_exchange_info(response: &Value) -> ExchangeResult<Vec<SymbolInfo>> {
+    pub fn parse_spot_exchange_info(response: &Value, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         // spotMeta response has a different structure
         let universe = match response.get("universe").and_then(|u| u.as_array()) {
             Some(u) => u,
@@ -874,7 +874,7 @@ impl HyperliquidParser {
                 tick_size: None,
                 step_size,
                 min_notional: None,
-                account_type: Default::default(),
+                account_type,
             });
         }
 

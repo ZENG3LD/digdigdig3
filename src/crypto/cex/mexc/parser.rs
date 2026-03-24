@@ -376,7 +376,7 @@ impl MexcParser {
     ///
     /// MEXC uses "1" for active status (not "TRADING" like Binance).
     /// Precision values come directly on the symbol object, not in a filters array.
-    pub fn parse_exchange_info(json: &Value) -> ExchangeResult<Vec<crate::core::types::SymbolInfo>> {
+    pub fn parse_exchange_info(json: &Value, account_type: AccountType) -> ExchangeResult<Vec<crate::core::types::SymbolInfo>> {
         Self::check_error(json)?;
 
         let symbols_arr = json["symbols"].as_array()
@@ -453,7 +453,7 @@ impl MexcParser {
                     tick_size,
                     step_size,
                     min_notional,
-                    account_type: Default::default(),
+                    account_type,
                 })
             })
             .collect();

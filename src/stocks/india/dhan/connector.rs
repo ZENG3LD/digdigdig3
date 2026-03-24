@@ -410,7 +410,7 @@ impl MarketData for DhanConnector {
     }
 
     /// Get exchange info — returns NSE equity instruments from Dhan
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         // Dhan's InstrumentList endpoint: /v2/instrument/{exchangeSegment}
         // Returns CSV with columns: SEM_EXM_EXCH_ID, SEM_SEGMENT, SEM_SMST_SECURITY_ID, SEM_INSTRUMENT_NAME, SEM_CUSTOM_SYMBOL, ...
         let base_url = self.urls.rest_url();
@@ -460,7 +460,7 @@ impl MarketData for DhanConnector {
                 tick_size: None,
                 step_size: Some(1.0),
                 min_notional: None,
-                account_type: Default::default(),
+                account_type,
             });
         }
 

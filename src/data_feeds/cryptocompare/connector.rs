@@ -198,7 +198,7 @@ impl MarketData for CryptoCompareConnector {
     }
 
     /// Get all coins listed on CryptoCompare
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let response = self.get(CryptoCompareEndpoint::CoinList, HashMap::new()).await?;
         let symbols = CryptoCompareParser::parse_symbols(&response)?;
 
@@ -216,7 +216,7 @@ impl MarketData for CryptoCompareConnector {
                 tick_size: None,
                 step_size: None,
                 min_notional: None,
-                account_type: Default::default(),
+                account_type,
             })
             .collect();
 

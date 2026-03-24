@@ -517,9 +517,9 @@ impl MarketData for MexcConnector {
         Ok(())
     }
 
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<crate::core::types::SymbolInfo>> {
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<crate::core::types::SymbolInfo>> {
         let response = self.get(MexcEndpoint::ExchangeInfo, HashMap::new()).await?;
-        let symbols = MexcParser::parse_exchange_info(&response)?;
+        let symbols = MexcParser::parse_exchange_info(&response, account_type)?;
         self.precision.load_from_symbols(&symbols);
         Ok(symbols)
     }

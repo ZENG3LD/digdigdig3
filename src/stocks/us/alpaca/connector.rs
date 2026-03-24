@@ -698,7 +698,7 @@ impl MarketData for AlpacaConnector {
     }
 
     /// Get exchange info — returns list of active, tradable US equity assets
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let mut params = HashMap::new();
         params.insert("status".to_string(), "active".to_string());
         params.insert("tradable".to_string(), "true".to_string());
@@ -745,7 +745,7 @@ impl MarketData for AlpacaConnector {
                 tick_size,
                 step_size,
                 min_notional: None,
-                account_type: Default::default(),
+                account_type,
             })
         }).collect();
 

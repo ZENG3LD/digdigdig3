@@ -378,7 +378,7 @@ impl BybitParser {
     /// Response: result.list = [{ symbol, baseCoin, quoteCoin, status, lotSizeFilter, priceFilter }]
     ///
     /// Filters to active/trading symbols only (status == "Trading").
-    pub fn parse_exchange_info(json: &Value) -> ExchangeResult<Vec<crate::core::types::SymbolInfo>> {
+    pub fn parse_exchange_info(json: &Value, account_type: AccountType) -> ExchangeResult<Vec<crate::core::types::SymbolInfo>> {
         let result = Self::extract_result(json)?;
         let list = result["list"].as_array()
             .ok_or_else(|| ExchangeError::Parse("Missing result.list".into()))?;
@@ -451,7 +451,7 @@ impl BybitParser {
                     tick_size,
                     step_size,
                     min_notional: None,
-                    account_type: Default::default(),
+                    account_type,
                 })
             })
             .collect();

@@ -540,7 +540,7 @@ impl MarketData for AngelOneConnector {
     }
 
     /// Get exchange info — search NSE equity symbols (Angel One uses search-based approach)
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         // Angel One doesn't have a bulk symbol listing endpoint.
         // Use SearchScrip with a broad search on NSE exchange.
         // In practice, callers should use `search_scrip()` for targeted searches.
@@ -574,7 +574,7 @@ impl MarketData for AngelOneConnector {
                 tick_size: None,
                 step_size: Some(1.0),
                 min_notional: None,
-                account_type: Default::default(),
+                account_type,
             })
         }).collect();
 

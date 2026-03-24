@@ -541,11 +541,11 @@ impl MarketData for HyperliquidConnector {
         let info = match account_type {
             AccountType::Spot => {
                 let response = self.get_spot_metadata().await?;
-                HyperliquidParser::parse_spot_exchange_info(&response)?
+                HyperliquidParser::parse_spot_exchange_info(&response, account_type)?
             }
             _ => {
                 let response = self.get_metadata().await?;
-                HyperliquidParser::parse_perp_exchange_info(&response)?
+                HyperliquidParser::parse_perp_exchange_info(&response, account_type)?
             }
         };
         self.precision.load_from_symbols(&info);

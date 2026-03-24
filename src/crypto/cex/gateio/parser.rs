@@ -12,7 +12,7 @@
 use serde_json::Value;
 
 use crate::core::types::{
-    ExchangeError, ExchangeResult,
+    ExchangeError, ExchangeResult, AccountType,
     Kline, OrderBook, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, PublicTrade, TradeSide,
@@ -234,7 +234,7 @@ impl GateioParser {
     ///                          order_price_round, quanto_multiplier }]
     ///
     /// Filters to active/tradable symbols only.
-    pub fn parse_exchange_info(response: &Value) -> ExchangeResult<Vec<crate::core::types::SymbolInfo>> {
+    pub fn parse_exchange_info(response: &Value, account_type: AccountType) -> ExchangeResult<Vec<crate::core::types::SymbolInfo>> {
         Self::check_error(response)?;
 
         let arr = response.as_array()
@@ -323,7 +323,7 @@ impl GateioParser {
                     tick_size,
                     step_size: None,
                     min_notional: Self::get_f64(item, "min_quote_amount"),
-                    account_type: Default::default(),
+                    account_type,
                 })
             })
             .collect();

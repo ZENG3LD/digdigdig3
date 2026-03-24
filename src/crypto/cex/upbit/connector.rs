@@ -465,10 +465,10 @@ impl MarketData for UpbitConnector {
         Ok(())
     }
 
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         // GET /v1/market/all returns all markets
         let response = self.get(UpbitEndpoint::TradingPairs, HashMap::new(), AccountType::Spot).await?;
-        let info = UpbitParser::parse_exchange_info(&response)?;
+        let info = UpbitParser::parse_exchange_info(&response, account_type)?;
         self.precision.load_from_symbols(&info);
         Ok(info)
     }

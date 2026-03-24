@@ -319,7 +319,7 @@ impl MarketData for GeminiConnector {
         Ok(())
     }
 
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         // Fetch all symbols first, then get details for each
         let symbols_response = self.get(GeminiEndpoint::Symbols, &[]).await?;
         let symbols = GeminiParser::parse_symbols(&symbols_response)?;
@@ -335,7 +335,7 @@ impl MarketData for GeminiConnector {
 
             match self.get(GeminiEndpoint::SymbolDetails, &[("symbol", symbol_lower)]).await {
                 Ok(details) => {
-                    if let Some(info) = GeminiParser::parse_symbol_details(&details, symbol_lower) {
+                    if let Some(info) = GeminiParser::parse_symbol_details(&details, symbol_lower, account_type) {
                         result.push(info);
                     }
                 }

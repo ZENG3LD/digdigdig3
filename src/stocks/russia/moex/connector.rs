@@ -260,7 +260,7 @@ impl MarketData for MoexConnector {
     ///
     /// Delegates to the same MarketSecurities endpoint used by `get_symbols()`
     /// which reliably returns all actively-trading instruments on the stock/shares market.
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let (engine, market, _) = default_stock_params();
 
         let path_params = &[
@@ -287,7 +287,7 @@ impl MarketData for MoexConnector {
             tick_size: None,
             step_size: Some(1.0),
             min_notional: None,
-            account_type: Default::default(),
+            account_type,
         }).collect();
 
         Ok(infos)

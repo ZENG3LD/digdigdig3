@@ -420,11 +420,11 @@ impl MarketData for BingxConnector {
         let info = match account_type {
             AccountType::Spot | AccountType::Margin => {
                 let response = self.get(BingxEndpoint::SpotSymbols, HashMap::new(), AccountType::Spot).await?;
-                BingxParser::parse_spot_exchange_info(&response)?
+                BingxParser::parse_spot_exchange_info(&response, account_type)?
             }
             _ => {
                 let response = self.get(BingxEndpoint::SwapContracts, HashMap::new(), AccountType::FuturesCross).await?;
-                BingxParser::parse_swap_exchange_info(&response)?
+                BingxParser::parse_swap_exchange_info(&response, account_type)?
             }
         };
         self.precision.load_from_symbols(&info);

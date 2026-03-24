@@ -354,7 +354,7 @@ impl MarketData for OandaConnector {
         self.check_response(&response)
     }
 
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         // Step 1: fetch account ID (can't use cached value since we have &self, not &mut self)
         let accounts_response = self.get(OandaEndpoint::ListAccounts, HashMap::new()).await?;
         let account_id = OandaParser::parse_account_id(&accounts_response)?;
@@ -407,7 +407,7 @@ impl MarketData for OandaConnector {
                     tick_size,
                     step_size: Some(1.0),
                     min_notional: None,
-                    account_type: Default::default(),
+                    account_type,
                 })
             })
             .collect::<Vec<SymbolInfo>>();

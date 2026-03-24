@@ -357,7 +357,7 @@ impl MarketData for KrxConnector {
     }
 
     /// Get exchange info — returns KOSPI listed stocks from KRX
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         // KospiBaseInfo returns list of all listed securities on KOSPI
         let today = format_today();
         let body = serde_json::json!({
@@ -379,7 +379,7 @@ impl MarketData for KrxConnector {
             tick_size: None,
             step_size: Some(1.0),
             min_notional: None,
-            account_type: Default::default(),
+            account_type,
         }).collect();
 
         Ok(infos)

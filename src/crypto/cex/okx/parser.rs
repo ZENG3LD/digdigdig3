@@ -28,6 +28,7 @@ use crate::core::types::{
     SymbolInfo, CancelAllResponse, OrderResult,
     UserTrade,
     FundingPayment, LedgerEntry, LedgerEntryType,
+    AccountType,
 };
 use crate::core::types::AlgoOrderResponse;
 use crate::core::types::{
@@ -212,7 +213,7 @@ impl OkxParser {
     }
 
     /// Парсить symbols/instruments
-    pub fn parse_symbols(response: &Value) -> ExchangeResult<Vec<SymbolInfo>> {
+    pub fn parse_symbols(response: &Value, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let data = Self::extract_data(response)?;
         let arr = data.as_array()
             .ok_or_else(|| ExchangeError::Parse("'data' is not an array".to_string()))?;
@@ -246,7 +247,7 @@ impl OkxParser {
                 tick_size,
                 step_size,
                 min_notional,
-                account_type: Default::default(),
+                account_type,
             });
         }
 

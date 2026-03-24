@@ -14,7 +14,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::core::types::{
-    ExchangeError, ExchangeResult, Kline, OrderBook, SymbolInfo, Ticker,
+    AccountType, ExchangeError, ExchangeResult, Kline, OrderBook, SymbolInfo, Ticker,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -741,7 +741,7 @@ impl PolymarketParser {
 ///
 /// Uses `condition_id` as the symbol identifier.
 /// The market question becomes the base_asset for display purposes.
-pub fn clob_market_to_symbol_info(market: &ClobMarket) -> SymbolInfo {
+pub fn clob_market_to_symbol_info(market: &ClobMarket, account_type: AccountType) -> SymbolInfo {
     let question_short = market
         .question
         .as_deref()
@@ -777,12 +777,12 @@ pub fn clob_market_to_symbol_info(market: &ClobMarket) -> SymbolInfo {
             .as_ref()
             .and_then(|s| s.parse::<f64>().ok()),
         min_notional: None,
-        account_type: Default::default(),
+        account_type,
     }
 }
 
 /// Convert a PolyMarket (Gamma) to V5 SymbolInfo
-pub fn poly_market_to_symbol_info(market: &PolyMarket) -> SymbolInfo {
+pub fn poly_market_to_symbol_info(market: &PolyMarket, account_type: AccountType) -> SymbolInfo {
     let condition_id = market
         .condition_id
         .as_deref()
@@ -815,7 +815,7 @@ pub fn poly_market_to_symbol_info(market: &PolyMarket) -> SymbolInfo {
         tick_size: market.order_price_min_tick_size,
         step_size: market.order_price_min_tick_size,
         min_notional: None,
-        account_type: Default::default(),
+        account_type,
     }
 }
 

@@ -334,9 +334,9 @@ impl MarketData for CryptoComConnector {
         CryptoComParser::check_response(&response)
     }
 
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let response = self.request(CryptoComEndpoint::GetInstruments, json!({})).await?;
-        let info = CryptoComParser::parse_exchange_info(&response)?;
+        let info = CryptoComParser::parse_exchange_info(&response, account_type)?;
         self.precision.load_from_symbols(&info);
         Ok(info)
     }

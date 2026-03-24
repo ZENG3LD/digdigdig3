@@ -267,7 +267,7 @@ impl MarketData for TwelvedataConnector {
     }
 
     /// Get exchange info — returns list of US stocks from Twelvedata
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let mut params = HashMap::new();
         params.insert("country".to_string(), "United States".to_string());
         params.insert("show_plan".to_string(), "false".to_string());
@@ -298,7 +298,7 @@ impl MarketData for TwelvedataConnector {
                 tick_size: None,
                 step_size: Some(1.0),
                 min_notional: None,
-                account_type: Default::default(),
+                account_type,
             })
         }).collect();
 

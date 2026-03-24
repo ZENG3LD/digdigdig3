@@ -256,7 +256,7 @@ impl MarketData for JQuantsConnector {
     }
 
     /// Get exchange info — returns listed Japanese stock codes from JQuants
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let params = HashMap::new();
         let response = self.get(JQuantsEndpoint::ListedInfo, params).await?;
         let symbols = JQuantsParser::parse_symbols(&response)?;
@@ -273,7 +273,7 @@ impl MarketData for JQuantsConnector {
             tick_size: None,
             step_size: Some(1.0),
             min_notional: None,
-            account_type: Default::default(),
+            account_type,
         }).collect();
 
         Ok(infos)

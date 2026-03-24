@@ -318,7 +318,7 @@ impl MarketData for ZerodhaConnector {
     /// Get exchange info — returns NSE equity instruments from Zerodha
     ///
     /// The /instruments endpoint returns CSV data. We parse it here.
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let url = format!("{}{}", self.endpoints.rest_base, ZerodhaEndpoint::InstrumentsExchange("NSE".to_string()).path());
 
         // Add auth headers
@@ -365,7 +365,7 @@ impl MarketData for ZerodhaConnector {
                 tick_size,
                 step_size: Some(1.0),
                 min_notional: None,
-                account_type: Default::default(),
+                account_type,
             });
         }
 

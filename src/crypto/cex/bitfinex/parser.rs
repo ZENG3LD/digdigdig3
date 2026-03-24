@@ -12,7 +12,7 @@
 use serde_json::Value;
 
 use crate::core::types::{
-    ExchangeError, ExchangeResult,
+    ExchangeError, ExchangeResult, AccountType,
     Kline, OrderBook, Ticker, Order, Balance, Position, PublicTrade, TradeSide,
     OrderSide, OrderType, OrderStatus, PositionSide, SymbolInfo, UserTrade,
 };
@@ -603,7 +603,7 @@ impl BitfinexParser {
     /// ```json
     /// [{"pair":"btcusd","price_precision":5,"initial_margin":"30.0","minimum_margin":"15.0","maximum_order_size":"2000.0","minimum_order_size":"0.00006","expiration":"NA","margin":true},...]
     /// ```
-    pub fn parse_exchange_info(response: &Value) -> ExchangeResult<Vec<SymbolInfo>> {
+    pub fn parse_exchange_info(response: &Value, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let items = response.as_array()
             .ok_or_else(|| ExchangeError::Parse("Expected array response".to_string()))?;
 
@@ -649,7 +649,7 @@ impl BitfinexParser {
                 tick_size: None,
                 step_size: None,
                 min_notional: None,
-                account_type: Default::default(),
+                account_type,
             });
         }
 

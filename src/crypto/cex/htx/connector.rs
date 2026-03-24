@@ -292,9 +292,9 @@ impl HtxConnector {
     }
 
     /// Get exchange info (parsed symbol list)
-    pub async fn get_exchange_info_parsed(&self) -> ExchangeResult<Vec<crate::core::types::SymbolInfo>> {
+    pub async fn get_exchange_info_parsed(&self, account_type: crate::core::types::AccountType) -> ExchangeResult<Vec<crate::core::types::SymbolInfo>> {
         let response = self.get_symbols().await?;
-        HtxParser::parse_exchange_info(&response)
+        HtxParser::parse_exchange_info(&response, account_type)
     }
 
     /// Cancel all orders (struct method — also available via CancelAll trait)
@@ -501,9 +501,9 @@ impl MarketData for HtxConnector {
         }
     }
 
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<crate::core::types::SymbolInfo>> {
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<crate::core::types::SymbolInfo>> {
         let response = self.get_symbols().await?;
-        let symbols = HtxParser::parse_exchange_info(&response)?;
+        let symbols = HtxParser::parse_exchange_info(&response, account_type)?;
         self.precision.load_from_symbols(&symbols);
         Ok(symbols)
     }

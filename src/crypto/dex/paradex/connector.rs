@@ -524,7 +524,7 @@ impl MarketData for ParadexConnector {
         Err(ExchangeError::Network("System not operational".to_string()))
     }
 
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let response = self.get(ParadexEndpoint::Markets, HashMap::new()).await?;
 
         // Paradex markets endpoint returns {"results": [...]} where each entry has
@@ -591,7 +591,7 @@ impl MarketData for ParadexConnector {
                 tick_size,
                 step_size,
                 min_notional,
-                account_type: Default::default(),
+                account_type,
             })
         }).collect();
 

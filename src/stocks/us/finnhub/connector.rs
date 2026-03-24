@@ -404,7 +404,7 @@ impl MarketData for FinnhubConnector {
     }
 
     /// Get exchange info — returns US stock symbols from Finnhub
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let mut params = HashMap::new();
         params.insert("exchange".to_string(), "US".to_string());
 
@@ -433,7 +433,7 @@ impl MarketData for FinnhubConnector {
                 tick_size: None,
                 step_size: Some(1.0),
                 min_notional: None,
-                account_type: Default::default(),
+                account_type,
             })
         }).collect();
 

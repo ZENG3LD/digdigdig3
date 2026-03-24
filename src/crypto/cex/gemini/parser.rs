@@ -7,7 +7,7 @@
 use serde_json::Value;
 
 use crate::core::types::{
-    ExchangeError, ExchangeResult,
+    ExchangeError, ExchangeResult, AccountType,
     Kline, OrderBook, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, PublicTrade, StreamEvent, TradeSide,
@@ -661,7 +661,7 @@ impl GeminiParser {
     /// ```json
     /// {"symbol":"BTCUSD","base_currency":"BTC","quote_currency":"USD","tick_size":1e-8,"quote_increment":0.01,"min_order_size":"0.00001","status":"open","wrap_enabled":false}
     /// ```
-    pub fn parse_symbol_details(response: &Value, symbol_lower: &str) -> Option<SymbolInfo> {
+    pub fn parse_symbol_details(response: &Value, symbol_lower: &str, account_type: AccountType) -> Option<SymbolInfo> {
         let status = response.get("status").and_then(|v| v.as_str()).unwrap_or("");
         if status != "open" && !status.is_empty() {
             return None;
@@ -729,7 +729,7 @@ impl GeminiParser {
             tick_size,
             step_size,
             min_notional: None,
-            account_type: Default::default(),
+            account_type,
         })
     }
 

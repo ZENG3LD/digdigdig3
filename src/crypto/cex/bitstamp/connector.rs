@@ -434,12 +434,12 @@ impl MarketData for BitstampConnector {
         Ok(())
     }
 
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         // GET /api/v2/trading-pairs-info/ returns detailed symbol info with name, url_symbol, etc.
         self.rate_limit_wait().await;
         let url = format!("{}/api/v2/trading-pairs-info/", BitstampUrls::base_url());
         let response = self.http.get(&url, &HashMap::new()).await?;
-        let info = BitstampParser::parse_exchange_info(&response)?;
+        let info = BitstampParser::parse_exchange_info(&response, account_type)?;
         self.precision.load_from_symbols(&info);
         Ok(info)
     }

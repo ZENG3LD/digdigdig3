@@ -303,7 +303,7 @@ impl MarketData for TiingoConnector {
     }
 
     /// Get exchange info — returns supported crypto tickers from Tiingo
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         // Tiingo doesn't have a bulk stock listing endpoint (requires ticker per request).
         // CryptoMeta returns all supported crypto tickers without pagination.
         let response = self.get(TiingoEndpoint::CryptoMeta, None, HashMap::new()).await?;
@@ -334,7 +334,7 @@ impl MarketData for TiingoConnector {
                 tick_size: None,
                 step_size: None,
                 min_notional: None,
-                account_type: Default::default(),
+                account_type,
             })
         }).collect();
 

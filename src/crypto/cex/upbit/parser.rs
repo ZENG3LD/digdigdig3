@@ -11,7 +11,7 @@
 use serde_json::Value;
 
 use crate::core::types::{
-    ExchangeError, ExchangeResult,
+    ExchangeError, ExchangeResult, AccountType,
     Kline, OrderBook, Ticker, Order, Balance, PublicTrade,
     OrderSide, OrderType, OrderStatus, TradeSide, SymbolInfo,
     UserTrade,
@@ -613,7 +613,7 @@ impl UpbitParser {
     /// [{"market":"KRW-BTC","korean_name":"비트코인","english_name":"Bitcoin","market_warning":"NONE"},...]
     /// ```
     /// Symbol format is "QUOTE-BASE" (e.g. "KRW-BTC" means base=BTC, quote=KRW)
-    pub fn parse_exchange_info(response: &Value) -> ExchangeResult<Vec<SymbolInfo>> {
+    pub fn parse_exchange_info(response: &Value, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let items = response.as_array()
             .ok_or_else(|| ExchangeError::Parse("Expected array response".to_string()))?;
 
@@ -650,7 +650,7 @@ impl UpbitParser {
                 tick_size: None,
                 step_size: None,
                 min_notional: None,
-                account_type: Default::default(),
+                account_type,
             });
         }
 

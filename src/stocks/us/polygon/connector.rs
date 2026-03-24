@@ -484,7 +484,7 @@ impl MarketData for PolygonConnector {
     }
 
     /// Get exchange info — returns a paginated list of US stock tickers
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let mut params = HashMap::new();
         params.insert("market".to_string(), "stocks".to_string());
         params.insert("active".to_string(), "true".to_string());
@@ -516,7 +516,7 @@ impl MarketData for PolygonConnector {
                 tick_size: None,
                 step_size: Some(1.0),
                 min_notional: None,
-                account_type: Default::default(),
+                account_type,
             })
         }).collect();
 

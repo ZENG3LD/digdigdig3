@@ -512,7 +512,7 @@ impl MarketData for DydxConnector {
         }
     }
 
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let response = self.get(DydxEndpoint::PerpetualMarkets, HashMap::new()).await?;
 
         let markets = response.get("markets")
@@ -555,7 +555,7 @@ impl MarketData for DydxConnector {
                 tick_size,
                 step_size,
                 min_notional: None,
-                account_type: Default::default(),
+                account_type,
             }
         }).collect();
 

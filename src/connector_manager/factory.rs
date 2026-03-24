@@ -127,13 +127,6 @@ use crate::data_feeds::yahoo::YahooFinanceConnector;
 use crate::data_feeds::cryptocompare::CryptoCompareConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// CONNECTOR IMPORTS - ON-CHAIN ANALYTICS
-// ═══════════════════════════════════════════════════════════════════════════════
-
-use crate::onchain::analytics::whale_alert::{WhaleAlertConnector, WhaleAlertAuth};
-use crate::onchain::analytics::bitquery::BitqueryConnector;
-
-// ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR FACTORY
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -421,7 +414,7 @@ impl ConnectorFactory {
             }
 
             // ═══════════════════════════════════════════════════════════════════════
-            // ON-CHAIN ANALYTICS
+            // ON-CHAIN ANALYTICS — extracted to dig2onchain-data crate
             // ═══════════════════════════════════════════════════════════════════════
             ExchangeId::Coinglass => {
                 Err(ExchangeError::Auth(
@@ -429,10 +422,9 @@ impl ConnectorFactory {
                 ))
             }
             ExchangeId::WhaleAlert => {
-                // WhaleAlert can work without API key at reduced rate limits (v1 API)
-                let auth = WhaleAlertAuth::none();
-                let c = WhaleAlertConnector::new(auth);
-                Ok(Arc::new(AnyConnector::WhaleAlert(Arc::new(c))))
+                Err(ExchangeError::UnsupportedOperation(
+                    "WhaleAlert has been extracted to the dig2onchain-data crate".into()
+                ))
             }
             ExchangeId::Fred => {
                 Err(ExchangeError::Auth(
@@ -440,8 +432,8 @@ impl ConnectorFactory {
                 ))
             }
             ExchangeId::Bitquery => {
-                Err(ExchangeError::Auth(
-                    "Bitquery requires OAuth token (use create_authenticated with api_key in Credentials)".into()
+                Err(ExchangeError::UnsupportedOperation(
+                    "Bitquery has been extracted to the dig2onchain-data crate".into()
                 ))
             }
 
@@ -790,9 +782,9 @@ impl ConnectorFactory {
                 ))
             }
             ExchangeId::WhaleAlert => {
-                let auth = WhaleAlertAuth::new(credentials.api_key);
-                let c = WhaleAlertConnector::new(auth);
-                Ok(Arc::new(AnyConnector::WhaleAlert(Arc::new(c))))
+                Err(ExchangeError::UnsupportedOperation(
+                    "WhaleAlert has been extracted to the dig2onchain-data crate".into()
+                ))
             }
             ExchangeId::Fred => {
                 Err(ExchangeError::Auth(
@@ -800,8 +792,9 @@ impl ConnectorFactory {
                 ))
             }
             ExchangeId::Bitquery => {
-                let c = BitqueryConnector::new(credentials).await?;
-                Ok(Arc::new(AnyConnector::Bitquery(Arc::new(c))))
+                Err(ExchangeError::UnsupportedOperation(
+                    "Bitquery has been extracted to the dig2onchain-data crate".into()
+                ))
             }
             ExchangeId::Bls => {
                 Err(ExchangeError::UnsupportedOperation(

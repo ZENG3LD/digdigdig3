@@ -40,7 +40,6 @@
 
 pub mod core;
 pub mod crypto;
-pub mod onchain;
 pub mod stocks;
 pub mod forex;
 pub mod brokers;

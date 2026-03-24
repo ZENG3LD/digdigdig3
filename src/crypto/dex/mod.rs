@@ -4,7 +4,5 @@
 //! while settling on-chain. These don't require direct RPC node connections.
 
 pub mod lighter;
-// jupiter extracted to dig2swap crate
-// gmx extracted to dig2swap crate
 pub mod paradex;
 pub mod dydx;

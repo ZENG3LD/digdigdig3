@@ -814,6 +814,7 @@ impl DeribitParser {
                 tick_size: raw_tick_size,
                 step_size,
                 min_notional: None,
+                account_type: Default::default(),
             });
         }
 

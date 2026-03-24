@@ -575,6 +575,7 @@ impl CryptoComParser {
                 tick_size,
                 step_size,
                 min_notional: None,
+                account_type: Default::default(),
             });
         }
 

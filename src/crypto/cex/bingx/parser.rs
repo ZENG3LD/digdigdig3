@@ -799,6 +799,7 @@ impl BingxParser {
                 tick_size,
                 step_size,
                 min_notional: None,
+                account_type: Default::default(),
             });
         }
 
@@ -890,6 +891,7 @@ impl BingxParser {
                 tick_size,
                 step_size,
                 min_notional,
+                account_type: Default::default(),
             });
         }
 

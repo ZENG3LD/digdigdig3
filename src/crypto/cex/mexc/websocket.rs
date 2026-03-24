@@ -173,6 +173,7 @@ impl MexcWebSocket {
         subs.insert(SubscriptionRequest {
             stream_type: StreamType::Ticker,
             symbol: symbol.clone(),
+            account_type: crate::core::AccountType::default(),
         });
 
         Ok(())
@@ -195,6 +196,7 @@ impl MexcWebSocket {
         subs.insert(SubscriptionRequest {
             stream_type: StreamType::Trade,
             symbol: symbol.clone(),
+            account_type: crate::core::AccountType::default(),
         });
 
         Ok(())

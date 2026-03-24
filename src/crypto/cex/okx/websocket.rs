@@ -450,8 +450,7 @@ impl WebSocketConnector for OkxWebSocket {
         };
 
         // For OKX the instId depends on account type.
-        // Default to Spot for live-data subscriptions (chart + watchlist).
-        let account_type = AccountType::Spot;
+        let account_type = request.account_type;
         let inst_id = format_symbol(&request.symbol.base, &request.symbol.quote, account_type);
 
         let sub_msg = json!({
@@ -488,8 +487,8 @@ impl WebSocketConnector for OkxWebSocket {
             crate::core::StreamType::PositionUpdate => "positions",
         };
 
-        // Must match the account_type used in subscribe() — Spot.
-        let account_type = AccountType::Spot;
+        // Use the same account_type that was used in subscribe().
+        let account_type = request.account_type;
         let inst_id = format_symbol(&request.symbol.base, &request.symbol.quote, account_type);
 
         let unsub_msg = json!({

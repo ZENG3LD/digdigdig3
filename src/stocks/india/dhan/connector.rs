@@ -460,6 +460,7 @@ impl MarketData for DhanConnector {
                 tick_size: None,
                 step_size: Some(1.0),
                 min_notional: None,
+                account_type: Default::default(),
             });
         }
 

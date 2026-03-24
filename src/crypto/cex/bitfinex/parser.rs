@@ -649,6 +649,7 @@ impl BitfinexParser {
                 tick_size: None,
                 step_size: None,
                 min_notional: None,
+                account_type: Default::default(),
             });
         }
 

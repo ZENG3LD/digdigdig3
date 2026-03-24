@@ -1176,6 +1176,9 @@ pub struct SymbolInfo {
     pub step_size: Option<f64>,
     /// Минимальный notional (price * qty)
     pub min_notional: Option<f64>,
+    /// Account / market type this symbol belongs to (Spot, FuturesCross, etc.)
+    #[serde(default)]
+    pub account_type: super::AccountType,
 }
 
 /// Информация о бирже

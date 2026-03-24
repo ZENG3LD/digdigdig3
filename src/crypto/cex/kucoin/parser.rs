@@ -290,6 +290,7 @@ impl KuCoinParser {
                     tick_size,
                     step_size,
                     min_notional,
+                    account_type: Default::default(),
                 })
             })
             .collect();

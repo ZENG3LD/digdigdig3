@@ -778,6 +778,7 @@ impl PhemexParser {
                         tick_size,
                         step_size,
                         min_notional,
+                        account_type: Default::default(),
                     });
                 }
             }

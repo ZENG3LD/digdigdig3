@@ -777,6 +777,7 @@ pub fn clob_market_to_symbol_info(market: &ClobMarket) -> SymbolInfo {
             .as_ref()
             .and_then(|s| s.parse::<f64>().ok()),
         min_notional: None,
+        account_type: Default::default(),
     }
 }
 
@@ -814,6 +815,7 @@ pub fn poly_market_to_symbol_info(market: &PolyMarket) -> SymbolInfo {
         tick_size: market.order_price_min_tick_size,
         step_size: market.order_price_min_tick_size,
         min_notional: None,
+        account_type: Default::default(),
     }
 }
 

@@ -451,6 +451,7 @@ impl BybitParser {
                     tick_size,
                     step_size,
                     min_notional: None,
+                    account_type: Default::default(),
                 })
             })
             .collect();

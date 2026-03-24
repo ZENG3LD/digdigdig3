@@ -246,9 +246,10 @@ pub enum ExchangeType {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Тип аккаунта/рынка
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum AccountType {
     /// Спотовая торговля
+    #[default]
     Spot,
     /// Маржинальная торговля
     Margin,
@@ -272,6 +273,36 @@ pub enum AccountType {
     ///
     /// ~7/24: Binance, Bybit, OKX, KuCoin, GateIO, HTX, CryptoCom.
     Convert,
+}
+
+impl AccountType {
+    /// Short display label for UI use.
+    pub fn short_label(&self) -> &'static str {
+        match self {
+            Self::Spot => "S",
+            Self::Margin => "M",
+            Self::FuturesCross => "F",
+            Self::FuturesIsolated => "FI",
+            Self::Earn => "E",
+            Self::Lending => "L",
+            Self::Options => "O",
+            Self::Convert => "CV",
+        }
+    }
+
+    /// Stable lowercase key string for serialization keys and map lookups.
+    pub fn as_key_str(&self) -> &'static str {
+        match self {
+            Self::Spot => "spot",
+            Self::Margin => "margin",
+            Self::FuturesCross => "futures_cross",
+            Self::FuturesIsolated => "futures_isolated",
+            Self::Earn => "earn",
+            Self::Lending => "lending",
+            Self::Options => "options",
+            Self::Convert => "convert",
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

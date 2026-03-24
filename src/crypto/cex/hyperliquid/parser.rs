@@ -736,6 +736,7 @@ impl HyperliquidParser {
                 tick_size: None,
                 step_size,
                 min_notional: None,
+                account_type: Default::default(),
             });
         }
 
@@ -873,6 +874,7 @@ impl HyperliquidParser {
                 tick_size: None,
                 step_size,
                 min_notional: None,
+                account_type: Default::default(),
             });
         }
 

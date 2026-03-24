@@ -13,8 +13,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    Kline, MarginType, OrderBook, OrderSide, OrderStatus, OrderType, PositionSide, Price,
-    PublicTrade, Quantity, Symbol, Ticker, Timestamp,
+    AccountType, Kline, MarginType, OrderBook, OrderSide, OrderStatus, OrderType, PositionSide,
+    Price, PublicTrade, Quantity, Symbol, Ticker, Timestamp,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -107,19 +107,30 @@ pub struct SubscriptionRequest {
     pub symbol: Symbol,
     /// Тип потока
     pub stream_type: StreamType,
+    /// Account / market type (Spot, FuturesCross, etc.). Defaults to Spot.
+    #[serde(default)]
+    pub account_type: AccountType,
 }
 
 impl SubscriptionRequest {
     pub fn new(symbol: Symbol, stream_type: StreamType) -> Self {
-        Self { symbol, stream_type }
+        Self { symbol, stream_type, account_type: AccountType::default() }
     }
 
     pub fn ticker(symbol: Symbol) -> Self {
         Self::new(symbol, StreamType::Ticker)
     }
 
+    pub fn ticker_for(symbol: Symbol, account_type: AccountType) -> Self {
+        Self { symbol, stream_type: StreamType::Ticker, account_type }
+    }
+
     pub fn trade(symbol: Symbol) -> Self {
         Self::new(symbol, StreamType::Trade)
+    }
+
+    pub fn trade_for(symbol: Symbol, account_type: AccountType) -> Self {
+        Self { symbol, stream_type: StreamType::Trade, account_type }
     }
 
     pub fn orderbook(symbol: Symbol) -> Self {

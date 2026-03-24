@@ -42,7 +42,6 @@ pub enum ExchangeId {
     Jupiter,
     Raydium,
     Gmx,
-    // Vertex,  // DISABLED: Exchange shut down Aug 14, 2025 (see exchanges/mod.rs)
     Paradex,
     Dydx,
 
@@ -120,7 +119,6 @@ impl ExchangeId {
             Self::Jupiter => "jupiter",
             Self::Raydium => "raydium",
             Self::Gmx => "gmx",
-            // Self::Vertex => "vertex",  // DISABLED
             Self::Paradex => "paradex",
             Self::Dydx => "dydx",
             Self::Polymarket => "polymarket",

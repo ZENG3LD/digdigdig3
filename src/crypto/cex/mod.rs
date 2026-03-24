@@ -26,8 +26,5 @@ pub mod hyperliquid;
 // DISABLED EXCHANGES
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// DISABLED: Vertex Protocol shut down August 14, 2025 (acquired by Ink Foundation)
-// pub mod vertex;
-
 // DISABLED: Bithumb has persistent infrastructure issues (SSL hangs, 403 geo-blocking)
 // pub mod bithumb;

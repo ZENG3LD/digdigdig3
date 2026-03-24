@@ -79,8 +79,7 @@ use crate::crypto::cex::hyperliquid::HyperliquidConnector;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 use crate::crypto::dex::lighter::LighterConnector;
-// Jupiter, Raydium, Uniswap → extracted to dig2swap crate
-use crate::crypto::dex::gmx::GmxConnector;
+// Jupiter, Raydium, Uniswap, GMX → extracted to dig2swap crate
 use crate::crypto::dex::paradex::ParadexConnector;
 use crate::crypto::dex::dydx::DydxConnector;
 
@@ -285,15 +284,11 @@ impl ConnectorFactory {
                 let c = LighterConnector::public(testnet).await?;
                 Ok(Arc::new(AnyConnector::Lighter(Arc::new(c))))
             }
-            // Jupiter, Raydium, Uniswap → extracted to dig2swap crate
-            ExchangeId::Jupiter | ExchangeId::Raydium | ExchangeId::Uniswap => {
+            // Jupiter, Raydium, Uniswap, GMX → extracted to dig2swap crate
+            ExchangeId::Jupiter | ExchangeId::Raydium | ExchangeId::Uniswap | ExchangeId::Gmx => {
                 Err(ExchangeError::UnsupportedOperation(
-                    "Jupiter, Raydium, and Uniswap have been extracted to the dig2swap crate".into()
+                    "Jupiter, Raydium, Uniswap, and GMX have been extracted to the dig2swap crate".into()
                 ))
-            }
-            ExchangeId::Gmx => {
-                let c = GmxConnector::arbitrum().await?;
-                Ok(Arc::new(AnyConnector::Gmx(Arc::new(c))))
             }
 
             // ═══════════════════════════════════════════════════════════════════════
@@ -592,19 +587,18 @@ impl ConnectorFactory {
                 Ok(Arc::new(AnyConnector::Paradex(Arc::new(c))))
             }
 
-            // Jupiter, Raydium, Uniswap → extracted to dig2swap crate
-            ExchangeId::Jupiter | ExchangeId::Raydium | ExchangeId::Uniswap => {
+            // Jupiter, Raydium, Uniswap, GMX → extracted to dig2swap crate
+            ExchangeId::Jupiter | ExchangeId::Raydium | ExchangeId::Uniswap | ExchangeId::Gmx => {
                 Err(ExchangeError::UnsupportedOperation(
-                    "Jupiter, Raydium, and Uniswap have been extracted to the dig2swap crate".into()
+                    "Jupiter, Raydium, Uniswap, and GMX have been extracted to the dig2swap crate".into()
                 ))
             }
 
             // ═══════════════════════════════════════════════════════════════════════
             // DEX - No auth supported (public only)
             // ═══════════════════════════════════════════════════════════════════════
-            ExchangeId::Lighter |
-            ExchangeId::Gmx => {
-                // These DEXs don't support authentication, use public connector
+            ExchangeId::Lighter => {
+                // Lighter doesn't support authentication, use public connector
                 Self::create_public(id, testnet).await
             }
 

@@ -5,6 +5,6 @@
 
 pub mod lighter;
 // jupiter extracted to dig2swap crate
-pub mod gmx;
+// gmx extracted to dig2swap crate
 pub mod paradex;
 pub mod dydx;

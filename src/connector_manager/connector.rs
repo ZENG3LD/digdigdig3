@@ -56,8 +56,7 @@ use crate::crypto::cex::hyperliquid::HyperliquidConnector;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 use crate::crypto::dex::lighter::LighterConnector;
-// Jupiter, Raydium, Uniswap → extracted to dig2swap crate
-use crate::crypto::dex::gmx::GmxConnector;
+// Jupiter, Raydium, Uniswap, GMX → extracted to dig2swap crate
 use crate::crypto::dex::paradex::ParadexConnector;
 use crate::crypto::dex::dydx::DydxConnector;
 
@@ -164,10 +163,9 @@ pub enum AnyConnector {
     HyperLiquid(Arc<HyperliquidConnector>),
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // DEX - Decentralized Exchanges (4) — Jupiter, Raydium, Uniswap extracted to dig2swap crate
+    // DEX - Decentralized Exchanges (3) — Jupiter, Raydium, Uniswap, GMX extracted to dig2swap crate
     // ═══════════════════════════════════════════════════════════════════════════
     Lighter(Arc<LighterConnector>),
-    Gmx(Arc<GmxConnector>),
     Paradex(Arc<ParadexConnector>),
     Dydx(Arc<DydxConnector>),
 
@@ -261,7 +259,6 @@ impl AnyConnector {
 
             // DEX
             Self::Lighter(_) => ExchangeId::Lighter,
-            Self::Gmx(_) => ExchangeId::Gmx,
             Self::Paradex(_) => ExchangeId::Paradex,
             Self::Dydx(_) => ExchangeId::Dydx,
 
@@ -333,7 +330,6 @@ impl AnyConnector {
 
             // DEX
             Self::Lighter(c) => c.metrics(),
-            Self::Gmx(c) => c.metrics(),
             Self::Paradex(c) => c.metrics(),
             Self::Dydx(c) => c.metrics(),
 
@@ -413,7 +409,6 @@ impl ExchangeIdentity for AnyConnector {
 
             // DEX
             Self::Lighter(c) => c.is_testnet(),
-            Self::Gmx(c) => c.is_testnet(),
             Self::Paradex(c) => c.is_testnet(),
             Self::Dydx(c) => c.is_testnet(),
 
@@ -481,7 +476,6 @@ impl ExchangeIdentity for AnyConnector {
 
             // DEX
             Self::Lighter(c) => c.supported_account_types(),
-            Self::Gmx(c) => c.supported_account_types(),
             Self::Paradex(c) => c.supported_account_types(),
             Self::Dydx(c) => c.supported_account_types(),
 
@@ -558,7 +552,6 @@ impl MarketData for AnyConnector {
 
             // DEX
             Self::Lighter(c) => c.get_price(symbol, account_type).await,
-            Self::Gmx(c) => c.get_price(symbol, account_type).await,
             Self::Paradex(c) => c.get_price(symbol, account_type).await,
             Self::Dydx(c) => c.get_price(symbol, account_type).await,
 
@@ -631,7 +624,6 @@ impl MarketData for AnyConnector {
 
             // DEX
             Self::Lighter(c) => c.get_orderbook(symbol, depth, account_type).await,
-            Self::Gmx(c) => c.get_orderbook(symbol, depth, account_type).await,
             Self::Paradex(c) => c.get_orderbook(symbol, depth, account_type).await,
             Self::Dydx(c) => c.get_orderbook(symbol, depth, account_type).await,
 
@@ -706,7 +698,6 @@ impl MarketData for AnyConnector {
 
             // DEX
             Self::Lighter(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
-            Self::Gmx(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
             Self::Paradex(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
             Self::Dydx(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
 
@@ -778,7 +769,6 @@ impl MarketData for AnyConnector {
 
             // DEX
             Self::Lighter(c) => c.get_ticker(symbol, account_type).await,
-            Self::Gmx(c) => c.get_ticker(symbol, account_type).await,
             Self::Paradex(c) => c.get_ticker(symbol, account_type).await,
             Self::Dydx(c) => c.get_ticker(symbol, account_type).await,
 
@@ -846,7 +836,6 @@ impl MarketData for AnyConnector {
 
             // DEX
             Self::Lighter(c) => c.ping().await,
-            Self::Gmx(c) => c.ping().await,
             Self::Paradex(c) => c.ping().await,
             Self::Dydx(c) => c.ping().await,
 
@@ -914,7 +903,6 @@ impl MarketData for AnyConnector {
 
             // DEX
             Self::Lighter(c) => c.get_exchange_info(account_type).await,
-            Self::Gmx(c) => c.get_exchange_info(account_type).await,
             Self::Paradex(c) => c.get_exchange_info(account_type).await,
             Self::Dydx(c) => c.get_exchange_info(account_type).await,
 
@@ -1074,9 +1062,9 @@ mod tests {
         // This is a compile-time test
         // All DEX variants should be accessible
 
-        // Expected 4 DEX connectors:
-        // Lighter, Gmx, Paradex, Dydx
-        // Jupiter, Raydium, Uniswap → extracted to dig2swap crate
+        // Expected 3 DEX connectors:
+        // Lighter, Paradex, Dydx
+        // Jupiter, Raydium, Uniswap, GMX → extracted to dig2swap crate
     }
 
     /// Test that all Stock market variants exist

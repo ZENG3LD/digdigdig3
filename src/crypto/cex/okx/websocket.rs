@@ -488,7 +488,8 @@ impl WebSocketConnector for OkxWebSocket {
             crate::core::StreamType::PositionUpdate => "positions",
         };
 
-        let account_type = AccountType::FuturesCross;
+        // Must match the account_type used in subscribe() — Spot.
+        let account_type = AccountType::Spot;
         let inst_id = format_symbol(&request.symbol.base, &request.symbol.quote, account_type);
 
         let unsub_msg = json!({

@@ -35,8 +35,6 @@
 //! verifyingContract: 0x0000000000000000000000000000000000000000
 //! ```
 
-#![cfg(feature = "onchain-evm")]
-
 use alloy::primitives::{keccak256, Address, B256};
 use alloy::signers::local::PrivateKeySigner;
 use alloy::signers::SignerSync;

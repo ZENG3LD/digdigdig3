@@ -242,10 +242,10 @@ pub enum PlaceOrderResponse {
     Simple(Order),
 
     /// A bracket order was placed (entry + TP + SL).
-    Bracket(BracketResponse),
+    Bracket(Box<BracketResponse>),
 
     /// An OCO order pair was placed.
-    Oco(OcoResponse),
+    Oco(Box<OcoResponse>),
 
     /// An algorithmic order (TWAP, etc.) was submitted.
     Algo(AlgoOrderResponse),

@@ -235,7 +235,7 @@ impl ParadexAuth {
     /// Returns true if a token exists and is not about to expire.
     pub async fn is_token_valid(&self) -> bool {
         let jwt = self.jwt_token.read().await;
-        jwt.as_ref().map_or(false, |t| t.is_valid())
+        jwt.as_ref().is_some_and(|t| t.is_valid())
     }
 
     /// Check if the current token has expired (no safety margin)
@@ -243,7 +243,7 @@ impl ParadexAuth {
     /// Returns true if no token exists or the token is past its expiry.
     pub async fn is_token_expired(&self) -> bool {
         let jwt = self.jwt_token.read().await;
-        jwt.as_ref().map_or(true, |t| t.is_expired())
+        jwt.as_ref().is_none_or(|t| t.is_expired())
     }
 
     /// Get seconds until token expiry (0 if expired or no token)

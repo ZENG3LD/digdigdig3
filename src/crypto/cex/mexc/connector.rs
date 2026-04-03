@@ -23,10 +23,10 @@ use crate::core::{
     HttpClient, Credentials,
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
-    Price, Quantity, Kline, Ticker, OrderBook,
+    Price, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, Balance, AccountInfo,
     OrderRequest, CancelRequest, CancelScope,
-    BalanceQuery, PositionQuery, PositionModification,
+    BalanceQuery,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     UserTrade, UserTradeFilter,
 };
@@ -1111,9 +1111,9 @@ impl BatchOrders for MexcConnector {
 
     async fn cancel_orders_batch(
         &self,
-        order_ids: Vec<String>,
-        symbol: Option<&str>,
-        account_type: AccountType,
+        _order_ids: Vec<String>,
+        _symbol: Option<&str>,
+        _account_type: AccountType,
     ) -> ExchangeResult<Vec<OrderResult>> {
         // MEXC doesn't have a true batch cancel — cancel one by one
         Err(ExchangeError::UnsupportedOperation(
@@ -1259,7 +1259,7 @@ impl CustodialFunds for MexcConnector {
 
         let net = response["network"]
             .as_str()
-            .or_else(|| network)
+            .or(network)
             .map(|s| s.to_string());
 
         Ok(DepositAddress {

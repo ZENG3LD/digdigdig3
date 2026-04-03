@@ -20,7 +20,7 @@ use crate::core::{
     HttpClient, Credentials,
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
-    Price, Quantity, Kline, Ticker, OrderBook,
+    Price, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, Balance, AccountInfo,
     Position,
     OrderRequest, CancelRequest, CancelScope,
@@ -199,37 +199,6 @@ impl BitfinexConnector {
         let response = self.http.post(&url, &body, &headers).await?;
         BitfinexParser::check_error(&response)?;
         Ok(response)
-    }
-
-    /// Build a minimal Order struct from known fields after place_order
-    fn make_order(
-        &self,
-        id: String,
-        symbol: &Symbol,
-        side: OrderSide,
-        order_type: OrderType,
-        quantity: Quantity,
-        price: Option<Price>,
-        stop_price: Option<Price>,
-    ) -> Order {
-        Order {
-            id,
-            client_order_id: None,
-            symbol: symbol.to_string(),
-            side,
-            order_type,
-            status: crate::core::OrderStatus::New,
-            price,
-            stop_price,
-            quantity,
-            filled_quantity: 0.0,
-            average_price: None,
-            commission: None,
-            commission_asset: None,
-            created_at: crate::core::timestamp_millis() as i64,
-            updated_at: None,
-            time_in_force: crate::core::TimeInForce::Gtc,
-        }
     }
 
     /// Format symbol helper
@@ -784,7 +753,7 @@ impl Trading for BitfinexConnector {
 
 #[async_trait]
 impl Account for BitfinexConnector {
-    async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+    async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         let response = self.post(
             BitfinexEndpoint::Wallets,
             &[],
@@ -1147,7 +1116,7 @@ impl BatchOrders for BitfinexConnector {
         let _response = self.post(BitfinexEndpoint::OrderMulti, &[], body).await?;
 
         // Return success results — Bitfinex returns notifications, not per-order status
-        let results = order_ids.iter().map(|id| OrderResult {
+        let results = order_ids.iter().map(|_id| OrderResult {
             order: None,
             client_order_id: None,
             success: true,
@@ -1469,11 +1438,8 @@ impl SubAccounts for BitfinexConnector {
             SubAccountOperation::Transfer { sub_account_id, asset, amount, to_sub } => {
                 // Bitfinex sub-account transfer: POST /v2/auth/w/sub_account/transfer
                 // Body: sub_account_id, wallet_from, wallet_to, amount, currency
-                let (wallet_from, wallet_to) = if to_sub {
-                    ("exchange", "exchange") // master → sub, exchange wallet on both sides
-                } else {
-                    ("exchange", "exchange") // sub → master
-                };
+                // Bitfinex uses "exchange" wallet for both master→sub and sub→master transfers
+                let (wallet_from, wallet_to) = ("exchange", "exchange");
 
                 let body = json!({
                     "sub_account_id": sub_account_id.parse::<i64>().unwrap_or(0),

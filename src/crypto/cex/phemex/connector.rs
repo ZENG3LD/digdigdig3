@@ -757,7 +757,7 @@ impl Trading for PhemexConnector {
 
                 let response = self.post(endpoint, body, account_type).await?;
                 PhemexParser::parse_bracket_order(&response, &symbol_str, self.default_price_scale)
-                    .map(PlaceOrderResponse::Bracket)
+                    .map(|b| PlaceOrderResponse::Bracket(Box::new(b)))
             }
 
             // Unsupported order types

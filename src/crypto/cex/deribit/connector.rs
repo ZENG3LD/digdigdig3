@@ -21,9 +21,9 @@ use serde_json::{json, Value};
 
 use crate::core::{
     HttpClient, Credentials,
-    ExchangeId, ExchangeType, AccountType, Symbol, Asset,
+    ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
-    Price, Quantity, Kline, Ticker, OrderBook,
+    Price, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, Balance, AccountInfo,
     Position, FundingRate,
     OrderRequest, CancelRequest, CancelScope,
@@ -692,7 +692,7 @@ impl Trading for DeribitConnector {
 
                 let response = self.rpc_call(method, params).await?;
                 DeribitParser::parse_bracket_order(&response, &instrument_name)
-                    .map(PlaceOrderResponse::Bracket)
+                    .map(|b| PlaceOrderResponse::Bracket(Box::new(b)))
             }
 
             _ => Err(ExchangeError::UnsupportedOperation(

@@ -301,46 +301,6 @@ impl BitgetConnector {
         self.get(endpoint, params, account_type).await
     }
 
-    /// Build common spot order body fields
-    fn spot_order_body_base(
-        symbol: &Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        account_type: AccountType,
-        client_oid: &str,
-    ) -> Value {
-        json!({
-            "symbol": format_symbol(&symbol.base, &symbol.quote, account_type),
-            "side": match side {
-                OrderSide::Buy => "buy",
-                OrderSide::Sell => "sell",
-            },
-            "size": quantity.to_string(),
-            "clientOid": client_oid,
-        })
-    }
-
-    /// Build common futures order body fields
-    fn futures_order_body_base(
-        symbol: &Symbol,
-        side: OrderSide,
-        quantity: Quantity,
-        account_type: AccountType,
-        client_oid: &str,
-    ) -> Value {
-        json!({
-            "symbol": format_symbol(&symbol.base, &symbol.quote, account_type),
-            "productType": get_product_type(&symbol.quote),
-            "marginCoin": symbol.quote.to_uppercase(),
-            "size": quantity.to_string(),
-            "side": match side {
-                OrderSide::Buy => "buy",
-                OrderSide::Sell => "sell",
-            },
-            "clientOid": client_oid,
-        })
-    }
-
     /// Build a minimal returned Order after placing
     fn build_placed_order(
         order_id: String,
@@ -1214,11 +1174,11 @@ impl Trading for BitgetConnector {
         if is_futures {
             // Futures fill history: productType required
             let product_type = filter.symbol.as_deref()
-                .and_then(|s| {
+                .map(|s| {
                     // Extract quote from raw symbol like "BTCUSDT" or "BTC/USDT"
-                    if s.contains("USDC") { Some("USDC-FUTURES") }
-                    else if s.contains("USD") && !s.contains("USDT") { Some("COIN-FUTURES") }
-                    else { Some("USDT-FUTURES") }
+                    if s.contains("USDC") { "USDC-FUTURES" }
+                    else if s.contains("USD") && !s.contains("USDT") { "COIN-FUTURES" }
+                    else { "USDT-FUTURES" }
                 })
                 .unwrap_or("USDT-FUTURES");
             params.insert("productType".to_string(), product_type.to_string());

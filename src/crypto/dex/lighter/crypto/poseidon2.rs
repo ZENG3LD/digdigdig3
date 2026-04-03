@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 //! Poseidon2 hash function over the Goldilocks field.
 //!
 //! Parameters (the "Goldilocks" variant used by Lighter/poseidon_crypto):

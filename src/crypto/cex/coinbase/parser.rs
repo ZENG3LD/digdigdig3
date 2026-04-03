@@ -935,7 +935,7 @@ impl CoinbaseParser {
 
         let created_at = data.get("created_at")
             .and_then(|v| v.as_str())
-            .and_then(|s| Self::parse_rfc3339_to_millis(s));
+            .and_then(Self::parse_rfc3339_to_millis);
 
         Ok(DepositAddress {
             address,
@@ -1013,7 +1013,7 @@ impl CoinbaseParser {
 
             let timestamp = item.get("created_at")
                 .and_then(|v| v.as_str())
-                .and_then(|s| Self::parse_rfc3339_to_millis(s))
+                .and_then(Self::parse_rfc3339_to_millis)
                 .unwrap_or(0);
 
             let tx_hash = item.get("transaction")
@@ -1083,7 +1083,7 @@ impl CoinbaseParser {
 
                 let timestamp = item.get("created_at")
                     .and_then(|v| v.as_str())
-                    .and_then(|s| Self::parse_rfc3339_to_millis(s))
+                    .and_then(Self::parse_rfc3339_to_millis)
                     .unwrap_or(0);
 
                 let tx_hash = item.get("network")

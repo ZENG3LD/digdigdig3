@@ -6,12 +6,12 @@ use async_trait::async_trait;
 use chrono::{Datelike, Timelike};
 
 use crate::core::{
-    ExchangeId, ExchangeType, AccountType, Symbol, Asset,
+    ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
     Kline, Ticker, OrderBook, FundingRate,
     Order, Balance, AccountInfo, Position,
     HttpClient,
-    OrderRequest, CancelRequest, CancelScope,
+    OrderRequest, CancelRequest,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };

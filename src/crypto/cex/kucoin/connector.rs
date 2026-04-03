@@ -24,7 +24,7 @@ use crate::core::{
     HttpClient, Credentials,
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
-    Price, Quantity, Kline, Ticker, OrderBook,
+    Price, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, Balance, AccountInfo,
     Position, FundingRate,
     OrderRequest, CancelRequest, CancelScope,
@@ -1038,7 +1038,7 @@ impl Trading for KuCoinConnector {
             }
             _ => {
                 return Err(ExchangeError::UnsupportedOperation(
-                    format!("Order type not supported on KuCoin")
+                    "Order type not supported on KuCoin".to_string()
                 ));
             }
         };

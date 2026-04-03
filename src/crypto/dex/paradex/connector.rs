@@ -25,7 +25,7 @@ use crate::core::{
     HttpClient, Credentials,
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
-    Price, Quantity, Kline, Ticker, OrderBook,
+    Price, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, OrderStatus, Balance, AccountInfo,
     Position, FundingRate, TimeInForce,
     OrderRequest, CancelRequest, CancelScope,
@@ -543,7 +543,7 @@ impl MarketData for ParadexConnector {
                 .and_then(|v| v.as_str())
                 .unwrap_or_else(|| {
                     // Fallback: split "BTC-USD-PERP" on first '-'
-                    sym.splitn(2, '-').next().unwrap_or(&sym)
+                    sym.split('-').next().unwrap_or(&sym)
                 })
                 .to_string();
 

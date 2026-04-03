@@ -11,8 +11,8 @@ use crate::core::{
     ExchangeId, AccountType, Symbol, ExchangeType,
     ExchangeError, ExchangeResult,
     Kline, Ticker, OrderBook,
-    Order, OrderSide, OrderType, OrderStatus, TimeInForce, Price, Quantity,
-    Balance, AccountInfo, Position, FundingRate, Asset,
+    Order, OrderSide, OrderType, OrderStatus, TimeInForce, Price,
+    Balance, AccountInfo, Position, FundingRate,
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
@@ -535,8 +535,8 @@ impl Trading for ZerodhaConnector {
                 let total_qty = quantity as u32;
                 let display_qty = display_quantity as u32;
                 // Zerodha requires iceberg_legs = ceil(total / display)
-                let legs = (total_qty + display_qty - 1) / display_qty;
-                let legs = legs.max(2).min(10); // Zerodha: 2–10 legs
+                let legs = total_qty.div_ceil(display_qty);
+                let legs = legs.clamp(2, 10); // Zerodha: 2–10 legs
 
                 let mut body = HashMap::new();
                 body.insert("exchange".to_string(), exchange.to_string());
@@ -813,7 +813,7 @@ impl AmendOrder for ZerodhaConnector {
             ("regular".to_string(), req.order_id.clone())
         };
 
-        let response = self
+        let _response = self
             .put(ZerodhaEndpoint::ModifyOrder(variety, order_id.clone()), body)
             .await?;
 

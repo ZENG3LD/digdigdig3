@@ -66,7 +66,7 @@ use crate::core::{
     HttpClient, Credentials,
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
-    Price, Quantity, Kline, Ticker, OrderBook,
+    Price, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType,Balance, AccountInfo,
     Position, FundingRate,
     OrderRequest, CancelRequest, CancelScope,
@@ -669,7 +669,7 @@ impl Trading for CoinbaseConnector {
                     }
                 })
             }
-            OrderType::Oco { price, stop_price, stop_limit_price } => {
+            OrderType::Oco { price, stop_price, stop_limit_price: _ } => {
                 // Coinbase supports bracket orders: trigger_bracket_gtc
                 json!({
                     "trigger_bracket_gtc": {
@@ -906,7 +906,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
                 let symbol = req.symbol.as_ref()
                     .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for batch cancel".into()))?
                     .clone();
-                let account_type = req.account_type;
+                let _account_type = req.account_type;
 
                 // Coinbase supports batch cancel natively: POST /orders/batch_cancel
                 let body = json!({ "order_ids": order_ids });

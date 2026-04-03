@@ -939,7 +939,7 @@ impl Trading for BinanceConnector {
 
                 let response = self.post(BinanceEndpoint::SpotOcoOrder, params, account_type).await?;
                 let oco = BinanceParser::parse_oco_response(&response)?;
-                Ok(PlaceOrderResponse::Oco(oco))
+                Ok(PlaceOrderResponse::Oco(Box::new(oco)))
             }
 
             OrderType::Bracket { price, take_profit, stop_loss } => {
@@ -974,7 +974,7 @@ impl Trading for BinanceConnector {
 
                         let response = self.post(BinanceEndpoint::SpotOtocoOrder, params, account_type).await?;
                         let bracket = BinanceParser::parse_otoco_response(&response)?;
-                        Ok(PlaceOrderResponse::Bracket(bracket))
+                        Ok(PlaceOrderResponse::Bracket(Box::new(bracket)))
                     }
                     _ => {
                         Err(ExchangeError::UnsupportedOperation(
@@ -1022,7 +1022,7 @@ impl Trading for BinanceConnector {
                 //              1,000–1,000,000 USDT (Futures).
 
                 // Validate duration range
-                if duration_seconds < 300 || duration_seconds > 86_400 {
+                if !(300..=86_400).contains(&duration_seconds) {
                     return Err(ExchangeError::InvalidRequest(format!(
                         "Binance TWAP duration must be between 300 and 86400 seconds, got {}",
                         duration_seconds
@@ -1470,31 +1470,28 @@ impl Account for BinanceConnector {
         if let Some(ref sym) = formatted_symbol {
             spot_params.insert("symbol".to_string(), sym.clone());
         }
-        match self.get(BinanceEndpoint::SpotTradeFee, spot_params, AccountType::Spot).await {
-            Ok(response) => return BinanceParser::parse_fee_info(&response, symbol),
-            Err(_) => {}
+        if let Ok(response) = self.get(BinanceEndpoint::SpotTradeFee, spot_params, AccountType::Spot).await {
+            return BinanceParser::parse_fee_info(&response, symbol);
         }
 
         // Attempt 2: Futures /fapi/v1/commissionRate (requires symbol)
         if let Some(ref sym) = formatted_symbol {
             let mut futures_params = HashMap::new();
             futures_params.insert("symbol".to_string(), sym.clone());
-            match self.get(
+            if let Ok(response) = self.get(
                 BinanceEndpoint::FuturesCommissionRate,
                 futures_params,
                 AccountType::FuturesCross,
             ).await {
-                Ok(response) => return BinanceParser::parse_fee_info(&response, symbol),
-                Err(_) => {}
+                return BinanceParser::parse_fee_info(&response, symbol);
             }
         }
 
         // Attempt 3: Spot account commissionRates
         let mut account_params = HashMap::new();
         account_params.insert("omitZeroBalances".to_string(), "true".to_string());
-        match self.get(BinanceEndpoint::SpotAccount, account_params, AccountType::Spot).await {
-            Ok(response) => return BinanceParser::parse_fee_info(&response, symbol),
-            Err(_) => {}
+        if let Ok(response) = self.get(BinanceEndpoint::SpotAccount, account_params, AccountType::Spot).await {
+            return BinanceParser::parse_fee_info(&response, symbol);
         }
 
         // Attempt 4: Futures account feeTier

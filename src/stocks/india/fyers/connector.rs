@@ -11,9 +11,9 @@ use serde_json::{json, Value};
 use reqwest;
 
 use crate::core::{
-    timestamp_seconds, timestamp_millis, AccountInfo, AccountType, Asset, Balance, ExchangeError,
+    timestamp_seconds, timestamp_millis, AccountInfo, AccountType, Balance, ExchangeError,
     ExchangeId, ExchangeResult, ExchangeType, FundingRate, HttpClient, Kline, Order, OrderBook,
-    OrderSide, OrderType, OrderStatus, TimeInForce, Position, Price, Quantity, Symbol, Ticker,
+    OrderSide, OrderType, OrderStatus, TimeInForce, Position, Price, Symbol, Ticker,
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
@@ -702,7 +702,7 @@ impl AmendOrder for FyersConnector {
         }
 
         let body = serde_json::Value::Object(body_map);
-        let response = self.put(FyersEndpoint::ModifyOrder, body).await?;
+        let _response = self.put(FyersEndpoint::ModifyOrder, body).await?;
 
         // Fyers modify returns the updated order_id; fetch full order from order list
         let orders_response = self.get(FyersEndpoint::GetOrders, HashMap::new()).await?;

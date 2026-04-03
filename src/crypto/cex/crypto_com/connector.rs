@@ -674,7 +674,7 @@ impl Trading for CryptoComConnector {
                     time_in_force: crate::core::TimeInForce::Gtc,
                 };
 
-                Ok(PlaceOrderResponse::Oco(crate::core::types::OcoResponse {
+                Ok(PlaceOrderResponse::Oco(Box::new(crate::core::types::OcoResponse {
                     first_order: make_leg(OrderType::Limit { price }, Some(price), None),
                     second_order: make_leg(
                         OrderType::StopMarket { stop_price },
@@ -682,7 +682,7 @@ impl Trading for CryptoComConnector {
                         Some(stop_price),
                     ),
                     list_id,
-                }))
+                })))
             }
 
             // Unsupported on Crypto.com

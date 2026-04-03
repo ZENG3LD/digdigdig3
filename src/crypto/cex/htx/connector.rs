@@ -23,9 +23,9 @@ use crate::core::{
     HttpClient, Credentials,
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
-    Price, Quantity, Kline, Ticker, OrderBook,
+    Price, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, Balance, AccountInfo,
-    Position, FundingRate, Asset,
+    Position, FundingRate,
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
@@ -1249,7 +1249,7 @@ impl CancelAll for HtxConnector {
 impl BatchOrders for HtxConnector {
     async fn place_orders_batch(
         &self,
-        orders: Vec<crate::core::OrderRequest>,
+        _orders: Vec<crate::core::OrderRequest>,
     ) -> ExchangeResult<Vec<OrderResult>> {
         // HTX doesn't have a true batch place endpoint for spot
         // Return UnsupportedOperation

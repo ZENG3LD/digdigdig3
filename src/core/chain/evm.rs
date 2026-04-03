@@ -229,6 +229,11 @@ impl EvmProvider {
         let provider = ProviderBuilder::new().connect_http(url);
         Self::new(DynProvider::new(provider), 10, "optimism")
     }
+
+    /// Human-readable chain name (e.g. `"ethereum"`, `"arbitrum"`).
+    pub fn chain_name(&self) -> &str {
+        &self.chain_name
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

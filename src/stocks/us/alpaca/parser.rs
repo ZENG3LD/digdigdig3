@@ -420,7 +420,7 @@ impl AlpacaParser {
         for item in items {
             let status_code = item.get("status").and_then(|v| v.as_u64()).unwrap_or(0);
             let order_id = item.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let success = status_code >= 200 && status_code < 300;
+            let success = (200..300).contains(&status_code);
 
             if success {
                 cancelled_count += 1;
@@ -606,7 +606,7 @@ impl AlpacaParser {
         let is_maker = liquidity.eq_ignore_ascii_case("M");
 
         let timestamp = data.get("transaction_time")
-            .and_then(|v| Self::parse_timestamp(v))
+            .and_then(Self::parse_timestamp)
             .unwrap_or(0);
 
         Ok(UserTrade {
@@ -652,8 +652,8 @@ impl AlpacaParser {
 
             let timestamp = item
                 .get("transaction_time")
-                .and_then(|v| Self::parse_timestamp(v))
-                .or_else(|| item.get("date").and_then(|v| Self::parse_timestamp(v)))
+                .and_then(Self::parse_timestamp)
+                .or_else(|| item.get("date").and_then(Self::parse_timestamp))
                 .unwrap_or(0);
 
             let ref_id = item

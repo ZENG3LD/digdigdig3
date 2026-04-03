@@ -23,7 +23,7 @@ use crate::core::{
     HttpClient,
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
-    Price, Quantity, Kline, Ticker, OrderBook,
+    Price, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, Balance, AccountInfo,
     Position, FundingRate, OrderStatus, TimeInForce,
     OrderRequest, CancelRequest, CancelScope,

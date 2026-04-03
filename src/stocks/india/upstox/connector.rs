@@ -20,9 +20,9 @@ use serde_json::{json, Value};
 
 use crate::core::{
     HttpClient, Credentials,
-    ExchangeId, ExchangeType, AccountType, Symbol, Asset,
+    ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
-    Price, Quantity, Kline, Ticker, OrderBook,
+    Price, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, OrderStatus, Balance, AccountInfo,
     Position,
     OrderRequest, CancelRequest, CancelScope,
@@ -898,7 +898,7 @@ impl BatchOrders for UpstoxConnector {
 
     async fn cancel_orders_batch(
         &self,
-        order_ids: Vec<String>,
+        _order_ids: Vec<String>,
         _symbol: Option<&str>,
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<OrderResult>> {

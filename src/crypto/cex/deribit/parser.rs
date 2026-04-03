@@ -438,7 +438,7 @@ impl DeribitParser {
 
         // Build TP order — first leg in otoco_config
         let tp_order = if let Some(legs) = legs_config {
-            let leg = legs.get(0).unwrap_or(&serde_json::Value::Null);
+            let leg = legs.first().unwrap_or(&serde_json::Value::Null);
             let tp_price = Self::get_f64(leg, "limit_price")
                 .or_else(|| Self::get_f64(leg, "price"))
                 .unwrap_or(0.0);

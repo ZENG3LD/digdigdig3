@@ -708,11 +708,11 @@ impl Trading for OkxConnector {
                 let algo_resp = OkxParser::parse_algo_order_response(&response)?;
                 // Build a synthetic OcoResponse from the algo ID
                 let placeholder = self.build_algo_placeholder_order(&algo_resp.algo_id, &inst_id, side, quantity);
-                return Ok(PlaceOrderResponse::Oco(OcoResponse {
+                return Ok(PlaceOrderResponse::Oco(Box::new(OcoResponse {
                     first_order: placeholder.clone(),
                     second_order: placeholder,
                     list_id: Some(algo_resp.algo_id),
-                }));
+                })));
             }
             OrderType::Twap { duration_seconds, interval_seconds } => {
                 // OKX TWAP algo: POST /api/v5/trade/order-algo with ordType="twap"
@@ -1138,13 +1138,10 @@ impl Positions for OkxConnector {
             PositionModification::SetMarginMode { ref symbol, margin_type, account_type } => {
                 let symbol = symbol.clone();
 
-                match account_type {
-                    AccountType::Spot => {
-                        return Err(ExchangeError::UnsupportedOperation(
-                            "SetMarginMode not supported for Spot".to_string()
-                        ));
-                    }
-                    _ => {}
+                if account_type == AccountType::Spot {
+                    return Err(ExchangeError::UnsupportedOperation(
+                        "SetMarginMode not supported for Spot".to_string()
+                    ));
                 }
 
                 let mgn_mode = match margin_type {

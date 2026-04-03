@@ -596,7 +596,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
     async fn get_user_trades(
         &self,
         filter: UserTradeFilter,
-        account_type: AccountType,
+        _account_type: AccountType,
     ) -> ExchangeResult<Vec<UserTrade>> {
         let mut params = HashMap::new();
         params.insert("sort".to_string(), "desc".to_string());

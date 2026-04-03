@@ -23,7 +23,7 @@ fn tif_str(tif: TimeInForce) -> &'static str {
         TimeInForce::Ioc => "ioc",
         TimeInForce::Fok => "fok",
         TimeInForce::PostOnly => "gtc", // Alpaca has no post-only TIF — caller should not reach here
-        TimeInForce::Gtd { .. } => "gtc", // Unsupported, caller guards this
+        TimeInForce::Gtd => "gtc", // Unsupported, caller guards this
         TimeInForce::GoodTilBlock { .. } => "gtc",
     }
 }
@@ -979,13 +979,13 @@ impl Trading for AlpacaConnector {
         if let Some(start_ms) = filter.start_time {
             // Alpaca expects RFC-3339 for "after" param
             let dt = chrono::DateTime::from_timestamp_millis(start_ms)
-                .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.into());
+                .unwrap_or(chrono::DateTime::UNIX_EPOCH);
             params.insert("after".to_string(), dt.to_rfc3339());
         }
 
         if let Some(end_ms) = filter.end_time {
             let dt = chrono::DateTime::from_timestamp_millis(end_ms)
-                .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.into());
+                .unwrap_or(chrono::DateTime::UNIX_EPOCH);
             params.insert("until".to_string(), dt.to_rfc3339());
         }
 
@@ -1023,12 +1023,12 @@ impl Trading for AlpacaConnector {
         // Time range — RFC-3339 datetime strings
         if let Some(start_ms) = filter.start_time {
             let dt = chrono::DateTime::from_timestamp_millis(start_ms as i64)
-                .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.into());
+                .unwrap_or(chrono::DateTime::UNIX_EPOCH);
             params.insert("after".to_string(), dt.to_rfc3339());
         }
         if let Some(end_ms) = filter.end_time {
             let dt = chrono::DateTime::from_timestamp_millis(end_ms as i64)
-                .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.into());
+                .unwrap_or(chrono::DateTime::UNIX_EPOCH);
             params.insert("until".to_string(), dt.to_rfc3339());
         }
 

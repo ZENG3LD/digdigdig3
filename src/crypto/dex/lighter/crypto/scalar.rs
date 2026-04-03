@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 //! ECgFp5 scalar field — integers modulo the curve group order n.
 //!
 //! The group order n is a 319-bit prime:

@@ -551,16 +551,16 @@ impl BitstampParser {
                 side: crate::core::OrderSide::Buy, // Unknown without deeper parsing
                 order_type: crate::core::OrderType::Limit { price: 0.0 },
                 status: crate::core::OrderStatus::Filled,
-                price: item.get("price").and_then(|v| Self::parse_f64(v)),
+                price: item.get("price").and_then(Self::parse_f64),
                 stop_price: None,
                 quantity: item.get("amount")
-                    .and_then(|v| Self::parse_f64(v))
+                    .and_then(Self::parse_f64)
                     .unwrap_or(0.0),
                 filled_quantity: item.get("amount")
-                    .and_then(|v| Self::parse_f64(v))
+                    .and_then(Self::parse_f64)
                     .unwrap_or(0.0),
-                average_price: item.get("price").and_then(|v| Self::parse_f64(v)),
-                commission: item.get("fee").and_then(|v| Self::parse_f64(v)),
+                average_price: item.get("price").and_then(Self::parse_f64),
+                commission: item.get("fee").and_then(Self::parse_f64),
                 commission_asset: None,
                 created_at: timestamp,
                 updated_at: Some(timestamp),
@@ -740,7 +740,7 @@ impl BitstampParser {
             };
 
             let commission = item.get("fee")
-                .and_then(|v| Self::parse_f64(v))
+                .and_then(Self::parse_f64)
                 .unwrap_or(0.0);
 
             // Bitstamp does not report maker/taker in user_transactions

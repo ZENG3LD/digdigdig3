@@ -7,8 +7,8 @@ use reqwest::Client;
 use std::collections::HashMap;
 
 use crate::core::types::{
-    AccountType, Asset, Balance, ExchangeError, ExchangeId, ExchangeResult, Kline, Order, OrderBook,
-    Position, Price, Symbol, Ticker, AccountInfo, OrderSide, Quantity, FundingRate, SymbolInfo,
+    AccountType, Balance, ExchangeError, ExchangeId, ExchangeResult, Kline, Order, OrderBook,
+    Position, Price, Symbol, Ticker, AccountInfo, FundingRate, SymbolInfo,
     OrderRequest, CancelRequest, OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     BalanceQuery, PositionQuery, PositionModification,
 };

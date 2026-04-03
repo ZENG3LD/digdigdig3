@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 //! ECgFp5 elliptic curve over GF(p^5).
 //!
 //! Curve equation (Montgomery form): y^2 = x*(x^2 + a*x + b)

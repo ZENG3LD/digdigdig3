@@ -18,11 +18,11 @@ use serde_json::Value;
 
 use crate::core::{
     HttpClient, Credentials,
-    ExchangeId, ExchangeType, AccountType, Symbol, Asset,
+    ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
-    Price, Quantity, Kline, Ticker, OrderBook,
-    Order, OrderSide, Balance, AccountInfo, Position, FundingRate,
-    OrderRequest, CancelRequest, CancelScope,
+    Price, Kline, Ticker, OrderBook,
+    Order, Balance, AccountInfo, Position, FundingRate,
+    OrderRequest, CancelRequest,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
 };

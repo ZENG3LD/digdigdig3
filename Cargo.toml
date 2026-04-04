@@ -1,9 +1,9 @@
 [package]
 name = "digdigdig3"
-version = "0.1.9"
-exclude = ["**/research/**", "contributing/**", "docs/API-KEYS*"]
+version = "0.1.10"
+exclude = ["**/research/**", "contributing/**", "docs/"]
 edition = "2021"
-description = "Multi-exchange connector library — unified async Rust API for 42 connectors: 19 CEX, 3 DEX, 5 forex/brokers, 14 stock providers, and 2 data feeds"
+description = "Unified async Rust API for 44 exchange connectors — crypto, stocks, forex. REST + WebSocket."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ZENG3LD/digdigdig3"
 homepage = "https://github.com/ZENG3LD/digdigdig3"

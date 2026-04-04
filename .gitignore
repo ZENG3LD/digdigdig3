@@ -15,3 +15,6 @@ ralph-test/
 docs/research/
 **/research/
 ROADMAP.md
+
+# API keys documentation (must not be published)
+docs/API-KEYS*

@@ -1,6 +1,6 @@
 [package]
 name = "digdigdig3"
-version = "0.1.10"
+version = "0.1.11"
 exclude = ["**/research/**", "contributing/**", "docs/"]
 edition = "2021"
 description = "Unified async Rust API for 44 exchange connectors — crypto, stocks, forex. REST + WebSocket."
@@ -39,6 +39,10 @@ futures-util = "0.3"
 # HTTP/WebSocket
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+# Explicit rustls dep to pin ring as the process-level CryptoProvider.
+# alloy-transport-ws pulls rustls 0.23 with aws_lc_rs; reqwest pulls ring.
+# rustls 0.23 panics unless one provider is installed via install_default().
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 
 # Error handling

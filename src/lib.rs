@@ -63,7 +63,7 @@ pub use core::{
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
     Price, Quantity, Asset, Timestamp,
-    OrderSide, OrderType, OrderStatus, Order, Position, Balance,
+    OrderSide, OrderType, OrderStatus, Order, Position, PositionSide, Balance,
     ExchangeCredentials,
     SymbolInfo,
     // WebSocket types

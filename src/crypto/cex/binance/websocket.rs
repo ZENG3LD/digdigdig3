@@ -462,6 +462,32 @@ impl BinanceWebSocket {
         if let Some(event_type) = event_type {
             Self::parse_event_by_type(event_type, data, account_type)
         } else {
+            // @depth20@100ms partial depth snapshot: no "e" field, has "lastUpdateId" + "bids"/"asks"
+            if data.get("lastUpdateId").is_some() && data.get("bids").is_some() {
+                let parse_levels = |key: &str| -> Vec<(f64, f64)> {
+                    data.get(key)
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|pair| {
+                                    let price = pair.get(0)?.as_str()?.parse().ok()?;
+                                    let size = pair.get(1)?.as_str()?.parse().ok()?;
+                                    Some((price, size))
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                let bids = parse_levels("bids");
+                let asks = parse_levels("asks");
+                let timestamp = data.get("E").and_then(|e| e.as_i64()).unwrap_or(0);
+                return Ok(Some(StreamEvent::OrderbookSnapshot(crate::core::OrderBook {
+                    bids,
+                    asks,
+                    timestamp,
+                    sequence: None,
+                })));
+            }
             Ok(None)
         }
     }

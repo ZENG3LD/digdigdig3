@@ -32,7 +32,7 @@ use tokio::sync::{broadcast, Mutex};
 use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::{client::IntoClientRequest, Message}, MaybeTlsStream, WebSocketStream};
 
-use crate::core::types::{TradeSide, WebSocketError, WebSocketResult};
+use crate::core::types::{TradeSide, WebSocketError, WebSocketResult, OrderBookLevel, OrderbookDelta as OrderbookDeltaData};
 use crate::core::traits::WebSocketConnector;
 use crate::core::{
     AccountType, ConnectionStatus, Credentials, ExchangeError, ExchangeResult, StreamEvent,
@@ -380,7 +380,7 @@ impl PhemexWebSocket {
             .map(|ns| ns / 1_000_000) // nanoseconds to milliseconds
             .unwrap_or_else(|| timestamp_millis() as i64);
 
-        let parse_levels = |key: &str| -> Vec<(f64, f64)> {
+        let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
             book.get(key)
                 .and_then(|v| v.as_array())
                 .map(|arr| {
@@ -395,7 +395,7 @@ impl PhemexWebSocket {
                                 pair[1].as_i64().map(|i| i as f64)
                             })?;
                             let price = unscale_price(price_ep, price_scale);
-                            Some((price, size))
+                            Some(OrderBookLevel::new(price, size))
                         })
                         .collect()
                 })
@@ -411,14 +411,25 @@ impl PhemexWebSocket {
                 bids,
                 asks,
                 sequence: msg.get("sequence").and_then(|s| s.as_i64()).map(|n| n.to_string()),
+                last_update_id: None,
+                first_update_id: None,
+                prev_update_id: None,
+                event_time: None,
+                transaction_time: None,
+                checksum: None,
             })))
         } else {
             // incremental
-            Ok(Some(StreamEvent::OrderbookDelta {
+            Ok(Some(StreamEvent::OrderbookDelta(OrderbookDeltaData {
                 bids,
                 asks,
                 timestamp,
-            }))
+                first_update_id: None,
+                last_update_id: None,
+                prev_update_id: None,
+                event_time: None,
+                checksum: None,
+            })))
         }
     }
 

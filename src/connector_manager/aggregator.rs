@@ -442,22 +442,24 @@ impl ConnectorAggregator {
 
         for (id, ob) in orderbooks {
             // Check bids (highest is best)
-            if let Some((bid_price, _)) = ob.bids.first() {
+            if let Some(bid_level) = ob.bids.first() {
+                let bid_price = bid_level.price;
                 match best_bid {
-                    None => best_bid = Some((*bid_price, id)),
-                    Some((current_best, _)) if *bid_price > current_best => {
-                        best_bid = Some((*bid_price, id))
+                    None => best_bid = Some((bid_price, id)),
+                    Some((current_best, _)) if bid_price > current_best => {
+                        best_bid = Some((bid_price, id))
                     }
                     _ => {}
                 }
             }
 
             // Check asks (lowest is best)
-            if let Some((ask_price, _)) = ob.asks.first() {
+            if let Some(ask_level) = ob.asks.first() {
+                let ask_price = ask_level.price;
                 match best_ask {
-                    None => best_ask = Some((*ask_price, id)),
-                    Some((current_best, _)) if *ask_price < current_best => {
-                        best_ask = Some((*ask_price, id))
+                    None => best_ask = Some((ask_price, id)),
+                    Some((current_best, _)) if ask_price < current_best => {
+                        best_ask = Some((ask_price, id))
                     }
                     _ => {}
                 }

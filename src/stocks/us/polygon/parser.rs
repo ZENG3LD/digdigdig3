@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::core::types::{
     ExchangeError, ExchangeResult,
-    Kline, OrderBook, Ticker, StreamEvent,
+    Kline, OrderBook, OrderBookLevel, Ticker, StreamEvent,
 };
 
 /// Parser for Polygon.io API responses
@@ -197,10 +197,16 @@ impl PolygonParser {
         let ask_size = Self::get_f64(last_quote, "S").unwrap_or(0.0);
 
         Ok(OrderBook {
-            bids: vec![(bid_price, bid_size)],
-            asks: vec![(ask_price, ask_size)],
+            bids: vec![OrderBookLevel::new(bid_price, bid_size)],
+            asks: vec![OrderBookLevel::new(ask_price, ask_size)],
             timestamp: Self::get_i64(last_quote, "t").unwrap_or(0),
             sequence: None,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 

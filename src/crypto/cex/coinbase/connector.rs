@@ -388,8 +388,8 @@ impl MarketData for CoinbaseConnector {
             let response = self.get(CoinbaseEndpoint::ProductBook, params).await?;
             let orderbook = CoinbaseParser::parse_orderbook(&response)?;
             // Derive price from best bid/ask
-            let bid = orderbook.bids.first().map(|(p, _)| *p);
-            let ask = orderbook.asks.first().map(|(p, _)| *p);
+            let bid = orderbook.bids.first().map(|l| l.price);
+            let ask = orderbook.asks.first().map(|l| l.price);
             match (bid, ask) {
                 (Some(b), Some(a)) => Ok((b + a) / 2.0),
                 (Some(b), None) => Ok(b),
@@ -419,8 +419,8 @@ impl MarketData for CoinbaseConnector {
             let response = self.get(CoinbaseEndpoint::ProductBook, params).await?;
             let orderbook = CoinbaseParser::parse_orderbook(&response)?;
             // Build ticker from orderbook data
-            let bid_price = orderbook.bids.first().map(|(p, _)| *p);
-            let ask_price = orderbook.asks.first().map(|(p, _)| *p);
+            let bid_price = orderbook.bids.first().map(|l| l.price);
+            let ask_price = orderbook.asks.first().map(|l| l.price);
             let last_price = match (bid_price, ask_price) {
                 (Some(b), Some(a)) => (b + a) / 2.0,
                 (Some(b), None) => b,

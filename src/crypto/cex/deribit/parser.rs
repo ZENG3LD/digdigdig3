@@ -12,11 +12,11 @@
 use serde_json::Value;
 
 use crate::core::types::{
-    ExchangeError, ExchangeResult, AccountType, OrderBook, Ticker, Order, Balance, Position,
+    ExchangeError, ExchangeResult, AccountType, OrderBook, OrderBookLevel, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, PublicTrade, StreamEvent, TradeSide,
     OrderUpdateEvent, SymbolInfo, Kline, BracketResponse,
-    UserTrade,
+    UserTrade, OrderbookDelta as OrderbookDeltaData,
 };
 
 /// Parser for Deribit JSON-RPC responses
@@ -125,7 +125,7 @@ impl DeribitParser {
     pub fn parse_orderbook(response: &Value) -> ExchangeResult<OrderBook> {
         let result = Self::extract_result(response)?;
 
-        let parse_levels = |key: &str| -> Vec<(f64, f64)> {
+        let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
             result.get(key)
                 .and_then(|v| v.as_array())
                 .map(|arr| {
@@ -141,7 +141,7 @@ impl DeribitParser {
                                 // REST format without action
                                 (Self::parse_f64(&pair[0])?, Self::parse_f64(&pair[1])?)
                             };
-                            Some((price, size))
+                            Some(OrderBookLevel::new(price, size))
                         })
                         .collect()
                 })
@@ -153,6 +153,12 @@ impl DeribitParser {
             bids: parse_levels("bids"),
             asks: parse_levels("asks"),
             sequence: Self::get_i64(result, "change_id").map(|id| id.to_string()),
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 
@@ -679,7 +685,7 @@ impl DeribitParser {
             Ok(StreamEvent::OrderbookSnapshot(orderbook))
         } else {
             // Delta update
-            let parse_changes = |key: &str| -> Vec<(f64, f64)> {
+            let parse_changes = |key: &str| -> Vec<OrderBookLevel> {
                 data.get(key)
                     .and_then(|arr| arr.as_array())
                     .map(|changes| {
@@ -689,18 +695,23 @@ impl DeribitParser {
                                 if arr.len() < 3 { return None; }
                                 let price = Self::parse_f64(&arr[1])?;
                                 let size = Self::parse_f64(&arr[2])?;
-                                Some((price, size))
+                                Some(OrderBookLevel::new(price, size))
                             })
                             .collect()
                     })
                     .unwrap_or_default()
             };
 
-            Ok(StreamEvent::OrderbookDelta {
+            Ok(StreamEvent::OrderbookDelta(OrderbookDeltaData {
                 bids: parse_changes("bids"),
                 asks: parse_changes("asks"),
                 timestamp: Self::get_i64(data, "timestamp").unwrap_or(0),
-            })
+                first_update_id: None,
+                last_update_id: None,
+                prev_update_id: None,
+                event_time: None,
+                checksum: None,
+            }))
         }
     }
 

@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use crate::core::types::{
     ExchangeError, ExchangeResult, AccountType,
-    Kline, OrderBook, Ticker, Order, Balance, Position,
+    Kline, OrderBook, OrderBookLevel, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, PublicTrade, TradeSide, SymbolInfo,
     UserTrade,
@@ -148,7 +148,7 @@ impl CryptoComParser {
             .and_then(|arr| arr.first())
             .ok_or_else(|| ExchangeError::Parse("No orderbook data".to_string()))?;
 
-        let parse_levels = |key: &str| -> Vec<(f64, f64)> {
+        let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
             data.get(key)
                 .and_then(|v| v.as_array())
                 .map(|arr| {
@@ -158,7 +158,7 @@ impl CryptoComParser {
                             if pair.len() < 2 { return None; }
                             let price = Self::parse_f64(&pair[0])?;
                             let size = Self::parse_f64(&pair[1])?;
-                            Some((price, size))
+                            Some(OrderBookLevel::new(price, size))
                         })
                         .collect()
                 })
@@ -172,6 +172,12 @@ impl CryptoComParser {
             bids: parse_levels("bids"),
             asks: parse_levels("asks"),
             sequence: None,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 
@@ -783,7 +789,7 @@ mod tests {
         let orderbook = CryptoComParser::parse_orderbook(&response).unwrap();
         assert_eq!(orderbook.bids.len(), 2);
         assert_eq!(orderbook.asks.len(), 2);
-        assert!((orderbook.bids[0].0 - 50000.0).abs() < f64::EPSILON);
+        assert!((orderbook.bids[0].price - 50000.0).abs() < f64::EPSILON);
         assert_eq!(orderbook.timestamp, 1234567890);
     }
 

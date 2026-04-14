@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::core::types::{
     ExchangeError, ExchangeResult,
-    Kline, OrderBook, Ticker, Order, Balance, Position,
+    Kline, OrderBook, OrderBookLevel, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, PublicTrade, StreamEvent, TradeSide,
     OrderUpdateEvent, BalanceUpdateEvent, PositionUpdateEvent,
@@ -110,7 +110,7 @@ impl ParadexParser {
 
     /// Парсить orderbook
     pub fn parse_orderbook(response: &Value) -> ExchangeResult<OrderBook> {
-        let parse_levels = |key: &str| -> Vec<(f64, f64)> {
+        let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
             response.get(key)
                 .and_then(|v| v.as_array())
                 .map(|arr| {
@@ -120,7 +120,7 @@ impl ParadexParser {
                             if pair.len() < 2 { return None; }
                             let price = Self::parse_f64(&pair[0])?;
                             let size = Self::parse_f64(&pair[1])?;
-                            Some((price, size))
+                            Some(OrderBookLevel::new(price, size))
                         })
                         .collect()
                 })
@@ -132,6 +132,12 @@ impl ParadexParser {
             bids: parse_levels("bids"),
             asks: parse_levels("asks"),
             sequence: Self::get_i64(response, "seq_no").map(|n| n.to_string()),
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 
@@ -557,7 +563,7 @@ impl ParadexParser {
 
     /// Парсить WebSocket orderbook
     fn parse_ws_orderbook(data: &Value) -> ExchangeResult<StreamEvent> {
-        let parse_levels = |key: &str| -> Vec<(f64, f64)> {
+        let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
             data.get(key)
                 .and_then(|v| v.as_array())
                 .map(|arr| {
@@ -567,7 +573,7 @@ impl ParadexParser {
                             if pair.len() < 2 { return None; }
                             let price = Self::parse_f64(&pair[0])?;
                             let size = Self::parse_f64(&pair[1])?;
-                            Some((price, size))
+                            Some(OrderBookLevel::new(price, size))
                         })
                         .collect()
                 })
@@ -579,6 +585,12 @@ impl ParadexParser {
             bids: parse_levels("bids"),
             asks: parse_levels("asks"),
             sequence: Self::get_i64(data, "seq_no").map(|n| n.to_string()),
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         };
 
         Ok(StreamEvent::OrderbookSnapshot(orderbook))
@@ -588,15 +600,21 @@ impl ParadexParser {
     fn parse_ws_bbo(data: &Value) -> ExchangeResult<StreamEvent> {
         let orderbook = OrderBook {
             timestamp: Self::get_i64(data, "timestamp").unwrap_or(0),
-            bids: vec![(
+            bids: vec![OrderBookLevel::new(
                 Self::get_f64(data, "bid").unwrap_or(0.0),
                 Self::get_f64(data, "bid_size").unwrap_or(0.0),
             )],
-            asks: vec![(
+            asks: vec![OrderBookLevel::new(
                 Self::get_f64(data, "ask").unwrap_or(0.0),
                 Self::get_f64(data, "ask_size").unwrap_or(0.0),
             )],
             sequence: Self::get_i64(data, "seq_no").map(|n| n.to_string()),
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         };
 
         Ok(StreamEvent::OrderbookSnapshot(orderbook))
@@ -881,6 +899,6 @@ mod tests {
         let orderbook = ParadexParser::parse_orderbook(&response).unwrap();
         assert_eq!(orderbook.bids.len(), 2);
         assert_eq!(orderbook.asks.len(), 2);
-        assert_eq!(orderbook.bids[0].0, 65432.4);
+        assert_eq!(orderbook.bids[0].price, 65432.4);
     }
 }

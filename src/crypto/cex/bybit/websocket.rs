@@ -53,6 +53,7 @@ use crate::core::{
     timestamp_millis,
 };
 use crate::core::types::{WebSocketResult, WebSocketError, TradeSide};
+use crate::core::types::OrderbookDelta;
 use crate::core::traits::WebSocketConnector;
 use crate::core::utils::WeightRateLimiter;
 
@@ -302,7 +303,8 @@ impl BybitWebSocket {
         // Data message
         if let Some(topic) = msg.topic {
             if let Some(data) = msg.data {
-                return Self::parse_data_message(&topic, &data, account_type);
+                let msg_type = msg.msg_type.as_deref();
+                return Self::parse_data_message(&topic, &data, account_type, msg_type);
             }
         }
 
@@ -314,6 +316,7 @@ impl BybitWebSocket {
         topic: &str,
         data: &Value,
         _account_type: AccountType,
+        msg_type: Option<&str>,
     ) -> WebSocketResult<Option<StreamEvent>> {
         if topic.starts_with("tickers.") {
             let ticker = Self::parse_ticker_ws(data)
@@ -324,7 +327,7 @@ impl BybitWebSocket {
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
             Ok(Some(StreamEvent::Trade(trade)))
         } else if topic.starts_with("orderbook.") {
-            let event = Self::parse_orderbook_ws(data)
+            let event = Self::parse_orderbook_ws(data, msg_type)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
             Ok(Some(event))
         } else if topic.starts_with("kline.") {
@@ -412,7 +415,8 @@ impl BybitWebSocket {
             }
             StreamType::Orderbook | StreamType::OrderbookDelta => {
                 let symbol = format_symbol(&request.symbol, account_type);
-                format!("orderbook.50.{}", symbol) // 50 depth levels
+                let depth = request.depth.unwrap_or(50);
+                format!("orderbook.{}.{}", depth, symbol)
             }
             StreamType::Kline { interval } => {
                 let symbol = format_symbol(&request.symbol, account_type);
@@ -536,14 +540,30 @@ impl BybitWebSocket {
         })
     }
 
-    fn parse_orderbook_ws(data: &Value) -> ExchangeResult<StreamEvent> {
+    fn parse_orderbook_ws(data: &Value, msg_type: Option<&str>) -> ExchangeResult<StreamEvent> {
         let wrapper = json!({
             "retCode": 0,
             "result": data,
         });
 
         let orderbook = BybitParser::parse_orderbook(&wrapper)?;
-        Ok(StreamEvent::OrderbookSnapshot(orderbook))
+
+        if msg_type == Some("delta") {
+            // Convert OrderBook into an OrderbookDelta
+            let delta = OrderbookDelta {
+                bids: orderbook.bids,
+                asks: orderbook.asks,
+                timestamp: orderbook.timestamp,
+                first_update_id: orderbook.first_update_id,
+                last_update_id: orderbook.last_update_id,
+                prev_update_id: orderbook.prev_update_id,
+                event_time: orderbook.event_time,
+                checksum: orderbook.checksum,
+            };
+            Ok(StreamEvent::OrderbookDelta(delta))
+        } else {
+            Ok(StreamEvent::OrderbookSnapshot(orderbook))
+        }
     }
 
     fn parse_kline_ws(data: &Value) -> ExchangeResult<crate::core::Kline> {

@@ -17,7 +17,7 @@ use serde_json::Value;
 
 use crate::core::types::{
     ExchangeError, ExchangeResult, AccountType,
-    Kline, OrderBook, Ticker, Order, Balance, Position,
+    Kline, OrderBook, OrderBookLevel, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, SymbolInfo, BracketResponse, UserTrade,
     FundingPayment,
@@ -138,7 +138,7 @@ impl PhemexParser {
         let book = result.get("book")
             .ok_or_else(|| ExchangeError::Parse("Missing 'book' field".to_string()))?;
 
-        let parse_levels = |key: &str| -> Vec<(f64, f64)> {
+        let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
             book.get(key)
                 .and_then(|v| v.as_array())
                 .map(|arr| {
@@ -149,7 +149,7 @@ impl PhemexParser {
                             let price_ep = pair[0].as_i64()?;
                             let size = Self::parse_f64(&pair[1])?;
                             let price = unscale_price(price_ep, price_scale);
-                            Some((price, size))
+                            Some(OrderBookLevel::new(price, size))
                         })
                         .collect()
                 })
@@ -166,6 +166,12 @@ impl PhemexParser {
             sequence: result.get("sequence")
                 .and_then(|s| s.as_i64())
                 .map(|n| n.to_string()),
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 
@@ -896,8 +902,8 @@ mod tests {
         let orderbook = PhemexParser::parse_orderbook(&response, 4).unwrap();
         assert_eq!(orderbook.bids.len(), 2);
         assert_eq!(orderbook.asks.len(), 2);
-        assert!((orderbook.bids[0].0 - 8770.0).abs() < 0.1);
-        assert!((orderbook.asks[0].0 - 8770.5).abs() < 0.1);
+        assert!((orderbook.bids[0].price - 8770.0).abs() < 0.1);
+        assert!((orderbook.asks[0].price - 8770.5).abs() < 0.1);
     }
 
     #[test]

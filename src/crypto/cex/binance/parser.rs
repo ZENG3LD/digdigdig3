@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::core::types::{
     ExchangeError, ExchangeResult,
-    Kline, OrderBook, Ticker, Order, Balance, Position,
+    Kline, OrderBook, OrderBookLevel, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, SymbolInfo, FeeInfo,
     OcoResponse, CancelAllResponse, OrderResult,
@@ -123,7 +123,7 @@ impl BinanceParser {
     pub fn parse_orderbook(response: &Value) -> ExchangeResult<OrderBook> {
         Self::check_error(response)?;
 
-        let parse_levels = |key: &str| -> Vec<(f64, f64)> {
+        let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
             response.get(key)
                 .and_then(|v| v.as_array())
                 .map(|arr| {
@@ -133,20 +133,27 @@ impl BinanceParser {
                             if pair.len() < 2 { return None; }
                             let price = Self::parse_f64(&pair[0])?;
                             let size = Self::parse_f64(&pair[1])?;
-                            Some((price, size))
+                            Some(OrderBookLevel::new(price, size))
                         })
                         .collect()
                 })
                 .unwrap_or_default()
         };
 
+        let last_update_id = response.get("lastUpdateId")
+            .and_then(|s| s.as_u64());
+
         Ok(OrderBook {
-            timestamp: 0, // Binance doesn't provide timestamp in orderbook
+            timestamp: 0, // Binance doesn't provide timestamp in REST orderbook
             bids: parse_levels("bids"),
             asks: parse_levels("asks"),
-            sequence: response.get("lastUpdateId")
-                .and_then(|s| s.as_i64())
-                .map(|n| n.to_string()),
+            sequence: last_update_id.map(|n| n.to_string()),
+            last_update_id,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 
@@ -1314,7 +1321,7 @@ mod tests {
         let orderbook = BinanceParser::parse_orderbook(&response).unwrap();
         assert_eq!(orderbook.bids.len(), 2);
         assert_eq!(orderbook.asks.len(), 2);
-        assert!((orderbook.bids[0].0 - 42000.0).abs() < f64::EPSILON);
+        assert!((orderbook.bids[0].price - 42000.0).abs() < f64::EPSILON);
     }
 
     #[test]

@@ -142,7 +142,7 @@ impl HtxParser {
                 let arr = entry.as_array()?;
                 let price = arr.first()?.as_f64()?;
                 let size = arr.get(1)?.as_f64()?;
-                Some((price, size))
+                Some(OrderBookLevel::new(price, size))
             })
             .collect();
 
@@ -153,7 +153,7 @@ impl HtxParser {
                 let arr = entry.as_array()?;
                 let price = arr.first()?.as_f64()?;
                 let size = arr.get(1)?.as_f64()?;
-                Some((price, size))
+                Some(OrderBookLevel::new(price, size))
             })
             .collect();
 
@@ -165,6 +165,12 @@ impl HtxParser {
             asks,
             timestamp,
             sequence,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 

@@ -5,8 +5,8 @@
 use serde_json::Value;
 
 use crate::core::types::{
-    AccountInfo, AccountType, Balance, ExchangeError, ExchangeResult, Kline, Order, OrderBook, OrderSide,
-    OrderStatus, OrderType, Position, PositionSide, Price, Ticker, TimeInForce, MarginType,
+    AccountInfo, AccountType, Balance, ExchangeError, ExchangeResult, Kline, Order, OrderBook, OrderBookLevel,
+    OrderSide, OrderStatus, OrderType, Position, PositionSide, Price, Ticker, TimeInForce, MarginType,
 };
 
 /// Fyers response parser
@@ -162,7 +162,7 @@ impl FyersParser {
             for bid in bids_array {
                 let price = bid["price"].as_f64().unwrap_or(0.0);
                 let volume = bid["volume"].as_f64().unwrap_or(0.0);
-                bids.push((price, volume));
+                bids.push(OrderBookLevel::new(price, volume));
             }
         }
 
@@ -170,7 +170,7 @@ impl FyersParser {
             for ask in asks_array {
                 let price = ask["price"].as_f64().unwrap_or(0.0);
                 let volume = ask["volume"].as_f64().unwrap_or(0.0);
-                asks.push((price, volume));
+                asks.push(OrderBookLevel::new(price, volume));
             }
         }
 
@@ -179,6 +179,12 @@ impl FyersParser {
             asks,
             timestamp: depth["timestamp"].as_i64().unwrap_or(0),
             sequence: None,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 

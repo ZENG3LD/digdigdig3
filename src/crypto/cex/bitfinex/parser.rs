@@ -13,8 +13,9 @@ use serde_json::Value;
 
 use crate::core::types::{
     ExchangeError, ExchangeResult, AccountType,
-    Kline, OrderBook, Ticker, Order, Balance, Position, PublicTrade, TradeSide,
+    Kline, OrderBook, OrderBookLevel, Ticker, Order, Balance, Position, PublicTrade, TradeSide,
     OrderSide, OrderType, OrderStatus, PositionSide, SymbolInfo, UserTrade,
+    OrderbookDelta as OrderbookDeltaData,
 };
 
 /// Parser for Bitfinex API v2 responses
@@ -137,10 +138,10 @@ impl BitfinexParser {
 
                 if amount > 0.0 {
                     // Positive = bid
-                    bids.push((price, amount));
+                    bids.push(OrderBookLevel::new(price, amount));
                 } else if amount < 0.0 {
                     // Negative = ask
-                    asks.push((price, amount.abs()));
+                    asks.push(OrderBookLevel::new(price, amount.abs()));
                 }
             }
         }
@@ -150,6 +151,12 @@ impl BitfinexParser {
             bids,
             asks,
             sequence: None,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 
@@ -557,20 +564,25 @@ impl BitfinexParser {
                     // Count = 0 means remove this price level
                     if count > 0 {
                         if amount > 0.0 {
-                            bids.push((price, amount));
+                            bids.push(OrderBookLevel::new(price, amount));
                         } else {
-                            asks.push((price, amount.abs()));
+                            asks.push(OrderBookLevel::new(price, amount.abs()));
                         }
                     }
                 }
             }
         }
 
-        Ok(crate::core::StreamEvent::OrderbookDelta {
+        Ok(crate::core::StreamEvent::OrderbookDelta(OrderbookDeltaData {
             bids,
             asks,
             timestamp: crate::core::timestamp_millis() as i64,
-        })
+            first_update_id: None,
+            last_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            checksum: None,
+        }))
     }
 
     /// Parse WebSocket kline (candle)
@@ -722,8 +734,8 @@ mod tests {
 
         assert_eq!(orderbook.bids.len(), 2);
         assert_eq!(orderbook.asks.len(), 2);
-        assert!((orderbook.bids[0].0 - 8744.9).abs() < f64::EPSILON);
-        assert!((orderbook.asks[0].1 - 0.25).abs() < f64::EPSILON);
+        assert!((orderbook.bids[0].price - 8744.9).abs() < f64::EPSILON);
+        assert!((orderbook.asks[0].size - 0.25).abs() < f64::EPSILON);
     }
 
     #[test]

@@ -41,7 +41,9 @@ pub fn assert_price_sane(price: f64, context: &str) -> Result<(), String> {
 /// - Best bid < best ask (no crossed book)
 pub fn assert_orderbook_sane(ob: &OrderBook) -> Result<(), String> {
     // Validate bid entries
-    for (i, &(price, size)) in ob.bids.iter().enumerate() {
+    for (i, level) in ob.bids.iter().enumerate() {
+        let price = level.price;
+        let size = level.size;
         if price <= 0.0 || price.is_nan() || price.is_infinite() {
             return Err(format!("orderbook: bid[{i}] price invalid: {price}"));
         }
@@ -51,7 +53,9 @@ pub fn assert_orderbook_sane(ob: &OrderBook) -> Result<(), String> {
     }
 
     // Validate ask entries
-    for (i, &(price, size)) in ob.asks.iter().enumerate() {
+    for (i, level) in ob.asks.iter().enumerate() {
+        let price = level.price;
+        let size = level.size;
         if price <= 0.0 || price.is_nan() || price.is_infinite() {
             return Err(format!("orderbook: ask[{i}] price invalid: {price}"));
         }
@@ -62,28 +66,30 @@ pub fn assert_orderbook_sane(ob: &OrderBook) -> Result<(), String> {
 
     // Bids should be sorted descending
     for i in 1..ob.bids.len() {
-        if ob.bids[i].0 > ob.bids[i - 1].0 {
+        if ob.bids[i].price > ob.bids[i - 1].price {
             return Err(format!(
                 "orderbook: bids not sorted descending at index {i}: {} > {}",
-                ob.bids[i].0,
-                ob.bids[i - 1].0
+                ob.bids[i].price,
+                ob.bids[i - 1].price
             ));
         }
     }
 
     // Asks should be sorted ascending
     for i in 1..ob.asks.len() {
-        if ob.asks[i].0 < ob.asks[i - 1].0 {
+        if ob.asks[i].price < ob.asks[i - 1].price {
             return Err(format!(
                 "orderbook: asks not sorted ascending at index {i}: {} < {}",
-                ob.asks[i].0,
-                ob.asks[i - 1].0
+                ob.asks[i].price,
+                ob.asks[i - 1].price
             ));
         }
     }
 
     // Best bid must be less than best ask (no crossed book)
-    if let (Some(&(best_bid, _)), Some(&(best_ask, _))) = (ob.bids.first(), ob.asks.first()) {
+    if let (Some(best_bid_level), Some(best_ask_level)) = (ob.bids.first(), ob.asks.first()) {
+        let best_bid = best_bid_level.price;
+        let best_ask = best_ask_level.price;
         if best_bid >= best_ask {
             return Err(format!(
                 "orderbook: crossed book — best_bid {best_bid} >= best_ask {best_ask}"
@@ -252,7 +258,7 @@ pub fn is_unsupported(err: &ExchangeError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::types::{OrderBook, Kline, Ticker, Balance};
+    use crate::core::types::{OrderBook, OrderBookLevel, Kline, Ticker, Balance};
 
     // ── assert_price_sane ────────────────────────────────────────────────────
 
@@ -284,7 +290,13 @@ mod tests {
     // ── assert_orderbook_sane ────────────────────────────────────────────────
 
     fn make_ob(bids: Vec<(f64, f64)>, asks: Vec<(f64, f64)>) -> OrderBook {
-        OrderBook { bids, asks, timestamp: MIN_TIMESTAMP_MS, sequence: None }
+        let bids = bids.into_iter().map(|(p, s)| OrderBookLevel::new(p, s)).collect();
+        let asks = asks.into_iter().map(|(p, s)| OrderBookLevel::new(p, s)).collect();
+        OrderBook {
+            bids, asks, timestamp: MIN_TIMESTAMP_MS, sequence: None,
+            last_update_id: None, first_update_id: None, prev_update_id: None,
+            event_time: None, transaction_time: None, checksum: None,
+        }
     }
 
     #[test]

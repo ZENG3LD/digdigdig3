@@ -29,7 +29,7 @@
 
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
 use serde_json::Value;
-use crate::core::types::{Kline, Ticker, OrderBook};
+use crate::core::types::{Kline, Ticker, OrderBook, OrderBookLevel};
 
 /// Result type for parsing operations
 pub type ParseResult<T> = Result<T, String>;
@@ -288,15 +288,15 @@ impl MoexParser {
                 .ok_or("Missing quantity")?;
 
             match side {
-                Some("B") => bids.push((price, quantity)),
-                Some("S") => asks.push((price, quantity)),
+                Some("B") => bids.push(OrderBookLevel::new(price, quantity)),
+                Some("S") => asks.push(OrderBookLevel::new(price, quantity)),
                 _ => {}
             }
         }
 
         // Sort: bids descending, asks ascending
-        bids.sort_by(|a, b| b.0.partial_cmp(&a.0).expect("f64 comparison should not return None"));
-        asks.sort_by(|a, b| a.0.partial_cmp(&b.0).expect("f64 comparison should not return None"));
+        bids.sort_by(|a, b| b.price.partial_cmp(&a.price).expect("f64 comparison should not return None"));
+        asks.sort_by(|a, b| a.price.partial_cmp(&b.price).expect("f64 comparison should not return None"));
 
         let timestamp = chrono::Utc::now().timestamp_millis();
 
@@ -305,6 +305,12 @@ impl MoexParser {
             asks,
             timestamp,
             sequence: None,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 

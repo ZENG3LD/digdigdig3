@@ -208,6 +208,12 @@ impl TinkoffParser {
             asks,
             timestamp,
             sequence: None,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 
@@ -554,7 +560,7 @@ impl TinkoffParser {
         obj.get(field).and_then(|v| v.as_str())
     }
 
-    fn parse_order_levels(value: Option<&Value>) -> ExchangeResult<Vec<(f64, f64)>> {
+    fn parse_order_levels(value: Option<&Value>) -> ExchangeResult<Vec<OrderBookLevel>> {
         let array = value
             .and_then(|v| v.as_array())
             .ok_or_else(|| ExchangeError::Parse("Invalid order levels".to_string()))?;
@@ -569,7 +575,7 @@ impl TinkoffParser {
                 .ok_or_else(|| ExchangeError::Parse("Missing quantity in level".to_string()))?
                 as f64;
 
-            Ok((price, quantity))
+            Ok(OrderBookLevel::new(price, quantity))
         }).collect()
     }
 }

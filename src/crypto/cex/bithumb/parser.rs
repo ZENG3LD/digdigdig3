@@ -6,9 +6,10 @@ use serde_json::Value;
 
 use crate::core::types::{
     ExchangeError, ExchangeResult,
-    Kline, OrderBook, Ticker, Order, Balance,
+    Kline, OrderBook, OrderBookLevel, Ticker, Order, Balance,
     OrderSide, OrderType, OrderStatus,
     PublicTrade, TradeSide, StreamEvent, OrderUpdateEvent, BalanceUpdateEvent,
+    OrderbookDelta as OrderbookDeltaData,
 };
 
 /// Парсер ответов Bithumb Pro API
@@ -130,7 +131,7 @@ impl BithumbParser {
         Self::check_response(response)?;
         let data = Self::extract_data(response)?;
 
-        let parse_levels = |key: &str| -> Vec<(f64, f64)> {
+        let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
             data.get(key)
                 .and_then(|v| v.as_array())
                 .map(|arr| {
@@ -140,7 +141,7 @@ impl BithumbParser {
                             if pair.len() < 2 { return None; }
                             let price = Self::parse_f64(&pair[0])?;
                             let size = Self::parse_f64(&pair[1])?;
-                            Some((price, size))
+                            Some(OrderBookLevel::new(price, size))
                         })
                         .collect()
                 })
@@ -152,6 +153,12 @@ impl BithumbParser {
             bids: parse_levels("b"),  // "b" = bids
             asks: parse_levels("s"),  // "s" = asks (sell orders)
             sequence: data.get("ver").and_then(|v| v.as_str()).map(String::from),
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 
@@ -318,7 +325,7 @@ impl BithumbParser {
     /// Parse WebSocket orderbook snapshot
     /// Format: { "b": [[price, qty], ...], "s": [[price, qty], ...], "ver": "123456789", "symbol": "BTC-USDT" }
     pub fn parse_ws_orderbook_snapshot(data: &Value) -> ExchangeResult<OrderBook> {
-        let parse_levels = |key: &str| -> Vec<(f64, f64)> {
+        let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
             data.get(key)
                 .and_then(|v| v.as_array())
                 .map(|arr| {
@@ -328,7 +335,7 @@ impl BithumbParser {
                             if pair.len() < 2 { return None; }
                             let price = Self::parse_f64(&pair[0])?;
                             let size = Self::parse_f64(&pair[1])?;
-                            Some((price, size))
+                            Some(OrderBookLevel::new(price, size))
                         })
                         .collect()
                 })
@@ -340,6 +347,12 @@ impl BithumbParser {
             bids: parse_levels("b"),
             asks: parse_levels("s"),
             sequence: data.get("ver").and_then(|v| v.as_str()).map(String::from),
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 
@@ -347,7 +360,7 @@ impl BithumbParser {
     /// Format: { "b": [[price, qty], ...], "s": [[price, qty], ...], "ver": "123456790" }
     /// Note: qty = 0 means remove that price level
     pub fn parse_ws_orderbook_delta(data: &Value) -> ExchangeResult<StreamEvent> {
-        let parse_levels = |key: &str| -> Vec<(f64, f64)> {
+        let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
             data.get(key)
                 .and_then(|v| v.as_array())
                 .map(|arr| {
@@ -357,18 +370,23 @@ impl BithumbParser {
                             if pair.len() < 2 { return None; }
                             let price = Self::parse_f64(&pair[0])?;
                             let size = Self::parse_f64(&pair[1])?;
-                            Some((price, size))
+                            Some(OrderBookLevel::new(price, size))
                         })
                         .collect()
                 })
                 .unwrap_or_default()
         };
 
-        Ok(StreamEvent::OrderbookDelta {
+        Ok(StreamEvent::OrderbookDelta(OrderbookDeltaData {
             bids: parse_levels("b"),
             asks: parse_levels("s"),
             timestamp: 0,
-        })
+            first_update_id: None,
+            last_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            checksum: None,
+        }))
     }
 
     /// Parse WebSocket trades
@@ -516,8 +534,8 @@ mod tests {
         let orderbook = BithumbParser::parse_orderbook(&response).unwrap();
         assert_eq!(orderbook.bids.len(), 2);
         assert_eq!(orderbook.asks.len(), 2);
-        assert!((orderbook.bids[0].0 - 50000.0).abs() < f64::EPSILON);
-        assert!((orderbook.asks[0].0 - 50010.0).abs() < f64::EPSILON);
+        assert!((orderbook.bids[0].price - 50000.0).abs() < f64::EPSILON);
+        assert!((orderbook.asks[0].price - 50010.0).abs() < f64::EPSILON);
         assert_eq!(orderbook.sequence, Some("123456789".to_string()));
     }
 

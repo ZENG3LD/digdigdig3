@@ -162,6 +162,12 @@ impl LighterParser {
             bids: Vec::new(),
             asks: Vec::new(),
             sequence: None,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 

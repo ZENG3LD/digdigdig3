@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::core::types::{
     ExchangeError, ExchangeResult,
-    Kline, OrderBook, Ticker, Order, Balance, Position,
+    Kline, OrderBook, OrderBookLevel, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide, AccountInfo, AccountType,
     MarginType,
 };
@@ -240,7 +240,7 @@ impl OandaParser {
                     .filter_map(|level| {
                         let price = Self::get_f64(level, "price")?;
                         let liquidity = Self::get_f64(level, "liquidity")?;
-                        Some((price, liquidity))
+                        Some(OrderBookLevel::new(price, liquidity))
                     })
                     .collect()
             })
@@ -254,7 +254,7 @@ impl OandaParser {
                     .filter_map(|level| {
                         let price = Self::get_f64(level, "price")?;
                         let liquidity = Self::get_f64(level, "liquidity")?;
-                        Some((price, liquidity))
+                        Some(OrderBookLevel::new(price, liquidity))
                     })
                     .collect()
             })
@@ -265,6 +265,12 @@ impl OandaParser {
             bids,
             asks,
             sequence: None,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 

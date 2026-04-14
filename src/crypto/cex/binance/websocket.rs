@@ -43,7 +43,7 @@ use crate::core::{
     ExchangeError, ExchangeResult,
     ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
 };
-use crate::core::types::{WebSocketResult, WebSocketError};
+use crate::core::types::{WebSocketResult, WebSocketError, OrderBookLevel, OrderbookDelta as OrderbookDeltaData};
 use crate::core::traits::WebSocketConnector;
 use crate::core::utils::SimpleRateLimiter;
 
@@ -464,15 +464,15 @@ impl BinanceWebSocket {
         } else {
             // @depth20@100ms partial depth snapshot: no "e" field, has "lastUpdateId" + "bids"/"asks"
             if data.get("lastUpdateId").is_some() && data.get("bids").is_some() {
-                let parse_levels = |key: &str| -> Vec<(f64, f64)> {
+                let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
                     data.get(key)
                         .and_then(|v| v.as_array())
                         .map(|arr| {
                             arr.iter()
                                 .filter_map(|pair| {
-                                    let price = pair.get(0)?.as_str()?.parse().ok()?;
-                                    let size = pair.get(1)?.as_str()?.parse().ok()?;
-                                    Some((price, size))
+                                    let price: f64 = pair.get(0)?.as_str()?.parse().ok()?;
+                                    let size: f64 = pair.get(1)?.as_str()?.parse().ok()?;
+                                    Some(OrderBookLevel::new(price, size))
                                 })
                                 .collect()
                         })
@@ -480,12 +480,20 @@ impl BinanceWebSocket {
                 };
                 let bids = parse_levels("bids");
                 let asks = parse_levels("asks");
-                let timestamp = data.get("E").and_then(|e| e.as_i64()).unwrap_or(0);
+                let event_time = data.get("E").and_then(|e| e.as_i64());
+                let timestamp = event_time.unwrap_or(0);
+                let last_update_id = data.get("lastUpdateId").and_then(|v| v.as_u64());
                 return Ok(Some(StreamEvent::OrderbookSnapshot(crate::core::OrderBook {
                     bids,
                     asks,
                     timestamp,
                     sequence: None,
+                    last_update_id,
+                    first_update_id: None,
+                    prev_update_id: None,
+                    event_time,
+                    transaction_time: None,
+                    checksum: None,
                 })));
             }
             Ok(None)
@@ -592,8 +600,15 @@ impl BinanceWebSocket {
         match &request.stream_type {
             StreamType::Ticker => format!("{}@ticker", symbol),
             StreamType::Trade => format!("{}@trade", symbol),
-            StreamType::Orderbook => format!("{}@depth20@100ms", symbol),
-            StreamType::OrderbookDelta => format!("{}@depth@100ms", symbol),
+            StreamType::Orderbook => {
+                let depth = request.depth.unwrap_or(20);
+                let speed = request.update_speed_ms.unwrap_or(100);
+                format!("{}@depth{}@{}ms", symbol, depth, speed)
+            }
+            StreamType::OrderbookDelta => {
+                let speed = request.update_speed_ms.unwrap_or(100);
+                format!("{}@depth@{}ms", symbol, speed)
+            }
             StreamType::Kline { interval } => format!("{}@kline_{}", symbol, interval),
             StreamType::MarkPrice => format!("{}@markPrice", symbol),
             StreamType::FundingRate => format!("{}@markPrice", symbol), // Binance includes funding in mark price stream
@@ -695,7 +710,7 @@ impl BinanceWebSocket {
     }
 
     fn parse_depth_update(data: &Value) -> ExchangeResult<StreamEvent> {
-        let parse_levels = |key: &str| -> Vec<(f64, f64)> {
+        let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
             data.get(key)
                 .and_then(|v| v.as_array())
                 .map(|arr| {
@@ -703,20 +718,28 @@ impl BinanceWebSocket {
                         .filter_map(|level| {
                             let pair = level.as_array()?;
                             if pair.len() < 2 { return None; }
-                            let price = pair[0].as_str()?.parse().ok()?;
-                            let size = pair[1].as_str()?.parse().ok()?;
-                            Some((price, size))
+                            let price: f64 = pair[0].as_str()?.parse().ok()?;
+                            let size: f64 = pair[1].as_str()?.parse().ok()?;
+                            Some(OrderBookLevel::new(price, size))
                         })
                         .collect()
                 })
                 .unwrap_or_default()
         };
 
-        Ok(StreamEvent::OrderbookDelta {
+        let event_time = data.get("E").and_then(|e| e.as_i64());
+        let timestamp = event_time.unwrap_or(0);
+
+        Ok(StreamEvent::OrderbookDelta(OrderbookDeltaData {
             bids: parse_levels("b"),
             asks: parse_levels("a"),
-            timestamp: data.get("E").and_then(|e| e.as_i64()).unwrap_or(0),
-        })
+            timestamp,
+            first_update_id: data.get("U").and_then(|v| v.as_u64()),
+            last_update_id: data.get("u").and_then(|v| v.as_u64()),
+            prev_update_id: data.get("pu").and_then(|v| v.as_u64()),
+            event_time,
+            checksum: None,
+        }))
     }
 
     fn parse_kline(data: &Value) -> ExchangeResult<crate::core::Kline> {

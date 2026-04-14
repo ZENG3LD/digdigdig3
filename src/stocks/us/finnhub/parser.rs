@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::core::types::{
     ExchangeError, ExchangeResult,
-    Kline, OrderBook, Ticker, StreamEvent,
+    Kline, OrderBook, OrderBookLevel, Ticker, StreamEvent,
 };
 
 /// Parser for Finnhub API responses
@@ -180,10 +180,16 @@ impl FinnhubParser {
         let timestamp = Self::get_i64(response, "t").unwrap_or(0);
 
         Ok(OrderBook {
-            bids: vec![(bid_price, bid_size)],
-            asks: vec![(ask_price, ask_size)],
+            bids: vec![OrderBookLevel::new(bid_price, bid_size)],
+            asks: vec![OrderBookLevel::new(ask_price, ask_size)],
             timestamp,
             sequence: None,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 
@@ -340,7 +346,7 @@ mod tests {
         });
 
         let orderbook = FinnhubParser::parse_orderbook(&response).unwrap();
-        assert_eq!(orderbook.asks[0].0, 150.86);
-        assert_eq!(orderbook.bids[0].0, 150.85);
+        assert_eq!(orderbook.asks[0].price, 150.86);
+        assert_eq!(orderbook.bids[0].price, 150.85);
     }
 }

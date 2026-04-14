@@ -47,7 +47,7 @@ use crate::core::{
     ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
     timestamp_millis,
 };
-use crate::core::types::{WebSocketResult, WebSocketError, TradeSide, OrderSide, OrderType, OrderStatus};
+use crate::core::types::{WebSocketResult, WebSocketError, TradeSide, OrderSide, OrderType, OrderStatus, OrderBookLevel, OrderbookDelta as OrderbookDeltaData};
 use crate::core::traits::WebSocketConnector;
 use crate::core::utils::WeightRateLimiter;
 
@@ -461,7 +461,7 @@ impl KrakenWebSocket {
         // Add channel-specific parameters ONLY when required
         match &request.stream_type {
             StreamType::Orderbook | StreamType::OrderbookDelta => {
-                params.depth = Some(10); // Default depth
+                params.depth = Some(request.depth.unwrap_or(10) as u16);
             }
             StreamType::Kline { interval } => {
                 // Parse interval string to minutes
@@ -625,7 +625,7 @@ impl KrakenWebSocket {
         let book_data = arr.first()
             .ok_or_else(|| ExchangeError::Parse("Empty orderbook array".to_string()))?;
 
-        let parse_levels = |key: &str| -> Vec<(f64, f64)> {
+        let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
             book_data.get(key)
                 .and_then(|v| v.as_array())
                 .map(|arr| {
@@ -633,7 +633,7 @@ impl KrakenWebSocket {
                         .filter_map(|level| {
                             let price = level.get("price")?.as_f64()?;
                             let qty = level.get("qty")?.as_f64()?;
-                            Some((price, qty))
+                            Some(OrderBookLevel::new(price, qty))
                         })
                         .collect()
                 })
@@ -649,13 +649,24 @@ impl KrakenWebSocket {
                 bids,
                 asks,
                 sequence: None,
+                last_update_id: None,
+                first_update_id: None,
+                prev_update_id: None,
+                event_time: None,
+                transaction_time: None,
+                checksum: None,
             }))
         } else {
-            Ok(StreamEvent::OrderbookDelta {
+            Ok(StreamEvent::OrderbookDelta(OrderbookDeltaData {
                 bids,
                 asks,
                 timestamp: timestamp_millis() as i64,
-            })
+                first_update_id: None,
+                last_update_id: None,
+                prev_update_id: None,
+                event_time: None,
+                checksum: None,
+            }))
         }
     }
 

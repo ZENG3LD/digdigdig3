@@ -14,7 +14,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::core::types::{
-    AccountType, ExchangeError, ExchangeResult, Kline, OrderBook, SymbolInfo, Ticker,
+    AccountType, ExchangeError, ExchangeResult, Kline, OrderBook, OrderBookLevel, SymbolInfo, Ticker,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -852,23 +852,23 @@ pub fn price_history_to_klines(
 
 /// Convert PolyOrderBook to V5 OrderBook
 pub fn poly_orderbook_to_v5(book: &PolyOrderBook) -> OrderBook {
-    let bids: Vec<(f64, f64)> = book
+    let bids: Vec<OrderBookLevel> = book
         .bids
         .iter()
         .filter_map(|level| {
             let p = level.price_f64()?;
             let s = level.size_f64()?;
-            Some((p, s))
+            Some(OrderBookLevel::new(p, s))
         })
         .collect();
 
-    let asks: Vec<(f64, f64)> = book
+    let asks: Vec<OrderBookLevel> = book
         .asks
         .iter()
         .filter_map(|level| {
             let p = level.price_f64()?;
             let s = level.size_f64()?;
-            Some((p, s))
+            Some(OrderBookLevel::new(p, s))
         })
         .collect();
 
@@ -877,6 +877,12 @@ pub fn poly_orderbook_to_v5(book: &PolyOrderBook) -> OrderBook {
         asks,
         timestamp: chrono::Utc::now().timestamp_millis(),
         sequence: book.timestamp.clone(),
+        last_update_id: None,
+        first_update_id: None,
+        prev_update_id: None,
+        event_time: None,
+        transaction_time: None,
+        checksum: None,
     }
 }
 

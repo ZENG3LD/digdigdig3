@@ -124,36 +124,43 @@ impl BybitParser {
     pub fn parse_orderbook(json: &Value) -> ExchangeResult<OrderBook> {
         let result = Self::extract_result(json)?;
 
-        let bids = result["b"].as_array()
+        let bids: Vec<OrderBookLevel> = result["b"].as_array()
             .ok_or_else(|| ExchangeError::Parse("Missing bids".into()))?
             .iter()
             .filter_map(|entry| {
                 let arr = entry.as_array()?;
                 let price = arr.first()?.as_str()?.parse::<f64>().ok()?;
                 let size = arr.get(1)?.as_str()?.parse::<f64>().ok()?;
-                Some((price, size))
+                Some(OrderBookLevel::new(price, size))
             })
             .collect();
 
-        let asks = result["a"].as_array()
+        let asks: Vec<OrderBookLevel> = result["a"].as_array()
             .ok_or_else(|| ExchangeError::Parse("Missing asks".into()))?
             .iter()
             .filter_map(|entry| {
                 let arr = entry.as_array()?;
                 let price = arr.first()?.as_str()?.parse::<f64>().ok()?;
                 let size = arr.get(1)?.as_str()?.parse::<f64>().ok()?;
-                Some((price, size))
+                Some(OrderBookLevel::new(price, size))
             })
             .collect();
 
         let timestamp = result["ts"].as_i64().unwrap_or(0);
-        let sequence = result["u"].as_i64().map(|u| u.to_string());
+        let last_update_id = result["u"].as_i64().map(|u| u as u64);
+        let sequence = last_update_id.map(|u| u.to_string());
 
         Ok(OrderBook {
             bids,
             asks,
             timestamp,
             sequence,
+            last_update_id,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 

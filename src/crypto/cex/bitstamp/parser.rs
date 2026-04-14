@@ -142,7 +142,7 @@ impl BitstampParser {
                 let arr = entry.as_array()?;
                 let price = arr.first()?.as_str()?.parse::<f64>().ok()?;
                 let size = arr.get(1)?.as_str()?.parse::<f64>().ok()?;
-                Some((price, size))
+                Some(OrderBookLevel::new(price, size))
             })
             .collect();
 
@@ -154,7 +154,7 @@ impl BitstampParser {
                 let arr = entry.as_array()?;
                 let price = arr.first()?.as_str()?.parse::<f64>().ok()?;
                 let size = arr.get(1)?.as_str()?.parse::<f64>().ok()?;
-                Some((price, size))
+                Some(OrderBookLevel::new(price, size))
             })
             .collect();
 
@@ -169,6 +169,12 @@ impl BitstampParser {
             asks,
             timestamp,
             sequence: None,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 
@@ -995,8 +1001,8 @@ mod tests {
         let orderbook = BitstampParser::parse_orderbook(&data).unwrap();
         assert_eq!(orderbook.bids.len(), 2);
         assert_eq!(orderbook.asks.len(), 2);
-        assert_eq!(orderbook.bids[0].0, 9484.34);
-        assert_eq!(orderbook.asks[0].0, 9485.00);
+        assert_eq!(orderbook.bids[0].price, 9484.34);
+        assert_eq!(orderbook.asks[0].price, 9485.00);
     }
 
     #[test]

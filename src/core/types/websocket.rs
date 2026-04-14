@@ -13,8 +13,9 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    AccountType, Kline, MarginType, OrderBook, OrderSide, OrderStatus, OrderType, PositionSide,
-    Price, PublicTrade, Quantity, Symbol, Ticker, Timestamp,
+    AccountType, Kline, MarginType, OrderBook, OrderSide, OrderStatus, OrderType,
+    OrderbookDelta as OrderbookDeltaData, PositionSide, Price, PublicTrade, Quantity, Symbol,
+    Ticker, Timestamp,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -110,11 +111,23 @@ pub struct SubscriptionRequest {
     /// Account / market type (Spot, FuturesCross, etc.). Defaults to Spot.
     #[serde(default)]
     pub account_type: AccountType,
+    /// Number of price levels to request (connector default if None)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<u32>,
+    /// Update speed in ms (connector default if None)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_speed_ms: Option<u32>,
 }
 
 impl SubscriptionRequest {
     pub fn new(symbol: Symbol, stream_type: StreamType) -> Self {
-        Self { symbol, stream_type, account_type: AccountType::default() }
+        Self {
+            symbol,
+            stream_type,
+            account_type: AccountType::default(),
+            depth: None,
+            update_speed_ms: None,
+        }
     }
 
     pub fn ticker(symbol: Symbol) -> Self {
@@ -122,7 +135,7 @@ impl SubscriptionRequest {
     }
 
     pub fn ticker_for(symbol: Symbol, account_type: AccountType) -> Self {
-        Self { symbol, stream_type: StreamType::Ticker, account_type }
+        Self { symbol, stream_type: StreamType::Ticker, account_type, depth: None, update_speed_ms: None }
     }
 
     pub fn trade(symbol: Symbol) -> Self {
@@ -130,7 +143,7 @@ impl SubscriptionRequest {
     }
 
     pub fn trade_for(symbol: Symbol, account_type: AccountType) -> Self {
-        Self { symbol, stream_type: StreamType::Trade, account_type }
+        Self { symbol, stream_type: StreamType::Trade, account_type, depth: None, update_speed_ms: None }
     }
 
     pub fn orderbook(symbol: Symbol) -> Self {
@@ -139,6 +152,16 @@ impl SubscriptionRequest {
 
     pub fn kline(symbol: Symbol, interval: impl Into<String>) -> Self {
         Self::new(symbol, StreamType::Kline { interval: interval.into() })
+    }
+
+    pub fn with_depth(mut self, depth: u32) -> Self {
+        self.depth = Some(depth);
+        self
+    }
+
+    pub fn with_speed(mut self, ms: u32) -> Self {
+        self.update_speed_ms = Some(ms);
+        self
     }
 }
 
@@ -163,11 +186,7 @@ pub enum StreamEvent {
     OrderbookSnapshot(OrderBook),
 
     /// Инкрементальное обновление стакана
-    OrderbookDelta {
-        bids: Vec<(f64, f64)>,
-        asks: Vec<(f64, f64)>,
-        timestamp: i64,
-    },
+    OrderbookDelta(OrderbookDeltaData),
 
     /// Обновление свечи
     Kline(Kline),

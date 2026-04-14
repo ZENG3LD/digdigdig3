@@ -17,7 +17,7 @@ use chrono::DateTime;
 
 use crate::core::types::{
     ExchangeError, ExchangeResult,
-    Kline, OrderBook, Ticker, Order, Balance, Position,
+    Kline, OrderBook, OrderBookLevel, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide, TimeInForce,
     OrderResult,
 };
@@ -180,7 +180,7 @@ impl UpstoxParser {
         let depth = quote.get("depth")
             .ok_or_else(|| ExchangeError::Parse("Missing 'depth' field".to_string()))?;
 
-        let parse_levels = |key: &str| -> Vec<(f64, f64)> {
+        let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
             depth.get(key)
                 .and_then(|v| v.as_array())
                 .map(|arr| {
@@ -188,7 +188,7 @@ impl UpstoxParser {
                         .filter_map(|level| {
                             let price = Self::get_f64(level, "price")?;
                             let quantity = Self::get_f64(level, "quantity")?;
-                            Some((price, quantity))
+                            Some(OrderBookLevel::new(price, quantity))
                         })
                         .collect()
                 })
@@ -205,6 +205,12 @@ impl UpstoxParser {
             bids: parse_levels("buy"),
             asks: parse_levels("sell"),
             sequence: None,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 

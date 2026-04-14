@@ -8,11 +8,12 @@ use serde_json::Value;
 
 use crate::core::types::{
     ExchangeError, ExchangeResult, AccountType,
-    Kline, OrderBook, Ticker, Order, Balance, Position,
+    Kline, OrderBook, OrderBookLevel, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, PublicTrade, StreamEvent, TradeSide,
     OrderUpdateEvent, SymbolInfo, FeeInfo,
     UserTrade,
+    OrderbookDelta as OrderbookDeltaData,
 };
 
 /// Парсер ответов Gemini API
@@ -147,7 +148,7 @@ impl GeminiParser {
     pub fn parse_orderbook(response: &Value) -> ExchangeResult<OrderBook> {
         Self::check_error(response)?;
 
-        let parse_levels = |key: &str| -> Vec<(f64, f64)> {
+        let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
             response.get(key)
                 .and_then(|v| v.as_array())
                 .map(|arr| {
@@ -156,7 +157,7 @@ impl GeminiParser {
                             let obj = level.as_object()?;
                             let price = obj.get("price").and_then(Self::parse_f64)?;
                             let amount = obj.get("amount").and_then(Self::parse_f64)?;
-                            Some((price, amount))
+                            Some(OrderBookLevel::new(price, amount))
                         })
                         .collect()
                 })
@@ -168,6 +169,12 @@ impl GeminiParser {
             bids: parse_levels("bids"),
             asks: parse_levels("asks"),
             sequence: None,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 
@@ -475,17 +482,22 @@ impl GeminiParser {
             let quantity = Self::parse_f64(&arr[2]).unwrap_or(0.0);
 
             if side == "buy" {
-                bids.push((price, quantity));
+                bids.push(OrderBookLevel::new(price, quantity));
             } else {
-                asks.push((price, quantity));
+                asks.push(OrderBookLevel::new(price, quantity));
             }
         }
 
-        Ok(StreamEvent::OrderbookDelta {
+        Ok(StreamEvent::OrderbookDelta(OrderbookDeltaData {
             bids,
             asks,
             timestamp: 0,
-        })
+            first_update_id: None,
+            last_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            checksum: None,
+        }))
     }
 
     /// Extract the most recent trade from a WebSocket L2 update message.

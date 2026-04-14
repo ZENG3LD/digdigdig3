@@ -36,6 +36,7 @@ use crate::core::{
     ConnectionStatus, StreamEvent, SubscriptionRequest,
     Ticker, PublicTrade, OrderBook,
 };
+use crate::core::types::OrderBookLevel;
 use crate::core::types::TradeSide;
 use crate::core::types::{WebSocketResult, WebSocketError};
 use crate::core::traits::WebSocketConnector;
@@ -582,7 +583,7 @@ impl LighterWebSocket {
     ///
     /// Lighter orderbook levels are objects: `[{"price":"2738.02","size":"15.40"}, ...]`
     /// Also supports legacy array format: `[["2738.02","15.40"], ...]`
-    fn parse_levels(arr: &Value) -> Vec<(f64, f64)> {
+    fn parse_levels(arr: &Value) -> Vec<OrderBookLevel> {
         arr.as_array()
             .map(|levels| {
                 levels.iter().filter_map(|entry| {
@@ -594,14 +595,14 @@ impl LighterWebSocket {
                         let size = obj.get("size")
                             .and_then(|v| v.as_str())
                             .and_then(|s| s.parse::<f64>().ok())?;
-                        Some((price, size))
+                        Some(OrderBookLevel::new(price, size))
                     }
                     // Array format: ["price", "size"]
                     else if let Some(pair_arr) = entry.as_array() {
                         if pair_arr.len() >= 2 {
                             let price = pair_arr[0].as_str()?.parse::<f64>().ok()?;
                             let size = pair_arr[1].as_str()?.parse::<f64>().ok()?;
-                            Some((price, size))
+                            Some(OrderBookLevel::new(price, size))
                         } else {
                             None
                         }
@@ -644,6 +645,12 @@ impl LighterWebSocket {
             asks,
             timestamp,
             sequence,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         }))
     }
 

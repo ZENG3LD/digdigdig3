@@ -180,6 +180,12 @@ impl AlpacaParser {
             asks,
             timestamp,
             sequence: None,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 
@@ -501,7 +507,7 @@ impl AlpacaParser {
     /// Parse order book levels
     ///
     /// Alpaca orderbook format: `[{"p": 45000.00, "s": 1.5}, ...]`
-    fn parse_order_levels(value: Option<&Value>) -> ExchangeResult<Vec<(f64, f64)>> {
+    fn parse_order_levels(value: Option<&Value>) -> ExchangeResult<Vec<OrderBookLevel>> {
         let array = value
             .and_then(|v| v.as_array())
             .ok_or_else(|| ExchangeError::Parse("Invalid order levels".to_string()))?;
@@ -519,7 +525,7 @@ impl AlpacaParser {
                     .and_then(|v| v.as_f64())
                     .ok_or_else(|| ExchangeError::Parse("Invalid size in level".to_string()))?;
 
-                Ok((price, size))
+                Ok(OrderBookLevel::new(price, size))
             })
             .collect()
     }

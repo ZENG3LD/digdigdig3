@@ -44,7 +44,7 @@ use crate::core::{
     ExchangeResult, ExchangeError, timestamp_millis,
     AccountType, ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
 };
-use crate::core::types::{WebSocketResult, WebSocketError};
+use crate::core::types::{WebSocketResult, WebSocketError, OrderBookLevel, OrderbookDelta as OrderbookDeltaData};
 use crate::core::traits::WebSocketConnector;
 use super::auth::CryptoComAuth;
 use super::endpoints::{InstrumentType, format_symbol as fmt_symbol};
@@ -340,7 +340,7 @@ impl CryptoComWebSocket {
                         arr.iter().filter_map(|entry| {
                             let price = entry.get(0)?.as_str()?.parse::<f64>().ok()?;
                             let qty = entry.get(1)?.as_str()?.parse::<f64>().ok()?;
-                            Some((price, qty))
+                            Some(OrderBookLevel::new(price, qty))
                         }).collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
@@ -350,14 +350,23 @@ impl CryptoComWebSocket {
                         arr.iter().filter_map(|entry| {
                             let price = entry.get(0)?.as_str()?.parse::<f64>().ok()?;
                             let qty = entry.get(1)?.as_str()?.parse::<f64>().ok()?;
-                            Some((price, qty))
+                            Some(OrderBookLevel::new(price, qty))
                         }).collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
                 let timestamp = data.get("t")
                     .and_then(|t| t.as_i64())
                     .unwrap_or(0);
-                Some(StreamEvent::OrderbookDelta { bids, asks, timestamp })
+                Some(StreamEvent::OrderbookDelta(OrderbookDeltaData {
+                    bids,
+                    asks,
+                    timestamp,
+                    first_update_id: None,
+                    last_update_id: None,
+                    prev_update_id: None,
+                    event_time: None,
+                    checksum: None,
+                }))
             }
             WsEvent::Trade(data) => {
                 let trade = super::parser::CryptoComParser::parse_ws_trade(data).ok()?;
@@ -646,7 +655,8 @@ impl CryptoComWebSocket {
             StreamType::Ticker => vec![format!("ticker.{}", symbol_str)],
             StreamType::Trade => vec![format!("trade.{}", symbol_str)],
             StreamType::Orderbook | StreamType::OrderbookDelta => {
-                vec![format!("book.{}.10", symbol_str)]
+                let depth = request.depth.unwrap_or(10);
+                vec![format!("book.{}.{}", symbol_str, depth)]
             }
             StreamType::Kline { interval } => vec![format!("candlestick.{}.{}", interval, symbol_str)],
             StreamType::OrderUpdate => vec![format!("user.order.{}", symbol_str)],

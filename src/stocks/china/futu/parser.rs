@@ -492,6 +492,12 @@ impl FutuParser {
             asks,
             timestamp: 0,
             sequence: None,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 
@@ -533,7 +539,7 @@ fn chrono_timestamp_ms(s: &str) -> Option<i64> {
 }
 
 /// Parse an order book side from a JSON array of {price, volume} objects.
-fn parse_book_side(value: Option<&Value>) -> Vec<(f64, f64)> {
+fn parse_book_side(value: Option<&Value>) -> Vec<OrderBookLevel> {
     value
         .and_then(|v| v.as_array())
         .map(|arr| {
@@ -543,7 +549,7 @@ fn parse_book_side(value: Option<&Value>) -> Vec<(f64, f64)> {
                     let volume = item.get("volume")?.as_f64()
                         .or_else(|| item.get("qty")?.as_f64())
                         .unwrap_or(0.0);
-                    Some((price, volume))
+                    Some(OrderBookLevel::new(price, volume))
                 })
                 .collect()
         })

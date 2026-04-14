@@ -24,7 +24,7 @@ use serde_json::Value;
 
 use crate::core::types::{
     ExchangeError, ExchangeResult, AccountType,
-    Kline, OrderBook, Ticker, Order, Balance, Position,
+    Kline, OrderBook, OrderBookLevel, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, SymbolInfo,
     CancelAllResponse, OrderResult,
@@ -146,7 +146,7 @@ impl KrakenParser {
             .or_else(|| Self::get_first_key(result).and_then(|k| result.get(k)))
             .ok_or_else(|| ExchangeError::Parse(format!("Symbol '{}' not found", symbol)))?;
 
-        let parse_levels = |key: &str| -> Vec<(f64, f64)> {
+        let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
             data.get(key)
                 .and_then(|v| v.as_array())
                 .map(|arr| {
@@ -156,7 +156,7 @@ impl KrakenParser {
                             if pair.len() < 2 { return None; }
                             let price = Self::parse_f64(&pair[0])?;
                             let size = Self::parse_f64(&pair[1])?;
-                            Some((price, size))
+                            Some(OrderBookLevel::new(price, size))
                         })
                         .collect()
                 })
@@ -168,6 +168,12 @@ impl KrakenParser {
             bids: parse_levels("bids"),
             asks: parse_levels("asks"),
             sequence: None,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 
@@ -1348,7 +1354,7 @@ mod tests {
         let orderbook = KrakenParser::parse_orderbook(&response, "XXBTZUSD").unwrap();
         assert_eq!(orderbook.bids.len(), 1);
         assert_eq!(orderbook.asks.len(), 1);
-        assert!((orderbook.bids[0].0 - 41999.0).abs() < f64::EPSILON);
+        assert!((orderbook.bids[0].price - 41999.0).abs() < f64::EPSILON);
     }
 
     #[test]

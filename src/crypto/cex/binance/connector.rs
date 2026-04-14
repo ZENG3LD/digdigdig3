@@ -57,15 +57,21 @@ use super::parser::BinanceParser;
 mod weights {
     pub const PING: u32 = 1;
     pub const KLINES: u32 = 2;
-    pub const _DEPTH_DEFAULT: u32 = 5;   // limit 100
-    pub const _DEPTH_500: u32 = 10;
     pub const TICKER_24H: u32 = 1;
-    pub const _ALL_TICKERS: u32 = 40;
-    pub const _TRADES: u32 = 10;
-    pub const ORDER_BOOK: u32 = 5;
     pub const ACCOUNT: u32 = 10;
     pub const ORDER: u32 = 1;
     pub const DEFAULT: u32 = 1;
+
+    /// Weight for /depth endpoint, scaled by limit parameter.
+    /// Reference: https://binance-docs.github.io/apidocs/spot/en/#order-book
+    pub const fn depth_weight(limit: u16) -> u32 {
+        match limit {
+            0..=100 => 5,
+            101..=500 => 25,
+            501..=1000 => 50,
+            _ => 250,
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -265,7 +271,12 @@ impl BinanceConnector {
         let weight = match endpoint {
             BinanceEndpoint::Ping => weights::PING,
             BinanceEndpoint::SpotKlines | BinanceEndpoint::FuturesKlines => weights::KLINES,
-            BinanceEndpoint::SpotOrderbook | BinanceEndpoint::FuturesOrderbook => weights::ORDER_BOOK,
+            BinanceEndpoint::SpotOrderbook | BinanceEndpoint::FuturesOrderbook => {
+                let limit: u16 = params.get("limit")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(100);
+                weights::depth_weight(limit)
+            }
             BinanceEndpoint::SpotTicker | BinanceEndpoint::FuturesTicker => weights::TICKER_24H,
             BinanceEndpoint::SpotAccount | BinanceEndpoint::FuturesAccount => weights::ACCOUNT,
             BinanceEndpoint::SpotGetOrder | BinanceEndpoint::FuturesGetOrder => weights::ORDER,

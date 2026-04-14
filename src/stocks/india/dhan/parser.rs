@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::core::types::{
     ExchangeError, ExchangeResult,
-    Kline, OrderBook, Ticker, Order, Balance, Position,
+    Kline, OrderBook, OrderBookLevel, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide, AccountInfo,
 };
 
@@ -138,7 +138,7 @@ impl DhanParser {
                 Self::get_f64(security_data, &bid_qty_key),
             ) {
                 if price > 0.0 && qty > 0.0 {
-                    bids.push((price, qty));
+                    bids.push(OrderBookLevel::new(price, qty));
                 }
             }
 
@@ -147,7 +147,7 @@ impl DhanParser {
                 Self::get_f64(security_data, &ask_qty_key),
             ) {
                 if price > 0.0 && qty > 0.0 {
-                    asks.push((price, qty));
+                    asks.push(OrderBookLevel::new(price, qty));
                 }
             }
         }
@@ -157,6 +157,12 @@ impl DhanParser {
             bids,
             asks,
             sequence: None,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 

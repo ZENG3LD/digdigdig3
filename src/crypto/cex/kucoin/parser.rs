@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::core::types::{
     ExchangeError, ExchangeResult, AccountType,
-    Kline, OrderBook, Ticker, Order, Balance, Position,
+    Kline, OrderBook, OrderBookLevel, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide, TimeInForce,
     FundingRate, PublicTrade, StreamEvent, TradeSide,
     OrderUpdateEvent, BalanceUpdateEvent, PositionUpdateEvent,
@@ -14,6 +14,7 @@ use crate::core::types::{
     CancelAllResponse, OrderResult,
     UserTrade,
     FundingPayment, LedgerEntry, LedgerEntryType,
+    OrderbookDelta as OrderbookDeltaData,
 };
 
 /// Парсер ответов KuCoin API
@@ -112,7 +113,7 @@ impl KuCoinParser {
     pub fn parse_orderbook(response: &Value) -> ExchangeResult<OrderBook> {
         let data = Self::extract_data(response)?;
 
-        let parse_levels = |key: &str| -> Vec<(f64, f64)> {
+        let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
             data.get(key)
                 .and_then(|v| v.as_array())
                 .map(|arr| {
@@ -122,7 +123,7 @@ impl KuCoinParser {
                             if pair.len() < 2 { return None; }
                             let price = Self::parse_f64(&pair[0])?;
                             let size = Self::parse_f64(&pair[1])?;
-                            Some((price, size))
+                            Some(OrderBookLevel::new(price, size))
                         })
                         .collect()
                 })
@@ -144,6 +145,12 @@ impl KuCoinParser {
                     s.as_i64().map(|n| n.to_string())
                         .or_else(|| s.as_str().map(String::from))
                 }),
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 
@@ -591,7 +598,7 @@ impl KuCoinParser {
 
     /// Parse WebSocket orderbook delta message
     pub fn parse_ws_orderbook_delta(data: &Value) -> ExchangeResult<StreamEvent> {
-        let parse_changes = |key: &str| -> Vec<(f64, f64)> {
+        let parse_changes = |key: &str| -> Vec<OrderBookLevel> {
             data.get("changes")
                 .and_then(|c| c.get(key))
                 .and_then(|arr| arr.as_array())
@@ -602,7 +609,7 @@ impl KuCoinParser {
                             if pair.len() < 2 { return None; }
                             let price = Self::parse_f64(&pair[0])?;
                             let size = Self::parse_f64(&pair[1])?;
-                            Some((price, size))
+                            Some(OrderBookLevel::new(price, size))
                         })
                         .collect()
                 })
@@ -618,25 +625,35 @@ impl KuCoinParser {
                 let side = parts[1];
 
                 let (bids, asks) = if side == "buy" {
-                    (vec![(price, size)], vec![])
+                    (vec![OrderBookLevel::new(price, size)], vec![])
                 } else {
-                    (vec![], vec![(price, size)])
+                    (vec![], vec![OrderBookLevel::new(price, size)])
                 };
 
-                return Ok(StreamEvent::OrderbookDelta {
+                return Ok(StreamEvent::OrderbookDelta(OrderbookDeltaData {
                     bids,
                     asks,
                     timestamp: data.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0),
-                });
+                    first_update_id: None,
+                    last_update_id: None,
+                    prev_update_id: None,
+                    event_time: None,
+                    checksum: None,
+                }));
             }
         }
 
         // Spot format (changes object)
-        Ok(StreamEvent::OrderbookDelta {
+        Ok(StreamEvent::OrderbookDelta(OrderbookDeltaData {
             bids: parse_changes("bids"),
             asks: parse_changes("asks"),
             timestamp: data.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0),
-        })
+            first_update_id: None,
+            last_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            checksum: None,
+        }))
     }
 
     /// Parse WebSocket kline message
@@ -1119,7 +1136,7 @@ mod tests {
         let orderbook = KuCoinParser::parse_orderbook(&response).unwrap();
         assert_eq!(orderbook.bids.len(), 2);
         assert_eq!(orderbook.asks.len(), 2);
-        assert!((orderbook.bids[0].0 - 42000.0).abs() < f64::EPSILON);
+        assert!((orderbook.bids[0].price - 42000.0).abs() < f64::EPSILON);
         assert_eq!(orderbook.timestamp, 1234567890);
         assert_eq!(orderbook.sequence, Some("123".to_string()));
     }
@@ -1141,7 +1158,7 @@ mod tests {
         let orderbook = KuCoinParser::parse_orderbook(&response).unwrap();
         assert_eq!(orderbook.bids.len(), 2);
         assert_eq!(orderbook.asks.len(), 2);
-        assert!((orderbook.bids[0].0 - 3200.0).abs() < f64::EPSILON);
+        assert!((orderbook.bids[0].price - 3200.0).abs() < f64::EPSILON);
         assert_eq!(orderbook.timestamp, 1604643655040584408i64);
         assert_eq!(orderbook.sequence, Some("100".to_string()));
     }

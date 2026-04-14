@@ -29,7 +29,7 @@ use serde_json::Value;
 
 use crate::core::types::{
     ExchangeError, ExchangeResult, AccountType,
-    Kline, OrderBook, Ticker, Order, Balance, Position,
+    Kline, OrderBook, OrderBookLevel, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, PublicTrade, TradeSide, SymbolInfo,
     UserTrade, FundingPayment,
@@ -141,14 +141,14 @@ impl HyperliquidParser {
             return Err(ExchangeError::Parse("Expected [bids, asks] in levels".to_string()));
         }
 
-        let parse_levels = |level_array: &Value| -> Vec<(f64, f64)> {
+        let parse_levels = |level_array: &Value| -> Vec<OrderBookLevel> {
             level_array.as_array()
                 .map(|arr| {
                     arr.iter()
                         .filter_map(|level| {
                             let px = Self::get_f64(level, "px")?;
                             let sz = Self::get_f64(level, "sz")?;
-                            Some((px, sz))
+                            Some(OrderBookLevel::new(px, sz))
                         })
                         .collect()
                 })
@@ -160,6 +160,12 @@ impl HyperliquidParser {
             bids: parse_levels(&levels[0]), // levels[0] = bids
             asks: parse_levels(&levels[1]), // levels[1] = asks
             sequence: None,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 
@@ -960,8 +966,8 @@ mod tests {
         let orderbook = HyperliquidParser::parse_orderbook(&response).unwrap();
         assert_eq!(orderbook.bids.len(), 2);
         assert_eq!(orderbook.asks.len(), 2);
-        assert!((orderbook.bids[0].0 - 50123.5).abs() < f64::EPSILON);
-        assert!((orderbook.asks[0].0 - 50124.0).abs() < f64::EPSILON);
+        assert!((orderbook.bids[0].price - 50123.5).abs() < f64::EPSILON);
+        assert!((orderbook.asks[0].price - 50124.0).abs() < f64::EPSILON);
     }
 
     #[test]

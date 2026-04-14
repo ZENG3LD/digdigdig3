@@ -86,10 +86,16 @@ impl ZerodhaParser {
                 std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("System time is before UNIX epoch").as_secs() as i64
             }),
             sequence: None,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 
-    fn parse_depth_levels(value: Option<&Value>) -> ExchangeResult<Vec<(f64, f64)>> {
+    fn parse_depth_levels(value: Option<&Value>) -> ExchangeResult<Vec<OrderBookLevel>> {
         let array = value.and_then(|v| v.as_array())
             .ok_or_else(|| ExchangeError::Parse("Invalid depth levels".to_string()))?;
 
@@ -99,7 +105,7 @@ impl ZerodhaParser {
                 .ok_or_else(|| ExchangeError::Parse("Missing depth price".to_string()))?;
             let quantity = level.get("quantity").and_then(|q| q.as_f64())
                 .ok_or_else(|| ExchangeError::Parse("Missing depth quantity".to_string()))?;
-            levels.push((price, quantity));
+            levels.push(OrderBookLevel::new(price, quantity));
         }
 
         Ok(levels)

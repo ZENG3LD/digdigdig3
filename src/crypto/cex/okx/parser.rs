@@ -21,7 +21,7 @@ use serde_json::Value;
 
 use crate::core::types::{
     ExchangeError, ExchangeResult,
-    Kline, OrderBook, Ticker, Order, Balance, Position,
+    Kline, OrderBook, OrderBookLevel, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide, TimeInForce, MarginType,
     FundingRate, PublicTrade, TradeSide,
     OrderUpdateEvent, BalanceUpdateEvent, PositionUpdateEvent,
@@ -36,11 +36,8 @@ use crate::core::types::{
     SubAccountResult, SubAccount,
 };
 
-/// Order book level pairs (price, quantity)
-type OrderBookLevels = Vec<(f64, f64)>;
-
-/// Parsed order book bids and asks
-type OrderBookSides = (OrderBookLevels, OrderBookLevels);
+/// Parsed order book bids and asks (asks, bids)
+type OrderBookSides = (Vec<OrderBookLevel>, Vec<OrderBookLevel>);
 
 /// Парсер ответов OKX API
 pub struct OkxParser;
@@ -149,7 +146,7 @@ impl OkxParser {
     pub fn parse_orderbook(response: &Value) -> ExchangeResult<OrderBook> {
         let data = Self::extract_first_data(response)?;
 
-        let parse_levels = |key: &str| -> Vec<(f64, f64)> {
+        let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
             data.get(key)
                 .and_then(|v| v.as_array())
                 .map(|arr| {
@@ -157,10 +154,14 @@ impl OkxParser {
                         .filter_map(|level| {
                             let pair = level.as_array()?;
                             if pair.len() < 2 { return None; }
-                            // OKX format: [price, size, deprecated, amount]
+                            // OKX format: [price, size, deprecated, num_orders]
                             let price = Self::parse_f64(&pair[0])?;
                             let size = Self::parse_f64(&pair[1])?;
-                            Some((price, size))
+                            let order_count = pair.get(3)
+                                .and_then(|v| Self::parse_f64(v))
+                                .map(|v| v as u32)
+                                .filter(|&c| c > 0);
+                            Some(OrderBookLevel { price, size, order_count })
                         })
                         .collect()
                 })
@@ -171,7 +172,13 @@ impl OkxParser {
             timestamp: Self::get_i64(data, "ts").unwrap_or(0),
             bids: parse_levels("bids"),
             asks: parse_levels("asks"),
-            sequence: None, // OKX doesn't provide sequence in this endpoint
+            sequence: None,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 
@@ -483,7 +490,7 @@ impl OkxParser {
 
     /// Парсить WebSocket orderbook update
     pub fn parse_ws_orderbook(data: &Value) -> ExchangeResult<OrderBookSides> {
-        let parse_levels = |key: &str| -> Vec<(f64, f64)> {
+        let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
             data.get(key)
                 .and_then(|v| v.as_array())
                 .map(|arr| {
@@ -491,9 +498,14 @@ impl OkxParser {
                         .filter_map(|level| {
                             let pair = level.as_array()?;
                             if pair.len() < 2 { return None; }
+                            // OKX WS format: [price, size, deprecated, num_orders]
                             let price = Self::parse_f64(&pair[0])?;
                             let size = Self::parse_f64(&pair[1])?;
-                            Some((price, size))
+                            let order_count = pair.get(3)
+                                .and_then(|v| Self::parse_f64(v))
+                                .map(|v| v as u32)
+                                .filter(|&c| c > 0);
+                            Some(OrderBookLevel { price, size, order_count })
                         })
                         .collect()
                 })

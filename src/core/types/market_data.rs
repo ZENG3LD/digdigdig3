@@ -66,17 +66,92 @@ pub struct Ticker {
 // ORDER BOOK
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/// One price level in the order book.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderBookLevel {
+    pub price: f64,
+    pub size: f64,
+    /// Number of orders at this level (some exchanges provide this).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order_count: Option<u32>,
+}
+
+impl OrderBookLevel {
+    pub fn new(price: f64, size: f64) -> Self {
+        Self { price, size, order_count: None }
+    }
+
+    pub fn with_count(price: f64, size: f64, count: u32) -> Self {
+        Self { price, size, order_count: Some(count) }
+    }
+}
+
+/// Convert from tuple for backwards compat
+impl From<(f64, f64)> for OrderBookLevel {
+    fn from((price, size): (f64, f64)) -> Self {
+        Self::new(price, size)
+    }
+}
+
 /// Снепшот стакана
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrderBook {
-    /// Bids (цена, размер) - отсортированы по убыванию цены
-    pub bids: Vec<(f64, f64)>,
-    /// Asks (цена, размер) - отсортированы по возрастанию цены
-    pub asks: Vec<(f64, f64)>,
+    /// Bids - отсортированы по убыванию цены
+    pub bids: Vec<OrderBookLevel>,
+    /// Asks - отсортированы по возрастанию цены
+    pub asks: Vec<OrderBookLevel>,
     /// Timestamp
     pub timestamp: i64,
     /// Sequence number (опционально, для инкрементальных обновлений)
     pub sequence: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_update_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_update_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_update_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_time: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transaction_time: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checksum: Option<i64>,
+}
+
+impl OrderBook {
+    /// Simple constructor from tuples (backwards compat helper)
+    pub fn simple(bids: Vec<(f64, f64)>, asks: Vec<(f64, f64)>, timestamp: i64) -> Self {
+        Self {
+            bids: bids.into_iter().map(OrderBookLevel::from).collect(),
+            asks: asks.into_iter().map(OrderBookLevel::from).collect(),
+            timestamp,
+            sequence: None,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
+        }
+    }
+}
+
+/// Incremental order-book update.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderbookDelta {
+    pub bids: Vec<OrderBookLevel>,
+    pub asks: Vec<OrderBookLevel>,
+    pub timestamp: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_update_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_update_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_update_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_time: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checksum: Option<i64>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

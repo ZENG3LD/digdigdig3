@@ -174,6 +174,8 @@ impl MexcWebSocket {
             stream_type: StreamType::Ticker,
             symbol: symbol.clone(),
             account_type: crate::core::AccountType::default(),
+            depth: None,
+            update_speed_ms: None,
         });
 
         Ok(())
@@ -197,6 +199,8 @@ impl MexcWebSocket {
             stream_type: StreamType::Trade,
             symbol: symbol.clone(),
             account_type: crate::core::AccountType::default(),
+            depth: None,
+            update_speed_ms: None,
         });
 
         Ok(())

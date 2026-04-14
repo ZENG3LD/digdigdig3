@@ -21,6 +21,7 @@ use crate::core::{
     Position, PositionSide, MarginType,
     Balance, AccountInfo, AccountType,
 };
+use crate::core::types::OrderBookLevel;
 
 /// Structured data from order details response
 pub struct OrderDetailsData {
@@ -159,14 +160,14 @@ impl AngelOneParser {
             Self::get_f64(quote, "bidprice"),
             Self::get_f64(quote, "bidqty"),
         ) {
-            bids.push((bid_price, bid_qty));
+            bids.push(OrderBookLevel::new(bid_price, bid_qty));
         }
 
         if let (Some(ask_price), Some(ask_qty)) = (
             Self::get_f64(quote, "askprice"),
             Self::get_f64(quote, "askqty"),
         ) {
-            asks.push((ask_price, ask_qty));
+            asks.push(OrderBookLevel::new(ask_price, ask_qty));
         }
 
         Ok(OrderBook {
@@ -174,6 +175,12 @@ impl AngelOneParser {
             asks,
             timestamp: chrono::Utc::now().timestamp_millis(),
             sequence: None,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 

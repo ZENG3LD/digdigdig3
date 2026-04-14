@@ -45,6 +45,7 @@ use crate::core::{
     AccountType, ConnectionStatus, Credentials, ExchangeResult, OrderBook,
     StreamEvent, SubscriptionRequest, timestamp_iso8601,
 };
+use crate::core::types::OrderbookDelta;
 use crate::core::traits::WebSocketConnector;
 use crate::core::types::{WebSocketError, WebSocketResult};
 
@@ -256,12 +257,14 @@ impl OkxWebSocket {
                                 if let Some(channel) =
                                     arg.get("channel").and_then(|c| c.as_str())
                                 {
+                                    // Extract top-level action ("snapshot" | "update")
+                                    let action = value.get("action").and_then(|a| a.as_str());
                                     if let Some(data_arr) =
                                         value.get("data").and_then(|d| d.as_array())
                                     {
                                         for data in data_arr {
                                             let event =
-                                                Self::parse_channel_data(channel, data);
+                                                Self::parse_channel_data(channel, data, action);
                                             if let Some(ev) = event {
                                                 let tx_guard = broadcast_tx.lock().unwrap();
                                                 if let Some(ref tx) = *tx_guard {
@@ -292,22 +295,53 @@ impl OkxWebSocket {
     }
 
     /// Parse channel data to [`StreamEvent`].
-    fn parse_channel_data(channel: &str, data: &Value) -> Option<StreamEvent> {
+    ///
+    /// `action` is taken from the top-level `"action"` field of the OKX push
+    /// message.  OKX sets it to `"snapshot"` for the initial full book and
+    /// `"update"` for incremental deltas.
+    fn parse_channel_data(channel: &str, data: &Value, action: Option<&str>) -> Option<StreamEvent> {
         match channel {
             "tickers" => OkxParser::parse_ws_ticker(data)
                 .ok()
                 .map(StreamEvent::Ticker),
-            "books" | "books5" => OkxParser::parse_ws_orderbook(data)
-                .ok()
-                .map(|(asks, bids)| {
+            "books" | "books5" | "books-l2-tbt" | "books50-l2-tbt" => {
+                let (asks, bids) = OkxParser::parse_ws_orderbook(data).ok()?;
+                let timestamp = OkxParser::get_i64(data, "ts").unwrap_or(0);
+
+                // OKX sequences: seqId → first_update_id, prevSeqId → prev_update_id
+                let seq_id = data.get("seqId").and_then(|v| v.as_u64());
+                let prev_seq_id = data.get("prevSeqId").and_then(|v| v.as_u64());
+                let checksum = data.get("checksum").and_then(|v| v.as_i64());
+
+                if action == Some("snapshot") {
                     let orderbook = OrderBook {
                         asks,
                         bids,
-                        timestamp: OkxParser::get_i64(data, "ts").unwrap_or(0),
+                        timestamp,
                         sequence: None,
+                        last_update_id: seq_id,
+                        first_update_id: seq_id,
+                        prev_update_id: prev_seq_id,
+                        event_time: Some(timestamp),
+                        transaction_time: None,
+                        checksum,
                     };
-                    StreamEvent::OrderbookSnapshot(orderbook)
-                }),
+                    Some(StreamEvent::OrderbookSnapshot(orderbook))
+                } else {
+                    // "update" or anything else → delta
+                    let delta = OrderbookDelta {
+                        asks,
+                        bids,
+                        timestamp,
+                        first_update_id: seq_id,
+                        last_update_id: seq_id,
+                        prev_update_id: prev_seq_id,
+                        event_time: Some(timestamp),
+                        checksum,
+                    };
+                    Some(StreamEvent::OrderbookDelta(delta))
+                }
+            }
             "trades" => OkxParser::parse_ws_trade(data)
                 .ok()
                 .map(StreamEvent::Trade),
@@ -429,8 +463,24 @@ impl WebSocketConnector for OkxWebSocket {
     async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let channel = match &request.stream_type {
             crate::core::StreamType::Ticker => "tickers",
-            crate::core::StreamType::Orderbook => "books",
-            crate::core::StreamType::OrderbookDelta => "books",
+            crate::core::StreamType::Orderbook => {
+                // OKX depth channels:
+                //   books          → full 400-level snapshot+update
+                //   books5         → top-5 levels
+                //   books-l2-tbt   → 400-level tick-by-tick
+                //   books50-l2-tbt → 50-level tick-by-tick
+                match request.depth {
+                    Some(5) => "books5",
+                    Some(50) => "books50-l2-tbt",
+                    _ => "books",
+                }
+            }
+            crate::core::StreamType::OrderbookDelta => {
+                match request.depth {
+                    Some(50) => "books50-l2-tbt",
+                    _ => "books-l2-tbt",
+                }
+            }
             crate::core::StreamType::Trade => "trades",
             crate::core::StreamType::Kline { interval } => match interval.as_str() {
                 "1m" => "candle1m",

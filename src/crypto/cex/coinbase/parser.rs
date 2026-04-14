@@ -151,7 +151,7 @@ impl CoinbaseParser {
             .filter_map(|entry| {
                 let price = entry.get("price")?.as_str()?.parse::<f64>().ok()?;
                 let size = entry.get("size")?.as_str()?.parse::<f64>().ok()?;
-                Some((price, size))
+                Some(OrderBookLevel::new(price, size))
             })
             .collect();
 
@@ -163,7 +163,7 @@ impl CoinbaseParser {
             .filter_map(|entry| {
                 let price = entry.get("price")?.as_str()?.parse::<f64>().ok()?;
                 let size = entry.get("size")?.as_str()?.parse::<f64>().ok()?;
-                Some((price, size))
+                Some(OrderBookLevel::new(price, size))
             })
             .collect();
 
@@ -177,6 +177,12 @@ impl CoinbaseParser {
             asks,
             timestamp,
             sequence: None, // Coinbase REST API doesn't provide sequence numbers
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 
@@ -540,8 +546,8 @@ impl CoinbaseParser {
             // Only add non-zero quantities
             if size > 0.0 {
                 match side {
-                    "bid" => bids.push((price, size)),
-                    "ask" => asks.push((price, size)),
+                    "bid" => bids.push(OrderBookLevel::new(price, size)),
+                    "ask" => asks.push(OrderBookLevel::new(price, size)),
                     _ => {},
                 }
             }
@@ -561,6 +567,12 @@ impl CoinbaseParser {
             asks,
             timestamp,
             sequence,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 

@@ -6,9 +6,10 @@ use serde_json::Value;
 
 use crate::core::types::{
     ExchangeError, ExchangeResult,
-    Kline, OrderBook, Ticker, Order, Balance, Position,
+    Kline, OrderBook, OrderBookLevel, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide, SymbolInfo,
     UserTrade,
+    OrderbookDelta as OrderbookDeltaData,
 };
 
 /// Парсер ответов BingX API
@@ -144,7 +145,7 @@ impl BingxParser {
     pub fn parse_orderbook(response: &Value) -> ExchangeResult<OrderBook> {
         let data = Self::extract_data(response)?;
 
-        let parse_levels = |key: &str| -> Vec<(f64, f64)> {
+        let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
             data.get(key)
                 .and_then(|v| v.as_array())
                 .map(|arr| {
@@ -154,7 +155,7 @@ impl BingxParser {
                             if pair.len() < 2 { return None; }
                             let price = Self::parse_f64(&pair[0])?;
                             let size = Self::parse_f64(&pair[1])?;
-                            Some((price, size))
+                            Some(OrderBookLevel::new(price, size))
                         })
                         .collect()
                 })
@@ -165,16 +166,22 @@ impl BingxParser {
         let mut asks = parse_levels("asks");
 
         // Ensure bids are sorted descending (highest price first)
-        bids.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        bids.sort_by(|a, b| b.price.partial_cmp(&a.price).unwrap_or(std::cmp::Ordering::Equal));
 
         // Ensure asks are sorted ascending (lowest price first)
-        asks.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        asks.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap_or(std::cmp::Ordering::Equal));
 
         Ok(OrderBook {
             timestamp: crate::core::timestamp_millis() as i64,
             bids,
             asks,
             sequence: None,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 
@@ -532,7 +539,7 @@ impl BingxParser {
                 if arr.len() >= 2 {
                     let price = Self::parse_f64(&arr[0]).unwrap_or(0.0);
                     let qty = Self::parse_f64(&arr[1]).unwrap_or(0.0);
-                    bids.push((price, qty));
+                    bids.push(OrderBookLevel::new(price, qty));
                 }
             }
         }
@@ -543,18 +550,23 @@ impl BingxParser {
                 if arr.len() >= 2 {
                     let price = Self::parse_f64(&arr[0]).unwrap_or(0.0);
                     let qty = Self::parse_f64(&arr[1]).unwrap_or(0.0);
-                    asks.push((price, qty));
+                    asks.push(OrderBookLevel::new(price, qty));
                 }
             }
         }
 
         let timestamp = crate::core::timestamp_millis() as i64;
 
-        Ok(crate::core::StreamEvent::OrderbookDelta {
+        Ok(crate::core::StreamEvent::OrderbookDelta(OrderbookDeltaData {
             bids,
             asks,
             timestamp,
-        })
+            first_update_id: None,
+            last_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            checksum: None,
+        }))
     }
 
     /// Parse WebSocket kline
@@ -1057,7 +1069,7 @@ mod tests {
         let orderbook = BingxParser::parse_orderbook(&response).unwrap();
         assert_eq!(orderbook.bids.len(), 2);
         assert_eq!(orderbook.asks.len(), 2);
-        assert!((orderbook.bids[0].0 - 43302.0).abs() < f64::EPSILON);
+        assert!((orderbook.bids[0].price - 43302.0).abs() < f64::EPSILON);
     }
 
     #[test]

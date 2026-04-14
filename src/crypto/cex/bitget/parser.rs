@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::core::types::{
     ExchangeError, ExchangeResult,
-    Kline, OrderBook, Ticker, Order, Balance, Position,
+    Kline, OrderBook, OrderBookLevel, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, UserTrade, LedgerEntry, LedgerEntryType,
     AccountType,
@@ -141,7 +141,7 @@ impl BitgetParser {
     pub fn parse_orderbook(response: &Value) -> ExchangeResult<OrderBook> {
         let data = Self::extract_data(response)?;
 
-        let parse_levels = |key: &str| -> Vec<(f64, f64)> {
+        let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
             data.get(key)
                 .and_then(|v| v.as_array())
                 .map(|arr| {
@@ -151,7 +151,7 @@ impl BitgetParser {
                             if pair.len() < 2 { return None; }
                             let price = Self::parse_f64(&pair[0])?;
                             let size = Self::parse_f64(&pair[1])?;
-                            Some((price, size))
+                            Some(OrderBookLevel::new(price, size))
                         })
                         .collect()
                 })
@@ -163,6 +163,12 @@ impl BitgetParser {
             bids: parse_levels("bids"),
             asks: parse_levels("asks"),
             sequence: None,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 
@@ -673,7 +679,7 @@ impl BitgetParser {
         };
 
         // Parse orderbook directly from WebSocket data (not a REST response)
-        let parse_levels = |key: &str| -> Vec<(f64, f64)> {
+        let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
             ob_data.get(key)
                 .and_then(|v| v.as_array())
                 .map(|arr| {
@@ -683,7 +689,7 @@ impl BitgetParser {
                             if pair.len() < 2 { return None; }
                             let price = Self::parse_f64(&pair[0])?;
                             let size = Self::parse_f64(&pair[1])?;
-                            Some((price, size))
+                            Some(OrderBookLevel::new(price, size))
                         })
                         .collect()
                 })
@@ -695,6 +701,12 @@ impl BitgetParser {
             bids: parse_levels("bids"),
             asks: parse_levels("asks"),
             sequence: None,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         };
 
         Ok(StreamEvent::OrderbookSnapshot(orderbook))
@@ -1095,7 +1107,7 @@ mod tests {
         let orderbook = BitgetParser::parse_orderbook(&response).unwrap();
         assert_eq!(orderbook.bids.len(), 2);
         assert_eq!(orderbook.asks.len(), 2);
-        assert!((orderbook.bids[0].0 - 50499.50).abs() < f64::EPSILON);
+        assert!((orderbook.bids[0].price - 50499.50).abs() < f64::EPSILON);
         assert_eq!(orderbook.timestamp, 1695806875837);
     }
 

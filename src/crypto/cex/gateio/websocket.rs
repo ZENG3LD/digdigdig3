@@ -51,7 +51,7 @@ use crate::core::{
     ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
     timestamp_seconds,
 };
-use crate::core::types::{WebSocketResult, WebSocketError};
+use crate::core::types::{WebSocketResult, WebSocketError, OrderBookLevel};
 use crate::core::traits::WebSocketConnector;
 use crate::core::utils::WeightRateLimiter;
 
@@ -437,7 +437,11 @@ impl GateioWebSocket {
         match &request.stream_type {
             StreamType::Ticker => vec![symbol],
             StreamType::Trade => vec![symbol],
-            StreamType::Orderbook | StreamType::OrderbookDelta => vec![symbol, "20".to_string(), "1000ms".to_string()],
+            StreamType::Orderbook | StreamType::OrderbookDelta => {
+                let depth = request.depth.unwrap_or(20).to_string();
+                let speed = request.update_speed_ms.map(|ms| format!("{}ms", ms)).unwrap_or_else(|| "1000ms".to_string());
+                vec![symbol, depth, speed]
+            }
             StreamType::Kline { interval } => vec![interval.to_string(), symbol],
             StreamType::MarkPrice => vec![symbol],
             StreamType::FundingRate => vec![symbol],
@@ -499,7 +503,7 @@ impl GateioWebSocket {
         // Parse orderbook from WebSocket data
         // Gate.io format: { t, lastUpdateId, s, bids: [[price, size]], asks: [[price, size]] }
 
-        let parse_levels = |key: &str| -> Vec<(f64, f64)> {
+        let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
             data.get(key)
                 .and_then(|v| v.as_array())
                 .map(|arr| {
@@ -509,7 +513,7 @@ impl GateioWebSocket {
                             if pair.len() < 2 { return None; }
                             let price = pair[0].as_str()?.parse::<f64>().ok()?;
                             let size = pair[1].as_str()?.parse::<f64>().ok()?;
-                            Some((price, size))
+                            Some(OrderBookLevel::new(price, size))
                         })
                         .collect()
                 })
@@ -525,6 +529,12 @@ impl GateioWebSocket {
             sequence: data.get("lastUpdateId")
                 .and_then(|s| s.as_i64())
                 .map(|n| n.to_string()),
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 

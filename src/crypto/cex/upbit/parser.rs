@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use crate::core::types::{
     ExchangeError, ExchangeResult, AccountType,
-    Kline, OrderBook, Ticker, Order, Balance, PublicTrade,
+    Kline, OrderBook, OrderBookLevel, Ticker, Order, Balance, PublicTrade,
     OrderSide, OrderType, OrderStatus, TradeSide, SymbolInfo,
     UserTrade,
 };
@@ -161,14 +161,14 @@ impl UpbitParser {
                 Self::get_f64(unit, "bid_price"),
                 Self::get_f64(unit, "bid_size")
             ) {
-                bids.push((bid_price, bid_size));
+                bids.push(OrderBookLevel::new(bid_price, bid_size));
             }
 
             if let (Some(ask_price), Some(ask_size)) = (
                 Self::get_f64(unit, "ask_price"),
                 Self::get_f64(unit, "ask_size")
             ) {
-                asks.push((ask_price, ask_size));
+                asks.push(OrderBookLevel::new(ask_price, ask_size));
             }
         }
 
@@ -179,6 +179,12 @@ impl UpbitParser {
             bids,
             asks,
             sequence: None,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 
@@ -581,14 +587,14 @@ impl UpbitParser {
                 Self::get_f64(unit, "bid_price"),
                 Self::get_f64(unit, "bid_size")
             ) {
-                bids.push((bid_price, bid_size));
+                bids.push(OrderBookLevel::new(bid_price, bid_size));
             }
 
             if let (Some(ask_price), Some(ask_size)) = (
                 Self::get_f64(unit, "ask_price"),
                 Self::get_f64(unit, "ask_size")
             ) {
-                asks.push((ask_price, ask_size));
+                asks.push(OrderBookLevel::new(ask_price, ask_size));
             }
         }
 
@@ -599,6 +605,12 @@ impl UpbitParser {
             bids,
             asks,
             sequence: None,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 

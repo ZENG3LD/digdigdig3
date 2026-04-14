@@ -7,9 +7,10 @@ use chrono::DateTime;
 
 use crate::core::types::{
     ExchangeError, ExchangeResult,
-    Kline, OrderBook, Ticker, Order, Balance, Position,
+    Kline, OrderBook, OrderBookLevel, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
     FundingRate, PublicTrade, StreamEvent, TradeSide,
+    OrderbookDelta as OrderbookDeltaData,
     UserTrade, FundingPayment,
 };
 
@@ -108,7 +109,7 @@ impl DydxParser {
 
     /// Парсить orderbook
     pub fn parse_orderbook(response: &Value) -> ExchangeResult<OrderBook> {
-        let parse_levels = |key: &str| -> Vec<(f64, f64)> {
+        let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
             response.get(key)
                 .and_then(|v| v.as_array())
                 .map(|arr| {
@@ -117,7 +118,7 @@ impl DydxParser {
                             let obj = level.as_object()?;
                             let price = obj.get("price").and_then(Self::parse_f64)?;
                             let size = obj.get("size").and_then(Self::parse_f64)?;
-                            Some((price, size))
+                            Some(OrderBookLevel::new(price, size))
                         })
                         .collect()
                 })
@@ -129,6 +130,12 @@ impl DydxParser {
             bids: parse_levels("bids"),
             asks: parse_levels("asks"),
             sequence: None,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 
@@ -487,7 +494,7 @@ impl DydxParser {
         let contents = data.get("contents")
             .ok_or_else(|| ExchangeError::Parse("Missing 'contents' field".to_string()))?;
 
-        let parse_levels = |key: &str| -> Vec<(f64, f64)> {
+        let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
             contents.get(key)
                 .and_then(|arr| arr.as_array())
                 .map(|levels| {
@@ -497,18 +504,23 @@ impl DydxParser {
                             if pair.len() < 2 { return None; }
                             let price = Self::parse_f64(&pair[0])?;
                             let size = Self::parse_f64(&pair[1])?;
-                            Some((price, size))
+                            Some(OrderBookLevel::new(price, size))
                         })
                         .collect()
                 })
                 .unwrap_or_default()
         };
 
-        Ok(StreamEvent::OrderbookDelta {
+        Ok(StreamEvent::OrderbookDelta(OrderbookDeltaData {
             bids: parse_levels("bids"),
             asks: parse_levels("asks"),
             timestamp: chrono::Utc::now().timestamp_millis(),
-        })
+            first_update_id: None,
+            last_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            checksum: None,
+        }))
     }
 
     /// Parse a `v4_candles` WebSocket message into a [`Kline`].
@@ -662,8 +674,8 @@ mod tests {
         let orderbook = DydxParser::parse_orderbook(&response).unwrap();
         assert_eq!(orderbook.bids.len(), 2);
         assert_eq!(orderbook.asks.len(), 2);
-        assert!((orderbook.bids[0].0 - 50000.0).abs() < f64::EPSILON);
-        assert!((orderbook.bids[0].1 - 1.5).abs() < f64::EPSILON);
+        assert!((orderbook.bids[0].price - 50000.0).abs() < f64::EPSILON);
+        assert!((orderbook.bids[0].size - 1.5).abs() < f64::EPSILON);
     }
 
     #[test]

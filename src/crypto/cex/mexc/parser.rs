@@ -137,7 +137,7 @@ impl MexcParser {
                 let arr = entry.as_array()?;
                 let price = arr.first()?.as_str()?.parse::<f64>().ok()?;
                 let size = arr.get(1)?.as_str()?.parse::<f64>().ok()?;
-                Some((price, size))
+                Some(OrderBookLevel::new(price, size))
             })
             .collect();
 
@@ -148,7 +148,7 @@ impl MexcParser {
                 let arr = entry.as_array()?;
                 let price = arr.first()?.as_str()?.parse::<f64>().ok()?;
                 let size = arr.get(1)?.as_str()?.parse::<f64>().ok()?;
-                Some((price, size))
+                Some(OrderBookLevel::new(price, size))
             })
             .collect();
 
@@ -160,6 +160,12 @@ impl MexcParser {
             asks,
             timestamp,
             sequence,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 
@@ -178,7 +184,7 @@ impl MexcParser {
                 let price = arr.first()?.as_f64()?;
                 // arr[1] is order count, arr[2] is quantity
                 let size = arr.get(2)?.as_f64()?;
-                Some((price, size))
+                Some(OrderBookLevel::new(price, size))
             })
             .collect();
 
@@ -190,7 +196,7 @@ impl MexcParser {
                 let price = arr.first()?.as_f64()?;
                 // arr[1] is order count, arr[2] is quantity
                 let size = arr.get(2)?.as_f64()?;
-                Some((price, size))
+                Some(OrderBookLevel::new(price, size))
             })
             .collect();
 
@@ -207,6 +213,12 @@ impl MexcParser {
             asks,
             timestamp,
             sequence,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
         })
     }
 
@@ -1175,8 +1187,8 @@ mod tests {
         let orderbook = MexcParser::parse_orderbook(&json).unwrap();
         assert_eq!(orderbook.bids.len(), 2);
         assert_eq!(orderbook.asks.len(), 2);
-        assert_eq!(orderbook.bids[0].0, 93220.00);
-        assert_eq!(orderbook.bids[0].1, 0.5);
+        assert_eq!(orderbook.bids[0].price, 93220.00);
+        assert_eq!(orderbook.bids[0].size, 0.5);
     }
 
     #[test]

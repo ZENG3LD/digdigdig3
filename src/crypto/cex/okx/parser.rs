@@ -158,7 +158,7 @@ impl OkxParser {
                             let price = Self::parse_f64(&pair[0])?;
                             let size = Self::parse_f64(&pair[1])?;
                             let order_count = pair.get(3)
-                                .and_then(|v| Self::parse_f64(v))
+                                .and_then(Self::parse_f64)
                                 .map(|v| v as u32)
                                 .filter(|&c| c > 0);
                             Some(OrderBookLevel { price, size, order_count })
@@ -502,7 +502,7 @@ impl OkxParser {
                             let price = Self::parse_f64(&pair[0])?;
                             let size = Self::parse_f64(&pair[1])?;
                             let order_count = pair.get(3)
-                                .and_then(|v| Self::parse_f64(v))
+                                .and_then(Self::parse_f64)
                                 .map(|v| v as u32)
                                 .filter(|&c| c > 0);
                             Some(OrderBookLevel { price, size, order_count })

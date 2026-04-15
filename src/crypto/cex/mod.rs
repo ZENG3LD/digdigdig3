@@ -16,7 +16,6 @@ pub mod mexc;
 pub mod htx;
 pub mod bitget;
 pub mod bingx;
-pub mod phemex;
 pub mod crypto_com;
 pub mod upbit;
 pub mod deribit;

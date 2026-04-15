@@ -45,7 +45,6 @@ use crate::crypto::cex::mexc::MexcConnector;
 use crate::crypto::cex::htx::HtxConnector;
 use crate::crypto::cex::bitget::BitgetConnector;
 use crate::crypto::cex::bingx::BingxConnector;
-use crate::crypto::cex::phemex::PhemexConnector;
 use crate::crypto::cex::crypto_com::CryptoComConnector;
 use crate::crypto::cex::upbit::UpbitConnector;
 use crate::crypto::cex::deribit::DeribitConnector;
@@ -149,7 +148,6 @@ pub enum AnyConnector {
     HTX(Arc<HtxConnector>),
     Bitget(Arc<BitgetConnector>),
     BingX(Arc<BingxConnector>),
-    Phemex(Arc<PhemexConnector>),
     CryptoCom(Arc<CryptoComConnector>),
     Upbit(Arc<UpbitConnector>),
     Deribit(Arc<DeribitConnector>),
@@ -239,7 +237,6 @@ impl AnyConnector {
             Self::HTX(_) => ExchangeId::HTX,
             Self::Bitget(_) => ExchangeId::Bitget,
             Self::BingX(_) => ExchangeId::BingX,
-            Self::Phemex(_) => ExchangeId::Phemex,
             Self::CryptoCom(_) => ExchangeId::CryptoCom,
             Self::Upbit(_) => ExchangeId::Upbit,
             Self::Deribit(_) => ExchangeId::Deribit,
@@ -306,7 +303,6 @@ impl AnyConnector {
             Self::HTX(c) => c.metrics(),
             Self::Bitget(c) => c.metrics(),
             Self::BingX(c) => c.metrics(),
-            Self::Phemex(c) => c.metrics(),
             Self::CryptoCom(c) => c.metrics(),
             Self::Upbit(c) => c.metrics(),
             Self::Deribit(c) => c.metrics(),
@@ -381,7 +377,6 @@ impl ExchangeIdentity for AnyConnector {
             Self::HTX(c) => c.is_testnet(),
             Self::Bitget(c) => c.is_testnet(),
             Self::BingX(c) => c.is_testnet(),
-            Self::Phemex(c) => c.is_testnet(),
             Self::CryptoCom(c) => c.is_testnet(),
             Self::Upbit(c) => c.is_testnet(),
             Self::Deribit(c) => c.is_testnet(),
@@ -444,7 +439,6 @@ impl ExchangeIdentity for AnyConnector {
             Self::HTX(c) => c.supported_account_types(),
             Self::Bitget(c) => c.supported_account_types(),
             Self::BingX(c) => c.supported_account_types(),
-            Self::Phemex(c) => c.supported_account_types(),
             Self::CryptoCom(c) => c.supported_account_types(),
             Self::Upbit(c) => c.supported_account_types(),
             Self::Deribit(c) => c.supported_account_types(),
@@ -516,7 +510,6 @@ impl MarketData for AnyConnector {
             Self::HTX(c) => c.get_price(symbol, account_type).await,
             Self::Bitget(c) => c.get_price(symbol, account_type).await,
             Self::BingX(c) => c.get_price(symbol, account_type).await,
-            Self::Phemex(c) => c.get_price(symbol, account_type).await,
             Self::CryptoCom(c) => c.get_price(symbol, account_type).await,
             Self::Upbit(c) => c.get_price(symbol, account_type).await,
             Self::Deribit(c) => c.get_price(symbol, account_type).await,
@@ -584,7 +577,6 @@ impl MarketData for AnyConnector {
             Self::HTX(c) => c.get_orderbook(symbol, depth, account_type).await,
             Self::Bitget(c) => c.get_orderbook(symbol, depth, account_type).await,
             Self::BingX(c) => c.get_orderbook(symbol, depth, account_type).await,
-            Self::Phemex(c) => c.get_orderbook(symbol, depth, account_type).await,
             Self::CryptoCom(c) => c.get_orderbook(symbol, depth, account_type).await,
             Self::Upbit(c) => c.get_orderbook(symbol, depth, account_type).await,
             Self::Deribit(c) => c.get_orderbook(symbol, depth, account_type).await,
@@ -654,7 +646,6 @@ impl MarketData for AnyConnector {
             Self::HTX(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
             Self::Bitget(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
             Self::BingX(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
-            Self::Phemex(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
             Self::CryptoCom(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
             Self::Upbit(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
             Self::Deribit(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
@@ -721,7 +712,6 @@ impl MarketData for AnyConnector {
             Self::HTX(c) => c.get_ticker(symbol, account_type).await,
             Self::Bitget(c) => c.get_ticker(symbol, account_type).await,
             Self::BingX(c) => c.get_ticker(symbol, account_type).await,
-            Self::Phemex(c) => c.get_ticker(symbol, account_type).await,
             Self::CryptoCom(c) => c.get_ticker(symbol, account_type).await,
             Self::Upbit(c) => c.get_ticker(symbol, account_type).await,
             Self::Deribit(c) => c.get_ticker(symbol, account_type).await,
@@ -784,7 +774,6 @@ impl MarketData for AnyConnector {
             Self::HTX(c) => c.ping().await,
             Self::Bitget(c) => c.ping().await,
             Self::BingX(c) => c.ping().await,
-            Self::Phemex(c) => c.ping().await,
             Self::CryptoCom(c) => c.ping().await,
             Self::Upbit(c) => c.ping().await,
             Self::Deribit(c) => c.ping().await,
@@ -847,7 +836,6 @@ impl MarketData for AnyConnector {
             Self::HTX(c) => c.get_exchange_info(account_type).await,
             Self::Bitget(c) => c.get_exchange_info(account_type).await,
             Self::BingX(c) => c.get_exchange_info(account_type).await,
-            Self::Phemex(c) => c.get_exchange_info(account_type).await,
             Self::CryptoCom(c) => c.get_exchange_info(account_type).await,
             Self::Upbit(c) => c.get_exchange_info(account_type).await,
             Self::Deribit(c) => c.get_exchange_info(account_type).await,
@@ -998,9 +986,9 @@ mod tests {
         // This is a compile-time test
         // All CEX variants should be accessible
 
-        // Expected 19 CEX connectors:
+        // Expected 18 CEX connectors:
         // Binance, Bybit, OKX, KuCoin, Kraken, Coinbase, GateIO, Bitfinex,
-        // Bitstamp, Gemini, MEXC, HTX, Bitget, BingX, Phemex, CryptoCom, Upbit,
+        // Bitstamp, Gemini, MEXC, HTX, Bitget, BingX, CryptoCom, Upbit,
         // Deribit, HyperLiquid
     }
 

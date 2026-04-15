@@ -268,7 +268,7 @@ pub enum LimiterModel {
     WeightBased,
     /// Continuous decay counter (e.g., Kraken Spot, Deribit)
     DecayingCounter,
-    /// Multiple independent pools (e.g., Phemex, Upbit, Paradex)
+    /// Multiple independent pools (e.g., Upbit, Paradex)
     GroupBased,
     /// No documented limits / unknown
     Unknown,
@@ -409,11 +409,6 @@ static BINGX_GROUPS: &[RateLimitGroup] = &[
     RateLimitGroup { name: "market", max_value: 100, window_seconds: 10, is_weight: false },
 ];
 
-static PHEMEX_GROUPS: &[RateLimitGroup] = &[
-    RateLimitGroup { name: "OTHERS",    max_value: 100, window_seconds: 60, is_weight: false },
-    RateLimitGroup { name: "CONTRACT",  max_value: 500, window_seconds: 60, is_weight: false },
-    RateLimitGroup { name: "SPOTORDER", max_value: 500, window_seconds: 60, is_weight: false },
-];
 
 static UPBIT_GROUPS: &[RateLimitGroup] = &[
     RateLimitGroup { name: "market",  max_value: 10, window_seconds: 1, is_weight: false },
@@ -1054,50 +1049,6 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
         base_url: "https://open-api.bingx.com",
         websocket_url: Some("wss://open-api-ws.bingx.com/market"),
         documentation_url: Some("https://bingx-api.github.io/docs/"),
-        requires_api_key_for_data: false,
-        requires_api_key_for_trading: true,
-        free_tier: true,
-    },
-    ConnectorMetadata {
-        id: ExchangeId::Phemex,
-        name: "Phemex",
-        exchange_type: ExchangeType::Cex,
-        category: ConnectorCategory::CryptoExchangeCex,
-        supported_features: Features {
-            market_data: true,
-            trading: true,
-            account: true,
-            positions: true,
-            websocket: true,
-            ws_klines: true,
-            ws_trades: true,
-            ws_orderbook: true,
-            ws_ticker: true,
-            cancel_all: true,
-            amend_order: true,
-            batch_orders: false,
-            account_transfers: true,
-            custodial_funds: true,
-            sub_accounts: true,
-            margin_trading: false,
-            trigger_orders: false,
-            convert_swap: false,
-            earn_staking: false,
-            copy_trading: false,
-        },
-        authentication: AuthType::ApiKey,
-        rate_limits: RateLimits {
-            requests_per_second: None,
-            requests_per_minute: Some(600),
-            weight_per_minute: None,
-            window_seconds: 60,
-            limiter_model: LimiterModel::GroupBased,
-            groups: PHEMEX_GROUPS,
-            has_server_headers: true,
-        },
-        base_url: "https://api.phemex.com",
-        websocket_url: Some("wss://phemex.com/ws"),
-        documentation_url: Some("https://phemex-docs.github.io/"),
         requires_api_key_for_data: false,
         requires_api_key_for_trading: true,
         free_tier: true,

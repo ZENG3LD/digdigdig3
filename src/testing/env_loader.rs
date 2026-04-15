@@ -153,7 +153,6 @@ fn all_exchange_ids() -> Vec<ExchangeId> {
         ExchangeId::HTX,
         ExchangeId::Bitget,
         ExchangeId::BingX,
-        ExchangeId::Phemex,
         ExchangeId::CryptoCom,
         ExchangeId::Upbit,
         ExchangeId::Deribit,

@@ -101,7 +101,6 @@ impl TestHarness {
             | ExchangeId::HTX
             | ExchangeId::Bitget
             | ExchangeId::BingX
-            | ExchangeId::Phemex
             | ExchangeId::CryptoCom
             | ExchangeId::Upbit => "BTC/USDT",
 

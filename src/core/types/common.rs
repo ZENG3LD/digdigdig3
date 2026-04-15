@@ -27,7 +27,6 @@ pub enum ExchangeId {
     HTX,
     Bitget,
     BingX,
-    Phemex,
     CryptoCom,
     // Bithumb,  // DISABLED: Infrastructure issues (see exchanges/mod.rs)
     Upbit,
@@ -108,7 +107,6 @@ impl ExchangeId {
             Self::HTX => "htx",
             Self::Bitget => "bitget",
             Self::BingX => "bingx",
-            Self::Phemex => "phemex",
             Self::CryptoCom => "crypto_com",
             // Self::Bithumb => "bithumb",  // DISABLED
             Self::Upbit => "upbit",
@@ -170,7 +168,6 @@ impl ExchangeId {
             "htx" => Some(Self::HTX),
             "bitget" => Some(Self::Bitget),
             "bingx" => Some(Self::BingX),
-            "phemex" => Some(Self::Phemex),
             "crypto_com" => Some(Self::CryptoCom),
             "upbit" => Some(Self::Upbit),
             "deribit" => Some(Self::Deribit),

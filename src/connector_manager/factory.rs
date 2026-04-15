@@ -4,7 +4,7 @@
 //!
 //! ## Overview
 //!
-//! This module provides a unified factory interface for creating any of the 45
+//! This module provides a unified factory interface for creating any of the
 //! supported connectors. It handles all constructor variations across different
 //! exchanges and categories.
 //!
@@ -68,7 +68,6 @@ use crate::crypto::cex::mexc::MexcConnector;
 use crate::crypto::cex::htx::HtxConnector;
 use crate::crypto::cex::bitget::BitgetConnector;
 use crate::crypto::cex::bingx::BingxConnector;
-use crate::crypto::cex::phemex::PhemexConnector;
 use crate::crypto::cex::crypto_com::CryptoComConnector;
 use crate::crypto::cex::upbit::UpbitConnector;
 use crate::crypto::cex::deribit::DeribitConnector;
@@ -220,10 +219,6 @@ impl ConnectorFactory {
             ExchangeId::BingX => {
                 let c = BingxConnector::public(testnet).await?;
                 Ok(Arc::new(AnyConnector::BingX(Arc::new(c))))
-            }
-            ExchangeId::Phemex => {
-                let c = PhemexConnector::public(testnet).await?;
-                Ok(Arc::new(AnyConnector::Phemex(Arc::new(c))))
             }
             ExchangeId::CryptoCom => {
                 let c = CryptoComConnector::public(testnet).await?;
@@ -522,10 +517,6 @@ impl ConnectorFactory {
             ExchangeId::BingX => {
                 let c = BingxConnector::new(Some(credentials), testnet).await?;
                 Ok(Arc::new(AnyConnector::BingX(Arc::new(c))))
-            }
-            ExchangeId::Phemex => {
-                let c = PhemexConnector::new(Some(credentials), testnet).await?;
-                Ok(Arc::new(AnyConnector::Phemex(Arc::new(c))))
             }
             ExchangeId::CryptoCom => {
                 let c = CryptoComConnector::new(Some(credentials), testnet).await?;
@@ -851,15 +842,15 @@ mod tests {
         }
     }
 
-    /// Test that all 48 exchanges can be instantiated (either public or with auth)
+    /// Test that all 47 exchanges can be instantiated (either public or with auth)
     #[tokio::test]
     async fn test_factory_coverage_all_51_exchanges() {
         let registry = ConnectorRegistry::default();
         let all_metas = registry.list_all();
 
-        assert_eq!(all_metas.len(), 48, "Registry should have 48 connectors");
+        assert_eq!(all_metas.len(), 47, "Registry should have 47 connectors");
 
-        println!("\n=== Testing Factory Coverage for 48 Exchanges ===\n");
+        println!("\n=== Testing Factory Coverage for 47 Exchanges ===\n");
 
         let mut public_success = 0;
         let mut public_requires_auth = 0;
@@ -907,12 +898,12 @@ mod tests {
         println!("Public connectors created: {}", public_success);
         println!("Require authentication: {}", public_requires_auth);
         println!("Auth connectors attempted: {}", auth_attempted);
-        println!("Total coverage: {}/48", public_success + public_requires_auth);
+        println!("Total coverage: {}/47", public_success + public_requires_auth);
 
         assert_eq!(
             public_success + public_requires_auth,
-            48,
-            "Factory should handle all 48 exchanges"
+            47,
+            "Factory should handle all 47 exchanges"
         );
     }
 

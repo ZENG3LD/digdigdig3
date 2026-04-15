@@ -4,7 +4,7 @@
 //!
 //! ## Architecture
 //!
-//! Instead of manually writing 51-arm match statements for each trait method,
+//! Instead of manually writing many-arm match statements for each trait method,
 //! these macros generate the boilerplate automatically.
 //!
 //! ## Usage
@@ -48,7 +48,7 @@ macro_rules! impl_sync_method {
     ($trait_name:ident, $method:ident, ($($param_name:ident: $param_type:ty),*) -> $ret:ty) => {
         fn $method(&self $(, $param_name: $param_type)*) -> $ret {
             match self {
-                // CEX (19)
+                // CEX (18)
                 Self::Binance(c) => c.$method($($param_name),*),
                 Self::Bybit(c) => c.$method($($param_name),*),
                 Self::OKX(c) => c.$method($($param_name),*),
@@ -63,7 +63,6 @@ macro_rules! impl_sync_method {
                 Self::HTX(c) => c.$method($($param_name),*),
                 Self::Bitget(c) => c.$method($($param_name),*),
                 Self::BingX(c) => c.$method($($param_name),*),
-                Self::Phemex(c) => c.$method($($param_name),*),
                 Self::CryptoCom(c) => c.$method($($param_name),*),
                 Self::Upbit(c) => c.$method($($param_name),*),
                 Self::Deribit(c) => c.$method($($param_name),*),
@@ -137,7 +136,7 @@ macro_rules! impl_async_method {
     ($trait_name:ident, $method:ident, ($($param_name:ident: $param_type:ty),*) -> $ret:ty) => {
         async fn $method(&self $(, $param_name: $param_type)*) -> $ret {
             match self {
-                // CEX (19)
+                // CEX (18)
                 Self::Binance(c) => c.$method($($param_name),*).await,
                 Self::Bybit(c) => c.$method($($param_name),*).await,
                 Self::OKX(c) => c.$method($($param_name),*).await,
@@ -152,7 +151,6 @@ macro_rules! impl_async_method {
                 Self::HTX(c) => c.$method($($param_name),*).await,
                 Self::Bitget(c) => c.$method($($param_name),*).await,
                 Self::BingX(c) => c.$method($($param_name),*).await,
-                Self::Phemex(c) => c.$method($($param_name),*).await,
                 Self::CryptoCom(c) => c.$method($($param_name),*).await,
                 Self::Upbit(c) => c.$method($($param_name),*).await,
                 Self::Deribit(c) => c.$method($($param_name),*).await,

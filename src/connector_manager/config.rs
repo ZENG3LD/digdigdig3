@@ -421,7 +421,6 @@ impl ConnectorConfigManager {
             ExchangeId::HTX,
             ExchangeId::Bitget,
             ExchangeId::BingX,
-            ExchangeId::Phemex,
             ExchangeId::CryptoCom,
             ExchangeId::Upbit,
             ExchangeId::Deribit,

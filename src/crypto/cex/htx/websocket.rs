@@ -59,7 +59,7 @@ use crate::core::{
     ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
     timestamp_millis,
 };
-use crate::core::types::{WebSocketResult, WebSocketError, Ticker, OrderBook, OrderBookLevel};
+use crate::core::types::{WebSocketResult, WebSocketError, Ticker, OrderBook, OrderBookLevel, OrderbookCapabilities};
 use crate::core::traits::WebSocketConnector;
 use crate::core::utils::WeightRateLimiter;
 
@@ -735,5 +735,17 @@ impl WebSocketConnector for HtxWebSocket {
 
     fn ping_rtt_handle(&self) -> Option<Arc<Mutex<u64>>> {
         Some(self.ws_ping_rtt_ms.clone())
+    }
+
+    fn orderbook_capabilities(&self) -> OrderbookCapabilities {
+        OrderbookCapabilities {
+            ws_depths: &[],
+            ws_default_depth: None,
+            rest_max_depth: Some(150),
+            supports_snapshot: true,
+            supports_delta: false,
+            update_speeds_ms: &[],
+            default_speed_ms: None,
+        }
     }
 }

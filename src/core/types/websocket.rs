@@ -19,6 +19,102 @@ use super::{
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// ORDERBOOK CAPABILITIES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Declares what L2/orderbook configurations an exchange supports on WebSocket.
+#[derive(Debug, Clone, Copy)]
+pub struct OrderbookCapabilities {
+    /// Valid depth levels for WS orderbook subscription.
+    /// Empty = exchange doesn't accept depth parameter (it decides internally).
+    pub ws_depths: &'static [u32],
+    /// Recommended default depth for WS subscription. None = omit depth.
+    pub ws_default_depth: Option<u32>,
+    /// Maximum depth available via REST get_orderbook. None = unknown/unlimited.
+    pub rest_max_depth: Option<u32>,
+    /// Whether the exchange supports full orderbook snapshots on WS.
+    pub supports_snapshot: bool,
+    /// Whether the exchange supports incremental/delta updates on WS.
+    pub supports_delta: bool,
+    /// Valid update speed values in milliseconds. Empty = not configurable.
+    pub update_speeds_ms: &'static [u32],
+    /// Recommended default update speed. None = exchange default.
+    pub default_speed_ms: Option<u32>,
+}
+
+impl OrderbookCapabilities {
+    /// Permissive default — accepts any depth, both snapshot and delta.
+    /// Used as default for connectors that haven't declared capabilities yet.
+    pub const fn permissive() -> Self {
+        Self {
+            ws_depths: &[],
+            ws_default_depth: None,
+            rest_max_depth: None,
+            supports_snapshot: true,
+            supports_delta: true,
+            update_speeds_ms: &[],
+            default_speed_ms: None,
+        }
+    }
+
+    /// Pick the closest valid depth for a requested value.
+    /// - If ws_depths is empty, returns ws_default_depth (exchange doesn't accept depth param).
+    /// - If requested is None, returns ws_default_depth.
+    /// - Otherwise finds the smallest valid depth >= requested, or the largest valid depth.
+    pub fn clamp_depth(&self, requested: Option<u32>) -> Option<u32> {
+        if self.ws_depths.is_empty() {
+            return self.ws_default_depth;
+        }
+        let target = match requested {
+            Some(d) => d,
+            None => return self.ws_default_depth,
+        };
+        // Find smallest depth >= target
+        let mut best = None;
+        for &d in self.ws_depths {
+            if d >= target {
+                match best {
+                    None => best = Some(d),
+                    Some(b) if d < b => best = Some(d),
+                    _ => {}
+                }
+            }
+        }
+        // If nothing >= target, use the largest available
+        best.or_else(|| self.ws_depths.iter().copied().max())
+    }
+
+    /// Pick the closest valid update speed for a requested value.
+    /// Same logic as clamp_depth but for speed.
+    pub fn clamp_speed(&self, requested: Option<u32>) -> Option<u32> {
+        if self.update_speeds_ms.is_empty() {
+            return self.default_speed_ms;
+        }
+        let target = match requested {
+            Some(s) => s,
+            None => return self.default_speed_ms,
+        };
+        let mut best = None;
+        for &s in self.update_speeds_ms {
+            if s >= target {
+                match best {
+                    None => best = Some(s),
+                    Some(b) if s < b => best = Some(s),
+                    _ => {}
+                }
+            }
+        }
+        best.or_else(|| self.update_speeds_ms.iter().copied().min())
+    }
+}
+
+impl Default for OrderbookCapabilities {
+    fn default() -> Self {
+        Self::permissive()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTION STATUS
 // ═══════════════════════════════════════════════════════════════════════════════
 

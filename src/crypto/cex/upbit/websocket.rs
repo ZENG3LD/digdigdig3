@@ -42,7 +42,7 @@ use crate::core::{
     Credentials, AccountType, ExchangeResult,
     ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
 };
-use crate::core::types::{WebSocketResult, WebSocketError};
+use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities};
 use crate::core::traits::WebSocketConnector;
 use crate::core::utils::SimpleRateLimiter;
 
@@ -455,13 +455,10 @@ impl WebSocketConnector for UpbitWebSocket {
     async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
         self.subscriptions.lock().await.insert(request.clone());
 
-        // Upbit symbol format is QUOTE-BASE (e.g. "USDT-BTC").
-        // The bridge's generic parse_symbol("usdt-btc") produces Symbol { base: "usdt", quote: "btc" }
-        // where the first segment (the Upbit quote currency) is in `base` and the second
-        // (the Upbit base currency) is in `quote`. To reconstruct the original Upbit code
-        // we just concatenate them back in order: base-quote (both uppercased).
-        // This is the inverse of what format_symbol does (which would reverse them again).
-        let upbit_symbol = format!("{}-{}", request.symbol.base.to_uppercase(), request.symbol.quote.to_uppercase());
+        // Upbit symbol format is QUOTE-BASE (e.g. "USDT-BTC" for the BTC/USDT pair).
+        // Symbol::new("BTC", "USDT") sets base="BTC", quote="USDT".
+        // To build the Upbit market code we place quote first, then base.
+        let upbit_symbol = format!("{}-{}", request.symbol.quote.to_uppercase(), request.symbol.base.to_uppercase());
 
         match request.stream_type {
             StreamType::Ticker => {
@@ -507,5 +504,17 @@ impl WebSocketConnector for UpbitWebSocket {
 
     fn ping_rtt_handle(&self) -> Option<Arc<Mutex<u64>>> {
         Some(self.ws_ping_rtt_ms.clone())
+    }
+
+    fn orderbook_capabilities(&self) -> OrderbookCapabilities {
+        OrderbookCapabilities {
+            ws_depths: &[],
+            ws_default_depth: None,
+            rest_max_depth: None,
+            supports_snapshot: true,
+            supports_delta: false,
+            update_speeds_ms: &[],
+            default_speed_ms: None,
+        }
     }
 }

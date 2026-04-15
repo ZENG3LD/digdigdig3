@@ -935,6 +935,15 @@ impl MexcParser {
                 .ok_or_else(|| ExchangeError::Parse("Missing bookTicker body (field 306)".into()))?;
             let ticker = Self::parse_pb_book_ticker(body, &symbol, timestamp)?;
             Ok((channel, StreamEvent::Ticker(ticker)))
+        } else if channel.contains("aggre.depth") || channel.contains("public.depth") {
+            // field 313: PublicAggreDepthV3Api (aggregated incremental depth updates)
+            // Try field 313 first (aggre depth), fall back to nearby fields
+            let body = Self::pb_bytes(data, 313)
+                .or_else(|| Self::pb_bytes(data, 310))
+                .or_else(|| Self::pb_bytes(data, 315))
+                .ok_or_else(|| ExchangeError::Parse("Missing aggre.depth body (field 313)".into()))?;
+            let orderbook = Self::parse_pb_aggre_depth(body, &symbol, timestamp)?;
+            Ok((channel, StreamEvent::OrderbookSnapshot(orderbook)))
         } else {
             Err(ExchangeError::Parse(format!("Unsupported protobuf channel: {}", channel)))
         }
@@ -1048,6 +1057,50 @@ impl MexcParser {
             price_change_24h: None,
             price_change_percent_24h: None,
             timestamp,
+        })
+    }
+
+    /// Parse PublicAggreDepthV3Api protobuf body into an `OrderBook`.
+    ///
+    /// MEXC aggre.depth sends incremental delta snapshots via protobuf.
+    /// The body layout (based on MEXC's websocket-proto schema) is:
+    ///   field 1 (repeated bytes): bid price levels — each sub-message:
+    ///     field 1 (string): price, field 2 (string): quantity
+    ///   field 2 (repeated bytes): ask price levels — same sub-message layout
+    ///   field 3 (varint): sequence / update id
+    ///
+    /// Zero-quantity levels indicate removals (standard L2 delta convention).
+    fn parse_pb_aggre_depth(body: &[u8], symbol: &str, timestamp: i64) -> ExchangeResult<OrderBook> {
+        let _ = symbol; // symbol comes from the outer wrapper; not repeated in body
+
+        let bid_entries = Self::pb_repeated_bytes(body, 1);
+        let ask_entries = Self::pb_repeated_bytes(body, 2);
+        let seq = Self::pb_varint(body, 3);
+
+        let parse_levels = |entries: Vec<&[u8]>| -> Vec<OrderBookLevel> {
+            entries.iter().filter_map(|entry| {
+                let price_str = Self::pb_string(entry, 1)?;
+                let qty_str   = Self::pb_string(entry, 2)?;
+                let price: f64 = price_str.parse().ok()?;
+                let qty: f64   = qty_str.parse().ok()?;
+                Some(OrderBookLevel::new(price, qty))
+            }).collect()
+        };
+
+        let bids = parse_levels(bid_entries);
+        let asks = parse_levels(ask_entries);
+
+        Ok(OrderBook {
+            bids,
+            asks,
+            timestamp,
+            sequence: seq.map(|s| s.to_string()),
+            last_update_id: seq,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: Some(timestamp),
+            transaction_time: None,
+            checksum: None,
         })
     }
 

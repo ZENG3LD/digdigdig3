@@ -45,6 +45,7 @@ use crate::core::{
 };
 use crate::core::types::{WebSocketResult, WebSocketError, OrderBookLevel, OrderbookDelta as OrderbookDeltaData};
 use crate::core::traits::WebSocketConnector;
+use crate::core::types::OrderbookCapabilities;
 use crate::core::utils::SimpleRateLimiter;
 
 use super::auth::BinanceAuth;
@@ -1152,5 +1153,19 @@ impl WebSocketConnector for BinanceWebSocket {
 
     fn ping_rtt_handle(&self) -> Option<Arc<Mutex<u64>>> {
         Some(self.ws_ping_rtt_ms.clone())
+    }
+
+    fn orderbook_capabilities(&self) -> OrderbookCapabilities {
+        static DEPTHS: &[u32] = &[5, 10, 20];
+        static SPEEDS: &[u32] = &[100, 1000];
+        OrderbookCapabilities {
+            ws_depths: DEPTHS,
+            ws_default_depth: Some(20),
+            rest_max_depth: Some(5000),
+            supports_snapshot: true,
+            supports_delta: true,
+            update_speeds_ms: SPEEDS,
+            default_speed_ms: Some(100),
+        }
     }
 }

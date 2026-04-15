@@ -32,3 +32,6 @@ pub use auth::BinanceAuth;
 pub use parser::BinanceParser;
 pub use connector::BinanceConnector;
 pub use websocket::BinanceWebSocket;
+
+#[cfg(test)]
+mod _tests_websocket;

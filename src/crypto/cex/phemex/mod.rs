@@ -45,3 +45,6 @@ pub use auth::PhemexAuth;
 pub use parser::PhemexParser;
 pub use connector::PhemexConnector;
 pub use websocket::PhemexWebSocket;
+
+#[cfg(test)]
+mod _tests_websocket;

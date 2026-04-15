@@ -99,6 +99,7 @@ pub use types::{
     ConnectionStatus, StreamType, SubscriptionRequest, StreamEvent,
     OrderUpdateEvent, BalanceUpdateEvent, PositionUpdateEvent,
     BalanceChangeReason, PositionChangeReason,
+    OrderbookCapabilities,
 };
 
 // Re-exports traits

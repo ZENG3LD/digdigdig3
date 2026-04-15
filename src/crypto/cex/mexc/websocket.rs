@@ -78,7 +78,7 @@ use crate::core::{
     ExchangeError, ExchangeResult,
     ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
 };
-use crate::core::types::{WebSocketResult, WebSocketError};
+use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities};
 use crate::core::traits::WebSocketConnector;
 
 use super::endpoints::{MexcUrls, MexcWsChannels, format_symbol};
@@ -176,6 +176,33 @@ impl MexcWebSocket {
             account_type: crate::core::AccountType::default(),
             depth: None,
             update_speed_ms: None,
+        });
+
+        Ok(())
+    }
+
+    /// Subscribe to aggregated depth (orderbook) stream (protobuf format).
+    ///
+    /// MEXC uses 100ms-batched incremental depth updates via the
+    /// `spot@public.aggre.depth.v3.api.pb@100ms@{SYMBOL}` channel.
+    pub async fn subscribe_orderbook(&self, symbol: Symbol) -> ExchangeResult<()> {
+        let symbol_str = format_symbol(&symbol, self.account_type);
+        let stream_name = MexcWsChannels::aggre_depth(&symbol_str);
+
+        let msg = json!({
+            "method": "SUBSCRIPTION",
+            "params": [stream_name]
+        });
+
+        self.send_message(&msg).await?;
+
+        let mut subs = self.subscriptions.lock().await;
+        subs.insert(SubscriptionRequest {
+            stream_type: StreamType::Orderbook,
+            symbol: symbol.clone(),
+            account_type: crate::core::AccountType::default(),
+            depth: None,
+            update_speed_ms: Some(100),
         });
 
         Ok(())
@@ -448,6 +475,10 @@ impl WebSocketConnector for MexcWebSocket {
                 self.subscribe_trades(request.symbol.clone()).await
                     .map_err(|e| WebSocketError::Subscription(e.to_string()))?;
             }
+            StreamType::Orderbook | StreamType::OrderbookDelta => {
+                self.subscribe_orderbook(request.symbol.clone()).await
+                    .map_err(|e| WebSocketError::Subscription(e.to_string()))?;
+            }
             _ => {
                 return Err(WebSocketError::Subscription(
                     format!("Unsupported stream type: {:?}", request.stream_type)
@@ -511,5 +542,19 @@ impl WebSocketConnector for MexcWebSocket {
 
     fn ping_rtt_handle(&self) -> Option<Arc<Mutex<u64>>> {
         Some(self.ws_ping_rtt_ms.clone())
+    }
+
+    fn orderbook_capabilities(&self) -> OrderbookCapabilities {
+        OrderbookCapabilities {
+            // MEXC aggre depth uses protobuf deltas; no fixed depth level is configurable
+            ws_depths: &[],
+            ws_default_depth: None,
+            rest_max_depth: Some(500),
+            supports_snapshot: true,
+            // aggre.depth channel provides incremental delta updates (100ms batched)
+            supports_delta: true,
+            update_speeds_ms: &[10, 100],
+            default_speed_ms: Some(100),
+        }
     }
 }

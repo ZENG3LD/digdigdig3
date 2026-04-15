@@ -16,8 +16,8 @@ use futures_util::Stream;
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::core::types::{
-    AccountType, ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest, Symbol,
-    WebSocketResult,
+    AccountType, ConnectionStatus, OrderbookCapabilities, StreamEvent, StreamType,
+    SubscriptionRequest, Symbol, WebSocketResult,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -70,6 +70,12 @@ pub trait WebSocketConnector: Send + Sync {
     /// that is updated on every pong.
     fn ping_rtt_handle(&self) -> Option<Arc<TokioMutex<u64>>> {
         None
+    }
+
+    /// Returns the exchange's L2/orderbook capabilities.
+    /// Override this in your connector to declare valid depth levels, speeds, etc.
+    fn orderbook_capabilities(&self) -> OrderbookCapabilities {
+        OrderbookCapabilities::permissive()
     }
 }
 

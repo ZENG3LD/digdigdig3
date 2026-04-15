@@ -32,7 +32,7 @@ use tokio::sync::{broadcast, Mutex};
 use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::{client::IntoClientRequest, Message}, MaybeTlsStream, WebSocketStream};
 
-use crate::core::types::{TradeSide, WebSocketError, WebSocketResult, OrderBookLevel, OrderbookDelta as OrderbookDeltaData};
+use crate::core::types::{TradeSide, WebSocketError, WebSocketResult, OrderBookLevel, OrderbookDelta as OrderbookDeltaData, OrderbookCapabilities};
 use crate::core::traits::WebSocketConnector;
 use crate::core::{
     AccountType, ConnectionStatus, Credentials, ExchangeError, ExchangeResult, StreamEvent,
@@ -1059,6 +1059,18 @@ impl WebSocketConnector for PhemexWebSocket {
 
     fn ping_rtt_handle(&self) -> Option<Arc<Mutex<u64>>> {
         Some(self.ws_ping_rtt_ms.clone())
+    }
+
+    fn orderbook_capabilities(&self) -> OrderbookCapabilities {
+        OrderbookCapabilities {
+            ws_depths: &[],
+            ws_default_depth: None,
+            rest_max_depth: Some(30),
+            supports_snapshot: true,
+            supports_delta: true,
+            update_speeds_ms: &[],
+            default_speed_ms: None,
+        }
     }
 }
 

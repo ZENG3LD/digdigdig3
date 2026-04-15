@@ -47,7 +47,7 @@ use crate::core::{
     ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
     timestamp_millis,
 };
-use crate::core::types::{WebSocketResult, WebSocketError, TradeSide, OrderSide, OrderType, OrderStatus, OrderBookLevel, OrderbookDelta as OrderbookDeltaData};
+use crate::core::types::{WebSocketResult, WebSocketError, TradeSide, OrderSide, OrderType, OrderStatus, OrderBookLevel, OrderbookDelta as OrderbookDeltaData, OrderbookCapabilities};
 use crate::core::traits::WebSocketConnector;
 use crate::core::utils::WeightRateLimiter;
 
@@ -1108,6 +1108,19 @@ impl WebSocketConnector for KrakenWebSocket {
 
     fn ping_rtt_handle(&self) -> Option<Arc<Mutex<u64>>> {
         Some(self.ws_ping_rtt_ms.clone())
+    }
+
+    fn orderbook_capabilities(&self) -> OrderbookCapabilities {
+        static DEPTHS: &[u32] = &[10, 25, 100, 500, 1000];
+        OrderbookCapabilities {
+            ws_depths: DEPTHS,
+            ws_default_depth: Some(10),
+            rest_max_depth: Some(500),
+            supports_snapshot: true,
+            supports_delta: true,
+            update_speeds_ms: &[],
+            default_speed_ms: None,
+        }
     }
 }
 

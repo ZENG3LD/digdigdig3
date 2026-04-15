@@ -103,3 +103,6 @@ pub use auth::DeribitAuth;
 pub use parser::DeribitParser;
 pub use connector::DeribitConnector;
 pub use websocket::DeribitWebSocket;
+
+#[cfg(test)]
+mod _tests_websocket;

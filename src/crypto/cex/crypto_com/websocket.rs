@@ -44,7 +44,7 @@ use crate::core::{
     ExchangeResult, ExchangeError, timestamp_millis,
     AccountType, ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
 };
-use crate::core::types::{WebSocketResult, WebSocketError, OrderBookLevel, OrderbookDelta as OrderbookDeltaData};
+use crate::core::types::{WebSocketResult, WebSocketError, OrderBookLevel, OrderbookDelta as OrderbookDeltaData, OrderbookCapabilities};
 use crate::core::traits::WebSocketConnector;
 use super::auth::CryptoComAuth;
 use super::endpoints::{InstrumentType, format_symbol as fmt_symbol};
@@ -811,6 +811,19 @@ impl WebSocketConnector for CryptoComWebSocket {
 
     fn ping_rtt_handle(&self) -> Option<Arc<Mutex<u64>>> {
         Some(self.ws_ping_rtt_ms.clone())
+    }
+
+    fn orderbook_capabilities(&self) -> OrderbookCapabilities {
+        static DEPTHS: &[u32] = &[10, 50];
+        OrderbookCapabilities {
+            ws_depths: DEPTHS,
+            ws_default_depth: Some(10),
+            rest_max_depth: Some(50),
+            supports_snapshot: false,
+            supports_delta: true,
+            update_speeds_ms: &[],
+            default_speed_ms: None,
+        }
     }
 }
 

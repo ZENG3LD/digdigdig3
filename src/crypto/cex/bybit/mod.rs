@@ -33,6 +33,9 @@ mod parser;
 mod connector;
 mod websocket;
 
+#[cfg(test)]
+mod _tests_websocket;
+
 pub use endpoints::*;
 pub use auth::*;
 pub use parser::*;

@@ -32,3 +32,6 @@ pub use auth::BingxAuth;
 pub use parser::BingxParser;
 pub use connector::BingxConnector;
 pub use websocket::BingxWebSocket;
+
+#[cfg(test)]
+mod _tests_websocket;

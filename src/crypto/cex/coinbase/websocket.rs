@@ -28,7 +28,7 @@ use crate::core::{
     ExchangeError, ExchangeResult,
     ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
 };
-use crate::core::types::{WebSocketResult, WebSocketError};
+use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities};
 use crate::core::traits::WebSocketConnector;
 
 use super::auth::CoinbaseAuth;
@@ -172,10 +172,29 @@ impl CoinbaseWebSocket {
                                             .ok()
                                             .map(StreamEvent::Ticker)
                                     },
-                                    "level2" => {
-                                        CoinbaseParser::parse_ws_orderbook(&json)
-                                            .ok()
-                                            .map(StreamEvent::OrderbookSnapshot)
+                                    // Coinbase subscribes with channel="level2" but the server
+                                    // sends back messages with channel="l2_data".
+                                    "l2_data" => {
+                                        // Coinbase sends two event sub-types on the l2_data channel:
+                                        //   events[0].type == "snapshot" — full book, emit OrderbookSnapshot
+                                        //   events[0].type == "update"   — incremental delta, emit OrderbookDelta
+                                        let event_type = json
+                                            .get("events")
+                                            .and_then(|e| e.as_array())
+                                            .and_then(|arr| arr.first())
+                                            .and_then(|ev| ev.get("type"))
+                                            .and_then(|t| t.as_str())
+                                            .unwrap_or("snapshot");
+
+                                        if event_type == "update" {
+                                            CoinbaseParser::parse_ws_orderbook_delta(&json)
+                                                .ok()
+                                                .map(StreamEvent::OrderbookDelta)
+                                        } else {
+                                            CoinbaseParser::parse_ws_orderbook(&json)
+                                                .ok()
+                                                .map(StreamEvent::OrderbookSnapshot)
+                                        }
                                     },
                                     "market_trades" => {
                                         CoinbaseParser::parse_ws_trades(&json)
@@ -370,5 +389,17 @@ impl WebSocketConnector for CoinbaseWebSocket {
 
     fn ping_rtt_handle(&self) -> Option<Arc<Mutex<u64>>> {
         Some(self.ws_ping_rtt_ms.clone())
+    }
+
+    fn orderbook_capabilities(&self) -> OrderbookCapabilities {
+        OrderbookCapabilities {
+            ws_depths: &[],
+            ws_default_depth: None,
+            rest_max_depth: None,
+            supports_snapshot: true,
+            supports_delta: false,
+            update_speeds_ms: &[],
+            default_speed_ms: None,
+        }
     }
 }

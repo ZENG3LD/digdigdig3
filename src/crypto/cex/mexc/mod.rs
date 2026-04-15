@@ -38,3 +38,6 @@ pub use auth::*;
 pub use parser::*;
 pub use connector::*;
 pub use websocket::*;
+
+#[cfg(test)]
+mod _tests_websocket;

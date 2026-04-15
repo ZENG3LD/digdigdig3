@@ -51,6 +51,9 @@ pub use parser::HyperliquidParser;
 pub use connector::HyperliquidConnector;
 pub use websocket::HyperliquidWebSocket;
 
+#[cfg(test)]
+mod _tests_websocket;
+
 #[cfg(feature = "onchain-evm")]
 pub use eip712::{
     Eip712Signer, HyperliquidDomain,

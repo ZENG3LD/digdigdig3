@@ -37,3 +37,6 @@ pub use auth::GeminiAuth;
 pub use parser::GeminiParser;
 pub use connector::GeminiConnector;
 pub use websocket::{GeminiWebSocket, WebSocketType};
+
+#[cfg(test)]
+mod _tests_websocket;

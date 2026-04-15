@@ -55,6 +55,7 @@ use crate::core::{
 use crate::core::types::{WebSocketResult, WebSocketError, TradeSide};
 use crate::core::types::OrderbookDelta;
 use crate::core::traits::WebSocketConnector;
+use crate::core::types::OrderbookCapabilities;
 use crate::core::utils::WeightRateLimiter;
 
 use super::auth::BybitAuth;
@@ -883,5 +884,18 @@ impl WebSocketConnector for BybitWebSocket {
 
     fn ping_rtt_handle(&self) -> Option<Arc<Mutex<u64>>> {
         Some(self.ws_ping_rtt_ms.clone())
+    }
+
+    fn orderbook_capabilities(&self) -> OrderbookCapabilities {
+        static DEPTHS: &[u32] = &[1, 50, 200, 500];
+        OrderbookCapabilities {
+            ws_depths: DEPTHS,
+            ws_default_depth: Some(50),
+            rest_max_depth: Some(500),
+            supports_snapshot: true,
+            supports_delta: true,
+            update_speeds_ms: &[],
+            default_speed_ms: None,
+        }
     }
 }

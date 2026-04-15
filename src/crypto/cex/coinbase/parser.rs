@@ -509,10 +509,56 @@ impl CoinbaseParser {
         })
     }
 
-    /// Parse WebSocket orderbook update
+    /// Parse the `updates` array from a level2 event into (bids, asks).
+    ///
+    /// When `snapshot_only` is true, levels with `new_quantity == 0` are dropped
+    /// (they are meaningless in a full snapshot).  When false, all levels are kept
+    /// so the caller can treat zero-quantity as a level-removal signal.
+    fn parse_level2_updates(
+        event: &Value,
+        snapshot_only: bool,
+    ) -> ExchangeResult<(Vec<OrderBookLevel>, Vec<OrderBookLevel>)> {
+        let updates = event.get("updates")
+            .and_then(|u| u.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing updates array in level2 event".into()))?;
+
+        let mut bids = Vec::new();
+        let mut asks = Vec::new();
+
+        for update in updates {
+            let side = update.get("side")
+                .and_then(|s| s.as_str())
+                .ok_or_else(|| ExchangeError::Parse("Missing side in level2 update".into()))?;
+
+            let price = update.get("price_level")
+                .and_then(|p| p.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .ok_or_else(|| ExchangeError::Parse("Invalid price_level in level2 update".into()))?;
+
+            let size = update.get("new_quantity")
+                .and_then(|q| q.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .ok_or_else(|| ExchangeError::Parse("Invalid new_quantity in level2 update".into()))?;
+
+            if snapshot_only && size == 0.0 {
+                continue;
+            }
+
+            match side {
+                "bid" => bids.push(OrderBookLevel::new(price, size)),
+                "offer" | "ask" => asks.push(OrderBookLevel::new(price, size)),
+                _ => {},
+            }
+        }
+
+        Ok((bids, asks))
+    }
+
+    /// Parse WebSocket level2 snapshot message.
     ///
     /// Channel: level2
-    /// Format: { channel, events: [{ type: "snapshot"|"update", product_id, updates: [{ side, price_level, new_quantity }] }] }
+    /// Event type: `"snapshot"` — full orderbook state, zero-quantity levels excluded.
+    /// Format: `{ channel, timestamp, sequence_num, events: [{ type: "snapshot", product_id, updates: [{side, price_level, new_quantity}] }] }`
     pub fn parse_ws_orderbook(json: &Value) -> ExchangeResult<OrderBook> {
         let events = json.get("events")
             .and_then(|e| e.as_array())
@@ -521,37 +567,7 @@ impl CoinbaseParser {
         let event = events.first()
             .ok_or_else(|| ExchangeError::Parse("Empty events array".into()))?;
 
-        let updates = event.get("updates")
-            .and_then(|u| u.as_array())
-            .ok_or_else(|| ExchangeError::Parse("Missing updates array".into()))?;
-
-        let mut bids = Vec::new();
-        let mut asks = Vec::new();
-
-        for update in updates {
-            let side = update.get("side")
-                .and_then(|s| s.as_str())
-                .ok_or_else(|| ExchangeError::Parse("Missing side".into()))?;
-
-            let price = update.get("price_level")
-                .and_then(|p| p.as_str())
-                .and_then(|s| s.parse::<f64>().ok())
-                .ok_or_else(|| ExchangeError::Parse("Invalid price_level".into()))?;
-
-            let size = update.get("new_quantity")
-                .and_then(|q| q.as_str())
-                .and_then(|s| s.parse::<f64>().ok())
-                .ok_or_else(|| ExchangeError::Parse("Invalid new_quantity".into()))?;
-
-            // Only add non-zero quantities
-            if size > 0.0 {
-                match side {
-                    "bid" => bids.push(OrderBookLevel::new(price, size)),
-                    "ask" => asks.push(OrderBookLevel::new(price, size)),
-                    _ => {},
-                }
-            }
-        }
+        let (bids, asks) = Self::parse_level2_updates(event, true)?;
 
         let timestamp = json.get("timestamp")
             .and_then(|t| t.as_str())
@@ -572,6 +588,41 @@ impl CoinbaseParser {
             prev_update_id: None,
             event_time: None,
             transaction_time: None,
+            checksum: None,
+        })
+    }
+
+    /// Parse WebSocket level2 delta (incremental update) message.
+    ///
+    /// Channel: level2
+    /// Event type: `"update"` — incremental changes; `new_quantity == 0` means remove the level.
+    /// Format: `{ channel, timestamp, sequence_num, events: [{ type: "update", product_id, updates: [{side, price_level, new_quantity}] }] }`
+    pub fn parse_ws_orderbook_delta(json: &Value) -> ExchangeResult<OrderbookDelta> {
+        let events = json.get("events")
+            .and_then(|e| e.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing events array".into()))?;
+
+        let event = events.first()
+            .ok_or_else(|| ExchangeError::Parse("Empty events array".into()))?;
+
+        // Keep zero-quantity levels — they signal level removal to the consumer.
+        let (bids, asks) = Self::parse_level2_updates(event, false)?;
+
+        let timestamp = json.get("timestamp")
+            .and_then(|t| t.as_str())
+            .and_then(Self::parse_rfc3339_to_millis)
+            .unwrap_or(0);
+
+        let sequence_num = json.get("sequence_num").and_then(|s| s.as_u64());
+
+        Ok(OrderbookDelta {
+            bids,
+            asks,
+            timestamp,
+            first_update_id: sequence_num,
+            last_update_id: sequence_num,
+            prev_update_id: None,
+            event_time: None,
             checksum: None,
         })
     }

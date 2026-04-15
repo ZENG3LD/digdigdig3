@@ -51,7 +51,7 @@ use crate::core::{
     ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
     timestamp_millis,
 };
-use crate::core::types::{WebSocketResult, WebSocketError};
+use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities};
 use crate::core::traits::WebSocketConnector;
 use crate::core::utils::SimpleRateLimiter;
 
@@ -865,5 +865,18 @@ impl WebSocketConnector for BitfinexWebSocket {
 
     fn ping_rtt_handle(&self) -> Option<Arc<Mutex<u64>>> {
         Some(self.ws_ping_rtt_ms.clone())
+    }
+
+    fn orderbook_capabilities(&self) -> OrderbookCapabilities {
+        static DEPTHS: &[u32] = &[25, 100];
+        OrderbookCapabilities {
+            ws_depths: DEPTHS,
+            ws_default_depth: Some(25),
+            rest_max_depth: Some(100),
+            supports_snapshot: false,
+            supports_delta: true,
+            update_speeds_ms: &[],
+            default_speed_ms: None,
+        }
     }
 }

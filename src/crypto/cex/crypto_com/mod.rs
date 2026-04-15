@@ -44,4 +44,7 @@ pub use parser::CryptoComParser;
 pub use connector::CryptoComConnector;
 pub use websocket::CryptoComWebSocket;
 
+#[cfg(test)]
+mod _tests_websocket;
+
 // Research docs are in research/ directory (not exported)

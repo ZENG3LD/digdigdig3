@@ -32,3 +32,6 @@ pub use auth::BitgetAuth;
 pub use parser::BitgetParser;
 pub use connector::BitgetConnector;
 pub use websocket::BitgetWebSocket;
+
+#[cfg(test)]
+mod _tests_websocket;

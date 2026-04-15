@@ -180,15 +180,28 @@ async fn test_subscribe_orderbook_spot() {
                 return;
             }
 
-            // Wait for orderbook data
+            // Wait for orderbook data — hard fail if no snapshot/delta arrives
             let mut stream = ws.event_stream();
-            let event = timeout(Duration::from_secs(10), stream.next()).await;
+            use connectors_v5::core::StreamEvent;
+            let ob = timeout(Duration::from_secs(15), async {
+                while let Some(event) = stream.next().await {
+                    match event {
+                        Ok(StreamEvent::OrderbookSnapshot(ob)) | Ok(StreamEvent::OrderbookDelta(ob)) => {
+                            return ob;
+                        }
+                        Ok(other) => {
+                            println!("Received non-orderbook event (skipping): {:?}", other);
+                            continue;
+                        }
+                        Err(e) => panic!("Stream returned error: {:?}", e),
+                    }
+                }
+                panic!("Stream ended without orderbook data");
+            }).await.expect("Timeout waiting for orderbook data — Bithumb did not send snapshot/delta within 15s");
 
-            if let Ok(Some(Ok(event))) = event {
-                println!("✓ Received orderbook event: {:?}", event);
-            } else {
-                println!("⚠ No orderbook event received (timeout or error)");
-            }
+            assert!(!ob.bids.is_empty(), "Snapshot bids must not be empty");
+            assert!(!ob.asks.is_empty(), "Snapshot asks must not be empty");
+            println!("✓ Received orderbook snapshot: {} bids, {} asks", ob.bids.len(), ob.asks.len());
 
             let _ = ws.disconnect().await;
             println!("✓ Spot orderbook subscription works");

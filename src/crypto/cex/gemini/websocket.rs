@@ -50,7 +50,7 @@ use crate::core::{
     ExchangeError, ExchangeResult,
     ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
 };
-use crate::core::types::{WebSocketResult, WebSocketError};
+use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities};
 use crate::core::traits::WebSocketConnector;
 
 use super::auth::GeminiAuth;
@@ -346,10 +346,14 @@ impl GeminiWebSocket {
             while let Some(msg) = reader.next().await {
                 match msg {
                     Ok(Message::Text(text)) => {
-                        // Parse and broadcast event
-                        if let Ok(Some(evt)) = Self::parse_message(&text, ws_type) {
+                        // Parse and broadcast events — a single WS frame can produce
+                        // more than one StreamEvent (e.g. l2_updates carries both book
+                        // changes and trade entries).
+                        if let Ok(events) = Self::parse_message(&text, ws_type) {
                             if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
-                                tx.send(Ok(evt)).ok();
+                                for evt in events {
+                                    tx.send(Ok(evt)).ok();
+                                }
                             }
                         }
 
@@ -389,8 +393,12 @@ impl GeminiWebSocket {
         // the stream is kept alive by the server's own activity.
     }
 
-    /// Parse incoming WebSocket message
-    fn parse_message(text: &str, ws_type: WebSocketType) -> ExchangeResult<Option<StreamEvent>> {
+    /// Parse incoming WebSocket message into zero or more stream events.
+    ///
+    /// Returns a `Vec` because a single Gemini `l2_updates` frame can carry
+    /// both book-level changes (`changes` array) and executed trades (`trades`
+    /// array) simultaneously.  All produced events are broadcast in order.
+    fn parse_message(text: &str, ws_type: WebSocketType) -> ExchangeResult<Vec<StreamEvent>> {
         let value: Value = serde_json::from_str(text)
             .map_err(|e| ExchangeError::Parse(e.to_string()))?;
 
@@ -399,49 +407,63 @@ impl GeminiWebSocket {
         match (ws_type, msg_type) {
             // Market Data events
             (WebSocketType::MarketData, Some("subscribed")) => {
-                // Subscription confirmation
-                Ok(None)
+                // Subscription confirmation — no events.
+                Ok(vec![])
             }
             (WebSocketType::MarketData, Some("l2_updates")) => {
-                // l2_updates contain both book changes and executed trades.
-                // If the "trades" array is non-empty, emit a Trade event so that
-                // trade-subscribed consumers (e.g. the live-data bridge) receive the
-                // last price. Otherwise emit an OrderbookDelta for book consumers.
+                // l2_updates carry both book changes (always present) and an
+                // optional trades array (non-empty only when executions happened).
+                // Emit an OrderbookDelta for the book changes, and additionally a
+                // Trade event for each trade entry.  Consumers subscribed to either
+                // channel therefore receive the data they care about.
+                let mut events: Vec<StreamEvent> = Vec::new();
+
+                // Book changes — emit OrderbookDelta when changes array is present.
+                let has_changes = value.get("changes")
+                    .and_then(|c| c.as_array())
+                    .map(|a| !a.is_empty())
+                    .unwrap_or(false);
+                if has_changes {
+                    match GeminiParser::parse_ws_l2_update(&value) {
+                        Ok(ev) => events.push(ev),
+                        Err(_) => {} // best-effort; skip malformed change
+                    }
+                }
+
+                // Trade executions — emit Trade event from the last entry.
                 let has_trades = value.get("trades")
                     .and_then(|t| t.as_array())
                     .map(|a| !a.is_empty())
                     .unwrap_or(false);
                 if has_trades {
-                    GeminiParser::parse_ws_l2_trade(&value).map(Some)
-                } else {
-                    // Pure book deltas — skip. Incremental L2 changes carry only
-                    // the modified levels, producing unreliable mid-prices.
-                    // Price updates come from Trade events + REST polling hybrid.
-                    Ok(None)
+                    match GeminiParser::parse_ws_l2_trade(&value) {
+                        Ok(ev) => events.push(ev),
+                        Err(_) => {}
+                    }
                 }
+
+                Ok(events)
             }
             (WebSocketType::MarketData, Some(t)) if t.starts_with("candles_") => {
                 // Candle update
                 let kline = GeminiParser::parse_ws_candle(&value)?;
-                Ok(Some(StreamEvent::Kline(kline)))
+                Ok(vec![StreamEvent::Kline(kline)])
             }
 
             // Order Events
             (WebSocketType::OrderEvents, Some("subscription_ack")) => {
-                // Subscription acknowledgment
-                Ok(None)
+                Ok(vec![])
             }
             (WebSocketType::OrderEvents, Some("heartbeat")) => {
-                // Heartbeat
-                Ok(None)
+                Ok(vec![])
             }
             (WebSocketType::OrderEvents, Some("initial" | "accepted" | "booked" | "fill" | "cancelled" | "rejected" | "closed")) => {
                 // Order event
                 let order_event = GeminiParser::parse_ws_order_event(&value)?;
-                Ok(Some(StreamEvent::OrderUpdate(order_event)))
+                Ok(vec![StreamEvent::OrderUpdate(order_event)])
             }
 
-            _ => Ok(None),
+            _ => Ok(vec![]),
         }
     }
 }
@@ -519,6 +541,18 @@ impl WebSocketConnector for GeminiWebSocket {
     fn ping_rtt_handle(&self) -> Option<Arc<Mutex<u64>>> {
         // Gemini disconnects on client ping frames, so RTT stays at 0.
         Some(self.ws_ping_rtt_ms.clone())
+    }
+
+    fn orderbook_capabilities(&self) -> OrderbookCapabilities {
+        OrderbookCapabilities {
+            ws_depths: &[],
+            ws_default_depth: None,
+            rest_max_depth: None,
+            supports_snapshot: false,
+            supports_delta: true,
+            update_speeds_ms: &[],
+            default_speed_ms: None,
+        }
     }
 }
 

@@ -51,7 +51,7 @@ use crate::core::{
     ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
     timestamp_seconds,
 };
-use crate::core::types::{WebSocketResult, WebSocketError, OrderBookLevel};
+use crate::core::types::{WebSocketResult, WebSocketError, OrderBookLevel, OrderbookCapabilities};
 use crate::core::traits::WebSocketConnector;
 use crate::core::utils::WeightRateLimiter;
 
@@ -732,5 +732,19 @@ impl WebSocketConnector for GateioWebSocket {
 
     fn ping_rtt_handle(&self) -> Option<Arc<Mutex<u64>>> {
         Some(self.ws_ping_rtt_ms.clone())
+    }
+
+    fn orderbook_capabilities(&self) -> OrderbookCapabilities {
+        static DEPTHS: &[u32] = &[5, 10, 20, 50, 100];
+        static SPEEDS: &[u32] = &[100, 1000];
+        OrderbookCapabilities {
+            ws_depths: DEPTHS,
+            ws_default_depth: Some(20),
+            rest_max_depth: Some(100),
+            supports_snapshot: true,
+            supports_delta: true,
+            update_speeds_ms: SPEEDS,
+            default_speed_ms: Some(1000),
+        }
     }
 }

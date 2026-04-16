@@ -261,7 +261,7 @@ pub trait Account: ExchangeIdentity {
 | `get_fees` | `Option<&str>` | `ExchangeResult<FeeInfo>` |
 
 **Notes:**
-- `get_fees` returns `UnsupportedOperation` for GMX and Uniswap/Raydium (AMMs) — these use
+- `get_fees` returns `UnsupportedOperation` for on-chain AMMs — these use
   protocol fee models not translatable to maker/taker.
 - `get_balance` with `query.asset = None` returns all non-zero balances; `Some("BTC")` returns
   only the BTC entry.
@@ -305,7 +305,7 @@ variants. Connectors match only what they support natively.
 ### `CancelAll`
 File: `c:/Users/VA PC/CODING/ML_TRADING/nemo/digdigdig3/src/core/traits/operations.rs`
 
-Coverage: 22/24 — GMX (no cancel-all endpoint) and dYdX v4 (Cosmos tx-based, no bulk cancel) excluded.
+Coverage: 43/43 active connectors — dYdX v4 (Cosmos tx-based, no bulk cancel) returns UnsupportedOperation by design.
 Supertraits: `Trading`
 Rule: Connectors implement this ONLY if the exchange has a native cancel-all endpoint. No looping
 over `cancel_order` is permitted.
@@ -664,7 +664,7 @@ File: `c:/Users/VA PC/CODING/ML_TRADING/nemo/digdigdig3/src/core/types/common.rs
 Comprehensive identifier for all supported sources:
 - **CEX crypto:** Binance, Bybit, OKX, KuCoin, Kraken, Coinbase, GateIO, Bitfinex, Bitstamp,
   Gemini, MEXC, HTX, Bitget, BingX, Phemex, CryptoCom, Upbit, Deribit, HyperLiquid
-- **DEX:** Lighter, Uniswap, Jupiter, Raydium, Gmx, Paradex, Dydx
+- **DEX:** Lighter, Paradex, Dydx
 - **Prediction markets:** Polymarket
 - **Data providers (stocks/crypto/forex/econ):** Polygon, Finnhub, Tiingo, Twelvedata,
   Coinglass, CryptoCompare, WhaleAlert, Bitquery, DefiLlama, Oanda, AlphaVantage,

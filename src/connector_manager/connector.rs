@@ -55,7 +55,6 @@ use crate::l3::open::crypto::cex::hyperliquid::HyperliquidConnector;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 use crate::l3::open::crypto::dex::lighter::LighterConnector;
-// Jupiter, Raydium, Uniswap, GMX → extracted to dig2swap crate
 use crate::l3::open::crypto::dex::paradex::ParadexConnector;
 use crate::l3::open::crypto::dex::dydx::DydxConnector;
 
@@ -119,7 +118,7 @@ use crate::l2::paid::cryptocompare::CryptoCompareConnector;
 // ANYCONNECTOR ENUM
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Unified connector enum wrapping all 49 active connectors
+/// Unified connector enum wrapping all active connectors
 ///
 /// Each variant wraps the connector in Arc for cheap cloning.
 /// All core traits are delegated to the underlying connector.
@@ -154,7 +153,7 @@ pub enum AnyConnector {
     HyperLiquid(Arc<HyperliquidConnector>),
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // DEX - Decentralized Exchanges (3) — Jupiter, Raydium, Uniswap, GMX extracted to dig2swap crate
+    // DEX - Decentralized Exchanges (3)
     // ═══════════════════════════════════════════════════════════════════════════
     Lighter(Arc<LighterConnector>),
     Paradex(Arc<ParadexConnector>),
@@ -1000,7 +999,6 @@ mod tests {
 
         // Expected 3 DEX connectors:
         // Lighter, Paradex, Dydx
-        // Jupiter, Raydium, Uniswap, GMX → extracted to dig2swap crate
     }
 
     /// Test that all Stock market variants exist
@@ -1033,7 +1031,7 @@ mod tests {
     #[test]
     fn test_aggregator_variants_exist() {
         // Expected connector categories:
-        // CEX: 19, DEX: 4 (Jupiter/Raydium/Uniswap extracted to dig2swap), Stocks: 14, Forex: 3, Prediction: 1, Brokers: 1, DataFeeds: 2, OnChain: 2
-        // Total: 46 connectors
+        // CEX: 18, DEX: 3 (Lighter, Paradex, Dydx), Stocks: 14, Forex: 3, Prediction: 1, Brokers: 1, DataFeeds: 2, OnChain: 2
+        // Total: 44 connectors
     }
 }

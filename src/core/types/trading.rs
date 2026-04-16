@@ -101,8 +101,7 @@ pub enum OrderType {
 
     /// Stop limit — triggers a limit order when `stop_price` is reached.
     ///
-    /// 19/24: same exchanges as StopMarket minus DEX-only (GMX, Jupiter, Uniswap,
-    /// Raydium + some CEX spot-only).
+    /// 19/24: same exchanges as StopMarket minus some CEX spot-only.
     StopLimit {
         /// Price at which the stop triggers.
         stop_price: Price,
@@ -172,7 +171,7 @@ pub enum OrderType {
     /// Post-Only limit — rejected if it would immediately match.
     /// Guarantees maker fee.
     ///
-    /// 20/24: all except GMX, Uniswap, Raydium, Jupiter (AMM / no maker/taker).
+    /// 20/24: all except AMM-style DEXes (no maker/taker concept).
     PostOnly {
         /// Limit price.
         price: Price,
@@ -180,7 +179,7 @@ pub enum OrderType {
 
     /// Immediate-Or-Cancel — fills what it can immediately, cancels the rest.
     ///
-    /// 21/24: all except GMX, Uniswap, Raydium (AMM semantics don't apply).
+    /// 21/24: all except AMM-based DEXes.
     Ioc {
         /// Limit price (None = market price for IOC market sweep).
         price: Option<Price>,
@@ -273,7 +272,7 @@ pub enum TimeInForce {
 
     /// Immediate-Or-Cancel — fill what is possible now, cancel the remainder.
     ///
-    /// 21/24 exchanges (not GMX, Uniswap, Raydium).
+    /// 21/24 exchanges.
     Ioc,
 
     /// Fill-Or-Kill — fill entirely now or cancel entirely.
@@ -283,7 +282,7 @@ pub enum TimeInForce {
 
     /// Post-Only — reject if the order would cross the spread (taker fill).
     ///
-    /// 20/24 exchanges (not GMX, Uniswap, Raydium, Jupiter).
+    /// 20/24 exchanges.
     PostOnly,
 
     /// Good-Till-Date — cancel at `expire_time` specified in the order.
@@ -427,7 +426,7 @@ pub enum CancelScope {
 
     /// Cancel ALL open orders — optionally filtered to a single symbol.
     ///
-    /// 22/24 exchanges (missing GMX, dYdX which have no native cancel-all).
+    /// Most exchanges — dYdX returns UnsupportedOperation (Cosmos tx-based, no native cancel-all).
     All {
         /// If `Some(symbol)`, only cancel orders for that symbol.
         /// If `None`, cancel all open orders across all symbols.
@@ -891,8 +890,8 @@ pub enum FundsRecordType {
 /// - JWT-ES256: 1 exchange (Coinbase Advanced Trade)
 /// - JWT-HMAC: 1 exchange (Paradex)
 /// - OAuth2: 1 exchange (Upstox, some India brokers)
-/// - Ethereum ECDSA: 2 exchanges (HyperLiquid, GMX)
-/// - Solana Ed25519: 1 exchange (Jupiter, Raydium)
+/// - Ethereum ECDSA: 1 exchange (HyperLiquid)
+/// - Solana Ed25519: 0 exchanges (removed with Solana DEX connectors)
 /// - STARK key: 2 exchanges (Lighter, Paradex)
 /// - Cosmos wallet: 1 exchange (dYdX v4)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -972,7 +971,7 @@ pub enum ExchangeCredentials {
 
     /// Ethereum ECDSA wallet signing.
     ///
-    /// 2/24: HyperLiquid (EIP-712), GMX (EIP-712).
+    /// 1/43: HyperLiquid (EIP-712).
     EthereumWallet {
         /// Private key as a 0x-prefixed hex string.
         private_key_hex: String,
@@ -981,8 +980,6 @@ pub enum ExchangeCredentials {
     },
 
     /// Solana Ed25519 keypair signing.
-    ///
-    /// 1/24: Jupiter, Raydium (both Solana-native).
     SolanaKeypair {
         /// Base58-encoded Solana private key (64-byte keypair).
         private_key_b58: String,

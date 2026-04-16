@@ -78,7 +78,6 @@ use crate::l3::open::crypto::cex::hyperliquid::HyperliquidConnector;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 use crate::l3::open::crypto::dex::lighter::LighterConnector;
-// Jupiter, Raydium, Uniswap, GMX → extracted to dig2swap crate
 use crate::l3::open::crypto::dex::paradex::ParadexConnector;
 use crate::l3::open::crypto::dex::dydx::DydxConnector;
 
@@ -272,13 +271,6 @@ impl ConnectorFactory {
                 let c = LighterConnector::public(testnet).await?;
                 Ok(Arc::new(AnyConnector::Lighter(Arc::new(c))))
             }
-            // Jupiter, Raydium, Uniswap, GMX → extracted to dig2swap crate
-            ExchangeId::Jupiter | ExchangeId::Raydium | ExchangeId::Uniswap | ExchangeId::Gmx => {
-                Err(ExchangeError::UnsupportedOperation(
-                    "Jupiter, Raydium, Uniswap, and GMX have been extracted to the dig2swap crate".into()
-                ))
-            }
-
             // ═══════════════════════════════════════════════════════════════════════
             // STOCKS - Pattern C: ::crypto_only() for public, ::from_env() for auth
             // ═══════════════════════════════════════════════════════════════════════
@@ -568,13 +560,6 @@ impl ConnectorFactory {
                 // Paradex::new takes credentials directly (not Option)
                 let c = ParadexConnector::new(credentials, testnet).await?;
                 Ok(Arc::new(AnyConnector::Paradex(Arc::new(c))))
-            }
-
-            // Jupiter, Raydium, Uniswap, GMX → extracted to dig2swap crate
-            ExchangeId::Jupiter | ExchangeId::Raydium | ExchangeId::Uniswap | ExchangeId::Gmx => {
-                Err(ExchangeError::UnsupportedOperation(
-                    "Jupiter, Raydium, Uniswap, and GMX have been extracted to the dig2swap crate".into()
-                ))
             }
 
             // ═══════════════════════════════════════════════════════════════════════

@@ -113,9 +113,9 @@ pub trait EvmChain: ChainProvider {
 /// Concrete EVM chain provider backed by alloy's type-erased HTTP provider.
 ///
 /// One `EvmProvider` per RPC endpoint is sufficient. Multiple DeFi connectors
-/// targeting the same chain (e.g. GMX and Uniswap both on Arbitrum) can share
-/// a single `EvmProvider` instance via `Arc<EvmProvider>`, reusing the same
-/// HTTP connection pool and avoiding duplicate RPC calls.
+/// targeting the same chain can share a single `EvmProvider` instance via
+/// `Arc<EvmProvider>`, reusing the same HTTP connection pool and avoiding
+/// duplicate RPC calls.
 ///
 /// ## Construction
 ///

@@ -43,8 +43,7 @@ use super::{Trading, Account};
 
 /// Cancel all open orders — optionally scoped to a symbol.
 ///
-/// 22/24: missing GMX (no cancel-all endpoint) and dYdX (Cosmos tx-based,
-/// no bulk cancel API in v4).
+/// All exchanges except dYdX (Cosmos tx-based, no bulk cancel API in v4).
 ///
 /// Connectors implement this trait ONLY if the exchange has a native
 /// cancel-all endpoint. No looping over `cancel_order` is permitted.
@@ -419,8 +418,6 @@ pub trait CopyTrading: Send + Sync {
 
 /// Liquidity pool management for DEX AMMs.
 ///
-/// Available on: Uniswap v3, Raydium, Jupiter (via pools), etc.
-///
 /// Default implementations return `UnsupportedOperation`.
 #[async_trait]
 pub trait LiquidityProvider: Send + Sync {
@@ -482,9 +479,9 @@ pub trait LiquidityProvider: Send + Sync {
 // VAULT MANAGER
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Managed vault deposits and withdrawals (e.g. GMX GLP, Paradex vaults).
+/// Managed vault deposits and withdrawals (e.g. Paradex vaults, HyperLiquid vaults).
 ///
-/// Available on: GMX, Paradex, dYdX MegaVault, HyperLiquid vaults, etc.
+/// Available on: Paradex, dYdX MegaVault, HyperLiquid vaults.
 ///
 /// Default implementations return `UnsupportedOperation`.
 #[async_trait]

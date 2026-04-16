@@ -83,8 +83,8 @@ pub trait Trading: ExchangeIdentity {
     /// Default implementation returns `UnsupportedOperation` — connectors
     /// that expose a native fills/trades endpoint should override this.
     ///
-    /// ~20/24: all major CEX exchanges. GMX, Uniswap, Raydium return
-    /// `UnsupportedOperation` (AMM — fills are on-chain events, not exchange records).
+    /// ~20/24: all major CEX exchanges. DEX connectors without native trade records return
+    /// `UnsupportedOperation`.
     async fn get_user_trades(
         &self,
         filter: UserTradeFilter,

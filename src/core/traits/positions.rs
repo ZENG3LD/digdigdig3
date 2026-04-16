@@ -55,7 +55,7 @@ pub trait Positions: ExchangeIdentity {
     ///
     /// ~18/24: Binance Futures, Bybit, OKX, KuCoin, GateIO, Bitget, BingX,
     /// Phemex, MEXC, HTX, CryptoCom, Deribit, HyperLiquid, Lighter,
-    /// Paradex, dYdX, GMX, Coinglass (data provider).
+    /// Paradex, dYdX, Coinglass (data provider).
     async fn get_open_interest(
         &self,
         symbol: &str,

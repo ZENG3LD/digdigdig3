@@ -35,7 +35,7 @@ pub trait Account: ExchangeIdentity {
     /// `symbol = Some("BTC/USDT")` returns symbol-specific fees (some exchanges
     /// allow per-symbol fee negotiation).
     ///
-    /// 22/24: GMX and Uniswap/Raydium (AMMs) use protocol fee models not
-    /// translatable to maker/taker — they return `UnsupportedOperation`.
+    /// DEX AMMs use protocol fee models not translatable to maker/taker — they return
+    /// `UnsupportedOperation`.
     async fn get_fees(&self, symbol: Option<&str>) -> ExchangeResult<FeeInfo>;
 }

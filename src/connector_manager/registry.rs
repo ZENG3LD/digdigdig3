@@ -16,7 +16,7 @@ use crate::core::types::{ExchangeId, ExchangeType};
 pub enum ConnectorCategory {
     /// Centralized crypto exchange (Binance, Bybit, etc.)
     CryptoExchangeCex,
-    /// Decentralized crypto exchange (Uniswap, Jupiter, etc.)
+    /// Decentralized crypto exchange (dYdX, Lighter, Paradex)
     CryptoExchangeDex,
     /// US stock market data/broker (Polygon, Alpaca, etc.)
     StockMarketUS,
@@ -1282,111 +1282,6 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
         free_tier: true,
     },
     ConnectorMetadata {
-        id: ExchangeId::Uniswap,
-        name: "Uniswap",
-        exchange_type: ExchangeType::Dex,
-        category: ConnectorCategory::CryptoExchangeDex,
-        supported_features: Features::dex(),
-        authentication: AuthType::None,
-        rate_limits: RateLimits::none(),
-        base_url: "https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3",
-        websocket_url: None,
-        documentation_url: Some("https://docs.uniswap.org/api/subgraph/overview"),
-        requires_api_key_for_data: true,
-        requires_api_key_for_trading: true,
-        free_tier: true,
-    },
-    ConnectorMetadata {
-        id: ExchangeId::Jupiter,
-        name: "Jupiter",
-        exchange_type: ExchangeType::Dex,
-        category: ConnectorCategory::CryptoExchangeDex,
-        supported_features: Features::dex(),
-        authentication: AuthType::None,
-        rate_limits: RateLimits {
-            requests_per_second: Some(1),
-            requests_per_minute: Some(60),
-            weight_per_minute: None,
-            window_seconds: 60,
-            limiter_model: LimiterModel::SimpleCounter,
-            groups: &[],
-            has_server_headers: false,
-        },
-        base_url: "https://quote-api.jup.ag",
-        websocket_url: None,
-        documentation_url: Some("https://station.jup.ag/docs/apis/swap-api"),
-        requires_api_key_for_data: true,
-        requires_api_key_for_trading: true,
-        free_tier: true,
-    },
-    ConnectorMetadata {
-        id: ExchangeId::Raydium,
-        name: "Raydium",
-        exchange_type: ExchangeType::Dex,
-        category: ConnectorCategory::CryptoExchangeDex,
-        supported_features: Features::dex(),
-        authentication: AuthType::None,
-        rate_limits: RateLimits {
-            requests_per_second: None,
-            requests_per_minute: None,
-            weight_per_minute: None,
-            window_seconds: 60,
-            limiter_model: LimiterModel::Unknown,
-            groups: &[],
-            has_server_headers: false,
-        },
-        base_url: "https://api.raydium.io",
-        websocket_url: None,
-        documentation_url: Some("https://docs.raydium.io/"),
-        requires_api_key_for_data: true,
-        requires_api_key_for_trading: true,
-        free_tier: true,
-    },
-    ConnectorMetadata {
-        id: ExchangeId::Gmx,
-        name: "GMX",
-        exchange_type: ExchangeType::Dex,
-        category: ConnectorCategory::CryptoExchangeDex,
-        supported_features: Features {
-            market_data: true,
-            trading: true,
-            account: false,
-            positions: false,
-            websocket: true,
-            ws_klines: true,
-            ws_trades: false,
-            ws_orderbook: false,
-            ws_ticker: true,
-            cancel_all: false,
-            amend_order: false,
-            batch_orders: false,
-            account_transfers: false,
-            custodial_funds: false,
-            sub_accounts: false,
-            margin_trading: false,
-            trigger_orders: false,
-            convert_swap: false,
-            earn_staking: false,
-            copy_trading: false,
-        },
-        authentication: AuthType::None,
-        rate_limits: RateLimits {
-            requests_per_second: None,
-            requests_per_minute: None,
-            weight_per_minute: None,
-            window_seconds: 60,
-            limiter_model: LimiterModel::Unknown,
-            groups: &[],
-            has_server_headers: false,
-        },
-        base_url: "https://api.gmx.io",
-        websocket_url: None,
-        documentation_url: Some("https://docs.gmx.io/docs/api/"),
-        requires_api_key_for_data: false,
-        requires_api_key_for_trading: true,
-        free_tier: true,
-    },
-    ConnectorMetadata {
         id: ExchangeId::Paradex,
         name: "Paradex",
         exchange_type: ExchangeType::Dex,
@@ -2043,23 +1938,6 @@ mod tests {
         assert!(meta.supported_features.websocket);
     }
 
-    /// Test get() for Uniswap (DEX) connector
-    #[test]
-    fn test_registry_get_uniswap() {
-        let registry = ConnectorRegistry::new();
-
-        let uniswap = registry.get(&ExchangeId::Uniswap);
-        assert!(uniswap.is_some(), "Uniswap should be in registry");
-
-        let meta = uniswap.unwrap();
-        assert_eq!(meta.id, ExchangeId::Uniswap);
-        assert_eq!(meta.name, "Uniswap");
-        assert_eq!(meta.exchange_type, ExchangeType::Dex);
-        assert_eq!(meta.category, ConnectorCategory::CryptoExchangeDex);
-        assert!(!meta.supported_features.websocket, "DEX typically don't have websockets");
-        assert!(meta.requires_api_key_for_data, "Uniswap now requires API key for data (changed policy)");
-    }
-
     /// Test get() for Alpaca (US Stock) connector
     #[test]
     fn test_registry_get_alpaca() {
@@ -2088,17 +1966,17 @@ mod tests {
         assert!(missing.is_none(), "Invalid ExchangeId should return None");
     }
 
-    /// Test iter() returns all 47 entries
+    /// Test iter() returns all entries
     #[test]
     fn test_registry_iter() {
         let registry = ConnectorRegistry::new();
 
         let count = registry.iter().count();
-        assert_eq!(count, 47, "iter() should return all 47 connectors");
+        assert_eq!(count, 43, "iter() should return all 43 connectors");
 
         // Verify we can collect into vector
         let all: Vec<_> = registry.iter().collect();
-        assert_eq!(all.len(), 47);
+        assert_eq!(all.len(), 43);
     }
 
     /// Test list_by_category for CryptoExchangeCex (should be 19)
@@ -2128,7 +2006,7 @@ mod tests {
 
         let dex = registry.list_by_category(ConnectorCategory::CryptoExchangeDex);
 
-        assert_eq!(dex.len(), 7, "Should have exactly 7 DEX connectors");
+        assert_eq!(dex.len(), 3, "Should have exactly 3 DEX connectors");
 
         // Verify all are DEX type
         for meta in &dex {
@@ -2175,8 +2053,8 @@ mod tests {
 
         let trading = registry.list_with_trading();
 
-        // CEX (19) + DEX (7) + Brokers (India 5, US 1, Russia 1, Forex 1, Aggregator 1) = ~35
-        assert!(trading.len() >= 25, "Should have at least 25 connectors with trading");
+        // CEX (18) + DEX (3) + Brokers (India 5, US 1, Russia 1, Forex 1, Aggregator 1) = ~29
+        assert!(trading.len() >= 20, "Should have at least 20 connectors with trading");
 
         // Verify all have trading enabled
         for meta in &trading {
@@ -2336,7 +2214,7 @@ mod tests {
         for _ in 0..100 {
             let _ = registry.get(&ExchangeId::Binance);
             let _ = registry.get(&ExchangeId::OKX);
-            let _ = registry.get(&ExchangeId::Uniswap);
+            let _ = registry.get(&ExchangeId::Lighter);
         }
 
         // Test should complete quickly if lookup is O(1)
@@ -2378,14 +2256,14 @@ mod tests {
         let free_connectors: Vec<_> = registry.iter().filter(|m| m.free_tier).collect();
 
         // Most connectors should have free tier
-        assert!(free_connectors.len() >= 40, "Should have at least 40 connectors with free tier");
+        assert!(free_connectors.len() >= 35, "Should have at least 35 connectors with free tier");
 
         // Verify some known free connectors
         let binance = registry.get(&ExchangeId::Binance).unwrap();
         assert!(binance.free_tier, "Binance should have free tier");
 
-        let uniswap = registry.get(&ExchangeId::Uniswap).unwrap();
-        assert!(uniswap.free_tier, "Uniswap should have free tier");
+        let lighter = registry.get(&ExchangeId::Lighter).unwrap();
+        assert!(lighter.free_tier, "Lighter should have free tier");
     }
 
     /// Test AuthType variants are used correctly

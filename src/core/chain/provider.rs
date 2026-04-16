@@ -14,8 +14,8 @@ use crate::core::types::ExchangeError;
 /// Identifies which chain family a provider connects to.
 ///
 /// Used by connectors to assert that the provider they receive at runtime
-/// matches the chain they were built for. For example, `GmxConnector` will
-/// panic (or return an error) if handed a `ChainFamily::Solana` provider.
+/// matches the chain they were built for. For example, a connector expecting
+/// EVM will panic (or return an error) if handed a `ChainFamily::Cosmos` provider.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ChainFamily {
     /// EVM-compatible chain (Ethereum, Arbitrum, Optimism, Base, Polygon, etc.).

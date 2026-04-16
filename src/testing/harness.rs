@@ -114,12 +114,6 @@ impl TestHarness {
             ExchangeId::Paradex => "BTC-USD-PERP",
             ExchangeId::Dydx => "BTC-USD",
 
-            // DEX — use pool-level symbols
-            ExchangeId::Uniswap => "ETH/USDC",
-            ExchangeId::Jupiter => "SOL/USDC",
-            ExchangeId::Raydium => "SOL/USDC",
-            ExchangeId::Gmx => "BTC/USD",
-
             // Prediction markets
             ExchangeId::Polymarket => "BTC-2024",
 

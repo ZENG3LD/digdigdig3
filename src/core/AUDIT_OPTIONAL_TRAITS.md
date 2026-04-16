@@ -12,7 +12,7 @@ This audit covers three optional traits defined in `src/core/traits/operations.r
 
 The matrix references are from `TRADING_CAPABILITY_MATRIX.md` Table C (Order Management).
 
-Exchanges not in the 24-exchange matrix (Bithumb, Vertex, Raydium, Uniswap) are excluded from gap analysis — they are either disabled or swap-only.
+Exchanges not in the 24-exchange matrix (Bithumb, Vertex) are excluded from gap analysis — they are either disabled or reference-only.
 
 **Gap definition:** Exchange has a native API endpoint per the matrix (Y or P) but no `impl <Trait> for <Connector>` in its `connector.rs`.
 
@@ -20,7 +20,7 @@ Exchanges not in the 24-exchange matrix (Bithumb, Vertex, Raydium, Uniswap) are 
 
 ## CancelAll (matrix says 22/24)
 
-Matrix: all exchanges EXCEPT GMX (N — no cancel-all endpoint) and dYdX (N — Cosmos tx-based, no bulk cancel in v4).
+Matrix: all exchanges EXCEPT dYdX (N — Cosmos tx-based, no bulk cancel in v4).
 HyperLiquid and Coinbase are marked P (partial) in the matrix.
 
 | Exchange | Has `impl CancelAll`? | Matrix says | Gap? |
@@ -45,12 +45,10 @@ HyperLiquid and Coinbase are marked P (partial) in the matrix.
 | Deribit | YES | Y | No |
 | HyperLiquid | NO | P | Partial — medium priority |
 | Lighter | NO | Y | **YES** |
-| Jupiter | NO | Y | **YES** |
 | Paradex | NO | Y | **YES** |
-| GMX | NO | N | Correct — no endpoint exists |
 | dYdX | NO | N | Correct — Cosmos, no bulk cancel |
 
-**Summary: 12 implemented, 8 confirmed gaps (Y in matrix but no impl), 2 partial gaps (Coinbase P, HyperLiquid P), 2 correctly absent.**
+**Summary: 12 implemented, 7 confirmed gaps (Y in matrix but no impl), 2 partial gaps (Coinbase P, HyperLiquid P), 1 correctly absent.**
 
 ### CancelAll Gaps (Y in matrix, no impl)
 1. `src/crypto/cex/bybit/connector.rs`
@@ -59,14 +57,13 @@ HyperLiquid and Coinbase are marked P (partial) in the matrix.
 4. `src/crypto/cex/kraken/connector.rs`
 5. `src/crypto/cex/gateio/connector.rs`
 6. `src/crypto/dex/lighter/connector.rs`
-7. `src/crypto/dex/jupiter/connector.rs`
-8. `src/crypto/dex/paradex/connector.rs`
+7. `src/crypto/dex/paradex/connector.rs`
 
 ---
 
 ## AmendOrder (matrix says 18/24)
 
-Matrix (Table C, "Amend" column): Y = Binance, Bybit, OKX, Gate.io, Bitfinex, Bitget, BingX, Phemex, Crypto.com, Deribit, HyperLiquid, Lighter, Paradex. P (partial) = KuCoin, Coinbase, Bitstamp, Bitget(F only), Upbit. N = MEXC, HTX, Gemini, GMX, Jupiter, dYdX.
+Matrix (Table C, "Amend" column): Y = Binance, Bybit, OKX, Gate.io, Bitfinex, Bitget, BingX, Phemex, Crypto.com, Deribit, HyperLiquid, Lighter, Paradex. P (partial) = KuCoin, Coinbase, Bitstamp, Bitget(F only), Upbit. N = MEXC, HTX, Gemini, dYdX.
 
 Per `operations.rs` doc comment, the 18 non-N exchanges are:
 Binance(F), Bybit, OKX, KuCoin(P), GateIO, Bitfinex, Bitget(F), BingX(F), Phemex, CryptoCom, Deribit, HyperLiquid, Lighter, Paradex, Upbit(P), Coinbase(P), Bitstamp(P), and dYdX is N.
@@ -93,12 +90,10 @@ Binance(F), Bybit, OKX, KuCoin(P), GateIO, Bitfinex, Bitget(F), BingX(F), Phemex
 | Deribit | YES | Y | No |
 | HyperLiquid | NO | Y | **YES** |
 | Lighter | NO | Y | **YES** |
-| Jupiter | NO | N | Correct — no amend endpoint |
-| GMX | NO | Y | **YES** |
 | Paradex | NO | Y | **YES** |
 | dYdX | NO | N | Correct — no amend endpoint |
 
-**Summary: 7 implemented, 7 confirmed gaps (Y in matrix but no impl), 5 partial gaps (P in matrix), 5 correctly absent.**
+**Summary: 7 implemented, 6 confirmed gaps (Y in matrix but no impl), 5 partial gaps (P in matrix), 4 correctly absent.**
 
 ### AmendOrder Gaps (Y in matrix, no impl)
 1. `src/crypto/cex/bybit/connector.rs`
@@ -106,10 +101,7 @@ Binance(F), Bybit, OKX, KuCoin(P), GateIO, Bitfinex, Bitget(F), BingX(F), Phemex
 3. `src/crypto/cex/gateio/connector.rs`
 4. `src/crypto/cex/hyperliquid/connector.rs`
 5. `src/crypto/dex/lighter/connector.rs`
-6. `src/crypto/dex/gmx/connector.rs`
-7. `src/crypto/dex/paradex/connector.rs`
-
-> Note: GMX has `Y` in the Amend column in the matrix, but GMX is on-chain-only (no amend REST endpoint — it's a cancel+replace on-chain). This may be a matrix data error. Verify before implementing.
+6. `src/crypto/dex/paradex/connector.rs`
 
 ---
 
@@ -117,7 +109,7 @@ Binance(F), Bybit, OKX, KuCoin(P), GateIO, Bitfinex, Bitget(F), BingX(F), Phemex
 
 Matrix (Table C, "Batch" column — non-N exchanges):
 Y = Binance(F:5), Bybit(20/10), OKX(20), KuCoin(S:5), Gate.io(S:10), Bitfinex(75), MEXC(S:20,F:50), HTX(10), Bitget(50), BingX(unspec.), Phemex, Crypto.com(10), Deribit, HyperLiquid(unspec.), Lighter(50), Paradex(10), dYdX(P).
-N = Kraken (spot only, no batch), Coinbase (N), Gemini (N), Bitstamp (N), Upbit (N), GMX (N), Jupiter (N).
+N = Kraken (spot only, no batch), Coinbase (N), Gemini (N), Bitstamp (N), Upbit (N).
 
 | Exchange | Has `impl BatchOrders`? | Matrix says | Gap? |
 |----------|------------------------|-------------|------|
@@ -141,12 +133,10 @@ N = Kraken (spot only, no batch), Coinbase (N), Gemini (N), Bitstamp (N), Upbit 
 | Deribit | NO | N | Correct — Deribit has no batch create (matrix N) |
 | HyperLiquid | NO | Y (unspec.) | **YES** |
 | Lighter | NO | Y (50) | **YES** |
-| Jupiter | NO | N | Correct — no batch endpoint |
-| GMX | NO | Y (multicall) | **YES** |
 | Paradex | NO | Y (10) | **YES** |
 | dYdX | NO | P | Partial — lower priority |
 
-**Summary: 4 implemented, 12 confirmed gaps (Y in matrix but no impl), 1 partial gap (dYdX P), 7 correctly absent.**
+**Summary: 4 implemented, 11 confirmed gaps (Y in matrix but no impl), 1 partial gap (dYdX P), 5 correctly absent.**
 
 ### BatchOrders Gaps (Y in matrix, no impl)
 1. `src/crypto/cex/bybit/connector.rs`
@@ -158,9 +148,8 @@ N = Kraken (spot only, no batch), Coinbase (N), Gemini (N), Bitstamp (N), Upbit 
 7. `src/crypto/cex/crypto_com/connector.rs`
 8. `src/crypto/cex/hyperliquid/connector.rs`
 9. `src/crypto/dex/lighter/connector.rs`
-10. `src/crypto/dex/gmx/connector.rs`
-11. `src/crypto/dex/paradex/connector.rs`
-12. `src/crypto/dex/dydx/connector.rs` (Partial — verify native batch endpoint)
+10. `src/crypto/dex/paradex/connector.rs`
+11. `src/crypto/dex/dydx/connector.rs` (Partial — verify native batch endpoint)
 
 > Note: For `Phemex` — matrix Table C shows "N" for Batch (no batch create), so Phemex is correctly absent. The `operations.rs` doc comment mentions Phemex in the BatchOrders list (line 88) but the matrix disagrees. Matrix is the authoritative source — Phemex should NOT implement BatchOrders.
 > Note: For `Deribit` — matrix Table C shows "N" for Batch (no batch create). The `operations.rs` doc comment includes Deribit in the list, but the matrix says N. Verify before implementing.
@@ -184,8 +173,6 @@ Sorting gaps by exchange importance (trading volume / rank) and how many traits 
 | BingX | — | — | YES | 1 | P2 |
 | Crypto.com | — | — | YES | 1 | P2 |
 | Kraken | YES | — | — | 1 | P2 |
-| Jupiter | YES | — | — | 1 | P2 |
-| GMX | — | Y? | Y? | 1-2 | P3 (verify matrix) |
 | dYdX | — | — | P | 0-1 | P3 (partial only) |
 | Coinbase | P | — | — | 0-1 | P3 (partial only) |
 

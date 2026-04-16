@@ -27,46 +27,12 @@ f64 to Decimal conversion at Trading trait boundary. Prevents IEEE-754 drift fro
 - [x] PrecisionCache wired into all 18 CEX connectors (place_order, amend_order, batch_orders)
 - [x] 17 unit tests for precision functions + cache
 - [x] Broker/DEX connectors: Paradex, OANDA, Alpaca, Zerodha wired to PrecisionCache
-- [x] DEX with own precision systems: dYdX (MarketConfigCache), GMX (U256 on-chain), Lighter ({:.8} fixed)
-- [x] Stubs skipped: Jupiter, Raydium (place_order returns UnsupportedOperation)
+- [x] DEX with own precision systems: dYdX (MarketConfigCache), Lighter ({:.8} fixed)
+- [x] Paradex: wired to PrecisionCache
 
-## Phase 0.5: DEX/Swap Connector Gaps (DONE)
+## Phase 0.5: DEX Connector Gaps (DONE)
 
-Complete unfinished DEX/swap connectors — wire existing endpoints, fix bugs, implement missing swap APIs.
-Trading trait is mandatory (CoreConnector supertrait) — AMMs return UnsupportedOperation by design.
-Real swap execution lives in struct methods and optional on-chain features.
-
-### GMX (DONE)
-- [x] Fix `get_funding_rate` — was wrongly stubbed, now parses `/markets/info` fundingFactorPerSecond
-- [x] Implement `get_positions` via Subsquid GraphQL
-- [x] Implement `get_open_orders` via Subsquid GraphQL
-- [x] Implement `get_order_history` via Subsquid GraphQL
-- [x] Implement `get_order` via Subsquid single-item lookup
-- [x] Wire ERC-20 `balanceOf` into `get_balance` via EvmProvider
-- [x] Fix ExchangeRouter address (0x7C68 to 0x87d6)
-
-### Jupiter (DONE)
-- [x] Fix Ultra Swap bug: correct HTTP method (GET) + requestId wiring
-- [x] Update deprecated balances to `/holdings/{address}` endpoint
-- [x] Wire holdings into Account trait `get_balance`
-- [x] Implement Trigger API (limit orders): create, cancel, bulk cancel, query
-- [x] Implement Recurring API (DCA orders): create, cancel, query
-- [x] Add token search/trending/category/recent wrapper methods
-
-### Raydium (DONE)
-- [x] Implement `get_swap_quote()` wrapper over SwapQuoteBaseIn/Out
-- [x] Implement `build_swap_transaction()` wrapper over SwapQuoteBaseIn/Out
-- [x] Fix WebSocket: dynamic pool lookup via REST fallback + cache
-- [x] Fix WebSocket race condition: broadcast channel init in new()
-- [x] Add 8 missing wrappers: token list, farm, pool, RPCs, priority fees
-
-### Uniswap (DONE)
-- [x] Wire `POST /swap` to `parse_swap_transaction()` (typed SwapTransaction struct)
-- [x] Fix WebSocket prices: decimal scaling (raw wei to human-readable)
-- [x] Fix `get_token_balance()`: dynamic decimals query
-- [x] Fix `volume_24h` in ticker: now queries poolDayDatas
-- [x] Surface TVL from pool queries
-- [x] Wire `POST /approval` endpoint
+Complete unfinished DEX connectors — wire existing endpoints, fix bugs, implement missing APIs.
 
 ### dYdX (DONE)
 - [x] Wire TakeProfit conditional orders via ConditionalPlan + TriggerDirection
@@ -136,12 +102,11 @@ All 24 connectors now implement `Trading::get_user_trades`.
 - [x] **Bitstamp** — `POST /api/v2/user_transactions/`
 - [x] **Gemini** — `POST /v1/mytrades`
 
-### DEX (5)
+### DEX (4)
 - [x] **HyperLiquid** — `POST /info` action=`userFills` (no auth, address-based)
 - [x] **dYdX v4** — `GET /v4/fills` (indexer, address-based)
 - [x] **Lighter** — `GET /api/v1/trades` (auth token required)
 - [x] **Paradex** — `GET /v1/fills` (JWT+StarkKey)
-- [x] **GMX** — Subsquid GraphQL `tradeActions` query (address-based)
 
 ### Stocks/Brokers (1)
 - [x] **Alpaca** — `GET /v2/account/activities/FILL` (API key header)
@@ -187,7 +152,7 @@ Two new traits added to core — funding rate payment history and full account l
 - [x] **Alpaca** — `GET /v2/account/activities`
 
 ### Not applicable (default UnsupportedOperation)
-- GMX, Lighter — no funding history endpoint (on-chain settlement only)
+- Lighter — no funding history endpoint (on-chain settlement only)
 - BingX, HTX, MEXC, Upbit, Coinbase, Gemini — no ledger/funding endpoint in public API
 - Tinkoff, OANDA, IB, Dukascopy — broker connectors, deferred
 
@@ -377,10 +342,6 @@ Deferred until accounts are obtained.
 - [ ] place_order (virtual rubles)
 - [ ] get_balance, get_positions on sandbox account
 
-**GMX v2** — requires EVM wallet with real ETH (Arbitrum Sepolia testnet not actively maintained)
-- [ ] Wire EvmProvider to connector
-- [ ] REST: place_order, cancel_order, get_positions, get_balance
-
 **Coinbase** — public market data works; trading sandbox (`api-public.sandbox.exchange.coinbase.com`) has static responses only
 - [ ] REST: get_klines, get_ticker, get_orderbook — validate on real data
 - [ ] WS: subscribe_klines, subscribe_orderbook
@@ -417,7 +378,7 @@ On-chain write operations (transaction submission) are handled by dig2chain, not
 - [ ] get_native_balance — ETH balance for address
 - [ ] erc20_balance() — ERC-20 token balance via eth_call
 - [ ] get_logs — Transfer event filter over a block range
-- [ ] EvmDecoder: decode_block() on a real block (ERC-20 transfers, Uniswap swaps)
+- [ ] EvmDecoder: decode_block() on a real block (ERC-20 transfers, DEX swaps)
 - [ ] Log subscription via WebSocket provider
 
 ### Bitcoin
@@ -430,7 +391,7 @@ On-chain write operations (transaction submission) are handled by dig2chain, not
 - [ ] Connect to mainnet-beta RPC
 - [ ] get_height — current slot
 - [ ] get_native_balance — SOL balance for address
-- [ ] SolanaDecoder: decode_transaction() on a real tx (SPL transfers, Raydium swap)
+- [ ] SolanaDecoder: decode_transaction() on a real tx (SPL transfers, DEX swap)
 - [ ] Account subscription via WebSocket
 
 ### Cosmos (Osmosis as test target)
@@ -487,8 +448,7 @@ These are already implemented on individual connectors — just need match-arm d
 - [ ] MarginTrading: Binance, Bybit, OKX (margin borrow/repay)
 - [ ] EarnStaking: Binance, Bybit, OKX (earn/flexible savings)
 - [ ] ConvertSwap: Binance, Bybit (dust conversion, instant swap)
-- [ ] VaultManager: GMX, HyperLiquid, Paradex (vault deposit/withdraw)
-- [ ] LiquidityProvider: Jupiter, Raydium (LP position management)
+- [ ] VaultManager: HyperLiquid, Paradex (vault deposit/withdraw)
 - [ ] StakingDelegation: CosmosProvider-backed connectors (dYdX, Osmosis)
 - [ ] TriggerOrders: Binance, Bybit, OKX (TP/SL conditional orders)
 - [ ] MarketMakerProtection: Binance, Bybit, Deribit (MMP config, mass quoting)

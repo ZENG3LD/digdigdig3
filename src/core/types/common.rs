@@ -37,10 +37,6 @@ pub enum ExchangeId {
 
     // DEX
     Lighter,
-    Uniswap,
-    Jupiter,
-    Raydium,
-    Gmx,
     Paradex,
     Dydx,
 
@@ -113,10 +109,6 @@ impl ExchangeId {
             Self::Deribit => "deribit",
             Self::HyperLiquid => "hyperliquid",
             Self::Lighter => "lighter",
-            Self::Uniswap => "uniswap",
-            Self::Jupiter => "jupiter",
-            Self::Raydium => "raydium",
-            Self::Gmx => "gmx",
             Self::Paradex => "paradex",
             Self::Dydx => "dydx",
             Self::Polymarket => "polymarket",
@@ -173,10 +165,6 @@ impl ExchangeId {
             "deribit" => Some(Self::Deribit),
             "hyperliquid" => Some(Self::HyperLiquid),
             "lighter" => Some(Self::Lighter),
-            "uniswap" => Some(Self::Uniswap),
-            "jupiter" => Some(Self::Jupiter),
-            "raydium" => Some(Self::Raydium),
-            "gmx" => Some(Self::Gmx),
             "paradex" => Some(Self::Paradex),
             "dydx" => Some(Self::Dydx),
             "polymarket" => Some(Self::Polymarket),
@@ -214,7 +202,7 @@ impl ExchangeId {
     pub fn exchange_type(&self) -> ExchangeType {
         match self {
             Self::HyperLiquid => ExchangeType::Hybrid,
-            Self::Lighter | Self::Uniswap | Self::Jupiter | Self::Raydium | Self::Gmx | Self::Paradex | Self::Dydx => ExchangeType::Dex,
+            Self::Lighter | Self::Paradex | Self::Dydx => ExchangeType::Dex,
             Self::Polymarket | Self::Polygon | Self::Finnhub | Self::Tiingo | Self::Twelvedata | Self::Coinglass | Self::CryptoCompare | Self::WhaleAlert | Self::Bitquery | Self::DefiLlama | Self::Dukascopy | Self::JQuants | Self::Krx | Self::Fred | Self::Bls | Self::YahooFinance => ExchangeType::DataProvider,
             Self::Alpaca | Self::Oanda | Self::AngelOne | Self::Zerodha | Self::Fyers | Self::Dhan | Self::Upstox | Self::Tinkoff | Self::AlphaVantage | Self::Moex | Self::Ib | Self::Futu => ExchangeType::Cex, // Brokers/providers with trading capabilities
             Self::Custom(_) => ExchangeType::Cex, // default

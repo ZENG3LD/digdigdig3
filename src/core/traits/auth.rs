@@ -166,12 +166,10 @@ pub enum CredentialKind {
 
     /// Ethereum ECDSA wallet signing (EIP-712).
     ///
-    /// 2/24: HyperLiquid, GMX.
+    /// 1/43: HyperLiquid.
     EthereumWallet,
 
     /// Solana Ed25519 keypair.
-    ///
-    /// 1/24: Jupiter, Raydium.
     SolanaKeypair,
 
     /// StarkEx / StarkNet STARK key.

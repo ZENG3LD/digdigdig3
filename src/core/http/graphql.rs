@@ -40,7 +40,7 @@ impl GraphQlClient {
     /// Create a new GraphQL client wrapping an `HttpClient`.
     ///
     /// `endpoint` is the full URL to the GraphQL endpoint
-    /// (e.g. `"https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3"`).
+    /// (e.g. `"https://api.thegraph.com/subgraphs/name/some-protocol/some-subgraph"`).
     pub fn new(http: HttpClient, endpoint: &str) -> Self {
         Self {
             http,

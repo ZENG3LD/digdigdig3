@@ -180,7 +180,6 @@ Notes:
 
 Notes:
 - Paradex WebSocket removed from live watchlist — per-symbol attribution is unreliable (exchange uses a global channel).
-- Solana interaction (previously Jupiter/Raydium) is handled via dig2chain. These connectors were removed from digdigdig3.
 
 ### L3 open — Prediction Markets (1 connector)
 
@@ -439,7 +438,7 @@ Chain providers used internally by DEX connectors for transaction signing and qu
 
 | Provider | Chain | Feature Flag | Used By |
 |----------|-------|-------------|---------|
-| `EvmProvider` | Ethereum/EVM | `onchain-evm` (default) | Uniswap, GMX (legacy) |
+| `EvmProvider` | Ethereum/EVM | `onchain-evm` (default) | HyperLiquid |
 | `CosmosProvider` | Cosmos | `onchain-cosmos` | dYdX |
 | `StarkNetProvider` | StarkNet | `onchain-starknet` | Paradex |
 
@@ -477,7 +476,7 @@ WebSocket base: `src/core/websocket/base_websocket.rs` — handles reconnect, pi
 | JWT ES256 (EC P-256) | Coinbase, Upbit, Tinkoff, Dhan, J-Quants |
 | JWT + TOTP | Angel One |
 | OAuth2 / Bearer token | Upstox, Fyers, Zerodha, OANDA, IB |
-| EIP-712 (Ethereum typed data) | EvmProvider (Uniswap/GMX) |
+| EIP-712 (Ethereum typed data) | EvmProvider (HyperLiquid) |
 | Cosmos SDK wallet | dYdX |
 | StarkNet ECDSA (STARK key) | Paradex |
 | Native ECgFp5+Schnorr | Lighter |
@@ -509,7 +508,6 @@ Removed features (extracted to dig2chain): `onchain-solana`, `onchain-bitcoin`, 
 | Connector | Issue | Status |
 |-----------|-------|--------|
 | Vertex | Exchange shut down 2025-08-14, acquired by Ink Foundation | Permanently disabled. Code retained as reference. |
-| GMX | No real-time WebSocket API — websocket.rs polls REST internally | Removed from live watchlist. REST data works. |
 | Paradex | Per-symbol WebSocket attribution unreliable (exchange uses a global channel) | WebSocket removed from live watchlist. REST works. |
 | Futu | Requires OpenD local daemon | All methods return `UnsupportedOperation` until OpenD binary is running. |
 

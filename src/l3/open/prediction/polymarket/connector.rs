@@ -356,7 +356,7 @@ impl ExchangeIdentity for PolymarketConnector {
 
 #[async_trait]
 impl MarketData for PolymarketConnector {
-    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+    fn market_data_capabilities(&self, _account_type: AccountType) -> MarketDataCapabilities {
         MarketDataCapabilities {
             has_ping: true,
             has_price: true,

@@ -373,7 +373,7 @@ impl MarketData for LighterConnector {
         Ok(())
     }
 
-    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+    fn market_data_capabilities(&self, _account_type: AccountType) -> MarketDataCapabilities {
         MarketDataCapabilities {
             has_ping: true,           // GET /status
             has_price: true,          // GET /orderBookDetails (best bid/ask midpoint)
@@ -608,7 +608,7 @@ impl Trading for LighterConnector {
         Ok(trades)
     }
 
-    fn trading_capabilities(&self) -> TradingCapabilities {
+    fn trading_capabilities(&self, _account_type: AccountType) -> TradingCapabilities {
         TradingCapabilities {
             has_market_order: true,    // OrderType::Market → tx_type 14 with order_type_code 1
             has_limit_order: true,     // OrderType::Limit → tx_type 14 with order_type_code 0
@@ -743,7 +743,7 @@ impl Account for LighterConnector {
         })
     }
 
-    fn account_capabilities(&self) -> AccountCapabilities {
+    fn account_capabilities(&self, _account_type: AccountType) -> AccountCapabilities {
         AccountCapabilities {
             has_balances: true,         // GET /api/v1/account (collateral + portfolio)
             has_account_info: true,     // GET /api/v1/account + OrderBooks for fees

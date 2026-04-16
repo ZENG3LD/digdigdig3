@@ -552,7 +552,7 @@ impl MarketData for OkxConnector {
         Ok(symbols)
     }
 
-    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+    fn market_data_capabilities(&self, _account_type: AccountType) -> MarketDataCapabilities {
         MarketDataCapabilities {
             has_ping: true,
             has_price: true,
@@ -991,7 +991,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
     
     }
 
-    fn trading_capabilities(&self) -> TradingCapabilities {
+    fn trading_capabilities(&self, _account_type: AccountType) -> TradingCapabilities {
         TradingCapabilities {
             has_market_order: true,
             has_limit_order: true,
@@ -1084,7 +1084,7 @@ impl Account for OkxConnector {
         })
     }
 
-    fn account_capabilities(&self) -> AccountCapabilities {
+    fn account_capabilities(&self, _account_type: AccountType) -> AccountCapabilities {
         AccountCapabilities {
             // get_balance implemented: GET /api/v5/account/balance
             has_balances: true,

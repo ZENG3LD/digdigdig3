@@ -445,7 +445,7 @@ impl MarketData for BitstampConnector {
         Ok(info)
     }
 
-    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+    fn market_data_capabilities(&self, _account_type: AccountType) -> MarketDataCapabilities {
         MarketDataCapabilities {
             has_ping: true,
             has_price: true,
@@ -651,7 +651,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         BitstampParser::parse_user_trades(&response, filter.symbol.as_deref(), filter.start_time, filter.end_time)
     }
 
-    fn trading_capabilities(&self) -> TradingCapabilities {
+    fn trading_capabilities(&self, _account_type: AccountType) -> TradingCapabilities {
         TradingCapabilities {
             has_market_order: true,
             has_limit_order: true,
@@ -714,7 +714,7 @@ impl Account for BitstampConnector {
         BitstampParser::parse_fee_rate(&response, symbol)
     }
 
-    fn account_capabilities(&self) -> AccountCapabilities {
+    fn account_capabilities(&self, _account_type: AccountType) -> AccountCapabilities {
         AccountCapabilities {
             has_balances: true,
             has_account_info: true,

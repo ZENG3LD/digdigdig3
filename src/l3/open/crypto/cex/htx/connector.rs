@@ -509,7 +509,7 @@ impl MarketData for HtxConnector {
         Ok(symbols)
     }
 
-    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+    fn market_data_capabilities(&self, _account_type: AccountType) -> MarketDataCapabilities {
         MarketDataCapabilities {
             has_ping: true,
             has_price: true,
@@ -1068,7 +1068,7 @@ impl Trading for HtxConnector {
         HtxParser::parse_user_trades(&response)
     }
 
-    fn trading_capabilities(&self) -> TradingCapabilities {
+    fn trading_capabilities(&self, _account_type: AccountType) -> TradingCapabilities {
         TradingCapabilities {
             has_market_order: true,
             has_limit_order: true,
@@ -1176,7 +1176,7 @@ impl Account for HtxConnector {
         })
     }
 
-    fn account_capabilities(&self) -> AccountCapabilities {
+    fn account_capabilities(&self, _account_type: AccountType) -> AccountCapabilities {
         AccountCapabilities {
             has_balances: true,
             has_account_info: true,

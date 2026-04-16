@@ -42,7 +42,8 @@ pub trait Account: ExchangeIdentity {
     ///
     /// The default implementation returns permissive defaults.
     /// Connectors with specific limitations should override this method.
-    fn account_capabilities(&self) -> AccountCapabilities {
+    fn account_capabilities(&self, account_type: AccountType) -> AccountCapabilities {
+        let _ = account_type;
         AccountCapabilities::permissive()
     }
 }

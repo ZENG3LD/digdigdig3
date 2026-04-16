@@ -348,7 +348,7 @@ impl MarketData for GeminiConnector {
         Ok(result)
     }
 
-    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+    fn market_data_capabilities(&self, _account_type: AccountType) -> MarketDataCapabilities {
         MarketDataCapabilities {
             // Gemini has no dedicated ping endpoint; we use /v1/symbols as health check
             has_ping: true,
@@ -575,7 +575,7 @@ impl Trading for GeminiConnector {
         GeminiParser::parse_user_trades(&response, filter.end_time)
     }
 
-    fn trading_capabilities(&self) -> TradingCapabilities {
+    fn trading_capabilities(&self, _account_type: AccountType) -> TradingCapabilities {
         TradingCapabilities {
             has_market_order: true,
             has_limit_order: true,
@@ -634,7 +634,7 @@ impl Account for GeminiConnector {
         GeminiParser::parse_notional_volume_fees(&response, symbol)
     }
 
-    fn account_capabilities(&self) -> AccountCapabilities {
+    fn account_capabilities(&self, _account_type: AccountType) -> AccountCapabilities {
         AccountCapabilities {
             // get_balance uses /v1/balances
             has_balances: true,

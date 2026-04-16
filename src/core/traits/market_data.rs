@@ -83,7 +83,8 @@ pub trait MarketData: ExchangeIdentity {
     ///
     /// The default implementation returns permissive defaults.
     /// Connectors with specific limitations should override this method.
-    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+    fn market_data_capabilities(&self, account_type: AccountType) -> MarketDataCapabilities {
+        let _ = account_type;
         MarketDataCapabilities::permissive()
     }
 }

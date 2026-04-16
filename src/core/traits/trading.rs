@@ -99,7 +99,8 @@ pub trait Trading: ExchangeIdentity {
     ///
     /// The default implementation returns permissive defaults.
     /// Connectors with specific limitations should override this method.
-    fn trading_capabilities(&self) -> TradingCapabilities {
+    fn trading_capabilities(&self, account_type: AccountType) -> TradingCapabilities {
+        let _ = account_type;
         TradingCapabilities::permissive()
     }
 }

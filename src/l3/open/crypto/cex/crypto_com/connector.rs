@@ -342,7 +342,7 @@ impl MarketData for CryptoComConnector {
         Ok(info)
     }
 
-    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+    fn market_data_capabilities(&self, _account_type: AccountType) -> MarketDataCapabilities {
         MarketDataCapabilities {
             has_ping: true,
             has_price: true,
@@ -953,7 +953,7 @@ impl Trading for CryptoComConnector {
         CryptoComParser::parse_user_trades(&response)
     }
 
-    fn trading_capabilities(&self) -> TradingCapabilities {
+    fn trading_capabilities(&self, _account_type: AccountType) -> TradingCapabilities {
         TradingCapabilities {
             has_market_order: true,
             has_limit_order: true,
@@ -1114,7 +1114,7 @@ impl Account for CryptoComConnector {
         CryptoComParser::parse_fee_rate(&response)
     }
 
-    fn account_capabilities(&self) -> AccountCapabilities {
+    fn account_capabilities(&self, _account_type: AccountType) -> AccountCapabilities {
         AccountCapabilities {
             // get_balance is implemented
             has_balances: true,

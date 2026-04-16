@@ -4,26 +4,37 @@ Checkbox status tracks real validation against live data or real accounts — no
 
 ---
 
+## What's Done This Session
+
+- L2 orderbook research for all L3/open connectors (18 CEX + 3 DEX + Polymarket)
+- `OrderbookCapabilities` implemented and wired for all L3/open connectors
+- WS integration tests written for all 18 L3/open CEX connectors
+- 14 of 18 pass live; 4 blocked by geo-restriction (Upbit, Bitfinex, Bitstamp, Crypto.com)
+- READMEs written for all L3/open connectors
+- Full codebase restructured to l1/l2/l3 + open/gated layout
+
+---
+
 ## Phase 0: Precision Guard (DONE)
 
-f64 → Decimal conversion at Trading trait boundary. Prevents IEEE-754 drift from corrupting order prices.
+f64 to Decimal conversion at Trading trait boundary. Prevents IEEE-754 drift from corrupting order prices.
 
 - [x] Research: f64 accumulation errors, CCXT approach, sub-tick drift analysis
 - [x] Core functions: `safe_price()` (round), `safe_qty()` (floor) in `core/utils/precision.rs`
 - [x] `PrecisionCache`: thread-safe per-symbol tick/step cache with RwLock
 - [x] `SymbolInfo.tick_size` field added
 - [x] 23 parsers extract real tick_size from exchange APIs
-- [x] PrecisionCache wired into all 19 CEX connectors (place_order, amend_order, batch_orders)
+- [x] PrecisionCache wired into all 18 CEX connectors (place_order, amend_order, batch_orders)
 - [x] 17 unit tests for precision functions + cache
 - [x] Broker/DEX connectors: Paradex, OANDA, Alpaca, Zerodha wired to PrecisionCache
 - [x] DEX with own precision systems: dYdX (MarketConfigCache), GMX (U256 on-chain), Lighter ({:.8} fixed)
-- [x] Stubs skipped: Jupiter, Raydium (place_order → UnsupportedOperation)
+- [x] Stubs skipped: Jupiter, Raydium (place_order returns UnsupportedOperation)
 
 ## Phase 0.5: DEX/Swap Connector Gaps (DONE)
 
 Complete unfinished DEX/swap connectors — wire existing endpoints, fix bugs, implement missing swap APIs.
 Trading trait is mandatory (CoreConnector supertrait) — AMMs return UnsupportedOperation by design.
-Real swap execution lives in struct methods + optional on-chain features.
+Real swap execution lives in struct methods and optional on-chain features.
 
 ### GMX (DONE)
 - [x] Fix `get_funding_rate` — was wrongly stubbed, now parses `/markets/info` fundingFactorPerSecond
@@ -32,11 +43,11 @@ Real swap execution lives in struct methods + optional on-chain features.
 - [x] Implement `get_order_history` via Subsquid GraphQL
 - [x] Implement `get_order` via Subsquid single-item lookup
 - [x] Wire ERC-20 `balanceOf` into `get_balance` via EvmProvider
-- [x] Fix ExchangeRouter address (0x7C68→0x87d6)
+- [x] Fix ExchangeRouter address (0x7C68 to 0x87d6)
 
 ### Jupiter (DONE)
 - [x] Fix Ultra Swap bug: correct HTTP method (GET) + requestId wiring
-- [x] Update deprecated balances → `/holdings/{address}` endpoint
+- [x] Update deprecated balances to `/holdings/{address}` endpoint
 - [x] Wire holdings into Account trait `get_balance`
 - [x] Implement Trigger API (limit orders): create, cancel, bulk cancel, query
 - [x] Implement Recurring API (DCA orders): create, cancel, query
@@ -50,8 +61,8 @@ Real swap execution lives in struct methods + optional on-chain features.
 - [x] Add 8 missing wrappers: token list, farm, pool, RPCs, priority fees
 
 ### Uniswap (DONE)
-- [x] Wire `POST /swap` → `parse_swap_transaction()` (typed SwapTransaction struct)
-- [x] Fix WebSocket prices: decimal scaling (raw wei → human-readable)
+- [x] Wire `POST /swap` to `parse_swap_transaction()` (typed SwapTransaction struct)
+- [x] Fix WebSocket prices: decimal scaling (raw wei to human-readable)
 - [x] Fix `get_token_balance()`: dynamic decimals query
 - [x] Fix `volume_24h` in ticker: now queries poolDayDatas
 - [x] Surface TVL from pool queries
@@ -59,7 +70,7 @@ Real swap execution lives in struct methods + optional on-chain features.
 
 ### dYdX (DONE)
 - [x] Wire TakeProfit conditional orders via ConditionalPlan + TriggerDirection
-- [x] Wire long-term orders via TimeInForce::Gtd → build_place_long_term_order_tx
+- [x] Wire long-term orders via TimeInForce::Gtd to build_place_long_term_order_tx
 - [x] Implement cancel_all_orders helper (serial cancel with sequence tracking)
 
 ### Lighter (DONE)
@@ -75,7 +86,7 @@ Real swap execution lives in struct methods + optional on-chain features.
 
 ## Phase 0.9: Fix Broken Testnet Flags (DONE)
 
-Testnet pipeline fix: `Credentials.testnet` → `ConnectorFactory` → `TestHarness` + fix 9 broken connectors.
+Testnet pipeline fix: `Credentials.testnet` to `ConnectorFactory` to `TestHarness` + fix 9 broken connectors.
 
 **Pipeline plumbing (commit 6c61d70):**
 - [x] Added `testnet: bool` to `Credentials` struct + `with_testnet()` builder
@@ -89,7 +100,6 @@ Testnet pipeline fix: `Credentials.testnet` → `ConnectorFactory` → `TestHarn
 - [x] **Bitget** — stores testnet, selects TESTNET URLs, injects `X-CHANNEL-API-CODE: paptrading` header
 - [x] **Bitfinex** — stores testnet, documented paper-trading via TEST-prefixed symbols
 - [x] **HTX** — documented no public testnet, flag stored for future use
-- [x] **Bithumb** — returns `UnsupportedOperation` when `testnet=true` (no testnet exists)
 - [x] **Angel One** — returns `UnsupportedOperation` when `testnet=true` (no sandbox)
 - [x] **Dhan** — documented: sandbox is token-based, not URL-based (correct by design)
 - [x] **IB** — added `paper()` constructor + `with_testnet()` builder (port 4004)
@@ -97,14 +107,13 @@ Testnet pipeline fix: `Credentials.testnet` → `ConnectorFactory` → `TestHarn
 
 **Still open (not blocking Phase 1):**
 - [ ] **Binance** — Verify testnet URL `testapi.binance.vision` vs `testnet.binance.vision/api` (may already be correct — both may work)
-- [ ] **GateIO** — Verify `api-testnet.gateapi.io` domain still active after `.io` → `.ws` migration
+- [ ] **GateIO** — Verify `api-testnet.gateapi.io` domain still active after `.io` to `.ws` migration
 
 ---
 
 ## Phase 0.95: Implement `get_user_trades` (DONE)
 
-All 24 connectors now implement `Trading::get_user_trades` — fills/trades history
-is available for dig3x3 to wrap as a thin parser layer.
+All 24 connectors now implement `Trading::get_user_trades`.
 
 ### CEX Major (7)
 - [x] **Binance** — `GET /api/v3/myTrades` (spot) + `GET /fapi/v1/userTrades` (futures)
@@ -115,13 +124,12 @@ is available for dig3x3 to wrap as a thin parser layer.
 - [x] **Coinbase** — `GET /api/v3/brokerage/orders/historical/fills` (cursor-based)
 - [x] **Gate.io** — `GET /api/v4/spot/my_trades` + `GET /api/v4/futures/{settle}/my_trades`
 
-### CEX Secondary (11)
+### CEX Secondary (9)
 - [x] **BingX** — `GET /openApi/swap/v2/trade/fillHistory`
 - [x] **Bitget** — `GET /api/v2/spot/trade/fills` + `GET /api/v2/mix/order/fills`
 - [x] **Bitfinex** — `POST /v2/auth/r/trades/hist`
 - [x] **HTX** — `GET /v1/order/matchresults` (spot)
 - [x] **MEXC** — `GET /api/v3/myTrades`
-- [x] **Phemex** — `GET /api-data/g-orders/tradeHistory`
 - [x] **Crypto.com** — `POST private/get-trades`
 - [x] **Upbit** — extract from order details (requires order_id)
 - [x] **Deribit** — `GET /api/v2/private/get_user_trades_by_currency`
@@ -143,7 +151,6 @@ is available for dig3x3 to wrap as a thin parser layer.
 ## Phase 0.96: Implement `FundingHistory` + `AccountLedger` traits (DONE)
 
 Two new traits added to core — funding rate payment history and full account ledger/transaction log.
-Researched per-exchange endpoints individually, not copy-pasted from Binance.
 
 ### Core types added
 - `FundingPayment` — symbol, funding_rate, position_size, payment, asset, timestamp
@@ -152,7 +159,7 @@ Researched per-exchange endpoints individually, not copy-pasted from Binance.
 - `LedgerEntryType` — Trade, Deposit, Withdrawal, Funding, Fee, Rebate, Transfer, Liquidation, Settlement, Other
 - `LedgerFilter` — asset, entry_type, start_time, end_time, limit
 
-### FundingHistory implementations (12 connectors)
+### FundingHistory implementations (11 connectors)
 - [x] **Binance** — `GET /fapi/v1/income` (type=FUNDING)
 - [x] **Bybit** — `GET /v5/account/transaction-log` (type=SETTLEMENT)
 - [x] **OKX** — `GET /api/v5/account/bills` (instType=SWAP, type=8)
@@ -161,7 +168,6 @@ Researched per-exchange endpoints individually, not copy-pasted from Binance.
 - [x] **Gate.io** — `GET /api/v4/futures/{settle}/funding_payments`
 - [x] **Bitfinex** — `POST /v2/auth/r/ledgers/hist` (category=28 funding)
 - [x] **Deribit** — `GET /api/v2/private/get_transaction_log` (type=delivery)
-- [x] **Phemex** — funding-fees endpoint
 - [x] **HyperLiquid** — `POST /info` action=`userFunding`
 - [x] **dYdX v4** — `GET /v4/historicalFunding`
 - [x] **Paradex** — `GET /v1/funding-payments`
@@ -187,396 +193,223 @@ Researched per-exchange endpoints individually, not copy-pasted from Binance.
 
 ---
 
-## Phase 1: Crypto CEX/DEX Execution Testing
+## Phase 1A: L3/open CEX — WebSocket Orderbook Tests (IN PROGRESS)
 
-Testing order placement, cancellation, account queries on real exchanges.
-Organized by testnet availability — test the free ones first.
+18 CEX connectors in `src/l3/open/crypto/cex/`. All have `OrderbookCapabilities` implemented.
+WS integration tests written and run against live feeds.
+
+Status: 14 pass, 4 geo-blocked.
+
+**Passing (14):**
+- [x] Binance — WS orderbook live
+- [x] Bybit — WS orderbook live
+- [x] OKX — WS orderbook live
+- [x] KuCoin — WS orderbook live
+- [x] Kraken — WS orderbook live
+- [x] Coinbase — WS orderbook live
+- [x] Gate.io — WS orderbook live
+- [x] HTX — WS orderbook live
+- [x] MEXC — WS orderbook live
+- [x] BingX — WS orderbook live
+- [x] Bitget — WS orderbook live
+- [x] Deribit — WS orderbook live
+- [x] HyperLiquid — WS orderbook live
+- [x] Gemini — WS orderbook live
+
+**Geo-blocked (4) — need VPN or proxy to validate:**
+- [ ] Upbit — geo-restricted (South Korea)
+- [ ] Bitfinex — geo-restricted (US/certain regions)
+- [ ] Bitstamp — geo-restricted (certain regions)
+- [ ] Crypto.com — geo-restricted (certain regions)
 
 ---
 
-### Phase 1A: Free Testnet Connectors (zero cost, test everything)
+## Phase 1B: L3/open DEX — WebSocket Orderbook Tests
 
-Full trading simulation available. No real money required.
+3 DEX connectors in `src/l3/open/crypto/dex/`. All have `OrderbookCapabilities` implemented.
+
+- [ ] dYdX v4 — WS orderbook (v4_orderbook channel, indexer feed)
+- [ ] Lighter — WS orderbook (testnet.zklighter.elliot.ai/stream)
+- [ ] Paradex — WS orderbook (ws.api.testnet.paradex.trade/v1)
+
+Note: Polymarket (`src/l3/open/prediction/`) is REST-only by design — no WS orderbook needed.
+
+---
+
+## Phase 2: L3/open Execution Testing (Testnets)
+
+Order placement, cancellation, account queries on real testnet endpoints.
+All connectors in `src/l3/open/`. No real money required for any item in this phase.
+
+### CEX with free testnets
 
 **Binance** (spot: `testnet.binance.vision/api`, futures: `testnet.binancefuture.com`)
 Keys: GitHub OAuth at testnet.binance.vision — instant, no Binance account needed.
 - [ ] REST: place_order (LIMIT, MARKET)
-- [ ] REST: cancel_order
-- [ ] REST: get_open_orders
-- [ ] REST: get_order_history
-- [ ] REST: get_balance
-- [ ] REST: get_positions (futures — testnet.binancefuture.com)
-- [ ] REST: amend_order
-- [ ] REST: cancel_all_orders
-- [ ] REST: batch_orders
-- [ ] WS: private order updates (`wss://testnet.binance.vision/stream`)
-- [ ] WS: private balance updates
+- [ ] REST: cancel_order, get_open_orders, get_order_history
+- [ ] REST: get_balance, get_positions (futures)
+- [ ] REST: amend_order, cancel_all_orders, batch_orders
+- [ ] WS: private order updates, balance updates
 
 **Bybit** (`api-testnet.bybit.com`, WS: `wss://stream-testnet.bybit.com`)
-Keys: email signup at testnet.bybit.com → request test coins (10,000 USDT + 1 BTC, 24h limit).
+Keys: email signup at testnet.bybit.com, request 10,000 USDT test coins.
 - [ ] REST: place_order (LIMIT, MARKET)
-- [ ] REST: cancel_order
-- [ ] REST: get_open_orders
-- [ ] REST: get_order_history
-- [ ] REST: get_balance
-- [ ] REST: get_positions (perps/futures)
-- [ ] REST: amend_order
-- [ ] REST: cancel_all_orders
-- [ ] REST: batch_orders
-- [ ] WS: private order updates
-- [ ] WS: private balance updates
+- [ ] REST: cancel_order, get_open_orders, get_order_history
+- [ ] REST: get_balance, get_positions
+- [ ] REST: amend_order, cancel_all_orders, batch_orders
+- [ ] WS: private order updates, balance updates
 
-**OKX** (same URL `okx.com` + header `x-simulated-trading: 1`)
-Keys: OKX account → Demo Trading → Personal Center → Demo Trading API.
+**OKX** (same URL + header `x-simulated-trading: 1`)
+Keys: OKX account to Demo Trading to Personal Center to Demo Trading API.
 - [ ] REST: place_order (LIMIT, MARKET)
-- [ ] REST: cancel_order
-- [ ] REST: get_open_orders
-- [ ] REST: get_order_history
-- [ ] REST: get_balance
-- [ ] REST: get_positions (futures/options)
-- [ ] REST: amend_order
-- [ ] REST: cancel_all_orders
-- [ ] REST: batch_orders
-- [ ] WS: private order updates
-- [ ] WS: private balance updates
+- [ ] REST: cancel_order, get_open_orders, get_order_history
+- [ ] REST: get_balance, get_positions
+- [ ] REST: amend_order, cancel_all_orders, batch_orders
+- [ ] WS: private order updates, balance updates
 
 **KuCoin** (`openapi-sandbox.kucoin.com`, WS: `wss://ws-api-sandbox.kucoin.com`)
-Keys: separate account at sandbox.kucoin.com — virtual BTC/ETH/KCS issued on registration.
+Keys: separate account at sandbox.kucoin.com — virtual BTC/ETH/KCS on registration.
 - [ ] REST: place_order (LIMIT, MARKET)
-- [ ] REST: cancel_order
-- [ ] REST: get_open_orders
-- [ ] REST: get_order_history
-- [ ] REST: get_balance
-- [ ] REST: get_positions (futures)
-- [ ] REST: amend_order
-- [ ] REST: cancel_all_orders
-- [ ] REST: batch_orders
-- [ ] WS: private order updates
-- [ ] WS: private balance updates
+- [ ] REST: cancel_order, get_open_orders, get_order_history
+- [ ] REST: get_balance, get_positions (futures)
+- [ ] REST: amend_order, cancel_all_orders, batch_orders
+- [ ] WS: private order updates, balance updates
 
 **Kraken** (futures only: `demo-futures.kraken.com`)
-Keys: any email/password at demo-futures.kraken.com — no email verification, $50K virtual USD.
-Note: Kraken spot has no testnet — spot trading test requires real account (Phase 1B).
+Keys: any email at demo-futures.kraken.com — no email verification, $50K virtual USD.
 - [ ] REST: place_order futures (LIMIT, MARKET)
-- [ ] REST: cancel_order
-- [ ] REST: get_open_orders
-- [ ] REST: get_order_history
-- [ ] REST: get_balance
-- [ ] REST: get_positions (futures)
+- [ ] REST: cancel_order, get_open_orders, get_order_history
+- [ ] REST: get_balance, get_positions
 - [ ] REST: cancel_all_orders
 - [ ] WS: private order updates (`wss://demo-futures.kraken.com/ws/v1`)
-- [ ] WS: private balance updates
 
 **Gemini** (`api.sandbox.gemini.com`, WS: `wss://api.sandbox.gemini.com`)
 Keys: register at exchange.sandbox.gemini.com — auto-verified with test funds. 2FA bypass: header `GEMINI-SANDBOX-2FA: 9999999`.
 - [ ] REST: place_order (LIMIT, MARKET)
-- [ ] REST: cancel_order
-- [ ] REST: get_open_orders
-- [ ] REST: get_order_history
-- [ ] REST: get_balance
+- [ ] REST: cancel_order, get_open_orders, get_order_history, get_balance
 - [ ] REST: cancel_all_orders
-- [ ] WS: private order updates
-- [ ] WS: private balance updates
+- [ ] WS: private order updates, balance updates
 
 **Bitstamp** (`sandbox.bitstamp.net/api/v2/`)
-Keys: existing Bitstamp account → Settings → API Access → New API Key (note: may require live account with KYC first).
+Keys: existing Bitstamp account to Settings to API Access (may require KYC first).
 - [ ] REST: place_order (LIMIT, MARKET)
-- [ ] REST: cancel_order
-- [ ] REST: get_open_orders
-- [ ] REST: get_order_history
-- [ ] REST: get_balance
+- [ ] REST: cancel_order, get_open_orders, get_order_history, get_balance
 - [ ] REST: amend_order
-- [ ] WS: private order updates
-- [ ] WS: private balance updates
+- [ ] WS: private order updates, balance updates
 
 **Deribit** (`test.deribit.com/api/v2`, WS: `wss://test.deribit.com/ws/api/v2`)
 Keys: register at test.deribit.com — no email verification, no KYC, virtual funds auto-credited.
 - [ ] REST: place_order (LIMIT, MARKET)
-- [ ] REST: cancel_order
-- [ ] REST: get_open_orders
-- [ ] REST: get_order_history
-- [ ] REST: get_balance
-- [ ] REST: get_positions (options/futures/perps)
-- [ ] REST: amend_order
-- [ ] REST: cancel_all_orders
-- [ ] WS: private order updates
-- [ ] WS: private balance updates
-
-**Phemex** (`testnet-api.phemex.com`, WS: `wss://testnet.phemex.com/ws`)
-Keys: register at testnet.phemex.com — 0.5 BTC virtual on registration.
-- [ ] REST: place_order (LIMIT, MARKET)
-- [ ] REST: cancel_order
-- [ ] REST: get_open_orders
-- [ ] REST: get_order_history
-- [ ] REST: get_balance
-- [ ] REST: get_positions (perps)
-- [ ] REST: amend_order
-- [ ] REST: cancel_all_orders
-- [ ] WS: private order updates
-- [ ] WS: private balance updates
+- [ ] REST: cancel_order, get_open_orders, get_order_history
+- [ ] REST: get_balance, get_positions (options/futures/perps)
+- [ ] REST: amend_order, cancel_all_orders
+- [ ] WS: private order updates, balance updates
 
 **Bitget** (demo: `api.bitget.com` + header `paptrading: 1`, WS: `wspap.bitget.com`)
-Keys: Bitget account → Demo mode → Personal Center → API Key Management → Create Demo API Key.
+Keys: Bitget account to Demo mode to API Key Management to Create Demo API Key.
 - [ ] REST: place_order (LIMIT, MARKET)
-- [ ] REST: cancel_order
-- [ ] REST: get_open_orders
-- [ ] REST: get_order_history
-- [ ] REST: get_balance
-- [ ] REST: get_positions (futures)
-- [ ] REST: amend_order
-- [ ] REST: cancel_all_orders
-- [ ] REST: batch_orders
-- [ ] WS: private order updates
-- [ ] WS: private balance updates
+- [ ] REST: cancel_order, get_open_orders, get_order_history
+- [ ] REST: get_balance, get_positions (futures)
+- [ ] REST: amend_order, cancel_all_orders, batch_orders
+- [ ] WS: private order updates, balance updates
 
-**BingX** (VST virtual pairs on live endpoint: `BTC-VST`, `ETH-VST`)
+**BingX** (VST virtual pairs: `BTC-VST`, `ETH-VST` on live endpoint)
 Keys: BingX account (free signup) — new accounts auto-receive 100,000 VST.
-- [ ] REST: place_order (LIMIT, MARKET) on VST pairs
-- [ ] REST: cancel_order
-- [ ] REST: get_open_orders
-- [ ] REST: get_order_history
-- [ ] REST: get_balance (VST balance)
-- [ ] REST: get_positions
-- [ ] REST: amend_order
-- [ ] REST: cancel_all_orders
-- [ ] REST: batch_orders
-- [ ] WS: private order updates
-- [ ] WS: private balance updates
-
-**dYdX v4** (testnet indexer: `indexer.v4testnet.dydx.exchange/v4`, WS: `wss://indexer.v4testnet.dydx.exchange/v4/ws`)
-Keys: Cosmos wallet + faucet at faucet.v4testnet.dydx.exchange (300 USDC Dv4TNT drip, no mainnet deposit needed).
-- [ ] REST/gRPC: place_order (LIMIT, MARKET)
-- [ ] REST/gRPC: cancel_order
-- [ ] REST: get_open_orders
-- [ ] REST: get_order_history
-- [ ] REST: get_balance
-- [ ] REST: get_positions (perps)
-- [ ] REST: cancel_all_orders
-- [ ] WS: private order updates
-
-**Lighter** (`testnet.zklighter.elliot.ai`, WS: `wss://testnet.zklighter.elliot.ai/stream`)
-Keys: account via testnet.app.lighter.xyz + test funds via Lighter Discord (no automated faucet as of 2026).
-- [ ] place_order_signed() — ZK-native signed order (internal method)
-- [ ] REST: cancel_order
-- [ ] REST: get_open_orders
-- [ ] REST: get_order_history
-- [ ] REST: get_balance
-- [ ] REST: get_positions
-- [ ] Expose place_order_signed() through standard Trading trait
-
-**Paradex** (testnet: `api.testnet.paradex.trade/v1`, WS: `wss://ws.api.testnet.paradex.trade/v1`)
-Keys: StarkNet wallet + testnet USDC via Paradex Discord #developers. Testnet launched March 2025.
-- [ ] REST: place_order (StarkNet signing)
-- [ ] REST: cancel_order
-- [ ] REST: get_open_orders
-- [ ] REST: get_order_history
-- [ ] REST: get_balance
-- [ ] REST: get_positions
+- [ ] REST: place_order on VST pairs (LIMIT, MARKET)
+- [ ] REST: cancel_order, get_open_orders, get_order_history
+- [ ] REST: get_balance (VST), get_positions
+- [ ] REST: amend_order, cancel_all_orders, batch_orders
+- [ ] WS: private order updates, balance updates
 
 **OANDA** (practice: `api-fxpractice.oanda.com`, streaming: `stream-fxpractice.oanda.com`)
-Keys: free registration at oanda.com → My Account → My Services → Manage API Access. No credit card. Rate limit: 120 req/s.
+Keys: free registration at oanda.com to My Account to Manage API Access. No credit card.
 - [ ] REST: place_order (LIMIT, MARKET)
-- [ ] REST: cancel_order
-- [ ] REST: get_open_orders
-- [ ] REST: get_order_history
-- [ ] REST: get_balance
-- [ ] REST: get_positions
+- [ ] REST: cancel_order, get_open_orders, get_order_history
+- [ ] REST: get_balance, get_positions
 - [ ] REST: amend_order
-- [ ] WS: streaming prices
-- [ ] WS: streaming account updates
+- [ ] WS: streaming prices, streaming account updates
 
 **Alpaca** (`paper-api.alpaca.markets`, WS: `wss://stream.data.alpaca.markets`)
-Keys: signup at app.alpaca.markets (email only) → Paper Trading → API Keys. Default constructor already uses paper URL.
+Keys: signup at app.alpaca.markets (email only) to Paper Trading to API Keys.
 - [ ] REST: place_order (LIMIT, MARKET)
-- [ ] REST: cancel_order
-- [ ] REST: get_open_orders
-- [ ] REST: get_order_history
-- [ ] REST: get_balance
-- [ ] REST: amend_order
+- [ ] REST: cancel_order, get_open_orders, get_order_history, get_balance
+- [ ] REST: amend_order, cancel_all_orders
+- [ ] WS: private order updates, balance updates
+
+### DEX with free testnets
+
+**dYdX v4** (testnet: `indexer.v4testnet.dydx.exchange/v4`)
+Keys: Cosmos wallet + faucet at faucet.v4testnet.dydx.exchange (300 USDC drip, no mainnet deposit).
+- [ ] REST/gRPC: place_order (LIMIT, MARKET)
+- [ ] REST: cancel_order, get_open_orders, get_order_history
+- [ ] REST: get_balance, get_positions
 - [ ] REST: cancel_all_orders
 - [ ] WS: private order updates
-- [ ] WS: private balance updates
+
+**Lighter** (`testnet.zklighter.elliot.ai`)
+Keys: account via testnet.app.lighter.xyz + test funds via Lighter Discord.
+- [ ] place_order_signed() via ZK-native signing
+- [ ] REST: cancel_order, get_open_orders, get_order_history
+- [ ] REST: get_balance, get_positions
+- [ ] Expose place_order_signed() through standard Trading trait
+
+**Paradex** (`api.testnet.paradex.trade/v1`)
+Keys: StarkNet wallet + testnet USDC via Paradex Discord #developers.
+- [ ] REST: place_order (StarkNet signing)
+- [ ] REST: cancel_order, get_open_orders, get_order_history
+- [ ] REST: get_balance, get_positions
 
 ---
 
-### Phase 1B: Free Data Only (no testnet trading, validate market data)
+## Phase 3: L3/gated Connector Validation (Deferred)
 
-No free trading simulation available. Market data endpoints are public and free.
-Test public REST + WebSocket data feeds here. Trading requires real accounts (deferred to Phase 1C or later).
+Connectors in `src/l3/gated/` that require real accounts or institutional API access.
+Deferred until accounts are obtained.
 
-**Coinbase** (public market data only — no testnet for Advanced Trade)
-Note: `api-public.sandbox.exchange.coinbase.com` exists (Exchange sandbox, static responses). Not yet wired.
-- [ ] REST: get_klines — validate on real data
-- [ ] REST: get_ticker
-- [ ] REST: get_orderbook
-- [ ] WS: subscribe_klines
-- [ ] WS: subscribe_orderbook
-
-**Gate.io** (futures testnet only: `fx-api-testnet.gateio.ws/api/v4` — verify domain after gateio.ws migration)
-- [ ] REST: get_klines (spot)
-- [ ] REST: get_ticker (spot)
-- [ ] REST: get_orderbook (spot)
-- [ ] REST: place_order futures (testnet)
-- [ ] REST: get_balance (testnet)
-- [ ] WS: subscribe_orderbook
-
-**HTX** (no testnet — validate public market data only)
-- [ ] REST: get_klines — validate on real data
-- [ ] REST: get_ticker
-- [ ] REST: get_orderbook
-- [ ] WS: subscribe_klines
-- [ ] WS: subscribe_orderbook
-
-**MEXC** (public API only — no spot API sandbox, futures institutional-only)
-- [ ] REST: get_klines — validate on real data
-- [ ] REST: get_ticker
-- [ ] REST: get_orderbook
-- [ ] WS: subscribe_klines
-- [ ] WS: subscribe_orderbook
-
-**Upbit** (full public Quotation API — no auth required)
-- [ ] REST: get_klines — validate on real data
-- [ ] REST: get_ticker
-- [ ] REST: get_orderbook
-- [ ] WS: subscribe_orderbook
-
-**Bitfinex** (public data + 2 paper trading pairs: `tTESTBTC:TESTUSD`, `tTESTBTC:TESTUSDT`)
-- [ ] REST: get_klines — validate on real data
-- [ ] REST: get_ticker
-- [ ] REST: get_orderbook
-- [ ] REST: place_order on paper pairs (TESTBTCTESTUSD)
-- [ ] REST: get_balance (paper sub-account)
-- [ ] WS: subscribe_orderbook
-
-**Crypto.com** (public market data; UAT sandbox is institutional-only)
-- [ ] REST: get_klines — validate on real data
-- [ ] REST: get_ticker
-- [ ] REST: get_orderbook
-- [ ] WS: subscribe_klines
-- [ ] WS: subscribe_orderbook
-
-**HyperLiquid** (testnet exists but requires $5 mainnet deposit for faucet)
-Testnet: `api.hyperliquid-testnet.xyz`. Third-party faucets (Chainstack, QuickNode) may bypass deposit requirement.
-- [ ] REST: get_klines — validate on real data (public, no auth)
-- [ ] REST: get_ticker
-- [ ] REST: get_orderbook
-- [ ] WS: subscribe_orderbook
-- [ ] (defer trading to when faucet is resolved)
-
-**Free data-only providers** (no testnet needed — validate public endpoints)
-- [ ] Finnhub: REST get_ticker, get_klines with free API key (60 calls/min)
-- [ ] Polygon: REST get_klines, get_ticker with free API key (5 calls/min)
-- [ ] FRED: REST economic series query with free API key (120 req/min)
-- [ ] DefiLlama: REST get_protocols, get_pools (no auth at all)
-- [ ] MOEX ISS: REST get_ticker, get_klines (no auth at all)
-- [ ] JQuants: REST historical stock prices (12-week delay free tier)
-- [ ] KRX: REST KOSPI/KOSDAQ market data
-
----
-
-### Phase 1C: Paid / Real Account Required (deferred)
-
-These require either a real brokerage account (KYC) or paid API access. Deferred until accounts are obtained.
-
-**Indian brokers** — all require Indian KYC and real brokerage account
+**Indian brokers** — require Indian KYC and real brokerage account
 - [ ] Zerodha (Kite): connect with OAuth token, validate get_open_orders
-- [ ] Upstox: connect with OAuth token (sandbox exists Jan 2025 but orders-only, no market data)
-- [ ] Angel One: connect with JWT + TOTP, validate get_balance (no testnet — returns UnsupportedOperation when testnet=true)
-- [ ] Fyers: connect with JWT, validate get_order_history (paid API Bridge for paper trading)
-- [ ] Dhan: sandbox available — moved to Phase 1A since developer.dhanhq.co requires no brokerage account
+- [ ] Upstox: connect with OAuth token (sandbox exists but orders-only, no market data)
+- [ ] Angel One: connect with JWT + TOTP, validate get_balance (no testnet)
+- [ ] Fyers: connect with JWT, validate get_order_history
+- [ ] Dhan: sandbox at developer.dhanhq.co — no brokerage account required
 
 **Tinkoff/T-Bank** — requires Russian T-Bank account (full gRPC sandbox once account open)
 - [ ] place_order (virtual rubles)
 - [ ] get_balance, get_positions on sandbox account
 
-**GMX v2** — Arbitrum Sepolia testnet not actively maintained; use real ETH for proper testing
+**GMX v2** — requires EVM wallet with real ETH (Arbitrum Sepolia testnet not actively maintained)
 - [ ] Wire EvmProvider to connector
-- [ ] REST: place_order (requires EVM wallet)
-- [ ] REST: cancel_order
-- [ ] REST: get_positions
-- [ ] REST: get_balance
+- [ ] REST: place_order, cancel_order, get_positions, get_balance
 
-**Coinglass** — paid API from $29/month
-- [ ] liquidations endpoint
-- [ ] open interest endpoint
-- [ ] funding rates endpoint
+**Coinbase** — public market data works; trading sandbox (`api-public.sandbox.exchange.coinbase.com`) has static responses only
+- [ ] REST: get_klines, get_ticker, get_orderbook — validate on real data
+- [ ] WS: subscribe_klines, subscribe_orderbook
 
----
-
-## Phase 1.5: AnyConnector Private Trait Delegation (dig3x3 prerequisite)
-
-Wire remaining traits onto `AnyConnector` dispatch enum:
-- [ ] `Trading` — `get_user_trades()`, `get_order_history()`, `get_open_orders()`, `get_order()`
-- [ ] `Account` — `get_balance()`, `get_account_info()`, `get_fees()`
-- [ ] `Positions` — `get_positions()`, `get_funding_rate()`, `get_closed_pnl()`, `get_funding_rate_history()`
-- [ ] `CustodialFunds` — `get_funds_history()`, `get_deposit_address()`, `withdraw()`
-- [ ] `AccountTransfers` — `transfer()`, `get_transfer_history()`
-
-These are already implemented on individual connectors — just need match-arm delegation in AnyConnector similar to how MarketData is done.
-
-**Blocked by**: Nothing (pure mechanical work)
-**Blocks**: dig3x3 integration (can use `Arc<dyn Trading>` directly via AnyConnector downcast)
+**Gate.io** — futures testnet only (`fx-api-testnet.gateio.ws/api/v4` — verify domain after gateio.ws migration)
+- [ ] REST: get_klines, get_ticker, get_orderbook (spot — real data)
+- [ ] REST: place_order futures (testnet)
+- [ ] WS: subscribe_orderbook
 
 ---
 
-## Phase 1.6: Generic Test Harness Validation
+## Phase 4: L2 Connector Validation
 
-Test harness code already exists in `src/testing/` (~2664 lines across market_data, trading, account, positions suites). This phase is about actually running it with real testnet keys.
+Connectors in `src/l2/`. Market data endpoints — no trading.
 
-- [ ] Set up `.env` with testnet API keys for Phase 1A exchanges (Binance, Bybit, OKX, KuCoin, Deribit, Phemex, Gemini, Bitstamp, Kraken, OANDA, Alpaca, dYdX, Lighter, Paradex, Bitget, BingX)
-- [ ] Run market_data suite against all Phase 1A exchanges (public endpoints — should work without auth keys)
-- [ ] Run trading suite against Phase 1A exchanges with testnet keys (place/cancel/amend orders)
-- [ ] Run account suite against Phase 1A exchanges (balance, order history)
-- [ ] Run positions suite against Phase 1A futures exchanges (Binance futures, Bybit perps, OKX futures, Kraken futures, Deribit, Phemex, dYdX, Lighter, Paradex)
-- [ ] Fix any parser bugs discovered during harness runs
-- [ ] Run market_data suite against Phase 1B exchanges (HTX, MEXC, Upbit, Coinbase, Gate.io, HyperLiquid public)
-
----
-
-## Phase 2: Crypto DataFeed Gaps
-
-Methods that exist but were never validated on real data.
-
-### All CEX (19 active connectors)
-- [ ] REST: get_orderbook — validate for all 19 connectors
-- [ ] REST: get_recent_trades — implement for the 18 missing, then validate all
-- [ ] WS: subscribe_orderbook — validate for all 19 connectors
-- [ ] WS: subscribe_klines — validate where supported
-
-### REST ticker (all CEX except Bitstamp and Gemini)
-- [ ] Binance: REST get_ticker
-- [ ] Bybit: REST get_ticker
-- [ ] OKX: REST get_ticker
-- [ ] KuCoin: REST get_ticker
-- [ ] Kraken: REST get_ticker
-- [ ] Coinbase: REST get_ticker
-- [ ] Gate.io: REST get_ticker
-- [ ] Bitfinex: REST get_ticker
-- [ ] MEXC: REST get_ticker
-- [ ] HTX: REST get_ticker
-- [ ] Bitget: REST get_ticker
-- [ ] BingX: REST get_ticker
-- [ ] Crypto.com: REST get_ticker
-- [ ] Upbit: REST get_ticker
-- [ ] Deribit: REST get_ticker
-- [ ] HyperLiquid: REST get_ticker
-- [ ] dYdX v4: REST get_ticker
-- [ ] Lighter: REST get_ticker
-- [ ] MOEX ISS: REST get_ticker
-
-### DEX data gaps
-- [ ] dYdX: REST get_orderbook — validate on real data
-- [ ] dYdX: WS subscribe_orderbook (v4_orderbook channel) — validate
-- [ ] Lighter: REST get_orderbook — validate on real data
-- [ ] GMX: get_orderbook — impossible (oracle pricing, no orderbook by design)
-- [ ] Jupiter: get_klines — impossible (no historical OHLCV API, need Birdeye/CoinGecko)
-- [ ] Jupiter: get_orderbook — impossible (aggregator, no native book)
+- [ ] Finnhub: REST get_ticker, get_klines with free API key (60 calls/min)
+- [ ] Polygon: REST get_klines, get_ticker with free API key (5 calls/min)
+- [ ] FRED: REST economic series query with free API key (120 req/min)
+- [ ] DefiLlama: REST get_protocols, get_pools (no auth)
+- [ ] MOEX ISS: REST get_ticker, get_klines (no auth)
+- [ ] JQuants: REST historical stock prices (12-week delay free tier)
+- [ ] KRX: REST KOSPI/KOSDAQ market data
 
 ---
 
-## Phase 3: On-Chain Provider Testing
+## Phase 5: L1 Connector Validation
 
-Test chain providers against live nodes. None of this has been exercised.
+Connectors in `src/l1/`. On-chain providers — connect to live nodes, validate read endpoints.
+On-chain write operations (transaction submission) are handled by dig2chain, not here.
 
 ### EVM (Ethereum and compatible chains)
 - [ ] Connect to Ethereum mainnet RPC (QuickNode, Infura, or public)
@@ -635,54 +468,24 @@ Test chain providers against live nodes. None of this has been exercised.
 
 ---
 
-## Phase 4: Authenticated DataFeed Testing
+## Phase 6: Extended Features
 
-Lower priority — providers requiring real accounts or payment that weren't covered in Phase 1C.
+Demand-driven additions. Nothing here is scheduled — items get promoted to earlier phases when needed.
 
-### Stock Brokers (real accounts required)
-- [ ] Interactive Brokers: paper trading — IBKR Lite account (KYC, no minimum) + local TWS/Gateway running
-- [ ] Futu: connect with OpenD daemon running locally, validate get_balance (Futu ID required)
-- [ ] Tinkoff: sandbox after T-Bank account obtained — place sandbox order, get_balance, get_positions
+### AnyConnector private trait delegation (dig3x3 prerequisite)
 
-### Intelligence Feeds
-- [ ] Etherscan: get_transactions and get_token_transfers with free API key (api-sepolia.etherscan.io for testnet)
-- [ ] CryptoCompare: multi-exchange price aggregation with free API key (100K calls/month)
-- [ ] Messari: crypto prices and metrics with free API key (20 req/min)
+Wire remaining traits onto `AnyConnector` dispatch enum:
+- [ ] `Trading` — `get_user_trades()`, `get_order_history()`, `get_open_orders()`, `get_order()`
+- [ ] `Account` — `get_balance()`, `get_account_info()`, `get_fees()`
+- [ ] `Positions` — `get_positions()`, `get_funding_rate()`, `get_closed_pnl()`, `get_funding_rate_history()`
+- [ ] `CustodialFunds` — `get_funds_history()`, `get_deposit_address()`, `withdraw()`
+- [ ] `AccountTransfers` — `transfer()`, `get_transfer_history()`
 
----
+These are already implemented on individual connectors — just need match-arm delegation in AnyConnector similar to how MarketData is done.
 
-## Phase 5: Extended Connectors
-
-New connectors and trait completions.
-
-### Missing CEX
-- [ ] AscendEX
-- [ ] BitMart
-- [ ] CoinEx
-- [ ] WOO X
-- [ ] XT.com
-- [ ] LBank
-- [ ] HashKey
-- [ ] WhiteBIT
-- [ ] BTSE
-- [ ] BigONE
-- [ ] ProBit
-
-### Jupiter (complete implementation)
-- [ ] Implement get_klines (currently stub returning UnsupportedOperation)
-- [ ] Implement get_orderbook (currently stub)
-- [ ] Implement place_order through standard Trading trait
-- [ ] Wire SolanaProvider for transaction submission
-
-### EventProducer trait implementations
-- [ ] EVM: implement EventProducer — emit OnChainEvent from log subscriptions
-- [ ] Solana: implement EventProducer — emit OnChainEvent from account/tx subscriptions
-- [ ] Bitcoin: implement EventProducer — emit OnChainEvent from block scanning
-- [ ] Cosmos: implement EventProducer — emit OnChainEvent from Tendermint events
-
-### Optional Trait Overrides (per-connector explicit impl blocks)
-- [ ] MarginTrading: Binance, Bybit, OKX (all support margin borrow/repay)
-- [ ] EarnStaking: Binance, Bybit, OKX (earn/flexible savings products)
+### Optional trait overrides (per-connector explicit impl blocks)
+- [ ] MarginTrading: Binance, Bybit, OKX (margin borrow/repay)
+- [ ] EarnStaking: Binance, Bybit, OKX (earn/flexible savings)
 - [ ] ConvertSwap: Binance, Bybit (dust conversion, instant swap)
 - [ ] VaultManager: GMX, HyperLiquid, Paradex (vault deposit/withdraw)
 - [ ] LiquidityProvider: Jupiter, Raydium (LP position management)
@@ -692,7 +495,13 @@ New connectors and trait completions.
 - [ ] BlockTradeOtc: Deribit (OTC block trade creation)
 - [ ] CopyTrading: Bybit, Bitget, OKX (follow/unfollow traders)
 
+### EventProducer trait implementations
+- [ ] EVM: emit OnChainEvent from log subscriptions
+- [ ] Solana: emit OnChainEvent from account/tx subscriptions
+- [ ] Bitcoin: emit OnChainEvent from block scanning
+- [ ] Cosmos: emit OnChainEvent from Tendermint events
+
 ### Infrastructure
-- [ ] Interactive Brokers: wire proper brokerage execution (currently aggregator/Web API mode only)
+- [ ] Interactive Brokers: wire proper brokerage execution (currently Web API mode only)
 - [ ] MOEX ISS: verify WebSocket stream works (currently listed as untested on WS)
 - [ ] India broker WebSocket: Zerodha, Upstox, Angel One, Fyers — add WS implementations

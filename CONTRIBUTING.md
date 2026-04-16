@@ -2,26 +2,22 @@
 
 ## Where Help Is Needed Most
 
-### 1. Intelligence feeds are unverified
+### 1. Trading modules are incomplete
 
-All 88 connectors in `src/intelligence_feeds/` were generated but **not tested against real APIs**. If you have API keys for any of these services, help us verify and fix the implementations.
+L3/open CEX connectors (Binance, Bybit, OKX, Kraken, KuCoin, etc.) in `src/l3/open/crypto/cex/` have verified `MarketData` — price, klines, orderbook, ticker all work. But `Trading`, `Account`, and `Positions` trait implementations are **untested stubs** in most of them. If you have exchange accounts with API keys, help us get trading working.
 
-### 2. Trading modules are incomplete
+### 2. API-key-required connectors need data verification
 
-Connectors that work without API keys (Binance, Bybit, OKX, Kraken, etc.) have verified `MarketData` — price, klines, orderbook, ticker all work. But `Trading`, `Account`, and `Positions` trait implementations are **untested stubs** in most of them. If you have exchange accounts with API keys, help us get trading working.
-
-### 3. API-key-required connectors need data verification
-
-Connectors marked `requires_api_key_for_data: true` in the registry have not been verified at all — neither market data nor trading. If you have keys for Coinbase, Alpaca, OANDA, Interactive Brokers, or any Indian/Korean/Japanese brokers, your help is especially valuable.
+Connectors in `src/l3/gated/` (stocks, forex, multi-asset brokers) and paid data providers in `src/l1/paid/` and `src/l2/paid/` have not been verified — neither market data nor trading. If you have keys for OANDA, Interactive Brokers, Alpaca, Tinkoff, Dhan, Zerodha, or similar, your help is especially valuable.
 
 ### Priority
 
 | Priority | What | Where |
 |----------|------|-------|
-| High | Verify & fix intelligence feed connectors | `src/intelligence_feeds/` |
-| High | Test trading on no-API-key exchanges | `src/exchanges/` |
-| Medium | Verify API-key-required data connectors | `src/stocks/`, `src/forex/`, `src/aggregators/` |
-| Low | Add new exchanges or feeds | `src/exchanges/`, `src/intelligence_feeds/` |
+| High | Test trading on CEX connectors | `src/l3/open/crypto/cex/` |
+| High | Verify gated broker connectors | `src/l3/gated/` |
+| Medium | Verify paid data providers | `src/l1/paid/`, `src/l2/paid/` |
+| Low | Add new connectors | see Adding a New Connector below |
 
 ## Adding a New Connector
 
@@ -33,7 +29,7 @@ Every new connector follows the **Agent Carousel** pipeline — a 6-phase proces
 
 2. **Standard module structure:**
    ```
-   src/exchanges/<name>/
+   src/l3/open/crypto/cex/<name>/
    ├── mod.rs          # public exports
    ├── endpoints.rs    # URL constants, endpoint enum, symbol formatting
    ├── auth.rs         # request signing
@@ -43,6 +39,14 @@ Every new connector follows the **Agent Carousel** pipeline — a 6-phase proces
    └── research/       # API documentation (6-8 .md files)
    ```
 
+   Place new connectors in the appropriate subtree:
+   - `src/l1/free/` or `src/l1/paid/` — data-only feeds (no orderbook)
+   - `src/l2/free/` or `src/l2/paid/` — orderbook data (no execution)
+   - `src/l3/open/crypto/cex/` — crypto CEX (no registration needed for market data)
+   - `src/l3/open/crypto/dex/` — decentralized exchanges
+   - `src/l3/open/prediction/` — prediction markets
+   - `src/l3/gated/stocks/`, `src/l3/gated/forex/`, `src/l3/gated/multi/` — brokers requiring account/KYC
+
 3. **Trait implementations** — at minimum `ExchangeIdentity` + `MarketData`. Add `Trading`, `Account`, `Positions` if the exchange supports them.
 
 4. **Registry entry** — add your connector to `ConnectorRegistry` in `src/connector_manager/registry.rs` and to `ConnectorFactory` in `src/connector_manager/factory.rs`.
@@ -51,11 +55,7 @@ Every new connector follows the **Agent Carousel** pipeline — a 6-phase proces
 
 ### Reference Implementation
 
-`src/exchanges/kucoin/` — follow this as the canonical example.
-
-### Intelligence Feeds
-
-Intelligence feeds follow a similar pattern but live in `src/intelligence_feeds/<category>/<name>/`. Add entries to `FeedRegistry` and `FeedFactory` in `src/intelligence_feeds/feed_manager/`.
+`src/l3/open/crypto/cex/kucoin/` — follow this as the canonical example.
 
 ## Code Style
 

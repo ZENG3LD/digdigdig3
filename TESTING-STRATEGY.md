@@ -12,7 +12,7 @@
 
 ## Section 1: Testability Matrix
 
-All ~55 connectors across all categories.
+All ~53 connectors across all categories.
 
 Priority tiers:
 - **Tier 1** — Free testnet with full trading simulation (test everything for free)
@@ -20,7 +20,7 @@ Priority tiers:
 - **Tier 3** — Paid required or real account required
 - **Tier 4** — Blocked, shut down, or structurally impossible to test
 
-### CEX Connectors (19)
+### CEX Connectors (17)
 
 | Connector | Category | Testnet/Sandbox? | Free Data? | Free Trading Test? | Needs Real Money? | API Key Source | Priority |
 |-----------|----------|-----------------|------------|-------------------|-----------------|----------------|----------|
@@ -32,7 +32,6 @@ Priority tiers:
 | Gemini | crypto/cex | YES — full sandbox | Yes (public) | Yes | No | exchange.sandbox.gemini.com | Tier 1 |
 | Bitstamp | crypto/cex | YES — sandbox | Yes (public) | Yes | No (but KYC on live acct) | sandbox.bitstamp.net | Tier 1 |
 | Deribit | crypto/cex | YES — full testnet | Yes (public) | Yes | No | test.deribit.com — free signup | Tier 1 |
-| Phemex | crypto/cex | YES — full testnet | Yes (public) | Yes | No | testnet.phemex.com — free signup | Tier 1 |
 | HyperLiquid | crypto/cex | YES — testnet (faucet requires mainnet deposit) | Yes (public) | Yes* | $5+ USDC on Arbitrum mainnet for faucet | Wallet-based — EVM private key | Tier 1* |
 | Bitget | crypto/cex | YES — demo via header (paptrading: 1) | Yes (public) | Yes (simulated) | No | Bitget demo account — free signup | Tier 1 |
 | BingX | crypto/cex | PARTIAL — VST demo pairs on live endpoint | Yes (public) | Yes (VST, no real money) | No | BingX account — free signup | Tier 1 |
@@ -42,7 +41,6 @@ Priority tiers:
 | Crypto.com | crypto/cex | PARTIAL — UAT institutional only | Yes (public) | No (retail blocked) | No | Institutional account required | Tier 3 |
 | HTX | crypto/cex | NO — testnet shut down | Yes (public) | No | No | Live account (minimal balance) | Tier 2 |
 | Upbit | crypto/cex | NO — no testnet | Yes (public quotation API) | No | KYC required | Static IP required | Tier 2 |
-| Bithumb | crypto/cex | NO — no real testnet (param ignored) | Yes (public) | No | Korean KYC required | Live account | Tier 2 |
 
 ### DEX Connectors (5)
 
@@ -212,11 +210,6 @@ These connectors allow testing the complete trading flow — market data, orders
 - WS: `wss://test.deribit.com/ws/api/v2`
 - Keys: Register at https://test.deribit.com. No email verification, no KYC. Virtual funds auto-credited.
 
-**Phemex (Spot + perpetuals up to 100x)**
-- REST: `https://testnet-api.phemex.com`
-- WS: `wss://testnet.phemex.com/ws`
-- Keys: Register at https://testnet.phemex.com. API keys from testnet API management. 0.5 BTC virtual funds on registration.
-
 **HyperLiquid (Perpetuals — with caveat)**
 - REST: `https://api.hyperliquid-testnet.xyz`
 - WS: `wss://api.hyperliquid-testnet.xyz/ws`
@@ -298,7 +291,6 @@ These connectors have free public market data (no auth or free tier API key) but
 | **HTX** | Public market data (OHLC, orderbook, trades) — no auth | Testnet shut down |
 | **MEXC** | Public REST + WS market data — no auth | Futures API is institutional-only |
 | **Upbit** | Full public Quotation API — no auth | No testnet; private API needs KYC |
-| **Bithumb** | Public market data | Korean KYC for trading |
 | **Gate.io spot** | Public market data | Spot has no testnet; futures testnet available |
 
 ### DEX (quote/read only)
@@ -405,7 +397,6 @@ These connectors cannot be tested without a real brokerage account (KYC required
 | **Aylien** | Acquired by Quantexa 2023; no new user signups | Use NewsAPI or GDELT as alternative |
 | **MEXC spot API (automation)** | Futures API restricted to institutional accounts for automated trading | Manual futures demo at futures.testnet.mexc.com; spot public market data available |
 | **IntoTheBlock** | Sunset/rebranded to Sentora; API access unclear | Check Sentora.io; consider Nansen or Glassnode instead |
-| **Bithumb** (for non-Koreans) | Korean KYC required; no testnet; codebase URLs point to mainnet anyway | Public market data available without auth |
 
 ---
 
@@ -440,41 +431,40 @@ Ordered by lowest friction to highest friction. Start here for CI/integration te
 17. **Bybit testnet** — Email signup → test coin request (24h) → API key.
 18. **KuCoin sandbox** — Separate sandbox.kucoin.com account → API key.
 19. **Deribit testnet** — No email verification at test.deribit.com. Fastest CEX testnet.
-20. **Phemex testnet** — Open registration at testnet.phemex.com. 0.5 BTC virtual.
-21. **dYdX v4 testnet** — Wallet + faucet. Cosmos chain. 300 USDC drip.
-22. **Dhan sandbox** — Email + mobile at developer.dhanhq.co. No brokerage account needed.
-23. **Uniswap Sepolia** — Sepolia ETH from Chainlink faucet. On-chain contracts.
+20. **dYdX v4 testnet** — Wallet + faucet. Cosmos chain. 300 USDC drip.
+21. **Dhan sandbox** — Email + mobile at developer.dhanhq.co. No brokerage account needed.
+22. **Uniswap Sepolia** — Sepolia ETH from Chainlink faucet. On-chain contracts.
 
 ### Phase 4 — Requires Identity or Real Account
 
-24. **Kraken futures demo** — Any email (no verification), instant $50K virtual USD.
-25. **Gemini sandbox** — Email registration at exchange.sandbox.gemini.com. 2FA bypass available.
-26. **Bitget demo** — Bitget account + demo mode switch.
-27. **HyperLiquid testnet** — EVM wallet + $5 mainnet deposit for faucet.
-28. **Lighter testnet** — Discord required for test funds.
-29. **Paradex testnet** — Discord required for test USDC.
-30. **Interactive Brokers paper** — IBKR Lite account (KYC, no minimum) + local TWS/Gateway.
+23. **Kraken futures demo** — Any email (no verification), instant $50K virtual USD.
+24. **Gemini sandbox** — Email registration at exchange.sandbox.gemini.com. 2FA bypass available.
+25. **Bitget demo** — Bitget account + demo mode switch.
+26. **HyperLiquid testnet** — EVM wallet + $5 mainnet deposit for faucet.
+27. **Lighter testnet** — Discord required for test funds.
+28. **Paradex testnet** — Discord required for test USDC.
+29. **Interactive Brokers paper** — IBKR Lite account (KYC, no minimum) + local TWS/Gateway.
 
 ### Phase 5 — Restricted Access (region, institution, or payment)
 
-31. Indian brokers (Zerodha, Angel One, Upstox, Fyers) — Indian KYC
-32. Tinkoff sandbox — Russian T-Bank account
-33. Futu paper — Futu ID + OpenD daemon
-34. Coinglass API — $29/month
-35. CryptoQuant API — $109/month
-36. Glassnode API — $79/month + addon
+30. Indian brokers (Zerodha, Angel One, Upstox, Fyers) — Indian KYC
+31. Tinkoff sandbox — Russian T-Bank account
+32. Futu paper — Futu ID + OpenD daemon
+33. Coinglass API — $29/month
+34. CryptoQuant API — $109/month
+35. Glassnode API — $79/month + addon
 
 ---
 
 ## Section 7: Codebase Gaps
 
-> **Status update (commit 6c61d70):** Gaps 2-9, 10 have been fixed. Gaps 1, 12 remain open for URL verification. Gaps 11, 13, 14, 15 are documented but not critical.
+> **Status update (commit 6c61d70):** Gaps 2-8, 9 have been fixed. Gaps 1, 11 remain open for URL verification. Gaps 10, 12, 13, 14 are documented but not critical.
 
 From `testnet-support-codebase-audit.md` — cases where code claims testnet support but the implementation is incomplete, uses wrong URLs, or ignores the parameter entirely.
 
 ### Gap 1: Binance — Wrong Testnet URL
 
-**File:** `src/crypto/cex/binance/endpoints.rs`
+**File:** `src/l3/open/crypto/cex/binance/endpoints.rs`
 
 **Problem:** Codebase uses `https://testapi.binance.vision` as the spot testnet REST base URL.
 **Correct URL:** `https://testnet.binance.vision/api`
@@ -484,7 +474,7 @@ From `testnet-support-codebase-audit.md` — cases where code claims testnet sup
 
 ### Gap 2: HTX — testnet param accepted but silently ignored
 
-**File:** `src/crypto/cex/htx/connector.rs`
+**File:** `src/l3/open/crypto/cex/htx/connector.rs`
 
 **Problem:** Constructor accepts `testnet: bool` and stores it, but all URL functions in `endpoints.rs` hardcode `https://api.huobi.pro`. The `_testnet` parameter is ignored in URL selection.
 **Reality:** HTX testnet was shut down. This is correct behavior — but the parameter acceptance is misleading. The connector stores `testnet: bool` in the struct and returns it from `is_testnet()`, meaning callers will think they are on testnet when they are on mainnet.
@@ -496,7 +486,7 @@ From `testnet-support-codebase-audit.md` — cases where code claims testnet sup
 
 ### Gap 3: Bitget — Incomplete testnet implementation
 
-**File:** `src/crypto/cex/bitget/connector.rs`, `endpoints.rs`
+**File:** `src/l3/open/crypto/cex/bitget/connector.rs`, `endpoints.rs`
 
 **Problem:** `_testnet: bool` is in the constructor signature but unused (prefixed with `_`). A `TESTNET` const is defined in endpoints.rs but it contains the same URLs as mainnet (`https://api.bitget.com`). `is_testnet()` returns hardcoded `false`.
 **Reality:** Bitget demo trading requires `paptrading: 1` header and separate demo API keys, plus different WebSocket domains (`wspap.bitget.com`). None of this is implemented.
@@ -508,7 +498,7 @@ From `testnet-support-codebase-audit.md` — cases where code claims testnet sup
 
 ### Gap 4: BingX — testnet param silently ignored
 
-**File:** `src/crypto/cex/bingx/connector.rs`
+**File:** `src/l3/open/crypto/cex/bingx/connector.rs`
 
 **Problem:** `_testnet: bool` in constructor, no field stored, `is_testnet()` hardcoded to `false`, comment says "BingX doesn't have public testnet."
 **Reality:** BingX has VST (Virtual USDT) demo pairs on the production endpoint. This is testable. The comment is inaccurate — BingX does have a form of free demo trading.
@@ -520,7 +510,7 @@ From `testnet-support-codebase-audit.md` — cases where code claims testnet sup
 
 ### Gap 5: Bitfinex — testnet param silently ignored
 
-**File:** `src/crypto/cex/bitfinex/connector.rs`
+**File:** `src/l3/open/crypto/cex/bitfinex/connector.rs`
 
 **Problem:** `_testnet: bool` in constructor, not stored, `is_testnet()` hardcoded `false`.
 **Reality:** Bitfinex has paper trading sub-accounts with 2 test pairs (TESTBTCTESTUSD, TESTBTCTESTUSDT) on the same endpoint. The comment says "doesn't have a public testnet" which is misleading.
@@ -530,21 +520,9 @@ From `testnet-support-codebase-audit.md` — cases where code claims testnet sup
 
 ---
 
-### Gap 6: Bithumb — fake testnet URLs
+### Gap 6: Angel One — fake testnet URLs
 
-**File:** `src/crypto/cex/bithumb/endpoints.rs`
-
-**Problem:** `testnet: bool` stored in struct and returned by `is_testnet()`. The `TESTNET` const is defined but contains the same mainnet URLs (`https://api.bithumb.com`). No actual testnet environment exists.
-**Reality:** Bithumb has no documented testnet. The parameter is accepted and stored but functionally a no-op — all requests go to mainnet regardless.
-**Fix needed:** Same as HTX — either remove the testnet param entirely or document clearly that testnet=true has no effect.
-
-**Status: FIXED** — returns UnsupportedOperation when testnet=true.
-
----
-
-### Gap 7: Angel One — fake testnet URLs
-
-**File:** `src/stocks/india/angel_one/endpoints.rs`
+**File:** `src/l3/gated/stocks/india/angel_one/endpoints.rs`
 
 **Problem:** `testnet: bool` stored, `TESTNET` const defined but same URLs as mainnet.
 **Reality:** Angel One has no testnet. The testnet param is a stub with no effect.
@@ -554,9 +532,9 @@ From `testnet-support-codebase-audit.md` — cases where code claims testnet sup
 
 ---
 
-### Gap 8: Dhan — fake testnet URLs (Dhan sandbox exists but URLs not implemented)
+### Gap 7: Dhan — fake testnet URLs (Dhan sandbox exists but URLs not implemented)
 
-**File:** `src/stocks/india/dhan/endpoints.rs`
+**File:** `src/l3/gated/stocks/india/dhan/endpoints.rs`
 
 **Problem:** `testnet: bool` stored but `TESTNET` const uses same mainnet URLs. However, Dhan's sandbox actually uses the same base URL (`api.dhan.co/v2/`) — the sandbox is differentiated by the API token, not URL.
 **Reality:** The implementation is closer to correct than it appears — Dhan sandbox genuinely uses the same URL. But `is_testnet()` returning the stored bool and the constructor accepting the param without token-level validation means there is no enforcement that a sandbox token is used.
@@ -566,9 +544,9 @@ From `testnet-support-codebase-audit.md` — cases where code claims testnet sup
 
 ---
 
-### Gap 9: IB (Interactive Brokers) — testnet field hardcoded false
+### Gap 8: IB (Interactive Brokers) — testnet field hardcoded false
 
-**File:** `src/aggregators/interactive_brokers/connector.rs`
+**File:** `src/l3/gated/multi/interactive_brokers/connector.rs`
 
 **Problem:** Constructor `from_gateway(base_url, account_id)` creates struct with `testnet: false` hardcoded. `is_testnet()` returns this field — always false.
 **Reality:** IB paper trading uses port 7497 (TWS) or 4002 (Gateway) instead of live ports 7496/4001. The URL passed to `from_gateway` is the full base URL including port, so paper trading technically works by passing the paper trading URL. But the `testnet` bool is never set to true and cannot be through the public API.
@@ -578,7 +556,7 @@ From `testnet-support-codebase-audit.md` — cases where code claims testnet sup
 
 ---
 
-### Gap 10: FRED — testnet field exists but is always false
+### Gap 9: FRED — testnet field exists but is always false
 
 **File:** `src/intelligence_feeds/fred/connector.rs`
 
@@ -590,9 +568,9 @@ From `testnet-support-codebase-audit.md` — cases where code claims testnet sup
 
 ---
 
-### Gap 11: Kraken spot testnet URL mismatch
+### Gap 10: Kraken spot testnet URL mismatch
 
-**File:** `src/crypto/cex/kraken/endpoints.rs`
+**File:** `src/l3/open/crypto/cex/kraken/endpoints.rs`
 
 **Problem:** When `testnet=true`, the spot REST URL returns `https://api.kraken.com` (production URL). Only the futures URL correctly switches to `https://demo-futures.kraken.com`.
 **Reality:** Kraken has no spot testnet — this is correct behavior. But returning the production URL when testnet=true is misleading.
@@ -600,18 +578,18 @@ From `testnet-support-codebase-audit.md` — cases where code claims testnet sup
 
 ---
 
-### Gap 12: GateIO spot testnet URL
+### Gap 11: GateIO spot testnet URL
 
-**File:** `src/crypto/cex/gateio/endpoints.rs`
+**File:** `src/l3/open/crypto/cex/gateio/endpoints.rs`
 
 **Note:** Codebase uses `https://api-testnet.gateapi.io/api/v4` as the spot testnet URL. The research audit found the futures testnet at `https://fx-api-testnet.gateio.ws/api/v4`. The `api-testnet.gateapi.io` domain should be verified — Gate.io has been migrating from `gateio.io` to `gateio.ws` and the testnet domain may have changed.
 **Action needed:** Verify `api-testnet.gateapi.io` is still active and correct.
 
 ---
 
-### Gap 13: Coinbase — no testnet at all
+### Gap 12: Coinbase — no testnet at all
 
-**File:** `src/crypto/cex/coinbase/connector.rs`
+**File:** `src/l3/open/crypto/cex/coinbase/connector.rs`
 
 **Problem:** Constructor has no testnet param, `is_testnet()` hardcoded false. Comment says "Coinbase doesn't have testnet for Advanced Trade."
 **Reality:** Coinbase Exchange Sandbox (`public-sandbox.exchange.coinbase.com`) and Advanced Trade Sandbox (`api-sandbox.coinbase.com`) both exist. The Advanced Trade sandbox has static responses only, but it does exist.
@@ -619,9 +597,9 @@ From `testnet-support-codebase-audit.md` — cases where code claims testnet sup
 
 ---
 
-### Gap 14: Bitstamp — no testnet support in constructor
+### Gap 13: Bitstamp — no testnet support in constructor
 
-**File:** `src/crypto/cex/bitstamp/connector.rs`
+**File:** `src/l3/open/crypto/cex/bitstamp/connector.rs`
 
 **Problem:** Constructor `new(credentials)` has no testnet param. `is_testnet()` hardcoded false. Comment says "Bitstamp doesn't have testnet via this API."
 **Reality:** Bitstamp has a sandbox at `sandbox.bitstamp.net` that does exist. The comment is incorrect.
@@ -629,9 +607,9 @@ From `testnet-support-codebase-audit.md` — cases where code claims testnet sup
 
 ---
 
-### Gap 15: Crypto.com — UAT URL correct but access is gated
+### Gap 14: Crypto.com — UAT URL correct but access is gated
 
-**File:** `src/crypto/cex/crypto_com/endpoints.rs`
+**File:** `src/l3/open/crypto/cex/crypto_com/endpoints.rs`
 
 **Note:** Codebase correctly implements UAT URLs (`uat-api.3ona.co`, `uat-stream.3ona.co`). However, the UAT environment requires institutional invitation. The constructor accepts the testnet flag but in practice, most users cannot authenticate against UAT.
 **Not a code bug** — the implementation is correct. Just a documentation/access gap. Consider adding a runtime error or warning if testnet credentials fail UAT auth.
@@ -647,7 +625,6 @@ From `testnet-support-codebase-audit.md` — cases where code claims testnet sup
 | Bitget incomplete | **FIXED** | Header injection + WS domain switch implemented |
 | BingX inaccurate comment | **FIXED** | Testnet flag stored, comment corrected |
 | Bitfinex inaccurate comment | **FIXED** | Testnet flag stored, comment corrected |
-| Bithumb fake testnet | **FIXED** | Returns UnsupportedOperation when testnet=true |
 | Angel One fake testnet | **FIXED** | Returns UnsupportedOperation when testnet=true |
 | Dhan URL semantics | **FIXED** | Documented sandbox is token-based |
 | IB no paper constructor | **FIXED** | Added paper() constructor (port 4004) |

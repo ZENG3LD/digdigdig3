@@ -356,7 +356,7 @@ impl Default for ConnectorPoolBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::cex::okx::OkxConnector;
+    use crate::l3::crypto::cex::okx::OkxConnector;
     use std::thread;
 
     /// Helper function to create a mock OKX connector for testing.

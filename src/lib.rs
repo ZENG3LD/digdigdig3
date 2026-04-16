@@ -39,12 +39,9 @@
 //! - `utils::time` - timestamp_millis, timestamp_iso8601
 
 pub mod core;
-pub mod crypto;
-pub mod stocks;
-pub mod forex;
-pub mod brokers;
-pub mod data_feeds;
-pub mod prediction;
+pub mod l1;
+pub mod l2;
+pub mod l3;
 pub mod connector_manager;
 pub mod testing;
 

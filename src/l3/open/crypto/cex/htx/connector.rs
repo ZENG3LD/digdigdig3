@@ -1068,27 +1068,57 @@ impl Trading for HtxConnector {
         HtxParser::parse_user_trades(&response)
     }
 
-    fn trading_capabilities(&self, _account_type: AccountType) -> TradingCapabilities {
-        TradingCapabilities {
-            has_market_order: true,
-            has_limit_order: true,
-            // HTX spot has no stop-market order type; stop orders must include a limit price.
-            has_stop_market: false,
-            has_stop_limit: true,
-            // Trailing stop implemented via POST /v2/algo-orders (AlgoOrders endpoint).
-            has_trailing_stop: true,
-            has_bracket: false,
-            has_oco: false,
-            // No AmendOrder trait implemented; HTX spot has no native order-amend endpoint.
-            has_amend: false,
-            // BatchOrders trait exists for cancel-only; place_batch_orders returns UnsupportedOperation.
-            // has_batch reflects full batch place+cancel support — neither is complete, so false.
-            has_batch: false,
-            max_batch_size: None,
-            // CancelAll trait implemented via POST /v1/order/orders/batchCancelOpenOrders.
-            has_cancel_all: true,
-            has_user_trades: true,
-            has_order_history: true,
+    fn trading_capabilities(&self, account_type: AccountType) -> TradingCapabilities {
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
+
+        if is_futures {
+            // Futures (hbdm.com) uses a completely different REST API — none of the
+            // spot trading endpoints in this connector are wired for futures.
+            // place_order falls through to UnsupportedOperation for all order types.
+            // CancelAll calls get_account_id() which returns a spot account ID → would
+            // fail on futures. cancel_orders_batch uses CancelAllOrders (spot endpoint).
+            // MatchResults and OrderHistory are spot-only endpoints on api.huobi.pro.
+            TradingCapabilities {
+                has_market_order: false,
+                has_limit_order: false,
+                has_stop_market: false,
+                has_stop_limit: false,
+                has_trailing_stop: false,
+                has_bracket: false,
+                has_oco: false,
+                has_amend: false,
+                has_batch: false,
+                max_batch_size: None,
+                has_cancel_all: false,
+                has_user_trades: false,
+                has_order_history: false,
+            }
+        } else {
+            // Spot / Margin
+            TradingCapabilities {
+                has_market_order: true,
+                has_limit_order: true,
+                // HTX spot has no stop-market type; stop orders require a limit price.
+                has_stop_market: false,
+                has_stop_limit: true,
+                // Trailing stop via POST /v2/algo-orders (AlgoOrders endpoint).
+                has_trailing_stop: true,
+                has_bracket: false,
+                has_oco: false,
+                // No AmendOrder trait; HTX spot has no native order-amend endpoint.
+                has_amend: false,
+                // place_batch_orders returns UnsupportedOperation; cancel batch works
+                // via CancelAllOrders (up to 50 IDs). has_batch = false because place
+                // is unsupported — the flag means full batch round-trip, not cancel-only.
+                has_batch: false,
+                max_batch_size: None,
+                // CancelAll trait via POST /v1/order/orders/batchCancelOpenOrders.
+                has_cancel_all: true,
+                // MatchResults endpoint: spot fills only.
+                has_user_trades: true,
+                // OrderHistory endpoint: spot orders only.
+                has_order_history: true,
+            }
         }
     }
 }
@@ -1176,26 +1206,33 @@ impl Account for HtxConnector {
         })
     }
 
-    fn account_capabilities(&self, _account_type: AccountType) -> AccountCapabilities {
+    fn account_capabilities(&self, account_type: AccountType) -> AccountCapabilities {
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
+
+        // get_balance / get_account_info use the spot account endpoint (api.huobi.pro).
+        // Futures balance lives on api.hbdm.com — not implemented in this connector.
+        // has_transfers is true for both: POST /v1/futures/transfer moves funds between
+        // spot and futures regardless of which side initiates the call.
+        // has_deposit_withdraw and has_sub_accounts are master-account operations,
+        // independent of which sub-account type is queried — they work for both.
+        // has_fees uses /v2/reference/transact-fee-rate (spot fee table only).
         AccountCapabilities {
-            has_balances: true,
-            has_account_info: true,
-            has_fees: true,
-            // AccountTransfers impl: POST /v1/futures/transfer + GET /v2/account/transfer.
+            has_balances: !is_futures,
+            has_account_info: !is_futures,
+            // Fee endpoint is spot-only; futures fees use a different hbdm endpoint.
+            has_fees: !is_futures,
+            // Transfer endpoint moves funds between spot↔futures; available from either side.
             has_transfers: true,
-            // SubAccounts impl: create, list, transfer, get_balance.
+            // Sub-account operations are master-level (api.huobi.pro), same for both.
             has_sub_accounts: true,
-            // CustodialFunds impl: deposit address, withdraw, deposit/withdraw history.
+            // Deposit/withdraw are custodial (chain-level), not account-type-specific.
             has_deposit_withdraw: true,
-            // No MarginTrading trait implemented.
             has_margin: false,
-            // No EarnStaking trait implemented.
             has_earn_staking: false,
-            // No FundingHistory trait implemented (get_funding_rate_history is an inherent method only).
+            // No FundingHistory trait; get_funding_rate_history is an inherent method only.
             has_funding_history: false,
-            // Ledger endpoint exists (/v2/account/ledger) but no AccountLedger trait is implemented.
+            // Ledger endpoint exists (/v2/account/ledger) but no AccountLedger trait implemented.
             has_ledger: false,
-            // No ConvertSwap trait implemented.
             has_convert: false,
         }
     }

@@ -525,19 +525,38 @@ impl MarketData for MexcConnector {
         Ok(symbols)
     }
 
-    fn market_data_capabilities(&self, _account_type: AccountType) -> MarketDataCapabilities {
-        MarketDataCapabilities {
-            has_ping: true,
-            has_price: true,
-            has_ticker: true,
-            has_orderbook: true,
-            has_klines: true,
-            has_exchange_info: true,
-            // get_recent_trades is only an extended struct method, not the MarketData trait method
-            has_recent_trades: false,
-            // MEXC spot intervals: 1m/5m/15m/30m are supported; 1h is mapped to "60m" internally
-            supported_intervals: &["1m", "5m", "15m", "30m", "1h", "4h", "8h", "1d", "1w", "1M"],
-            max_kline_limit: Some(1000),
+    fn market_data_capabilities(&self, account_type: AccountType) -> MarketDataCapabilities {
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
+        if is_futures {
+            MarketDataCapabilities {
+                has_ping: true,
+                has_price: true,
+                has_ticker: true,
+                has_orderbook: true,
+                has_klines: true,
+                // get_exchange_info parses spot symbols only; futures uses /api/v1/contract/detail
+                has_exchange_info: false,
+                // GET /api/v1/contract/deals/{symbol} exists as extended method, not trait method
+                has_recent_trades: false,
+                // Futures kline intervals map to Min1/Min5/.../Month1
+                supported_intervals: &["1m", "5m", "15m", "30m", "1h", "4h", "8h", "1d", "1w", "1M"],
+                // Futures /api/v1/contract/kline does not accept a limit param
+                max_kline_limit: None,
+            }
+        } else {
+            MarketDataCapabilities {
+                has_ping: true,
+                has_price: true,
+                has_ticker: true,
+                has_orderbook: true,
+                has_klines: true,
+                has_exchange_info: true,
+                // get_recent_trades is only an extended struct method, not the MarketData trait method
+                has_recent_trades: false,
+                // MEXC spot intervals: 1m/5m/15m/30m are supported; 1h is mapped to "60m" internally
+                supported_intervals: &["1m", "5m", "15m", "30m", "1h", "4h", "8h", "1d", "1w", "1M"],
+                max_kline_limit: Some(1000),
+            }
         }
     }
 }
@@ -883,28 +902,53 @@ impl Trading for MexcConnector {
         MexcParser::parse_user_trades(&response)
     }
 
-    fn trading_capabilities(&self, _account_type: AccountType) -> TradingCapabilities {
-        TradingCapabilities {
-            has_market_order: true,
-            has_limit_order: true,
-            // MEXC spot does not support stop-market or stop-limit order types
-            has_stop_market: false,
-            has_stop_limit: false,
-            has_trailing_stop: false,
-            has_bracket: false,
-            // MEXC spot does not have an OCO endpoint
-            has_oco: false,
-            // No amend/modify order endpoint on MEXC spot
-            has_amend: false,
-            // BatchOrders trait is implemented: POST /api/v3/batchOrders (max 20)
-            has_batch: true,
-            max_batch_size: Some(20),
-            // CancelAll trait is implemented: DELETE /api/v3/openOrders
-            has_cancel_all: true,
-            // get_user_trades is implemented via GET /api/v3/myTrades
-            has_user_trades: true,
-            // get_order_history is implemented via GET /api/v3/allOrders
-            has_order_history: true,
+    fn trading_capabilities(&self, account_type: AccountType) -> TradingCapabilities {
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
+        if is_futures {
+            TradingCapabilities {
+                has_market_order: true,
+                has_limit_order: true,
+                // Futures contract API supports STOP order type
+                has_stop_market: true,
+                has_stop_limit: true,
+                has_trailing_stop: false,
+                has_bracket: false,
+                has_oco: false,
+                // No amend/modify endpoint on MEXC futures
+                has_amend: false,
+                // POST /api/v3/batchOrders is a spot-only endpoint
+                has_batch: false,
+                max_batch_size: None,
+                // DELETE /api/v3/openOrders is a spot-only endpoint; futures cancel-all not implemented
+                has_cancel_all: false,
+                // GET /api/v3/myTrades is spot-only; no futures trade history endpoint implemented
+                has_user_trades: false,
+                // GET /api/v3/allOrders is spot-only; no futures order history endpoint implemented
+                has_order_history: false,
+            }
+        } else {
+            TradingCapabilities {
+                has_market_order: true,
+                has_limit_order: true,
+                // MEXC spot does not support stop-market or stop-limit order types
+                has_stop_market: false,
+                has_stop_limit: false,
+                has_trailing_stop: false,
+                has_bracket: false,
+                // MEXC spot does not have an OCO endpoint
+                has_oco: false,
+                // No amend/modify order endpoint on MEXC spot
+                has_amend: false,
+                // BatchOrders trait is implemented: POST /api/v3/batchOrders (max 20)
+                has_batch: true,
+                max_batch_size: Some(20),
+                // CancelAll trait is implemented: DELETE /api/v3/openOrders
+                has_cancel_all: true,
+                // get_user_trades is implemented via GET /api/v3/myTrades
+                has_user_trades: true,
+                // get_order_history is implemented via GET /api/v3/allOrders
+                has_order_history: true,
+            }
         }
     }
 }
@@ -1006,30 +1050,54 @@ impl Account for MexcConnector {
         })
     }
 
-    fn account_capabilities(&self, _account_type: AccountType) -> AccountCapabilities {
-        AccountCapabilities {
-            // GET /api/v3/account returns balances
-            has_balances: true,
-            // GET /api/v3/account returns canTrade/canWithdraw/canDeposit
-            has_account_info: true,
-            // GET /api/v3/tradeFee is implemented
-            has_fees: true,
-            // AccountTransfers trait is implemented: POST/GET /api/v3/capital/transfer
-            has_transfers: true,
-            // SubAccounts trait is implemented: create/list/transfer/getBalance
-            has_sub_accounts: true,
-            // CustodialFunds trait is implemented: deposit address, withdraw, deposit/withdraw history
-            has_deposit_withdraw: true,
-            // MEXC is spot-only — no margin borrow/repay endpoints implemented
-            has_margin: false,
-            // No earn or staking endpoints implemented
-            has_earn_staking: false,
-            // No funding payment history (spot-only connector, no perp funding)
-            has_funding_history: false,
-            // No full account ledger/transaction log endpoint implemented
-            has_ledger: false,
-            // No coin-to-coin convert endpoint implemented
-            has_convert: false,
+    fn account_capabilities(&self, account_type: AccountType) -> AccountCapabilities {
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
+        if is_futures {
+            AccountCapabilities {
+                // Futures wallet balance requires a separate futures account endpoint (not implemented)
+                has_balances: false,
+                // GET /api/v3/account is spot-only; no futures account info endpoint implemented
+                has_account_info: false,
+                // GET /api/v3/tradeFee is spot-only; futures fees differ
+                has_fees: false,
+                // Capital transfers use spot base URL and work for all account types
+                has_transfers: true,
+                // Sub-accounts are a spot/master-level concept, not per-futures
+                has_sub_accounts: false,
+                // Deposits/withdrawals always go through the spot wallet, not futures directly
+                has_deposit_withdraw: false,
+                has_margin: false,
+                has_earn_staking: false,
+                // Futures perpetual contracts have funding payments; endpoint not yet implemented
+                has_funding_history: false,
+                has_ledger: false,
+                has_convert: false,
+            }
+        } else {
+            AccountCapabilities {
+                // GET /api/v3/account returns balances
+                has_balances: true,
+                // GET /api/v3/account returns canTrade/canWithdraw/canDeposit
+                has_account_info: true,
+                // GET /api/v3/tradeFee is implemented
+                has_fees: true,
+                // AccountTransfers trait is implemented: POST/GET /api/v3/capital/transfer
+                has_transfers: true,
+                // SubAccounts trait is implemented: create/list/transfer/getBalance
+                has_sub_accounts: true,
+                // CustodialFunds trait is implemented: deposit address, withdraw, deposit/withdraw history
+                has_deposit_withdraw: true,
+                // No margin borrow/repay endpoints implemented
+                has_margin: false,
+                // No earn or staking endpoints implemented
+                has_earn_staking: false,
+                // No funding payment history for spot
+                has_funding_history: false,
+                // No full account ledger/transaction log endpoint implemented
+                has_ledger: false,
+                // No coin-to-coin convert endpoint implemented
+                has_convert: false,
+            }
         }
     }
 }

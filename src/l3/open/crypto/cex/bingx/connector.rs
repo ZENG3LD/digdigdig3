@@ -838,25 +838,26 @@ impl Trading for BingxConnector {
         }
     }
 
-    fn trading_capabilities(&self, _account_type: AccountType) -> TradingCapabilities {
+    fn trading_capabilities(&self, account_type: AccountType) -> TradingCapabilities {
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
+
         TradingCapabilities {
             has_market_order: true,
             has_limit_order: true,
-            // StopMarket / StopLimit / TrailingStop: Swap (futures) only;
-            // Spot returns UnsupportedOperation.
-            has_stop_market: true,
-            has_stop_limit: true,
-            has_trailing_stop: true,
-            // Bracket: Swap only via embedded takeProfit/stopLoss JSON params.
-            has_bracket: true,
-            // OCO: no implementation — no BingX OCO endpoint wired up.
+            // StopMarket / StopLimit / TrailingStop / Bracket: Swap (futures) only;
+            // place_order returns UnsupportedOperation for Spot.
+            has_stop_market: is_futures,
+            has_stop_limit: is_futures,
+            has_trailing_stop: is_futures,
+            has_bracket: is_futures,
+            // OCO: no BingX endpoint implemented.
             has_oco: false,
-            // AmendOrder trait implemented for Swap via /openApi/swap/v1/trade/amend.
-            has_amend: true,
-            // BatchOrders trait implemented; max 5 orders per batch (Swap only).
-            has_batch: true,
-            max_batch_size: Some(5),
-            // CancelAll trait implemented for both Spot and Swap.
+            // AmendOrder: Swap only (/openApi/swap/v1/trade/amend); Spot requires cancel+replace.
+            has_amend: is_futures,
+            // BatchOrders: Swap only (/openApi/swap/v2/trade/batchOrders, max 5).
+            has_batch: is_futures,
+            max_batch_size: if is_futures { Some(5) } else { None },
+            // CancelAll: both Spot and Swap have dedicated cancel-all endpoints.
             has_cancel_all: true,
             has_user_trades: true,
             has_order_history: true,

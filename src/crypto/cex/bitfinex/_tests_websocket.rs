@@ -42,7 +42,7 @@ async fn test_orderbook_capabilities() {
         }
     };
 
-    let caps = ws.orderbook_capabilities();
+    let caps = ws.orderbook_capabilities(AccountType::Spot);
     println!("Bitfinex orderbook capabilities: {:?}", caps);
 
     // Bitfinex supports depths 25, 100

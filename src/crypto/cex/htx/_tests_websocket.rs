@@ -42,7 +42,7 @@ async fn test_orderbook_capabilities() {
         }
     };
 
-    let caps = ws.orderbook_capabilities();
+    let caps = ws.orderbook_capabilities(AccountType::Spot);
     println!("HTX orderbook capabilities: {:?}", caps);
     // HTX provides snapshot-only (no delta stream on the public endpoint)
     println!("ws_depths: {:?}", caps.ws_depths);

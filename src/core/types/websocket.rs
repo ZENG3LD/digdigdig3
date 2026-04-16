@@ -22,9 +22,95 @@ use super::{
 // ORDERBOOK CAPABILITIES
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/// Algorithm used to compute the orderbook integrity checksum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChecksumAlgorithm {
+    /// CRC-32 over interleaved top-N bid+ask price:qty strings (OKX/Bitget format).
+    Crc32Interleaved,
+    /// CRC-32 over asks_string + bids_string with decimal-stripped numeric strings (Kraken format).
+    Crc32KrakenFormat,
+    /// CRC-32, exact algorithm TBD (used by Crypto.com `cs` field).
+    Crc32Generic,
+    /// CRC-32 over interleaved top-25 bid+ask with order IDs (Bitfinex R0).
+    Crc32BitfinexRaw,
+}
+
+/// Describes the checksum coverage and algorithm for a WS orderbook channel.
+#[derive(Debug, Clone, Copy)]
+pub struct ChecksumInfo {
+    /// Algorithm used.
+    pub algorithm: ChecksumAlgorithm,
+    /// Number of levels per side covered by the checksum (e.g. 10 for Kraken, 25 for OKX/Bitget).
+    pub levels_per_side: u32,
+    /// Whether the checksum is opt-in (must be enabled via flags, e.g. Bitfinex OB_CHECKSUM).
+    pub opt_in: bool,
+}
+
+/// Describes one named WebSocket orderbook channel variant.
+///
+/// Some exchanges expose multiple named channels with distinct depth/speed/update-model
+/// characteristics (OKX books vs books5; KuCoin level2 vs level2Depth5; HTX mbp vs depth).
+/// Each variant is described here. The ws_manager picks the best-fit channel at subscription
+/// time using `ws_channels` instead of raw `ws_depths` / `update_speeds_ms`.
+///
+/// All fields are `Copy`-safe and use `'static` lifetimes for zero-alloc use.
+#[derive(Debug, Clone, Copy)]
+pub struct WsBookChannel {
+    /// Exchange-specific channel or topic name (e.g. "books5", "mbp.150", "level2Depth50").
+    pub name: &'static str,
+    /// Fixed depth of this channel. `None` = full book / not constrained to a fixed count.
+    pub depth: Option<u32>,
+    /// True if this channel delivers full snapshots on every push.
+    /// False = delta/incremental (initial snapshot then deltas).
+    pub is_snapshot: bool,
+    /// Fixed update speed in milliseconds. `None` = event-driven / real-time.
+    pub update_speed_ms: Option<u32>,
+    /// True if this channel requires elevated account tier / VIP / API key.
+    pub requires_auth_tier: bool,
+}
+
+impl WsBookChannel {
+    pub const fn snapshot(name: &'static str, depth: u32, speed_ms: u32) -> Self {
+        Self {
+            name,
+            depth: Some(depth),
+            is_snapshot: true,
+            update_speed_ms: Some(speed_ms),
+            requires_auth_tier: false,
+        }
+    }
+
+    pub const fn delta(name: &'static str, depth: Option<u32>, speed_ms: Option<u32>) -> Self {
+        Self {
+            name,
+            depth,
+            is_snapshot: false,
+            update_speed_ms: speed_ms,
+            requires_auth_tier: false,
+        }
+    }
+
+    pub const fn with_auth_tier(mut self) -> Self {
+        self.requires_auth_tier = true;
+        self
+    }
+}
+
 /// Declares what L2/orderbook configurations an exchange supports on WebSocket.
+///
+/// ## Design notes
+/// - All fields use `&'static` slices or `Copy` primitives — zero-allocation, `const`-friendly.
+/// - `ws_channels` is the primary field for multi-channel exchanges (OKX, HTX, KuCoin, etc.).
+///   When `ws_channels` is non-empty, `ws_depths` and `update_speeds_ms` are best-effort summaries.
+/// - `rest_depth_values` overrides `rest_max_depth` when an exchange requires discrete values.
+///   An empty `rest_depth_values` with `rest_max_depth = Some(N)` means "any integer up to N".
+/// - `checksum` is `None` for exchanges without checksums.
+/// - `has_sequence` / `has_prev_sequence` describe gap-detection capability.
+///   `has_prev_sequence = true` implies `has_sequence = true`.
 #[derive(Debug, Clone, Copy)]
 pub struct OrderbookCapabilities {
+    // ── Existing fields (preserved, semantics unchanged) ─────────────────────
+
     /// Valid depth levels for WS orderbook subscription.
     /// Empty = exchange doesn't accept depth parameter (it decides internally).
     pub ws_depths: &'static [u32],
@@ -40,6 +126,41 @@ pub struct OrderbookCapabilities {
     pub update_speeds_ms: &'static [u32],
     /// Recommended default update speed. None = exchange default.
     pub default_speed_ms: Option<u32>,
+
+    // ── New: named channel variants ──────────────────────────────────────────
+
+    /// Named WS channel variants with distinct depth/speed/model properties.
+    /// Empty slice = exchange has a single implicit channel (use ws_depths / update_speeds_ms).
+    /// Non-empty = use `WsBookChannel` records for channel selection logic.
+    pub ws_channels: &'static [WsBookChannel],
+
+    // ── New: REST depth precision ─────────────────────────────────────────────
+
+    /// Discrete valid values for REST `limit` / `depth` parameter.
+    /// Empty = any integer up to `rest_max_depth` is accepted.
+    /// Non-empty = ONLY these values are valid (e.g. Binance Futures: 5/10/20/50/100/500/1000).
+    pub rest_depth_values: &'static [u32],
+
+    // ── New: checksum ─────────────────────────────────────────────────────────
+
+    /// Checksum info for the primary (or only) channel. None = no checksum.
+    pub checksum: Option<ChecksumInfo>,
+
+    // ── New: sequence / gap-detection ────────────────────────────────────────
+
+    /// True = WS messages carry a monotonic sequence/update-ID field.
+    pub has_sequence: bool,
+    /// True = WS messages carry a PREVIOUS sequence field enabling in-message gap detection.
+    /// (e.g. Binance Futures `pu`, OKX `prevSeqId`, Deribit `prev_change_id`).
+    pub has_prev_sequence: bool,
+
+    // ── New: price aggregation ────────────────────────────────────────────────
+
+    /// True = exchange supports price-level aggregation/grouping on WS or REST.
+    pub supports_aggregation: bool,
+    /// Named aggregation tiers or parameter values (e.g. "step0".."step5", "P0".."R0", "none").
+    /// Empty = aggregation not available or values are numeric/continuous.
+    pub aggregation_levels: &'static [&'static str],
 }
 
 impl OrderbookCapabilities {
@@ -54,7 +175,50 @@ impl OrderbookCapabilities {
             supports_delta: true,
             update_speeds_ms: &[],
             default_speed_ms: None,
+            ws_channels: &[],
+            rest_depth_values: &[],
+            checksum: None,
+            has_sequence: false,
+            has_prev_sequence: false,
+            supports_aggregation: false,
+            aggregation_levels: &[],
         }
+    }
+
+    /// Pick the best matching WsBookChannel for a requested depth and update model.
+    ///
+    /// Returns `None` if `ws_channels` is empty (caller should fall back to legacy fields).
+    /// Auth-tier channels are always skipped.
+    /// When `prefer_delta` is true, delta channels are preferred over snapshots.
+    pub fn best_channel(&self, requested_depth: Option<u32>, prefer_delta: bool) -> Option<&WsBookChannel> {
+        if self.ws_channels.is_empty() {
+            return None;
+        }
+        // Filter out auth-tier channels
+        let public: Vec<&WsBookChannel> = self.ws_channels.iter()
+            .filter(|c| !c.requires_auth_tier)
+            .collect();
+        if public.is_empty() {
+            return None;
+        }
+        // Prefer delta or snapshot channels
+        let preferred: Vec<&&WsBookChannel> = public.iter()
+            .filter(|c| if prefer_delta { !c.is_snapshot } else { c.is_snapshot })
+            .collect();
+        let candidates: Vec<&WsBookChannel> = if preferred.is_empty() {
+            public
+        } else {
+            preferred.into_iter().copied().collect()
+        };
+        // Pick by closest depth: smallest depth >= requested, or largest depth
+        candidates.into_iter().min_by_key(|c| {
+            match (c.depth, requested_depth) {
+                (Some(d), Some(r)) if d >= r => d - r,
+                (Some(_), Some(_)) => u32::MAX,
+                (None, _) => 0,
+                (Some(_), None) => 0,
+            }
+        })
     }
 
     /// Pick the closest valid depth for a requested value.

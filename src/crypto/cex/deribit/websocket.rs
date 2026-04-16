@@ -44,7 +44,7 @@ use crate::core::{
     ExchangeResult, ExchangeError,
     ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
 };
-use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities};
+use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities, WsBookChannel};
 use crate::core::traits::WebSocketConnector;
 
 use super::endpoints::DeribitUrls;
@@ -652,15 +652,27 @@ impl WebSocketConnector for DeribitWebSocket {
         Some(self.ws_ping_rtt_ms.clone())
     }
 
-    fn orderbook_capabilities(&self) -> OrderbookCapabilities {
+    fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        static DERIBIT_CHANNELS: &[WsBookChannel] = &[
+            WsBookChannel::delta("book.{instr}.{group}.{depth}.100ms", None, Some(100)),
+            WsBookChannel::delta("book.{instr}.{group}.{depth}.agg2",  None, None    ),
+            WsBookChannel::delta("book.{instr}.{group}.{depth}.raw",   None, None    ).with_auth_tier(),
+        ];
         OrderbookCapabilities {
-            ws_depths: &[],
-            ws_default_depth: None,
-            rest_max_depth: Some(20),
+            ws_depths: &[1, 10, 20],
+            ws_default_depth: Some(20),
+            rest_max_depth: None,
+            rest_depth_values: &[],
             supports_snapshot: true,
             supports_delta: true,
-            update_speeds_ms: &[],
-            default_speed_ms: None,
+            update_speeds_ms: &[100],
+            default_speed_ms: Some(100),
+            ws_channels: DERIBIT_CHANNELS,
+            checksum: None,
+            has_sequence: true,
+            has_prev_sequence: true,
+            supports_aggregation: true,
+            aggregation_levels: &["none", "1", "2", "5", "10", "25", "100", "250"],
         }
     }
 }

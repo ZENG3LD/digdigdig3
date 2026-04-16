@@ -44,7 +44,7 @@ use crate::core::{
     ExchangeError, ExchangeResult,
     ConnectionStatus, StreamEvent, SubscriptionRequest,
 };
-use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities};
+use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities, WsBookChannel};
 use crate::core::traits::WebSocketConnector;
 
 use super::endpoints::{BitstampUrls, format_symbol};
@@ -524,15 +524,26 @@ impl WebSocketConnector for BitstampWebSocket {
         Some(self.ws_ping_rtt_ms.clone())
     }
 
-    fn orderbook_capabilities(&self) -> OrderbookCapabilities {
+    fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        static BITSTAMP_CHANNELS: &[WsBookChannel] = &[
+            WsBookChannel::snapshot("order_book",      100, 1000),
+            WsBookChannel::delta("diff_order_book",    None, None),
+        ];
         OrderbookCapabilities {
             ws_depths: &[],
             ws_default_depth: None,
             rest_max_depth: None,
+            rest_depth_values: &[],
             supports_snapshot: true,
             supports_delta: true,
             update_speeds_ms: &[],
             default_speed_ms: None,
+            ws_channels: BITSTAMP_CHANNELS,
+            checksum: None,
+            has_sequence: false,
+            has_prev_sequence: false,
+            supports_aggregation: true,
+            aggregation_levels: &["0", "1", "2"],
         }
     }
 }

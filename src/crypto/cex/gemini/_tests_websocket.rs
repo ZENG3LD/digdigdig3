@@ -44,7 +44,7 @@ async fn test_orderbook_capabilities() {
         }
     };
 
-    let caps = WebSocketConnector::orderbook_capabilities(&ws);
+    let caps = WebSocketConnector::orderbook_capabilities(&ws, AccountType::Spot);
     println!("Gemini orderbook capabilities: {:?}", caps);
     println!("ws_depths: {:?}", caps.ws_depths);
     println!("supports_snapshot: {}", caps.supports_snapshot);

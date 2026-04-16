@@ -51,7 +51,7 @@ use crate::core::{
     ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
     timestamp_millis,
 };
-use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities};
+use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities, WsBookChannel, ChecksumInfo, ChecksumAlgorithm};
 use crate::core::traits::WebSocketConnector;
 use crate::core::utils::SimpleRateLimiter;
 
@@ -867,16 +867,34 @@ impl WebSocketConnector for BitfinexWebSocket {
         Some(self.ws_ping_rtt_ms.clone())
     }
 
-    fn orderbook_capabilities(&self) -> OrderbookCapabilities {
-        static DEPTHS: &[u32] = &[25, 100];
+    fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        static BITFINEX_CHANNELS: &[WsBookChannel] = &[
+            WsBookChannel::delta("book/P0", None, None),
+            WsBookChannel::delta("book/P1", None, None),
+            WsBookChannel::delta("book/P2", None, None),
+            WsBookChannel::delta("book/P3", None, None),
+            WsBookChannel::delta("book/P4", None, None),
+            WsBookChannel::delta("book/R0", None, None),
+        ];
         OrderbookCapabilities {
-            ws_depths: DEPTHS,
+            ws_depths: &[1, 25, 100, 250],
             ws_default_depth: Some(25),
-            rest_max_depth: Some(100),
-            supports_snapshot: false,
+            rest_max_depth: Some(250),
+            rest_depth_values: &[1, 25, 100, 250],
+            supports_snapshot: true,
             supports_delta: true,
             update_speeds_ms: &[],
             default_speed_ms: None,
+            ws_channels: BITFINEX_CHANNELS,
+            checksum: Some(ChecksumInfo {
+                algorithm: ChecksumAlgorithm::Crc32Interleaved,
+                levels_per_side: 25,
+                opt_in: true,
+            }),
+            has_sequence: false,
+            has_prev_sequence: false,
+            supports_aggregation: true,
+            aggregation_levels: &["P0", "P1", "P2", "P3", "P4", "R0"],
         }
     }
 }

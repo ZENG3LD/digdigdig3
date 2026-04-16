@@ -41,7 +41,7 @@ async fn test_orderbook_capabilities() {
         }
     };
 
-    let caps = ws.orderbook_capabilities();
+    let caps = ws.orderbook_capabilities(AccountType::Spot);
     println!("Gate.io orderbook capabilities: {:?}", caps);
 
     // Gate.io supports depths 20, 50

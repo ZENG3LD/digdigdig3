@@ -50,7 +50,7 @@ use crate::core::{
     ExchangeError, ExchangeResult,
     ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
 };
-use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities};
+use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities, WsBookChannel};
 use crate::core::traits::WebSocketConnector;
 
 use super::auth::GeminiAuth;
@@ -543,15 +543,32 @@ impl WebSocketConnector for GeminiWebSocket {
         Some(self.ws_ping_rtt_ms.clone())
     }
 
-    fn orderbook_capabilities(&self) -> OrderbookCapabilities {
+    fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        static GEMINI_CHANNELS: &[WsBookChannel] = &[
+            WsBookChannel::snapshot("depth5",         5,  1000),
+            WsBookChannel::snapshot("depth10",        10, 1000),
+            WsBookChannel::snapshot("depth20",        20, 1000),
+            WsBookChannel::snapshot("depth5@100ms",   5,  100),
+            WsBookChannel::snapshot("depth10@100ms",  10, 100),
+            WsBookChannel::snapshot("depth20@100ms",  20, 100),
+            WsBookChannel::delta("depth",             None, Some(1000)),
+            WsBookChannel::delta("depth@100ms",       None, Some(100)),
+        ];
         OrderbookCapabilities {
-            ws_depths: &[],
-            ws_default_depth: None,
+            ws_depths: &[5, 10, 20],
+            ws_default_depth: Some(20),
             rest_max_depth: None,
-            supports_snapshot: false,
+            rest_depth_values: &[],
+            supports_snapshot: true,
             supports_delta: true,
-            update_speeds_ms: &[],
-            default_speed_ms: None,
+            update_speeds_ms: &[100, 1000],
+            default_speed_ms: Some(1000),
+            ws_channels: GEMINI_CHANNELS,
+            checksum: None,
+            has_sequence: true,
+            has_prev_sequence: false,
+            supports_aggregation: false,
+            aggregation_levels: &[],
         }
     }
 }

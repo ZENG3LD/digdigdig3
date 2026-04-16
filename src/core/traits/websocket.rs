@@ -72,9 +72,13 @@ pub trait WebSocketConnector: Send + Sync {
         None
     }
 
-    /// Returns the exchange's L2/orderbook capabilities.
-    /// Override this in your connector to declare valid depth levels, speeds, etc.
-    fn orderbook_capabilities(&self) -> OrderbookCapabilities {
+    /// Returns the exchange's L2/orderbook capabilities for the given account type.
+    ///
+    /// Connectors with different capabilities per market type (e.g. Binance Spot vs Futures)
+    /// should match on `account_type` and return the appropriate struct.
+    /// The default implementation ignores `account_type` and returns permissive defaults.
+    fn orderbook_capabilities(&self, account_type: AccountType) -> OrderbookCapabilities {
+        let _ = account_type;
         OrderbookCapabilities::permissive()
     }
 }

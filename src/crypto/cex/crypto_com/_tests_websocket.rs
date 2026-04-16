@@ -39,7 +39,7 @@ async fn test_orderbook_capabilities() {
     // CryptoComWebSocket::new() is a sync constructor
     let ws = CryptoComWebSocket::new(None, false);
 
-    let caps = WebSocketConnector::orderbook_capabilities(&ws);
+    let caps = WebSocketConnector::orderbook_capabilities(&ws, AccountType::Spot);
     println!("Crypto.com orderbook capabilities: {:?}", caps);
 
     // Crypto.com supports depths 10, 50

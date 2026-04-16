@@ -28,7 +28,7 @@ use crate::core::{
     ExchangeError, ExchangeResult,
     ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
 };
-use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities};
+use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities, WsBookChannel};
 use crate::core::traits::WebSocketConnector;
 
 use super::auth::CoinbaseAuth;
@@ -391,15 +391,26 @@ impl WebSocketConnector for CoinbaseWebSocket {
         Some(self.ws_ping_rtt_ms.clone())
     }
 
-    fn orderbook_capabilities(&self) -> OrderbookCapabilities {
+    fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        static COINBASE_CHANNELS: &[WsBookChannel] = &[
+            WsBookChannel::delta("level2",       None, None),
+            WsBookChannel::delta("level2_batch", None, None),
+        ];
         OrderbookCapabilities {
             ws_depths: &[],
             ws_default_depth: None,
             rest_max_depth: None,
+            rest_depth_values: &[],
             supports_snapshot: true,
-            supports_delta: false,
+            supports_delta: true,
             update_speeds_ms: &[],
             default_speed_ms: None,
+            ws_channels: COINBASE_CHANNELS,
+            checksum: None,
+            has_sequence: true,
+            has_prev_sequence: false,
+            supports_aggregation: false,
+            aggregation_levels: &[],
         }
     }
 }

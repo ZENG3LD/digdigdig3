@@ -624,15 +624,22 @@ impl WebSocketConnector for HyperliquidWebSocket {
         Some(self.ws_ping_rtt_ms.clone())
     }
 
-    fn orderbook_capabilities(&self) -> OrderbookCapabilities {
+    fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
         OrderbookCapabilities {
             ws_depths: &[],
-            ws_default_depth: None,
-            rest_max_depth: None,
+            ws_default_depth: Some(20),
+            rest_max_depth: Some(20),
+            rest_depth_values: &[],
             supports_snapshot: true,
             supports_delta: false,
             update_speeds_ms: &[],
-            default_speed_ms: None,
+            default_speed_ms: Some(500),
+            ws_channels: &[],
+            checksum: None,
+            has_sequence: false,
+            has_prev_sequence: false,
+            supports_aggregation: true,
+            aggregation_levels: &["null", "2", "3", "4", "5"],
         }
     }
 }

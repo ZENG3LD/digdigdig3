@@ -44,7 +44,7 @@ use crate::core::{
     ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
     timestamp_millis,
 };
-use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities};
+use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities, WsBookChannel};
 use crate::core::traits::WebSocketConnector;
 use crate::core::utils::WeightRateLimiter;
 
@@ -844,15 +844,50 @@ impl WebSocketConnector for KuCoinWebSocket {
         Some(self.ws_ping_rtt_ms.clone())
     }
 
-    fn orderbook_capabilities(&self) -> OrderbookCapabilities {
-        OrderbookCapabilities {
-            ws_depths: &[],
-            ws_default_depth: None,
-            rest_max_depth: Some(100),
-            supports_snapshot: false,
-            supports_delta: true,
-            update_speeds_ms: &[],
-            default_speed_ms: None,
+    fn orderbook_capabilities(&self, account_type: AccountType) -> OrderbookCapabilities {
+        static SPOT_CHANNELS: &[WsBookChannel] = &[
+            WsBookChannel::snapshot("spotMarket/level2Depth5",  5,  100),
+            WsBookChannel::snapshot("spotMarket/level2Depth50", 50, 100),
+            WsBookChannel::delta("market/level2",               None, None),
+        ];
+        static FUTURES_CHANNELS: &[WsBookChannel] = &[
+            WsBookChannel::snapshot("contractMarket/level2Depth5",  5,  100),
+            WsBookChannel::snapshot("contractMarket/level2Depth50", 50, 100),
+            WsBookChannel::delta("contractMarket/level2",           None, None),
+        ];
+        match account_type {
+            AccountType::FuturesCross | AccountType::FuturesIsolated => OrderbookCapabilities {
+                ws_depths: &[5, 50],
+                ws_default_depth: Some(50),
+                rest_max_depth: Some(100),
+                rest_depth_values: &[20, 100],
+                supports_snapshot: true,
+                supports_delta: true,
+                update_speeds_ms: &[],
+                default_speed_ms: None,
+                ws_channels: FUTURES_CHANNELS,
+                checksum: None,
+                has_sequence: true,
+                has_prev_sequence: false,
+                supports_aggregation: false,
+                aggregation_levels: &[],
+            },
+            _ => OrderbookCapabilities {
+                ws_depths: &[5, 50],
+                ws_default_depth: Some(50),
+                rest_max_depth: None,
+                rest_depth_values: &[20, 100],
+                supports_snapshot: true,
+                supports_delta: true,
+                update_speeds_ms: &[],
+                default_speed_ms: None,
+                ws_channels: SPOT_CHANNELS,
+                checksum: None,
+                has_sequence: true,
+                has_prev_sequence: false,
+                supports_aggregation: false,
+                aggregation_levels: &[],
+            },
         }
     }
 }

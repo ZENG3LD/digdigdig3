@@ -47,7 +47,7 @@ use crate::core::{
     ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
     timestamp_millis,
 };
-use crate::core::types::{WebSocketResult, WebSocketError, TradeSide, OrderSide, OrderType, OrderStatus, OrderBookLevel, OrderbookDelta as OrderbookDeltaData, OrderbookCapabilities};
+use crate::core::types::{WebSocketResult, WebSocketError, TradeSide, OrderSide, OrderType, OrderStatus, OrderBookLevel, OrderbookDelta as OrderbookDeltaData, OrderbookCapabilities, WsBookChannel, ChecksumInfo, ChecksumAlgorithm};
 use crate::core::traits::WebSocketConnector;
 use crate::core::utils::WeightRateLimiter;
 
@@ -1110,16 +1110,47 @@ impl WebSocketConnector for KrakenWebSocket {
         Some(self.ws_ping_rtt_ms.clone())
     }
 
-    fn orderbook_capabilities(&self) -> OrderbookCapabilities {
-        static DEPTHS: &[u32] = &[10, 25, 100, 500, 1000];
-        OrderbookCapabilities {
-            ws_depths: DEPTHS,
-            ws_default_depth: Some(10),
-            rest_max_depth: Some(500),
-            supports_snapshot: true,
-            supports_delta: true,
-            update_speeds_ms: &[],
-            default_speed_ms: None,
+    fn orderbook_capabilities(&self, account_type: AccountType) -> OrderbookCapabilities {
+        static SPOT_CHANNELS: &[WsBookChannel] = &[
+            WsBookChannel::delta("book", None, None),
+        ];
+        match account_type {
+            AccountType::Spot => OrderbookCapabilities {
+                ws_depths: &[10, 25, 100, 500, 1000],
+                ws_default_depth: Some(10),
+                rest_max_depth: Some(100),
+                rest_depth_values: &[],
+                supports_snapshot: true,
+                supports_delta: true,
+                update_speeds_ms: &[],
+                default_speed_ms: None,
+                ws_channels: SPOT_CHANNELS,
+                checksum: Some(ChecksumInfo {
+                    algorithm: ChecksumAlgorithm::Crc32KrakenFormat,
+                    levels_per_side: 10,
+                    opt_in: false,
+                }),
+                has_sequence: false,
+                has_prev_sequence: false,
+                supports_aggregation: false,
+                aggregation_levels: &[],
+            },
+            _ => OrderbookCapabilities {
+                ws_depths: &[],
+                ws_default_depth: None,
+                rest_max_depth: None,
+                rest_depth_values: &[],
+                supports_snapshot: true,
+                supports_delta: true,
+                update_speeds_ms: &[],
+                default_speed_ms: None,
+                ws_channels: &[],
+                checksum: None,
+                has_sequence: true,
+                has_prev_sequence: false,
+                supports_aggregation: false,
+                aggregation_levels: &[],
+            },
         }
     }
 }

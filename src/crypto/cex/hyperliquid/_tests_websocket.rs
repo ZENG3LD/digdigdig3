@@ -37,7 +37,7 @@ async fn test_orderbook_capabilities() {
     // HyperliquidWebSocket::new() is a sync constructor
     let ws = HyperliquidWebSocket::new(false);
 
-    let caps = ws.orderbook_capabilities();
+    let caps = ws.orderbook_capabilities(AccountType::Spot);
     println!("HyperLiquid orderbook capabilities: {:?}", caps);
     println!("ws_depths: {:?}", caps.ws_depths);
     println!("supports_snapshot: {}", caps.supports_snapshot);

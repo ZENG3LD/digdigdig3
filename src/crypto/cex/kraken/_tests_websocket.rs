@@ -42,7 +42,7 @@ async fn test_orderbook_capabilities() {
         }
     };
 
-    let caps = ws.orderbook_capabilities();
+    let caps = ws.orderbook_capabilities(AccountType::Spot);
     println!("Kraken orderbook capabilities: {:?}", caps);
 
     // Kraken supports depths 10, 25

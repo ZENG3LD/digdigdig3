@@ -78,7 +78,7 @@ use crate::core::{
     ExchangeError, ExchangeResult,
     ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
 };
-use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities};
+use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities, WsBookChannel};
 use crate::core::traits::WebSocketConnector;
 
 use super::endpoints::{MexcUrls, MexcWsChannels, format_symbol};
@@ -544,17 +544,28 @@ impl WebSocketConnector for MexcWebSocket {
         Some(self.ws_ping_rtt_ms.clone())
     }
 
-    fn orderbook_capabilities(&self) -> OrderbookCapabilities {
+    fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        static MEXC_CHANNELS: &[WsBookChannel] = &[
+            WsBookChannel::delta("increase.depth",    None,     None      ),
+            WsBookChannel::snapshot("limit.depth",    20,       1000      ),
+            WsBookChannel::delta("aggre.depth@10ms",  None,     Some(10)  ),
+            WsBookChannel::delta("aggre.depth@100ms", None,     Some(100) ),
+        ];
         OrderbookCapabilities {
-            // MEXC aggre depth uses protobuf deltas; no fixed depth level is configurable
-            ws_depths: &[],
+            ws_depths: &[5, 10, 20],
             ws_default_depth: None,
-            rest_max_depth: Some(500),
+            rest_max_depth: Some(5000),
+            rest_depth_values: &[],
             supports_snapshot: true,
-            // aggre.depth channel provides incremental delta updates (100ms batched)
             supports_delta: true,
             update_speeds_ms: &[10, 100],
-            default_speed_ms: Some(100),
+            default_speed_ms: None,
+            ws_channels: MEXC_CHANNELS,
+            checksum: None,
+            has_sequence: true,
+            has_prev_sequence: false,
+            supports_aggregation: true,
+            aggregation_levels: &[],
         }
     }
 }

@@ -59,7 +59,7 @@ use crate::core::{
     ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
     timestamp_millis,
 };
-use crate::core::types::{WebSocketResult, WebSocketError, Ticker, OrderBook, OrderBookLevel, OrderbookCapabilities};
+use crate::core::types::{WebSocketResult, WebSocketError, Ticker, OrderBook, OrderBookLevel, OrderbookCapabilities, WsBookChannel};
 use crate::core::traits::WebSocketConnector;
 use crate::core::utils::WeightRateLimiter;
 
@@ -737,15 +737,35 @@ impl WebSocketConnector for HtxWebSocket {
         Some(self.ws_ping_rtt_ms.clone())
     }
 
-    fn orderbook_capabilities(&self) -> OrderbookCapabilities {
+    fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        static HTX_CHANNELS: &[WsBookChannel] = &[
+            WsBookChannel::delta("mbp.5",   Some(5),   None      ),
+            WsBookChannel::delta("mbp.10",  Some(10),  Some(100) ),
+            WsBookChannel::delta("mbp.20",  Some(20),  Some(100) ),
+            WsBookChannel::delta("mbp.150", Some(150), Some(100) ),
+            WsBookChannel::delta("mbp.400", Some(400), Some(100) ),
+            WsBookChannel::snapshot("depth.step0", 150, 100),
+            WsBookChannel::snapshot("depth.step1", 20,  100),
+            WsBookChannel::snapshot("depth.step2", 20,  100),
+            WsBookChannel::snapshot("depth.step3", 20,  100),
+            WsBookChannel::snapshot("depth.step4", 20,  100),
+            WsBookChannel::snapshot("depth.step5", 20,  100),
+        ];
         OrderbookCapabilities {
-            ws_depths: &[],
-            ws_default_depth: None,
+            ws_depths: &[5, 10, 20, 150, 400],
+            ws_default_depth: Some(20),
             rest_max_depth: Some(150),
+            rest_depth_values: &[5, 10, 20],
             supports_snapshot: true,
-            supports_delta: false,
-            update_speeds_ms: &[],
-            default_speed_ms: None,
+            supports_delta: true,
+            update_speeds_ms: &[100],
+            default_speed_ms: Some(100),
+            ws_channels: HTX_CHANNELS,
+            checksum: None,
+            has_sequence: true,
+            has_prev_sequence: false,
+            supports_aggregation: true,
+            aggregation_levels: &["step0", "step1", "step2", "step3", "step4", "step5"],
         }
     }
 }

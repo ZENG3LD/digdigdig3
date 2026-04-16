@@ -1155,17 +1155,40 @@ impl WebSocketConnector for BinanceWebSocket {
         Some(self.ws_ping_rtt_ms.clone())
     }
 
-    fn orderbook_capabilities(&self) -> OrderbookCapabilities {
-        static DEPTHS: &[u32] = &[5, 10, 20];
-        static SPEEDS: &[u32] = &[100, 1000];
-        OrderbookCapabilities {
-            ws_depths: DEPTHS,
-            ws_default_depth: Some(20),
-            rest_max_depth: Some(5000),
-            supports_snapshot: true,
-            supports_delta: true,
-            update_speeds_ms: SPEEDS,
-            default_speed_ms: Some(100),
+    fn orderbook_capabilities(&self, account_type: AccountType) -> OrderbookCapabilities {
+        match account_type {
+            AccountType::Spot => OrderbookCapabilities {
+                ws_depths: &[5, 10, 20],
+                ws_default_depth: Some(20),
+                rest_max_depth: Some(5000),
+                rest_depth_values: &[],
+                supports_snapshot: true,
+                supports_delta: true,
+                update_speeds_ms: &[100, 1000],
+                default_speed_ms: Some(1000),
+                ws_channels: &[],
+                checksum: None,
+                has_sequence: true,
+                has_prev_sequence: false,
+                supports_aggregation: false,
+                aggregation_levels: &[],
+            },
+            _ => OrderbookCapabilities {
+                ws_depths: &[5, 10, 20],
+                ws_default_depth: Some(20),
+                rest_max_depth: Some(1000),
+                rest_depth_values: &[5, 10, 20, 50, 100, 500, 1000],
+                supports_snapshot: true,
+                supports_delta: true,
+                update_speeds_ms: &[100, 250, 500],
+                default_speed_ms: Some(250),
+                ws_channels: &[],
+                checksum: None,
+                has_sequence: true,
+                has_prev_sequence: true,
+                supports_aggregation: false,
+                aggregation_levels: &[],
+            },
         }
     }
 }

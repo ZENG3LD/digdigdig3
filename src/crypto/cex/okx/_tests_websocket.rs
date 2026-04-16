@@ -41,7 +41,7 @@ async fn test_orderbook_capabilities() {
         }
     };
 
-    let caps = ws.orderbook_capabilities();
+    let caps = ws.orderbook_capabilities(AccountType::Spot);
     println!("OKX orderbook capabilities: {:?}", caps);
 
     // OKX supports depths 5, 50

@@ -40,7 +40,7 @@ async fn test_orderbook_capabilities() {
         }
     };
 
-    let caps = ws.orderbook_capabilities();
+    let caps = ws.orderbook_capabilities(AccountType::Spot);
     println!("Binance orderbook capabilities: {:?}", caps);
 
     // Binance supports depths 5, 10, 20

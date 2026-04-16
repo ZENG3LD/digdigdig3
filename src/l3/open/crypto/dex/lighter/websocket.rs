@@ -582,26 +582,23 @@ impl LighterWebSocket {
     /// Parse price/size levels from a JSON array into (f64, f64) tuples.
     ///
     /// Lighter orderbook levels are objects: `[{"price":"2738.02","size":"15.40"}, ...]`
+    /// Also supports numeric values: `[{"price":2738.02,"size":15.40}, ...]`
     /// Also supports legacy array format: `[["2738.02","15.40"], ...]`
     fn parse_levels(arr: &Value) -> Vec<OrderBookLevel> {
         arr.as_array()
             .map(|levels| {
                 levels.iter().filter_map(|entry| {
-                    // Object format: {"price": "...", "size": "..."}
+                    // Object format: {"price": "..." or number, "size": "..." or number}
                     if let Some(obj) = entry.as_object() {
-                        let price = obj.get("price")
-                            .and_then(|v| v.as_str())
-                            .and_then(|s| s.parse::<f64>().ok())?;
-                        let size = obj.get("size")
-                            .and_then(|v| v.as_str())
-                            .and_then(|s| s.parse::<f64>().ok())?;
+                        let price = obj.get("price").and_then(Self::json_val_to_f64)?;
+                        let size = obj.get("size").and_then(Self::json_val_to_f64)?;
                         Some(OrderBookLevel::new(price, size))
                     }
-                    // Array format: ["price", "size"]
+                    // Array format: ["price", "size"] or [price, size]
                     else if let Some(pair_arr) = entry.as_array() {
                         if pair_arr.len() >= 2 {
-                            let price = pair_arr[0].as_str()?.parse::<f64>().ok()?;
-                            let size = pair_arr[1].as_str()?.parse::<f64>().ok()?;
+                            let price = Self::json_val_to_f64(&pair_arr[0])?;
+                            let size = Self::json_val_to_f64(&pair_arr[1])?;
                             Some(OrderBookLevel::new(price, size))
                         } else {
                             None
@@ -612,6 +609,11 @@ impl LighterWebSocket {
                 }).collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Convert a JSON Value to f64, supporting both string-encoded numbers and raw numbers.
+    fn json_val_to_f64(v: &Value) -> Option<f64> {
+        v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

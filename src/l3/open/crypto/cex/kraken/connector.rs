@@ -913,7 +913,8 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         Ok(all_trades)
     }
 
-    fn trading_capabilities(&self, _account_type: AccountType) -> TradingCapabilities {
+    fn trading_capabilities(&self, account_type: AccountType) -> TradingCapabilities {
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
         TradingCapabilities {
             has_market_order: true,
             has_limit_order: true,
@@ -925,14 +926,13 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
             has_oco: false,
             // AmendOrder impl exists for both Spot (EditOrder) and Futures (editorder).
             has_amend: true,
-            // BatchOrders impl exists; Futures batch placement works (Spot returns UnsupportedOperation).
-            has_batch: true,
-            // Kraken Futures batchorder limit is 10 per request.
-            max_batch_size: Some(10),
+            // Futures: native batch via /batchorder (max 10). Spot: no batch endpoint.
+            has_batch: is_futures,
+            max_batch_size: if is_futures { Some(10) } else { None },
             // CancelAll impl exists for both Spot (/CancelAll) and Futures (/cancelallorders).
             has_cancel_all: true,
-            // get_user_trades implemented for Spot via TradesHistory (Futures returns UnsupportedOperation).
-            has_user_trades: true,
+            // get_user_trades: Spot only via TradesHistory. Futures returns UnsupportedOperation.
+            has_user_trades: !is_futures,
             has_order_history: true,
         }
     }
@@ -1002,25 +1002,26 @@ impl Account for KrakenConnector {
         })
     }
 
-    fn account_capabilities(&self, _account_type: AccountType) -> AccountCapabilities {
+    fn account_capabilities(&self, account_type: AccountType) -> AccountCapabilities {
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
         AccountCapabilities {
             has_balances: true,
             has_account_info: true,
             has_fees: true,
             // No AccountTransfers trait implemented for Kraken.
             has_transfers: false,
-            // SubAccounts impl exists (list + transfer to/from sub-account).
+            // SubAccounts: List and Transfer work for both. Create/GetBalance always UnsupportedOperation.
             has_sub_accounts: true,
-            // CustodialFunds impl exists (deposit addresses, withdraw, deposit/withdrawal history).
-            has_deposit_withdraw: true,
+            // CustodialFunds endpoints are Spot-only (/DepositAddresses, /Withdraw, etc.).
+            has_deposit_withdraw: !is_futures,
             // No dedicated MarginTrading trait implemented.
             has_margin: false,
             // No EarnStaking trait implemented.
             has_earn_staking: false,
-            // FundingHistory impl exists (spot rollover payments via Ledgers endpoint).
-            has_funding_history: true,
-            // AccountLedger impl exists (full spot ledger via /Ledgers).
-            has_ledger: true,
+            // FundingHistory uses /Ledgers (type=rollover) — Spot endpoint only.
+            has_funding_history: !is_futures,
+            // AccountLedger uses /Ledgers — Spot endpoint only.
+            has_ledger: !is_futures,
             // No ConvertSwap trait implemented.
             has_convert: false,
         }

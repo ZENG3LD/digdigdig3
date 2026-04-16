@@ -527,7 +527,8 @@ impl MarketData for BitgetConnector {
         Ok(symbols)
     }
 
-    fn market_data_capabilities(&self, _account_type: AccountType) -> MarketDataCapabilities {
+    fn market_data_capabilities(&self, account_type: AccountType) -> MarketDataCapabilities {
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
         MarketDataCapabilities {
             has_ping: true,
             has_price: true,
@@ -538,12 +539,12 @@ impl MarketData for BitgetConnector {
             // get_recent_trades is not implemented in the MarketData trait impl.
             has_recent_trades: false,
             // Spot: 1m 3m 5m 15m 30m 1h 2h 4h 6h 12h 1d 1w 1M
-            // Futures adds 3d — advertise the full union.
-            supported_intervals: &[
-                "1m", "3m", "5m", "15m", "30m",
-                "1h", "2h", "4h", "6h", "12h",
-                "1d", "3d", "1w", "1M",
-            ],
+            // Futures adds 3d (granularity=3D is valid on mix/market/candles).
+            supported_intervals: if is_futures {
+                &["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "3d", "1w", "1M"]
+            } else {
+                &["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "1w", "1M"]
+            },
             // Both Spot and Futures accept limit up to 1000.
             max_kline_limit: Some(1000),
         }
@@ -1245,26 +1246,28 @@ impl Trading for BitgetConnector {
         }
     }
 
-    fn trading_capabilities(&self, _account_type: AccountType) -> TradingCapabilities {
+    fn trading_capabilities(&self, account_type: AccountType) -> TradingCapabilities {
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
         TradingCapabilities {
             has_market_order: true,
             has_limit_order: true,
-            // StopMarket and StopLimit are implemented for Futures via plan orders.
-            has_stop_market: true,
-            has_stop_limit: true,
+            // StopMarket/StopLimit/TrailingStop/Bracket: Futures-only via plan orders.
+            // place_order returns UnsupportedOperation for Spot at runtime.
+            has_stop_market: is_futures,
+            has_stop_limit: is_futures,
             // TrailingStop via planType=track_plan — Futures only.
-            has_trailing_stop: true,
+            has_trailing_stop: is_futures,
             // Bracket via presetStopSurplusPrice/presetStopLossPrice — Futures only.
-            has_bracket: true,
+            has_bracket: is_futures,
             // No OCO order type is implemented; falls through to UnsupportedOperation.
             has_oco: false,
-            // AmendOrder trait is implemented.
+            // AmendOrder: both Spot (SpotModifyOrder) and Futures (FuturesModifyOrder) are implemented.
             has_amend: true,
-            // BatchOrders trait is implemented.
+            // BatchOrders: both Spot (SpotBatchPlaceOrders) and Futures (FuturesBatchPlaceOrders) are implemented.
             has_batch: true,
-            // Bitget Futures batch limit is 50 orders per request (matches max_batch_place_size()).
+            // Spot batch doc says 50 orders max, same as Futures.
             max_batch_size: Some(50),
-            // CancelAll trait is implemented.
+            // CancelAll: both Spot (SpotCancelBySymbol) and Futures (FuturesCancelBySymbol) are implemented.
             has_cancel_all: true,
             has_user_trades: true,
             has_order_history: true,
@@ -1384,7 +1387,8 @@ impl Account for BitgetConnector {
         }
     }
 
-    fn account_capabilities(&self, _account_type: AccountType) -> AccountCapabilities {
+    fn account_capabilities(&self, account_type: AccountType) -> AccountCapabilities {
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
         AccountCapabilities {
             has_balances: true,
             has_account_info: true,
@@ -1401,8 +1405,8 @@ impl Account for BitgetConnector {
             has_earn_staking: false,
             // No FundingHistory trait implemented for Bitget.
             has_funding_history: false,
-            // AccountLedger impl exists (spot + futures ledger).
-            has_ledger: true,
+            // AccountLedger impl only calls SpotBills — Futures ledger endpoint not wired up.
+            has_ledger: !is_futures,
             // No ConvertSwap trait implemented.
             has_convert: false,
         }

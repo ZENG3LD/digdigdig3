@@ -767,6 +767,9 @@ impl MarketData for BinanceConnector {
     }
 
     fn market_data_capabilities(&self, _account_type: AccountType) -> MarketDataCapabilities {
+        // Spot and Futures share the same intervals and kline limit (1000 per request).
+        // Both endpoints (SpotKlines / FuturesKlines) accept identical interval strings
+        // via map_kline_interval — no branching needed here.
         MarketDataCapabilities {
             has_ping: true,
             has_price: true,
@@ -1410,29 +1413,58 @@ impl Trading for BinanceConnector {
         BinanceParser::parse_user_trades(&response, is_futures)
     }
 
-    fn trading_capabilities(&self, _account_type: AccountType) -> TradingCapabilities {
-        TradingCapabilities {
-            has_market_order: true,
-            has_limit_order: true,
-            // StopMarket: Futures via /fapi/v1/order/algo (STOP_MARKET). Spot returns UnsupportedOperation.
-            has_stop_market: true,
-            // StopLimit: Spot via STOP_LOSS_LIMIT on /api/v3/order; Futures via /fapi/v1/order/algo (STOP).
-            has_stop_limit: true,
-            // TrailingStop: Futures via /fapi/v1/order/algo (TRAILING_STOP_MARKET). Spot unsupported.
-            has_trailing_stop: true,
-            // Bracket: Spot via OTOCO /api/v3/orderList/otoco. Futures returns UnsupportedOperation.
-            has_bracket: true,
-            // OCO: Spot via /api/v3/orderList/oco. Futures unsupported.
-            has_oco: true,
-            // AmendOrder trait is implemented; Futures only (Spot returns UnsupportedOperation).
-            has_amend: true,
-            // BatchOrders trait is implemented; Futures only, max 5 place / 10 cancel.
-            has_batch: true,
-            max_batch_size: Some(5),
-            // CancelAll trait implemented for both Spot and Futures (requires symbol).
-            has_cancel_all: true,
-            has_user_trades: true,
-            has_order_history: true,
+    fn trading_capabilities(&self, account_type: AccountType) -> TradingCapabilities {
+        // Futures = FuturesCross / FuturesIsolated; everything else (Spot, Margin) is spot-like.
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
+
+        if is_futures {
+            TradingCapabilities {
+                has_market_order: true,
+                has_limit_order: true,
+                // STOP_MARKET available via /fapi/v1/order (type=STOP_MARKET)
+                has_stop_market: true,
+                // STOP available via /fapi/v1/order (type=STOP)
+                has_stop_limit: true,
+                // TRAILING_STOP_MARKET available via /fapi/v1/order/algo
+                has_trailing_stop: true,
+                // Bracket returns UnsupportedOperation for Futures (place_order arm for Bracket)
+                has_bracket: false,
+                // OCO returns UnsupportedOperation for Futures (place_order arm for Oco)
+                has_oco: false,
+                // AmendOrder impl uses PUT /fapi/v1/order — Futures only
+                has_amend: true,
+                // BatchOrders impl uses /fapi/v1/batchOrders — Futures only, max 5 place
+                has_batch: true,
+                max_batch_size: Some(5),
+                // CancelAll implemented for both (SpotCancelAllOrders / FuturesCancelAllOrders)
+                has_cancel_all: true,
+                has_user_trades: true,
+                has_order_history: true,
+            }
+        } else {
+            TradingCapabilities {
+                has_market_order: true,
+                has_limit_order: true,
+                // Spot: place_order returns UnsupportedOperation for StopMarket
+                has_stop_market: false,
+                // STOP_LOSS_LIMIT available on /api/v3/order for Spot
+                has_stop_limit: true,
+                // Spot: place_order returns UnsupportedOperation for TrailingStop
+                has_trailing_stop: false,
+                // Bracket mapped to OTOCO via /api/v3/orderList/otoco on Spot
+                has_bracket: true,
+                // OCO available via /api/v3/orderList/oco on Spot
+                has_oco: true,
+                // AmendOrder returns UnsupportedOperation for Spot/Margin
+                has_amend: false,
+                // BatchOrders returns UnsupportedOperation for Spot/Margin
+                has_batch: false,
+                max_batch_size: None,
+                // CancelAll implemented for both
+                has_cancel_all: true,
+                has_user_trades: true,
+                has_order_history: true,
+            }
         }
     }
 }
@@ -1555,25 +1587,31 @@ impl Account for BinanceConnector {
         BinanceParser::parse_fee_info(&response, symbol)
     }
 
-    fn account_capabilities(&self, _account_type: AccountType) -> AccountCapabilities {
+    fn account_capabilities(&self, account_type: AccountType) -> AccountCapabilities {
+        // Futures = FuturesCross / FuturesIsolated; everything else is spot-like.
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
+
         AccountCapabilities {
             has_balances: true,
             has_account_info: true,
             has_fees: true,
-            // AccountTransfers trait implemented: POST /sapi/v1/asset/transfer
+            // AccountTransfers always routes through /sapi/v1/asset/transfer (Spot endpoint).
+            // Transfers move funds between Spot ↔ Futures wallet — available regardless of account_type.
             has_transfers: true,
-            // SubAccounts trait implemented: create, list, transfer, get_balance
+            // SubAccounts always use Spot-level SAPI endpoints — available for both account types.
             has_sub_accounts: true,
-            // CustodialFunds trait implemented: deposit address, withdraw, deposit/withdrawal history
+            // CustodialFunds (deposit/withdraw) uses Spot SAPI endpoints — available for both.
             has_deposit_withdraw: true,
             // No margin borrowing/repayment endpoints implemented
             has_margin: false,
             // No earn/staking endpoints implemented
             has_earn_staking: false,
-            // FundingHistory trait implemented: GET /fapi/v1/income?incomeType=FUNDING_FEE
-            has_funding_history: true,
-            // AccountLedger trait implemented: GET /fapi/v1/income (all types)
-            has_ledger: true,
+            // FundingHistory (GET /fapi/v1/income?incomeType=FUNDING_FEE) is Futures-only.
+            // Spot returns UnsupportedOperation from get_funding_payments.
+            has_funding_history: is_futures,
+            // AccountLedger (GET /fapi/v1/income) is Futures-only.
+            // Spot returns UnsupportedOperation from get_ledger.
+            has_ledger: is_futures,
             // No coin-to-coin conversion endpoint implemented
             has_convert: false,
         }

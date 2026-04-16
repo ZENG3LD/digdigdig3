@@ -777,7 +777,8 @@ impl MarketData for KuCoinConnector {
         Ok(symbols)
     }
 
-    fn market_data_capabilities(&self, _account_type: AccountType) -> MarketDataCapabilities {
+    fn market_data_capabilities(&self, account_type: AccountType) -> MarketDataCapabilities {
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
         MarketDataCapabilities {
             has_ping: true,
             has_price: true,
@@ -788,13 +789,13 @@ impl MarketData for KuCoinConnector {
             // get_spot_recent_trades exists as an inherent method but is NOT part of the
             // MarketData trait — the trait method is not overridden, so false here.
             has_recent_trades: false,
-            // Spot supports: 1m 3m 5m 15m 30m 1h 2h 4h 6h 8h 12h 1d 1w 1M
-            // Futures drops 3m, 6h, 1M — we advertise the union of spot intervals.
-            supported_intervals: &[
-                "1m", "3m", "5m", "15m", "30m",
-                "1h", "2h", "4h", "6h", "8h", "12h",
-                "1d", "1w", "1M",
-            ],
+            // Spot: 1m 3m 5m 15m 30m 1h 2h 4h 6h 8h 12h 1d 1w 1M
+            // Futures: drops 3m, 6h, 1M (granularity is integer minutes)
+            supported_intervals: if is_futures {
+                &["1m", "5m", "15m", "30m", "1h", "2h", "4h", "8h", "12h", "1d", "1w"]
+            } else {
+                &["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "1w", "1M"]
+            },
             // KuCoin uses time-window, not a numeric limit param; effective max is 1500 bars.
             max_kline_limit: Some(1500),
         }
@@ -1332,7 +1333,8 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         KuCoinParser::parse_fills(&response)
     }
 
-    fn trading_capabilities(&self, _account_type: AccountType) -> TradingCapabilities {
+    fn trading_capabilities(&self, account_type: AccountType) -> TradingCapabilities {
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
         TradingCapabilities {
             has_market_order: true,
             has_limit_order: true,
@@ -1341,16 +1343,18 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
             // TrailingStop / Bracket / Twap all return UnsupportedOperation in place_order.
             has_trailing_stop: false,
             has_bracket: false,
-            // OCO: native KuCoin spot endpoint exists and is implemented.
-            has_oco: true,
-            // AmendOrder is implemented for Futures only; Spot returns UnsupportedOperation.
-            // We advertise true because the trait impl exists for the connector.
-            has_amend: true,
-            // BatchOrders impl exists; place_orders_batch works; cancel_orders_batch returns
+            // OCO: native endpoint POST /api/v3/oco/order exists for Spot only;
+            // Futures returns UnsupportedOperation.
+            has_oco: !is_futures,
+            // AmendOrder (POST /api/v1/orders/{id}) is Futures-only;
+            // Spot returns UnsupportedOperation.
+            has_amend: is_futures,
+            // BatchOrders impl exists for both; cancel_orders_batch returns
             // UnsupportedOperation (no native KuCoin batch-cancel endpoint).
             has_batch: true,
-            // Spot HF max = 5; Futures max = 20. Advertise the more restrictive spot limit.
-            max_batch_size: Some(5),
+            // Spot HF Pro batch: max 5 orders (same symbol, limit only).
+            // Futures batch: max 20 orders (POST /api/v1/orders/multi).
+            max_batch_size: if is_futures { Some(20) } else { Some(5) },
             has_cancel_all: true,
             has_user_trades: true,
             has_order_history: true,
@@ -1453,7 +1457,8 @@ impl Account for KuCoinConnector {
         })
     }
 
-    fn account_capabilities(&self, _account_type: AccountType) -> AccountCapabilities {
+    fn account_capabilities(&self, account_type: AccountType) -> AccountCapabilities {
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
         AccountCapabilities {
             has_balances: true,
             has_account_info: true,
@@ -1469,10 +1474,12 @@ impl Account for KuCoinConnector {
             has_margin: false,
             // No EarnStaking trait is implemented.
             has_earn_staking: false,
-            // FundingHistory impl exists (futures funding payment history).
-            has_funding_history: true,
-            // AccountLedger impl exists (spot account ledger).
-            has_ledger: true,
+            // FundingHistory (GET /api/v1/funding-history) hits the Futures domain only;
+            // the Spot API has no equivalent funding payment endpoint.
+            has_funding_history: is_futures,
+            // AccountLedger (GET /api/v1/accounts/ledgers) is a Spot/Main account endpoint;
+            // Futures account does not expose a ledger via this path.
+            has_ledger: !is_futures,
             // No ConvertSwap trait is implemented.
             has_convert: false,
         }

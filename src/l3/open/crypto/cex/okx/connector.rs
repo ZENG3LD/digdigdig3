@@ -778,6 +778,14 @@ impl Trading for OkxConnector {
                 return Ok(PlaceOrderResponse::Algo(algo_resp));
             }
             OrderType::ReduceOnly { price } => {
+                // reduceOnly only makes sense for futures (closing an existing position).
+                // OKX Spot has no positions, so the API would reject this field.
+                if matches!(account_type, AccountType::Spot | AccountType::Margin) {
+                    return Err(ExchangeError::UnsupportedOperation(
+                        "ReduceOnly orders are not supported for Spot/Margin accounts. \
+                         ReduceOnly is a futures-only concept (closing an open position).".to_string()
+                    ));
+                }
                 let ord_type = if price.is_some() { "limit" } else { "market" };
                 let mut body = json!({
                     "instId": inst_id,
@@ -992,30 +1000,37 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
     }
 
     fn trading_capabilities(&self, _account_type: AccountType) -> TradingCapabilities {
+        // OKX supports the same order types on Spot and Futures via the unified algo endpoint.
+        // The one structural difference — ReduceOnly (futures-only) — is enforced in place_order
+        // at runtime, not captured here because TradingCapabilities has no has_reduce_only field.
         TradingCapabilities {
             has_market_order: true,
             has_limit_order: true,
             // StopMarket: OrderType::StopMarket → POST /api/v5/trade/order-algo (ordType="conditional", orderPx=-1)
+            // Available on both Spot and Futures via algo endpoint.
             has_stop_market: true,
             // StopLimit: OrderType::StopLimit → POST /api/v5/trade/order-algo (ordType="conditional", orderPx=limit)
+            // Available on both Spot and Futures via algo endpoint.
             has_stop_limit: true,
             // TrailingStop: OrderType::TrailingStop → POST /api/v5/trade/order-algo (ordType="move_order_stop")
+            // Available on both Spot and Futures via algo endpoint.
             has_trailing_stop: true,
             // Bracket: OrderType::Bracket → UnsupportedOperation (no atomic bracket on OKX API)
             has_bracket: false,
             // OCO: OrderType::Oco → POST /api/v5/trade/order-algo (ordType="oco")
+            // Available on both Spot and Futures via algo endpoint.
             has_oco: true,
-            // AmendOrder trait implemented: POST /api/v5/trade/amend-order
+            // AmendOrder trait implemented: POST /api/v5/trade/amend-order — same for both.
             has_amend: true,
-            // BatchOrders trait implemented: POST /api/v5/trade/batch-orders and cancel-batch-orders
+            // BatchOrders trait implemented: POST /api/v5/trade/batch-orders — same for both.
             has_batch: true,
             // max_batch_place_size() and max_batch_cancel_size() both return 20
             max_batch_size: Some(20),
-            // CancelAll trait implemented: POST /api/v5/trade/cancel-all-after (DMS, timeOut="0")
+            // CancelAll trait implemented: POST /api/v5/trade/cancel-all-after (DMS) — same for both.
             has_cancel_all: true,
-            // get_user_trades implemented: GET /api/v5/trade/fills
+            // get_user_trades implemented: GET /api/v5/trade/fills — same for both.
             has_user_trades: true,
-            // get_order_history implemented: GET /api/v5/trade/orders-history
+            // get_order_history implemented: GET /api/v5/trade/orders-history — same for both.
             has_order_history: true,
         }
     }
@@ -1084,29 +1099,32 @@ impl Account for OkxConnector {
         })
     }
 
-    fn account_capabilities(&self, _account_type: AccountType) -> AccountCapabilities {
+    fn account_capabilities(&self, account_type: AccountType) -> AccountCapabilities {
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
+
         AccountCapabilities {
-            // get_balance implemented: GET /api/v5/account/balance
+            // get_balance implemented: GET /api/v5/account/balance — same for both.
             has_balances: true,
-            // get_account_info implemented: builds from get_balance + hardcoded flags
+            // get_account_info implemented: builds from get_balance + hardcoded flags — same for both.
             has_account_info: true,
-            // get_fees implemented: GET /api/v5/account/config (makerFeeRate/takerFeeRate)
+            // get_fees implemented: GET /api/v5/account/config (makerFeeRate/takerFeeRate) — same for both.
             has_fees: true,
-            // AccountTransfers trait implemented: POST /api/v5/asset/transfer + GET /api/v5/asset/bills
+            // AccountTransfers trait implemented: POST /api/v5/asset/transfer — same for both.
             has_transfers: true,
-            // SubAccounts trait implemented: create, list, transfer, get_balance
+            // SubAccounts trait implemented: create, list, transfer, get_balance — same for both.
             has_sub_accounts: true,
-            // CustodialFunds trait implemented: deposit address, withdraw, deposit/withdrawal history
+            // CustodialFunds trait implemented: deposit address, withdraw, deposit/withdrawal history — same for both.
             has_deposit_withdraw: true,
-            // No MarginTrading trait — no borrow/repay endpoints implemented
+            // No MarginTrading trait — no borrow/repay endpoints implemented.
             has_margin: false,
-            // No earn/staking endpoints implemented
+            // No earn/staking endpoints implemented.
             has_earn_staking: false,
-            // FundingHistory trait implemented: GET /api/v5/account/bills?type=8
-            has_funding_history: true,
-            // AccountLedger trait implemented: GET /api/v5/account/bills + bills-archive
+            // FundingHistory: GET /api/v5/account/bills?type=8 returns funding fee payments.
+            // Funding fees only accrue on perpetual SWAP positions (Futures). Spot never pays funding.
+            has_funding_history: is_futures,
+            // AccountLedger trait implemented: GET /api/v5/account/bills + bills-archive — same for both.
             has_ledger: true,
-            // No ConvertSwap trait — no coin-to-coin conversion endpoints implemented
+            // No ConvertSwap trait — no coin-to-coin conversion endpoints implemented.
             has_convert: false,
         }
     }
@@ -1871,8 +1889,18 @@ impl FundingHistory for OkxConnector {
     async fn get_funding_payments(
         &self,
         filter: FundingFilter,
-        _account_type: AccountType,
+        account_type: AccountType,
     ) -> ExchangeResult<Vec<FundingPayment>> {
+        // Funding fees are only applicable to perpetual SWAP (Futures) accounts.
+        // Spot accounts never pay or receive funding — the API bills endpoint type=8
+        // will return empty results, so we short-circuit with a clear error instead.
+        if matches!(account_type, AccountType::Spot | AccountType::Margin) {
+            return Err(ExchangeError::UnsupportedOperation(
+                "Funding payments are only available for Futures accounts (FuturesCross/FuturesIsolated). \
+                 Spot and Margin accounts do not pay funding fees.".to_string()
+            ));
+        }
+
         let mut params: HashMap<String, String> = HashMap::new();
         // type=8 = interest/funding; funding subTypes are 173 (expense) and 174 (income)
         params.insert("type".to_string(), "8".to_string());

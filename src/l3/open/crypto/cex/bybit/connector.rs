@@ -633,6 +633,9 @@ impl MarketData for BybitConnector {
     }
 
     fn market_data_capabilities(&self, _account_type: AccountType) -> MarketDataCapabilities {
+        // Bybit uses the same /v5/market/* endpoints for both Spot and Futures —
+        // the `category` parameter (spot/linear) is passed per-request. Intervals
+        // and limits are identical across categories, so no branching needed here.
         MarketDataCapabilities {
             has_ping: true,
             has_price: true,
@@ -1465,25 +1468,26 @@ impl Trading for BybitConnector {
         Ok(trades)
     }
 
-    fn trading_capabilities(&self, _account_type: AccountType) -> TradingCapabilities {
+    fn trading_capabilities(&self, account_type: AccountType) -> TradingCapabilities {
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
         TradingCapabilities {
             has_market_order: true,
             has_limit_order: true,
             has_stop_market: true,
             has_stop_limit: true,
-            // TrailingStop: Futures only (Spot/Margin returns UnsupportedOperation)
-            has_trailing_stop: true,
-            // Bracket: no native bracket order type on Bybit API (UnsupportedOperation)
+            // TrailingStop: Futures only — Spot/Margin returns UnsupportedOperation (line 874)
+            has_trailing_stop: is_futures,
+            // Bracket: no native bracket order type on Bybit API (UnsupportedOperation for all)
             has_bracket: false,
-            // OCO: UI only on Bybit — not available via API (UnsupportedOperation)
+            // OCO: UI only on Bybit — not available via API (UnsupportedOperation for all)
             has_oco: false,
-            // AmendOrder trait implemented: POST /v5/order/amend
+            // AmendOrder: POST /v5/order/amend supports both spot and linear
             has_amend: true,
-            // BatchOrders trait implemented: POST /v5/order/create-batch and cancel-batch
+            // BatchOrders: POST /v5/order/create-batch and cancel-batch support both categories
             has_batch: true,
-            // Bybit batch limit is 10 per request
+            // Bybit batch limit is 10 per request (same for spot and futures)
             max_batch_size: Some(10),
-            // CancelAll trait implemented: POST /v5/order/cancel-all
+            // CancelAll: POST /v5/order/cancel-all supports both spot and linear
             has_cancel_all: true,
             has_user_trades: true,
             has_order_history: true,
@@ -1573,24 +1577,26 @@ impl Account for BybitConnector {
         })
     }
 
-    fn account_capabilities(&self, _account_type: AccountType) -> AccountCapabilities {
+    fn account_capabilities(&self, account_type: AccountType) -> AccountCapabilities {
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
         AccountCapabilities {
             has_balances: true,
             has_account_info: true,
             has_fees: true,
-            // AccountTransfers trait implemented: POST /v5/asset/transfer/inter-transfer
+            // AccountTransfers: no account_type branching in impl — works for all
             has_transfers: true,
-            // SubAccounts trait implemented: create, list, transfer, get_balance
+            // SubAccounts: no account_type branching in impl — works for all
             has_sub_accounts: true,
-            // CustodialFunds trait implemented: deposit address, withdraw, deposit/withdrawal history
+            // CustodialFunds: deposit address, withdraw, deposit/withdrawal history — works for all
             has_deposit_withdraw: true,
             // No MarginTrading trait — no borrow/repay endpoints
             has_margin: false,
             // No earn/staking endpoints implemented
             has_earn_staking: false,
-            // FundingHistory trait implemented: GET /v5/account/transaction-log?type=SETTLEMENT
-            has_funding_history: true,
-            // AccountLedger trait implemented: GET /v5/account/transaction-log (all types)
+            // FundingHistory: funding payments (SETTLEMENT) only exist for Futures positions
+            // Spot/Margin returns UnsupportedOperation from get_funding_rate (line 1729)
+            has_funding_history: is_futures,
+            // AccountLedger: GET /v5/account/transaction-log — available for all account types
             has_ledger: true,
             // No ConvertSwap trait — no coin conversion endpoints
             has_convert: false,

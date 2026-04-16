@@ -1161,7 +1161,8 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         GateioParser::parse_user_trades(&response, is_futures)
     }
 
-    fn trading_capabilities(&self, _account_type: AccountType) -> TradingCapabilities {
+    fn trading_capabilities(&self, account_type: AccountType) -> TradingCapabilities {
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
         TradingCapabilities {
             has_market_order: true,
             has_limit_order: true,
@@ -1179,8 +1180,8 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
             has_amend: true,
             // BatchOrders trait implemented: POST /spot/batch_orders and /futures/{settle}/batch_orders
             has_batch: true,
-            // Gate.io Spot batch limit is 10 (more conservative vs Futures 20)
-            max_batch_size: Some(10),
+            // Spot: max 10 per batch; Futures: max 20 per batch (Gate.io API limits)
+            max_batch_size: if is_futures { Some(20) } else { Some(10) },
             // CancelAll trait implemented: DELETE /spot/orders and /futures/{settle}/orders
             has_cancel_all: true,
             // get_user_trades: GET /spot/my_trades and /futures/{settle}/my_trades
@@ -1291,24 +1292,26 @@ impl Account for GateioConnector {
         })
     }
 
-    fn account_capabilities(&self, _account_type: AccountType) -> AccountCapabilities {
+    fn account_capabilities(&self, account_type: AccountType) -> AccountCapabilities {
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
         AccountCapabilities {
             has_balances: true,
             has_account_info: true,
-            has_fees: true,
-            // AccountTransfers trait implemented: POST /wallet/transfers
+            // get_fees uses GET /spot/fee — only valid for spot pairs, not futures contracts
+            has_fees: !is_futures,
+            // AccountTransfers trait: POST /wallet/transfers — wallet-level, same for both
             has_transfers: true,
-            // SubAccounts trait implemented: create, list, transfer, get_balance
+            // SubAccounts trait: /sub_accounts endpoints — wallet-level, same for both
             has_sub_accounts: true,
-            // CustodialFunds trait implemented: deposit address, withdraw, deposit/withdrawal history
+            // CustodialFunds trait: /wallet/deposit_address, /withdrawals — wallet-level, same for both
             has_deposit_withdraw: true,
             // No margin borrow/repay endpoints implemented
             has_margin: false,
             // No earn/staking endpoints implemented
             has_earn_staking: false,
-            // FundingHistory trait implemented: GET /futures/{settle}/funding_payments
-            has_funding_history: true,
-            // AccountLedger trait implemented: GET /wallet/ledger and /futures/{settle}/account_book
+            // FundingHistory trait: GET /futures/{settle}/funding_payments — futures-only
+            has_funding_history: is_futures,
+            // AccountLedger trait: GET /wallet/ledger (spot) or /futures/{settle}/account_book (futures)
             has_ledger: true,
             // No coin conversion endpoint implemented
             has_convert: false,
@@ -1721,9 +1724,11 @@ impl BatchOrders for GateioConnector {
 
         let account_type = orders[0].account_type;
 
-        if orders.len() > self.max_batch_place_size() {
+        let limit = if !matches!(account_type, AccountType::Spot | AccountType::Margin) { 20 } else { 10 };
+        if orders.len() > limit {
             return Err(ExchangeError::InvalidRequest(
-                format!("Batch size {} exceeds Gate.io limit of {}", orders.len(), self.max_batch_place_size())
+                format!("Batch size {} exceeds Gate.io {} limit of {}", orders.len(),
+                    if limit == 20 { "Futures" } else { "Spot" }, limit)
             ));
         }
 
@@ -1805,7 +1810,10 @@ impl BatchOrders for GateioConnector {
     }
 
     fn max_batch_place_size(&self) -> usize {
-        10 // Gate.io Spot limit (Futures limit is 20, using the more conservative value)
+        // This method has no account_type; returns Spot limit as safe default.
+        // Actual per-type limits are enforced in place_orders_batch (Spot=10, Futures=20)
+        // and reported correctly via trading_capabilities(account_type).max_batch_size.
+        10
     }
 
     fn max_batch_cancel_size(&self) -> usize {

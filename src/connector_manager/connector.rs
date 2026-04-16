@@ -20,11 +20,11 @@ use async_trait::async_trait;
 
 use crate::core::types::{
     ConnectorStats, ExchangeId, AccountType, Symbol, SymbolInfo, Price, OrderBook, Kline, Ticker,
-    ExchangeResult,
+    ExchangeResult, MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
 
 use crate::core::traits::{
-    ExchangeIdentity, MarketData,
+    ExchangeIdentity, MarketData, Trading, Account,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -865,6 +865,209 @@ impl MarketData for AnyConnector {
             Self::IB(c) => c.get_exchange_info(account_type).await,
             Self::YahooFinance(c) => c.get_exchange_info(account_type).await,
             Self::CryptoCompare(c) => c.get_exchange_info(account_type).await,
+        }
+    }
+
+    fn market_data_capabilities(&self, account_type: AccountType) -> MarketDataCapabilities {
+        match self {
+            // CEX
+            Self::Binance(c) => c.market_data_capabilities(account_type),
+            Self::Bybit(c) => c.market_data_capabilities(account_type),
+            Self::OKX(c) => c.market_data_capabilities(account_type),
+            Self::KuCoin(c) => c.market_data_capabilities(account_type),
+            Self::Kraken(c) => c.market_data_capabilities(account_type),
+            Self::Coinbase(c) => c.market_data_capabilities(account_type),
+            Self::GateIO(c) => c.market_data_capabilities(account_type),
+            Self::Bitfinex(c) => c.market_data_capabilities(account_type),
+            Self::Bitstamp(c) => c.market_data_capabilities(account_type),
+            Self::Gemini(c) => c.market_data_capabilities(account_type),
+            Self::MEXC(c) => c.market_data_capabilities(account_type),
+            Self::HTX(c) => c.market_data_capabilities(account_type),
+            Self::Bitget(c) => c.market_data_capabilities(account_type),
+            Self::BingX(c) => c.market_data_capabilities(account_type),
+            Self::CryptoCom(c) => c.market_data_capabilities(account_type),
+            Self::Upbit(c) => c.market_data_capabilities(account_type),
+            Self::Deribit(c) => c.market_data_capabilities(account_type),
+            Self::HyperLiquid(c) => c.market_data_capabilities(account_type),
+
+            // DEX
+            Self::Lighter(c) => c.market_data_capabilities(account_type),
+            Self::Dydx(c) => c.market_data_capabilities(account_type),
+
+            // Stocks US
+            Self::Polygon(c) => c.market_data_capabilities(account_type),
+            Self::Finnhub(c) => c.market_data_capabilities(account_type),
+            Self::Tiingo(c) => c.market_data_capabilities(account_type),
+            Self::Twelvedata(c) => c.market_data_capabilities(account_type),
+            Self::Alpaca(c) => c.market_data_capabilities(account_type),
+
+            // Stocks India
+            Self::AngelOne(c) => c.market_data_capabilities(account_type),
+            Self::Zerodha(c) => c.market_data_capabilities(account_type),
+            Self::Upstox(c) => c.market_data_capabilities(account_type),
+            Self::Dhan(c) => c.market_data_capabilities(account_type),
+            Self::Fyers(c) => c.market_data_capabilities(account_type),
+
+            // Stocks Other
+            Self::JQuants(c) => c.market_data_capabilities(account_type),
+            Self::Krx(c) => c.market_data_capabilities(account_type),
+            Self::Moex(c) => c.market_data_capabilities(account_type),
+            Self::Tinkoff(c) => c.market_data_capabilities(account_type),
+
+            // Forex
+            Self::Oanda(c) => c.market_data_capabilities(account_type),
+            Self::Dukascopy(c) => c.market_data_capabilities(account_type),
+            Self::AlphaVantage(c) => c.market_data_capabilities(account_type),
+
+            // Prediction
+            Self::Polymarket(c) => c.market_data_capabilities(account_type),
+
+            // Aggregators
+            Self::IB(c) => c.market_data_capabilities(account_type),
+            Self::YahooFinance(c) => c.market_data_capabilities(account_type),
+            Self::CryptoCompare(c) => c.market_data_capabilities(account_type),
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CAPABILITIES METHODS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+impl AnyConnector {
+    /// Returns the trading capabilities of the underlying connector.
+    ///
+    /// Delegates to the connector's `Trading::trading_capabilities` implementation.
+    /// For connectors that do not implement the `Trading` trait (IB, Polymarket),
+    /// returns `TradingCapabilities::permissive()` (the trait default).
+    pub fn trading_capabilities(&self, account_type: AccountType) -> TradingCapabilities {
+        match self {
+            // CEX
+            Self::Binance(c) => c.trading_capabilities(account_type),
+            Self::Bybit(c) => c.trading_capabilities(account_type),
+            Self::OKX(c) => c.trading_capabilities(account_type),
+            Self::KuCoin(c) => c.trading_capabilities(account_type),
+            Self::Kraken(c) => c.trading_capabilities(account_type),
+            Self::Coinbase(c) => c.trading_capabilities(account_type),
+            Self::GateIO(c) => c.trading_capabilities(account_type),
+            Self::Bitfinex(c) => c.trading_capabilities(account_type),
+            Self::Bitstamp(c) => c.trading_capabilities(account_type),
+            Self::Gemini(c) => c.trading_capabilities(account_type),
+            Self::MEXC(c) => c.trading_capabilities(account_type),
+            Self::HTX(c) => c.trading_capabilities(account_type),
+            Self::Bitget(c) => c.trading_capabilities(account_type),
+            Self::BingX(c) => c.trading_capabilities(account_type),
+            Self::CryptoCom(c) => c.trading_capabilities(account_type),
+            Self::Upbit(c) => c.trading_capabilities(account_type),
+            Self::Deribit(c) => c.trading_capabilities(account_type),
+            Self::HyperLiquid(c) => c.trading_capabilities(account_type),
+
+            // DEX
+            Self::Lighter(c) => c.trading_capabilities(account_type),
+            Self::Dydx(c) => c.trading_capabilities(account_type),
+
+            // Stocks US
+            Self::Polygon(c) => c.trading_capabilities(account_type),
+            Self::Finnhub(c) => c.trading_capabilities(account_type),
+            Self::Tiingo(c) => c.trading_capabilities(account_type),
+            Self::Twelvedata(c) => c.trading_capabilities(account_type),
+            Self::Alpaca(c) => c.trading_capabilities(account_type),
+
+            // Stocks India
+            Self::AngelOne(c) => c.trading_capabilities(account_type),
+            Self::Zerodha(c) => c.trading_capabilities(account_type),
+            Self::Upstox(c) => c.trading_capabilities(account_type),
+            Self::Dhan(c) => c.trading_capabilities(account_type),
+            Self::Fyers(c) => c.trading_capabilities(account_type),
+
+            // Stocks Other
+            Self::JQuants(c) => c.trading_capabilities(account_type),
+            Self::Krx(c) => c.trading_capabilities(account_type),
+            Self::Moex(c) => c.trading_capabilities(account_type),
+            Self::Tinkoff(c) => c.trading_capabilities(account_type),
+
+            // Forex
+            Self::Oanda(c) => c.trading_capabilities(account_type),
+            Self::Dukascopy(c) => c.trading_capabilities(account_type),
+            Self::AlphaVantage(c) => c.trading_capabilities(account_type),
+
+            // Prediction — Polymarket does not implement Trading
+            Self::Polymarket(_) => TradingCapabilities::permissive(),
+
+            // Brokers — IB does not implement Trading
+            Self::IB(_) => TradingCapabilities::permissive(),
+
+            // Data Feeds
+            Self::YahooFinance(c) => c.trading_capabilities(account_type),
+            Self::CryptoCompare(c) => c.trading_capabilities(account_type),
+        }
+    }
+
+    /// Returns the account capabilities of the underlying connector.
+    ///
+    /// Delegates to the connector's `Account::account_capabilities` implementation.
+    /// For connectors that do not implement the `Account` trait (IB, Polymarket),
+    /// returns `AccountCapabilities::permissive()` (the trait default).
+    pub fn account_capabilities(&self, account_type: AccountType) -> AccountCapabilities {
+        match self {
+            // CEX
+            Self::Binance(c) => c.account_capabilities(account_type),
+            Self::Bybit(c) => c.account_capabilities(account_type),
+            Self::OKX(c) => c.account_capabilities(account_type),
+            Self::KuCoin(c) => c.account_capabilities(account_type),
+            Self::Kraken(c) => c.account_capabilities(account_type),
+            Self::Coinbase(c) => c.account_capabilities(account_type),
+            Self::GateIO(c) => c.account_capabilities(account_type),
+            Self::Bitfinex(c) => c.account_capabilities(account_type),
+            Self::Bitstamp(c) => c.account_capabilities(account_type),
+            Self::Gemini(c) => c.account_capabilities(account_type),
+            Self::MEXC(c) => c.account_capabilities(account_type),
+            Self::HTX(c) => c.account_capabilities(account_type),
+            Self::Bitget(c) => c.account_capabilities(account_type),
+            Self::BingX(c) => c.account_capabilities(account_type),
+            Self::CryptoCom(c) => c.account_capabilities(account_type),
+            Self::Upbit(c) => c.account_capabilities(account_type),
+            Self::Deribit(c) => c.account_capabilities(account_type),
+            Self::HyperLiquid(c) => c.account_capabilities(account_type),
+
+            // DEX
+            Self::Lighter(c) => c.account_capabilities(account_type),
+            Self::Dydx(c) => c.account_capabilities(account_type),
+
+            // Stocks US
+            Self::Polygon(c) => c.account_capabilities(account_type),
+            Self::Finnhub(c) => c.account_capabilities(account_type),
+            Self::Tiingo(c) => c.account_capabilities(account_type),
+            Self::Twelvedata(c) => c.account_capabilities(account_type),
+            Self::Alpaca(c) => c.account_capabilities(account_type),
+
+            // Stocks India
+            Self::AngelOne(c) => c.account_capabilities(account_type),
+            Self::Zerodha(c) => c.account_capabilities(account_type),
+            Self::Upstox(c) => c.account_capabilities(account_type),
+            Self::Dhan(c) => c.account_capabilities(account_type),
+            Self::Fyers(c) => c.account_capabilities(account_type),
+
+            // Stocks Other
+            Self::JQuants(c) => c.account_capabilities(account_type),
+            Self::Krx(c) => c.account_capabilities(account_type),
+            Self::Moex(c) => c.account_capabilities(account_type),
+            Self::Tinkoff(c) => c.account_capabilities(account_type),
+
+            // Forex
+            Self::Oanda(c) => c.account_capabilities(account_type),
+            Self::Dukascopy(c) => c.account_capabilities(account_type),
+            Self::AlphaVantage(c) => c.account_capabilities(account_type),
+
+            // Prediction — Polymarket does not implement Account
+            Self::Polymarket(_) => AccountCapabilities::permissive(),
+
+            // Brokers — IB does not implement Account
+            Self::IB(_) => AccountCapabilities::permissive(),
+
+            // Data Feeds
+            Self::YahooFinance(c) => c.account_capabilities(account_type),
+            Self::CryptoCompare(c) => c.account_capabilities(account_type),
         }
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "digdigdig3"
-version = "0.1.23"
+version = "0.1.24"
 exclude = ["**/research/**", "contributing/**", "docs/"]
 edition = "2021"
 description = "Unified async Rust API for 44 exchange connectors — crypto, stocks, forex. REST + WebSocket."

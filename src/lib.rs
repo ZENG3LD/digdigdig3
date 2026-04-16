@@ -63,6 +63,9 @@ pub use core::{
     OrderSide, OrderType, OrderStatus, Order, Position, PositionSide, Balance,
     ExchangeCredentials,
     SymbolInfo,
+    // Capabilities
+    MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
+
     // WebSocket types
     ConnectionStatus, StreamType, SubscriptionRequest, StreamEvent,
     OrderUpdateEvent, BalanceUpdateEvent, PositionUpdateEvent,

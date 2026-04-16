@@ -46,7 +46,10 @@ use dashmap::DashMap;
 use std::sync::Arc;
 
 use crate::connector_manager::AnyConnector;
-use crate::core::types::ExchangeId;
+use crate::core::traits::MarketData;
+use crate::core::types::{
+    AccountCapabilities, AccountType, ExchangeId, MarketDataCapabilities, TradingCapabilities,
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ConnectorPool - Thread-Safe Pool with DashMap
@@ -260,6 +263,66 @@ impl ConnectorPool {
     /// ```
     pub fn ids(&self) -> Vec<ExchangeId> {
         self.connectors.iter().map(|entry| *entry.key()).collect()
+    }
+
+    /// Get market data capabilities for a connector.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - Exchange identifier to look up
+    /// * `account_type` - Account type to query capabilities for
+    ///
+    /// # Returns
+    ///
+    /// `Some(MarketDataCapabilities)` if the connector exists, `None` otherwise.
+    pub fn market_data_capabilities(
+        &self,
+        id: &ExchangeId,
+        account_type: AccountType,
+    ) -> Option<MarketDataCapabilities> {
+        self.connectors
+            .get(id)
+            .map(|c| c.market_data_capabilities(account_type))
+    }
+
+    /// Get trading capabilities for a connector.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - Exchange identifier to look up
+    /// * `account_type` - Account type to query capabilities for
+    ///
+    /// # Returns
+    ///
+    /// `Some(TradingCapabilities)` if the connector exists, `None` otherwise.
+    pub fn trading_capabilities(
+        &self,
+        id: &ExchangeId,
+        account_type: AccountType,
+    ) -> Option<TradingCapabilities> {
+        self.connectors
+            .get(id)
+            .map(|c| c.trading_capabilities(account_type))
+    }
+
+    /// Get account capabilities for a connector.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - Exchange identifier to look up
+    /// * `account_type` - Account type to query capabilities for
+    ///
+    /// # Returns
+    ///
+    /// `Some(AccountCapabilities)` if the connector exists, `None` otherwise.
+    pub fn account_capabilities(
+        &self,
+        id: &ExchangeId,
+        account_type: AccountType,
+    ) -> Option<AccountCapabilities> {
+        self.connectors
+            .get(id)
+            .map(|c| c.account_capabilities(account_type))
     }
 }
 

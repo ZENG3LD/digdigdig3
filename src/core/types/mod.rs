@@ -10,7 +10,10 @@ mod trading;
 mod websocket;
 mod responses;
 
-pub use capabilities::{MarketDataCapabilities, TradingCapabilities, AccountCapabilities};
+pub use capabilities::{
+    MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
+    ChecksumAlgorithm, ChecksumInfo, WsBookChannel, OrderbookCapabilities,
+};
 pub use common::*;
 pub use market_data::*;
 pub use trading::*;

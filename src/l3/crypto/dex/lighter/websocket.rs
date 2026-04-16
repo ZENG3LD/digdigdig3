@@ -38,7 +38,7 @@ use crate::core::{
 };
 use crate::core::types::OrderBookLevel;
 use crate::core::types::TradeSide;
-use crate::core::types::{WebSocketResult, WebSocketError};
+use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities};
 use crate::core::traits::WebSocketConnector;
 
 use super::auth::LighterAuth;
@@ -893,6 +893,32 @@ impl WebSocketConnector for LighterWebSocket {
 
     fn ping_rtt_handle(&self) -> Option<Arc<Mutex<u64>>> {
         Some(self.ws_ping_rtt_ms.clone())
+    }
+
+    /// Lighter orderbook capabilities.
+    ///
+    /// Single channel `order_book/{market}`: snapshot on first subscribe, then incremental
+    /// deltas batched every 50 ms. No configurable depth or speed.
+    /// No checksum. Carries `nonce` (current sequence) and `begin_nonce` (previous sequence)
+    /// enabling in-message gap detection — both sequence and prev-sequence are present.
+    /// Same mechanics for both spot and perp markets.
+    fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        OrderbookCapabilities {
+            ws_depths: &[],
+            ws_default_depth: None,
+            rest_max_depth: Some(250),
+            rest_depth_values: &[],
+            supports_snapshot: true,
+            supports_delta: true,
+            update_speeds_ms: &[50],
+            default_speed_ms: Some(50),
+            ws_channels: &[],
+            checksum: None,
+            has_sequence: true,
+            has_prev_sequence: true,
+            supports_aggregation: false,
+            aggregation_levels: &[],
+        }
     }
 }
 

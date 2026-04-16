@@ -34,7 +34,7 @@ use crate::core::{
     AccountType, ExchangeResult,
     ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
 };
-use crate::core::types::{WebSocketResult, WebSocketError};
+use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities};
 use crate::core::traits::WebSocketConnector;
 
 use super::endpoints::{DydxUrls, normalize_symbol};
@@ -663,6 +663,32 @@ impl WebSocketConnector for DydxWebSocket {
 
     fn ping_rtt_handle(&self) -> Option<Arc<Mutex<u64>>> {
         Some(Arc::clone(&self.ws_ping_rtt_ms))
+    }
+
+    /// dYdX v4 orderbook capabilities.
+    ///
+    /// Single channel `v4_orderbook`: snapshot on subscribe, then incremental deltas.
+    /// Depth is server-controlled (up to 100 levels per side). No client depth param.
+    /// No checksum. Carries `message_id` (connection-level sequence) for gap detection.
+    /// No prev-sequence in individual messages — gap detection relies on connection counter.
+    /// Perpetuals only (account_type is irrelevant, but we match for consistency).
+    fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        OrderbookCapabilities {
+            ws_depths: &[],
+            ws_default_depth: None,
+            rest_max_depth: Some(100),
+            rest_depth_values: &[],
+            supports_snapshot: true,
+            supports_delta: true,
+            update_speeds_ms: &[],
+            default_speed_ms: None,
+            ws_channels: &[],
+            checksum: None,
+            has_sequence: true,
+            has_prev_sequence: false,
+            supports_aggregation: false,
+            aggregation_levels: &[],
+        }
     }
 }
 

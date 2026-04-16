@@ -47,6 +47,8 @@ use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream,
 };
 
+use crate::core::{AccountType, OrderbookCapabilities};
+
 use super::parser::{
     WsBookSnapshot, WsLastTradePrice, WsPriceChange, WsTickSizeChange,
     WsBestBidAsk,
@@ -378,6 +380,33 @@ impl ClobWebSocket {
     /// Get currently subscribed token IDs
     pub fn subscribed_tokens(&self) -> &[String] {
         &self.token_ids
+    }
+
+    /// Polymarket CLOB orderbook capabilities.
+    ///
+    /// Single `market` channel: full `book` snapshot on subscribe (and after every trade),
+    /// then incremental `price_change` deltas. No depth parameter — full book always
+    /// returned. No sequence numbers (gap recovery = reconnect + resync from snapshot).
+    /// No rolling checksum on the delta stream; the `book` event carries a state `hash`
+    /// but that is a point-in-time integrity field, not a rolling checksum. No aggregation.
+    /// Prediction market — subscriptions use ERC-1155 `token_id`, not traditional symbols.
+    pub fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        OrderbookCapabilities {
+            ws_depths: &[],
+            ws_default_depth: None,
+            rest_max_depth: None,
+            rest_depth_values: &[],
+            supports_snapshot: true,
+            supports_delta: true,
+            update_speeds_ms: &[],
+            default_speed_ms: None,
+            ws_channels: &[],
+            checksum: None,
+            has_sequence: false,
+            has_prev_sequence: false,
+            supports_aggregation: false,
+            aggregation_levels: &[],
+        }
     }
 }
 

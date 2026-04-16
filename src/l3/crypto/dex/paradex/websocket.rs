@@ -59,7 +59,7 @@ use crate::core::{
     ExchangeResult,
     ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
 };
-use crate::core::types::{WebSocketResult, WebSocketError};
+use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities, WsBookChannel};
 use crate::core::traits::WebSocketConnector;
 
 use super::auth::ParadexAuth;
@@ -621,6 +621,42 @@ impl WebSocketConnector for ParadexWebSocket {
 
     fn ping_rtt_handle(&self) -> Option<Arc<Mutex<u64>>> {
         Some(self.ws_ping_rtt_ms.clone())
+    }
+
+    /// Paradex orderbook capabilities.
+    ///
+    /// Two distinct channels:
+    /// - `order_book.{market}` — throttled (50 ms or 100 ms), max 15 levels per side,
+    ///   delivers full snapshots (`update_type: "s"`) and incremental deltas (`"d"`),
+    ///   supports `price_tick` aggregation.
+    /// - `order_book_deltas.{market}` — raw unthrottled delta stream, no aggregation.
+    ///   Requires a REST snapshot seed for initial book state.
+    ///
+    /// No checksum. `seq_no` provides gap detection (increments by 1). No prev-sequence
+    /// in individual WS messages. Perpetuals only.
+    fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        static PARADEX_CHANNELS: &[WsBookChannel] = &[
+            // Throttled channel: snapshot + delta, max 15 levels, 50 ms default
+            WsBookChannel::delta("order_book", Some(15), Some(50)),
+            // Raw unthrottled delta-only channel (full book depth)
+            WsBookChannel::delta("order_book_deltas", None, None),
+        ];
+        OrderbookCapabilities {
+            ws_depths: &[],
+            ws_default_depth: Some(15),
+            rest_max_depth: None,
+            rest_depth_values: &[],
+            supports_snapshot: true,
+            supports_delta: true,
+            update_speeds_ms: &[50, 100],
+            default_speed_ms: Some(50),
+            ws_channels: PARADEX_CHANNELS,
+            checksum: None,
+            has_sequence: true,
+            has_prev_sequence: false,
+            supports_aggregation: true,
+            aggregation_levels: &[],
+        }
     }
 }
 

@@ -111,7 +111,6 @@ impl TestHarness {
             ExchangeId::Deribit => "BTC-PERPETUAL",
             ExchangeId::HyperLiquid => "BTC",
             ExchangeId::Lighter => "BTC/USDC",
-            ExchangeId::Paradex => "BTC-USD-PERP",
             ExchangeId::Dydx => "BTC-USD",
 
             // Prediction markets

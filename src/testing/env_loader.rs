@@ -158,7 +158,6 @@ fn all_exchange_ids() -> Vec<ExchangeId> {
         ExchangeId::Deribit,
         ExchangeId::HyperLiquid,
         ExchangeId::Lighter,
-        ExchangeId::Paradex,
         ExchangeId::Dydx,
         ExchangeId::Polymarket,
         ExchangeId::Polygon,

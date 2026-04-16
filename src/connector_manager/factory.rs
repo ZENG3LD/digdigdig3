@@ -78,7 +78,6 @@ use crate::l3::open::crypto::cex::hyperliquid::HyperliquidConnector;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 use crate::l3::open::crypto::dex::lighter::LighterConnector;
-use crate::l3::open::crypto::dex::paradex::ParadexConnector;
 use crate::l3::open::crypto::dex::dydx::DydxConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -238,10 +237,6 @@ impl ConnectorFactory {
             ExchangeId::Dydx => {
                 let c = DydxConnector::public(testnet).await?;
                 Ok(Arc::new(AnyConnector::Dydx(Arc::new(c))))
-            }
-            ExchangeId::Paradex => {
-                let c = ParadexConnector::public(testnet).await?;
-                Ok(Arc::new(AnyConnector::Paradex(Arc::new(c))))
             }
 
             // ═══════════════════════════════════════════════════════════════════════
@@ -555,11 +550,6 @@ impl ConnectorFactory {
             ExchangeId::Dydx => {
                 let c = DydxConnector::new(Some(credentials), testnet).await?;
                 Ok(Arc::new(AnyConnector::Dydx(Arc::new(c))))
-            }
-            ExchangeId::Paradex => {
-                // Paradex::new takes credentials directly (not Option)
-                let c = ParadexConnector::new(credentials, testnet).await?;
-                Ok(Arc::new(AnyConnector::Paradex(Arc::new(c))))
             }
 
             // ═══════════════════════════════════════════════════════════════════════

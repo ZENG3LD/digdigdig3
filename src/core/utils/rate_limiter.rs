@@ -12,7 +12,7 @@
 //!    - Used by: Kraken Spot (max=15/20, decay=0.33/1.0 per second), Deribit (credits)
 //!
 //! 4. **GroupRateLimiter** - For exchanges with multiple independent rate limit pools
-//!    - Used by: Phemex (CONTRACT/SPOTORDER/OTHERS), Upbit, Paradex, Kraken Futures
+//!    - Used by: Phemex (CONTRACT/SPOTORDER/OTHERS), Upbit, Kraken Futures
 //!
 //! ## Example Usage
 //!
@@ -498,7 +498,6 @@ impl DecayingRateLimiter {
 /// ## Used by exchanges:
 /// - **Phemex**: CONTRACT, SPOTORDER, OTHERS groups
 /// - **Upbit**: market, account, order groups
-/// - **Paradex**: public, orders, private_gets groups
 /// - **Kraken Futures**: derivatives (500/10s), history (100/600s)
 #[derive(Debug, Clone)]
 pub struct GroupRateLimiter {

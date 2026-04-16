@@ -43,7 +43,7 @@ digdigdig3/src/
 ├── l3/                              # Full stack (L1 + L2 + execution)
 │   ├── open/                        # Market data requires no registration
 │   │   ├── crypto/cex/  18 CEX
-│   │   ├── crypto/dex/  dydx, lighter, paradex
+│   │   ├── crypto/dex/  dydx, lighter
 │   │   └── prediction/  polymarket
 │   └── gated/                       # Account/KYC required for all data
 │       ├── stocks/us/    alpaca
@@ -170,16 +170,12 @@ Notes:
 |----------|-------|--------|
 | Vertex | Exchange shut down 2025-08-14, acquired by Ink Foundation | Permanently disabled. Code retained as reference. |
 
-### L3 open — Crypto DEX (3 connectors)
+### L3 open — Crypto DEX (2 connectors)
 
 | Connector | Chain | Feature Flag | Execution |
 |-----------|-------|-------------|-----------|
 | dYdX v4 | Cosmos | `onchain-cosmos` + `grpc` | Full trading trait via Cosmos gRPC |
 | Lighter.xyz | Custom | — | Full trading trait, native ECgFp5+Poseidon2+Schnorr signing (zero third-party crates) |
-| Paradex | StarkNet | `onchain-starknet` | Full trading trait, StarkNet ECDSA signing |
-
-Notes:
-- Paradex WebSocket removed from live watchlist — per-symbol attribution is unreliable (exchange uses a global channel).
 
 ### L3 open — Prediction Markets (1 connector)
 
@@ -269,7 +265,6 @@ Note: Dukascopy is placed in gated/ because the connection model requires an API
 |-----------|----------------|
 | dYdX v4 | Order placement via Cosmos gRPC — full trading trait |
 | Lighter | Full trading trait — native ECgFp5+Poseidon2+Schnorr signing |
-| Paradex | Full trading trait, StarkNet signing via `onchain-starknet` feature |
 
 ### Stock Broker Execution
 
@@ -350,7 +345,6 @@ if let Some(ch) = caps.best_channel(Some(20), true) {
 | HyperLiquid | 20 (fixed) | No | nSigFigs | No |
 | dYdX v4 | full book | No | No | sequence |
 | Lighter | full book | No | No | sequence |
-| Paradex | full book | No | No | sequence |
 | Polymarket | N/A (binary market) | N/A | N/A | N/A |
 
 ---
@@ -440,7 +434,7 @@ Chain providers used internally by DEX connectors for transaction signing and qu
 |----------|-------|-------------|---------|
 | `EvmProvider` | Ethereum/EVM | `onchain-evm` (default) | HyperLiquid |
 | `CosmosProvider` | Cosmos | `onchain-cosmos` | dYdX |
-| `StarkNetProvider` | StarkNet | `onchain-starknet` | Paradex |
+| `StarkNetProvider` | StarkNet | `onchain-starknet` | Lighter |
 
 None of these have been tested end-to-end with real transaction submission.
 
@@ -457,7 +451,7 @@ Note: Solana chain interaction is implemented in dig2chain. No `solana-sdk` depe
 | gRPC (tonic) | `grpc` | dYdX (Cosmos gRPC), Tinkoff Invest |
 | On-chain EVM RPC | `onchain-evm` | EvmProvider |
 | On-chain Cosmos gRPC | `onchain-cosmos` | dYdX |
-| On-chain StarkNet | `onchain-starknet` | Paradex |
+| On-chain StarkNet | `onchain-starknet` | Lighter |
 
 HTTP client: `src/core/http/client.rs` — async reqwest wrapper with auth injection, retry logic, and rate limiting (`SimpleRateLimiter` token bucket and `WeightRateLimiter`).
 
@@ -478,7 +472,6 @@ WebSocket base: `src/core/websocket/base_websocket.rs` — handles reconnect, pi
 | OAuth2 / Bearer token | Upstox, Fyers, Zerodha, OANDA, IB |
 | EIP-712 (Ethereum typed data) | EvmProvider (HyperLiquid) |
 | Cosmos SDK wallet | dYdX |
-| StarkNet ECDSA (STARK key) | Paradex |
 | Native ECgFp5+Schnorr | Lighter |
 | API key in header | Polygon, Finnhub, Tiingo, TwelveData, Alpha Vantage, CryptoCompare |
 | No auth | MOEX ISS, Yahoo Finance, Dukascopy |
@@ -493,7 +486,7 @@ WebSocket base: `src/core/websocket/base_websocket.rs` — handles reconnect, pi
 | `onchain-evm` | `alloy` (provider-ws, rpc-types) | EVM chain provider |
 | `onchain-ethereum` | `onchain-evm` | Backward-compat alias |
 | `onchain-cosmos` | `cosmrs` (bip32) | Cosmos provider for dYdX |
-| `onchain-starknet` | `starknet-crypto` | StarkNet provider for Paradex |
+| `onchain-starknet` | `starknet-crypto` | StarkNet provider for Lighter |
 | `starknet` | `onchain-starknet` | Legacy alias |
 | `websocket` | — | WebSocket enablement flag |
 | `grpc` | `tonic` (tls, tls-native-roots), `prost` | gRPC transport |
@@ -508,7 +501,6 @@ Removed features (extracted to dig2chain): `onchain-solana`, `onchain-bitcoin`, 
 | Connector | Issue | Status |
 |-----------|-------|--------|
 | Vertex | Exchange shut down 2025-08-14, acquired by Ink Foundation | Permanently disabled. Code retained as reference. |
-| Paradex | Per-symbol WebSocket attribution unreliable (exchange uses a global channel) | WebSocket removed from live watchlist. REST works. |
 | Futu | Requires OpenD local daemon | All methods return `UnsupportedOperation` until OpenD binary is running. |
 
 ---

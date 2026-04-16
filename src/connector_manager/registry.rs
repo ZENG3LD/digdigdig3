@@ -16,7 +16,7 @@ use crate::core::types::{ExchangeId, ExchangeType};
 pub enum ConnectorCategory {
     /// Centralized crypto exchange (Binance, Bybit, etc.)
     CryptoExchangeCex,
-    /// Decentralized crypto exchange (dYdX, Lighter, Paradex)
+    /// Decentralized crypto exchange (dYdX, Lighter)
     CryptoExchangeDex,
     /// US stock market data/broker (Polygon, Alpaca, etc.)
     StockMarketUS,
@@ -268,7 +268,7 @@ pub enum LimiterModel {
     WeightBased,
     /// Continuous decay counter (e.g., Kraken Spot, Deribit)
     DecayingCounter,
-    /// Multiple independent pools (e.g., Upbit, Paradex)
+    /// Multiple independent pools (e.g., Upbit)
     GroupBased,
     /// No documented limits / unknown
     Unknown,
@@ -421,11 +421,6 @@ static GEMINI_GROUPS: &[RateLimitGroup] = &[
     RateLimitGroup { name: "private", max_value: 600, window_seconds: 60, is_weight: false },
 ];
 
-static PARADEX_GROUPS: &[RateLimitGroup] = &[
-    RateLimitGroup { name: "public",       max_value: 1500,  window_seconds: 60, is_weight: false },
-    RateLimitGroup { name: "orders",       max_value: 17250, window_seconds: 60, is_weight: false },
-    RateLimitGroup { name: "private_gets", max_value: 600,   window_seconds: 60, is_weight: false },
-];
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // STATIC METADATA ARRAY
@@ -1277,50 +1272,6 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
         base_url: "https://api.lighter.xyz",
         websocket_url: Some("wss://mainnet.zklighter.elliot.ai/stream"),
         documentation_url: Some("https://docs.lighter.xyz/"),
-        requires_api_key_for_data: false,
-        requires_api_key_for_trading: true,
-        free_tier: true,
-    },
-    ConnectorMetadata {
-        id: ExchangeId::Paradex,
-        name: "Paradex",
-        exchange_type: ExchangeType::Dex,
-        category: ConnectorCategory::CryptoExchangeDex,
-        supported_features: Features {
-            market_data: true,
-            trading: true,
-            account: false,
-            positions: false,
-            websocket: true,
-            ws_klines: false,
-            ws_trades: true,
-            ws_orderbook: true,
-            ws_ticker: true,
-            cancel_all: true,
-            amend_order: true,
-            batch_orders: true,
-            account_transfers: false,
-            custodial_funds: false,
-            sub_accounts: false,
-            margin_trading: false,
-            trigger_orders: false,
-            convert_swap: false,
-            earn_staking: false,
-            copy_trading: false,
-        },
-        authentication: AuthType::ApiKey,
-        rate_limits: RateLimits {
-            requests_per_second: None,
-            requests_per_minute: Some(1500),
-            weight_per_minute: None,
-            window_seconds: 60,
-            limiter_model: LimiterModel::GroupBased,
-            groups: PARADEX_GROUPS,
-            has_server_headers: true,
-        },
-        base_url: "https://api.paradex.trade",
-        websocket_url: Some("wss://ws.paradex.trade/v1"),
-        documentation_url: Some("https://docs.paradex.trade/"),
         requires_api_key_for_data: false,
         requires_api_key_for_trading: true,
         free_tier: true,

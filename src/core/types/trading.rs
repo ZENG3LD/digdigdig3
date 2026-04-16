@@ -888,11 +888,11 @@ pub enum FundsRecordType {
 /// - HMAC-SHA512: 1 exchange (Kraken)
 /// - HMAC-SHA384: 1 exchange (Coinbase legacy)
 /// - JWT-ES256: 1 exchange (Coinbase Advanced Trade)
-/// - JWT-HMAC: 1 exchange (Paradex)
+/// - JWT-HMAC: 0 exchanges
 /// - OAuth2: 1 exchange (Upstox, some India brokers)
 /// - Ethereum ECDSA: 1 exchange (HyperLiquid)
 /// - Solana Ed25519: 0 exchanges (removed with Solana DEX connectors)
-/// - STARK key: 2 exchanges (Lighter, Paradex)
+/// - STARK key: 1 exchange (Lighter)
 /// - Cosmos wallet: 1 exchange (dYdX v4)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ExchangeCredentials {
@@ -951,7 +951,7 @@ pub enum ExchangeCredentials {
 
     /// JWT signed with HMAC-SHA256 secret.
     ///
-    /// 1/24: Paradex (uses JWT + StarkKey hybrid).
+    /// 0/24: currently unused (was used by Paradex).
     JwtHmac {
         /// API key or JWT issuer identifier.
         api_key: String,
@@ -987,7 +987,7 @@ pub enum ExchangeCredentials {
 
     /// StarkEx / StarkNet STARK key.
     ///
-    /// 2/24: Lighter (Starknet), Paradex (Starknet).
+    /// 1/24: Lighter (Starknet).
     StarkKey {
         /// StarkKey private key as a hex string.
         stark_private_key: String,

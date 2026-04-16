@@ -68,9 +68,8 @@ macro_rules! impl_sync_method {
                 Self::Deribit(c) => c.$method($($param_name),*),
                 Self::HyperLiquid(c) => c.$method($($param_name),*),
 
-                // DEX (3)
+                // DEX (2)
                 Self::Lighter(c) => c.$method($($param_name),*),
-                Self::Paradex(c) => c.$method($($param_name),*),
                 Self::Dydx(c) => c.$method($($param_name),*),
 
                 // Stocks US (5)
@@ -152,9 +151,8 @@ macro_rules! impl_async_method {
                 Self::Deribit(c) => c.$method($($param_name),*).await,
                 Self::HyperLiquid(c) => c.$method($($param_name),*).await,
 
-                // DEX (3)
+                // DEX (2)
                 Self::Lighter(c) => c.$method($($param_name),*).await,
-                Self::Paradex(c) => c.$method($($param_name),*).await,
                 Self::Dydx(c) => c.$method($($param_name),*).await,
 
                 // Stocks US (5)

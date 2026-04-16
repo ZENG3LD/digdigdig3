@@ -156,7 +156,7 @@ pub enum CredentialKind {
 
     /// JWT signed with HMAC-SHA256 secret.
     ///
-    /// 1/24: Paradex.
+    /// 0/24: currently unused.
     JwtHmac,
 
     /// OAuth 2.0 bearer token.
@@ -174,7 +174,7 @@ pub enum CredentialKind {
 
     /// StarkEx / StarkNet STARK key.
     ///
-    /// 2/24: Lighter, Paradex.
+    /// 1/24: Lighter.
     StarkKey,
 
     /// Cosmos SDK wallet (Tendermint).

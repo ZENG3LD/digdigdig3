@@ -426,7 +426,6 @@ impl ConnectorConfigManager {
             ExchangeId::Deribit,
             ExchangeId::HyperLiquid,
             ExchangeId::Lighter,
-            ExchangeId::Paradex,
             ExchangeId::Dydx,
             ExchangeId::Polygon,
             ExchangeId::Finnhub,

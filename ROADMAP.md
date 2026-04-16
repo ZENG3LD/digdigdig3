@@ -26,9 +26,8 @@ f64 to Decimal conversion at Trading trait boundary. Prevents IEEE-754 drift fro
 - [x] 23 parsers extract real tick_size from exchange APIs
 - [x] PrecisionCache wired into all 18 CEX connectors (place_order, amend_order, batch_orders)
 - [x] 17 unit tests for precision functions + cache
-- [x] Broker/DEX connectors: Paradex, OANDA, Alpaca, Zerodha wired to PrecisionCache
+- [x] Broker/DEX connectors: OANDA, Alpaca, Zerodha wired to PrecisionCache
 - [x] DEX with own precision systems: dYdX (MarketConfigCache), Lighter ({:.8} fixed)
-- [x] Paradex: wired to PrecisionCache
 
 ## Phase 0.5: DEX Connector Gaps (DONE)
 
@@ -102,11 +101,10 @@ All 24 connectors now implement `Trading::get_user_trades`.
 - [x] **Bitstamp** — `POST /api/v2/user_transactions/`
 - [x] **Gemini** — `POST /v1/mytrades`
 
-### DEX (4)
+### DEX (3)
 - [x] **HyperLiquid** — `POST /info` action=`userFills` (no auth, address-based)
 - [x] **dYdX v4** — `GET /v4/fills` (indexer, address-based)
 - [x] **Lighter** — `GET /api/v1/trades` (auth token required)
-- [x] **Paradex** — `GET /v1/fills` (JWT+StarkKey)
 
 ### Stocks/Brokers (1)
 - [x] **Alpaca** — `GET /v2/account/activities/FILL` (API key header)
@@ -135,7 +133,6 @@ Two new traits added to core — funding rate payment history and full account l
 - [x] **Deribit** — `GET /api/v2/private/get_transaction_log` (type=delivery)
 - [x] **HyperLiquid** — `POST /info` action=`userFunding`
 - [x] **dYdX v4** — `GET /v4/historicalFunding`
-- [x] **Paradex** — `GET /v1/funding-payments`
 
 ### AccountLedger implementations (12 connectors)
 - [x] **Binance** — `GET /fapi/v1/income` (all types)
@@ -195,7 +192,6 @@ Status: 14 pass, 4 geo-blocked.
 
 - [ ] dYdX v4 — WS orderbook (v4_orderbook channel, indexer feed)
 - [ ] Lighter — WS orderbook (testnet.zklighter.elliot.ai/stream)
-- [ ] Paradex — WS orderbook (ws.api.testnet.paradex.trade/v1)
 
 Note: Polymarket (`src/l3/open/prediction/`) is REST-only by design — no WS orderbook needed.
 
@@ -317,12 +313,6 @@ Keys: account via testnet.app.lighter.xyz + test funds via Lighter Discord.
 - [ ] REST: cancel_order, get_open_orders, get_order_history
 - [ ] REST: get_balance, get_positions
 - [ ] Expose place_order_signed() through standard Trading trait
-
-**Paradex** (`api.testnet.paradex.trade/v1`)
-Keys: StarkNet wallet + testnet USDC via Paradex Discord #developers.
-- [ ] REST: place_order (StarkNet signing)
-- [ ] REST: cancel_order, get_open_orders, get_order_history
-- [ ] REST: get_balance, get_positions
 
 ---
 
@@ -448,7 +438,7 @@ These are already implemented on individual connectors — just need match-arm d
 - [ ] MarginTrading: Binance, Bybit, OKX (margin borrow/repay)
 - [ ] EarnStaking: Binance, Bybit, OKX (earn/flexible savings)
 - [ ] ConvertSwap: Binance, Bybit (dust conversion, instant swap)
-- [ ] VaultManager: HyperLiquid, Paradex (vault deposit/withdraw)
+- [ ] VaultManager: HyperLiquid (vault deposit/withdraw)
 - [ ] StakingDelegation: CosmosProvider-backed connectors (dYdX, Osmosis)
 - [ ] TriggerOrders: Binance, Bybit, OKX (TP/SL conditional orders)
 - [ ] MarketMakerProtection: Binance, Bybit, Deribit (MMP config, mass quoting)

@@ -55,7 +55,6 @@ use crate::l3::open::crypto::cex::hyperliquid::HyperliquidConnector;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 use crate::l3::open::crypto::dex::lighter::LighterConnector;
-use crate::l3::open::crypto::dex::paradex::ParadexConnector;
 use crate::l3::open::crypto::dex::dydx::DydxConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -153,10 +152,9 @@ pub enum AnyConnector {
     HyperLiquid(Arc<HyperliquidConnector>),
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // DEX - Decentralized Exchanges (3)
+    // DEX - Decentralized Exchanges (2)
     // ═══════════════════════════════════════════════════════════════════════════
     Lighter(Arc<LighterConnector>),
-    Paradex(Arc<ParadexConnector>),
     Dydx(Arc<DydxConnector>),
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -243,7 +241,6 @@ impl AnyConnector {
 
             // DEX
             Self::Lighter(_) => ExchangeId::Lighter,
-            Self::Paradex(_) => ExchangeId::Paradex,
             Self::Dydx(_) => ExchangeId::Dydx,
 
             // Stocks US
@@ -309,7 +306,6 @@ impl AnyConnector {
 
             // DEX
             Self::Lighter(c) => c.metrics(),
-            Self::Paradex(c) => c.metrics(),
             Self::Dydx(c) => c.metrics(),
 
             // Stocks US
@@ -383,7 +379,6 @@ impl ExchangeIdentity for AnyConnector {
 
             // DEX
             Self::Lighter(c) => c.is_testnet(),
-            Self::Paradex(c) => c.is_testnet(),
             Self::Dydx(c) => c.is_testnet(),
 
             // Stocks US
@@ -445,7 +440,6 @@ impl ExchangeIdentity for AnyConnector {
 
             // DEX
             Self::Lighter(c) => c.supported_account_types(),
-            Self::Paradex(c) => c.supported_account_types(),
             Self::Dydx(c) => c.supported_account_types(),
 
             // Stocks US
@@ -516,7 +510,6 @@ impl MarketData for AnyConnector {
 
             // DEX
             Self::Lighter(c) => c.get_price(symbol, account_type).await,
-            Self::Paradex(c) => c.get_price(symbol, account_type).await,
             Self::Dydx(c) => c.get_price(symbol, account_type).await,
 
             // Stocks US
@@ -583,7 +576,6 @@ impl MarketData for AnyConnector {
 
             // DEX
             Self::Lighter(c) => c.get_orderbook(symbol, depth, account_type).await,
-            Self::Paradex(c) => c.get_orderbook(symbol, depth, account_type).await,
             Self::Dydx(c) => c.get_orderbook(symbol, depth, account_type).await,
 
             // Stocks US
@@ -652,7 +644,6 @@ impl MarketData for AnyConnector {
 
             // DEX
             Self::Lighter(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
-            Self::Paradex(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
             Self::Dydx(c) => c.get_klines(symbol, interval, limit, account_type, end_time).await,
 
             // Stocks US
@@ -718,7 +709,6 @@ impl MarketData for AnyConnector {
 
             // DEX
             Self::Lighter(c) => c.get_ticker(symbol, account_type).await,
-            Self::Paradex(c) => c.get_ticker(symbol, account_type).await,
             Self::Dydx(c) => c.get_ticker(symbol, account_type).await,
 
             // Stocks US
@@ -780,7 +770,6 @@ impl MarketData for AnyConnector {
 
             // DEX
             Self::Lighter(c) => c.ping().await,
-            Self::Paradex(c) => c.ping().await,
             Self::Dydx(c) => c.ping().await,
 
             // Stocks US
@@ -842,7 +831,6 @@ impl MarketData for AnyConnector {
 
             // DEX
             Self::Lighter(c) => c.get_exchange_info(account_type).await,
-            Self::Paradex(c) => c.get_exchange_info(account_type).await,
             Self::Dydx(c) => c.get_exchange_info(account_type).await,
 
             // Stocks US
@@ -997,8 +985,8 @@ mod tests {
         // This is a compile-time test
         // All DEX variants should be accessible
 
-        // Expected 3 DEX connectors:
-        // Lighter, Paradex, Dydx
+        // Expected 2 DEX connectors:
+        // Lighter, Dydx
     }
 
     /// Test that all Stock market variants exist
@@ -1031,7 +1019,7 @@ mod tests {
     #[test]
     fn test_aggregator_variants_exist() {
         // Expected connector categories:
-        // CEX: 18, DEX: 3 (Lighter, Paradex, Dydx), Stocks: 14, Forex: 3, Prediction: 1, Brokers: 1, DataFeeds: 2, OnChain: 2
-        // Total: 44 connectors
+        // CEX: 18, DEX: 2 (Lighter, Dydx), Stocks: 14, Forex: 3, Prediction: 1, Brokers: 1, DataFeeds: 2, OnChain: 2
+        // Total: 43 connectors
     }
 }

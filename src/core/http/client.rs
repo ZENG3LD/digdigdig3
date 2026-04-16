@@ -168,7 +168,7 @@ impl HttpClient {
         self.request_with_retry(Method::DELETE, url, params, headers, None).await
     }
 
-    /// DELETE запрос с JSON body и retry (for APIs like Paradex batch cancel)
+    /// DELETE запрос с JSON body и retry (for APIs that require body in DELETE requests)
     pub async fn delete_with_body(
         &self,
         url: &str,

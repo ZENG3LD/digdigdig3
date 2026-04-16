@@ -479,9 +479,9 @@ pub trait LiquidityProvider: Send + Sync {
 // VAULT MANAGER
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Managed vault deposits and withdrawals (e.g. Paradex vaults, HyperLiquid vaults).
+/// Managed vault deposits and withdrawals (e.g. HyperLiquid vaults).
 ///
-/// Available on: Paradex, dYdX MegaVault, HyperLiquid vaults.
+/// Available on: dYdX MegaVault, HyperLiquid vaults.
 ///
 /// Default implementations return `UnsupportedOperation`.
 #[async_trait]
@@ -523,7 +523,7 @@ pub trait VaultManager: Send + Sync {
 
 /// On-chain validator delegation for PoS chains (Cosmos, Ethereum staking, etc.).
 ///
-/// Available on: dYdX (Cosmos), Paradex (StarkEx), and other L1/L2 connectors.
+/// Available on: dYdX (Cosmos), and other L1/L2 connectors.
 ///
 /// Default implementations return `UnsupportedOperation`.
 #[async_trait]

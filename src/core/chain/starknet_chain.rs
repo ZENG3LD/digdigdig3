@@ -70,7 +70,7 @@ const BALANCE_OF_SELECTOR: &str =
 /// StarkNet-specific chain operations.
 ///
 /// Extends [`ChainProvider`] with the StarkNet JSON-RPC surface needed by
-/// on-chain connectors (Paradex, JediSwap, etc.): contract invokes, read-only
+/// on-chain connectors (JediSwap, etc.): contract invokes, read-only
 /// `starknet_call`, nonce queries, and receipt retrieval.
 ///
 /// ## Object safety
@@ -137,7 +137,7 @@ pub trait StarkNetChain: ChainProvider {
 /// Concrete StarkNet chain provider using raw JSON-RPC over HTTP.
 ///
 /// One `StarkNetProvider` per RPC endpoint is sufficient. Multiple connectors
-/// targeting StarkNet (e.g. Paradex and JediSwap) can share a single instance
+/// targeting StarkNet (e.g. Lighter and JediSwap) can share a single instance
 /// via `Arc<StarkNetProvider>`.
 ///
 /// ## Construction

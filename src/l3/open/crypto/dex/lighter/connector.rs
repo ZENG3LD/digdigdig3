@@ -36,7 +36,7 @@ use crate::core::{
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
 };
-use crate::core::types::{ConnectorStats, SymbolInfo};
+use crate::core::types::{ConnectorStats, SymbolInfo, MarketDataCapabilities, TradingCapabilities, AccountCapabilities};
 use crate::core::utils::WeightRateLimiter;
 
 use super::endpoints::{LighterUrls, LighterEndpoint, map_kline_interval, format_symbol, symbol_to_market_id};
@@ -373,6 +373,20 @@ impl MarketData for LighterConnector {
         Ok(())
     }
 
+    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+        MarketDataCapabilities {
+            has_ping: true,           // GET /status
+            has_price: true,          // GET /orderBookDetails (best bid/ask midpoint)
+            has_ticker: true,         // GET /orderBookDetails (24h stats)
+            has_orderbook: true,      // GET /orderBookOrders
+            has_klines: true,         // GET /candles
+            has_exchange_info: true,  // static market mapping
+            has_recent_trades: false, // get_recent_trades is connector-specific, not in MarketData trait
+            supported_intervals: &["1m", "5m", "15m", "1h", "4h", "1d"],
+            max_kline_limit: Some(500),
+        }
+    }
+
     async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         // The OrderBookDetails endpoint is geo-blocked by CloudFront.
         // Build the symbol list from the static market ID mapping instead.
@@ -593,6 +607,24 @@ impl Trading for LighterConnector {
 
         Ok(trades)
     }
+
+    fn trading_capabilities(&self) -> TradingCapabilities {
+        TradingCapabilities {
+            has_market_order: true,    // OrderType::Market → tx_type 14 with order_type_code 1
+            has_limit_order: true,     // OrderType::Limit → tx_type 14 with order_type_code 0
+            has_stop_market: false,    // no stop-market in Lighter protocol
+            has_stop_limit: false,     // no stop-limit in Lighter protocol
+            has_trailing_stop: false,  // not supported
+            has_bracket: false,        // not supported
+            has_oco: false,            // not supported
+            has_amend: false,          // no order amendment endpoint
+            has_batch: false,          // sendTxBatch exists but cancel_all / batch_place not in trait
+            max_batch_size: None,
+            has_cancel_all: false,     // each cancel requires a signed tx; no bulk cancel endpoint
+            has_user_trades: true,     // GET /api/v1/trades with account_index filter
+            has_order_history: true,   // GET /api/v1/accountInactiveOrders
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -709,6 +741,22 @@ impl Account for LighterConnector {
             symbol: symbol.map(|s| s.to_string()),
             tier: None,
         })
+    }
+
+    fn account_capabilities(&self) -> AccountCapabilities {
+        AccountCapabilities {
+            has_balances: true,         // GET /api/v1/account (collateral + portfolio)
+            has_account_info: true,     // GET /api/v1/account + OrderBooks for fees
+            has_fees: true,             // GET /api/v1/orderBooks (maker_fee / taker_fee fields)
+            has_transfers: false,       // deposit/withdraw use on-chain txs, not a REST endpoint
+            has_sub_accounts: false,    // Lighter has no sub-account model
+            has_deposit_withdraw: false, // deposit/withdraw history endpoints exist but not in trait
+            has_margin: false,          // margin fractions are protocol-level, no per-account REST
+            has_earn_staking: false,    // not supported
+            has_funding_history: false, // funding payments via connector-specific get_position_funding
+            has_ledger: false,          // no ledger/transaction log in trait
+            has_convert: false,         // not supported
+        }
     }
 }
 

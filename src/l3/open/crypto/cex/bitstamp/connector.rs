@@ -32,6 +32,7 @@ use crate::core::{
     CancelAll, AmendOrder, CustodialFunds,
     AmendRequest,
     DepositAddress, WithdrawResponse, FundsRecord,
+    MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
 use crate::core::traits::AccountLedger;
 use crate::core::types::SymbolInfo;
@@ -443,6 +444,28 @@ impl MarketData for BitstampConnector {
         self.precision.load_from_symbols(&info);
         Ok(info)
     }
+
+    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+        MarketDataCapabilities {
+            has_ping: true,
+            has_price: true,
+            has_ticker: true,
+            has_orderbook: true,
+            has_klines: true,
+            has_exchange_info: true,
+            // MarketData::get_recent_trades is not overridden — default returns UnsupportedOperation.
+            has_recent_trades: false,
+            // Bitstamp OHLC `step` values: 60, 180, 300, 900, 1800, 3600, 7200, 14400, 21600,
+            // 43200, 86400, 259200 — mapped in map_kline_interval().
+            // No 8h, 1w, or 1M equivalent available.
+            supported_intervals: &[
+                "1m", "3m", "5m", "15m", "30m",
+                "1h", "2h", "4h", "6h", "12h", "1d", "3d",
+            ],
+            // Bitstamp OHLC endpoint accepts `limit` up to 1000.
+            max_kline_limit: Some(1000),
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -627,6 +650,30 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
 
         BitstampParser::parse_user_trades(&response, filter.symbol.as_deref(), filter.start_time, filter.end_time)
     }
+
+    fn trading_capabilities(&self) -> TradingCapabilities {
+        TradingCapabilities {
+            has_market_order: true,
+            has_limit_order: true,
+            // Bitstamp has no stop-market endpoint — only stop-limit (sell side).
+            has_stop_market: false,
+            // StopLimit is implemented for sell-side; buy-side returns UnsupportedOperation.
+            // We advertise true because the StopLimit arm is handled (not a blanket reject).
+            has_stop_limit: true,
+            has_trailing_stop: false,
+            has_bracket: false,
+            has_oco: false,
+            // AmendOrder trait is implemented via POST /api/v2/replace_order/.
+            has_amend: true,
+            // No batch order placement/cancellation endpoint on Bitstamp.
+            has_batch: false,
+            max_batch_size: None,
+            // CancelAll trait is implemented via POST /api/v2/cancel_all_orders/.
+            has_cancel_all: true,
+            has_user_trades: true,
+            has_order_history: true,
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -665,6 +712,29 @@ impl Account for BitstampConnector {
         // POST /api/v2/fees/trading/ — returns per-pair fee info
         let response = self.post(BitstampEndpoint::TradingFees, None, HashMap::new()).await?;
         BitstampParser::parse_fee_rate(&response, symbol)
+    }
+
+    fn account_capabilities(&self) -> AccountCapabilities {
+        AccountCapabilities {
+            has_balances: true,
+            has_account_info: true,
+            has_fees: true,
+            // sub_account_transfer() exists as an inherent method but the AccountTransfers
+            // trait is not implemented on this connector.
+            has_transfers: false,
+            // No SubAccounts trait implemented.
+            has_sub_accounts: false,
+            // CustodialFunds trait is implemented: deposit addresses + withdrawals.
+            has_deposit_withdraw: true,
+            // Spot-only exchange — no margin borrowing/repayment trait.
+            has_margin: false,
+            has_earn_staking: false,
+            // Spot-only — no perpetual funding payments.
+            has_funding_history: false,
+            // AccountLedger trait is implemented via POST /api/v2/user_transactions/.
+            has_ledger: true,
+            has_convert: false,
+        }
     }
 }
 

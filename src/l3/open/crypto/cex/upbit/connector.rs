@@ -34,6 +34,7 @@ use crate::core::{
     AmendRequest,
     DepositAddress, WithdrawResponse, FundsRecord,
     UserTrade, UserTradeFilter,
+    MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
 use crate::core::types::{WithdrawRequest, FundsHistoryFilter, FundsRecordType};
 use crate::core::types::SymbolInfo;
@@ -472,6 +473,23 @@ impl MarketData for UpbitConnector {
         self.precision.load_from_symbols(&info);
         Ok(info)
     }
+
+    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+        MarketDataCapabilities {
+            has_ping: true,
+            has_price: true,
+            has_ticker: true,
+            has_orderbook: true,
+            has_klines: true,
+            has_exchange_info: true,
+            // RecentTrades endpoint exists in the enum but no connector method calls it
+            has_recent_trades: false,
+            // map_kline_interval covers: 1m 3m 5m 10m 15m 30m 1h 4h 1d 1w 1M
+            supported_intervals: &["1m", "3m", "5m", "10m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"],
+            // get_klines caps count at .min(200)
+            max_kline_limit: Some(200),
+        }
+    }
 }
 
 #[async_trait]
@@ -658,6 +676,29 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         let response = self.get(UpbitEndpoint::GetOrder, params, account_type).await?;
         UpbitParser::parse_order_trades(&response)
     }
+
+    fn trading_capabilities(&self) -> TradingCapabilities {
+        TradingCapabilities {
+            has_market_order: true,
+            has_limit_order: true,
+            // Upbit spot supports only market and limit order types
+            has_stop_market: false,
+            has_stop_limit: false,
+            has_trailing_stop: false,
+            has_bracket: false,
+            has_oco: false,
+            // AmendOrder trait implemented via cancel-and-new (POST /v1/orders/cancel_and_new)
+            has_amend: true,
+            // No batch order placement; BatchCancelOrders is for cancel-all only
+            has_batch: false,
+            max_batch_size: None,
+            // CancelAll trait implemented via DELETE /v1/orders
+            has_cancel_all: true,
+            // get_user_trades implemented, but requires order_id (no bulk fills endpoint)
+            has_user_trades: true,
+            has_order_history: true,
+        }
+    }
 }
 
 #[async_trait]
@@ -698,6 +739,27 @@ impl Account for UpbitConnector {
         Err(ExchangeError::UnsupportedOperation(
             "Upbit does not provide a fee query API endpoint".to_string()
         ))
+    }
+
+    fn account_capabilities(&self) -> AccountCapabilities {
+        AccountCapabilities {
+            has_balances: true,
+            has_account_info: true,
+            // Upbit has no fee query API endpoint — get_fees returns UnsupportedOperation
+            has_fees: false,
+            // No AccountTransfers trait impl (no spot↔futures — spot-only exchange)
+            has_transfers: false,
+            has_sub_accounts: false,
+            // CustodialFunds trait implemented: deposit address + withdraw
+            has_deposit_withdraw: true,
+            // Spot-only exchange — no margin, earn, staking, or perp funding
+            has_margin: false,
+            has_earn_staking: false,
+            has_funding_history: false,
+            // No AccountLedger trait impl
+            has_ledger: false,
+            has_convert: false,
+        }
     }
 }
 

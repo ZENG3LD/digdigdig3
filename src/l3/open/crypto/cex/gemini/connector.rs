@@ -36,6 +36,7 @@ use crate::core::types::SymbolInfo;
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
 };
+use crate::core::{MarketDataCapabilities, TradingCapabilities, AccountCapabilities};
 use crate::core::types::ConnectorStats;
 use crate::core::types::{WithdrawRequest, FundsHistoryFilter, FundsRecordType};
 use crate::core::types::{UserTrade, UserTradeFilter};
@@ -346,6 +347,25 @@ impl MarketData for GeminiConnector {
         self.precision.load_from_symbols(&result);
         Ok(result)
     }
+
+    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+        MarketDataCapabilities {
+            // Gemini has no dedicated ping endpoint; we use /v1/symbols as health check
+            has_ping: true,
+            has_price: true,
+            has_ticker: true,
+            has_orderbook: true,
+            has_klines: true,
+            has_exchange_info: true,
+            // GeminiEndpoint::Trades exists but get_recent_trades is not implemented
+            // on the MarketData trait — the inherent endpoint is unused here
+            has_recent_trades: false,
+            // Gemini supports: 1m 5m 15m 30m 1h 6h 1d
+            supported_intervals: &["1m", "5m", "15m", "30m", "1h", "6h", "1d"],
+            // Gemini returns all available candles per time-frame; no limit param in API
+            max_kline_limit: None,
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -554,6 +574,34 @@ impl Trading for GeminiConnector {
         let response = self.post(GeminiEndpoint::PastTrades, params, &[]).await?;
         GeminiParser::parse_user_trades(&response, filter.end_time)
     }
+
+    fn trading_capabilities(&self) -> TradingCapabilities {
+        TradingCapabilities {
+            has_market_order: true,
+            has_limit_order: true,
+            // Gemini has no stop-market (trigger-only) order type
+            has_stop_market: false,
+            // Gemini supports "exchange stop limit" via StopLimit arm in place_order
+            has_stop_limit: true,
+            // No trailing stop on Gemini REST API
+            has_trailing_stop: false,
+            // No bracket orders
+            has_bracket: false,
+            // No OCO on Gemini
+            has_oco: false,
+            // No order amendment endpoint
+            has_amend: false,
+            // No batch order placement
+            has_batch: false,
+            max_batch_size: None,
+            // CancelAll trait is implemented via /v1/order/cancel/all
+            has_cancel_all: true,
+            // get_user_trades uses /v1/mytrades
+            has_user_trades: true,
+            // get_order_history also uses /v1/mytrades (past trades)
+            has_order_history: true,
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -584,6 +632,33 @@ impl Account for GeminiConnector {
         // Use /v1/notionalvolume which returns API fee tier in basis points
         let response = self.post(GeminiEndpoint::NotionalVolume, HashMap::new(), &[]).await?;
         GeminiParser::parse_notional_volume_fees(&response, symbol)
+    }
+
+    fn account_capabilities(&self) -> AccountCapabilities {
+        AccountCapabilities {
+            // get_balance uses /v1/balances
+            has_balances: true,
+            // get_account_info returns a static stub (no real Gemini endpoint)
+            has_account_info: true,
+            // get_fees uses /v1/notionalvolume
+            has_fees: true,
+            // No AccountTransfers trait implemented — no internal transfer endpoint
+            has_transfers: false,
+            // No sub-account management
+            has_sub_accounts: false,
+            // CustodialFunds trait is implemented: deposit address + withdraw + transfer history
+            has_deposit_withdraw: true,
+            // MarginAccount exists as an extended method but no Account-level margin trait
+            has_margin: false,
+            // StakingBalances endpoint exists but no earn/staking Account trait is implemented
+            has_earn_staking: false,
+            // FundingPayments is an extended method only, not an Account trait method
+            has_funding_history: false,
+            // No ledger / transactions trait implemented
+            has_ledger: false,
+            // No convert/swap support
+            has_convert: false,
+        }
     }
 }
 

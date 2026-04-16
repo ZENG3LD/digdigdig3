@@ -39,6 +39,7 @@ use crate::core::types::{
     TransferRequest, TransferHistoryFilter, TransferResponse,
     DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord, FundsHistoryFilter, FundsRecordType,
     SubAccountOperation, SubAccountResult, SubAccount,
+    MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
 use crate::core::utils::WeightRateLimiter;
 
@@ -523,6 +524,22 @@ impl MarketData for MexcConnector {
         self.precision.load_from_symbols(&symbols);
         Ok(symbols)
     }
+
+    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+        MarketDataCapabilities {
+            has_ping: true,
+            has_price: true,
+            has_ticker: true,
+            has_orderbook: true,
+            has_klines: true,
+            has_exchange_info: true,
+            // get_recent_trades is only an extended struct method, not the MarketData trait method
+            has_recent_trades: false,
+            // MEXC spot intervals: 1m/5m/15m/30m are supported; 1h is mapped to "60m" internally
+            supported_intervals: &["1m", "5m", "15m", "30m", "1h", "4h", "8h", "1d", "1w", "1M"],
+            max_kline_limit: Some(1000),
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -865,6 +882,31 @@ impl Trading for MexcConnector {
         let response = self.get(MexcEndpoint::MyTrades, params).await?;
         MexcParser::parse_user_trades(&response)
     }
+
+    fn trading_capabilities(&self) -> TradingCapabilities {
+        TradingCapabilities {
+            has_market_order: true,
+            has_limit_order: true,
+            // MEXC spot does not support stop-market or stop-limit order types
+            has_stop_market: false,
+            has_stop_limit: false,
+            has_trailing_stop: false,
+            has_bracket: false,
+            // MEXC spot does not have an OCO endpoint
+            has_oco: false,
+            // No amend/modify order endpoint on MEXC spot
+            has_amend: false,
+            // BatchOrders trait is implemented: POST /api/v3/batchOrders (max 20)
+            has_batch: true,
+            max_batch_size: Some(20),
+            // CancelAll trait is implemented: DELETE /api/v3/openOrders
+            has_cancel_all: true,
+            // get_user_trades is implemented via GET /api/v3/myTrades
+            has_user_trades: true,
+            // get_order_history is implemented via GET /api/v3/allOrders
+            has_order_history: true,
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -962,6 +1004,33 @@ impl Account for MexcConnector {
             symbol: symbol.map(|s| s.to_string()),
             tier: None,
         })
+    }
+
+    fn account_capabilities(&self) -> AccountCapabilities {
+        AccountCapabilities {
+            // GET /api/v3/account returns balances
+            has_balances: true,
+            // GET /api/v3/account returns canTrade/canWithdraw/canDeposit
+            has_account_info: true,
+            // GET /api/v3/tradeFee is implemented
+            has_fees: true,
+            // AccountTransfers trait is implemented: POST/GET /api/v3/capital/transfer
+            has_transfers: true,
+            // SubAccounts trait is implemented: create/list/transfer/getBalance
+            has_sub_accounts: true,
+            // CustodialFunds trait is implemented: deposit address, withdraw, deposit/withdraw history
+            has_deposit_withdraw: true,
+            // MEXC is spot-only — no margin borrow/repay endpoints implemented
+            has_margin: false,
+            // No earn or staking endpoints implemented
+            has_earn_staking: false,
+            // No funding payment history (spot-only connector, no perp funding)
+            has_funding_history: false,
+            // No full account ledger/transaction log endpoint implemented
+            has_ledger: false,
+            // No coin-to-coin convert endpoint implemented
+            has_convert: false,
+        }
     }
 }
 

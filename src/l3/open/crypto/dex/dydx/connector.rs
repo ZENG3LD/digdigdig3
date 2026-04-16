@@ -36,7 +36,10 @@ use crate::core::traits::{
     FundingHistory,
 };
 use crate::core::utils::SimpleRateLimiter;
-use crate::core::types::{ConnectorStats, SymbolInfo, FundingPayment, FundingFilter};
+use crate::core::types::{
+    ConnectorStats, SymbolInfo, FundingPayment, FundingFilter,
+    MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
+};
 
 use super::endpoints::{DydxUrls, DydxEndpoint, format_symbol, map_kline_interval};
 use super::auth::DydxAuth;
@@ -561,6 +564,20 @@ impl MarketData for DydxConnector {
 
         Ok(infos)
     }
+
+    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+        MarketDataCapabilities {
+            has_ping: true,         // GET /v4/time
+            has_price: true,        // GET /v4/perpetualMarkets (oracle price field)
+            has_ticker: true,       // GET /v4/perpetualMarkets (24h stats)
+            has_orderbook: true,    // GET /v4/orderbooks/perpetualMarket/{market}
+            has_klines: true,       // GET /v4/candles/perpetualMarkets/{market}
+            has_exchange_info: true, // GET /v4/perpetualMarkets (full symbol list)
+            has_recent_trades: false, // Trades endpoint exists but not exposed via trait
+            supported_intervals: &["1m", "5m", "15m", "30m", "1h", "4h", "1d"],
+            max_kline_limit: Some(1000),
+        }
+    }
 }
 
 #[async_trait]
@@ -694,6 +711,22 @@ impl Account for DydxConnector {
             symbol: symbol.map(|s| s.to_string()),
             tier: None,
         })
+    }
+
+    fn account_capabilities(&self) -> AccountCapabilities {
+        AccountCapabilities {
+            has_balances: true,       // GET /v4/addresses/{addr}/subaccountNumber/{n}
+            has_account_info: true,   // same endpoint, wrapped into AccountInfo
+            has_fees: true,           // approximated from GET /v4/fills (or published defaults)
+            has_transfers: false,     // Transfers endpoint exists but not in trait impl
+            has_sub_accounts: true,   // SpecificSubaccount + ParentSubaccount endpoints used
+            has_deposit_withdraw: false, // no deposit/withdraw API on Indexer
+            has_margin: false,        // margin mode changes require gRPC Node API
+            has_earn_staking: false,  // no earn/staking on dYdX v4
+            has_funding_history: true, // FundingHistory trait is implemented
+            has_ledger: false,        // no ledger/transaction log endpoint
+            has_convert: false,       // no coin conversion endpoint
+        }
     }
 }
 
@@ -1375,6 +1408,27 @@ impl Trading for DydxConnector {
         }
 
         Ok(trades)
+    }
+
+    fn trading_capabilities(&self) -> TradingCapabilities {
+        TradingCapabilities {
+            // Order placement requires grpc + onchain-cosmos features + credentials.
+            // Without those features the connector is read-only; declare false here
+            // because the default (no-feature) build returns UnsupportedOperation.
+            has_market_order: false,
+            has_limit_order: false,   // available only with grpc+onchain-cosmos features
+            has_stop_market: false,   // conditional orders require same feature gates
+            has_stop_limit: false,
+            has_trailing_stop: false, // not supported by dYdX v4 protocol
+            has_bracket: false,       // not a native dYdX order type
+            has_oco: false,           // not a native dYdX order type
+            has_amend: false,         // no order amendment endpoint
+            has_batch: false,         // no batch order API
+            max_batch_size: None,
+            has_cancel_all: false,    // cancel_all_orders is a helper, not in the trait
+            has_user_trades: true,    // GET /v4/fills is implemented
+            has_order_history: true,  // GET /v4/orders (returnLatestOrders) is implemented
+        }
     }
 }
 

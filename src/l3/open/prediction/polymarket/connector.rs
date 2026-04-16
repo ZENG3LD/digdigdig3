@@ -27,6 +27,7 @@ use crate::core::{
     Kline, OrderBook, Price, Symbol, SymbolInfo, Ticker,
 };
 use crate::core::traits::{ExchangeIdentity, MarketData};
+use crate::core::types::MarketDataCapabilities;
 
 use super::auth::{PolymarketAuth, PolymarketCredentials};
 use super::endpoints::{
@@ -355,6 +356,24 @@ impl ExchangeIdentity for PolymarketConnector {
 
 #[async_trait]
 impl MarketData for PolymarketConnector {
+    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+        MarketDataCapabilities {
+            has_ping: true,
+            has_price: true,
+            has_ticker: true,
+            has_orderbook: true,
+            has_klines: true,
+            has_exchange_info: true,
+            // No recent-trades endpoint in Polymarket's public API
+            has_recent_trades: false,
+            // Polymarket /prices-history supports: 1m, 1h, 6h, 1d, 1w, all
+            // Sub-hour intervals (3m, 5m, 15m, 30m) are mapped to "1m"; 2h/4h → "1h"; 8h/12h → "6h"
+            supported_intervals: &["1m", "1h", "6h", "1d", "1w"],
+            // get_fidelity() caps at 1000 via .min(1000)
+            max_kline_limit: Some(1000),
+        }
+    }
+
     /// Check connectivity by fetching server time
     async fn ping(&self) -> ExchangeResult<()> {
         self.get_clob("/time", &[]).await?;

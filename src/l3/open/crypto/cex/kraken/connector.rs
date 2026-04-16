@@ -27,6 +27,7 @@ use crate::core::{
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     AmendRequest, CancelAllResponse, OrderResult,
+    MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
 use crate::core::types::{
     WithdrawRequest, WithdrawResponse, DepositAddress,
@@ -407,6 +408,23 @@ impl MarketData for KrakenConnector {
         let symbols = KrakenParser::parse_exchange_info(&response, account_type)?;
         self.precision.load_from_symbols(&symbols);
         Ok(symbols)
+    }
+
+    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+        MarketDataCapabilities {
+            has_ping: true,
+            has_price: true,
+            has_ticker: true,
+            has_orderbook: true,
+            has_klines: true,
+            has_exchange_info: true,
+            // Kraken has no public recent-trades REST endpoint in this connector.
+            has_recent_trades: false,
+            // Kraken OHLC intervals (integer minutes): 1, 5, 15, 30, 60, 240, 1440, 10080, 21600
+            supported_intervals: &["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "15d"],
+            // Kraken returns up to 720 candles per OHLC request.
+            max_kline_limit: Some(720),
+        }
     }
 }
 
@@ -894,6 +912,30 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
 
         Ok(all_trades)
     }
+
+    fn trading_capabilities(&self) -> TradingCapabilities {
+        TradingCapabilities {
+            has_market_order: true,
+            has_limit_order: true,
+            has_stop_market: true,  // stop-loss (market trigger) implemented
+            has_stop_limit: true,   // stop-loss-limit implemented
+            // TrailingStop / OCO / Bracket all return UnsupportedOperation in place_order.
+            has_trailing_stop: false,
+            has_bracket: false,
+            has_oco: false,
+            // AmendOrder impl exists for both Spot (EditOrder) and Futures (editorder).
+            has_amend: true,
+            // BatchOrders impl exists; Futures batch placement works (Spot returns UnsupportedOperation).
+            has_batch: true,
+            // Kraken Futures batchorder limit is 10 per request.
+            max_batch_size: Some(10),
+            // CancelAll impl exists for both Spot (/CancelAll) and Futures (/cancelallorders).
+            has_cancel_all: true,
+            // get_user_trades implemented for Spot via TradesHistory (Futures returns UnsupportedOperation).
+            has_user_trades: true,
+            has_order_history: true,
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -958,6 +1000,30 @@ impl Account for KrakenConnector {
             symbol: symbol.map(String::from),
             tier: None,
         })
+    }
+
+    fn account_capabilities(&self) -> AccountCapabilities {
+        AccountCapabilities {
+            has_balances: true,
+            has_account_info: true,
+            has_fees: true,
+            // No AccountTransfers trait implemented for Kraken.
+            has_transfers: false,
+            // SubAccounts impl exists (list + transfer to/from sub-account).
+            has_sub_accounts: true,
+            // CustodialFunds impl exists (deposit addresses, withdraw, deposit/withdrawal history).
+            has_deposit_withdraw: true,
+            // No dedicated MarginTrading trait implemented.
+            has_margin: false,
+            // No EarnStaking trait implemented.
+            has_earn_staking: false,
+            // FundingHistory impl exists (spot rollover payments via Ledgers endpoint).
+            has_funding_history: true,
+            // AccountLedger impl exists (full spot ledger via /Ledgers).
+            has_ledger: true,
+            // No ConvertSwap trait implemented.
+            has_convert: false,
+        }
     }
 }
 

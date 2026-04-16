@@ -50,6 +50,7 @@ use crate::core::types::{
     ConnectorStats,
     FundingPayment, FundingFilter,
     LedgerEntry, LedgerFilter,
+    MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
 use crate::core::utils::WeightRateLimiter;
 
@@ -629,6 +630,27 @@ impl MarketData for BybitConnector {
         let symbols = BybitParser::parse_exchange_info(&response, account_type)?;
         self.precision.load_from_symbols(&symbols);
         Ok(symbols)
+    }
+
+    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+        MarketDataCapabilities {
+            has_ping: true,
+            has_price: true,
+            has_ticker: true,
+            has_orderbook: true,
+            has_klines: true,
+            has_exchange_info: true,
+            // get_recent_trades is a struct method (not part of MarketData trait impl)
+            has_recent_trades: false,
+            // map_kline_interval covers: 1m 3m 5m 15m 30m 1h 2h 4h 6h 12h 1d 1w 1M (no 8h/3d)
+            supported_intervals: &[
+                "1m", "3m", "5m", "15m", "30m",
+                "1h", "2h", "4h", "6h", "12h",
+                "1d", "1w", "1M",
+            ],
+            // get_klines caps limit at .min(1000)
+            max_kline_limit: Some(1000),
+        }
     }
 }
 
@@ -1442,6 +1464,31 @@ impl Trading for BybitConnector {
 
         Ok(trades)
     }
+
+    fn trading_capabilities(&self) -> TradingCapabilities {
+        TradingCapabilities {
+            has_market_order: true,
+            has_limit_order: true,
+            has_stop_market: true,
+            has_stop_limit: true,
+            // TrailingStop: Futures only (Spot/Margin returns UnsupportedOperation)
+            has_trailing_stop: true,
+            // Bracket: no native bracket order type on Bybit API (UnsupportedOperation)
+            has_bracket: false,
+            // OCO: UI only on Bybit — not available via API (UnsupportedOperation)
+            has_oco: false,
+            // AmendOrder trait implemented: POST /v5/order/amend
+            has_amend: true,
+            // BatchOrders trait implemented: POST /v5/order/create-batch and cancel-batch
+            has_batch: true,
+            // Bybit batch limit is 10 per request
+            max_batch_size: Some(10),
+            // CancelAll trait implemented: POST /v5/order/cancel-all
+            has_cancel_all: true,
+            has_user_trades: true,
+            has_order_history: true,
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1524,6 +1571,30 @@ impl Account for BybitConnector {
             symbol: symbol.map(String::from),
             tier: None,
         })
+    }
+
+    fn account_capabilities(&self) -> AccountCapabilities {
+        AccountCapabilities {
+            has_balances: true,
+            has_account_info: true,
+            has_fees: true,
+            // AccountTransfers trait implemented: POST /v5/asset/transfer/inter-transfer
+            has_transfers: true,
+            // SubAccounts trait implemented: create, list, transfer, get_balance
+            has_sub_accounts: true,
+            // CustodialFunds trait implemented: deposit address, withdraw, deposit/withdrawal history
+            has_deposit_withdraw: true,
+            // No MarginTrading trait — no borrow/repay endpoints
+            has_margin: false,
+            // No earn/staking endpoints implemented
+            has_earn_staking: false,
+            // FundingHistory trait implemented: GET /v5/account/transaction-log?type=SETTLEMENT
+            has_funding_history: true,
+            // AccountLedger trait implemented: GET /v5/account/transaction-log (all types)
+            has_ledger: true,
+            // No ConvertSwap trait — no coin conversion endpoints
+            has_convert: false,
+        }
     }
 }
 

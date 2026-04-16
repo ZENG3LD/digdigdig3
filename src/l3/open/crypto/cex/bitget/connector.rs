@@ -33,6 +33,7 @@ use crate::core::{
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     TimeInForce, UserTrade, UserTradeFilter,
+    MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions, AccountLedger,
@@ -524,6 +525,28 @@ impl MarketData for BitgetConnector {
         let symbols = BitgetParser::parse_exchange_info(&response, account_type)?;
         self.precision.load_from_symbols(&symbols);
         Ok(symbols)
+    }
+
+    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+        MarketDataCapabilities {
+            has_ping: true,
+            has_price: true,
+            has_ticker: true,
+            has_orderbook: true,
+            has_klines: true,
+            has_exchange_info: true,
+            // get_recent_trades is not implemented in the MarketData trait impl.
+            has_recent_trades: false,
+            // Spot: 1m 3m 5m 15m 30m 1h 2h 4h 6h 12h 1d 1w 1M
+            // Futures adds 3d — advertise the full union.
+            supported_intervals: &[
+                "1m", "3m", "5m", "15m", "30m",
+                "1h", "2h", "4h", "6h", "12h",
+                "1d", "3d", "1w", "1M",
+            ],
+            // Both Spot and Futures accept limit up to 1000.
+            max_kline_limit: Some(1000),
+        }
     }
 }
 
@@ -1221,6 +1244,32 @@ impl Trading for BitgetConnector {
             BitgetParser::parse_user_trades(&response)
         }
     }
+
+    fn trading_capabilities(&self) -> TradingCapabilities {
+        TradingCapabilities {
+            has_market_order: true,
+            has_limit_order: true,
+            // StopMarket and StopLimit are implemented for Futures via plan orders.
+            has_stop_market: true,
+            has_stop_limit: true,
+            // TrailingStop via planType=track_plan — Futures only.
+            has_trailing_stop: true,
+            // Bracket via presetStopSurplusPrice/presetStopLossPrice — Futures only.
+            has_bracket: true,
+            // No OCO order type is implemented; falls through to UnsupportedOperation.
+            has_oco: false,
+            // AmendOrder trait is implemented.
+            has_amend: true,
+            // BatchOrders trait is implemented.
+            has_batch: true,
+            // Bitget Futures batch limit is 20 orders per request.
+            max_batch_size: Some(20),
+            // CancelAll trait is implemented.
+            has_cancel_all: true,
+            has_user_trades: true,
+            has_order_history: true,
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1332,6 +1381,30 @@ impl Account for BitgetConnector {
                 symbol: None,
                 tier: Some(format!("VIP{}", level)),
             })
+        }
+    }
+
+    fn account_capabilities(&self) -> AccountCapabilities {
+        AccountCapabilities {
+            has_balances: true,
+            has_account_info: true,
+            has_fees: true,
+            // AccountTransfers impl exists (spot and futures transfers + history).
+            has_transfers: true,
+            // SubAccounts impl exists.
+            has_sub_accounts: true,
+            // CustodialFunds impl exists (deposit addresses + withdrawals).
+            has_deposit_withdraw: true,
+            // No dedicated MarginTrading trait implemented.
+            has_margin: false,
+            // No EarnStaking trait implemented.
+            has_earn_staking: false,
+            // No FundingHistory trait implemented for Bitget.
+            has_funding_history: false,
+            // AccountLedger impl exists (spot + futures ledger).
+            has_ledger: true,
+            // No ConvertSwap trait implemented.
+            has_convert: false,
         }
     }
 }

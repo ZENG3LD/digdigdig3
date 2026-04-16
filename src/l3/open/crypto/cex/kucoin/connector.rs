@@ -33,6 +33,7 @@ use crate::core::{
     AmendRequest, CancelAllResponse, OrderResult,
     UserTrade, UserTradeFilter,
     TransferResponse, DepositAddress, WithdrawResponse, FundsRecord,
+    MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
@@ -775,6 +776,29 @@ impl MarketData for KuCoinConnector {
         self.precision.load_from_symbols(&symbols);
         Ok(symbols)
     }
+
+    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+        MarketDataCapabilities {
+            has_ping: true,
+            has_price: true,
+            has_ticker: true,
+            has_orderbook: true,
+            has_klines: true,
+            has_exchange_info: true,
+            // get_spot_recent_trades exists as an inherent method but is NOT part of the
+            // MarketData trait — the trait method is not overridden, so false here.
+            has_recent_trades: false,
+            // Spot supports: 1m 3m 5m 15m 30m 1h 2h 4h 6h 8h 12h 1d 1w 1M
+            // Futures drops 3m, 6h, 1M — we advertise the union of spot intervals.
+            supported_intervals: &[
+                "1m", "3m", "5m", "15m", "30m",
+                "1h", "2h", "4h", "6h", "8h", "12h",
+                "1d", "1w", "1M",
+            ],
+            // KuCoin uses time-window, not a numeric limit param; effective max is 1500 bars.
+            max_kline_limit: Some(1500),
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1307,6 +1331,31 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         let response = self.get(endpoint, params, account_type).await?;
         KuCoinParser::parse_fills(&response)
     }
+
+    fn trading_capabilities(&self) -> TradingCapabilities {
+        TradingCapabilities {
+            has_market_order: true,
+            has_limit_order: true,
+            has_stop_market: true,
+            has_stop_limit: true,
+            // TrailingStop / Bracket / Twap all return UnsupportedOperation in place_order.
+            has_trailing_stop: false,
+            has_bracket: false,
+            // OCO: native KuCoin spot endpoint exists and is implemented.
+            has_oco: true,
+            // AmendOrder is implemented for Futures only; Spot returns UnsupportedOperation.
+            // We advertise true because the trait impl exists for the connector.
+            has_amend: true,
+            // BatchOrders impl exists; place_orders_batch works; cancel_orders_batch returns
+            // UnsupportedOperation (no native KuCoin batch-cancel endpoint).
+            has_batch: true,
+            // Spot HF max = 5; Futures max = 20. Advertise the more restrictive spot limit.
+            max_batch_size: Some(5),
+            has_cancel_all: true,
+            has_user_trades: true,
+            has_order_history: true,
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1402,6 +1451,31 @@ impl Account for KuCoinConnector {
             symbol: symbol.map(String::from),
             tier: None,
         })
+    }
+
+    fn account_capabilities(&self) -> AccountCapabilities {
+        AccountCapabilities {
+            has_balances: true,
+            has_account_info: true,
+            has_fees: true,
+            // AccountTransfers impl exists (inner-transfer + history).
+            has_transfers: true,
+            // SubAccounts impl exists.
+            has_sub_accounts: true,
+            // CustodialFunds impl covers deposit addresses and withdrawals.
+            has_deposit_withdraw: true,
+            // Margin borrow/repay is exposed via get_balance(Margin) and the AccountTransfers
+            // impl; there is no dedicated MarginTrading trait implemented, so false.
+            has_margin: false,
+            // No EarnStaking trait is implemented.
+            has_earn_staking: false,
+            // FundingHistory impl exists (futures funding payment history).
+            has_funding_history: true,
+            // AccountLedger impl exists (spot account ledger).
+            has_ledger: true,
+            // No ConvertSwap trait is implemented.
+            has_convert: false,
+        }
     }
 }
 

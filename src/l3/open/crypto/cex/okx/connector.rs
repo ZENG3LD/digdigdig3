@@ -28,6 +28,7 @@ use crate::core::{
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     AmendRequest, CancelAllResponse, OrderResult,
     UserTrade, UserTradeFilter,
+    MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
 use crate::core::types::{
     TransferRequest, TransferHistoryFilter, TransferResponse,
@@ -550,6 +551,28 @@ impl MarketData for OkxConnector {
         self.precision.load_from_symbols(&symbols);
         Ok(symbols)
     }
+
+    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+        MarketDataCapabilities {
+            has_ping: true,
+            has_price: true,
+            has_ticker: true,
+            has_orderbook: true,
+            has_klines: true,
+            has_exchange_info: true,
+            // get_recent_trades is not part of the MarketData trait — OKX has the endpoint
+            // (Trades/HistoryTrades) exposed as connector-specific public methods only.
+            has_recent_trades: false,
+            // map_kline_interval covers: 1m 3m 5m 15m 30m 1h 2h 4h 6h 12h 1d 1w 1M 3M 6M 1y
+            supported_intervals: &[
+                "1m", "3m", "5m", "15m", "30m",
+                "1h", "2h", "4h", "6h", "12h",
+                "1d", "1w", "1M", "3M", "6M", "1y",
+            ],
+            // get_klines caps at 300 via `.min(300)` in the limit param
+            max_kline_limit: Some(300),
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -968,6 +991,35 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
     
     }
 
+    fn trading_capabilities(&self) -> TradingCapabilities {
+        TradingCapabilities {
+            has_market_order: true,
+            has_limit_order: true,
+            // StopMarket: OrderType::StopMarket → POST /api/v5/trade/order-algo (ordType="conditional", orderPx=-1)
+            has_stop_market: true,
+            // StopLimit: OrderType::StopLimit → POST /api/v5/trade/order-algo (ordType="conditional", orderPx=limit)
+            has_stop_limit: true,
+            // TrailingStop: OrderType::TrailingStop → POST /api/v5/trade/order-algo (ordType="move_order_stop")
+            has_trailing_stop: true,
+            // Bracket: OrderType::Bracket → UnsupportedOperation (no atomic bracket on OKX API)
+            has_bracket: false,
+            // OCO: OrderType::Oco → POST /api/v5/trade/order-algo (ordType="oco")
+            has_oco: true,
+            // AmendOrder trait implemented: POST /api/v5/trade/amend-order
+            has_amend: true,
+            // BatchOrders trait implemented: POST /api/v5/trade/batch-orders and cancel-batch-orders
+            has_batch: true,
+            // max_batch_place_size() and max_batch_cancel_size() both return 20
+            max_batch_size: Some(20),
+            // CancelAll trait implemented: POST /api/v5/trade/cancel-all-after (DMS, timeOut="0")
+            has_cancel_all: true,
+            // get_user_trades implemented: GET /api/v5/trade/fills
+            has_user_trades: true,
+            // get_order_history implemented: GET /api/v5/trade/orders-history
+            has_order_history: true,
+        }
+    }
+
     async fn get_open_orders(
         &self,
         symbol: Option<&str>,
@@ -1030,6 +1082,33 @@ impl Account for OkxConnector {
             taker_commission: 0.1,
             balances,
         })
+    }
+
+    fn account_capabilities(&self) -> AccountCapabilities {
+        AccountCapabilities {
+            // get_balance implemented: GET /api/v5/account/balance
+            has_balances: true,
+            // get_account_info implemented: builds from get_balance + hardcoded flags
+            has_account_info: true,
+            // get_fees implemented: GET /api/v5/account/config (makerFeeRate/takerFeeRate)
+            has_fees: true,
+            // AccountTransfers trait implemented: POST /api/v5/asset/transfer + GET /api/v5/asset/bills
+            has_transfers: true,
+            // SubAccounts trait implemented: create, list, transfer, get_balance
+            has_sub_accounts: true,
+            // CustodialFunds trait implemented: deposit address, withdraw, deposit/withdrawal history
+            has_deposit_withdraw: true,
+            // No MarginTrading trait — no borrow/repay endpoints implemented
+            has_margin: false,
+            // No earn/staking endpoints implemented
+            has_earn_staking: false,
+            // FundingHistory trait implemented: GET /api/v5/account/bills?type=8
+            has_funding_history: true,
+            // AccountLedger trait implemented: GET /api/v5/account/bills + bills-archive
+            has_ledger: true,
+            // No ConvertSwap trait — no coin-to-coin conversion endpoints implemented
+            has_convert: false,
+        }
     }
 
     async fn get_fees(&self, symbol: Option<&str>) -> ExchangeResult<FeeInfo> {

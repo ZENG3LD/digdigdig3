@@ -46,6 +46,7 @@ use crate::core::traits::{
 use crate::core::types::{
     FundingPayment, FundingFilter,
     LedgerEntry, LedgerFilter,
+    MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
 use crate::core::utils::WeightRateLimiter;
 
@@ -764,6 +765,24 @@ impl MarketData for BinanceConnector {
         self.precision.load_from_symbols(&symbols);
         Ok(symbols)
     }
+
+    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+        MarketDataCapabilities {
+            has_ping: true,
+            has_price: true,
+            has_ticker: true,
+            has_orderbook: true,
+            has_klines: true,
+            has_exchange_info: true,
+            has_recent_trades: true,
+            supported_intervals: &[
+                "1m", "3m", "5m", "15m", "30m",
+                "1h", "2h", "4h", "6h", "8h", "12h",
+                "1d", "3d", "1w", "1M",
+            ],
+            max_kline_limit: Some(1000),
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1390,6 +1409,32 @@ impl Trading for BinanceConnector {
         let response = self.get(endpoint, params, account_type).await?;
         BinanceParser::parse_user_trades(&response, is_futures)
     }
+
+    fn trading_capabilities(&self) -> TradingCapabilities {
+        TradingCapabilities {
+            has_market_order: true,
+            has_limit_order: true,
+            // StopMarket: Futures via /fapi/v1/order/algo (STOP_MARKET). Spot returns UnsupportedOperation.
+            has_stop_market: true,
+            // StopLimit: Spot via STOP_LOSS_LIMIT on /api/v3/order; Futures via /fapi/v1/order/algo (STOP).
+            has_stop_limit: true,
+            // TrailingStop: Futures via /fapi/v1/order/algo (TRAILING_STOP_MARKET). Spot unsupported.
+            has_trailing_stop: true,
+            // Bracket: Spot via OTOCO /api/v3/orderList/otoco. Futures returns UnsupportedOperation.
+            has_bracket: true,
+            // OCO: Spot via /api/v3/orderList/oco. Futures unsupported.
+            has_oco: true,
+            // AmendOrder trait is implemented; Futures only (Spot returns UnsupportedOperation).
+            has_amend: true,
+            // BatchOrders trait is implemented; Futures only, max 5 place / 10 cancel.
+            has_batch: true,
+            max_batch_size: Some(5),
+            // CancelAll trait implemented for both Spot and Futures (requires symbol).
+            has_cancel_all: true,
+            has_user_trades: true,
+            has_order_history: true,
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1508,6 +1553,30 @@ impl Account for BinanceConnector {
         // Attempt 4: Futures account feeTier
         let response = self.get(BinanceEndpoint::FuturesAccount, HashMap::new(), AccountType::FuturesCross).await?;
         BinanceParser::parse_fee_info(&response, symbol)
+    }
+
+    fn account_capabilities(&self) -> AccountCapabilities {
+        AccountCapabilities {
+            has_balances: true,
+            has_account_info: true,
+            has_fees: true,
+            // AccountTransfers trait implemented: POST /sapi/v1/asset/transfer
+            has_transfers: true,
+            // SubAccounts trait implemented: create, list, transfer, get_balance
+            has_sub_accounts: true,
+            // CustodialFunds trait implemented: deposit address, withdraw, deposit/withdrawal history
+            has_deposit_withdraw: true,
+            // No margin borrowing/repayment endpoints implemented
+            has_margin: false,
+            // No earn/staking endpoints implemented
+            has_earn_staking: false,
+            // FundingHistory trait implemented: GET /fapi/v1/income?incomeType=FUNDING_FEE
+            has_funding_history: true,
+            // AccountLedger trait implemented: GET /fapi/v1/income (all types)
+            has_ledger: true,
+            // No coin-to-coin conversion endpoint implemented
+            has_convert: false,
+        }
     }
 }
 

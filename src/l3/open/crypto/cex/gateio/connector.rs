@@ -42,6 +42,7 @@ use crate::core::types::{
     FundsHistoryFilter, FundsRecordType, SubAccountOperation, SubAccountResult,
     SubAccount, ConnectorStats,
     FundingPayment, FundingFilter, LedgerEntry, LedgerFilter,
+    MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
 use crate::core::utils::WeightRateLimiter;
 use crate::core::utils::precision::PrecisionCache;
@@ -545,6 +546,28 @@ impl MarketData for GateioConnector {
         let symbols = GateioParser::parse_exchange_info(&response, account_type)?;
         self.precision.load_from_symbols(&symbols);
         Ok(symbols)
+    }
+
+    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+        MarketDataCapabilities {
+            has_ping: true,
+            has_price: true,
+            has_ticker: true,
+            has_orderbook: true,
+            has_klines: true,
+            has_exchange_info: true,
+            // get_recent_trades is a struct method only — not exposed via MarketData trait
+            has_recent_trades: false,
+            // Native intervals: 10s, 1m, 5m, 15m, 30m, 1h, 4h, 8h, 1d, 7d (1w), 30d (1M)
+            // 3m/2h/6h/12h map to nearest supported interval in map_kline_interval()
+            supported_intervals: &[
+                "10s", "1m", "5m", "15m", "30m",
+                "1h", "4h", "8h",
+                "1d", "1w", "1M",
+            ],
+            // get_klines caps limit at .min(1000)
+            max_kline_limit: Some(1000),
+        }
     }
 }
 
@@ -1137,6 +1160,35 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         let response = self.get(endpoint, params, account_type).await?;
         GateioParser::parse_user_trades(&response, is_futures)
     }
+
+    fn trading_capabilities(&self) -> TradingCapabilities {
+        TradingCapabilities {
+            has_market_order: true,
+            has_limit_order: true,
+            // StopMarket: POST /spot/price_orders (spot) and /futures/{settle}/price_orders (futures)
+            has_stop_market: true,
+            // StopLimit: same price_orders endpoint with limit put order
+            has_stop_limit: true,
+            // TrailingStop: returns UnsupportedOperation in place_order match
+            has_trailing_stop: false,
+            // Bracket: not supported (UnsupportedOperation)
+            has_bracket: false,
+            // OCO: not supported (UnsupportedOperation)
+            has_oco: false,
+            // AmendOrder trait implemented: /spot/orders/{id} PATCH and /futures/{settle}/orders/{id}
+            has_amend: true,
+            // BatchOrders trait implemented: POST /spot/batch_orders and /futures/{settle}/batch_orders
+            has_batch: true,
+            // Gate.io Spot batch limit is 10 (more conservative vs Futures 20)
+            max_batch_size: Some(10),
+            // CancelAll trait implemented: DELETE /spot/orders and /futures/{settle}/orders
+            has_cancel_all: true,
+            // get_user_trades: GET /spot/my_trades and /futures/{settle}/my_trades
+            has_user_trades: true,
+            // get_order_history: GET /spot/orders?status=finished and /futures/{settle}/orders?status=finished
+            has_order_history: true,
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1237,6 +1289,30 @@ impl Account for GateioConnector {
             symbol: symbol.map(String::from),
             tier: None,
         })
+    }
+
+    fn account_capabilities(&self) -> AccountCapabilities {
+        AccountCapabilities {
+            has_balances: true,
+            has_account_info: true,
+            has_fees: true,
+            // AccountTransfers trait implemented: POST /wallet/transfers
+            has_transfers: true,
+            // SubAccounts trait implemented: create, list, transfer, get_balance
+            has_sub_accounts: true,
+            // CustodialFunds trait implemented: deposit address, withdraw, deposit/withdrawal history
+            has_deposit_withdraw: true,
+            // No margin borrow/repay endpoints implemented
+            has_margin: false,
+            // No earn/staking endpoints implemented
+            has_earn_staking: false,
+            // FundingHistory trait implemented: GET /futures/{settle}/funding_payments
+            has_funding_history: true,
+            // AccountLedger trait implemented: GET /wallet/ledger and /futures/{settle}/account_book
+            has_ledger: true,
+            // No coin conversion endpoint implemented
+            has_convert: false,
+        }
     }
 }
 

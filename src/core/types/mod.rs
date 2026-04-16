@@ -3,12 +3,14 @@
 //! Типы данных для V5 коннекторов.
 //! Независимые от V4, упрощённые для использования агентами.
 
+mod capabilities;
 mod common;
 mod market_data;
 mod trading;
 mod websocket;
 mod responses;
 
+pub use capabilities::{MarketDataCapabilities, TradingCapabilities, AccountCapabilities};
 pub use common::*;
 pub use market_data::*;
 pub use trading::*;

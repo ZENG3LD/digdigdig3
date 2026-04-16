@@ -6,7 +6,8 @@
 use async_trait::async_trait;
 
 use crate::core::types::{
-    AccountType, ExchangeResult, Kline, OrderBook, Price, Symbol, SymbolInfo, Ticker,
+    AccountType, ExchangeResult, Kline, MarketDataCapabilities, OrderBook, Price, Symbol,
+    SymbolInfo, Ticker,
 };
 
 use super::ExchangeIdentity;
@@ -76,5 +77,13 @@ pub trait MarketData: ExchangeIdentity {
         Err(crate::core::types::ExchangeError::UnsupportedOperation(
             "get_exchange_info not implemented for this connector".to_string(),
         ))
+    }
+
+    /// Returns the connector's market data capabilities.
+    ///
+    /// The default implementation returns permissive defaults.
+    /// Connectors with specific limitations should override this method.
+    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+        MarketDataCapabilities::permissive()
     }
 }

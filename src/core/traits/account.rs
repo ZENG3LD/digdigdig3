@@ -5,8 +5,7 @@
 use async_trait::async_trait;
 
 use crate::core::types::{
-    AccountInfo, AccountType, Balance, ExchangeResult,
-    BalanceQuery, FeeInfo,
+    AccountCapabilities, AccountInfo, AccountType, Balance, BalanceQuery, ExchangeResult, FeeInfo,
 };
 
 use super::ExchangeIdentity;
@@ -38,4 +37,12 @@ pub trait Account: ExchangeIdentity {
     /// DEX AMMs use protocol fee models not translatable to maker/taker — they return
     /// `UnsupportedOperation`.
     async fn get_fees(&self, symbol: Option<&str>) -> ExchangeResult<FeeInfo>;
+
+    /// Returns the connector's account capabilities.
+    ///
+    /// The default implementation returns permissive defaults.
+    /// Connectors with specific limitations should override this method.
+    fn account_capabilities(&self) -> AccountCapabilities {
+        AccountCapabilities::permissive()
+    }
 }

@@ -12,9 +12,8 @@
 use async_trait::async_trait;
 
 use crate::core::types::{
-    AccountType, ExchangeResult, Order,
-    OrderHistoryFilter, OrderRequest, CancelRequest, PlaceOrderResponse,
-    UserTrade, UserTradeFilter,
+    AccountType, ExchangeResult, Order, OrderHistoryFilter, OrderRequest, CancelRequest,
+    PlaceOrderResponse, TradingCapabilities, UserTrade, UserTradeFilter,
 };
 
 use super::ExchangeIdentity;
@@ -94,5 +93,13 @@ pub trait Trading: ExchangeIdentity {
         Err(crate::core::types::ExchangeError::UnsupportedOperation(
             "get_user_trades not implemented".into(),
         ))
+    }
+
+    /// Returns the connector's trading capabilities.
+    ///
+    /// The default implementation returns permissive defaults.
+    /// Connectors with specific limitations should override this method.
+    fn trading_capabilities(&self) -> TradingCapabilities {
+        TradingCapabilities::permissive()
     }
 }

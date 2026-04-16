@@ -100,6 +100,8 @@ pub use types::{
     OrderUpdateEvent, BalanceUpdateEvent, PositionUpdateEvent,
     BalanceChangeReason, PositionChangeReason,
     OrderbookCapabilities,
+    // Capabilities
+    MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
 
 // Re-exports traits

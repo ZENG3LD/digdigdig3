@@ -30,6 +30,7 @@ use crate::core::{
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     UserTrade, UserTradeFilter,
+    MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
@@ -506,6 +507,24 @@ impl MarketData for HtxConnector {
         let symbols = HtxParser::parse_exchange_info(&response, account_type)?;
         self.precision.load_from_symbols(&symbols);
         Ok(symbols)
+    }
+
+    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+        MarketDataCapabilities {
+            has_ping: true,
+            has_price: true,
+            has_ticker: true,
+            has_orderbook: true,
+            has_klines: true,
+            has_exchange_info: true,
+            // get_recent_trades is an inherent method (uses RecentTrades endpoint)
+            // but is NOT part of the MarketData trait, so false.
+            has_recent_trades: false,
+            // HTX intervals: 1min 5min 15min 30min 60min 4hour 1day 1week 1mon 1year
+            supported_intervals: &["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"],
+            // HTX kline endpoint accepts up to 2000 bars per request.
+            max_kline_limit: Some(2000),
+        }
     }
 }
 
@@ -1047,6 +1066,29 @@ impl Trading for HtxConnector {
         let response = self.get(HtxEndpoint::MatchResults, params).await?;
         HtxParser::parse_user_trades(&response)
     }
+
+    fn trading_capabilities(&self) -> TradingCapabilities {
+        TradingCapabilities {
+            has_market_order: true,
+            has_limit_order: true,
+            // HTX spot has no stop-market order type; stop orders must include a limit price.
+            has_stop_market: false,
+            has_stop_limit: true,
+            // Trailing stop implemented via POST /v2/algo-orders (AlgoOrders endpoint).
+            has_trailing_stop: true,
+            has_bracket: false,
+            has_oco: false,
+            // No AmendOrder trait implemented; HTX spot has no native order-amend endpoint.
+            has_amend: false,
+            // BatchOrders impl exists: cancel up to 50 per call; place is UnsupportedOperation.
+            has_batch: true,
+            max_batch_size: Some(50),
+            // CancelAll trait implemented via POST /v1/order/orders/batchCancelOpenOrders.
+            has_cancel_all: true,
+            has_user_trades: true,
+            has_order_history: true,
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1130,6 +1172,30 @@ impl Account for HtxConnector {
             symbol: symbol.map(|s| s.to_string()),
             tier: None,
         })
+    }
+
+    fn account_capabilities(&self) -> AccountCapabilities {
+        AccountCapabilities {
+            has_balances: true,
+            has_account_info: true,
+            has_fees: true,
+            // AccountTransfers impl: POST /v1/futures/transfer + GET /v2/account/transfer.
+            has_transfers: true,
+            // SubAccounts impl: create, list, transfer, get_balance.
+            has_sub_accounts: true,
+            // CustodialFunds impl: deposit address, withdraw, deposit/withdraw history.
+            has_deposit_withdraw: true,
+            // No MarginTrading trait implemented.
+            has_margin: false,
+            // No EarnStaking trait implemented.
+            has_earn_staking: false,
+            // No FundingHistory trait implemented (get_funding_rate_history is an inherent method only).
+            has_funding_history: false,
+            // Ledger endpoint exists (/v2/account/ledger) but no AccountLedger trait is implemented.
+            has_ledger: false,
+            // No ConvertSwap trait implemented.
+            has_convert: false,
+        }
     }
 }
 

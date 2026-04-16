@@ -32,6 +32,7 @@ use crate::core::{
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     TimeInForce, AmendRequest,
     UserTrade, UserTradeFilter,
+    MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
 use crate::core::types::SymbolInfo;
 use crate::core::traits::{
@@ -430,6 +431,27 @@ impl MarketData for BingxConnector {
         self.precision.load_from_symbols(&info);
         Ok(info)
     }
+
+    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+        MarketDataCapabilities {
+            has_ping: true,
+            has_price: true,
+            has_ticker: true,
+            has_orderbook: true,
+            has_klines: true,
+            has_exchange_info: true,
+            // SpotTrades / SwapTrades endpoints exist but get_recent_trades is not
+            // implemented in the MarketData trait impl for this connector.
+            has_recent_trades: false,
+            supported_intervals: &[
+                "1m", "3m", "5m", "15m", "30m",
+                "1h", "2h", "4h", "6h", "8h", "12h",
+                "1d", "3d", "1w", "1M",
+            ],
+            // get_klines enforces .min(1440) before sending to BingX
+            max_kline_limit: Some(1440),
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -815,6 +837,31 @@ impl Trading for BingxConnector {
             BingxParser::parse_user_trades(&response, false)
         }
     }
+
+    fn trading_capabilities(&self) -> TradingCapabilities {
+        TradingCapabilities {
+            has_market_order: true,
+            has_limit_order: true,
+            // StopMarket / StopLimit / TrailingStop: Swap (futures) only;
+            // Spot returns UnsupportedOperation.
+            has_stop_market: true,
+            has_stop_limit: true,
+            has_trailing_stop: true,
+            // Bracket: Swap only via embedded takeProfit/stopLoss JSON params.
+            has_bracket: true,
+            // OCO: no implementation — no BingX OCO endpoint wired up.
+            has_oco: false,
+            // AmendOrder trait implemented for Swap via /openApi/swap/v1/trade/amend.
+            has_amend: true,
+            // BatchOrders trait implemented; max 5 orders per batch (Swap only).
+            has_batch: true,
+            max_batch_size: Some(5),
+            // CancelAll trait implemented for both Spot and Swap.
+            has_cancel_all: true,
+            has_user_trades: true,
+            has_order_history: true,
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -890,6 +937,31 @@ impl Account for BingxConnector {
             symbol: _symbol.map(String::from),
             tier: None,
         })
+    }
+
+    fn account_capabilities(&self) -> AccountCapabilities {
+        AccountCapabilities {
+            has_balances: true,
+            has_account_info: true,
+            has_fees: true,
+            // AccountTransfers trait implemented: POST /openApi/api/v3/post/account/innerTransfer
+            has_transfers: true,
+            // SubAccounts trait implemented: create, list, transfer, get_balance
+            has_sub_accounts: true,
+            // CustodialFunds trait implemented: deposit address, withdraw, deposit/withdrawal history
+            has_deposit_withdraw: true,
+            // No margin borrowing/repayment endpoints implemented
+            has_margin: false,
+            // No earn/staking product endpoints implemented
+            has_earn_staking: false,
+            // SwapIncome endpoint (/openApi/swap/v2/user/income) is defined but not exposed
+            // through the Account trait; only raw connector method.
+            has_funding_history: false,
+            // No full ledger/transaction log endpoint implemented
+            has_ledger: false,
+            // No coin-to-coin convert endpoint implemented
+            has_convert: false,
+        }
     }
 }
 

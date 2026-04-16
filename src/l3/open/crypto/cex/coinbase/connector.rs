@@ -77,6 +77,7 @@ use crate::core::{
 use crate::core::types::{
     WithdrawRequest, WithdrawResponse, DepositAddress,
     FundsHistoryFilter, FundsRecord, FundsRecordType,
+    MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
 use crate::core::types::SymbolInfo;
 use crate::core::traits::{
@@ -555,6 +556,25 @@ impl MarketData for CoinbaseConnector {
         let symbols = CoinbaseParser::parse_exchange_info(&response, account_type)?;
         self.precision.load_from_symbols(&symbols);
         Ok(symbols)
+    }
+
+    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+        MarketDataCapabilities {
+            has_ping: true,
+            has_price: true,
+            has_ticker: true,
+            // Orderbook is implemented but SPOT ONLY — perpetuals return NotSupported at runtime.
+            has_orderbook: true,
+            // Klines are implemented but SPOT ONLY — same perpetuals restriction as orderbook.
+            has_klines: true,
+            has_exchange_info: true,
+            // No get_recent_trades() override in the MarketData impl.
+            has_recent_trades: false,
+            // Intervals come from map_kline_interval() in endpoints.rs.
+            supported_intervals: &["1m", "5m", "15m", "30m", "1h", "2h", "6h", "1d"],
+            // Coinbase max window is 350 candles (enforced via truncate(l.min(350))).
+            max_kline_limit: Some(350),
+        }
     }
 }
 
@@ -1066,6 +1086,30 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
 
         CoinbaseParser::parse_fills(&response)
     }
+
+    fn trading_capabilities(&self) -> TradingCapabilities {
+        TradingCapabilities {
+            has_market_order: true,
+            has_limit_order: true,
+            has_stop_market: true,
+            has_stop_limit: true,
+            // TrailingStop returns UnsupportedOperation in place_order.
+            has_trailing_stop: false,
+            // Bracket order maps to trigger_bracket_gtc — implemented.
+            has_bracket: true,
+            // OCO maps to trigger_bracket_gtc — implemented.
+            has_oco: true,
+            // No AmendOrder trait impl on this connector.
+            has_amend: false,
+            // No BatchOrders trait impl — CancelAll is a separate trait.
+            has_batch: false,
+            max_batch_size: None,
+            // CancelAll trait is implemented (2-step: list open orders + batch_cancel).
+            has_cancel_all: true,
+            has_user_trades: true,
+            has_order_history: true,
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1138,6 +1182,30 @@ impl Account for CoinbaseConnector {
             symbol: symbol.map(String::from),
             tier,
         })
+    }
+
+    fn account_capabilities(&self) -> AccountCapabilities {
+        AccountCapabilities {
+            has_balances: true,
+            has_account_info: true,
+            has_fees: true,
+            // No AccountTransfers trait impl (no inner-transfer endpoint).
+            has_transfers: false,
+            // No SubAccounts trait impl.
+            has_sub_accounts: false,
+            // CustodialFunds impl covers deposit address, withdrawal, and funds history.
+            has_deposit_withdraw: true,
+            // No margin trading trait impl.
+            has_margin: false,
+            // No earn/staking trait impl.
+            has_earn_staking: false,
+            // No dedicated funding payment history — CustodialFunds covers deposit/withdraw history only.
+            has_funding_history: false,
+            // No ledger trait impl.
+            has_ledger: false,
+            // No convert/swap trait impl.
+            has_convert: false,
+        }
     }
 }
 

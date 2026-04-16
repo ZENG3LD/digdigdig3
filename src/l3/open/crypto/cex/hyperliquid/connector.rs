@@ -33,6 +33,7 @@ use crate::core::{
     AmendRequest, OrderResult,
     CancelAllResponse,
     UserTrade, UserTradeFilter,
+    MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
 use crate::core::traits::{Trading, Account, Positions, AmendOrder, BatchOrders, CancelAll, AccountTransfers, FundingHistory};
 use crate::core::types::{ConnectorStats, SymbolInfo, AlgoOrderResponse, TransferRequest, TransferHistoryFilter, TransferResponse, FundingPayment, FundingFilter};
@@ -551,6 +552,27 @@ impl MarketData for HyperliquidConnector {
         self.precision.load_from_symbols(&info);
         Ok(info)
     }
+
+    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+        MarketDataCapabilities {
+            has_ping: true,
+            has_price: true,
+            // get_ticker returns NotSupported — HL has no 24h stats endpoint per symbol
+            has_ticker: false,
+            has_orderbook: true,
+            has_klines: true,
+            has_exchange_info: true,
+            // get_recent_trades not implemented (InfoType::RecentTrades exists but no method)
+            has_recent_trades: false,
+            supported_intervals: &[
+                "1m", "3m", "5m", "15m", "30m",
+                "1h", "2h", "4h", "8h", "12h",
+                "1d", "3d", "1w", "1M",
+            ],
+            // get_klines uses .min(5000) as the hard cap
+            max_kline_limit: Some(5000),
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -943,6 +965,35 @@ impl Trading for HyperliquidConnector {
 
         Ok(trades)
     }
+
+    fn trading_capabilities(&self) -> TradingCapabilities {
+        TradingCapabilities {
+            has_market_order: true,
+            has_limit_order: true,
+            // StopMarket: implemented as trigger order (tpsl="sl", isMarket=true)
+            has_stop_market: true,
+            // StopLimit: implemented as trigger order (tpsl="sl", isMarket=false)
+            has_stop_limit: true,
+            // TrailingStop: not a native HL order type; falls to UnsupportedOperation
+            has_trailing_stop: false,
+            // Bracket: not supported on HL
+            has_bracket: false,
+            // OCO: not supported on HL
+            has_oco: false,
+            // AmendOrder trait implemented via native modify action
+            has_amend: true,
+            // BatchOrders trait implemented; HL natively accepts order arrays
+            has_batch: true,
+            // max_batch_place_size / max_batch_cancel_size both return 10
+            max_batch_size: Some(10),
+            // CancelAll trait implemented (fetch open orders then batch cancel)
+            has_cancel_all: true,
+            // get_user_trades implemented via userFills / userFillsByTime
+            has_user_trades: true,
+            // get_order_history implemented via historicalOrders / userFillsByTime
+            has_order_history: true,
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1050,6 +1101,30 @@ impl Account for HyperliquidConnector {
             symbol: symbol.map(String::from),
             tier: Some("Standard".to_string()),
         })
+    }
+
+    fn account_capabilities(&self) -> AccountCapabilities {
+        AccountCapabilities {
+            has_balances: true,
+            has_account_info: true,
+            has_fees: true,
+            // AccountTransfers trait implemented: Spot ↔ Perp USDC via usdClassTransfer
+            has_transfers: true,
+            // No sub-account management on HL
+            has_sub_accounts: false,
+            // No deposit address or withdrawal endpoint implemented
+            has_deposit_withdraw: false,
+            // HL uses cross margin natively; no traditional margin borrow/repay
+            has_margin: false,
+            // No earn/staking products on HL
+            has_earn_staking: false,
+            // FundingHistory trait implemented via userFunding endpoint
+            has_funding_history: true,
+            // No ledger/transaction-log endpoint on HL
+            has_ledger: false,
+            // No coin-to-coin conversion on HL
+            has_convert: false,
+        }
     }
 }
 

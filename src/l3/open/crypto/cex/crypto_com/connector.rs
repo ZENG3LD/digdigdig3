@@ -31,6 +31,7 @@ use crate::core::{
     CancelAll, AmendOrder, BatchOrders, CustodialFunds, SubAccounts,
     AccountLedger, LedgerEntry, LedgerFilter, LedgerEntryType,
     UserTrade, UserTradeFilter,
+    MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
 use crate::core::types::{
     DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord, FundsHistoryFilter, FundsRecordType,
@@ -339,6 +340,25 @@ impl MarketData for CryptoComConnector {
         let info = CryptoComParser::parse_exchange_info(&response, account_type)?;
         self.precision.load_from_symbols(&info);
         Ok(info)
+    }
+
+    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+        MarketDataCapabilities {
+            has_ping: true,
+            has_price: true,
+            has_ticker: true,
+            has_orderbook: true,
+            has_klines: true,
+            has_exchange_info: true,
+            // get_recent_trades is not implemented (no public/get-trades override in MarketData)
+            has_recent_trades: false,
+            // map_kline_interval covers these 11 intervals
+            supported_intervals: &[
+                "1m", "5m", "15m", "30m", "1h", "2h", "4h", "12h", "1d", "1w", "1M",
+            ],
+            // get_klines hard-caps at .min(300)
+            max_kline_limit: Some(300),
+        }
     }
 }
 
@@ -932,6 +952,34 @@ impl Trading for CryptoComConnector {
         let response = self.request(CryptoComEndpoint::GetUserTrades, params).await?;
         CryptoComParser::parse_user_trades(&response)
     }
+
+    fn trading_capabilities(&self) -> TradingCapabilities {
+        TradingCapabilities {
+            has_market_order: true,
+            has_limit_order: true,
+            // StopMarket via private/advanced/create-order (migrated 2026-01-28)
+            has_stop_market: true,
+            // StopLimit via private/advanced/create-order (migrated 2026-01-28)
+            has_stop_limit: true,
+            // TrailingStop confirmed unavailable via API (UI-only); returns UnsupportedOperation
+            has_trailing_stop: false,
+            // Bracket returns UnsupportedOperation (OTOCO endpoint exists but not in OrderType enum)
+            has_bracket: false,
+            // OCO via private/advanced/create-oco (Spot only, returns UnsupportedOperation for Futures)
+            has_oco: true,
+            // AmendOrder trait is implemented
+            has_amend: true,
+            // BatchOrders trait is implemented; max 10 per batch
+            has_batch: true,
+            max_batch_size: Some(10),
+            // CancelAll trait is implemented
+            has_cancel_all: true,
+            // get_user_trades is implemented
+            has_user_trades: true,
+            // get_order_history is implemented
+            has_order_history: true,
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1064,6 +1112,33 @@ impl Account for CryptoComConnector {
 
         let response = self.request(endpoint, params).await?;
         CryptoComParser::parse_fee_rate(&response)
+    }
+
+    fn account_capabilities(&self) -> AccountCapabilities {
+        AccountCapabilities {
+            // get_balance is implemented
+            has_balances: true,
+            // get_account_info is implemented
+            has_account_info: true,
+            // get_fees is implemented (account-wide and per-instrument)
+            has_fees: true,
+            // No AccountTransfers trait implemented
+            has_transfers: false,
+            // SubAccounts trait is implemented (create, list, transfer, get_balance)
+            has_sub_accounts: true,
+            // CustodialFunds trait is implemented (deposit address, withdraw, history)
+            has_deposit_withdraw: true,
+            // No margin borrowing/repayment endpoints implemented
+            has_margin: false,
+            // No earn/staking endpoints implemented
+            has_earn_staking: false,
+            // No dedicated FundingHistory trait (ledger has FUNDING type but no separate trait)
+            has_funding_history: false,
+            // AccountLedger trait is implemented via private/get-transactions
+            has_ledger: true,
+            // No coin-to-coin conversion endpoint implemented
+            has_convert: false,
+        }
     }
 }
 

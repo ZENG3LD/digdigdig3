@@ -32,6 +32,7 @@ use crate::core::types::SymbolInfo;
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
 };
+use crate::core::types::{MarketDataCapabilities, TradingCapabilities, AccountCapabilities};
 use crate::core::{CancelAll, AmendOrder, BatchOrders, AccountTransfers, CustodialFunds, SubAccounts};
 use crate::core::traits::{FundingHistory, AccountLedger};
 use crate::core::types::{
@@ -387,6 +388,27 @@ impl MarketData for BitfinexConnector {
         let info = BitfinexParser::parse_exchange_info(&response, account_type)?;
         self.precision.load_from_symbols(&info);
         Ok(info)
+    }
+
+    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+        MarketDataCapabilities {
+            has_ping: true,
+            has_price: true,
+            has_ticker: true,
+            has_orderbook: true,
+            has_klines: true,
+            has_exchange_info: true,
+            // No public recent-trades endpoint implemented in this connector.
+            has_recent_trades: false,
+            // Bitfinex candle timeframes: 1m 3m 5m 15m 30m 1h 2h 3h 4h 6h 8h 12h 1D 1W 14D 1M
+            supported_intervals: &[
+                "1m", "3m", "5m", "15m", "30m",
+                "1h", "2h", "3h", "4h", "6h", "8h", "12h",
+                "1d", "1w", "2w", "1M",
+            ],
+            // Bitfinex accepts up to 10 000 candles per request (capped in get_klines with .min(10000)).
+            max_kline_limit: Some(10000),
+        }
     }
 }
 
@@ -745,6 +767,27 @@ impl Trading for BitfinexConnector {
 
         BitfinexParser::parse_user_trades(&response)
     }
+
+    fn trading_capabilities(&self) -> TradingCapabilities {
+        TradingCapabilities {
+            has_market_order: true,
+            has_limit_order: true,
+            has_stop_market: true,  // EXCHANGE STOP / STOP
+            has_stop_limit: true,   // EXCHANGE STOP LIMIT / STOP LIMIT
+            has_trailing_stop: true, // EXCHANGE TRAILING STOP / TRAILING STOP
+            // Bitfinex has no bracket (TP+SL combo) order type.
+            has_bracket: false,
+            // Bitfinex has no OCO order type.
+            has_oco: false,
+            has_amend: true,        // AmendOrder trait implemented via UpdateOrder endpoint
+            has_batch: true,        // BatchOrders trait implemented via OrderMulti endpoint
+            // Bitfinex OrderMulti accepts up to 75 operations per call.
+            max_batch_size: Some(75),
+            has_cancel_all: true,   // CancelAll trait implemented via CancelMultipleOrders
+            has_user_trades: true,
+            has_order_history: true,
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -812,6 +855,25 @@ impl Account for BitfinexConnector {
             symbol: symbol.map(|s| s.to_string()),
             tier: None,
         })
+    }
+
+    fn account_capabilities(&self) -> AccountCapabilities {
+        AccountCapabilities {
+            has_balances: true,
+            has_account_info: true,
+            has_fees: true,
+            has_transfers: true,        // AccountTransfers trait implemented (wallet-to-wallet)
+            has_sub_accounts: true,     // SubAccounts trait implemented (list + transfer)
+            has_deposit_withdraw: true, // CustodialFunds trait implemented (deposit address + withdraw + movements)
+            // Bitfinex margin borrowing is order-flag-based, no dedicated borrow/repay endpoint.
+            has_margin: false,
+            // No earn or staking product endpoints in this connector.
+            has_earn_staking: false,
+            has_funding_history: true,  // FundingHistory trait implemented via ledger category 28
+            has_ledger: true,           // AccountLedger trait implemented via LedgerHist endpoint
+            // No coin-to-coin conversion endpoint implemented.
+            has_convert: false,
+        }
     }
 }
 

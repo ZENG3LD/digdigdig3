@@ -32,6 +32,7 @@ use crate::core::{
     CustodialFunds,
     DepositAddress, WithdrawResponse, FundsRecord,
 };
+use crate::core::types::{MarketDataCapabilities, TradingCapabilities, AccountCapabilities};
 use crate::core::types::{WithdrawRequest, FundsHistoryFilter};
 use crate::core::types::{ConnectorStats, SymbolInfo, CancelAllResponse, AmendRequest};
 use crate::core::types::{UserTrade, UserTradeFilter};
@@ -368,6 +369,23 @@ impl ExchangeIdentity for DeribitConnector {
 
 #[async_trait]
 impl MarketData for DeribitConnector {
+    fn market_data_capabilities(&self) -> MarketDataCapabilities {
+        MarketDataCapabilities {
+            has_ping: true,
+            has_price: true,   // public/ticker
+            has_ticker: true,  // public/ticker
+            has_orderbook: true, // public/get_order_book
+            has_klines: true,  // public/get_tradingview_chart_data
+            has_exchange_info: true, // public/get_instruments
+            has_recent_trades: false, // GetLastTradesByInstrument exists but is not wired to the trait method
+            supported_intervals: &[
+                "1m", "3m", "5m", "15m", "30m",
+                "1h", "2h", "4h", "6h", "12h", "1d",
+            ],
+            max_kline_limit: Some(10000),
+        }
+    }
+
     async fn get_price(&self, symbol: Symbol, account_type: AccountType) -> ExchangeResult<Price> {
         let instrument_name = Self::instrument_from_symbol(&symbol, account_type);
 
@@ -488,6 +506,24 @@ impl MarketData for DeribitConnector {
 
 #[async_trait]
 impl Trading for DeribitConnector {
+    fn trading_capabilities(&self) -> TradingCapabilities {
+        TradingCapabilities {
+            has_market_order: true,
+            has_limit_order: true,
+            has_stop_market: true,    // type=stop_market with trigger_price
+            has_stop_limit: true,     // type=stop_limit with trigger_price + price
+            has_trailing_stop: true,  // type=trailing_stop with trailing_amount
+            has_bracket: true,        // OTOCO via linked_order_type=one_triggers_one_cancels_other
+            has_oco: false,           // no standalone OCO; bracket covers the use-case via OTOCO
+            has_amend: true,          // AmendOrder trait: private/edit
+            has_batch: false,         // no batch order endpoint
+            max_batch_size: None,
+            has_cancel_all: true,     // CancelAll trait: private/cancel_all / cancel_all_by_instrument
+            has_user_trades: true,    // get_user_trades_by_instrument / by_currency
+            has_order_history: true,  // get_order_history_by_currency / by_instrument
+        }
+    }
+
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         let symbol = req.symbol.clone();
         let side = req.side;
@@ -858,6 +894,22 @@ impl Trading for DeribitConnector {
 
 #[async_trait]
 impl Account for DeribitConnector {
+    fn account_capabilities(&self) -> AccountCapabilities {
+        AccountCapabilities {
+            has_balances: true,       // private/get_account_summary
+            has_account_info: true,   // derived from get_account_summary
+            has_fees: true,           // maker/taker_commission from account summary extended
+            has_transfers: false,     // no internal transfer endpoint implemented
+            has_sub_accounts: false,  // Deribit has sub-accounts but not wired to the trait
+            has_deposit_withdraw: true, // CustodialFunds: get_deposit_address + withdraw + funds history
+            has_margin: false,        // Deribit uses dynamic margin; no explicit margin query implemented
+            has_earn_staking: false,
+            has_funding_history: true, // FundingHistory trait: private/get_transaction_log?query=funding
+            has_ledger: true,         // AccountLedger trait: private/get_transaction_log
+            has_convert: false,
+        }
+    }
+
     async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         let asset = query.asset.clone();
         let _account_type = query.account_type;

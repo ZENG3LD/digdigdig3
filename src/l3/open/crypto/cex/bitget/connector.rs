@@ -1262,8 +1262,8 @@ impl Trading for BitgetConnector {
             has_amend: true,
             // BatchOrders trait is implemented.
             has_batch: true,
-            // Bitget Futures batch limit is 20 orders per request.
-            max_batch_size: Some(20),
+            // Bitget Futures batch limit is 50 orders per request (matches max_batch_place_size()).
+            max_batch_size: Some(50),
             // CancelAll trait is implemented.
             has_cancel_all: true,
             has_user_trades: true,

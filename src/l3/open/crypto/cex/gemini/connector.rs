@@ -638,8 +638,8 @@ impl Account for GeminiConnector {
         AccountCapabilities {
             // get_balance uses /v1/balances
             has_balances: true,
-            // get_account_info returns a static stub (no real Gemini endpoint)
-            has_account_info: true,
+            // get_account_info is a hardcoded stub with no real API call — reports false.
+            has_account_info: false,
             // get_fees uses /v1/notionalvolume
             has_fees: true,
             // No AccountTransfers trait implemented — no internal transfer endpoint

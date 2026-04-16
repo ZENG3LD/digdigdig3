@@ -1091,14 +1091,16 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         TradingCapabilities {
             has_market_order: true,
             has_limit_order: true,
-            has_stop_market: true,
+            // Coinbase "stop-market" is actually a stop-limit with limit_price == stop_price,
+            // not a true stop-market that fills at best available price.
+            has_stop_market: false,
             has_stop_limit: true,
             // TrailingStop returns UnsupportedOperation in place_order.
             has_trailing_stop: false,
             // Bracket order maps to trigger_bracket_gtc — implemented.
             has_bracket: true,
-            // OCO maps to trigger_bracket_gtc — implemented.
-            has_oco: true,
+            // OCO routes to bracket order internally, not a native exchange OCO.
+            has_oco: false,
             // No AmendOrder trait impl on this connector.
             has_amend: false,
             // No BatchOrders trait impl — CancelAll is a separate trait.

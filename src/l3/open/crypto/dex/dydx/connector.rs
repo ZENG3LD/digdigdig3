@@ -575,7 +575,8 @@ impl MarketData for DydxConnector {
             has_exchange_info: true, // GET /v4/perpetualMarkets (full symbol list)
             has_recent_trades: false, // Trades endpoint exists but not exposed via trait
             supported_intervals: &["1m", "5m", "15m", "30m", "1h", "4h", "1d"],
-            max_kline_limit: Some(1000),
+            // No .min() cap applied in get_klines — limit is passed through as-is.
+            max_kline_limit: None,
         }
     }
 }

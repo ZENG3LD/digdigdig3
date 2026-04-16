@@ -521,7 +521,8 @@ impl MarketData for HtxConnector {
             // but is NOT part of the MarketData trait, so false.
             has_recent_trades: false,
             // HTX intervals: 1min 5min 15min 30min 60min 4hour 1day 1week 1mon 1year
-            supported_intervals: &["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"],
+            // "1y" maps to "1year" in endpoints.rs map_kline_interval.
+            supported_intervals: &["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1M", "1y"],
             // HTX kline endpoint accepts up to 2000 bars per request.
             max_kline_limit: Some(2000),
         }
@@ -1080,9 +1081,10 @@ impl Trading for HtxConnector {
             has_oco: false,
             // No AmendOrder trait implemented; HTX spot has no native order-amend endpoint.
             has_amend: false,
-            // BatchOrders impl exists: cancel up to 50 per call; place is UnsupportedOperation.
-            has_batch: true,
-            max_batch_size: Some(50),
+            // BatchOrders trait exists for cancel-only; place_batch_orders returns UnsupportedOperation.
+            // has_batch reflects full batch place+cancel support — neither is complete, so false.
+            has_batch: false,
+            max_batch_size: None,
             // CancelAll trait implemented via POST /v1/order/orders/batchCancelOpenOrders.
             has_cancel_all: true,
             has_user_trades: true,

@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::core::types::{
     ExchangeError, ExchangeResult,
-    Kline, OrderBook, Ticker, PublicTrade, FundingRate,
+    Kline, OrderBook, OrderBookLevel, Ticker, PublicTrade, FundingRate,
     OrderSide, UserTrade,
 };
 
@@ -148,19 +148,61 @@ impl LighterParser {
         })
     }
 
-    /// Parse orderbook from orderBookOrders response
+    /// Parse orderbook from orderBookOrders response.
     ///
-    /// Note: Lighter doesn't have a dedicated orderbook snapshot endpoint.
-    /// This is a placeholder that would need the actual orderBookOrders data.
+    /// The `/api/v1/orderBookOrders` endpoint returns separate `"asks"` and `"bids"` arrays
+    /// at the top level. Each entry has `price` (string) and `remaining_base_amount` (string).
+    /// Orders at the same price level are aggregated (summed) into one entry.
+    ///
+    /// Bids are sorted descending by price; asks ascending.
     pub fn parse_orderbook(response: &Value) -> ExchangeResult<OrderBook> {
         Self::check_success(response)?;
 
-        // Lighter's orderBookOrders returns full order list, not aggregated levels
-        // For now, return empty orderbook - this would need proper aggregation
+        use std::collections::BTreeMap;
+
+        // Helper: aggregate a side's individual orders into sorted price levels.
+        // Returns a BTreeMap keyed by price bits (i64), values are (price_f64, total_size).
+        let aggregate_side = |key: &str| -> Vec<OrderBookLevel> {
+            let arr = match response.get(key).and_then(|v| v.as_array()) {
+                Some(a) => a,
+                None => return Vec::new(),
+            };
+
+            // BTreeMap<price_bits, (price, size)> — ascending key = ascending price
+            let mut map: BTreeMap<u64, (f64, f64)> = BTreeMap::new();
+
+            for order in arr {
+                let price = match Self::get_f64(order, "price") {
+                    Some(p) if p > 0.0 => p,
+                    _ => continue,
+                };
+                let size = Self::get_f64(order, "remaining_base_amount")
+                    .or_else(|| Self::get_f64(order, "base_amount"))
+                    .or_else(|| Self::get_f64(order, "initial_base_amount"))
+                    .unwrap_or(0.0);
+                if size <= 0.0 {
+                    continue;
+                }
+                let entry = map.entry(price.to_bits()).or_insert((price, 0.0));
+                entry.1 += size;
+            }
+
+            map.values()
+                .map(|(p, s)| OrderBookLevel::new(*p, *s))
+                .collect()
+        };
+
+        // Asks: ascending price (BTreeMap already gives ascending order)
+        let asks_vec = aggregate_side("asks");
+
+        // Bids: descending price — collect ascending then reverse
+        let mut bids_vec = aggregate_side("bids");
+        bids_vec.sort_by(|a, b| b.price.partial_cmp(&a.price).unwrap_or(std::cmp::Ordering::Equal));
+
         Ok(OrderBook {
             timestamp: chrono::Utc::now().timestamp_millis(),
-            bids: Vec::new(),
-            asks: Vec::new(),
+            bids: bids_vec,
+            asks: asks_vec,
             sequence: None,
             last_update_id: None,
             first_update_id: None,

@@ -38,6 +38,11 @@ mod parser;
 mod connector;
 mod websocket;
 
+#[cfg(test)]
+mod _tests_rest;
+#[cfg(test)]
+mod _tests_websocket;
+
 pub use endpoints::{ParadexEndpoint, ParadexUrls};
 pub use auth::ParadexAuth;
 pub use parser::ParadexParser;

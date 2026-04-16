@@ -310,7 +310,7 @@ impl MarketData for LighterConnector {
         LighterParser::parse_ticker(&response)
     }
 
-    async fn get_orderbook(&self, symbol: Symbol, _depth: Option<u16>, account_type: AccountType) -> ExchangeResult<OrderBook> {
+    async fn get_orderbook(&self, symbol: Symbol, depth: Option<u16>, account_type: AccountType) -> ExchangeResult<OrderBook> {
         let formatted_symbol = if let Some(raw) = symbol.raw() {
             raw.to_string()
         } else {
@@ -318,8 +318,12 @@ impl MarketData for LighterConnector {
         };
         let market_id = self.get_market_id(&formatted_symbol, account_type).await?;
 
+        // limit is required by the API (range 1–250); use requested depth or default 50
+        let limit = depth.unwrap_or(50).min(250).max(1);
+
         let mut params = HashMap::new();
         params.insert("market_id".to_string(), market_id.to_string());
+        params.insert("limit".to_string(), limit.to_string());
 
         let response = self.get(LighterEndpoint::OrderBookOrders, params, 300).await?;
         LighterParser::parse_orderbook(&response)

@@ -40,6 +40,11 @@ mod parser;
 mod connector;
 mod websocket;
 
+#[cfg(test)]
+mod _tests_rest;
+#[cfg(test)]
+mod _tests_websocket;
+
 /// Hand-written prost protobuf message types for dYdX v4 order placement
 /// and cancellation.  Only compiled when the `grpc` feature is enabled.
 #[cfg(feature = "grpc")]

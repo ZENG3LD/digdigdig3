@@ -72,6 +72,11 @@ mod connector;
 mod websocket;
 pub mod crypto;
 
+#[cfg(test)]
+mod _tests_rest;
+#[cfg(test)]
+mod _tests_websocket;
+
 pub use endpoints::{LighterEndpoint, LighterUrls, format_symbol, normalize_symbol, map_kline_interval};
 pub use auth::LighterAuth;
 pub use parser::LighterParser;

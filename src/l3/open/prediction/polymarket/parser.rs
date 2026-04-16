@@ -99,6 +99,23 @@ where
     }
 }
 
+/// Deserialize a field that may be a JSON string, number, or null into an optional String.
+///
+/// The Polymarket CLOB API returns `minimum_order_size` and `minimum_tick_size` as numbers
+/// in some responses (e.g. `15` or `0.01`) even though the documented type is string.
+fn deserialize_number_or_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let v: Option<Value> = Option::deserialize(deserializer)?;
+    match v {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s)),
+        Some(Value::Number(n)) => Ok(Some(n.to_string())),
+        Some(other) => Ok(Some(other.to_string())),
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // GAMMA API TYPES
 // ═══════════════════════════════════════════════════════════════════════════
@@ -345,11 +362,11 @@ pub struct ClobMarket {
     /// Tokens (outcomes)
     #[serde(default)]
     pub tokens: Vec<PolyToken>,
-    /// Minimum order size
-    #[serde(default)]
+    /// Minimum order size (API returns number or string)
+    #[serde(default, deserialize_with = "deserialize_number_or_string")]
     pub minimum_order_size: Option<String>,
-    /// Minimum tick size
-    #[serde(default)]
+    /// Minimum tick size (API returns number or string)
+    #[serde(default, deserialize_with = "deserialize_number_or_string")]
     pub minimum_tick_size: Option<String>,
     /// Description
     #[serde(default)]
@@ -851,8 +868,12 @@ pub fn price_history_to_klines(
 }
 
 /// Convert PolyOrderBook to V5 OrderBook
+///
+/// Bids are sorted descending (highest price first).
+/// Asks are sorted ascending (lowest price first).
+/// The CLOB API does not guarantee order, so we sort explicitly.
 pub fn poly_orderbook_to_v5(book: &PolyOrderBook) -> OrderBook {
-    let bids: Vec<OrderBookLevel> = book
+    let mut bids: Vec<OrderBookLevel> = book
         .bids
         .iter()
         .filter_map(|level| {
@@ -861,8 +882,10 @@ pub fn poly_orderbook_to_v5(book: &PolyOrderBook) -> OrderBook {
             Some(OrderBookLevel::new(p, s))
         })
         .collect();
+    // Sort bids descending by price (best bid first)
+    bids.sort_by(|a, b| b.price.partial_cmp(&a.price).unwrap_or(std::cmp::Ordering::Equal));
 
-    let asks: Vec<OrderBookLevel> = book
+    let mut asks: Vec<OrderBookLevel> = book
         .asks
         .iter()
         .filter_map(|level| {
@@ -871,6 +894,8 @@ pub fn poly_orderbook_to_v5(book: &PolyOrderBook) -> OrderBook {
             Some(OrderBookLevel::new(p, s))
         })
         .collect();
+    // Sort asks ascending by price (best ask first)
+    asks.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap_or(std::cmp::Ordering::Equal));
 
     OrderBook {
         bids,
@@ -886,9 +911,15 @@ pub fn poly_orderbook_to_v5(book: &PolyOrderBook) -> OrderBook {
     }
 }
 
-/// Convert a ClobMarket to V5 Ticker using YES token price
+/// Convert a ClobMarket to V5 Ticker using the primary token price.
+///
+/// Prefers the "Yes" outcome token; falls back to the first token for non-binary markets.
 pub fn clob_market_to_ticker(market: &ClobMarket) -> Option<Ticker> {
-    let yes_token = market.tokens.iter().find(|t| t.outcome == "Yes")?;
+    let yes_token = market
+        .tokens
+        .iter()
+        .find(|t| t.outcome == "Yes")
+        .or_else(|| market.tokens.first())?;
     let price = yes_token.price?;
 
     Some(Ticker {

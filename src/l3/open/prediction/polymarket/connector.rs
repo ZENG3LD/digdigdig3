@@ -36,6 +36,7 @@ use super::parser::{
     PolymarketParser, ClobMarket, PolyMarket, PolyOrderBook, PolyMidpoint,
     PolyEvent,
     clob_market_to_symbol_info, clob_market_to_ticker,
+    poly_market_to_symbol_info,
     price_history_to_klines, poly_orderbook_to_v5,
     interval_to_ms,
 };
@@ -284,20 +285,39 @@ impl PolymarketConnector {
         PolymarketParser::parse_gamma_markets(&response)
     }
 
-    /// Get YES token ID for a condition_id by fetching market details
+    /// Get the primary token ID for a condition_id by fetching market details.
+    ///
+    /// Prefers the "Yes" outcome token. Falls back to the first available token
+    /// for markets that use non-binary outcome names (e.g. team names, candidates).
     async fn get_yes_token_id(&self, condition_id: &str) -> ExchangeResult<String> {
         let market = self.get_market(condition_id).await?;
-        market
+        // Prefer "Yes" outcome; fall back to first token for non-binary markets.
+        let token = market
             .tokens
             .iter()
             .find(|t| t.outcome == "Yes")
-            .map(|t| t.token_id.clone())
+            .or_else(|| market.tokens.first())
             .ok_or_else(|| {
                 ExchangeError::Parse(format!(
-                    "No YES token found for condition_id {}",
+                    "No tokens found for condition_id {}",
                     condition_id
                 ))
-            })
+            })?;
+        Ok(token.token_id.clone())
+    }
+
+    /// Extract identifier from symbol, lowercased.
+    ///
+    /// Polymarket identifiers (condition_id, token_id) are hex strings that
+    /// must be lowercase for the CLOB API. `Symbol::new` uppercases `base`,
+    /// so we lowercase the result here regardless of source.
+    fn symbol_id<'a>(&self, symbol: &'a Symbol) -> std::borrow::Cow<'a, str> {
+        let s = symbol.raw().unwrap_or(&symbol.base);
+        if s.chars().any(|c| c.is_ascii_uppercase()) {
+            std::borrow::Cow::Owned(s.to_lowercase())
+        } else {
+            std::borrow::Cow::Borrowed(s)
+        }
     }
 }
 
@@ -350,22 +370,25 @@ impl MarketData for PolymarketConnector {
         symbol: Symbol,
         _account_type: AccountType,
     ) -> ExchangeResult<Price> {
-        let condition_id = symbol.raw().unwrap_or(&symbol.base);
+        let condition_id = self.symbol_id(&symbol);
+        let condition_id = condition_id.as_ref();
 
-        // Get the market to find the YES token ID
+        // Get the market to find the primary token ID.
+        // Prefers "Yes" outcome; falls back to first token for non-binary markets.
         let market = self.get_market(condition_id).await?;
         let yes_token = market
             .tokens
             .iter()
             .find(|t| t.outcome == "Yes")
+            .or_else(|| market.tokens.first())
             .ok_or_else(|| {
                 ExchangeError::Parse(format!(
-                    "No YES token found for market {}",
-                    condition_id
+                    "No tokens found for market {}",
+                    condition_id,
                 ))
             })?;
 
-        // Get last trade price for the YES token
+        // Get last trade price for the primary token
         match self.get_last_trade_price(&yes_token.token_id).await {
             Ok(price) => Ok(price),
             Err(_) => {
@@ -385,7 +408,8 @@ impl MarketData for PolymarketConnector {
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        let condition_id = symbol.raw().unwrap_or(&symbol.base);
+        let condition_id = self.symbol_id(&symbol);
+        let condition_id = condition_id.as_ref();
 
         // Get the YES token ID
         let yes_token_id = self.get_yes_token_id(condition_id).await?;
@@ -409,10 +433,14 @@ impl MarketData for PolymarketConnector {
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let input = symbol.raw().unwrap_or(&symbol.base);
+        let input_cow = self.symbol_id(&symbol);
+        let input = input_cow.as_ref();
 
-        // Determine if this looks like a condition_id (0x...) or a token_id
-        let token_id = if input.starts_with("0x") && input.len() == 66 {
+        // Determine if this looks like a condition_id (0x... 66 chars) or a token_id.
+        // A condition_id is 0x + 64 hex chars = 66 chars total.
+        // A token_id is a plain numeric string (up to 78 digits).
+        let token_id = if (input.starts_with("0x") || input.starts_with("0X")) && input.len() == 66
+        {
             // Looks like a condition_id — look up YES token
             self.get_yes_token_id(input).await?
         } else {
@@ -450,7 +478,8 @@ impl MarketData for PolymarketConnector {
         symbol: Symbol,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        let condition_id = symbol.raw().unwrap_or(&symbol.base);
+        let condition_id = self.symbol_id(&symbol);
+        let condition_id = condition_id.as_ref();
         let market = self.get_market(condition_id).await?;
 
         clob_market_to_ticker(&market).ok_or_else(|| {
@@ -463,19 +492,39 @@ impl MarketData for PolymarketConnector {
 
     /// Get all active markets as SymbolInfo
     ///
-    /// Returns up to 500 active markets by default.
+    /// Uses the Gamma API with `active=true&closed=false` filtering to return
+    /// only currently-open markets. Falls back to the CLOB API if Gamma fails.
     async fn get_exchange_info(
         &self,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<SymbolInfo>> {
-        // Fetch active markets from CLOB API
-        let markets = self.get_active_markets(Some(500)).await?;
+        // Gamma API correctly filters active/open markets (CLOB `/markets` pagination
+        // orders by creation date ascending and does not filter closed markets reliably).
+        let gamma_result = self
+            .get_gamma(
+                "/markets",
+                &[("active", "true"), ("closed", "false"), ("limit", "500")],
+            )
+            .await;
 
-        let symbols = markets
-            .iter()
-            .map(|m| clob_market_to_symbol_info(m, account_type))
-            .collect();
-
-        Ok(symbols)
+        match gamma_result {
+            Ok(response) => {
+                let markets = PolymarketParser::parse_gamma_markets(&response)?;
+                let symbols = markets
+                    .iter()
+                    .map(|m| poly_market_to_symbol_info(m, account_type))
+                    .collect();
+                Ok(symbols)
+            }
+            Err(_) => {
+                // Fall back to CLOB API
+                let markets = self.get_active_markets(Some(500)).await?;
+                let symbols = markets
+                    .iter()
+                    .map(|m| clob_market_to_symbol_info(m, account_type))
+                    .collect();
+                Ok(symbols)
+            }
+        }
     }
 }

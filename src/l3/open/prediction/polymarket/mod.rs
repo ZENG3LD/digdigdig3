@@ -72,6 +72,11 @@ mod parser;
 mod connector;
 mod websocket;
 
+#[cfg(test)]
+mod _tests_rest;
+#[cfg(test)]
+mod _tests_websocket;
+
 // Public API
 pub use endpoints::{PolymarketEndpoint, PolymarketEndpoints};
 pub use auth::{PolymarketAuth, PolymarketCredentials};

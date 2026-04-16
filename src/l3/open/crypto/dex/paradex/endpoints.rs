@@ -215,8 +215,14 @@ impl ParadexEndpoint {
 ///
 /// Note: Paradex only supports perpetual futures, no spot trading
 pub fn format_symbol(base: &str, quote: &str, _account_type: AccountType) -> String {
-    // Paradex только perpetuals, всегда формат BASE-QUOTE-PERP
-    format!("{}-{}-PERP", base.to_uppercase(), quote.to_uppercase())
+    // Paradex только perpetuals, всегда формат BASE-QUOTE-PERP.
+    //
+    // Symbol::parse splits on the first '-', so "BTC-USD-PERP" gives
+    // base="BTC", quote="USD-PERP".  Strip any trailing "-PERP" suffix from
+    // quote before appending so we never produce "BTC-USD-PERP-PERP".
+    let quote_clean = quote.to_uppercase();
+    let quote_clean = quote_clean.strip_suffix("-PERP").unwrap_or(&quote_clean);
+    format!("{}-{}-PERP", base.to_uppercase(), quote_clean)
 }
 
 /// Маппинг интервала kline для Paradex API

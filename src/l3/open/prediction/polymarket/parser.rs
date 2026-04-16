@@ -530,7 +530,8 @@ pub struct WsSubscription {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WsBookSnapshot {
     pub event_type: String,
-    pub asset_id: String,
+    #[serde(default)]
+    pub asset_id: Option<String>,
     pub market: String,
     pub bids: Vec<PolyPriceLevel>,
     pub asks: Vec<PolyPriceLevel>,
@@ -541,12 +542,25 @@ pub struct WsBookSnapshot {
 }
 
 /// Incremental price update from WebSocket
+///
+/// Polymarket sends price_change as a single level update with `price`/`size`
+/// fields at the top level, not in a `changes` array.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WsPriceChange {
     pub event_type: String,
-    pub asset_id: String,
-    pub market: String,
+    #[serde(default)]
+    pub asset_id: Option<String>,
+    #[serde(default)]
+    pub market: Option<String>,
+    /// Batch of changes (may be absent — single-level updates use price/size fields)
+    #[serde(default)]
     pub changes: Vec<PolyPriceLevel>,
+    /// Price of the changed level (single-level format)
+    #[serde(default)]
+    pub price: Option<String>,
+    /// Size at this price (single-level format)
+    #[serde(default)]
+    pub size: Option<String>,
     #[serde(default)]
     pub side: Option<String>,
     #[serde(default)]
@@ -557,7 +571,8 @@ pub struct WsPriceChange {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WsLastTradePrice {
     pub event_type: String,
-    pub asset_id: String,
+    #[serde(default)]
+    pub asset_id: Option<String>,
     pub market: String,
     pub price: String,
     #[serde(default)]
@@ -572,7 +587,8 @@ pub struct WsLastTradePrice {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WsTickSizeChange {
     pub event_type: String,
-    pub asset_id: String,
+    #[serde(default)]
+    pub asset_id: Option<String>,
     pub market: String,
     pub old_tick_size: String,
     pub new_tick_size: String,
@@ -586,7 +602,8 @@ pub struct WsTickSizeChange {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WsBestBidAsk {
     pub event_type: String,
-    pub asset_id: String,
+    #[serde(default)]
+    pub asset_id: Option<String>,
     pub market: String,
     pub best_bid: String,
     pub best_ask: String,

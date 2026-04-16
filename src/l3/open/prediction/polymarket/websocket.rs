@@ -416,13 +416,26 @@ impl ClobWebSocket {
 
 /// Parse a WebSocket message JSON string into a WsEvent
 pub fn parse_event(json: &str) -> Result<WsEvent, WsError> {
-    let value: Value =
+    let raw: Value =
         serde_json::from_str(json).map_err(|e| WsError::Parse(e.to_string()))?;
+
+    // Polymarket WS wraps events in a JSON array: [{...}]
+    // Unwrap the first element if it's an array.
+    let value = if let Some(arr) = raw.as_array() {
+        match arr.first() {
+            Some(v) => v.clone(),
+            None => {
+                // Empty array [] — heartbeat/ack
+                return Ok(WsEvent::Unknown(WsUnknownEvent { raw: json.to_string() }));
+            }
+        }
+    } else {
+        raw
+    };
 
     let event_type = match value.get("event_type").and_then(|v| v.as_str()) {
         Some(et) => et,
         None => {
-            // Some messages don't have event_type (acks, heartbeats)
             tracing::debug!("Polymarket WS: message without event_type: {}", json);
             return Ok(WsEvent::Unknown(WsUnknownEvent { raw: json.to_string() }));
         }
@@ -444,6 +457,15 @@ pub fn parse_event(json: &str) -> Result<WsEvent, WsError> {
         "price_change" => {
             let mut change: WsPriceChange = serde_json::from_value(value)
                 .map_err(|e| WsError::Parse(format!("price_change parse: {}", e)))?;
+            // If single-level format (price/size at top level), pack into changes vec
+            if change.changes.is_empty() {
+                if let Some(price) = change.price.take() {
+                    change.changes.push(super::parser::PolyPriceLevel {
+                        price,
+                        size: change.size.take().unwrap_or_default(),
+                    });
+                }
+            }
             for level in &mut change.changes {
                 normalize_price_in_place(&mut level.price);
             }

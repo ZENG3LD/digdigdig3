@@ -54,33 +54,33 @@ use crate::connector_manager::AnyConnector;
 // CONNECTOR IMPORTS - CEX
 // ═══════════════════════════════════════════════════════════════════════════════
 
-use crate::l3::crypto::cex::binance::BinanceConnector;
-use crate::l3::crypto::cex::bybit::BybitConnector;
-use crate::l3::crypto::cex::okx::OkxConnector;
-use crate::l3::crypto::cex::kucoin::KuCoinConnector;
-use crate::l3::crypto::cex::kraken::KrakenConnector;
-use crate::l3::crypto::cex::coinbase::CoinbaseConnector;
-use crate::l3::crypto::cex::gateio::GateioConnector;
-use crate::l3::crypto::cex::bitfinex::BitfinexConnector;
-use crate::l3::crypto::cex::bitstamp::BitstampConnector;
-use crate::l3::crypto::cex::gemini::GeminiConnector;
-use crate::l3::crypto::cex::mexc::MexcConnector;
-use crate::l3::crypto::cex::htx::HtxConnector;
-use crate::l3::crypto::cex::bitget::BitgetConnector;
-use crate::l3::crypto::cex::bingx::BingxConnector;
-use crate::l3::crypto::cex::crypto_com::CryptoComConnector;
-use crate::l3::crypto::cex::upbit::UpbitConnector;
-use crate::l3::crypto::cex::deribit::DeribitConnector;
-use crate::l3::crypto::cex::hyperliquid::HyperliquidConnector;
+use crate::l3::open::crypto::cex::binance::BinanceConnector;
+use crate::l3::open::crypto::cex::bybit::BybitConnector;
+use crate::l3::open::crypto::cex::okx::OkxConnector;
+use crate::l3::open::crypto::cex::kucoin::KuCoinConnector;
+use crate::l3::open::crypto::cex::kraken::KrakenConnector;
+use crate::l3::open::crypto::cex::coinbase::CoinbaseConnector;
+use crate::l3::open::crypto::cex::gateio::GateioConnector;
+use crate::l3::open::crypto::cex::bitfinex::BitfinexConnector;
+use crate::l3::open::crypto::cex::bitstamp::BitstampConnector;
+use crate::l3::open::crypto::cex::gemini::GeminiConnector;
+use crate::l3::open::crypto::cex::mexc::MexcConnector;
+use crate::l3::open::crypto::cex::htx::HtxConnector;
+use crate::l3::open::crypto::cex::bitget::BitgetConnector;
+use crate::l3::open::crypto::cex::bingx::BingxConnector;
+use crate::l3::open::crypto::cex::crypto_com::CryptoComConnector;
+use crate::l3::open::crypto::cex::upbit::UpbitConnector;
+use crate::l3::open::crypto::cex::deribit::DeribitConnector;
+use crate::l3::open::crypto::cex::hyperliquid::HyperliquidConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR IMPORTS - DEX
 // ═══════════════════════════════════════════════════════════════════════════════
 
-use crate::l3::crypto::dex::lighter::LighterConnector;
+use crate::l3::open::crypto::dex::lighter::LighterConnector;
 // Jupiter, Raydium, Uniswap, GMX → extracted to dig2swap crate
-use crate::l3::crypto::dex::paradex::ParadexConnector;
-use crate::l3::crypto::dex::dydx::DydxConnector;
+use crate::l3::open::crypto::dex::paradex::ParadexConnector;
+use crate::l3::open::crypto::dex::dydx::DydxConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR IMPORTS - STOCKS US
@@ -90,13 +90,13 @@ use crate::l2::paid::polygon::PolygonConnector;
 use crate::l1::free::finnhub::FinnhubConnector;
 use crate::l1::paid::tiingo::TiingoConnector;
 use crate::l1::paid::twelvedata::TwelvedataConnector;
-use crate::l3::stocks::us::alpaca::AlpacaConnector;
+use crate::l3::gated::stocks::us::alpaca::AlpacaConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR IMPORTS - STOCKS INDIA
 // ═══════════════════════════════════════════════════════════════════════════════
 
-use crate::l3::stocks::india::dhan::DhanConnector;
+use crate::l3::gated::stocks::india::dhan::DhanConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR IMPORTS - STOCKS OTHER
@@ -109,14 +109,14 @@ use crate::l2::free::moex::MoexConnector;
 // CONNECTOR IMPORTS - FOREX
 // ═══════════════════════════════════════════════════════════════════════════════
 
-use crate::l3::forex::dukascopy::DukascopyConnector;
+use crate::l3::gated::forex::dukascopy::DukascopyConnector;
 use crate::l1::paid::alphavantage::{AlphaVantageConnector, AlphaVantageAuth};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR IMPORTS - PREDICTION
 // ═══════════════════════════════════════════════════════════════════════════════
 
-use crate::l3::prediction::polymarket::PolymarketConnector;
+use crate::l3::open::prediction::polymarket::PolymarketConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR IMPORTS - DATA FEEDS
@@ -754,7 +754,7 @@ impl ConnectorFactory {
                 // Because Polymarket requires a 4th field (passphrase), and standard
                 // Credentials only carries 3, callers should use PolymarketConnector::authenticated()
                 // directly for full auth. Factory provides best-effort mapping.
-                let poly_creds = crate::l3::prediction::polymarket::PolymarketCredentials::new(
+                let poly_creds = crate::l3::open::prediction::polymarket::PolymarketCredentials::new(
                     credentials.api_key.clone(),
                     credentials.api_secret.clone(),
                     credentials.passphrase.clone().unwrap_or_default(),

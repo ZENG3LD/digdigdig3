@@ -2,7 +2,7 @@
 
 Multi-exchange connector library — unified async Rust API for crypto exchanges, stock brokers, forex providers, intelligence feeds, and DEX/on-chain query providers.
 
-**Version:** 0.1.8
+**Version:** 0.1.17
 **Edition:** Rust 2021
 **License:** MIT OR Apache-2.0
 **Repository:** https://github.com/ZENG3LD/digdigdig3
@@ -17,7 +17,7 @@ digdigdig3 is organized around capability levels. Each level describes what a co
 
 | Level | Description | Auth Required | Count |
 |-------|-------------|--------------|-------|
-| 1a | Market data feed — klines, orderbook, ticker, trades | No | 15 CEX + 7 DEX/other |
+| 1a | Market data feed — klines, orderbook, ticker, trades | No | 14 CEX + 7 DEX/other |
 | 1b | Extended data feed — intelligence, aggregators, analytics | No or API key | ~95 |
 | 2 | Authenticated data feed — order history, account info, positions | Yes | ~50 |
 | 3 | Execution — place/cancel orders, manage positions | Yes | ~30 |
@@ -34,14 +34,14 @@ digdigdig3 is organized around capability levels. Each level describes what a co
 [dependencies]
 digdigdig3 = { path = "../digdigdig3" }
 # or
-digdigdig3 = { git = "https://github.com/ZENG3LD/digdigdig3", tag = "v0.1.8" }
+digdigdig3 = { git = "https://github.com/ZENG3LD/digdigdig3", tag = "v0.1.17" }
 ```
 
 With specific feature flags:
 
 ```toml
 [dependencies]
-digdigdig3 = { version = "0.1.8", features = ["grpc", "k256-signing"] }
+digdigdig3 = { version = "0.1.17", features = ["grpc", "k256-signing"] }
 ```
 
 ---
@@ -75,13 +75,11 @@ These connectors implement `ExchangeIdentity` + `MarketData` + `WebSocketConnect
 | BingX | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
 | Crypto.com | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
 | Upbit | Tested | Untested | Untested | N/A | Tested | Tested | Untested | Untested |
-| Phemex | Untested | Untested | Untested | N/A | Untested | Untested | Untested | Untested |
 
 Notes:
 - Gemini supplements WebSocket ticker with a REST poll fallback (15s interval). That REST `get_ticker` call was exercised in production.
 - `get_recent_trades` (REST trades column) is implemented only for Lighter. All other connectors return `UnsupportedOperation` and are marked N/A.
 - WS orderbook and WS klines channels exist in code for most connectors but were never subscribed to in a live session.
-- Phemex: HTTP 403 on WebSocket upgrade from some regions. REST may work. Code retained.
 
 ### Crypto CEX — Disabled
 
@@ -193,7 +191,7 @@ No connector in this category was tested against real credentials. All implement
 
 ### Crypto CEX (auth-required read methods)
 
-All 15 active CEX connectors listed in Level 1a also implement these authenticated read methods:
+All 14 active CEX connectors listed in Level 1a also implement these authenticated read methods:
 
 - `get_open_orders()` — open orders for symbol or all symbols
 - `get_order_history()` — historical orders with filters
@@ -244,7 +242,7 @@ Futu requires the OpenD binary running locally. All methods return `UnsupportedO
 | Bithumb | 26 tests | Disabled (geo-block) |
 | Vertex | 20 tests | Disabled (shut down) |
 
-All 15 active CEX connectors have zero test files. This is the primary quality gap.
+All 14 active CEX connectors have zero test files. This is the primary quality gap.
 
 ---
 
@@ -284,7 +282,6 @@ All CEX connectors and most broker connectors implement:
 | Coinbase | Yes | No | No | No | Yes | No |
 | Gemini | Yes | No | No | No | Yes | No |
 | Upbit | Yes | Yes | No | No | Yes | No |
-| Phemex | Yes | Yes | No | Yes | Yes | Yes |
 
 ### DEX Execution
 
@@ -341,6 +338,55 @@ Chain providers used internally by DEX connectors for transaction signing and qu
 None of these have been tested end-to-end with real transaction submission.
 
 Note: Solana chain interaction (Jupiter, Raydium) is implemented via raw WebSocket + tokio-tungstenite against the Solana RPC — no `solana-sdk` dependency needed.
+
+---
+
+## L2 Orderbook Capabilities
+
+Each exchange declares its L2/orderbook capabilities via `orderbook_capabilities(account_type)`:
+
+```rust
+use digdigdig3::core::traits::WebSocketConnector;
+use digdigdig3::core::types::AccountType;
+
+let ws = BinanceWebSocket::new(None, None);
+let caps = ws.orderbook_capabilities(AccountType::Spot);
+
+println!("WS depths: {:?}", caps.ws_depths);           // [5, 10, 20]
+println!("REST max: {:?}", caps.rest_max_depth);        // Some(5000)
+println!("Snapshot: {}", caps.supports_snapshot);        // true
+println!("Delta: {}", caps.supports_delta);              // true
+println!("Checksum: {:?}", caps.checksum);               // None
+println!("Channels: {}", caps.ws_channels.len());        // 8
+
+// Pick best channel for your needs
+if let Some(ch) = caps.best_channel(Some(20), true) {
+    println!("Use channel: {} (delta={}, depth={:?})", ch.name, !ch.is_snapshot, ch.depth);
+}
+```
+
+### Capabilities per exchange
+
+| Exchange | WS Depths | Checksum | Aggregation | Sequence |
+|----------|-----------|----------|-------------|----------|
+| Binance | 5/10/20 | No | No | U/u (futures: +pu) |
+| Bybit | 1/50/200/1000 | No | No | u field |
+| OKX | 1/5/50/400 | CRC32 top-25 | No | seqId/prevSeqId |
+| Kraken | 10/25/100/500/1000 | CRC32 top-10 | No | No (spot) |
+| KuCoin | 5/50 (snapshot) | No | No | sequence |
+| Coinbase | full book | No | No | sequence |
+| GateIO | 5/10/20/50/100 | No | No | U/u |
+| Bitfinex | 1/25/100/250 | CRC32 top-25 | P0-P4 | optional |
+| Bitget | 1/5/15/full | CRC32 top-25 | No | seqId |
+| HTX | 5/10/20/150/400 | No | step0-step5 | seqNum |
+| MEXC | 5/10/20 | No | No | version |
+| BingX | 5/10/20 | No | No | U/u |
+| Bitstamp | 100 (snap)/full (delta) | No | No | microtimestamp |
+| Gemini | 5/10/20 (Fast API) | No | No | socket_sequence |
+| CryptoCom | 10/50/150 | CRC32 | No | u field |
+| Upbit | 1/5/15/30 | No | KRW only | No |
+| Deribit | 1/10/20 | No | group param | change_id |
+| HyperLiquid | 20 (fixed) | No | nSigFigs | No |
 
 ---
 
@@ -443,7 +489,7 @@ WebSocket base: `src/core/websocket/base_websocket.rs` — handles reconnect, pi
 
 | Method | Connectors |
 |--------|-----------|
-| HMAC-SHA256 | Binance, Bybit, OKX, KuCoin, Gate.io, Bitget, BingX, MEXC, HTX, Crypto.com, Phemex |
+| HMAC-SHA256 | Binance, Bybit, OKX, KuCoin, Gate.io, Bitget, BingX, MEXC, HTX, Crypto.com |
 | HMAC-SHA384 | Gemini |
 | HMAC-SHA512 | Kraken |
 | HMAC + passphrase | OKX, KuCoin, Bitget (additional passphrase layer on top of HMAC) |
@@ -483,7 +529,6 @@ Removed features (extracted to dig2chain): `onchain-solana`, `onchain-bitcoin`, 
 |-----------|-------|--------|
 | Vertex | Exchange shut down 2025-08-14, acquired by Ink Foundation | Permanently disabled. Code retained as reference |
 | Bithumb | SSL handshake timeouts and HTTP 403 geo-blocking | Temporarily disabled. Code complete. Re-enable when access resolves |
-| Phemex | HTTP 403 on WebSocket upgrade from restricted regions | REST may still work. WebSocket removed from live watchlist |
 | GMX | No real-time WebSocket API — websocket.rs does REST polling internally | Removed from live watchlist. REST data works |
 | Paradex | Per-symbol WebSocket attribution is unreliable (exchange uses a global channel) | WebSocket removed from live watchlist. REST works |
 | Jupiter | Klines and orderbook impossible by design (aggregator, no historical data) | Swap APIs (Ultra, Trigger, Recurring) fully wired |
@@ -492,4 +537,4 @@ Removed features (extracted to dig2chain): `onchain-solana`, `onchain-bitcoin`, 
 
 ---
 
-*Audit date: 2026-03-25. On-chain monitoring extracted to dig2chain. Version bumped to 0.1.8.*
+*Audit date: 2026-04-16. On-chain monitoring extracted to dig2chain. Version bumped to 0.1.17.*

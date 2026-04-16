@@ -348,21 +348,27 @@ impl MarketData for GeminiConnector {
         Ok(result)
     }
 
-    fn market_data_capabilities(&self, _account_type: AccountType) -> MarketDataCapabilities {
+    fn market_data_capabilities(&self, account_type: AccountType) -> MarketDataCapabilities {
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
+
         MarketDataCapabilities {
             // Gemini has no dedicated ping endpoint; we use /v1/symbols as health check
             has_ping: true,
+            // Both spot and perpetuals work with /v1/pubticker/{symbol}
             has_price: true,
+            // Both work with /v2/ticker/{symbol}; TickerV2 accepts perp symbols
             has_ticker: true,
             has_orderbook: true,
+            // Both work: spot uses /v2/candles, futures uses /v2/derivatives/candles
             has_klines: true,
-            has_exchange_info: true,
+            // /v1/symbols + /v1/symbols/details is spot-oriented; perpetuals not listed there
+            has_exchange_info: !is_futures,
             // GeminiEndpoint::Trades exists but get_recent_trades is not implemented
             // on the MarketData trait — the inherent endpoint is unused here
             has_recent_trades: false,
-            // Gemini supports: 1m 5m 15m 30m 1h 6h 1d
+            // Both Candles and DerivativeCandles support the same time frames
             supported_intervals: &["1m", "5m", "15m", "30m", "1h", "6h", "1d"],
-            // Gemini returns all available candles per time-frame; no limit param in API
+            // Gemini returns all available candles per time-frame; no limit param in either API
             max_kline_limit: None,
         }
     }
@@ -575,14 +581,16 @@ impl Trading for GeminiConnector {
         GeminiParser::parse_user_trades(&response, filter.end_time)
     }
 
-    fn trading_capabilities(&self, _account_type: AccountType) -> TradingCapabilities {
+    fn trading_capabilities(&self, account_type: AccountType) -> TradingCapabilities {
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
+
         TradingCapabilities {
             has_market_order: true,
             has_limit_order: true,
-            // Gemini has no stop-market (trigger-only) order type
+            // Gemini has no stop-market (trigger-only) order type on either account type
             has_stop_market: false,
-            // Gemini supports "exchange stop limit" via StopLimit arm in place_order
-            has_stop_limit: true,
+            // "exchange stop limit" is a spot-only order type; perpetuals use different flow
+            has_stop_limit: !is_futures,
             // No trailing stop on Gemini REST API
             has_trailing_stop: false,
             // No bracket orders
@@ -596,9 +604,9 @@ impl Trading for GeminiConnector {
             max_batch_size: None,
             // CancelAll trait is implemented via /v1/order/cancel/all
             has_cancel_all: true,
-            // get_user_trades uses /v1/mytrades
+            // get_user_trades uses /v1/mytrades (works for both spot and futures trades)
             has_user_trades: true,
-            // get_order_history also uses /v1/mytrades (past trades)
+            // get_order_history also uses /v1/mytrades
             has_order_history: true,
         }
     }
@@ -634,26 +642,28 @@ impl Account for GeminiConnector {
         GeminiParser::parse_notional_volume_fees(&response, symbol)
     }
 
-    fn account_capabilities(&self, _account_type: AccountType) -> AccountCapabilities {
+    fn account_capabilities(&self, account_type: AccountType) -> AccountCapabilities {
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
+
         AccountCapabilities {
-            // get_balance uses /v1/balances
+            // get_balance uses /v1/balances (works for both)
             has_balances: true,
             // get_account_info is a hardcoded stub with no real API call — reports false.
             has_account_info: false,
-            // get_fees uses /v1/notionalvolume
-            has_fees: true,
+            // get_fees uses /v1/notionalvolume (spot fee tiers; less meaningful for futures)
+            has_fees: !is_futures,
             // No AccountTransfers trait implemented — no internal transfer endpoint
             has_transfers: false,
             // No sub-account management
             has_sub_accounts: false,
-            // CustodialFunds trait is implemented: deposit address + withdraw + transfer history
-            has_deposit_withdraw: true,
+            // Deposit/withdraw is a spot/custody concept; perpetuals are GUSD-settled internally
+            has_deposit_withdraw: !is_futures,
             // MarginAccount exists as an extended method but no Account-level margin trait
             has_margin: false,
             // StakingBalances endpoint exists but no earn/staking Account trait is implemented
             has_earn_staking: false,
-            // FundingPayments is an extended method only, not an Account trait method
-            has_funding_history: false,
+            // /v1/perpetuals/fundingPayment exists and is exposed as get_funding_payments() extended method
+            has_funding_history: is_futures,
             // No ledger / transactions trait implemented
             has_ledger: false,
             // No convert/swap support

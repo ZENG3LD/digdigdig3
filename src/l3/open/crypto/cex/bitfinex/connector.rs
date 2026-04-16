@@ -769,12 +769,17 @@ impl Trading for BitfinexConnector {
     }
 
     fn trading_capabilities(&self, _account_type: AccountType) -> TradingCapabilities {
+        // All order types (Market, Limit, Stop, StopLimit, TrailingStop, PostOnly, IOC, FOK,
+        // Iceberg) work for both Spot and Derivatives. The only Derivatives-only order type is
+        // ReduceOnly, but TradingCapabilities has no has_reduce_only field — the gate is
+        // enforced at runtime in place_order(). Wire format differences (the "EXCHANGE " prefix
+        // for Spot) are handled transparently by order_type_prefix(). No per-account branching.
         TradingCapabilities {
             has_market_order: true,
             has_limit_order: true,
-            has_stop_market: true,  // EXCHANGE STOP / STOP
-            has_stop_limit: true,   // EXCHANGE STOP LIMIT / STOP LIMIT
-            has_trailing_stop: true, // EXCHANGE TRAILING STOP / TRAILING STOP
+            has_stop_market: true,  // "EXCHANGE STOP" (Spot) / "STOP" (Derivatives)
+            has_stop_limit: true,   // "EXCHANGE STOP LIMIT" / "STOP LIMIT"
+            has_trailing_stop: true, // "EXCHANGE TRAILING STOP" / "TRAILING STOP"
             // Bitfinex has no bracket (TP+SL combo) order type.
             has_bracket: false,
             // Bitfinex has no OCO order type.
@@ -857,7 +862,9 @@ impl Account for BitfinexConnector {
         })
     }
 
-    fn account_capabilities(&self, _account_type: AccountType) -> AccountCapabilities {
+    fn account_capabilities(&self, account_type: AccountType) -> AccountCapabilities {
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
+
         AccountCapabilities {
             has_balances: true,
             has_account_info: true,
@@ -869,8 +876,10 @@ impl Account for BitfinexConnector {
             has_margin: false,
             // No earn or staking product endpoints in this connector.
             has_earn_staking: false,
-            has_funding_history: true,  // FundingHistory trait implemented via ledger category 28
-            has_ledger: true,           // AccountLedger trait implemented via LedgerHist endpoint
+            // Funding payments (ledger category 28) are perpetual interest charges on open
+            // derivative positions — not applicable to Spot accounts.
+            has_funding_history: is_futures,
+            has_ledger: true,           // AccountLedger trait works for all account types
             // No coin-to-coin conversion endpoint implemented.
             has_convert: false,
         }

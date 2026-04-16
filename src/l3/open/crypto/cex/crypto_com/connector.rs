@@ -953,7 +953,9 @@ impl Trading for CryptoComConnector {
         CryptoComParser::parse_user_trades(&response)
     }
 
-    fn trading_capabilities(&self, _account_type: AccountType) -> TradingCapabilities {
+    fn trading_capabilities(&self, account_type: AccountType) -> TradingCapabilities {
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
+
         TradingCapabilities {
             has_market_order: true,
             has_limit_order: true,
@@ -965,18 +967,18 @@ impl Trading for CryptoComConnector {
             has_trailing_stop: false,
             // Bracket returns UnsupportedOperation (OTOCO endpoint exists but not in OrderType enum)
             has_bracket: false,
-            // OCO via private/advanced/create-oco (Spot only, returns UnsupportedOperation for Futures)
-            has_oco: true,
-            // AmendOrder trait is implemented
+            // OCO via private/advanced/create-oco — Spot only; place_order explicitly rejects Futures
+            has_oco: !is_futures,
+            // AmendOrder trait is implemented for both
             has_amend: true,
-            // BatchOrders trait is implemented; max 10 per batch
-            has_batch: true,
-            max_batch_size: Some(10),
-            // CancelAll trait is implemented
+            // private/create-order-list supports Spot LIMIT/MARKET batches only; not supported for Futures
+            has_batch: !is_futures,
+            max_batch_size: if is_futures { None } else { Some(10) },
+            // CancelAll trait is implemented for both
             has_cancel_all: true,
-            // get_user_trades is implemented
+            // get_user_trades is implemented for both
             has_user_trades: true,
-            // get_order_history is implemented
+            // get_order_history is implemented for both
             has_order_history: true,
         }
     }
@@ -1114,27 +1116,29 @@ impl Account for CryptoComConnector {
         CryptoComParser::parse_fee_rate(&response)
     }
 
-    fn account_capabilities(&self, _account_type: AccountType) -> AccountCapabilities {
+    fn account_capabilities(&self, account_type: AccountType) -> AccountCapabilities {
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
+
         AccountCapabilities {
-            // get_balance is implemented
+            // get_balance is implemented for both (same private/user-balance endpoint)
             has_balances: true,
-            // get_account_info is implemented
+            // get_account_info is implemented for both
             has_account_info: true,
-            // get_fees is implemented (account-wide and per-instrument)
+            // get_fees is implemented for both (account-wide and per-instrument)
             has_fees: true,
-            // No AccountTransfers trait implemented
+            // No AccountTransfers trait implemented for either
             has_transfers: false,
-            // SubAccounts trait is implemented (create, list, transfer, get_balance)
-            has_sub_accounts: true,
-            // CustodialFunds trait is implemented (deposit address, withdraw, history)
-            has_deposit_withdraw: true,
+            // SubAccounts are master-account level — not meaningful for Futures sub-context
+            has_sub_accounts: !is_futures,
+            // Deposit/withdraw belongs to the master Spot account; not applicable for Futures
+            has_deposit_withdraw: !is_futures,
             // No margin borrowing/repayment endpoints implemented
             has_margin: false,
             // No earn/staking endpoints implemented
             has_earn_staking: false,
-            // No dedicated FundingHistory trait (ledger has FUNDING type but no separate trait)
-            has_funding_history: false,
-            // AccountLedger trait is implemented via private/get-transactions
+            // Funding history is only relevant for Futures positions
+            has_funding_history: is_futures,
+            // AccountLedger trait is implemented for both via private/get-transactions
             has_ledger: true,
             // No coin-to-coin conversion endpoint implemented
             has_convert: false,

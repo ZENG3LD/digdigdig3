@@ -558,15 +558,19 @@ impl MarketData for CoinbaseConnector {
         Ok(symbols)
     }
 
-    fn market_data_capabilities(&self, _account_type: AccountType) -> MarketDataCapabilities {
+    fn market_data_capabilities(&self, account_type: AccountType) -> MarketDataCapabilities {
+        // Coinbase REST API: orderbook and candles are SPOT ONLY.
+        // For futures, get_orderbook() and get_klines() return NotSupported at runtime —
+        // capabilities must reflect this so callers can skip before attempting.
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
         MarketDataCapabilities {
             has_ping: true,
             has_price: true,
             has_ticker: true,
-            // Orderbook is implemented but SPOT ONLY — perpetuals return NotSupported at runtime.
-            has_orderbook: true,
-            // Klines are implemented but SPOT ONLY — same perpetuals restriction as orderbook.
-            has_klines: true,
+            // Orderbook REST endpoint is SPOT ONLY; futures require WebSocket or INTX API.
+            has_orderbook: !is_futures,
+            // Candles REST endpoint is SPOT ONLY; same limitation as orderbook.
+            has_klines: !is_futures,
             has_exchange_info: true,
             // No get_recent_trades() override in the MarketData impl.
             has_recent_trades: false,
@@ -1186,7 +1190,10 @@ impl Account for CoinbaseConnector {
         })
     }
 
-    fn account_capabilities(&self, _account_type: AccountType) -> AccountCapabilities {
+    fn account_capabilities(&self, account_type: AccountType) -> AccountCapabilities {
+        // CustodialFunds (deposit address, withdraw, funds history) uses the v2 API which is
+        // account-based and SPOT ONLY — not available for futures account types.
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
         AccountCapabilities {
             has_balances: true,
             has_account_info: true,
@@ -1195,8 +1202,8 @@ impl Account for CoinbaseConnector {
             has_transfers: false,
             // No SubAccounts trait impl.
             has_sub_accounts: false,
-            // CustodialFunds impl covers deposit address, withdrawal, and funds history.
-            has_deposit_withdraw: true,
+            // v2 custodial deposit/withdraw is SPOT ONLY — not available for futures.
+            has_deposit_withdraw: !is_futures,
             // No margin trading trait impl.
             has_margin: false,
             // No earn/staking trait impl.

@@ -966,31 +966,32 @@ impl Trading for HyperliquidConnector {
         Ok(trades)
     }
 
-    fn trading_capabilities(&self, _account_type: AccountType) -> TradingCapabilities {
+    fn trading_capabilities(&self, account_type: AccountType) -> TradingCapabilities {
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
+
         TradingCapabilities {
             has_market_order: true,
             has_limit_order: true,
-            // StopMarket: implemented as trigger order (tpsl="sl", isMarket=true)
-            has_stop_market: true,
-            // StopLimit: implemented as trigger order (tpsl="sl", isMarket=false)
-            has_stop_limit: true,
-            // TrailingStop: not a native HL order type; falls to UnsupportedOperation
+            // Trigger orders (stop market/limit) are perp-only on Hyperliquid;
+            // the spot order universe doesn't support the tpsl trigger type.
+            has_stop_market: is_futures,
+            has_stop_limit: is_futures,
+            // TrailingStop: not a native HL order type on either account type
             has_trailing_stop: false,
-            // Bracket: not supported on HL
+            // Bracket/OCO: not supported on HL for any account type
             has_bracket: false,
-            // OCO: not supported on HL
             has_oco: false,
-            // AmendOrder trait implemented via native modify action
-            has_amend: true,
-            // BatchOrders trait implemented; HL natively accepts order arrays
+            // Amend (modify) uses perp asset indices via /exchange; not valid for spot assets
+            has_amend: is_futures,
+            // BatchOrders trait implemented; HL natively accepts order arrays for both types
             has_batch: true,
             // max_batch_place_size / max_batch_cancel_size both return 10
             max_batch_size: Some(10),
-            // CancelAll trait implemented (fetch open orders then batch cancel)
+            // CancelAll: fetch open orders then batch cancel — works for both account types
             has_cancel_all: true,
-            // get_user_trades implemented via userFills / userFillsByTime
+            // get_user_trades: userFills / userFillsByTime — works for both (fills are unified)
             has_user_trades: true,
-            // get_order_history implemented via historicalOrders / userFillsByTime
+            // get_order_history: historicalOrders / userFillsByTime — works for both
             has_order_history: true,
         }
     }
@@ -1103,12 +1104,15 @@ impl Account for HyperliquidConnector {
         })
     }
 
-    fn account_capabilities(&self, _account_type: AccountType) -> AccountCapabilities {
+    fn account_capabilities(&self, account_type: AccountType) -> AccountCapabilities {
+        let is_futures = !matches!(account_type, AccountType::Spot | AccountType::Margin);
+
         AccountCapabilities {
             has_balances: true,
             has_account_info: true,
             has_fees: true,
-            // AccountTransfers trait implemented: Spot ↔ Perp USDC via usdClassTransfer
+            // AccountTransfers: usdClassTransfer moves USDC between Spot ↔ Perp.
+            // Available on both sides; the direction is encoded in the transfer request.
             has_transfers: true,
             // No sub-account management on HL
             has_sub_accounts: false,
@@ -1118,8 +1122,9 @@ impl Account for HyperliquidConnector {
             has_margin: false,
             // No earn/staking products on HL
             has_earn_staking: false,
-            // FundingHistory trait implemented via userFunding endpoint
-            has_funding_history: true,
+            // userFunding endpoint returns perp funding payments only;
+            // spot accounts never pay funding rates.
+            has_funding_history: is_futures,
             // No ledger/transaction-log endpoint on HL
             has_ledger: false,
             // No coin-to-coin conversion on HL

@@ -525,6 +525,14 @@ impl MarketData for HtxConnector {
             supported_intervals: &["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1M", "1y"],
             // HTX kline endpoint accepts up to 2000 bars per request.
             max_kline_limit: Some(2000),
+            // HTX WebSocket: market.{symbol}.kline.{period} channel for klines.
+            has_ws_klines: true,
+            // HTX WebSocket: market.{symbol}.trade.detail channel.
+            has_ws_trades: true,
+            // HTX WebSocket: market.{symbol}.depth.step0 channel for orderbook.
+            has_ws_orderbook: true,
+            // HTX WebSocket: market.{symbol}.ticker channel.
+            has_ws_ticker: true,
         }
     }
 }
@@ -1234,6 +1242,8 @@ impl Account for HtxConnector {
             // Ledger endpoint exists (/v2/account/ledger) but no AccountLedger trait implemented.
             has_ledger: false,
             has_convert: false,
+            // HTX connector is spot-only — no futures positions implemented.
+            has_positions: false,
         }
     }
 }

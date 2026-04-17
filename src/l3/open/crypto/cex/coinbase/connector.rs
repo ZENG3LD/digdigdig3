@@ -578,6 +578,11 @@ impl MarketData for CoinbaseConnector {
             supported_intervals: &["1m", "5m", "15m", "30m", "1h", "2h", "6h", "1d"],
             // Coinbase max window is 350 candles (enforced via truncate(l.min(350))).
             max_kline_limit: Some(350),
+            // WS: ticker, level2 (orderbook+delta), market_trades, candles channels supported.
+            has_ws_ticker: true,
+            has_ws_trades: true,
+            has_ws_orderbook: true,
+            has_ws_klines: true,
         }
     }
 }
@@ -1214,6 +1219,9 @@ impl Account for CoinbaseConnector {
             has_ledger: false,
             // No convert/swap trait impl.
             has_convert: false,
+            // Positions trait is implemented but returns NotSupported — Coinbase has no
+            // real futures positions endpoint in the Advanced Trade API.
+            has_positions: false,
         }
     }
 }

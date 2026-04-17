@@ -424,6 +424,14 @@ impl MarketData for KrakenConnector {
             supported_intervals: &["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "15d"],
             // Kraken returns up to 720 candles per OHLC request.
             max_kline_limit: Some(720),
+            // Kraken WebSocket v2: ohlc channel for klines.
+            has_ws_klines: true,
+            // Kraken WebSocket v2: trade channel.
+            has_ws_trades: true,
+            // Kraken WebSocket v2: book channel for orderbook.
+            has_ws_orderbook: true,
+            // Kraken WebSocket v2: ticker channel.
+            has_ws_ticker: true,
         }
     }
 }
@@ -1024,6 +1032,8 @@ impl Account for KrakenConnector {
             has_ledger: !is_futures,
             // No ConvertSwap trait implemented.
             has_convert: false,
+            // Kraken connector is spot/margin only — no futures positions.
+            has_positions: false,
         }
     }
 }

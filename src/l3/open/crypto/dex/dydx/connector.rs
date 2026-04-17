@@ -574,6 +574,10 @@ impl MarketData for DydxConnector {
             has_klines: true,       // GET /v4/candles/perpetualMarkets/{market}
             has_exchange_info: true, // GET /v4/perpetualMarkets (full symbol list)
             has_recent_trades: false, // Trades endpoint exists but not exposed via trait
+            has_ws_klines: true,     // v4_candles channel
+            has_ws_trades: true,     // v4_trades channel
+            has_ws_orderbook: true,  // v4_orderbook channel
+            has_ws_ticker: true,     // v4_markets channel (global market stats)
             supported_intervals: &["1m", "5m", "15m", "30m", "1h", "4h", "1d"],
             // No .min() cap applied in get_klines — limit is passed through as-is.
             max_kline_limit: None,
@@ -727,6 +731,7 @@ impl Account for DydxConnector {
             has_funding_history: true, // FundingHistory trait is implemented
             has_ledger: false,        // no ledger/transaction log endpoint
             has_convert: false,       // no coin conversion endpoint
+            has_positions: true,      // perpetual futures DEX — Positions trait is implemented
         }
     }
 }

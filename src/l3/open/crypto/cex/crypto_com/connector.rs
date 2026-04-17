@@ -358,6 +358,14 @@ impl MarketData for CryptoComConnector {
             ],
             // get_klines hard-caps at .min(300)
             max_kline_limit: Some(300),
+            // WebSocket: candlestick.{interval}.{symbol} channel supported
+            has_ws_klines: true,
+            // WebSocket: trade.{symbol} channel supported
+            has_ws_trades: true,
+            // WebSocket: book.{symbol}.{depth} channel supported
+            has_ws_orderbook: true,
+            // WebSocket: ticker.{symbol} channel supported
+            has_ws_ticker: true,
         }
     }
 }
@@ -1142,6 +1150,8 @@ impl Account for CryptoComConnector {
             has_ledger: true,
             // No coin-to-coin conversion endpoint implemented
             has_convert: false,
+            // Positions trait is implemented; only meaningful for futures account type
+            has_positions: is_futures,
         }
     }
 }

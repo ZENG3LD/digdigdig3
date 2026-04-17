@@ -645,6 +645,10 @@ impl MarketData for BybitConnector {
             has_exchange_info: true,
             // get_recent_trades is a struct method (not part of MarketData trait impl)
             has_recent_trades: false,
+            has_ws_klines: true,
+            has_ws_trades: true,
+            has_ws_orderbook: true,
+            has_ws_ticker: true,
             // map_kline_interval covers: 1m 3m 5m 15m 30m 1h 2h 4h 6h 12h 1d 1w 1M (no 8h/3d)
             supported_intervals: &[
                 "1m", "3m", "5m", "15m", "30m",
@@ -1600,6 +1604,8 @@ impl Account for BybitConnector {
             has_ledger: true,
             // No ConvertSwap trait — no coin conversion endpoints
             has_convert: false,
+            // Positions (GET /v5/position/list) are Futures/Perp only — Spot has no positions.
+            has_positions: is_futures,
         }
     }
 }

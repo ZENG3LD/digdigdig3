@@ -277,6 +277,14 @@ impl MarketData for MoexConnector {
             // MOEX candles endpoint uses date ranges instead of a count limit.
             // No numeric per-request limit is enforced by the API.
             max_kline_limit: None,
+            // MOEX STOMP WebSocket supports kline (candle) streaming
+            has_ws_klines: true,
+            // MOEX STOMP WebSocket supports trade streaming
+            has_ws_trades: true,
+            // MOEX STOMP WebSocket supports orderbook streaming
+            has_ws_orderbook: true,
+            // MOEX STOMP WebSocket supports ticker streaming
+            has_ws_ticker: true,
         }
     }
 

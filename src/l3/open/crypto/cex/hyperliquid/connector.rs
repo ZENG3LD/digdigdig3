@@ -564,6 +564,10 @@ impl MarketData for HyperliquidConnector {
             has_exchange_info: true,
             // get_recent_trades not implemented (InfoType::RecentTrades exists but no method)
             has_recent_trades: false,
+            has_ws_klines: true,     // candle channel
+            has_ws_trades: true,     // trades channel
+            has_ws_orderbook: true,  // l2Book channel
+            has_ws_ticker: true,     // activeAssetCtx channel (24h stats per coin)
             supported_intervals: &[
                 "1m", "3m", "5m", "15m", "30m",
                 "1h", "2h", "4h", "8h", "12h",
@@ -1129,6 +1133,8 @@ impl Account for HyperliquidConnector {
             has_ledger: false,
             // No coin-to-coin conversion on HL
             has_convert: false,
+            // Perpetuals only — spot accounts do not carry margin positions
+            has_positions: is_futures,
         }
     }
 }

@@ -778,6 +778,10 @@ impl MarketData for BinanceConnector {
             has_klines: true,
             has_exchange_info: true,
             has_recent_trades: true,
+            has_ws_klines: true,
+            has_ws_trades: true,
+            has_ws_orderbook: true,
+            has_ws_ticker: true,
             supported_intervals: &[
                 "1m", "3m", "5m", "15m", "30m",
                 "1h", "2h", "4h", "6h", "8h", "12h",
@@ -1614,6 +1618,8 @@ impl Account for BinanceConnector {
             has_ledger: is_futures,
             // No coin-to-coin conversion endpoint implemented
             has_convert: false,
+            // Positions (GET /fapi/v2/positionRisk) are Futures-only.
+            has_positions: is_futures,
         }
     }
 }

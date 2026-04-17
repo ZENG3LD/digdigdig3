@@ -408,6 +408,11 @@ impl MarketData for BitfinexConnector {
             ],
             // Bitfinex accepts up to 10 000 candles per request (capped in get_klines with .min(10000)).
             max_kline_limit: Some(10000),
+            // ticker, trades, book, candles channels all available in Bitfinex WS v2.
+            has_ws_ticker: true,
+            has_ws_trades: true,
+            has_ws_orderbook: true,
+            has_ws_klines: true,
         }
     }
 }
@@ -882,6 +887,8 @@ impl Account for BitfinexConnector {
             has_ledger: true,           // AccountLedger trait works for all account types
             // No coin-to-coin conversion endpoint implemented.
             has_convert: false,
+            // Positions trait implemented; applies to margin/futures account types.
+            has_positions: is_futures,
         }
     }
 }

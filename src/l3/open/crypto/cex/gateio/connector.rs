@@ -567,6 +567,14 @@ impl MarketData for GateioConnector {
             ],
             // get_klines caps limit at .min(1000)
             max_kline_limit: Some(1000),
+            // Gate.io WebSocket: {prefix}.candlesticks channel for klines.
+            has_ws_klines: true,
+            // Gate.io WebSocket: {prefix}.trades channel.
+            has_ws_trades: true,
+            // Gate.io WebSocket: {prefix}.order_book channel for orderbook.
+            has_ws_orderbook: true,
+            // Gate.io WebSocket: {prefix}.tickers channel.
+            has_ws_ticker: true,
         }
     }
 }
@@ -1315,6 +1323,8 @@ impl Account for GateioConnector {
             has_ledger: true,
             // No coin conversion endpoint implemented
             has_convert: false,
+            // Futures branch supports positions; Spot/Margin does not.
+            has_positions: is_futures,
         }
     }
 }

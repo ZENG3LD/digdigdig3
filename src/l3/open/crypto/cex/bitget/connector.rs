@@ -547,6 +547,14 @@ impl MarketData for BitgetConnector {
             },
             // Both Spot and Futures accept limit up to 1000.
             max_kline_limit: Some(1000),
+            // Bitget WebSocket: candle{interval} channel for klines.
+            has_ws_klines: true,
+            // Bitget WebSocket: trade channel.
+            has_ws_trades: true,
+            // Bitget WebSocket: books/books5/books15 channels for orderbook.
+            has_ws_orderbook: true,
+            // Bitget WebSocket: ticker channel.
+            has_ws_ticker: true,
         }
     }
 }
@@ -1409,6 +1417,8 @@ impl Account for BitgetConnector {
             has_ledger: !is_futures,
             // No ConvertSwap trait implemented.
             has_convert: false,
+            // Futures branch supports positions; Spot/Margin does not.
+            has_positions: is_futures,
         }
     }
 }

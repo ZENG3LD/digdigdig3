@@ -789,6 +789,10 @@ impl MarketData for KuCoinConnector {
             // get_spot_recent_trades exists as an inherent method but is NOT part of the
             // MarketData trait — the trait method is not overridden, so false here.
             has_recent_trades: false,
+            has_ws_klines: true,
+            has_ws_trades: true,
+            has_ws_orderbook: true,
+            has_ws_ticker: true,
             // Spot: 1m 3m 5m 15m 30m 1h 2h 4h 6h 8h 12h 1d 1w 1M
             // Futures: drops 3m, 6h, 1M (granularity is integer minutes)
             supported_intervals: if is_futures {
@@ -1482,6 +1486,9 @@ impl Account for KuCoinConnector {
             has_ledger: !is_futures,
             // No ConvertSwap trait is implemented.
             has_convert: false,
+            // Positions (GET /api/v1/positions) are Futures-only (KuCoin Futures domain).
+            // Spot has no positions concept.
+            has_positions: is_futures,
         }
     }
 }

@@ -371,6 +371,14 @@ impl MarketData for PolymarketConnector {
             supported_intervals: &["1m", "1h", "6h", "1d", "1w"],
             // get_fidelity() caps at 1000 via .min(1000)
             max_kline_limit: Some(1000),
+            // WS supports orderbook snapshots (book) and delta updates (price_change)
+            has_ws_orderbook: true,
+            // WS provides last_trade_price events
+            has_ws_trades: true,
+            // No kline streaming channel; price history is REST-only
+            has_ws_klines: false,
+            // No 24h ticker stream; ticker data is REST-only
+            has_ws_ticker: false,
         }
     }
 

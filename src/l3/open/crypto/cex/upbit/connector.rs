@@ -488,6 +488,14 @@ impl MarketData for UpbitConnector {
             supported_intervals: &["1m", "3m", "5m", "10m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"],
             // get_klines caps count at .min(200)
             max_kline_limit: Some(200),
+            // WebSocket: kline subscriptions not supported (subscribe() has no Kline branch)
+            has_ws_klines: false,
+            // WebSocket: trade channel supported
+            has_ws_trades: true,
+            // WebSocket: orderbook channel supported
+            has_ws_orderbook: true,
+            // WebSocket: ticker channel supported
+            has_ws_ticker: true,
         }
     }
 }
@@ -759,6 +767,8 @@ impl Account for UpbitConnector {
             // No AccountLedger trait impl
             has_ledger: false,
             has_convert: false,
+            // Spot-only exchange — no positions
+            has_positions: false,
         }
     }
 }

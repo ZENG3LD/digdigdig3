@@ -24,6 +24,14 @@ pub struct MarketDataCapabilities {
     pub has_exchange_info: bool,
     /// Supports recent public trades endpoint
     pub has_recent_trades: bool,
+    /// Supports WebSocket kline/candlestick stream
+    pub has_ws_klines: bool,
+    /// Supports WebSocket trade stream
+    pub has_ws_trades: bool,
+    /// Supports WebSocket orderbook stream
+    pub has_ws_orderbook: bool,
+    /// Supports WebSocket ticker stream
+    pub has_ws_ticker: bool,
     /// Supported kline intervals (e.g. &["1m", "5m", "15m", "1h", "4h", "1d"])
     pub supported_intervals: &'static [&'static str],
     /// Maximum klines per single request. None = unknown/unlimited.
@@ -41,6 +49,10 @@ impl MarketDataCapabilities {
             has_klines: true,
             has_exchange_info: true,
             has_recent_trades: true,
+            has_ws_klines: true,
+            has_ws_trades: true,
+            has_ws_orderbook: true,
+            has_ws_ticker: true,
             supported_intervals: &[
                 "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d",
                 "1w", "1M",
@@ -59,6 +71,10 @@ impl MarketDataCapabilities {
             has_klines: true,
             has_exchange_info: true,
             has_recent_trades: false,
+            has_ws_klines: false,
+            has_ws_trades: false,
+            has_ws_orderbook: false,
+            has_ws_ticker: false,
             supported_intervals: &[
                 "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d",
                 "1w", "1M",
@@ -77,6 +93,10 @@ impl MarketDataCapabilities {
             has_klines: true,
             has_exchange_info: false,
             has_recent_trades: false,
+            has_ws_klines: false,
+            has_ws_trades: false,
+            has_ws_orderbook: false,
+            has_ws_ticker: false,
             supported_intervals: &["1d"],
             max_kline_limit: Some(100),
         }
@@ -92,6 +112,10 @@ impl MarketDataCapabilities {
             has_klines: false,
             has_exchange_info: false,
             has_recent_trades: false,
+            has_ws_klines: false,
+            has_ws_trades: false,
+            has_ws_orderbook: false,
+            has_ws_ticker: false,
             supported_intervals: &[],
             max_kline_limit: None,
         }
@@ -107,6 +131,10 @@ impl MarketDataCapabilities {
             has_klines: true,
             has_exchange_info: true,
             has_recent_trades: true,
+            has_ws_klines: true,
+            has_ws_trades: true,
+            has_ws_orderbook: true,
+            has_ws_ticker: true,
             supported_intervals: &[
                 "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d",
                 "1w", "1M",
@@ -522,6 +550,8 @@ pub struct AccountCapabilities {
     pub has_ledger: bool,
     /// Supports instant coin-to-coin conversion (swap)
     pub has_convert: bool,
+    /// Supports fetching open positions (futures/perp)
+    pub has_positions: bool,
 }
 
 impl AccountCapabilities {
@@ -539,6 +569,7 @@ impl AccountCapabilities {
             has_funding_history: true,
             has_ledger: true,
             has_convert: false,
+            has_positions: true,
         }
     }
 
@@ -556,6 +587,7 @@ impl AccountCapabilities {
             has_funding_history: false,
             has_ledger: false,
             has_convert: false,
+            has_positions: false,
         }
     }
 
@@ -573,6 +605,7 @@ impl AccountCapabilities {
             has_funding_history: false,
             has_ledger: false,
             has_convert: false,
+            has_positions: false,
         }
     }
 
@@ -590,6 +623,7 @@ impl AccountCapabilities {
             has_funding_history: true,
             has_ledger: true,
             has_convert: true,
+            has_positions: true,
         }
     }
 }

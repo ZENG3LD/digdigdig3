@@ -464,6 +464,12 @@ impl MarketData for BitstampConnector {
             ],
             // Bitstamp OHLC endpoint accepts `limit` up to 1000.
             max_kline_limit: Some(1000),
+            // live_trades channel emits Ticker events; diff_order_book emits OrderbookDelta.
+            has_ws_ticker: true,
+            has_ws_trades: true,
+            has_ws_orderbook: true,
+            // Bitstamp WebSocket has no candle/kline channel.
+            has_ws_klines: false,
         }
     }
 }
@@ -734,6 +740,8 @@ impl Account for BitstampConnector {
             // AccountLedger trait is implemented via POST /api/v2/user_transactions/.
             has_ledger: true,
             has_convert: false,
+            // Bitstamp is spot-only — no futures positions.
+            has_positions: false,
         }
     }
 }

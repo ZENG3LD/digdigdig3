@@ -382,6 +382,10 @@ impl MarketData for LighterConnector {
             has_klines: true,         // GET /candles
             has_exchange_info: true,  // static market mapping
             has_recent_trades: false, // get_recent_trades is connector-specific, not in MarketData trait
+            has_ws_klines: false,     // no klines/candles WebSocket channel
+            has_ws_trades: true,      // trade/{market_id} channel
+            has_ws_orderbook: true,   // order_book/{market_id} channel
+            has_ws_ticker: true,      // market_stats/{market_id} channel
             supported_intervals: &["1m", "5m", "15m", "1h", "4h", "1d"],
             max_kline_limit: Some(500),
         }
@@ -756,6 +760,7 @@ impl Account for LighterConnector {
             has_funding_history: false, // funding payments via connector-specific get_position_funding
             has_ledger: false,          // no ledger/transaction log in trait
             has_convert: false,         // not supported
+            has_positions: true,        // perpetual futures DEX
         }
     }
 }

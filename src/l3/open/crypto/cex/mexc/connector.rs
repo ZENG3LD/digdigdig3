@@ -542,6 +542,14 @@ impl MarketData for MexcConnector {
                 supported_intervals: &["1m", "5m", "15m", "30m", "1h", "4h", "8h", "1d", "1w", "1M"],
                 // Futures /api/v1/contract/kline does not accept a limit param
                 max_kline_limit: None,
+                // WebSocket: kline channel exists in endpoints but subscribe() has no kline branch
+                has_ws_klines: false,
+                // WebSocket: aggre.deals channel supported
+                has_ws_trades: true,
+                // WebSocket: aggre.depth channel supported
+                has_ws_orderbook: true,
+                // WebSocket: miniTicker channel supported
+                has_ws_ticker: true,
             }
         } else {
             MarketDataCapabilities {
@@ -556,6 +564,14 @@ impl MarketData for MexcConnector {
                 // MEXC spot intervals: 1m/5m/15m/30m are supported; 1h is mapped to "60m" internally
                 supported_intervals: &["1m", "5m", "15m", "30m", "1h", "4h", "8h", "1d", "1w", "1M"],
                 max_kline_limit: Some(1000),
+                // WebSocket: kline channel exists in endpoints but subscribe() has no kline branch
+                has_ws_klines: false,
+                // WebSocket: aggre.deals channel supported
+                has_ws_trades: true,
+                // WebSocket: aggre.depth channel supported
+                has_ws_orderbook: true,
+                // WebSocket: miniTicker channel supported
+                has_ws_ticker: true,
             }
         }
     }
@@ -1072,6 +1088,8 @@ impl Account for MexcConnector {
                 has_funding_history: false,
                 has_ledger: false,
                 has_convert: false,
+                // Positions trait is not implemented for MEXC
+                has_positions: false,
             }
         } else {
             AccountCapabilities {
@@ -1097,6 +1115,8 @@ impl Account for MexcConnector {
                 has_ledger: false,
                 // No coin-to-coin convert endpoint implemented
                 has_convert: false,
+                // Spot-only account type — no positions
+                has_positions: false,
             }
         }
     }

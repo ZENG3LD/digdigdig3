@@ -563,6 +563,10 @@ impl MarketData for OkxConnector {
             // get_recent_trades is not part of the MarketData trait — OKX has the endpoint
             // (Trades/HistoryTrades) exposed as connector-specific public methods only.
             has_recent_trades: false,
+            has_ws_klines: true,
+            has_ws_trades: true,
+            has_ws_orderbook: true,
+            has_ws_ticker: true,
             // map_kline_interval covers: 1m 3m 5m 15m 30m 1h 2h 4h 6h 12h 1d 1w 1M 3M 6M 1y
             supported_intervals: &[
                 "1m", "3m", "5m", "15m", "30m",
@@ -1126,6 +1130,9 @@ impl Account for OkxConnector {
             has_ledger: true,
             // No ConvertSwap trait — no coin-to-coin conversion endpoints implemented.
             has_convert: false,
+            // Positions (GET /api/v5/account/positions) are meaningful only for Futures/SWAP.
+            // Spot has no leveraged positions concept.
+            has_positions: is_futures,
         }
     }
 

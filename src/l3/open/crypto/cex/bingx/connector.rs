@@ -450,6 +450,14 @@ impl MarketData for BingxConnector {
             ],
             // get_klines enforces .min(1440) before sending to BingX
             max_kline_limit: Some(1440),
+            // WebSocket: @kline_ channel supported (parse_data_message handles it)
+            has_ws_klines: true,
+            // WebSocket: @trade channel supported
+            has_ws_trades: true,
+            // WebSocket: @depth and @depth20 channels supported
+            has_ws_orderbook: true,
+            // WebSocket: @ticker channel supported
+            has_ws_ticker: true,
         }
     }
 }
@@ -962,6 +970,8 @@ impl Account for BingxConnector {
             has_ledger: false,
             // No coin-to-coin convert endpoint implemented
             has_convert: false,
+            // Positions trait is implemented; BingX supports futures positions
+            has_positions: true,
         }
     }
 }

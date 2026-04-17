@@ -370,6 +370,13 @@ impl MarketData for GeminiConnector {
             supported_intervals: &["1m", "5m", "15m", "30m", "1h", "6h", "1d"],
             // Gemini returns all available candles per time-frame; no limit param in either API
             max_kline_limit: None,
+            // l2_updates channel carries orderbook deltas; ticker is approximated via l2 bid/ask.
+            has_ws_ticker: true,
+            has_ws_trades: true,
+            // l2 channel provides full L2 orderbook stream.
+            has_ws_orderbook: true,
+            // candles_{interval} channel provides kline updates.
+            has_ws_klines: true,
         }
     }
 }
@@ -668,6 +675,8 @@ impl Account for GeminiConnector {
             has_ledger: false,
             // No convert/swap support
             has_convert: false,
+            // Positions trait is implemented; relevant for futures account types.
+            has_positions: is_futures,
         }
     }
 }

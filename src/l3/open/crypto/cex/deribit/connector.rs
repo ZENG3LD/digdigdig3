@@ -378,6 +378,10 @@ impl MarketData for DeribitConnector {
             has_klines: true,  // public/get_tradingview_chart_data
             has_exchange_info: true, // public/get_instruments
             has_recent_trades: false, // GetLastTradesByInstrument exists but is not wired to the trait method
+            has_ws_klines: true,     // chart.trades.{instrument}.{resolution}
+            has_ws_trades: true,     // trades.{instrument}.100ms
+            has_ws_orderbook: true,  // book.{instrument}.100ms
+            has_ws_ticker: true,     // ticker.{instrument}.100ms
             supported_intervals: &[
                 "1m", "3m", "5m", "15m", "30m",
                 "1h", "2h", "4h", "6h", "12h", "1d",
@@ -907,6 +911,7 @@ impl Account for DeribitConnector {
             has_funding_history: true, // FundingHistory trait: private/get_transaction_log?query=funding
             has_ledger: true,         // AccountLedger trait: private/get_transaction_log
             has_convert: false,
+            has_positions: true,      // Positions trait: futures/options/perpetuals
         }
     }
 

@@ -661,8 +661,8 @@ impl WebSocketConnector for DeribitWebSocket {
         OrderbookCapabilities {
             ws_depths: &[1, 10, 20],
             ws_default_depth: Some(20),
-            rest_max_depth: None,
-            rest_depth_values: &[],
+            rest_max_depth: Some(10000),
+            rest_depth_values: &[1, 5, 10, 20, 50, 100, 1000, 10000],
             supports_snapshot: true,
             supports_delta: true,
             update_speeds_ms: &[100],

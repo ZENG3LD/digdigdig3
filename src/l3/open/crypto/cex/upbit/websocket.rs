@@ -511,7 +511,7 @@ impl WebSocketConnector for UpbitWebSocket {
             ws_depths: &[1, 5, 15, 30],
             ws_default_depth: Some(30),
             rest_max_depth: Some(30),
-            rest_depth_values: &[1, 5, 15, 30],
+            rest_depth_values: &[],
             supports_snapshot: true,
             supports_delta: false,
             update_speeds_ms: &[],

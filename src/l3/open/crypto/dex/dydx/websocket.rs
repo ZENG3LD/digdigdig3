@@ -676,7 +676,7 @@ impl WebSocketConnector for DydxWebSocket {
         OrderbookCapabilities {
             ws_depths: &[],
             ws_default_depth: None,
-            rest_max_depth: Some(100),
+            rest_max_depth: None,
             rest_depth_values: &[],
             supports_snapshot: true,
             supports_delta: true,

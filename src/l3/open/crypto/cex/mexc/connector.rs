@@ -598,14 +598,14 @@ impl MarketData for MexcConnector {
                 has_klines: true,
                 // get_exchange_info parses spot symbols only; futures uses /api/v1/contract/detail
                 has_exchange_info: false,
-                // GET /api/v1/contract/deals/{symbol} exists as extended method, not trait method
-                has_recent_trades: false,
+                // GET /api/v1/contract/deals/{symbol} is implemented via get_recent_trades
+                has_recent_trades: true,
                 // Futures kline intervals map to Min1/Min5/.../Month1
                 supported_intervals: &["1m", "5m", "15m", "30m", "1h", "4h", "8h", "1d", "1w", "1M"],
                 // Futures /api/v1/contract/kline does not accept a limit param
                 max_kline_limit: None,
-                // WebSocket: kline channel exists in endpoints but subscribe() has no kline branch
-                has_ws_klines: false,
+                // WebSocket: kline channel supported
+                has_ws_klines: true,
                 // WebSocket: aggre.deals channel supported
                 has_ws_trades: true,
                 // WebSocket: aggre.depth channel supported
@@ -621,13 +621,13 @@ impl MarketData for MexcConnector {
                 has_orderbook: true,
                 has_klines: true,
                 has_exchange_info: true,
-                // get_recent_trades is only an extended struct method, not the MarketData trait method
-                has_recent_trades: false,
+                // get_recent_trades is implemented via the MarketData trait
+                has_recent_trades: true,
                 // MEXC spot intervals: 1m/5m/15m/30m are supported; 1h is mapped to "60m" internally
                 supported_intervals: &["1m", "5m", "15m", "30m", "1h", "4h", "8h", "1d", "1w", "1M"],
                 max_kline_limit: Some(1000),
-                // WebSocket: kline channel exists in endpoints but subscribe() has no kline branch
-                has_ws_klines: false,
+                // WebSocket: kline channel supported
+                has_ws_klines: true,
                 // WebSocket: aggre.deals channel supported
                 has_ws_trades: true,
                 // WebSocket: aggre.depth channel supported

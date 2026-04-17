@@ -463,7 +463,7 @@ impl MarketData for UpbitConnector {
         UpbitParser::parse_price(&response)
     }
 
-    async fn get_orderbook(&self, symbol: Symbol, _depth: Option<u16>, account_type: AccountType) -> ExchangeResult<OrderBook> {
+    async fn get_orderbook(&self, symbol: Symbol, depth: Option<u16>, account_type: AccountType) -> ExchangeResult<OrderBook> {
         let upbit_symbol = if let Some(raw) = symbol.raw() {
             raw.to_string()
         } else {
@@ -471,6 +471,10 @@ impl MarketData for UpbitConnector {
         };
         let mut params = HashMap::new();
         params.insert("markets".to_string(), upbit_symbol);
+        if let Some(n) = depth {
+            let count = n.clamp(1, 30);
+            params.insert("count".to_string(), count.to_string());
+        }
 
         let response = self.get(UpbitEndpoint::Orderbook, params, account_type).await?;
         UpbitParser::parse_orderbook(&response)
@@ -550,8 +554,8 @@ impl MarketData for UpbitConnector {
             supported_intervals: &["1m", "3m", "5m", "10m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"],
             // get_klines caps count at .min(200)
             max_kline_limit: Some(200),
-            // WebSocket: kline subscriptions not supported (subscribe() has no Kline branch)
-            has_ws_klines: false,
+            // WebSocket: kline subscriptions supported
+            has_ws_klines: true,
             // WebSocket: trade channel supported
             has_ws_trades: true,
             // WebSocket: orderbook channel supported

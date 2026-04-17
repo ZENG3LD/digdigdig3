@@ -432,7 +432,7 @@ impl MarketData for LighterConnector {
             has_orderbook: true,      // GET /orderBookOrders
             has_klines: true,         // GET /candles
             has_exchange_info: true,  // static market mapping
-            has_recent_trades: false, // get_recent_trades is connector-specific, not in MarketData trait
+            has_recent_trades: true,  // GET /trades is implemented via get_recent_trades
             has_ws_klines: false,     // no klines/candles WebSocket channel
             has_ws_trades: true,      // trade/{market_id} channel
             has_ws_orderbook: true,   // order_book/{market_id} channel

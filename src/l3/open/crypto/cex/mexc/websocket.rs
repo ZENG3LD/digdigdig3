@@ -546,8 +546,6 @@ impl WebSocketConnector for MexcWebSocket {
 
     fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
         static MEXC_CHANNELS: &[WsBookChannel] = &[
-            WsBookChannel::delta("increase.depth",    None,     None      ),
-            WsBookChannel::snapshot("limit.depth",    20,       1000      ),
             WsBookChannel::delta("aggre.depth@10ms",  None,     Some(10)  ),
             WsBookChannel::delta("aggre.depth@100ms", None,     Some(100) ),
         ];

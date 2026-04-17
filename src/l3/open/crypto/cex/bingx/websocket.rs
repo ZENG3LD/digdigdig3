@@ -783,7 +783,7 @@ impl WebSocketConnector for BingxWebSocket {
             rest_max_depth: None,
             rest_depth_values: &[],
             supports_snapshot: true,
-            supports_delta: true,
+            supports_delta: false,
             update_speeds_ms: &[100],
             default_speed_ms: Some(100),
             ws_channels: &[],

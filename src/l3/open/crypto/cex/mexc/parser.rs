@@ -943,7 +943,17 @@ impl MexcParser {
                 .or_else(|| Self::pb_bytes(data, 315))
                 .ok_or_else(|| ExchangeError::Parse("Missing aggre.depth body (field 313)".into()))?;
             let orderbook = Self::parse_pb_aggre_depth(body, &symbol, timestamp)?;
-            Ok((channel, StreamEvent::OrderbookSnapshot(orderbook)))
+            let delta = crate::core::types::OrderbookDelta {
+                bids: orderbook.bids,
+                asks: orderbook.asks,
+                timestamp: orderbook.timestamp,
+                first_update_id: orderbook.first_update_id,
+                last_update_id: orderbook.last_update_id,
+                prev_update_id: orderbook.prev_update_id,
+                event_time: orderbook.event_time,
+                checksum: orderbook.checksum,
+            };
+            Ok((channel, StreamEvent::OrderbookDelta(delta)))
         } else {
             Err(ExchangeError::Parse(format!("Unsupported protobuf channel: {}", channel)))
         }

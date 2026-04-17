@@ -44,7 +44,7 @@ use crate::core::{
     ExchangeResult, ExchangeError, timestamp_millis,
     AccountType, ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
 };
-use crate::core::types::{WebSocketResult, WebSocketError, OrderBookLevel, OrderbookDelta as OrderbookDeltaData, OrderbookCapabilities, ChecksumInfo, ChecksumAlgorithm};
+use crate::core::types::{WebSocketResult, WebSocketError, OrderBookLevel, OrderbookDelta as OrderbookDeltaData, OrderbookCapabilities};
 use crate::core::traits::WebSocketConnector;
 use super::auth::CryptoComAuth;
 use super::endpoints::{InstrumentType, format_symbol as fmt_symbol};
@@ -815,21 +815,17 @@ impl WebSocketConnector for CryptoComWebSocket {
 
     fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
         OrderbookCapabilities {
-            ws_depths: &[10, 50, 150],
+            ws_depths: &[10, 50],
             ws_default_depth: Some(50),
             rest_max_depth: Some(50),
-            rest_depth_values: &[10, 50, 150],
+            rest_depth_values: &[],
             supports_snapshot: true,
             supports_delta: true,
             update_speeds_ms: &[100, 500],
             default_speed_ms: Some(100),
             ws_channels: &[],
-            checksum: Some(ChecksumInfo {
-                algorithm: ChecksumAlgorithm::Crc32Generic,
-                levels_per_side: 25,
-                opt_in: false,
-            }),
-            has_sequence: true,
+            checksum: None,
+            has_sequence: false,
             has_prev_sequence: false,
             supports_aggregation: false,
             aggregation_levels: &[],

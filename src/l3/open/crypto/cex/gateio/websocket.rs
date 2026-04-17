@@ -746,7 +746,7 @@ impl WebSocketConnector for GateioWebSocket {
         OrderbookCapabilities {
             ws_depths: &[5, 10, 20, 50, 100, 400],
             ws_default_depth: Some(100),
-            rest_max_depth: Some(100),
+            rest_max_depth: Some(1000),
             rest_depth_values: &[],
             supports_snapshot: true,
             supports_delta: true,

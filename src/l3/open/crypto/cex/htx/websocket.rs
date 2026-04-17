@@ -755,7 +755,7 @@ impl WebSocketConnector for HtxWebSocket {
             ws_depths: &[5, 10, 20, 150, 400],
             ws_default_depth: Some(20),
             rest_max_depth: Some(150),
-            rest_depth_values: &[5, 10, 20],
+            rest_depth_values: &[5, 10, 20, 30, 150],
             supports_snapshot: true,
             supports_delta: true,
             update_speeds_ms: &[100],
@@ -763,7 +763,7 @@ impl WebSocketConnector for HtxWebSocket {
             ws_channels: HTX_CHANNELS,
             checksum: None,
             has_sequence: true,
-            has_prev_sequence: false,
+            has_prev_sequence: true,
             supports_aggregation: true,
             aggregation_levels: &["step0", "step1", "step2", "step3", "step4", "step5"],
         }

@@ -1118,7 +1118,7 @@ impl WebSocketConnector for KrakenWebSocket {
             AccountType::Spot => OrderbookCapabilities {
                 ws_depths: &[10, 25, 100, 500, 1000],
                 ws_default_depth: Some(10),
-                rest_max_depth: Some(100),
+                rest_max_depth: Some(500),
                 rest_depth_values: &[],
                 supports_snapshot: true,
                 supports_delta: true,

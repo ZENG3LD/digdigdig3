@@ -49,8 +49,8 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio_tungstenite::{connect_async, tungstenite::{Message, client::IntoClientRequest, http::header}};
 
 use crate::core::types::{
-    AccountType, ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
-    Symbol, Ticker, WebSocketError, WebSocketResult,
+    AccountType, ConnectionStatus, OrderbookCapabilities, StreamEvent, StreamType,
+    SubscriptionRequest, Symbol, Ticker, WebSocketError, WebSocketResult,
 };
 use crate::core::traits::WebSocketConnector;
 
@@ -1169,6 +1169,32 @@ impl WebSocketConnector for MoexWebSocket {
         match self.subscriptions.try_read() {
             Ok(guard) => guard.iter().cloned().collect(),
             Err(_) => Vec::new(),
+        }
+    }
+
+    /// MOEX orderbook capabilities
+    ///
+    /// REST (ISS): ~20 levels per side, no depth parameter, column-array format.
+    /// WS (STOMP): `MXSE.orderbooks` channel delivers full snapshots, no deltas.
+    /// Free tier (DEMO/guest): 15-minute delayed data. Real-time requires paid subscription.
+    /// SEQNUM field present in REST responses.
+    /// No checksum. No aggregation.
+    fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        OrderbookCapabilities {
+            ws_depths: &[20],
+            ws_default_depth: Some(20),
+            rest_max_depth: Some(20),
+            rest_depth_values: &[],
+            supports_snapshot: true,
+            supports_delta: false,
+            update_speeds_ms: &[],
+            default_speed_ms: None,
+            ws_channels: &[],
+            checksum: None,
+            has_sequence: true,
+            has_prev_sequence: false,
+            supports_aggregation: false,
+            aggregation_levels: &[],
         }
     }
 }

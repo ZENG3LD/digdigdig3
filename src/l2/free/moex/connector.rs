@@ -11,6 +11,7 @@ use crate::core::types::{
     Position, Price, Symbol, Ticker, AccountInfo, FundingRate, SymbolInfo,
     OrderRequest, CancelRequest, OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     BalanceQuery, PositionQuery, PositionModification,
+    MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
 use crate::core::traits::{ExchangeIdentity, MarketData, Trading, Account, Positions};
 
@@ -256,6 +257,29 @@ impl MarketData for MoexConnector {
             .map(|_| ())
     }
 
+    fn market_data_capabilities(&self, _account_type: AccountType) -> MarketDataCapabilities {
+        MarketDataCapabilities {
+            has_ping: true,
+            has_price: true,
+            has_ticker: true,
+            // Orderbook endpoint exists but requires a paid real-time subscription.
+            // The REST snapshot is available for authenticated users; we mark it true
+            // since the connector implements the call and returns data when authorized.
+            has_orderbook: true,
+            has_klines: true,
+            has_exchange_info: true,
+            // SecurityTrades endpoint exists in the API but the MarketData trait
+            // method get_recent_trades is not implemented for this connector.
+            has_recent_trades: false,
+            // MOEX ISS candle intervals (integer-minute codes via map_interval):
+            // 1 min, 10 min, 1 hour, 1 day, 1 week, 1 month, 1 quarter.
+            supported_intervals: &["1m", "10m", "1h", "1d", "1w", "1M", "1Q"],
+            // MOEX candles endpoint uses date ranges instead of a count limit.
+            // No numeric per-request limit is enforced by the API.
+            max_kline_limit: None,
+        }
+    }
+
     /// Get exchange info — returns listed securities from MOEX
     ///
     /// Delegates to the same MarketSecurities endpoint used by `get_symbols()`
@@ -342,6 +366,10 @@ impl Trading for MoexConnector {
             "MOEX ISS is a data provider - trading not supported. Use MOEX WebAPI for trading.".to_string()
         ))
     }
+
+    fn trading_capabilities(&self, _account_type: AccountType) -> TradingCapabilities {
+        TradingCapabilities::none()
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -367,6 +395,10 @@ impl Account for MoexConnector {
         Err(ExchangeError::UnsupportedOperation(
             "MOEX ISS is a data provider - account operations not supported. Use MOEX WebAPI or broker API.".to_string()
         ))
+    }
+
+    fn account_capabilities(&self, _account_type: AccountType) -> AccountCapabilities {
+        AccountCapabilities::none()
     }
 }
 

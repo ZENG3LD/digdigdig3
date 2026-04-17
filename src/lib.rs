@@ -65,6 +65,8 @@ pub use core::{
     SymbolInfo,
     // Capabilities
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
+    RateLimitCapabilities, LimitModel,
+    EndpointWeight, RestLimitPool, DecayingLimitConfig, WsLimits,
 
     // WebSocket types
     ConnectionStatus, StreamType, SubscriptionRequest, StreamEvent,

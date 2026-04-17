@@ -10,7 +10,7 @@
 //! - Hyperliquid: ✅
 
 use crate::core::types::{
-    AccountType, ConnectorStats, ExchangeId, ExchangeType,
+    AccountType, ConnectorStats, ExchangeId, ExchangeType, RateLimitCapabilities,
 };
 
 /// Базовая идентификация биржи
@@ -68,5 +68,13 @@ pub trait ExchangeIdentity: Send + Sync {
     /// Override this in connectors that have an `HttpClient` to expose live data.
     fn metrics(&self) -> ConnectorStats {
         ConnectorStats::default()
+    }
+
+    /// Static rate limit capabilities for this exchange.
+    ///
+    /// Returns the compile-time descriptor used to build runtime limiters.
+    /// Default is `permissive()` (unlimited) — override in each connector.
+    fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
+        RateLimitCapabilities::permissive()
     }
 }

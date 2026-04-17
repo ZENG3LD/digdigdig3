@@ -5,7 +5,10 @@
 //! Provides O(1) lookup by ExchangeId and filtering by category/type.
 
 use std::collections::HashMap;
-use crate::core::types::{ExchangeId, ExchangeType};
+use crate::core::types::{
+    ExchangeId, ExchangeType,
+    RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, DecayingLimitConfig,
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SUPPORTING TYPES
@@ -259,94 +262,6 @@ pub enum AuthType {
     None,
 }
 
-/// Classification of rate limiter implementation model
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LimiterModel {
-    /// Simple request counter per window (e.g., OKX 20/2s)
-    SimpleCounter,
-    /// Weight-based budget per window (e.g., Binance 6000w/60s)
-    WeightBased,
-    /// Continuous decay counter (e.g., Kraken Spot, Deribit)
-    DecayingCounter,
-    /// Multiple independent pools (e.g., Upbit)
-    GroupBased,
-    /// No documented limits / unknown
-    Unknown,
-}
-
-/// Description of a single rate limit group/pool
-#[derive(Debug, Clone, Copy)]
-pub struct RateLimitGroup {
-    /// Group name (e.g., "public", "private", "spot", "orders", "CONTRACT")
-    pub name: &'static str,
-    /// Maximum value (requests or weight) per window
-    pub max_value: u32,
-    /// Window duration in seconds
-    pub window_seconds: u32,
-    /// true = weight-based, false = simple count
-    pub is_weight: bool,
-}
-
-/// Rate limiting configuration
-#[derive(Debug, Clone, Copy)]
-pub struct RateLimits {
-    /// Max requests per second (legacy display field)
-    pub requests_per_second: Option<u32>,
-    /// Max requests per minute (legacy display field)
-    pub requests_per_minute: Option<u32>,
-    /// Weight-based limit per minute - Binance-style (legacy display field)
-    pub weight_per_minute: Option<u32>,
-    /// Actual window duration in seconds used by the runtime limiter
-    pub window_seconds: u32,
-    /// What limiter model this exchange uses
-    pub limiter_model: LimiterModel,
-    /// Rate limit groups (empty = single limiter described by legacy fields)
-    pub groups: &'static [RateLimitGroup],
-    /// Whether server returns rate limit headers
-    pub has_server_headers: bool,
-}
-
-impl RateLimits {
-    /// No rate limits defined
-    pub const fn none() -> Self {
-        Self {
-            requests_per_second: None,
-            requests_per_minute: None,
-            weight_per_minute: None,
-            window_seconds: 60,
-            limiter_model: LimiterModel::Unknown,
-            groups: &[],
-            has_server_headers: false,
-        }
-    }
-
-    /// Standard rate limit (SimpleCounter, 60-second window, no server headers)
-    pub const fn standard(rps: u32, rpm: u32) -> Self {
-        Self {
-            requests_per_second: Some(rps),
-            requests_per_minute: Some(rpm),
-            weight_per_minute: None,
-            window_seconds: 60,
-            limiter_model: LimiterModel::SimpleCounter,
-            groups: &[],
-            has_server_headers: false,
-        }
-    }
-
-    /// Weight-based rate limit (Binance-style)
-    pub const fn weight_based(rps: u32, rpm: u32, wpm: u32) -> Self {
-        Self {
-            requests_per_second: Some(rps),
-            requests_per_minute: Some(rpm),
-            weight_per_minute: Some(wpm),
-            window_seconds: 60,
-            limiter_model: LimiterModel::WeightBased,
-            groups: &[],
-            has_server_headers: false,
-        }
-    }
-}
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR METADATA
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -366,8 +281,8 @@ pub struct ConnectorMetadata {
     pub supported_features: Features,
     /// Authentication type
     pub authentication: AuthType,
-    /// Rate limits
-    pub rate_limits: RateLimits,
+    /// Rate limit capabilities
+    pub rate_limits: RateLimitCapabilities,
     /// Base REST API URL
     pub base_url: &'static str,
     /// WebSocket URL (if supported)
@@ -383,44 +298,38 @@ pub struct ConnectorMetadata {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// STATIC RATE LIMIT GROUPS
+// STATIC RATE LIMIT POOLS (for multi-pool exchanges)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-static COINBASE_GROUPS: &[RateLimitGroup] = &[
-    RateLimitGroup { name: "public",  max_value: 10,  window_seconds: 1,  is_weight: false },
-    RateLimitGroup { name: "private", max_value: 30,  window_seconds: 1,  is_weight: false },
+static COINBASE_POOLS: &[RestLimitPool] = &[
+    RestLimitPool { name: "public",  max_budget: 10,  window_seconds: 1,  is_weight: false, has_server_headers: true,  server_header: Some("X-RateLimit-Remaining"), header_reports_used: false },
+    RestLimitPool { name: "private", max_budget: 30,  window_seconds: 1,  is_weight: false, has_server_headers: true,  server_header: Some("X-RateLimit-Remaining"), header_reports_used: false },
 ];
 
-static GATEIO_GROUPS: &[RateLimitGroup] = &[
-    RateLimitGroup { name: "spot",    max_value: 200, window_seconds: 10, is_weight: false },
-    RateLimitGroup { name: "futures", max_value: 200, window_seconds: 10, is_weight: false },
+static GATEIO_POOLS: &[RestLimitPool] = &[
+    RestLimitPool { name: "spot",    max_budget: 200, window_seconds: 10, is_weight: false, has_server_headers: true,  server_header: Some("X-Gate-RateLimit-Remaining"), header_reports_used: false },
+    RestLimitPool { name: "futures", max_budget: 200, window_seconds: 10, is_weight: false, has_server_headers: true,  server_header: Some("X-Gate-RateLimit-Remaining"), header_reports_used: false },
 ];
 
-static HTX_GROUPS: &[RateLimitGroup] = &[
-    RateLimitGroup { name: "spot_pub", max_value: 100, window_seconds: 10, is_weight: false },
+static HTX_POOLS: &[RestLimitPool] = &[
+    RestLimitPool { name: "spot_pub", max_budget: 100, window_seconds: 10, is_weight: true, has_server_headers: true, server_header: Some("X-RateLimit-Used"), header_reports_used: true },
 ];
 
-static BITGET_GROUPS: &[RateLimitGroup] = &[
-    RateLimitGroup { name: "market",  max_value: 20, window_seconds: 1, is_weight: false },
-    RateLimitGroup { name: "trading", max_value: 10, window_seconds: 1, is_weight: false },
+static BITGET_POOLS: &[RestLimitPool] = &[
+    RestLimitPool { name: "market",  max_budget: 20, window_seconds: 1, is_weight: false, has_server_headers: true, server_header: Some("X-Bapi-Limit"), header_reports_used: true },
+    RestLimitPool { name: "trading", max_budget: 10, window_seconds: 1, is_weight: false, has_server_headers: true, server_header: Some("X-Bapi-Limit"), header_reports_used: true },
 ];
 
-static BINGX_GROUPS: &[RateLimitGroup] = &[
-    RateLimitGroup { name: "market", max_value: 100, window_seconds: 10, is_weight: false },
+static UPBIT_POOLS: &[RestLimitPool] = &[
+    RestLimitPool { name: "market",  max_budget: 10, window_seconds: 1, is_weight: false, has_server_headers: true, server_header: Some("Remaining-Req"), header_reports_used: false },
+    RestLimitPool { name: "account", max_budget: 30, window_seconds: 1, is_weight: false, has_server_headers: true, server_header: Some("Remaining-Req"), header_reports_used: false },
+    RestLimitPool { name: "order",   max_budget: 8,  window_seconds: 1, is_weight: false, has_server_headers: true, server_header: Some("Remaining-Req"), header_reports_used: false },
 ];
 
-
-static UPBIT_GROUPS: &[RateLimitGroup] = &[
-    RateLimitGroup { name: "market",  max_value: 10, window_seconds: 1, is_weight: false },
-    RateLimitGroup { name: "account", max_value: 30, window_seconds: 1, is_weight: false },
-    RateLimitGroup { name: "order",   max_value: 8,  window_seconds: 1, is_weight: false },
+static GEMINI_POOLS: &[RestLimitPool] = &[
+    RestLimitPool { name: "public",  max_budget: 120, window_seconds: 60, is_weight: false, has_server_headers: false, server_header: None, header_reports_used: false },
+    RestLimitPool { name: "private", max_budget: 600, window_seconds: 60, is_weight: false, has_server_headers: false, server_header: None, header_reports_used: false },
 ];
-
-static GEMINI_GROUPS: &[RateLimitGroup] = &[
-    RateLimitGroup { name: "public",  max_value: 120, window_seconds: 60, is_weight: false },
-    RateLimitGroup { name: "private", max_value: 600, window_seconds: 60, is_weight: false },
-];
-
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // STATIC METADATA ARRAY
@@ -460,14 +369,25 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
             copy_trading: false,
         },
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits {
-            requests_per_second: Some(10),
-            requests_per_minute: Some(1200),
-            weight_per_minute: Some(6000),
-            window_seconds: 60,
-            limiter_model: LimiterModel::WeightBased,
-            groups: &[],
-            has_server_headers: true,
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Weight,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 6000,
+                window_seconds: 60,
+                is_weight: true,
+                has_server_headers: true,
+                server_header: Some("X-MBX-USED-WEIGHT-1M"),
+                header_reports_used: true,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits {
+                max_connections: None,
+                max_subs_per_conn: None,
+                max_msg_per_sec: Some(5),
+                max_streams_per_conn: Some(1024),
+            },
         },
         base_url: "https://api.binance.com",
         websocket_url: Some("wss://stream.binance.com:9443"),
@@ -504,14 +424,20 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
             copy_trading: false,
         },
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits {
-            requests_per_second: None,
-            requests_per_minute: Some(120),
-            weight_per_minute: None,
-            window_seconds: 5,
-            limiter_model: LimiterModel::SimpleCounter,
-            groups: &[],
-            has_server_headers: true,
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Simple,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 600,
+                window_seconds: 5,
+                is_weight: false,
+                has_server_headers: true,
+                server_header: Some("X-Bapi-Limit-Status"),
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits::unlimited(),
         },
         base_url: "https://api.bybit.com",
         websocket_url: Some("wss://stream.bybit.com/v5/public/spot"),
@@ -548,14 +474,20 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
             copy_trading: false,
         },
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits {
-            requests_per_second: Some(10),
-            requests_per_minute: Some(600),
-            weight_per_minute: None,
-            window_seconds: 2,
-            limiter_model: LimiterModel::SimpleCounter,
-            groups: &[],
-            has_server_headers: false,
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Simple,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 40,
+                window_seconds: 2,
+                is_weight: false,
+                has_server_headers: false,
+                server_header: None,
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits::unlimited(),
         },
         base_url: "https://www.okx.com",
         websocket_url: Some("wss://ws.okx.com:8443/ws/v5/public"),
@@ -592,14 +524,25 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
             copy_trading: false,
         },
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits {
-            requests_per_second: None,
-            requests_per_minute: Some(120),
-            weight_per_minute: Some(4000),
-            window_seconds: 30,
-            limiter_model: LimiterModel::WeightBased,
-            groups: &[],
-            has_server_headers: true,
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Weight,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 4000,
+                window_seconds: 30,
+                is_weight: true,
+                has_server_headers: true,
+                server_header: Some("X-RateLimit-Used"),
+                header_reports_used: true,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits {
+                max_connections: Some(800),
+                max_subs_per_conn: Some(300),
+                max_msg_per_sec: Some(10),
+                max_streams_per_conn: None,
+            },
         },
         base_url: "https://api.kucoin.com",
         websocket_url: Some("wss://ws-api-spot.kucoin.com"),
@@ -636,14 +579,21 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
             copy_trading: false,
         },
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits {
-            requests_per_second: Some(1),
-            requests_per_minute: Some(60),
-            weight_per_minute: None,
-            window_seconds: 0,
-            limiter_model: LimiterModel::DecayingCounter,
-            groups: &[],
-            has_server_headers: false,
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Decaying,
+            rest_pools: &[],
+            decaying: Some(DecayingLimitConfig {
+                max_counter: 15.0,
+                decay_rate_per_sec: 0.33,
+                default_cost: 1.0,
+            }),
+            endpoint_weights: &[],
+            ws: WsLimits {
+                max_connections: Some(150),
+                max_subs_per_conn: None,
+                max_msg_per_sec: None,
+                max_streams_per_conn: None,
+            },
         },
         base_url: "https://api.kraken.com",
         websocket_url: Some("wss://ws.kraken.com"),
@@ -680,14 +630,17 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
             copy_trading: false,
         },
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits {
-            requests_per_second: Some(10),
-            requests_per_minute: Some(600),
-            weight_per_minute: None,
-            window_seconds: 1,
-            limiter_model: LimiterModel::SimpleCounter,
-            groups: COINBASE_GROUPS,
-            has_server_headers: true,
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Group,
+            rest_pools: COINBASE_POOLS,
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits {
+                max_connections: None,
+                max_subs_per_conn: None,
+                max_msg_per_sec: Some(8),
+                max_streams_per_conn: None,
+            },
         },
         base_url: "https://api.coinbase.com",
         websocket_url: Some("wss://ws-feed.exchange.coinbase.com"),
@@ -724,14 +677,12 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
             copy_trading: false,
         },
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits {
-            requests_per_second: None,
-            requests_per_minute: Some(1200),
-            weight_per_minute: None,
-            window_seconds: 10,
-            limiter_model: LimiterModel::SimpleCounter,
-            groups: GATEIO_GROUPS,
-            has_server_headers: true,
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Group,
+            rest_pools: GATEIO_POOLS,
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits::unlimited(),
         },
         base_url: "https://api.gateio.ws",
         websocket_url: Some("wss://api.gateio.ws/ws/v4/"),
@@ -768,14 +719,25 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
             copy_trading: false,
         },
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits {
-            requests_per_second: None,
-            requests_per_minute: Some(90),
-            weight_per_minute: None,
-            window_seconds: 60,
-            limiter_model: LimiterModel::SimpleCounter,
-            groups: &[],
-            has_server_headers: false,
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Simple,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 90,
+                window_seconds: 60,
+                is_weight: false,
+                has_server_headers: false,
+                server_header: None,
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits {
+                max_connections: None,
+                max_subs_per_conn: Some(30),
+                max_msg_per_sec: None,
+                max_streams_per_conn: None,
+            },
         },
         base_url: "https://api-pub.bitfinex.com",
         websocket_url: Some("wss://api-pub.bitfinex.com/ws/2"),
@@ -812,14 +774,20 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
             copy_trading: false,
         },
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits {
-            requests_per_second: Some(10),
-            requests_per_minute: Some(600),
-            weight_per_minute: None,
-            window_seconds: 1,
-            limiter_model: LimiterModel::SimpleCounter,
-            groups: &[],
-            has_server_headers: false,
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Simple,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 400,
+                window_seconds: 1,
+                is_weight: false,
+                has_server_headers: false,
+                server_header: None,
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits::unlimited(),
         },
         base_url: "https://www.bitstamp.net",
         websocket_url: Some("wss://ws.bitstamp.net"),
@@ -856,14 +824,12 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
             copy_trading: false,
         },
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits {
-            requests_per_second: None,
-            requests_per_minute: Some(120),
-            weight_per_minute: None,
-            window_seconds: 60,
-            limiter_model: LimiterModel::SimpleCounter,
-            groups: GEMINI_GROUPS,
-            has_server_headers: false,
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Group,
+            rest_pools: GEMINI_POOLS,
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits::unlimited(),
         },
         base_url: "https://api.gemini.com",
         websocket_url: Some("wss://api.gemini.com/v1/marketdata"),
@@ -900,14 +866,25 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
             copy_trading: false,
         },
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits {
-            requests_per_second: None,
-            requests_per_minute: Some(1200),
-            weight_per_minute: Some(7200),
-            window_seconds: 10,
-            limiter_model: LimiterModel::WeightBased,
-            groups: &[],
-            has_server_headers: true,
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Weight,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 500,
+                window_seconds: 10,
+                is_weight: true,
+                has_server_headers: true,
+                server_header: Some("X-MBX-USED-WEIGHT"),
+                header_reports_used: true,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits {
+                max_connections: None,
+                max_subs_per_conn: Some(30),
+                max_msg_per_sec: Some(100),
+                max_streams_per_conn: None,
+            },
         },
         base_url: "https://api.mexc.com",
         websocket_url: Some("wss://wbs.mexc.com/ws"),
@@ -944,14 +921,12 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
             copy_trading: false,
         },
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits {
-            requests_per_second: None,
-            requests_per_minute: Some(600),
-            weight_per_minute: None,
-            window_seconds: 10,
-            limiter_model: LimiterModel::SimpleCounter,
-            groups: HTX_GROUPS,
-            has_server_headers: true,
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Group,
+            rest_pools: HTX_POOLS,
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits::unlimited(),
         },
         base_url: "https://api.huobi.pro",
         websocket_url: Some("wss://api.huobi.pro/ws"),
@@ -988,14 +963,17 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
             copy_trading: false,
         },
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits {
-            requests_per_second: Some(20),
-            requests_per_minute: Some(1200),
-            weight_per_minute: None,
-            window_seconds: 1,
-            limiter_model: LimiterModel::SimpleCounter,
-            groups: BITGET_GROUPS,
-            has_server_headers: true,
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Group,
+            rest_pools: BITGET_POOLS,
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits {
+                max_connections: None,
+                max_subs_per_conn: Some(1000),
+                max_msg_per_sec: None,
+                max_streams_per_conn: None,
+            },
         },
         base_url: "https://api.bitget.com",
         websocket_url: Some("wss://ws.bitget.com/v2/ws/public"),
@@ -1032,14 +1010,25 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
             copy_trading: false,
         },
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits {
-            requests_per_second: None,
-            requests_per_minute: Some(600),
-            weight_per_minute: None,
-            window_seconds: 10,
-            limiter_model: LimiterModel::SimpleCounter,
-            groups: BINGX_GROUPS,
-            has_server_headers: false,
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Simple,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 500,
+                window_seconds: 10,
+                is_weight: false,
+                has_server_headers: false,
+                server_header: None,
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits {
+                max_connections: None,
+                max_subs_per_conn: Some(200),
+                max_msg_per_sec: None,
+                max_streams_per_conn: None,
+            },
         },
         base_url: "https://open-api.bingx.com",
         websocket_url: Some("wss://open-api-ws.bingx.com/market"),
@@ -1076,14 +1065,25 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
             copy_trading: false,
         },
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits {
-            requests_per_second: Some(3),
-            requests_per_minute: Some(180),
-            weight_per_minute: None,
-            window_seconds: 1,
-            limiter_model: LimiterModel::SimpleCounter,
-            groups: &[],
-            has_server_headers: false,
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Simple,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 100,
+                window_seconds: 1,
+                is_weight: false,
+                has_server_headers: false,
+                server_header: None,
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits {
+                max_connections: None,
+                max_subs_per_conn: Some(400),
+                max_msg_per_sec: Some(100),
+                max_streams_per_conn: None,
+            },
         },
         base_url: "https://api.crypto.com",
         websocket_url: Some("wss://stream.crypto.com/exchange/v1/market"),
@@ -1120,14 +1120,17 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
             copy_trading: false,
         },
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits {
-            requests_per_second: Some(10),
-            requests_per_minute: Some(600),
-            weight_per_minute: None,
-            window_seconds: 1,
-            limiter_model: LimiterModel::GroupBased,
-            groups: UPBIT_GROUPS,
-            has_server_headers: true,
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Group,
+            rest_pools: UPBIT_POOLS,
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits {
+                max_connections: None,
+                max_subs_per_conn: None,
+                max_msg_per_sec: Some(5),
+                max_streams_per_conn: None,
+            },
         },
         base_url: "https://api.upbit.com",
         websocket_url: Some("wss://api.upbit.com/websocket/v1"),
@@ -1168,14 +1171,21 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
             copy_trading: false,
         },
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits {
-            requests_per_second: Some(20),
-            requests_per_minute: Some(1000),
-            weight_per_minute: None,
-            window_seconds: 0,
-            limiter_model: LimiterModel::DecayingCounter,
-            groups: &[],
-            has_server_headers: false,
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Decaying,
+            rest_pools: &[],
+            decaying: Some(DecayingLimitConfig {
+                max_counter: 50000.0,
+                decay_rate_per_sec: 10000.0,
+                default_cost: 500.0,
+            }),
+            endpoint_weights: &[],
+            ws: WsLimits {
+                max_connections: Some(32),
+                max_subs_per_conn: None,
+                max_msg_per_sec: None,
+                max_streams_per_conn: None,
+            },
         },
         base_url: "https://www.deribit.com",
         websocket_url: Some("wss://www.deribit.com/ws/api/v2"),
@@ -1212,14 +1222,25 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
             copy_trading: false,
         },
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits {
-            requests_per_second: Some(20),
-            requests_per_minute: Some(1200),
-            weight_per_minute: Some(1200),
-            window_seconds: 60,
-            limiter_model: LimiterModel::WeightBased,
-            groups: &[],
-            has_server_headers: false,
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Weight,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 1200,
+                window_seconds: 60,
+                is_weight: true,
+                has_server_headers: false,
+                server_header: None,
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits {
+                max_connections: Some(10),
+                max_subs_per_conn: Some(1000),
+                max_msg_per_sec: None,
+                max_streams_per_conn: None,
+            },
         },
         base_url: "https://api.hyperliquid.xyz",
         websocket_url: Some("wss://api.hyperliquid.xyz/ws"),
@@ -1260,14 +1281,25 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
             copy_trading: false,
         },
         authentication: AuthType::None,
-        rate_limits: RateLimits {
-            requests_per_second: None,
-            requests_per_minute: None,
-            weight_per_minute: Some(10_000),
-            window_seconds: 60,
-            limiter_model: LimiterModel::WeightBased,
-            groups: &[],
-            has_server_headers: false,
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Weight,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 60,
+                window_seconds: 60,
+                is_weight: true,
+                has_server_headers: false,
+                server_header: None,
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits {
+                max_connections: Some(100),
+                max_subs_per_conn: Some(100),
+                max_msg_per_sec: None,
+                max_streams_per_conn: None,
+            },
         },
         base_url: "https://api.lighter.xyz",
         websocket_url: Some("wss://mainnet.zklighter.elliot.ai/stream"),
@@ -1304,14 +1336,25 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
             copy_trading: false,
         },
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits {
-            requests_per_second: None,
-            requests_per_minute: Some(360),
-            weight_per_minute: None,
-            window_seconds: 10,
-            limiter_model: LimiterModel::SimpleCounter,
-            groups: &[],
-            has_server_headers: false,
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Simple,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 100,
+                window_seconds: 10,
+                is_weight: false,
+                has_server_headers: false,
+                server_header: None,
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits {
+                max_connections: None,
+                max_subs_per_conn: Some(32),
+                max_msg_per_sec: None,
+                max_streams_per_conn: None,
+            },
         },
         base_url: "https://api.dydx.exchange",
         websocket_url: Some("wss://api.dydx.exchange/v3/ws"),
@@ -1331,7 +1374,21 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
         category: ConnectorCategory::StockMarketUS,
         supported_features: Features::data_with_ws(),
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits::standard(5, 5),
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Simple,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 5,
+                window_seconds: 60,
+                is_weight: false,
+                has_server_headers: false,
+                server_header: None,
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits::unlimited(),
+        },
         base_url: "https://api.polygon.io",
         websocket_url: Some("wss://socket.polygon.io"),
         documentation_url: Some("https://polygon.io/docs/stocks"),
@@ -1346,7 +1403,21 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
         category: ConnectorCategory::StockMarketUS,
         supported_features: Features::data_with_ws(),
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits::standard(1, 60),
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Simple,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 60,
+                window_seconds: 60,
+                is_weight: false,
+                has_server_headers: false,
+                server_header: None,
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits::unlimited(),
+        },
         base_url: "https://finnhub.io",
         websocket_url: Some("wss://ws.finnhub.io"),
         documentation_url: Some("https://finnhub.io/docs/api"),
@@ -1361,7 +1432,21 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
         category: ConnectorCategory::StockMarketUS,
         supported_features: Features::data_with_ws(),
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits::standard(50, 1000),
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Simple,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 1000,
+                window_seconds: 60,
+                is_weight: false,
+                has_server_headers: false,
+                server_header: None,
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits::unlimited(),
+        },
         base_url: "https://api.tiingo.com",
         websocket_url: Some("wss://api.tiingo.com/iex"),
         documentation_url: Some("https://www.tiingo.com/documentation/general/overview"),
@@ -1376,7 +1461,21 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
         category: ConnectorCategory::StockMarketUS,
         supported_features: Features::data_with_ws(),
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits::standard(8, 800),
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Simple,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 800,
+                window_seconds: 60,
+                is_weight: false,
+                has_server_headers: false,
+                server_header: None,
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits::unlimited(),
+        },
         base_url: "https://api.twelvedata.com",
         websocket_url: Some("wss://ws.twelvedata.com"),
         documentation_url: Some("https://twelvedata.com/docs"),
@@ -1391,7 +1490,21 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
         category: ConnectorCategory::StockMarketUS,
         supported_features: Features::broker(),
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits::standard(3, 200),
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Simple,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 200,
+                window_seconds: 60,
+                is_weight: false,
+                has_server_headers: false,
+                server_header: None,
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits::unlimited(),
+        },
         base_url: "https://api.alpaca.markets",
         websocket_url: Some("wss://stream.data.alpaca.markets/v2"),
         documentation_url: Some("https://docs.alpaca.markets/"),
@@ -1410,7 +1523,21 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
         category: ConnectorCategory::StockMarketIndia,
         supported_features: Features::broker(),
         authentication: AuthType::TOTP,
-        rate_limits: RateLimits::standard(10, 600),
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Simple,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 600,
+                window_seconds: 60,
+                is_weight: false,
+                has_server_headers: false,
+                server_header: None,
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits::unlimited(),
+        },
         base_url: "https://apiconnect.angelbroking.com",
         websocket_url: Some("wss://smartapisocket.angelone.in/smart-stream"),
         documentation_url: Some("https://smartapi.angelbroking.com/docs"),
@@ -1425,7 +1552,21 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
         category: ConnectorCategory::StockMarketIndia,
         supported_features: Features::broker(),
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits::standard(3, 180),
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Simple,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 180,
+                window_seconds: 60,
+                is_weight: false,
+                has_server_headers: false,
+                server_header: None,
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits::unlimited(),
+        },
         base_url: "https://api.kite.trade",
         websocket_url: Some("wss://ws.kite.trade"),
         documentation_url: Some("https://kite.trade/docs/connect/v3/"),
@@ -1440,7 +1581,21 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
         category: ConnectorCategory::StockMarketIndia,
         supported_features: Features::broker(),
         authentication: AuthType::OAuth2,
-        rate_limits: RateLimits::standard(25, 1000),
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Simple,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 1000,
+                window_seconds: 60,
+                is_weight: false,
+                has_server_headers: false,
+                server_header: None,
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits::unlimited(),
+        },
         base_url: "https://api.upstox.com",
         websocket_url: Some("wss://api.upstox.com/v2/feed/market-data-feed"),
         documentation_url: Some("https://upstox.com/developer/api-documentation/"),
@@ -1455,7 +1610,21 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
         category: ConnectorCategory::StockMarketIndia,
         supported_features: Features::broker(),
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits::standard(10, 600),
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Simple,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 600,
+                window_seconds: 60,
+                is_weight: false,
+                has_server_headers: false,
+                server_header: None,
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits::unlimited(),
+        },
         base_url: "https://api.dhan.co",
         websocket_url: Some("wss://api-feed.dhan.co"),
         documentation_url: Some("https://dhanhq.co/docs/v2/"),
@@ -1470,7 +1639,21 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
         category: ConnectorCategory::StockMarketIndia,
         supported_features: Features::broker(),
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits::standard(10, 600),
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Simple,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 600,
+                window_seconds: 60,
+                is_weight: false,
+                has_server_headers: false,
+                server_header: None,
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits::unlimited(),
+        },
         base_url: "https://api-t1.fyers.in",
         websocket_url: Some("wss://api-t1.fyers.in/socket/v2"),
         documentation_url: Some("https://fyers.in/api-documentation/"),
@@ -1489,7 +1672,21 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
         category: ConnectorCategory::StockMarketJapan,
         supported_features: Features::data_only(),
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits::standard(10, 600),
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Simple,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 600,
+                window_seconds: 60,
+                is_weight: false,
+                has_server_headers: false,
+                server_header: None,
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits::unlimited(),
+        },
         base_url: "https://api.jquants.com",
         websocket_url: None,
         documentation_url: Some("https://jpx.gitbook.io/j-quants-en"),
@@ -1508,7 +1705,21 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
         category: ConnectorCategory::StockMarketKorea,
         supported_features: Features::data_only(),
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits::standard(5, 100),
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Simple,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 100,
+                window_seconds: 60,
+                is_weight: false,
+                has_server_headers: false,
+                server_header: None,
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits::unlimited(),
+        },
         base_url: "https://data.krx.co.kr",
         websocket_url: None,
         documentation_url: Some("https://data.krx.co.kr/contents/MDC/MAIN/main/index.cmd"),
@@ -1548,7 +1759,21 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
             copy_trading: false,
         },
         authentication: AuthType::None,
-        rate_limits: RateLimits::standard(10, 600),
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Simple,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 600,
+                window_seconds: 60,
+                is_weight: false,
+                has_server_headers: false,
+                server_header: None,
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits::unlimited(),
+        },
         base_url: "https://iss.moex.com",
         websocket_url: Some("wss://iss.moex.com/infocx/v3/websocket"),
         documentation_url: Some("https://www.moex.com/a2193"),
@@ -1563,7 +1788,21 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
         category: ConnectorCategory::StockMarketRussia,
         supported_features: Features::broker(),
         authentication: AuthType::BearerToken,
-        rate_limits: RateLimits::standard(100, 300),
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Simple,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 300,
+                window_seconds: 60,
+                is_weight: false,
+                has_server_headers: false,
+                server_header: None,
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits::unlimited(),
+        },
         base_url: "https://invest-public-api.tinkoff.ru",
         websocket_url: Some("wss://invest-public-api.tinkoff.ru/ws"),
         documentation_url: Some("https://tinkoff.github.io/investAPI/"),
@@ -1582,7 +1821,21 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
         category: ConnectorCategory::Forex,
         supported_features: Features::broker(),
         authentication: AuthType::BearerToken,
-        rate_limits: RateLimits::standard(10, 120),
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Simple,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 120,
+                window_seconds: 60,
+                is_weight: false,
+                has_server_headers: false,
+                server_header: None,
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits::unlimited(),
+        },
         base_url: "https://api-fxtrade.oanda.com",
         websocket_url: Some("wss://stream-fxtrade.oanda.com"),
         documentation_url: Some("https://developer.oanda.com/rest-live-v20/introduction/"),
@@ -1597,7 +1850,21 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
         category: ConnectorCategory::Forex,
         supported_features: Features::data_only(),
         authentication: AuthType::None,
-        rate_limits: RateLimits::standard(5, 300),
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Simple,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 300,
+                window_seconds: 60,
+                is_weight: false,
+                has_server_headers: false,
+                server_header: None,
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits::unlimited(),
+        },
         base_url: "https://datafeed.dukascopy.com",
         websocket_url: None,
         documentation_url: Some("https://www.dukascopy.com/swiss/english/marketwatch/historical/"),
@@ -1612,7 +1879,21 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
         category: ConnectorCategory::Forex,
         supported_features: Features::data_only(),
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits::standard(1, 5),
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Simple,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 5,
+                window_seconds: 60,
+                is_weight: false,
+                has_server_headers: false,
+                server_header: None,
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits::unlimited(),
+        },
         base_url: "https://www.alphavantage.co",
         websocket_url: None,
         documentation_url: Some("https://www.alphavantage.co/documentation/"),
@@ -1652,7 +1933,21 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
             copy_trading: false,
         },
         authentication: AuthType::ApiKey, // L2 HMAC-SHA256 (optional for public data)
-        rate_limits: RateLimits::standard(10, 500), // ~500 req/min undocumented
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Simple,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 500,
+                window_seconds: 60,
+                is_weight: false,
+                has_server_headers: false,
+                server_header: None,
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits::unlimited(),
+        },
         base_url: "https://clob.polymarket.com",
         websocket_url: Some("wss://ws-subscriptions-clob.polymarket.com/ws/market"),
         documentation_url: Some("https://docs.polymarket.com/"),
@@ -1692,7 +1987,7 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
             copy_trading: false,
         },
         authentication: AuthType::OAuth2,
-        rate_limits: RateLimits::none(),
+        rate_limits: RateLimitCapabilities::unlimited(),
         base_url: "https://localhost:5000/v1/api", // Gateway default, can use https://api.ibkr.com/v1/api for OAuth
         websocket_url: Some("wss://localhost:5000/v1/api/ws"),
         documentation_url: Some("https://www.interactivebrokers.com/api/doc.html"),
@@ -1707,7 +2002,21 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
         category: ConnectorCategory::DataProvider,
         supported_features: Features::data_only(),
         authentication: AuthType::None,
-        rate_limits: RateLimits::standard(5, 100),
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Simple,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 100,
+                window_seconds: 60,
+                is_weight: false,
+                has_server_headers: false,
+                server_header: None,
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits::unlimited(),
+        },
         base_url: "https://query1.finance.yahoo.com",
         websocket_url: None,
         documentation_url: None,
@@ -1722,7 +2031,21 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
         category: ConnectorCategory::DataProvider,
         supported_features: Features::data_with_ws(),
         authentication: AuthType::ApiKey,
-        rate_limits: RateLimits::standard(10, 250000),
+        rate_limits: RateLimitCapabilities {
+            model: LimitModel::Simple,
+            rest_pools: &[RestLimitPool {
+                name: "default",
+                max_budget: 250000,
+                window_seconds: 60,
+                is_weight: false,
+                has_server_headers: false,
+                server_header: None,
+                header_reports_used: false,
+            }],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits::unlimited(),
+        },
         base_url: "https://min-api.cryptocompare.com",
         websocket_url: Some("wss://streamer.cryptocompare.com/v2"),
         documentation_url: Some("https://min-api.cryptocompare.com/documentation"),
@@ -1923,11 +2246,11 @@ mod tests {
         let registry = ConnectorRegistry::new();
 
         let count = registry.iter().count();
-        assert_eq!(count, 43, "iter() should return all 43 connectors");
+        assert_eq!(count, 47, "iter() should return all 47 connectors");
 
         // Verify we can collect into vector
         let all: Vec<_> = registry.iter().collect();
-        assert_eq!(all.len(), 43);
+        assert_eq!(all.len(), 47);
     }
 
     /// Test list_by_category for CryptoExchangeCex (should be 19)
@@ -1950,14 +2273,14 @@ mod tests {
         }
     }
 
-    /// Test list_by_category for CryptoExchangeDex (should be 7)
+    /// Test list_by_category for CryptoExchangeDex
     #[test]
     fn test_registry_list_by_category_dex() {
         let registry = ConnectorRegistry::new();
 
         let dex = registry.list_by_category(ConnectorCategory::CryptoExchangeDex);
 
-        assert_eq!(dex.len(), 3, "Should have exactly 3 DEX connectors");
+        assert_eq!(dex.len(), 2, "Should have exactly 2 DEX connectors");
 
         // Verify all are DEX type
         for meta in &dex {
@@ -2004,7 +2327,7 @@ mod tests {
 
         let trading = registry.list_with_trading();
 
-        // CEX (18) + DEX (3) + Brokers (India 5, US 1, Russia 1, Forex 1, Aggregator 1) = ~29
+        // CEX (18) + DEX (2) + Brokers = many
         assert!(trading.len() >= 20, "Should have at least 20 connectors with trading");
 
         // Verify all have trading enabled
@@ -2136,24 +2459,19 @@ mod tests {
         assert!(!features.websocket);
     }
 
-    /// Test RateLimits::none() preset
+    /// Test RateLimitCapabilities::unlimited() preset
     #[test]
-    fn test_rate_limits_none() {
-        let limits = RateLimits::none();
+    fn test_rate_limit_capabilities_unlimited() {
+        let limits = RateLimitCapabilities::unlimited();
 
-        assert!(limits.requests_per_second.is_none());
-        assert!(limits.requests_per_minute.is_none());
-        assert!(limits.weight_per_minute.is_none());
-    }
-
-    /// Test RateLimits::standard() preset
-    #[test]
-    fn test_rate_limits_standard() {
-        let limits = RateLimits::standard(10, 600);
-
-        assert_eq!(limits.requests_per_second, Some(10));
-        assert_eq!(limits.requests_per_minute, Some(600));
-        assert!(limits.weight_per_minute.is_none());
+        assert_eq!(limits.model, LimitModel::Unlimited);
+        assert!(limits.rest_pools.is_empty());
+        assert!(limits.decaying.is_none());
+        assert!(limits.endpoint_weights.is_empty());
+        assert!(limits.ws.max_connections.is_none());
+        assert!(limits.ws.max_subs_per_conn.is_none());
+        assert!(limits.ws.max_msg_per_sec.is_none());
+        assert!(limits.ws.max_streams_per_conn.is_none());
     }
 
     /// Test that registry lookup is O(1) via HashMap
@@ -2231,7 +2549,7 @@ mod tests {
         assert!(api_key_count >= 30, "Should have at least 30 connectors with API key auth");
 
         // Some should require no auth (DEX, public data)
-        assert!(none_count >= 5, "Should have at least 5 connectors with no auth");
+        assert!(none_count >= 2, "Should have at least 2 connectors with no auth");
 
         // Some brokers use OAuth
         assert!(oauth_count >= 1, "Should have at least 1 connector with OAuth2");

@@ -13,6 +13,8 @@ mod responses;
 pub use capabilities::{
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
     ChecksumAlgorithm, ChecksumInfo, WsBookChannel, OrderbookCapabilities,
+    RateLimitCapabilities, LimitModel,
+    EndpointWeight, RestLimitPool, DecayingLimitConfig, WsLimits,
 };
 pub use common::*;
 pub use market_data::*;

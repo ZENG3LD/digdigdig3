@@ -627,3 +627,180 @@ impl AccountCapabilities {
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RATE LIMIT CAPABILITIES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// REST endpoint weight descriptor.
+///
+/// Covers parameterized endpoints where weight varies by request parameter
+/// (Binance depth-tiered OB is the canonical example).
+#[derive(Debug, Clone, Copy)]
+pub struct EndpointWeight {
+    /// Endpoint logical name (e.g. "depth", "klines", "ticker").
+    pub endpoint: &'static str,
+    /// Weight when no tier matches (flat cost). `None` = varies only by tiers.
+    pub default_weight: Option<u32>,
+    /// Discrete `(param_value, weight)` tiers. Empty = flat cost only.
+    /// For Binance Spot depth: `&[(5, 5), (10, 5), (20, 5), (50, 5), (100, 5), (500, 25), (1000, 50), (5000, 250)]`
+    pub tiers: &'static [(u32, u32)],
+}
+
+impl EndpointWeight {
+    /// Resolve weight for a given parameter value.
+    /// Finds the tier whose `param_value == requested`, falls back to `default_weight`, then to 1.
+    pub const fn resolve(&self, param: u32) -> u32 {
+        let mut i = 0;
+        while i < self.tiers.len() {
+            if self.tiers[i].0 == param {
+                return self.tiers[i].1;
+            }
+            i += 1;
+        }
+        match self.default_weight {
+            Some(w) => w,
+            None => 1,
+        }
+    }
+}
+
+/// REST rate limit pool descriptor.
+#[derive(Debug, Clone, Copy)]
+pub struct RestLimitPool {
+    /// Pool name. Single-pool exchanges use `"default"`.
+    pub name: &'static str,
+    /// Maximum budget per window (weight units or request count).
+    pub max_budget: u32,
+    /// Window duration in seconds.
+    pub window_seconds: u32,
+    /// `true` = weight-based (`WeightRateLimiter`), `false` = count-based (`SimpleRateLimiter`).
+    pub is_weight: bool,
+    /// `true` = exchange sends remaining/used budget in response headers.
+    pub has_server_headers: bool,
+    /// Header name (e.g. `"X-MBX-USED-WEIGHT-1M"`). `None` when no server headers.
+    pub server_header: Option<&'static str>,
+    /// `true` = header reports USED amount (Binance), `false` = REMAINING (most others).
+    pub header_reports_used: bool,
+}
+
+/// Decaying-counter REST limit config (Kraken Spot, Deribit credits).
+#[derive(Debug, Clone, Copy)]
+pub struct DecayingLimitConfig {
+    /// Maximum counter value before blocking.
+    pub max_counter: f64,
+    /// Units per second that decay from the counter.
+    pub decay_rate_per_sec: f64,
+    /// Default cost of a standard request.
+    pub default_cost: f64,
+}
+
+/// Which runtime limiter model this exchange uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LimitModel {
+    /// `SimpleRateLimiter` — flat request count per window.
+    Simple,
+    /// `WeightRateLimiter` — cumulative weight per window.
+    Weight,
+    /// `DecayingRateLimiter` — continuous decay counter.
+    Decaying,
+    /// `GroupRateLimiter` — multiple independent pools.
+    Group,
+    /// No documented REST limits.
+    Unlimited,
+}
+
+/// WebSocket structural limits (not budget-based).
+#[derive(Debug, Clone, Copy)]
+pub struct WsLimits {
+    /// Max simultaneous WS connections per IP. `None` = undocumented.
+    pub max_connections: Option<u32>,
+    /// Max subscriptions per single connection. `None` = unlimited.
+    pub max_subs_per_conn: Option<u32>,
+    /// Max outbound messages per second. `None` = unlimited.
+    pub max_msg_per_sec: Option<u32>,
+    /// Max topic streams per connection (e.g. Binance combined = 1024). `None` = unlimited.
+    pub max_streams_per_conn: Option<u32>,
+}
+
+impl WsLimits {
+    /// No documented limits.
+    pub const fn unlimited() -> Self {
+        Self {
+            max_connections: None,
+            max_subs_per_conn: None,
+            max_msg_per_sec: None,
+            max_streams_per_conn: None,
+        }
+    }
+}
+
+/// Full rate limit capability descriptor for one exchange.
+///
+/// # Design notes
+/// - `Copy` + `const`-constructible — safe to embed in `static`.
+/// - REST pools: `&'static [RestLimitPool]`. Single-pool = one entry.
+/// - `decaying` is `Some` only when `model == LimitModel::Decaying`.
+/// - `endpoint_weights` covers parameterized endpoints. Empty = all cost 1.
+/// - `ws` covers structural WS limits.
+#[derive(Debug, Clone, Copy)]
+pub struct RateLimitCapabilities {
+    /// Runtime limiter model to instantiate.
+    pub model: LimitModel,
+    /// REST budget pools. Single-pool exchanges have one entry.
+    pub rest_pools: &'static [RestLimitPool],
+    /// Decaying counter config. `Some` only when `model == Decaying`.
+    pub decaying: Option<DecayingLimitConfig>,
+    /// Per-endpoint weight overrides. Empty = all endpoints cost 1.
+    pub endpoint_weights: &'static [EndpointWeight],
+    /// WebSocket structural limits.
+    pub ws: WsLimits,
+}
+
+impl RateLimitCapabilities {
+    /// No REST limits enforced. WS unlimited.
+    pub const fn unlimited() -> Self {
+        Self {
+            model: LimitModel::Unlimited,
+            rest_pools: &[],
+            decaying: None,
+            endpoint_weights: &[],
+            ws: WsLimits::unlimited(),
+        }
+    }
+
+    /// Alias for `unlimited()` — used by connectors not yet filled in.
+    pub const fn permissive() -> Self {
+        Self::unlimited()
+    }
+
+    /// Resolve the weight for a named endpoint with a given parameter.
+    /// Returns 1 if no `EndpointWeight` entry matches.
+    pub fn endpoint_weight(&self, endpoint: &str, param: u32) -> u32 {
+        let mut i = 0;
+        while i < self.endpoint_weights.len() {
+            if self.endpoint_weights[i].endpoint.as_bytes() == endpoint.as_bytes() {
+                return self.endpoint_weights[i].resolve(param);
+            }
+            i += 1;
+        }
+        1
+    }
+
+    /// Resolve the default weight for a named endpoint (no parameter).
+    /// Returns 1 if no entry matches.
+    pub fn endpoint_default_weight(&self, endpoint: &str) -> u32 {
+        for ew in self.endpoint_weights {
+            if ew.endpoint == endpoint {
+                return ew.default_weight.unwrap_or(1);
+            }
+        }
+        1
+    }
+}
+
+impl Default for RateLimitCapabilities {
+    fn default() -> Self {
+        Self::permissive()
+    }
+}

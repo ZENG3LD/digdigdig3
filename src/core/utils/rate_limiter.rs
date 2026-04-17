@@ -596,6 +596,234 @@ impl Default for GroupRateLimiter {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// RUNTIME LIMITER — unified enum wrapping the four implementations
+// ═══════════════════════════════════════════════════════════════════════════════
+
+use crate::core::types::{RateLimitCapabilities, LimitModel};
+
+/// Unified runtime limiter — wraps one of the four implementations.
+///
+/// Built once per connector via `RuntimeLimiter::from_caps(&RateLimitCapabilities)`.
+/// Held behind `Arc<Mutex<RuntimeLimiter>>` in the connector struct.
+pub enum RuntimeLimiter {
+    Simple(SimpleRateLimiter),
+    Weight(WeightRateLimiter),
+    Decaying(DecayingRateLimiter),
+    Group(GroupRateLimiter),
+    Unlimited,
+}
+
+impl RuntimeLimiter {
+    /// Build from capabilities. Unknown/Unlimited models return `Unlimited`.
+    pub fn from_caps(caps: &RateLimitCapabilities) -> Self {
+        match caps.model {
+            LimitModel::Unlimited => Self::Unlimited,
+
+            LimitModel::Simple => {
+                if caps.rest_pools.is_empty() {
+                    return Self::Unlimited;
+                }
+                let pool = &caps.rest_pools[0];
+                Self::Simple(SimpleRateLimiter::new(
+                    pool.max_budget,
+                    Duration::from_secs(pool.window_seconds as u64),
+                ))
+            }
+
+            LimitModel::Weight => {
+                if caps.rest_pools.is_empty() {
+                    return Self::Unlimited;
+                }
+                let pool = &caps.rest_pools[0];
+                Self::Weight(WeightRateLimiter::new(
+                    pool.max_budget,
+                    Duration::from_secs(pool.window_seconds as u64),
+                ))
+            }
+
+            LimitModel::Decaying => {
+                if let Some(cfg) = caps.decaying {
+                    Self::Decaying(DecayingRateLimiter::new(cfg.max_counter, cfg.decay_rate_per_sec))
+                } else {
+                    Self::Unlimited
+                }
+            }
+
+            LimitModel::Group => {
+                let mut g = GroupRateLimiter::new();
+                for pool in caps.rest_pools {
+                    g.add_group(
+                        pool.name,
+                        pool.max_budget,
+                        Duration::from_secs(pool.window_seconds as u64),
+                    );
+                }
+                Self::Group(g)
+            }
+        }
+    }
+
+    /// Try to acquire budget. Returns `true` if allowed.
+    pub fn try_acquire(&mut self, group: &str, weight: u32) -> bool {
+        match self {
+            Self::Unlimited => true,
+            Self::Simple(l) => l.try_acquire(),
+            Self::Weight(l) => l.try_acquire(weight),
+            Self::Decaying(l) => l.try_acquire(weight as f64),
+            Self::Group(l) => l.try_acquire(group, weight),
+        }
+    }
+
+    /// Time to wait before `weight` can be acquired.
+    pub fn time_until_ready(&mut self, group: &str, weight: u32) -> Duration {
+        match self {
+            Self::Unlimited => Duration::ZERO,
+            Self::Simple(l) => l.time_until_ready(),
+            Self::Weight(l) => l.time_until_ready(weight),
+            Self::Decaying(l) => l.time_until_ready(weight as f64),
+            Self::Group(l) => l.time_until_ready(group, weight),
+        }
+    }
+
+    /// Sync from server-reported used/remaining value.
+    pub fn update_from_server(&mut self, group: &str, value: u32) {
+        match self {
+            Self::Weight(l) => l.update_from_server(value),
+            Self::Group(l) => l.update_from_server(group, value),
+            Self::Simple(l) => l.update_from_server(value),
+            _ => {}
+        }
+    }
+
+    /// Snapshot: `(used, max)` for the primary pool. For `ConnectorStats`.
+    pub fn primary_stats(&mut self) -> (u32, u32) {
+        match self {
+            Self::Unlimited => (0, 0),
+            Self::Simple(l) => (l.current_count(), l.max_requests()),
+            Self::Weight(l) => (l.current_weight(), l.max_weight()),
+            Self::Decaying(l) => (l.current_level() as u32, l.max_level() as u32),
+            Self::Group(l) => l.primary_stats(),
+        }
+    }
+
+    /// All group stats for `ConnectorStats::rate_groups`.
+    pub fn group_stats(&mut self) -> Vec<(String, u32, u32)> {
+        match self {
+            Self::Group(l) => l
+                .all_stats()
+                .into_iter()
+                .map(|(name, used, max)| (name.to_string(), used, max))
+                .collect(),
+            _ => vec![],
+        }
+    }
+
+    /// Utilization ratio in `[0.0, 1.0]`. Used by threshold monitor.
+    pub fn utilization(&mut self) -> f32 {
+        let (used, max) = self.primary_stats();
+        if max == 0 {
+            return 0.0;
+        }
+        (used as f32 / max as f32).min(1.0)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RATE LIMIT PRESSURE MONITORING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Threshold levels for rate limit pressure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RateLimitPressure {
+    /// < 80% utilization — normal operation.
+    Normal,
+    /// >= 80% — warning; UI shows amber indicator.
+    Warning,
+    /// >= 90% — throttle non-essential; UI shows red indicator.
+    Critical,
+    /// >= 95% — drop non-essential requests, return `RateLimitExceeded`.
+    Throttled,
+}
+
+impl RateLimitPressure {
+    /// Determine pressure level from utilization ratio.
+    pub fn from_utilization(ratio: f32) -> Self {
+        if ratio >= 0.95 {
+            Self::Throttled
+        } else if ratio >= 0.90 {
+            Self::Critical
+        } else if ratio >= 0.80 {
+            Self::Warning
+        } else {
+            Self::Normal
+        }
+    }
+}
+
+/// Lightweight monitor — called inline before every request.
+///
+/// No channels, no background task. Logs once per pressure transition.
+pub struct RateLimitMonitor {
+    last_pressure: RateLimitPressure,
+    exchange_name: &'static str,
+}
+
+impl RateLimitMonitor {
+    pub fn new(exchange_name: &'static str) -> Self {
+        Self {
+            last_pressure: RateLimitPressure::Normal,
+            exchange_name,
+        }
+    }
+
+    /// Evaluate current pressure and return level.
+    /// Logs once when pressure level changes.
+    pub fn check(&mut self, limiter: &mut RuntimeLimiter) -> RateLimitPressure {
+        let ratio = limiter.utilization();
+        let pressure = RateLimitPressure::from_utilization(ratio);
+        if pressure != self.last_pressure {
+            match pressure {
+                RateLimitPressure::Warning => {
+                    tracing::warn!(
+                        exchange = self.exchange_name,
+                        utilization = format!("{:.0}%", ratio * 100.0),
+                        "Rate limit warning: 80%+ budget used"
+                    );
+                }
+                RateLimitPressure::Critical => {
+                    tracing::error!(
+                        exchange = self.exchange_name,
+                        utilization = format!("{:.0}%", ratio * 100.0),
+                        "Rate limit critical: 90%+ budget used — throttling non-essential"
+                    );
+                }
+                RateLimitPressure::Throttled => {
+                    tracing::error!(
+                        exchange = self.exchange_name,
+                        utilization = format!("{:.0}%", ratio * 100.0),
+                        "Rate limit THROTTLED: 95%+ budget used — dropping non-essential requests"
+                    );
+                }
+                RateLimitPressure::Normal => {
+                    tracing::info!(
+                        exchange = self.exchange_name,
+                        utilization = format!("{:.0}%", ratio * 100.0),
+                        "Rate limit pressure eased — back to normal"
+                    );
+                }
+            }
+            self.last_pressure = pressure;
+        }
+        pressure
+    }
+
+    /// Current pressure without re-checking.
+    pub fn current_pressure(&self) -> RateLimitPressure {
+        self.last_pressure
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

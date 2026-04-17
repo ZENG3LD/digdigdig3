@@ -59,7 +59,7 @@ mod factory;
 
 pub use connector::AnyConnector;
 pub use registry::{
-    AuthType, ConnectorCategory, ConnectorMetadata, ConnectorRegistry, Features, RateLimits,
+    AuthType, ConnectorCategory, ConnectorMetadata, ConnectorRegistry, Features,
 };
 pub use pool::{ConnectorPool, ConnectorPoolBuilder};
 pub use aggregator::{BestBidAsk, ConnectorAggregator, ConnectorAggregatorBuilder};

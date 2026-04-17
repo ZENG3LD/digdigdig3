@@ -102,6 +102,9 @@ pub use types::{
     OrderbookCapabilities,
     // Capabilities
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
+    // Rate limit capabilities
+    RateLimitCapabilities, LimitModel,
+    EndpointWeight, RestLimitPool, DecayingLimitConfig, WsLimits,
 };
 
 // Re-exports traits
@@ -124,6 +127,7 @@ pub use utils::{
     encode_base64, encode_hex, encode_hex_lower,
     timestamp_millis, timestamp_seconds, timestamp_iso8601,
     SimpleRateLimiter, WeightRateLimiter,
+    RuntimeLimiter, RateLimitPressure, RateLimitMonitor,
     safe_price, safe_qty, format_price, format_qty,
     PrecisionCache, PrecisionInfo,
 };

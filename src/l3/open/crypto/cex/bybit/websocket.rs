@@ -889,13 +889,19 @@ impl WebSocketConnector for BybitWebSocket {
     fn orderbook_capabilities(&self, account_type: AccountType) -> OrderbookCapabilities {
         static SPOT_CHANNELS: &[WsBookChannel] = &[
             WsBookChannel::snapshot("orderbook.1",    1,    10),
-            WsBookChannel::snapshot("orderbook.50",   50,   20),
-            WsBookChannel::snapshot("orderbook.200",  200,  100),
-            WsBookChannel::snapshot("orderbook.1000", 1000, 200),
+            WsBookChannel::delta("orderbook.50",      Some(50),   Some(20)),
+            WsBookChannel::delta("orderbook.200",     Some(200),  Some(100)),
+            WsBookChannel::delta("orderbook.1000",    Some(1000), Some(200)),
+        ];
+        static LINEAR_CHANNELS: &[WsBookChannel] = &[
+            WsBookChannel::snapshot("orderbook.1",    1,    10),
+            WsBookChannel::delta("orderbook.50",      Some(50),   Some(20)),
+            WsBookChannel::delta("orderbook.200",     Some(200),  Some(100)),
+            WsBookChannel::delta("orderbook.1000",    Some(1000), Some(200)),
         ];
         static OPTION_CHANNELS: &[WsBookChannel] = &[
-            WsBookChannel::snapshot("orderbook.25",  25,  20),
-            WsBookChannel::snapshot("orderbook.100", 100, 100),
+            WsBookChannel::delta("orderbook.25",     Some(25),  Some(20)),
+            WsBookChannel::delta("orderbook.100",    Some(100), Some(100)),
         ];
         match account_type {
             AccountType::Options => OrderbookCapabilities {
@@ -914,6 +920,22 @@ impl WebSocketConnector for BybitWebSocket {
                 supports_aggregation: false,
                 aggregation_levels: &[],
             },
+            AccountType::Spot => OrderbookCapabilities {
+                ws_depths: &[1, 50, 200, 1000],
+                ws_default_depth: Some(50),
+                rest_max_depth: Some(200),
+                rest_depth_values: &[],
+                supports_snapshot: true,
+                supports_delta: true,
+                update_speeds_ms: &[10, 20, 100, 200],
+                default_speed_ms: Some(20),
+                ws_channels: SPOT_CHANNELS,
+                checksum: None,
+                has_sequence: true,
+                has_prev_sequence: false,
+                supports_aggregation: false,
+                aggregation_levels: &[],
+            },
             _ => OrderbookCapabilities {
                 ws_depths: &[1, 50, 200, 1000],
                 ws_default_depth: Some(50),
@@ -923,7 +945,7 @@ impl WebSocketConnector for BybitWebSocket {
                 supports_delta: true,
                 update_speeds_ms: &[10, 20, 100, 200],
                 default_speed_ms: Some(20),
-                ws_channels: SPOT_CHANNELS,
+                ws_channels: LINEAR_CHANNELS,
                 checksum: None,
                 has_sequence: true,
                 has_prev_sequence: false,

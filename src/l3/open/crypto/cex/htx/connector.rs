@@ -42,11 +42,39 @@ use crate::core::types::{
     DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord, FundsHistoryFilter, FundsRecordType,
     SubAccountOperation, SubAccountResult, SubAccount,
 };
-use crate::core::utils::WeightRateLimiter;
+use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits};
 
 use super::endpoints::{HtxUrls, HtxEndpoint, format_symbol, map_kline_interval};
 use super::auth::HtxAuth;
 use super::parser::HtxParser;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RATE LIMIT CAPABILITIES (static — embedded in binary, no allocation)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+static HTX_POOLS: &[RestLimitPool] = &[RestLimitPool {
+    name: "default",
+    max_budget: 100,
+    window_seconds: 10,
+    is_weight: true,
+    has_server_headers: true,
+    server_header: Some("X-RateLimit-Used"),
+    header_reports_used: true,
+}];
+
+static HTX_RATE_CAPS: RateLimitCapabilities = RateLimitCapabilities {
+    model: LimitModel::Weight,
+    rest_pools: HTX_POOLS,
+    decaying: None,
+    endpoint_weights: &[],
+    ws: WsLimits {
+        max_connections: None,
+        max_subs_per_conn: None,
+        max_msg_per_sec: None,
+        max_streams_per_conn: None,
+    },
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR
@@ -60,8 +88,10 @@ pub struct HtxConnector {
     auth: Option<HtxAuth>,
     /// Testnet mode (HTX doesn't have dedicated testnet)
     testnet: bool,
-    /// Rate limiter (100 requests per second for trading)
-    rate_limiter: Arc<Mutex<WeightRateLimiter>>,
+    /// Runtime rate limiter (Weight model: 100 weight per 10 seconds)
+    limiter: Arc<Mutex<RuntimeLimiter>>,
+    /// Pressure monitor — gates non-essential requests at >= 90%
+    monitor: Arc<Mutex<RateLimitMonitor>>,
     /// Cached account ID for spot trading
     account_id: Arc<Mutex<Option<i64>>>,
     /// Per-symbol precision cache for safe price/qty formatting
@@ -90,16 +120,15 @@ impl HtxConnector {
             }
         }
 
-        // Initialize rate limiter: 100 requests per 10 seconds (HTX spot public limit)
-        let rate_limiter = Arc::new(Mutex::new(
-            WeightRateLimiter::new(100, Duration::from_secs(10))
-        ));
+        let limiter = Arc::new(Mutex::new(RuntimeLimiter::from_caps(&HTX_RATE_CAPS)));
+        let monitor = Arc::new(Mutex::new(RateLimitMonitor::new("HTX")));
 
         Ok(Self {
             http,
             auth,
             testnet,
-            rate_limiter,
+            limiter,
+            monitor,
             account_id: Arc::new(Mutex::new(None)),
             precision: crate::core::utils::precision::PrecisionCache::new(),
         })
@@ -144,23 +173,34 @@ impl HtxConnector {
 
         if let (Some(remaining), Some(limit)) = (remaining, limit) {
             let used = limit.saturating_sub(remaining);
-            if let Ok(mut limiter) = self.rate_limiter.lock() {
-                limiter.update_from_server(used);
+            if let Ok(mut limiter) = self.limiter.lock() {
+                limiter.update_from_server("default", used);
             }
         }
     }
 
-    /// Wait for rate limit if needed
-    async fn rate_limit_wait(&self, weight: u32) {
+    /// Wait for rate limit budget. Non-essential requests are dropped at >= 90% utilization.
+    ///
+    /// Returns `true` if acquired, `false` if dropped due to cutoff pressure.
+    /// Trading endpoints should pass `essential: true` to always wait through.
+    async fn rate_limit_wait(&self, weight: u32, essential: bool) -> bool {
         loop {
             let wait_time = {
-                let mut limiter = self.rate_limiter.lock().expect("Mutex poisoned");
-                if limiter.try_acquire(weight) {
-                    return;
-                }
-                limiter.time_until_ready(weight)
-            };
+                let mut limiter = self.limiter.lock()
+                    .expect("rate limiter mutex poisoned");
 
+                let pressure = self.monitor.lock()
+                    .expect("rate monitor mutex poisoned")
+                    .check(&mut limiter);
+                if pressure >= RateLimitPressure::Cutoff && !essential {
+                    return false;
+                }
+
+                if limiter.try_acquire("default", weight) {
+                    return true;
+                }
+                limiter.time_until_ready("default", weight)
+            };
             if wait_time > Duration::ZERO {
                 tokio::time::sleep(wait_time).await;
             }
@@ -173,7 +213,13 @@ impl HtxConnector {
         endpoint: HtxEndpoint,
         params: HashMap<String, String>,
     ) -> ExchangeResult<Value> {
-        self.rate_limit_wait(1).await;
+        // Market data = non-essential: drop at >= 90% utilization to preserve budget for trading
+        if !self.rate_limit_wait(1, false).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; non-essential market data request dropped".to_string(),
+            });
+        }
 
         // Route to correct base URL based on endpoint
         let base_url = match endpoint {
@@ -223,7 +269,7 @@ impl HtxConnector {
         endpoint: HtxEndpoint,
         body: Value,
     ) -> ExchangeResult<Value> {
-        self.rate_limit_wait(1).await;
+        self.rate_limit_wait(1, true).await;
 
         let base_url = HtxUrls::base_url(self.testnet);
         let path = endpoint.path();
@@ -345,8 +391,8 @@ impl ExchangeIdentity for HtxConnector {
 
     fn metrics(&self) -> ConnectorStats {
         let (http_requests, http_errors, last_latency_ms) = self.http.stats();
-        let (rate_used, rate_max) = if let Ok(mut limiter) = self.rate_limiter.lock() {
-            (limiter.current_weight(), limiter.max_weight())
+        let (rate_used, rate_max) = if let Ok(mut limiter) = self.limiter.lock() {
+            limiter.primary_stats()
         } else {
             (0, 0)
         };
@@ -375,6 +421,10 @@ impl ExchangeIdentity for HtxConnector {
 
     fn exchange_type(&self) -> ExchangeType {
         ExchangeType::Cex
+    }
+
+    fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
+        HTX_RATE_CAPS
     }
 }
 
@@ -889,7 +939,7 @@ impl Trading for HtxConnector {
                 let mut headers = HashMap::new();
                 headers.insert("Content-Type".to_string(), "application/json".to_string());
 
-                self.rate_limit_wait(1).await;
+                self.rate_limit_wait(1, true).await;
                 let (response, resp_headers) = self.http.post_with_response_headers(&url, &body, &headers).await?;
                 self.update_rate_from_headers(&resp_headers);
 
@@ -987,7 +1037,7 @@ impl Trading for HtxConnector {
 
         let url = format!("{}{}?{}", base_url, path, query);
 
-        self.rate_limit_wait(1).await;
+        self.rate_limit_wait(1, true).await;
         let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
         self.update_rate_from_headers(&resp_headers);
 
@@ -1152,7 +1202,7 @@ impl Account for HtxConnector {
 
         let url = format!("{}{}?{}", base_url, path, query);
 
-        self.rate_limit_wait(1).await;
+        self.rate_limit_wait(1, true).await;
         let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
         self.update_rate_from_headers(&resp_headers);
 
@@ -1852,7 +1902,7 @@ impl SubAccounts for HtxConnector {
 
                 let url = format!("{}{}?{}", base_url, path, query);
 
-                self.rate_limit_wait(1).await;
+                self.rate_limit_wait(1, true).await;
                 let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
                 self.update_rate_from_headers(&resp_headers);
 
@@ -1887,7 +1937,7 @@ impl HtxConnector {
         let query = auth.build_signed_query("GET", "api.huobi.pro", &path, &HashMap::new());
         let base_url = HtxUrls::base_url(self.testnet);
         let url = format!("{}{}?{}", base_url, path, query);
-        self.rate_limit_wait(1).await;
+        self.rate_limit_wait(1, true).await;
         let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
         self.update_rate_from_headers(&resp_headers);
         Ok(response)

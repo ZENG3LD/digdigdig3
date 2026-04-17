@@ -44,12 +44,51 @@ use crate::core::types::{
     FundingPayment, FundingFilter, LedgerEntry, LedgerFilter,
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
-use crate::core::utils::WeightRateLimiter;
+use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight};
 use crate::core::utils::precision::PrecisionCache;
 
 use super::endpoints::{GateioUrls, GateioEndpoint, format_symbol, map_kline_interval};
 use super::auth::GateioAuth;
 use super::parser::GateioParser;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RATE LIMIT CAPABILITIES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+static GATEIO_POOLS: &[RestLimitPool] = &[
+    RestLimitPool {
+        name: "spot",
+        max_budget: 200,
+        window_seconds: 10,
+        is_weight: false,
+        has_server_headers: true,
+        server_header: Some("X-Gate-RateLimit-Requests-Remain"),
+        header_reports_used: false,
+    },
+    RestLimitPool {
+        name: "futures",
+        max_budget: 200,
+        window_seconds: 10,
+        is_weight: false,
+        has_server_headers: true,
+        server_header: Some("X-Gate-RateLimit-Requests-Remain"),
+        header_reports_used: false,
+    },
+];
+
+static GATEIO_RATE_CAPS: RateLimitCapabilities = RateLimitCapabilities {
+    model: LimitModel::Group,
+    rest_pools: GATEIO_POOLS,
+    decaying: None,
+    endpoint_weights: &[] as &[EndpointWeight],
+    ws: WsLimits {
+        max_connections: None,
+        max_subs_per_conn: None,
+        max_msg_per_sec: None,
+        max_streams_per_conn: None,
+    },
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR
@@ -65,10 +104,10 @@ pub struct GateioConnector {
     urls: GateioUrls,
     /// Testnet mode
     testnet: bool,
-    /// Rate limiter for spot orders (10 requests per second)
-    spot_rate_limiter: Arc<Mutex<WeightRateLimiter>>,
-    /// Rate limiter for futures orders (100 requests per second)
-    futures_rate_limiter: Arc<Mutex<WeightRateLimiter>>,
+    /// Runtime rate limiter (Group model: spot 200/10s + futures 200/10s)
+    limiter: Arc<Mutex<RuntimeLimiter>>,
+    /// Pressure monitor
+    monitor: Arc<Mutex<RateLimitMonitor>>,
     /// Per-symbol precision cache (populated after get_exchange_info)
     precision: PrecisionCache,
 }
@@ -102,21 +141,16 @@ impl GateioConnector {
             }
         }
 
-        // Initialize rate limiters: 200 requests per 10 seconds (Gate.io per-endpoint limit)
-        let spot_rate_limiter = Arc::new(Mutex::new(
-            WeightRateLimiter::new(200, Duration::from_secs(10))
-        ));
-        let futures_rate_limiter = Arc::new(Mutex::new(
-            WeightRateLimiter::new(200, Duration::from_secs(10))
-        ));
+        let limiter = Arc::new(Mutex::new(RuntimeLimiter::from_caps(&GATEIO_RATE_CAPS)));
+        let monitor = Arc::new(Mutex::new(RateLimitMonitor::new("Gate.io")));
 
         Ok(Self {
             http,
             auth,
             urls,
             testnet,
-            spot_rate_limiter,
-            futures_rate_limiter,
+            limiter,
+            monitor,
             precision: PrecisionCache::new(),
         })
     }
@@ -146,38 +180,39 @@ impl GateioConnector {
 
         if let (Some(remaining), Some(limit)) = (remaining, limit) {
             let used = limit.saturating_sub(remaining);
-            let limiter = match account_type {
-                AccountType::Spot | AccountType::Margin => &self.spot_rate_limiter,
-                AccountType::FuturesCross | AccountType::FuturesIsolated => &self.futures_rate_limiter,
-                AccountType::Earn | AccountType::Lending | AccountType::Options | AccountType::Convert => &self.spot_rate_limiter,
+            let group = match account_type {
+                AccountType::FuturesCross | AccountType::FuturesIsolated => "futures",
+                _ => "spot",
             };
-            if let Ok(mut guard) = limiter.lock() {
-                guard.update_from_server(used);
+            if let Ok(mut guard) = self.limiter.lock() {
+                guard.update_from_server(group, used);
             }
         }
     }
 
     /// Wait for rate limit if needed.
     ///
-    /// All requests consume rate limit tokens. `is_order_operation` only determines
-    /// which limiter to use (spot vs futures) — it does NOT skip rate limiting.
-    async fn rate_limit_wait(&self, weight: u32, account_type: AccountType, _is_order_operation: bool) {
-        // Select appropriate rate limiter based on account type
-        let limiter = match account_type {
-            AccountType::Spot | AccountType::Margin => &self.spot_rate_limiter,
-            AccountType::FuturesCross | AccountType::FuturesIsolated => &self.futures_rate_limiter,
-            AccountType::Earn | AccountType::Lending | AccountType::Options | AccountType::Convert => &self.spot_rate_limiter,
+    /// Routes to the correct group ("spot" or "futures") based on account type.
+    /// Non-essential requests are dropped at >= 90% utilization.
+    /// Returns `true` if acquired, `false` if dropped due to cutoff pressure.
+    async fn rate_limit_wait(&self, weight: u32, account_type: AccountType, essential: bool) -> bool {
+        let group = match account_type {
+            AccountType::FuturesCross | AccountType::FuturesIsolated => "futures",
+            _ => "spot",
         };
 
         loop {
             let wait_time = {
-                let mut guard = limiter.lock().expect("Mutex poisoned");
-                if guard.try_acquire(weight) {
-                    return;
+                let mut limiter = self.limiter.lock().expect("limiter poisoned");
+                let pressure = self.monitor.lock().expect("monitor poisoned").check(&mut limiter);
+                if pressure >= RateLimitPressure::Cutoff && !essential {
+                    return false;
                 }
-                guard.time_until_ready(weight)
+                if limiter.try_acquire(group, weight) {
+                    return true;
+                }
+                limiter.time_until_ready(group, weight)
             };
-
             if wait_time > Duration::ZERO {
                 tokio::time::sleep(wait_time).await;
             }
@@ -191,8 +226,13 @@ impl GateioConnector {
         params: HashMap<String, String>,
         account_type: AccountType,
     ) -> ExchangeResult<Value> {
-        // GET requests are typically queries, not order operations
-        self.rate_limit_wait(1, account_type, false).await;
+        // GET requests are non-essential: dropped at >= 90% utilization
+        if !self.rate_limit_wait(1, account_type, false).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; market data request dropped".to_string(),
+            });
+        }
 
         let base_url = self.urls.rest_url(account_type);
         let settle = if matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated) {
@@ -240,7 +280,7 @@ impl GateioConnector {
         body: Value,
         account_type: AccountType,
     ) -> ExchangeResult<Value> {
-        // POST requests are typically order operations
+        // POST requests are order operations — always wait (essential)
         self.rate_limit_wait(1, account_type, true).await;
 
         let base_url = self.urls.rest_url(account_type);
@@ -394,11 +434,12 @@ impl ExchangeIdentity for GateioConnector {
 
     fn metrics(&self) -> ConnectorStats {
         let (http_requests, http_errors, last_latency_ms) = self.http.stats();
-        // Use the spot rate limiter as the primary for metrics display
-        let (rate_used, rate_max) = if let Ok(mut limiter) = self.spot_rate_limiter.lock() {
-            (limiter.current_weight(), limiter.max_weight())
+        let (rate_used, rate_max, rate_groups) = if let Ok(mut limiter) = self.limiter.lock() {
+            let (used, max) = limiter.primary_stats();
+            let groups = limiter.group_stats();
+            (used, max, groups)
         } else {
-            (0, 0)
+            (0, 0, Vec::new())
         };
         ConnectorStats {
             http_requests,
@@ -406,9 +447,13 @@ impl ExchangeIdentity for GateioConnector {
             last_latency_ms,
             rate_used,
             rate_max,
-            rate_groups: Vec::new(),
+            rate_groups,
             ws_ping_rtt_ms: 0,
         }
+    }
+
+    fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
+        GATEIO_RATE_CAPS
     }
 
     fn is_testnet(&self) -> bool {

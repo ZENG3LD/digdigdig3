@@ -52,11 +52,39 @@ use crate::core::types::{
     LedgerEntry, LedgerFilter,
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
-use crate::core::utils::WeightRateLimiter;
+use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits};
 
 use super::endpoints::{BybitUrls, BybitEndpoint, format_symbol, account_type_to_category, account_type_to_transfer_type, map_kline_interval};
 use super::auth::BybitAuth;
 use super::parser::BybitParser;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RATE LIMIT CAPABILITIES (static — embedded in binary, no allocation)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+static BYBIT_POOLS: &[RestLimitPool] = &[RestLimitPool {
+    name: "default",
+    max_budget: 600,
+    window_seconds: 5,
+    is_weight: true,
+    has_server_headers: true,
+    server_header: Some("X-Bapi-Limit-Status"),
+    header_reports_used: false,
+}];
+
+static BYBIT_RATE_CAPS: RateLimitCapabilities = RateLimitCapabilities {
+    model: LimitModel::Weight,
+    rest_pools: BYBIT_POOLS,
+    decaying: None,
+    endpoint_weights: &[],
+    ws: WsLimits {
+        max_connections: None,
+        max_subs_per_conn: None,
+        max_msg_per_sec: None,
+        max_streams_per_conn: None,
+    },
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR
@@ -70,8 +98,10 @@ pub struct BybitConnector {
     auth: Option<BybitAuth>,
     /// Testnet mode
     testnet: bool,
-    /// Rate limiter (120 requests per second)
-    rate_limiter: Arc<Mutex<WeightRateLimiter>>,
+    /// Runtime rate limiter (Weight model: 600 weight per 5 seconds)
+    limiter: Arc<Mutex<RuntimeLimiter>>,
+    /// Pressure monitor — gates non-essential requests at >= 90%
+    monitor: Arc<Mutex<RateLimitMonitor>>,
     /// Per-symbol precision cache (populated from get_exchange_info)
     precision: crate::core::utils::precision::PrecisionCache,
 }
@@ -100,16 +130,15 @@ impl BybitConnector {
             }
         }
 
-        // Initialize rate limiter: 600 requests per 5 seconds (Bybit IP global limit)
-        let rate_limiter = Arc::new(Mutex::new(
-            WeightRateLimiter::new(600, Duration::from_secs(5))
-        ));
+        let limiter = Arc::new(Mutex::new(RuntimeLimiter::from_caps(&BYBIT_RATE_CAPS)));
+        let monitor = Arc::new(Mutex::new(RateLimitMonitor::new("Bybit")));
 
         Ok(Self {
             http,
             auth,
             testnet,
-            rate_limiter,
+            limiter,
+            monitor,
             precision: crate::core::utils::precision::PrecisionCache::new(),
         })
     }
@@ -123,9 +152,9 @@ impl BybitConnector {
     // HTTP HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// Update rate limiter from Bybit response headers
+    /// Sync limiter from Bybit response headers.
     ///
-    /// Bybit reports: X-Bapi-Limit-Status = remaining, X-Bapi-Limit = total limit
+    /// Bybit reports: X-Bapi-Limit-Status = remaining, X-Bapi-Limit = total limit.
     fn update_rate_from_headers(&self, headers: &HeaderMap) {
         let remaining = headers
             .get("X-Bapi-Limit-Status")
@@ -139,24 +168,34 @@ impl BybitConnector {
 
         if let (Some(remaining), Some(limit)) = (remaining, limit) {
             let used = limit.saturating_sub(remaining);
-            if let Ok(mut limiter) = self.rate_limiter.lock() {
-                limiter.update_from_server(used);
+            if let Ok(mut limiter) = self.limiter.lock() {
+                limiter.update_from_server("default", used);
             }
         }
     }
 
-    /// Wait for rate limit if needed
-    async fn rate_limit_wait(&self, weight: u32) {
+    /// Wait for rate limit budget. Non-essential requests are dropped at >= 90% utilization.
+    ///
+    /// Returns `true` if acquired, `false` if dropped due to cutoff pressure.
+    /// Trading endpoints should pass `essential: true` to always wait through.
+    async fn rate_limit_wait(&self, weight: u32, essential: bool) -> bool {
         loop {
-            // Scope the lock to ensure it's dropped before await
             let wait_time = {
-                let mut limiter = self.rate_limiter.lock().expect("Mutex poisoned");
-                if limiter.try_acquire(weight) {
-                    return; // Successfully acquired, exit early
-                }
-                limiter.time_until_ready(weight)
-            }; // Lock is dropped here
+                let mut limiter = self.limiter.lock()
+                    .expect("rate limiter mutex poisoned");
 
+                let pressure = self.monitor.lock()
+                    .expect("rate monitor mutex poisoned")
+                    .check(&mut limiter);
+                if pressure >= RateLimitPressure::Cutoff && !essential {
+                    return false;
+                }
+
+                if limiter.try_acquire("default", weight) {
+                    return true;
+                }
+                limiter.time_until_ready("default", weight)
+            };
             if wait_time > Duration::ZERO {
                 tokio::time::sleep(wait_time).await;
             }
@@ -169,8 +208,13 @@ impl BybitConnector {
         endpoint: BybitEndpoint,
         params: HashMap<String, String>,
     ) -> ExchangeResult<Value> {
-        // Wait for rate limit (weight 1 for most GET requests)
-        self.rate_limit_wait(1).await;
+        // Market data = non-essential: drop at >= 90% utilization to preserve budget for trading
+        if !self.rate_limit_wait(1, false).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; non-essential market data request dropped".to_string(),
+            });
+        }
 
         let base_url = BybitUrls::base_url(self.testnet);
         let path = endpoint.path();
@@ -212,8 +256,8 @@ impl BybitConnector {
         endpoint: BybitEndpoint,
         body: Value,
     ) -> ExchangeResult<Value> {
-        // Wait for rate limit (weight 1 for most POST requests)
-        self.rate_limit_wait(1).await;
+        // Order placement = essential: always wait, never drop
+        self.rate_limit_wait(1, true).await;
 
         let base_url = BybitUrls::base_url(self.testnet);
         let path = endpoint.path();
@@ -510,8 +554,8 @@ impl ExchangeIdentity for BybitConnector {
 
     fn metrics(&self) -> ConnectorStats {
         let (http_requests, http_errors, last_latency_ms) = self.http.stats();
-        let (rate_used, rate_max) = if let Ok(mut limiter) = self.rate_limiter.lock() {
-            (limiter.current_weight(), limiter.max_weight())
+        let (rate_used, rate_max) = if let Ok(mut limiter) = self.limiter.lock() {
+            limiter.primary_stats()
         } else {
             (0, 0)
         };
@@ -541,6 +585,10 @@ impl ExchangeIdentity for BybitConnector {
 
     fn exchange_type(&self) -> ExchangeType {
         ExchangeType::Cex
+    }
+
+    fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
+        BYBIT_RATE_CAPS
     }
 }
 

@@ -46,7 +46,8 @@ use crate::core::types::{
     SubAccountOperation, SubAccountResult, SubAccount,
     LedgerEntry, LedgerFilter,
 };
-use crate::core::utils::SimpleRateLimiter;
+use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight};
 
 use super::endpoints::{
     BitgetUrls, BitgetEndpoint, format_symbol, map_kline_interval,
@@ -54,6 +55,44 @@ use super::endpoints::{
 };
 use super::auth::BitgetAuth;
 use super::parser::BitgetParser;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RATE LIMIT CAPABILITIES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+static BITGET_POOLS: &[RestLimitPool] = &[
+    RestLimitPool {
+        name: "market",
+        max_budget: 20,
+        window_seconds: 1,
+        is_weight: false,
+        has_server_headers: true,
+        server_header: Some("X-Bapi-Limit"),
+        header_reports_used: true,
+    },
+    RestLimitPool {
+        name: "trading",
+        max_budget: 10,
+        window_seconds: 1,
+        is_weight: false,
+        has_server_headers: true,
+        server_header: Some("X-Bapi-Limit"),
+        header_reports_used: true,
+    },
+];
+
+static BITGET_RATE_CAPS: RateLimitCapabilities = RateLimitCapabilities {
+    model: LimitModel::Group,
+    rest_pools: BITGET_POOLS,
+    decaying: None,
+    endpoint_weights: &[] as &[EndpointWeight],
+    ws: WsLimits {
+        max_connections: None,
+        max_subs_per_conn: Some(1000),
+        max_msg_per_sec: None,
+        max_streams_per_conn: None,
+    },
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR
@@ -71,10 +110,10 @@ pub struct BitgetConnector {
     /// When `true`, WebSocket connects to `wspap.bitget.com` and all
     /// authenticated REST requests include the `X-CHANNEL-API-CODE: paptrading` header.
     testnet: bool,
-    /// Rate limiter для market data (20 req/sec)
-    market_limiter: Arc<Mutex<SimpleRateLimiter>>,
-    /// Rate limiter для trading (10 req/sec)
-    trading_limiter: Arc<Mutex<SimpleRateLimiter>>,
+    /// Runtime rate limiter (Group model: market 20/1s + trading 10/1s)
+    limiter: Arc<Mutex<RuntimeLimiter>>,
+    /// Pressure monitor
+    monitor: Arc<Mutex<RateLimitMonitor>>,
     /// Per-symbol precision cache for safe price/qty formatting
     precision: crate::core::utils::precision::PrecisionCache,
 }
@@ -117,21 +156,16 @@ impl BitgetConnector {
             }
         }
 
-        // Bitget rate limits: market 20/s, trading 10/s
-        let market_limiter = Arc::new(Mutex::new(
-            SimpleRateLimiter::new(20, Duration::from_secs(1))
-        ));
-        let trading_limiter = Arc::new(Mutex::new(
-            SimpleRateLimiter::new(10, Duration::from_secs(1))
-        ));
+        let limiter = Arc::new(Mutex::new(RuntimeLimiter::from_caps(&BITGET_RATE_CAPS)));
+        let monitor = Arc::new(Mutex::new(RateLimitMonitor::new("Bitget")));
 
         Ok(Self {
             http,
             auth,
             urls,
             testnet,
-            market_limiter,
-            trading_limiter,
+            limiter,
+            monitor,
             precision: crate::core::utils::precision::PrecisionCache::new(),
         })
     }
@@ -148,29 +182,36 @@ impl BitgetConnector {
     /// Parse rate limit headers from Bitget response and update the appropriate limiter.
     ///
     /// Bitget reports: `x-mbx-used-remain-limit` = remaining requests in the current second.
-    fn update_rate_from_headers(&self, headers: &HeaderMap, is_private: bool) {
-        if let Some(remaining) = headers
-            .get("x-mbx-used-remain-limit")
+    fn update_rate_from_headers(&self, headers: &HeaderMap, group: &str) {
+        if let Some(used) = headers
+            .get("X-Bapi-Limit")
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<u32>().ok())
         {
-            let limiter = if is_private { &self.trading_limiter } else { &self.market_limiter };
-            if let Ok(mut lim) = limiter.lock() {
-                lim.update_from_server(remaining);
+            if let Ok(mut limiter) = self.limiter.lock() {
+                limiter.update_from_server(group, used);
             }
         }
     }
 
-    /// Wait for rate limit if necessary
-    async fn rate_limit_wait(&self, is_private: bool) {
-        let limiter = if is_private { &self.trading_limiter } else { &self.market_limiter };
+    /// Wait for rate limit if necessary.
+    ///
+    /// Routes to "market" or "trading" group based on whether the endpoint requires auth.
+    /// Non-essential requests (market data) are dropped at >= 90% utilization.
+    /// Returns `true` if acquired, `false` if dropped.
+    async fn rate_limit_wait(&self, is_private: bool, essential: bool) -> bool {
+        let group = if is_private { "trading" } else { "market" };
         loop {
             let wait_time = {
-                let mut l = limiter.lock().expect("lock");
-                if l.try_acquire() {
-                    return;
+                let mut limiter = self.limiter.lock().expect("limiter poisoned");
+                let pressure = self.monitor.lock().expect("monitor poisoned").check(&mut limiter);
+                if pressure >= RateLimitPressure::Cutoff && !essential {
+                    return false;
                 }
-                l.time_until_ready()
+                if limiter.try_acquire(group, 1) {
+                    return true;
+                }
+                limiter.time_until_ready(group, 1)
             };
             if wait_time > Duration::ZERO {
                 tokio::time::sleep(wait_time).await;
@@ -195,8 +236,14 @@ impl BitgetConnector {
         params: HashMap<String, String>,
         account_type: AccountType,
     ) -> ExchangeResult<Value> {
-        // Rate limit based on endpoint type
-        self.rate_limit_wait(endpoint.requires_auth()).await;
+        // Rate limit based on endpoint type; market data is non-essential
+        let is_private = endpoint.requires_auth();
+        if !self.rate_limit_wait(is_private, is_private).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; market data request dropped".to_string(),
+            });
+        }
 
         let base_url = self.urls.rest_url(account_type);
         let path = endpoint.path();
@@ -227,8 +274,9 @@ impl BitgetConnector {
             self.inject_demo_header(&mut headers);
         }
 
+        let group = if is_private { "trading" } else { "market" };
         let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &headers).await?;
-        self.update_rate_from_headers(&resp_headers, endpoint.requires_auth());
+        self.update_rate_from_headers(&resp_headers, group);
         self.check_response(&response)?;
         Ok(response)
     }
@@ -240,8 +288,8 @@ impl BitgetConnector {
         body: Value,
         account_type: AccountType,
     ) -> ExchangeResult<Value> {
-        // POST endpoints are always trading-related
-        self.rate_limit_wait(true).await;
+        // POST endpoints are always trading-related (essential)
+        self.rate_limit_wait(true, true).await;
 
         let base_url = self.urls.rest_url(account_type);
         let path = endpoint.path();
@@ -257,7 +305,7 @@ impl BitgetConnector {
         self.inject_demo_header(&mut headers);
 
         let (response, resp_headers) = self.http.post_with_response_headers(&url, &body, &headers).await?;
-        self.update_rate_from_headers(&resp_headers, true);
+        self.update_rate_from_headers(&resp_headers, "trading");
         self.check_response(&response)?;
         Ok(response)
     }
@@ -344,10 +392,12 @@ impl ExchangeIdentity for BitgetConnector {
 
     fn metrics(&self) -> ConnectorStats {
         let (http_requests, http_errors, last_latency_ms) = self.http.stats();
-        let (rate_used, rate_max) = if let Ok(mut lim) = self.market_limiter.lock() {
-            (lim.current_count(), lim.max_requests())
+        let (rate_used, rate_max, rate_groups) = if let Ok(mut limiter) = self.limiter.lock() {
+            let (used, max) = limiter.primary_stats();
+            let groups = limiter.group_stats();
+            (used, max, groups)
         } else {
-            (0, 0)
+            (0, 0, Vec::new())
         };
         ConnectorStats {
             http_requests,
@@ -355,9 +405,13 @@ impl ExchangeIdentity for BitgetConnector {
             last_latency_ms,
             rate_used,
             rate_max,
-            rate_groups: Vec::new(),
+            rate_groups,
             ws_ping_rtt_ms: 0,
         }
+    }
+
+    fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
+        BITGET_RATE_CAPS
     }
 
     fn is_testnet(&self) -> bool {

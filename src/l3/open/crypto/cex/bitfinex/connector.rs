@@ -47,13 +47,41 @@ use crate::core::types::{
 use crate::core::types::{
     FundingPayment, FundingFilter,
     LedgerEntry, LedgerEntryType, LedgerFilter,
+    RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits,
 };
-use crate::core::utils::SimpleRateLimiter;
+use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 use crate::core::utils::PrecisionCache;
 
 use super::endpoints::{BitfinexUrls, BitfinexEndpoint, format_symbol, build_candle_key};
 use super::auth::BitfinexAuth;
 use super::parser::BitfinexParser;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RATE LIMIT CAPABILITIES (static — embedded in binary, no allocation)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+static BITFINEX_RATE_POOLS: &[RestLimitPool] = &[RestLimitPool {
+    name: "default",
+    max_budget: 90,
+    window_seconds: 60,
+    is_weight: false,
+    has_server_headers: false,
+    server_header: None,
+    header_reports_used: false,
+}];
+
+static BITFINEX_RATE_CAPS: RateLimitCapabilities = RateLimitCapabilities {
+    model: LimitModel::Simple,
+    rest_pools: BITFINEX_RATE_POOLS,
+    decaying: None,
+    endpoint_weights: &[],
+    ws: WsLimits {
+        max_connections: None,
+        max_subs_per_conn: Some(30),
+        max_msg_per_sec: None,
+        max_streams_per_conn: None,
+    },
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR
@@ -72,8 +100,10 @@ pub struct BitfinexConnector {
     /// (e.g., tTESTBTC:TESTUSD) on the same mainnet endpoints.
     /// Stored here for future paper trading symbol routing support.
     testnet: bool,
-    /// Rate limiter (conservative: 10 requests per 60 seconds)
-    rate_limiter: Arc<Mutex<SimpleRateLimiter>>,
+    /// Runtime rate limiter (Simple model: 90 req/60s)
+    limiter: Arc<Mutex<RuntimeLimiter>>,
+    /// Pressure monitor — logs transitions, gates non-essential requests at >= 90%
+    monitor: Arc<Mutex<RateLimitMonitor>>,
     /// Per-symbol precision cache for safe price/qty formatting
     precision: PrecisionCache,
 }
@@ -93,17 +123,16 @@ impl BitfinexConnector {
             .map(BitfinexAuth::new)
             .transpose()?;
 
-        // Bitfinex rate limit: 90 requests per 60 seconds (matches registry rpm)
-        let rate_limiter = Arc::new(Mutex::new(
-            SimpleRateLimiter::new(90, Duration::from_secs(60))
-        ));
+        let limiter = Arc::new(Mutex::new(RuntimeLimiter::from_caps(&BITFINEX_RATE_CAPS)));
+        let monitor = Arc::new(Mutex::new(RateLimitMonitor::new("Bitfinex")));
 
         Ok(Self {
             http,
             auth,
             urls,
             testnet,
-            rate_limiter,
+            limiter,
+            monitor,
             precision: PrecisionCache::new(),
         })
     }
@@ -117,15 +146,27 @@ impl BitfinexConnector {
     // HTTP HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// Wait for rate limit if necessary
-    async fn rate_limit_wait(&self) {
+    /// Wait for rate limit budget. Non-essential requests are dropped at >= 90% utilization.
+    ///
+    /// Returns `true` if acquired, `false` if dropped due to cutoff pressure.
+    /// Trading endpoints should pass `essential: true` to always wait through.
+    async fn rate_limit_wait(&self, weight: u32, essential: bool) -> bool {
         loop {
             let wait_time = {
-                let mut limiter = self.rate_limiter.lock().expect("lock");
-                if limiter.try_acquire() {
-                    return;
+                let mut limiter = self.limiter.lock()
+                    .expect("rate limiter mutex poisoned");
+
+                let pressure = self.monitor.lock()
+                    .expect("rate monitor mutex poisoned")
+                    .check(&mut limiter);
+                if pressure >= RateLimitPressure::Cutoff && !essential {
+                    return false;
                 }
-                limiter.time_until_ready()
+
+                if limiter.try_acquire("default", weight) {
+                    return true;
+                }
+                limiter.time_until_ready("default", weight)
             };
             if wait_time > Duration::ZERO {
                 tokio::time::sleep(wait_time).await;
@@ -140,8 +181,12 @@ impl BitfinexConnector {
         path_params: &[(&str, &str)],
         query_params: HashMap<String, String>,
     ) -> ExchangeResult<Value> {
-        // Rate limit before making request
-        self.rate_limit_wait().await;
+        if !self.rate_limit_wait(1, false).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; non-essential market data request dropped".to_string(),
+            });
+        }
 
         let base_url = self.urls.rest_url(endpoint.requires_auth());
         let mut path = endpoint.path().to_string();
@@ -175,8 +220,7 @@ impl BitfinexConnector {
         path_params: &[(&str, &str)],
         body: Value,
     ) -> ExchangeResult<Value> {
-        // Rate limit before making request
-        self.rate_limit_wait().await;
+        self.rate_limit_wait(1, true).await;
 
         let base_url = self.urls.rest_url(true); // Always use auth URL for POST
         let mut path = endpoint.path().to_string();
@@ -237,8 +281,8 @@ impl ExchangeIdentity for BitfinexConnector {
 
     fn metrics(&self) -> ConnectorStats {
         let (http_requests, http_errors, last_latency_ms) = self.http.stats();
-        let (rate_used, rate_max) = if let Ok(mut lim) = self.rate_limiter.lock() {
-            (lim.current_count(), lim.max_requests())
+        let (rate_used, rate_max) = if let Ok(mut limiter) = self.limiter.lock() {
+            limiter.primary_stats()
         } else {
             (0, 0)
         };
@@ -268,6 +312,10 @@ impl ExchangeIdentity for BitfinexConnector {
 
     fn exchange_type(&self) -> ExchangeType {
         ExchangeType::Cex
+    }
+
+    fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
+        BITFINEX_RATE_CAPS
     }
 }
 
@@ -382,7 +430,12 @@ impl MarketData for BitfinexConnector {
     async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         // Use Bitfinex v1 symbols_details endpoint (returns array with pair info)
         // Note: v1 is still supported and returns more detail than v2 conf endpoints
-        self.rate_limit_wait().await;
+        if !self.rate_limit_wait(1, false).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; non-essential market data request dropped".to_string(),
+            });
+        }
         let url = "https://api.bitfinex.com/v1/symbols_details";
         let response = self.http.get(url, &HashMap::new()).await?;
         let info = BitfinexParser::parse_exchange_info(&response, account_type)?;

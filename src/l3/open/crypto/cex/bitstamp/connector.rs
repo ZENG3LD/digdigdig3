@@ -39,12 +39,40 @@ use crate::core::types::SymbolInfo;
 use crate::core::types::ConnectorStats;
 use crate::core::types::{WithdrawRequest, FundsHistoryFilter, FundsRecordType, LedgerEntry, LedgerFilter};
 use crate::core::types::{UserTrade, UserTradeFilter};
-use crate::core::utils::SimpleRateLimiter;
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits};
+use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 use crate::core::utils::PrecisionCache;
 
 use super::endpoints::{BitstampUrls, BitstampEndpoint, format_symbol, map_kline_interval};
 use super::auth::BitstampAuth;
 use super::parser::BitstampParser;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RATE LIMIT CAPABILITIES (static — embedded in binary, no allocation)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+static BITSTAMP_RATE_POOLS: &[RestLimitPool] = &[RestLimitPool {
+    name: "default",
+    max_budget: 400,
+    window_seconds: 1,
+    is_weight: false,
+    has_server_headers: false,
+    server_header: None,
+    header_reports_used: false,
+}];
+
+static BITSTAMP_RATE_CAPS: RateLimitCapabilities = RateLimitCapabilities {
+    model: LimitModel::Simple,
+    rest_pools: BITSTAMP_RATE_POOLS,
+    decaying: None,
+    endpoint_weights: &[],
+    ws: WsLimits {
+        max_connections: None,
+        max_subs_per_conn: None,
+        max_msg_per_sec: None,
+        max_streams_per_conn: None,
+    },
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR
@@ -58,8 +86,10 @@ pub struct BitstampConnector {
     reqwest_client: reqwest::Client,
     /// Authentication (None for public methods)
     auth: Option<BitstampAuth>,
-    /// Rate limiter (~167 requests per second sustained, 10000/10min)
-    rate_limiter: Arc<Mutex<SimpleRateLimiter>>,
+    /// Runtime rate limiter (Simple model: 400 req/1s)
+    limiter: Arc<Mutex<RuntimeLimiter>>,
+    /// Pressure monitor — logs transitions, gates non-essential requests at >= 90%
+    monitor: Arc<Mutex<RateLimitMonitor>>,
     /// Per-symbol precision cache for safe price/qty formatting
     precision: PrecisionCache,
 }
@@ -76,16 +106,15 @@ impl BitstampConnector {
 
         let auth = credentials.as_ref().map(BitstampAuth::new);
 
-        // Initialize rate limiter: ~167 req/s (~10000 per 10 minutes)
-        let rate_limiter = Arc::new(Mutex::new(
-            SimpleRateLimiter::new(167, Duration::from_secs(1))
-        ));
+        let limiter = Arc::new(Mutex::new(RuntimeLimiter::from_caps(&BITSTAMP_RATE_CAPS)));
+        let monitor = Arc::new(Mutex::new(RateLimitMonitor::new("Bitstamp")));
 
         Ok(Self {
             http,
             reqwest_client,
             auth,
-            rate_limiter,
+            limiter,
+            monitor,
             precision: PrecisionCache::new(),
         })
     }
@@ -99,18 +128,28 @@ impl BitstampConnector {
     // HTTP HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// Wait for rate limit if needed
-    async fn rate_limit_wait(&self) {
+    /// Wait for rate limit budget. Non-essential requests are dropped at >= 90% utilization.
+    ///
+    /// Returns `true` if acquired, `false` if dropped due to cutoff pressure.
+    /// Trading endpoints should pass `essential: true` to always wait through.
+    async fn rate_limit_wait(&self, weight: u32, essential: bool) -> bool {
         loop {
-            // Scope the lock to ensure it's dropped before await
             let wait_time = {
-                let mut limiter = self.rate_limiter.lock().expect("Mutex poisoned");
-                if limiter.try_acquire() {
-                    return; // Successfully acquired, exit early
-                }
-                limiter.time_until_ready()
-            }; // Lock is dropped here
+                let mut limiter = self.limiter.lock()
+                    .expect("rate limiter mutex poisoned");
 
+                let pressure = self.monitor.lock()
+                    .expect("rate monitor mutex poisoned")
+                    .check(&mut limiter);
+                if pressure >= RateLimitPressure::Cutoff && !essential {
+                    return false;
+                }
+
+                if limiter.try_acquire("default", weight) {
+                    return true;
+                }
+                limiter.time_until_ready("default", weight)
+            };
             if wait_time > Duration::ZERO {
                 tokio::time::sleep(wait_time).await;
             }
@@ -124,8 +163,12 @@ impl BitstampConnector {
         pair: Option<&str>,
         params: HashMap<String, String>,
     ) -> ExchangeResult<Value> {
-        // Wait for rate limit (weight 1 for GET requests)
-        self.rate_limit_wait().await;
+        if !self.rate_limit_wait(1, false).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; non-essential market data request dropped".to_string(),
+            });
+        }
 
         let base_url = BitstampUrls::base_url();
         let path = if let Some(p) = pair {
@@ -161,8 +204,7 @@ impl BitstampConnector {
         pair: Option<&str>,
         body_params: HashMap<String, String>,
     ) -> ExchangeResult<Value> {
-        // Wait for rate limit (weight 1 for POST requests)
-        self.rate_limit_wait().await;
+        self.rate_limit_wait(1, true).await;
 
         let base_url = BitstampUrls::base_url();
         let path = if let Some(p) = pair {
@@ -238,7 +280,7 @@ impl BitstampConnector {
         path: &str,
         body_params: HashMap<String, String>,
     ) -> ExchangeResult<Value> {
-        self.rate_limit_wait().await;
+        self.rate_limit_wait(1, true).await;
 
         let base_url = BitstampUrls::base_url();
 
@@ -332,8 +374,8 @@ impl ExchangeIdentity for BitstampConnector {
 
     fn metrics(&self) -> ConnectorStats {
         let (http_requests, http_errors, last_latency_ms) = self.http.stats();
-        let (rate_used, rate_max) = if let Ok(mut limiter) = self.rate_limiter.lock() {
-            (limiter.current_count(), limiter.max_requests())
+        let (rate_used, rate_max) = if let Ok(mut limiter) = self.limiter.lock() {
+            limiter.primary_stats()
         } else {
             (0, 0)
         };
@@ -363,6 +405,10 @@ impl ExchangeIdentity for BitstampConnector {
 
     fn exchange_type(&self) -> ExchangeType {
         ExchangeType::Cex
+    }
+
+    fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
+        BITSTAMP_RATE_CAPS
     }
 }
 
@@ -437,7 +483,12 @@ impl MarketData for BitstampConnector {
 
     async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         // GET /api/v2/trading-pairs-info/ returns detailed symbol info with name, url_symbol, etc.
-        self.rate_limit_wait().await;
+        if !self.rate_limit_wait(1, false).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; non-essential market data request dropped".to_string(),
+            });
+        }
         let url = format!("{}/api/v2/trading-pairs-info/", BitstampUrls::base_url());
         let response = self.http.get(&url, &HashMap::new()).await?;
         let info = BitstampParser::parse_exchange_info(&response, account_type)?;

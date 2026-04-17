@@ -45,12 +45,40 @@ use crate::core::types::{
     DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord, FundsHistoryFilter, FundsRecordType,
     SubAccountOperation, SubAccountResult, SubAccount,
 };
-use crate::core::utils::SimpleRateLimiter;
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits};
+use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 use crate::core::utils::PrecisionCache;
 
 use super::endpoints::{BingxUrls, BingxEndpoint, format_symbol, map_kline_interval};
 use super::auth::BingxAuth;
 use super::parser::BingxParser;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RATE LIMIT CAPABILITIES (static — embedded in binary, no allocation)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+static BINGX_RATE_POOLS: &[RestLimitPool] = &[RestLimitPool {
+    name: "default",
+    max_budget: 500,
+    window_seconds: 10,
+    is_weight: false,
+    has_server_headers: false,
+    server_header: None,
+    header_reports_used: false,
+}];
+
+static BINGX_RATE_CAPS: RateLimitCapabilities = RateLimitCapabilities {
+    model: LimitModel::Simple,
+    rest_pools: BINGX_RATE_POOLS,
+    decaying: None,
+    endpoint_weights: &[],
+    ws: WsLimits {
+        max_connections: None,
+        max_subs_per_conn: Some(200),
+        max_msg_per_sec: None,
+        max_streams_per_conn: None,
+    },
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR
@@ -69,8 +97,10 @@ pub struct BingxConnector {
     /// the same mainnet endpoints with "-VST" pair suffixes (e.g., BTC-USDT-VST).
     /// Stored here for future VST pair routing support.
     testnet: bool,
-    /// Rate limiter для market data (100 req/10s)
-    market_limiter: Arc<Mutex<SimpleRateLimiter>>,
+    /// Runtime rate limiter (Simple model: 500 req/10s)
+    limiter: Arc<Mutex<RuntimeLimiter>>,
+    /// Pressure monitor — logs transitions, gates non-essential requests at >= 90%
+    monitor: Arc<Mutex<RateLimitMonitor>>,
     /// Per-symbol precision cache for safe price/qty formatting
     precision: PrecisionCache,
 }
@@ -92,17 +122,16 @@ impl BingxConnector {
             .map(BingxAuth::new)
             .transpose()?;
 
-        // BingX rate limit: 100 requests per 10 seconds (shared pool)
-        let market_limiter = Arc::new(Mutex::new(
-            SimpleRateLimiter::new(100, Duration::from_secs(10))
-        ));
+        let limiter = Arc::new(Mutex::new(RuntimeLimiter::from_caps(&BINGX_RATE_CAPS)));
+        let monitor = Arc::new(Mutex::new(RateLimitMonitor::new("BingX")));
 
         Ok(Self {
             http,
             auth,
             urls,
             testnet,
-            market_limiter,
+            limiter,
+            monitor,
             precision: PrecisionCache::new(),
         })
     }
@@ -116,15 +145,27 @@ impl BingxConnector {
     // HTTP HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// Wait for rate limit if necessary
-    async fn rate_limit_wait(&self) {
+    /// Wait for rate limit budget. Non-essential requests are dropped at >= 90% utilization.
+    ///
+    /// Returns `true` if acquired, `false` if dropped due to cutoff pressure.
+    /// Trading endpoints should pass `essential: true` to always wait through.
+    async fn rate_limit_wait(&self, weight: u32, essential: bool) -> bool {
         loop {
             let wait_time = {
-                let mut limiter = self.market_limiter.lock().expect("Mutex poisoned");
-                if limiter.try_acquire() {
-                    return;
+                let mut limiter = self.limiter.lock()
+                    .expect("rate limiter mutex poisoned");
+
+                let pressure = self.monitor.lock()
+                    .expect("rate monitor mutex poisoned")
+                    .check(&mut limiter);
+                if pressure >= RateLimitPressure::Cutoff && !essential {
+                    return false;
                 }
-                limiter.time_until_ready()
+
+                if limiter.try_acquire("default", weight) {
+                    return true;
+                }
+                limiter.time_until_ready("default", weight)
             };
             if wait_time > Duration::ZERO {
                 tokio::time::sleep(wait_time).await;
@@ -139,8 +180,12 @@ impl BingxConnector {
         mut params: HashMap<String, String>,
         account_type: AccountType,
     ) -> ExchangeResult<Value> {
-        // Rate limit before making request
-        self.rate_limit_wait().await;
+        if !self.rate_limit_wait(1, false).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; non-essential market data request dropped".to_string(),
+            });
+        }
 
         let base_url = self.urls.rest_url(account_type);
         let path = endpoint.path();
@@ -177,8 +222,7 @@ impl BingxConnector {
         mut params: HashMap<String, String>,
         account_type: AccountType,
     ) -> ExchangeResult<Value> {
-        // Rate limit before making request
-        self.rate_limit_wait().await;
+        self.rate_limit_wait(1, true).await;
 
         let base_url = self.urls.rest_url(account_type);
         let path = endpoint.path();
@@ -207,8 +251,7 @@ impl BingxConnector {
         mut params: HashMap<String, String>,
         account_type: AccountType,
     ) -> ExchangeResult<Value> {
-        // Rate limit before making request
-        self.rate_limit_wait().await;
+        self.rate_limit_wait(1, true).await;
 
         let base_url = self.urls.rest_url(account_type);
         let path = endpoint.path();
@@ -287,8 +330,8 @@ impl ExchangeIdentity for BingxConnector {
 
     fn metrics(&self) -> ConnectorStats {
         let (http_requests, http_errors, last_latency_ms) = self.http.stats();
-        let (rate_used, rate_max) = if let Ok(mut lim) = self.market_limiter.lock() {
-            (lim.current_count(), lim.max_requests())
+        let (rate_used, rate_max) = if let Ok(mut limiter) = self.limiter.lock() {
+            limiter.primary_stats()
         } else {
             (0, 0)
         };
@@ -318,6 +361,10 @@ impl ExchangeIdentity for BingxConnector {
 
     fn exchange_type(&self) -> ExchangeType {
         ExchangeType::Cex
+    }
+
+    fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
+        BINGX_RATE_CAPS
     }
 }
 
@@ -1284,7 +1331,8 @@ impl BatchOrders for BingxConnector {
 
         let url = format!("{}{}?{}", base_url, path, query);
 
-        self.rate_limit_wait().await;
+        // Batch order placement = essential: always wait, never drop
+        self.rate_limit_wait(1, true).await;
         let response = self.http.post(&url, &json!({}), &headers).await?;
         self.check_response(&response)?;
 

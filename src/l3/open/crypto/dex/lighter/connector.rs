@@ -37,11 +37,39 @@ use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
 };
 use crate::core::types::{ConnectorStats, SymbolInfo, MarketDataCapabilities, TradingCapabilities, AccountCapabilities};
-use crate::core::utils::WeightRateLimiter;
+use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits};
 
 use super::endpoints::{LighterUrls, LighterEndpoint, map_kline_interval, format_symbol, symbol_to_market_id};
 use super::auth::LighterAuth;
 use super::parser::LighterParser;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RATE LIMIT CAPABILITIES (static — embedded in binary, no allocation)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+static LIGHTER_POOLS: &[RestLimitPool] = &[RestLimitPool {
+    name: "default",
+    max_budget: 60,
+    window_seconds: 60,
+    is_weight: true,
+    has_server_headers: false,
+    server_header: None,
+    header_reports_used: false,
+}];
+
+static LIGHTER_RATE_CAPS: RateLimitCapabilities = RateLimitCapabilities {
+    model: LimitModel::Weight,
+    rest_pools: LIGHTER_POOLS,
+    decaying: None,
+    endpoint_weights: &[],
+    ws: WsLimits {
+        max_connections: Some(100),
+        max_subs_per_conn: Some(100),
+        max_msg_per_sec: None,
+        max_streams_per_conn: None,
+    },
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR
@@ -57,8 +85,10 @@ pub struct LighterConnector {
     urls: LighterUrls,
     /// Testnet mode
     testnet: bool,
-    /// Rate limiter (10,000 weight per minute)
-    rate_limiter: Arc<Mutex<WeightRateLimiter>>,
+    /// Runtime rate limiter (Weight model: 60 weight per 60 seconds)
+    limiter: Arc<Mutex<RuntimeLimiter>>,
+    /// Pressure monitor — gates non-essential requests at >= 90%
+    monitor: Arc<Mutex<RateLimitMonitor>>,
 }
 
 impl LighterConnector {
@@ -77,17 +107,16 @@ impl LighterConnector {
             .map(LighterAuth::new)
             .transpose()?;
 
-        // Initialize rate limiter: 10,000 weight per minute
-        let rate_limiter = Arc::new(Mutex::new(
-            WeightRateLimiter::new(10_000, Duration::from_secs(60))
-        ));
+        let limiter = Arc::new(Mutex::new(RuntimeLimiter::from_caps(&LIGHTER_RATE_CAPS)));
+        let monitor = Arc::new(Mutex::new(RateLimitMonitor::new("Lighter")));
 
         Ok(Self {
             http,
             _auth: auth,
             urls,
             testnet,
-            rate_limiter,
+            limiter,
+            monitor,
         })
     }
 
@@ -102,16 +131,16 @@ impl LighterConnector {
         let http = HttpClient::new(30_000)?;
         let auth = Some(LighterAuth::public_only());
 
-        let rate_limiter = Arc::new(Mutex::new(
-            WeightRateLimiter::new(10_000, Duration::from_secs(60))
-        ));
+        let limiter = Arc::new(Mutex::new(RuntimeLimiter::from_caps(&LIGHTER_RATE_CAPS)));
+        let monitor = Arc::new(Mutex::new(RateLimitMonitor::new("Lighter")));
 
         Ok(Self {
             http,
             _auth: auth,
             urls,
             testnet,
-            rate_limiter,
+            limiter,
+            monitor,
         })
     }
 
@@ -119,17 +148,28 @@ impl LighterConnector {
     // HTTP HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// Wait for rate limit if needed
-    async fn rate_limit_wait(&self, weight: u32) {
+    /// Wait for rate limit budget. Non-essential requests are dropped at >= 90% utilization.
+    ///
+    /// Returns `true` if acquired, `false` if dropped due to cutoff pressure.
+    /// Trading endpoints should pass `essential: true` to always wait through.
+    async fn rate_limit_wait(&self, weight: u32, essential: bool) -> bool {
         loop {
             let wait_time = {
-                let mut limiter = self.rate_limiter.lock().expect("Mutex poisoned");
-                if limiter.try_acquire(weight) {
-                    return;
-                }
-                limiter.time_until_ready(weight)
-            };
+                let mut limiter = self.limiter.lock()
+                    .expect("rate limiter mutex poisoned");
 
+                let pressure = self.monitor.lock()
+                    .expect("rate monitor mutex poisoned")
+                    .check(&mut limiter);
+                if pressure >= RateLimitPressure::Cutoff && !essential {
+                    return false;
+                }
+
+                if limiter.try_acquire("default", weight) {
+                    return true;
+                }
+                limiter.time_until_ready("default", weight)
+            };
             if wait_time > Duration::ZERO {
                 tokio::time::sleep(wait_time).await;
             }
@@ -143,7 +183,13 @@ impl LighterConnector {
         params: HashMap<String, String>,
         weight: u32,
     ) -> ExchangeResult<Value> {
-        self.rate_limit_wait(weight).await;
+        // Market data = non-essential: drop at >= 90% utilization to preserve budget for trading
+        if !self.rate_limit_wait(weight, false).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; non-essential market data request dropped".to_string(),
+            });
+        }
 
         let base_url = self.urls.rest_url();
         let path = endpoint.path();
@@ -175,7 +221,8 @@ impl LighterConnector {
         body: Value,
         weight: u32,
     ) -> ExchangeResult<Value> {
-        self.rate_limit_wait(weight).await;
+        // Order placement = essential: always wait, never drop
+        self.rate_limit_wait(weight, true).await;
 
         let base_url = self.urls.rest_url();
         let path = endpoint.path();
@@ -246,8 +293,8 @@ impl ExchangeIdentity for LighterConnector {
 
     fn metrics(&self) -> ConnectorStats {
         let (http_requests, http_errors, last_latency_ms) = self.http.stats();
-        let (rate_used, rate_max) = if let Ok(mut limiter) = self.rate_limiter.lock() {
-            (limiter.current_weight(), limiter.max_weight())
+        let (rate_used, rate_max) = if let Ok(mut limiter) = self.limiter.lock() {
+            limiter.primary_stats()
         } else {
             (0, 0)
         };
@@ -271,6 +318,10 @@ impl ExchangeIdentity for LighterConnector {
             AccountType::Spot,
             AccountType::FuturesCross,
         ]
+    }
+
+    fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
+        LIGHTER_RATE_CAPS
     }
 }
 
@@ -1324,7 +1375,8 @@ impl LighterConnector {
         params: HashMap<String, String>,
         weight: u32,
     ) -> ExchangeResult<Value> {
-        self.rate_limit_wait(weight).await;
+        // Authenticated account requests = essential: always wait, never drop
+        self.rate_limit_wait(weight, true).await;
 
         let base_url = self.urls.rest_url();
         let path = endpoint.path();

@@ -45,12 +45,34 @@ use crate::core::traits::{
     FundingHistory, AccountLedger,
 };
 use crate::core::{CancelAll, AmendOrder};
-use crate::core::utils::DecayingRateLimiter;
+use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight, DecayingLimitConfig};
 use crate::core::utils::PrecisionCache;
 
 use super::endpoints::{DeribitUrls, DeribitMethod, format_symbol};
 use super::auth::DeribitAuth;
 use super::parser::DeribitParser;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RATE LIMIT CAPABILITIES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+static DERIBIT_RATE_CAPS: RateLimitCapabilities = RateLimitCapabilities {
+    model: LimitModel::Decaying,
+    rest_pools: &[] as &[RestLimitPool],
+    decaying: Some(DecayingLimitConfig {
+        max_counter: 50000.0,
+        decay_rate_per_sec: 10000.0,
+        default_cost: 500.0,
+    }),
+    endpoint_weights: &[] as &[EndpointWeight],
+    ws: WsLimits {
+        max_connections: Some(32),
+        max_subs_per_conn: None,
+        max_msg_per_sec: None,
+        max_streams_per_conn: None,
+    },
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR
@@ -68,8 +90,10 @@ pub struct DeribitConnector {
     testnet: bool,
     /// Request counter for JSON-RPC ID
     request_id: Arc<Mutex<u64>>,
-    /// Rate limiter (Deribit credit system: max 10000 credits, refill 10000/s, cost 500/request)
-    rate_limiter: Arc<Mutex<DecayingRateLimiter>>,
+    /// Runtime rate limiter (Decaying: max=50000, decay=10000/s, cost=500/req)
+    limiter: Arc<Mutex<RuntimeLimiter>>,
+    /// Pressure monitor
+    monitor: Arc<Mutex<RateLimitMonitor>>,
     /// Per-symbol precision cache for safe price/qty formatting
     precision: PrecisionCache,
 }
@@ -90,10 +114,8 @@ impl DeribitConnector {
             .map(DeribitAuth::new)
             .transpose()?;
 
-        // Deribit rate limit: 10000 credits max, refills at 10000/s, each request costs 500
-        let rate_limiter = Arc::new(Mutex::new(
-            DecayingRateLimiter::new(10000.0, 10000.0)
-        ));
+        let limiter = Arc::new(Mutex::new(RuntimeLimiter::from_caps(&DERIBIT_RATE_CAPS)));
+        let monitor = Arc::new(Mutex::new(RateLimitMonitor::new("Deribit")));
 
         let connector = Self {
             http,
@@ -101,7 +123,8 @@ impl DeribitConnector {
             urls,
             testnet,
             request_id: Arc::new(Mutex::new(1)),
-            rate_limiter,
+            limiter,
+            monitor,
             precision: PrecisionCache::new(),
         };
 
@@ -205,17 +228,24 @@ impl DeribitConnector {
     // RATE LIMITING
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// Wait for rate limit if necessary (cost = 500 credits per request)
-    async fn rate_limit_wait(&self) {
+    /// Wait for rate limit if necessary (cost = 500 credits per request).
+    ///
+    /// Non-essential requests are dropped at >= 90% utilization.
+    /// Returns `true` if acquired, `false` if dropped.
+    async fn rate_limit_wait(&self, essential: bool) -> bool {
         loop {
             let wait_time = {
-                let mut limiter = self.rate_limiter.lock().expect("Mutex poisoned");
-                if limiter.try_acquire(500.0) {
-                    return;
+                let mut limiter = self.limiter.lock().expect("limiter poisoned");
+                let pressure = self.monitor.lock().expect("monitor poisoned").check(&mut limiter);
+                if pressure >= RateLimitPressure::Cutoff && !essential {
+                    return false;
                 }
-                limiter.time_until_ready(500.0)
+                // Cost = 500 credits per request
+                if limiter.try_acquire("default", 500) {
+                    return true;
+                }
+                limiter.time_until_ready("default", 500)
             };
-
             if wait_time > Duration::ZERO {
                 tokio::time::sleep(wait_time).await;
             }
@@ -228,7 +258,8 @@ impl DeribitConnector {
         method: DeribitMethod,
         params: HashMap<String, Value>,
     ) -> ExchangeResult<Value> {
-        self.rate_limit_wait().await;
+        // All RPC calls are essential (both public market data and private trading)
+        self.rate_limit_wait(true).await;
 
         let id = self.next_id();
         let url = self.urls.rest_url();
@@ -269,7 +300,8 @@ impl DeribitConnector {
         method: DeribitMethod,
         params: HashMap<String, Value>,
     ) -> ExchangeResult<Value> {
-        self.rate_limit_wait().await;
+        // All RPC calls are essential (both public market data and private trading)
+        self.rate_limit_wait(true).await;
 
         let id = self.next_id();
         let url = self.urls.rest_url();
@@ -330,8 +362,8 @@ impl ExchangeIdentity for DeribitConnector {
 
     fn metrics(&self) -> ConnectorStats {
         let (http_requests, http_errors, last_latency_ms) = self.http.stats();
-        let (rate_used, rate_max) = if let Ok(mut lim) = self.rate_limiter.lock() {
-            (lim.current_level() as u32, lim.max_level() as u32)
+        let (rate_used, rate_max) = if let Ok(mut limiter) = self.limiter.lock() {
+            limiter.primary_stats()
         } else {
             (0, 0)
         };
@@ -344,6 +376,10 @@ impl ExchangeIdentity for DeribitConnector {
             rate_groups: Vec::new(),
             ws_ping_rtt_ms: 0,
         }
+    }
+
+    fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
+        DERIBIT_RATE_CAPS
     }
 
     fn is_testnet(&self) -> bool {

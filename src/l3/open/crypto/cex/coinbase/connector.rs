@@ -85,12 +85,51 @@ use crate::core::traits::{
 };
 use crate::core::types::{CancelAllResponse, OrderResult};
 use crate::core::types::ConnectorStats;
-use crate::core::utils::WeightRateLimiter;
+use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight};
 use crate::core::utils::precision::PrecisionCache;
 
 use super::endpoints::{CoinbaseUrls, CoinbaseEndpoint, format_symbol, map_kline_interval};
 use super::auth::CoinbaseAuth;
 use super::parser::CoinbaseParser;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RATE LIMIT CAPABILITIES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+static COINBASE_POOLS: &[RestLimitPool] = &[
+    RestLimitPool {
+        name: "public",
+        max_budget: 10,
+        window_seconds: 1,
+        is_weight: false,
+        has_server_headers: true,
+        server_header: Some("X-RateLimit-Remaining"),
+        header_reports_used: false,
+    },
+    RestLimitPool {
+        name: "private",
+        max_budget: 30,
+        window_seconds: 1,
+        is_weight: false,
+        has_server_headers: true,
+        server_header: Some("X-RateLimit-Remaining"),
+        header_reports_used: false,
+    },
+];
+
+static COINBASE_RATE_CAPS: RateLimitCapabilities = RateLimitCapabilities {
+    model: LimitModel::Group,
+    rest_pools: COINBASE_POOLS,
+    decaying: None,
+    endpoint_weights: &[] as &[EndpointWeight],
+    ws: WsLimits {
+        max_connections: None,
+        max_subs_per_conn: None,
+        max_msg_per_sec: Some(8),
+        max_streams_per_conn: None,
+    },
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR
@@ -102,8 +141,10 @@ pub struct CoinbaseConnector {
     http: HttpClient,
     /// Authentication (None for public methods)
     auth: Option<CoinbaseAuth>,
-    /// Rate limiter (30 requests per second for private, 10 for public)
-    rate_limiter: Arc<Mutex<WeightRateLimiter>>,
+    /// Runtime rate limiter (Group model: public 10/1s + private 30/1s)
+    limiter: Arc<Mutex<RuntimeLimiter>>,
+    /// Pressure monitor
+    monitor: Arc<Mutex<RateLimitMonitor>>,
     /// Per-symbol precision cache (populated after get_exchange_info)
     precision: PrecisionCache,
 }
@@ -120,15 +161,14 @@ impl CoinbaseConnector {
             None
         };
 
-        // Initialize rate limiter: 30 requests per second (Coinbase private tier)
-        let rate_limiter = Arc::new(Mutex::new(
-            WeightRateLimiter::new(30, Duration::from_secs(1))
-        ));
+        let limiter = Arc::new(Mutex::new(RuntimeLimiter::from_caps(&COINBASE_RATE_CAPS)));
+        let monitor = Arc::new(Mutex::new(RateLimitMonitor::new("Coinbase")));
 
         Ok(Self {
             http,
             auth,
-            rate_limiter,
+            limiter,
+            monitor,
             precision: PrecisionCache::new(),
         })
     }
@@ -144,41 +184,45 @@ impl CoinbaseConnector {
 
     /// Update rate limiter from Coinbase response headers
     ///
-    /// Coinbase reports: CB-RATELIMIT-REMAINING = remaining, CB-RATELIMIT-LIMIT = total limit
-    fn update_rate_from_headers(&self, headers: &HeaderMap) {
+    /// Coinbase reports: X-RateLimit-Remaining = remaining requests in the current window
+    fn update_rate_from_headers(&self, headers: &HeaderMap, group: &str) {
         let remaining = headers
-            .get("CB-RATELIMIT-REMAINING")
+            .get("X-RateLimit-Remaining")
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<u32>().ok());
 
         let limit = headers
-            .get("CB-RATELIMIT-LIMIT")
+            .get("X-RateLimit-Limit")
             .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<u32>().ok())
-            .or_else(|| {
-                // Fall back to the limiter's max_weight if no limit header
-                self.rate_limiter.lock().ok().map(|l| l.max_weight())
-            });
+            .and_then(|s| s.parse::<u32>().ok());
 
         if let (Some(remaining), Some(limit)) = (remaining, limit) {
             let used = limit.saturating_sub(remaining);
-            if let Ok(mut limiter) = self.rate_limiter.lock() {
-                limiter.update_from_server(used);
+            if let Ok(mut limiter) = self.limiter.lock() {
+                limiter.update_from_server(group, used);
             }
         }
     }
 
-    /// Wait for rate limit if needed
-    async fn rate_limit_wait(&self, weight: u32) {
+    /// Wait for rate limit if needed.
+    ///
+    /// Routes to the correct group based on whether the request is private.
+    /// Non-essential requests are dropped at >= 90% utilization.
+    /// Returns `true` if acquired, `false` if dropped due to cutoff pressure.
+    async fn rate_limit_wait(&self, is_private: bool, essential: bool) -> bool {
+        let group = if is_private { "private" } else { "public" };
         loop {
             let wait_time = {
-                let mut limiter = self.rate_limiter.lock().expect("Mutex poisoned");
-                if limiter.try_acquire(weight) {
-                    return;
+                let mut limiter = self.limiter.lock().expect("limiter poisoned");
+                let pressure = self.monitor.lock().expect("monitor poisoned").check(&mut limiter);
+                if pressure >= RateLimitPressure::Cutoff && !essential {
+                    return false;
                 }
-                limiter.time_until_ready(weight)
+                if limiter.try_acquire(group, 1) {
+                    return true;
+                }
+                limiter.time_until_ready(group, 1)
             };
-
             if wait_time > Duration::ZERO {
                 tokio::time::sleep(wait_time).await;
             }
@@ -191,7 +235,14 @@ impl CoinbaseConnector {
         endpoint: CoinbaseEndpoint,
         params: HashMap<String, String>,
     ) -> ExchangeResult<Value> {
-        self.rate_limit_wait(1).await;
+        let is_private = endpoint.is_private() && self.auth.is_some();
+        // Non-private GET = public (market data, non-essential); private GET = essential
+        if !self.rate_limit_wait(is_private, is_private).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; market data request dropped".to_string(),
+            });
+        }
 
         let path = endpoint.path();
 
@@ -236,8 +287,9 @@ impl CoinbaseConnector {
             HashMap::new()
         };
 
+        let group = if is_private { "private" } else { "public" };
         let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &headers).await?;
-        self.update_rate_from_headers(&resp_headers);
+        self.update_rate_from_headers(&resp_headers, group);
         Ok(response)
     }
 
@@ -247,7 +299,8 @@ impl CoinbaseConnector {
         endpoint: CoinbaseEndpoint,
         body: Value,
     ) -> ExchangeResult<Value> {
-        self.rate_limit_wait(1).await;
+        // POST is always private + essential
+        self.rate_limit_wait(true, true).await;
 
         let base_url = CoinbaseUrls::base_url();
         let path = endpoint.path();
@@ -260,7 +313,7 @@ impl CoinbaseConnector {
             .map_err(ExchangeError::Auth)?;
 
         let (response, resp_headers) = self.http.post_with_response_headers(&url, &body, &headers).await?;
-        self.update_rate_from_headers(&resp_headers);
+        self.update_rate_from_headers(&resp_headers, "private");
         Ok(response)
     }
 
@@ -268,7 +321,8 @@ impl CoinbaseConnector {
     ///
     /// `path` must be a fully constructed path like `/accounts/{uuid}/deposits`.
     async fn get_v2(&self, path: &str, params: HashMap<String, String>) -> ExchangeResult<Value> {
-        self.rate_limit_wait(1).await;
+        // v2 GET is always private + essential
+        self.rate_limit_wait(true, true).await;
 
         let query = if params.is_empty() {
             String::new()
@@ -288,13 +342,14 @@ impl CoinbaseConnector {
             .map_err(ExchangeError::Auth)?;
 
         let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &headers).await?;
-        self.update_rate_from_headers(&resp_headers);
+        self.update_rate_from_headers(&resp_headers, "private");
         Ok(response)
     }
 
     /// POST request against the v2 API with a dynamic path.
     async fn post_v2(&self, path: &str, body: Value) -> ExchangeResult<Value> {
-        self.rate_limit_wait(1).await;
+        // v2 POST is always private + essential
+        self.rate_limit_wait(true, true).await;
 
         let url = format!("{}{}", CoinbaseUrls::v2_url(), path);
 
@@ -304,7 +359,7 @@ impl CoinbaseConnector {
             .map_err(ExchangeError::Auth)?;
 
         let (response, resp_headers) = self.http.post_with_response_headers(&url, &body, &headers).await?;
-        self.update_rate_from_headers(&resp_headers);
+        self.update_rate_from_headers(&resp_headers, "private");
         Ok(response)
     }
 
@@ -329,10 +384,12 @@ impl ExchangeIdentity for CoinbaseConnector {
 
     fn metrics(&self) -> ConnectorStats {
         let (http_requests, http_errors, last_latency_ms) = self.http.stats();
-        let (rate_used, rate_max) = if let Ok(mut limiter) = self.rate_limiter.lock() {
-            (limiter.current_weight(), limiter.max_weight())
+        let (rate_used, rate_max, rate_groups) = if let Ok(mut limiter) = self.limiter.lock() {
+            let (used, max) = limiter.primary_stats();
+            let groups = limiter.group_stats();
+            (used, max, groups)
         } else {
-            (0, 0)
+            (0, 0, Vec::new())
         };
         ConnectorStats {
             http_requests,
@@ -340,9 +397,13 @@ impl ExchangeIdentity for CoinbaseConnector {
             last_latency_ms,
             rate_used,
             rate_max,
-            rate_groups: Vec::new(),
+            rate_groups,
             ws_ping_rtt_ms: 0,
         }
+    }
+
+    fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
+        COINBASE_RATE_CAPS
     }
 
     fn is_testnet(&self) -> bool {
@@ -528,9 +589,16 @@ impl MarketData for CoinbaseConnector {
             HashMap::new()
         };
 
-        self.rate_limit_wait(1).await;
+        let is_private = self.auth.is_some();
+        if !self.rate_limit_wait(is_private, false).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; non-essential market data request dropped".to_string(),
+            });
+        }
         let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &headers).await?;
-        self.update_rate_from_headers(&resp_headers);
+        let group = if is_private { "private" } else { "public" };
+        self.update_rate_from_headers(&resp_headers, group);
         let mut klines = CoinbaseParser::parse_klines(&response)?;
 
         if let Some(l) = limit {
@@ -988,9 +1056,10 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
             .sign_request("GET", &path)
             .map_err(ExchangeError::Auth)?;
 
-        self.rate_limit_wait(1).await;
+        // Order lookup = essential: always wait, never drop
+        self.rate_limit_wait(true, true).await;
         let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &headers).await?;
-        self.update_rate_from_headers(&resp_headers);
+        self.update_rate_from_headers(&resp_headers, "private");
         CoinbaseParser::parse_order(&response)
     }
 

@@ -43,12 +43,34 @@ use crate::core::traits::{
     FundingHistory, AccountLedger,
 };
 use crate::core::types::ConnectorStats;
-use crate::core::utils::DecayingRateLimiter;
+use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight, DecayingLimitConfig};
 use crate::core::utils::precision::PrecisionCache;
 
 use super::endpoints::{KrakenUrls, KrakenEndpoint, format_symbol, map_ohlc_interval};
 use super::auth::KrakenAuth;
 use super::parser::KrakenParser;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RATE LIMIT CAPABILITIES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+static KRAKEN_RATE_CAPS: RateLimitCapabilities = RateLimitCapabilities {
+    model: LimitModel::Decaying,
+    rest_pools: &[] as &[RestLimitPool],
+    decaying: Some(DecayingLimitConfig {
+        max_counter: 15.0,
+        decay_rate_per_sec: 0.33,
+        default_cost: 1.0,
+    }),
+    endpoint_weights: &[] as &[EndpointWeight],
+    ws: WsLimits {
+        max_connections: Some(150),
+        max_subs_per_conn: None,
+        max_msg_per_sec: None,
+        max_streams_per_conn: None,
+    },
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR
@@ -64,8 +86,10 @@ pub struct KrakenConnector {
     urls: KrakenUrls,
     /// Testnet mode
     testnet: bool,
-    /// Rate limiter (Kraken Spot Starter tier: max=15, decay=0.33/s)
-    rate_limiter: Arc<Mutex<DecayingRateLimiter>>,
+    /// Runtime rate limiter (Decaying model: max=15, decay=0.33/s)
+    limiter: Arc<Mutex<RuntimeLimiter>>,
+    /// Pressure monitor
+    monitor: Arc<Mutex<RateLimitMonitor>>,
     /// Per-symbol precision cache (populated after get_exchange_info)
     precision: PrecisionCache,
 }
@@ -86,17 +110,16 @@ impl KrakenConnector {
             .map(KrakenAuth::new)
             .transpose()?;
 
-        // Initialize rate limiter: Kraken Spot Starter tier (max=15, decay=0.33/s)
-        let rate_limiter = Arc::new(Mutex::new(
-            DecayingRateLimiter::new(15.0, 0.33)
-        ));
+        let limiter = Arc::new(Mutex::new(RuntimeLimiter::from_caps(&KRAKEN_RATE_CAPS)));
+        let monitor = Arc::new(Mutex::new(RateLimitMonitor::new("Kraken")));
 
         Ok(Self {
             http,
             auth,
             urls,
             testnet,
-            rate_limiter,
+            limiter,
+            monitor,
             precision: PrecisionCache::new(),
         })
     }
@@ -110,17 +133,24 @@ impl KrakenConnector {
     // HTTP HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// Wait for rate limit if needed
-    async fn rate_limit_wait(&self) {
+    /// Wait for rate limit if needed.
+    ///
+    /// Uses the Decaying model — cost 1 per request.
+    /// Non-essential requests are dropped at >= 90% utilization.
+    /// Returns `true` if acquired, `false` if dropped.
+    async fn rate_limit_wait(&self, essential: bool) -> bool {
         loop {
             let wait_time = {
-                let mut limiter = self.rate_limiter.lock().expect("Mutex poisoned");
-                if limiter.try_acquire(1.0) {
-                    return;
+                let mut limiter = self.limiter.lock().expect("limiter poisoned");
+                let pressure = self.monitor.lock().expect("monitor poisoned").check(&mut limiter);
+                if pressure >= RateLimitPressure::Cutoff && !essential {
+                    return false;
                 }
-                limiter.time_until_ready(1.0)
+                if limiter.try_acquire("default", 1) {
+                    return true;
+                }
+                limiter.time_until_ready("default", 1)
             };
-
             if wait_time > Duration::ZERO {
                 tokio::time::sleep(wait_time).await;
             }
@@ -134,7 +164,13 @@ impl KrakenConnector {
         params: HashMap<String, String>,
         account_type: AccountType,
     ) -> ExchangeResult<Value> {
-        self.rate_limit_wait().await;
+        // GET requests are public market data — non-essential
+        if !self.rate_limit_wait(false).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; market data request dropped".to_string(),
+            });
+        }
 
         let base_url = self.urls.rest_url(account_type);
         let path = endpoint.path();
@@ -166,7 +202,8 @@ impl KrakenConnector {
         params: HashMap<String, String>,
         account_type: AccountType,
     ) -> ExchangeResult<Value> {
-        self.rate_limit_wait().await;
+        // POST requests are trading operations — always essential
+        self.rate_limit_wait(true).await;
 
         let base_url = self.urls.rest_url(account_type);
         let path = endpoint.path();
@@ -259,8 +296,8 @@ impl ExchangeIdentity for KrakenConnector {
 
     fn metrics(&self) -> ConnectorStats {
         let (http_requests, http_errors, last_latency_ms) = self.http.stats();
-        let (rate_used, rate_max) = if let Ok(mut lim) = self.rate_limiter.lock() {
-            (lim.current_level() as u32, lim.max_level() as u32)
+        let (rate_used, rate_max) = if let Ok(mut limiter) = self.limiter.lock() {
+            limiter.primary_stats()
         } else {
             (0, 0)
         };
@@ -273,6 +310,10 @@ impl ExchangeIdentity for KrakenConnector {
             rate_groups: Vec::new(),
             ws_ping_rtt_ms: 0,
         }
+    }
+
+    fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
+        KRAKEN_RATE_CAPS
     }
 
     fn is_testnet(&self) -> bool {

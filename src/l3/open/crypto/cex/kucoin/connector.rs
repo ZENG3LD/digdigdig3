@@ -47,11 +47,39 @@ use crate::core::types::{
     SubAccount, ConnectorStats,
     FundingPayment, FundingFilter, LedgerEntry, LedgerFilter,
 };
-use crate::core::utils::WeightRateLimiter;
+use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits};
 
 use super::endpoints::{KuCoinUrls, KuCoinEndpoint, format_symbol, map_kline_interval, map_futures_granularity};
 use super::auth::KuCoinAuth;
 use super::parser::KuCoinParser;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RATE LIMIT CAPABILITIES (static — embedded in binary, no allocation)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+static KUCOIN_POOLS: &[RestLimitPool] = &[RestLimitPool {
+    name: "default",
+    max_budget: 4000,
+    window_seconds: 30,
+    is_weight: true,
+    has_server_headers: true,
+    server_header: Some("X-RateLimit-Used"),
+    header_reports_used: true,
+}];
+
+static KUCOIN_RATE_CAPS: RateLimitCapabilities = RateLimitCapabilities {
+    model: LimitModel::Weight,
+    rest_pools: KUCOIN_POOLS,
+    decaying: None,
+    endpoint_weights: &[],
+    ws: WsLimits {
+        max_connections: Some(800),
+        max_subs_per_conn: Some(300),
+        max_msg_per_sec: Some(10),
+        max_streams_per_conn: None,
+    },
+};
 
 // KuCoin endpoint weights (VIP0 spot limits)
 mod weights {
@@ -78,8 +106,10 @@ pub struct KuCoinConnector {
     urls: KuCoinUrls,
     /// Testnet mode
     testnet: bool,
-    /// Rate limiter (4000 weight per 30 seconds)
-    rate_limiter: Arc<Mutex<WeightRateLimiter>>,
+    /// Runtime rate limiter (Weight model: 4000 weight per 30 seconds)
+    limiter: Arc<Mutex<RuntimeLimiter>>,
+    /// Pressure monitor — gates non-essential requests at >= 90%
+    monitor: Arc<Mutex<RateLimitMonitor>>,
     /// Per-symbol precision cache for safe price/qty formatting
     precision: crate::core::utils::precision::PrecisionCache,
 }
@@ -113,17 +143,16 @@ impl KuCoinConnector {
             }
         }
 
-        // Initialize rate limiter: 4000 weight per 30 seconds (KuCoin spot VIP0)
-        let rate_limiter = Arc::new(Mutex::new(
-            WeightRateLimiter::new(4000, Duration::from_secs(30))
-        ));
+        let limiter = Arc::new(Mutex::new(RuntimeLimiter::from_caps(&KUCOIN_RATE_CAPS)));
+        let monitor = Arc::new(Mutex::new(RateLimitMonitor::new("KuCoin")));
 
         Ok(Self {
             http,
             auth,
             urls,
             testnet,
-            rate_limiter,
+            limiter,
+            monitor,
             precision: crate::core::utils::precision::PrecisionCache::new(),
         })
     }
@@ -137,41 +166,43 @@ impl KuCoinConnector {
     // HTTP HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// Update rate limiter from KuCoin response headers
+    /// Sync limiter from KuCoin response headers.
     ///
-    /// KuCoin reports: gw-ratelimit-remaining = remaining, gw-ratelimit-limit = total limit
+    /// KuCoin reports: X-RateLimit-Used = used weight.
     fn update_rate_from_headers(&self, headers: &HeaderMap) {
-        let remaining = headers
-            .get("gw-ratelimit-remaining")
+        if let Some(used) = headers
+            .get("X-RateLimit-Used")
             .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<u32>().ok());
-
-        let limit = headers
-            .get("gw-ratelimit-limit")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<u32>().ok());
-
-        if let (Some(remaining), Some(limit)) = (remaining, limit) {
-            let used = limit.saturating_sub(remaining);
-            if let Ok(mut limiter) = self.rate_limiter.lock() {
-                limiter.update_from_server(used);
+            .and_then(|s| s.parse::<u32>().ok())
+        {
+            if let Ok(mut limiter) = self.limiter.lock() {
+                limiter.update_from_server("default", used);
             }
         }
     }
 
-    /// Wait for rate limit if needed
-    async fn rate_limit_wait(&self, weight: u32) {
+    /// Wait for rate limit budget. Non-essential requests are dropped at >= 90% utilization.
+    ///
+    /// Returns `true` if acquired, `false` if dropped due to cutoff pressure.
+    /// Trading endpoints should pass `essential: true` to always wait through.
+    async fn rate_limit_wait(&self, weight: u32, essential: bool) -> bool {
         loop {
-            // Scope the lock to ensure it's dropped before await
             let wait_time = {
-                let mut limiter = self.rate_limiter.lock()
-                    .expect("Rate limiter mutex poisoned");
-                if limiter.try_acquire(weight) {
-                    return; // Successfully acquired, exit early
-                }
-                limiter.time_until_ready(weight)
-            }; // Lock is dropped here
+                let mut limiter = self.limiter.lock()
+                    .expect("rate limiter mutex poisoned");
 
+                let pressure = self.monitor.lock()
+                    .expect("rate monitor mutex poisoned")
+                    .check(&mut limiter);
+                if pressure >= RateLimitPressure::Cutoff && !essential {
+                    return false;
+                }
+
+                if limiter.try_acquire("default", weight) {
+                    return true;
+                }
+                limiter.time_until_ready("default", weight)
+            };
             if wait_time > Duration::ZERO {
                 tokio::time::sleep(wait_time).await;
             }
@@ -192,7 +223,13 @@ impl KuCoinConnector {
             KuCoinEndpoint::SpotAllTickers | KuCoinEndpoint::FuturesAllTickers => weights::ALL_TICKERS,
             _ => weights::DEFAULT,
         };
-        self.rate_limit_wait(weight).await;
+        // Market data = non-essential: drop at >= 90% utilization to preserve budget for trading
+        if !self.rate_limit_wait(weight, false).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; non-essential market data request dropped".to_string(),
+            });
+        }
 
         let base_url = self.urls.rest_url(account_type);
         let path = endpoint.path();
@@ -237,7 +274,8 @@ impl KuCoinConnector {
             KuCoinEndpoint::SpotCreateOrder | KuCoinEndpoint::FuturesCreateOrder => weights::PLACE_ORDER,
             _ => weights::DEFAULT,
         };
-        self.rate_limit_wait(weight).await;
+        // Order placement = essential: always wait, never drop
+        self.rate_limit_wait(weight, true).await;
 
         let base_url = self.urls.rest_url(account_type);
         let path = endpoint.path();
@@ -267,7 +305,8 @@ impl KuCoinConnector {
             KuCoinEndpoint::SpotCancelOrder | KuCoinEndpoint::FuturesCancelOrder => weights::AMEND_ORDER,
             _ => weights::DEFAULT,
         };
-        self.rate_limit_wait(weight).await;
+        // Order management = essential: always wait, never drop
+        self.rate_limit_wait(weight, true).await;
 
         let base_url = self.urls.rest_url(account_type);
         let mut path = endpoint.path().to_string();
@@ -492,7 +531,7 @@ impl KuCoinConnector {
 
     /// Get current mark price for a futures symbol.
     pub async fn get_futures_mark_price(&self, symbol: &str) -> ExchangeResult<Value> {
-        self.rate_limit_wait(weights::DEFAULT).await;
+        self.rate_limit_wait(weights::DEFAULT, false).await;
         let base_url = self.urls.rest_url(AccountType::FuturesCross);
         let path = format!("/api/v1/mark-price/{}/current", symbol);
         let url = format!("{}{}", base_url, path);
@@ -503,7 +542,7 @@ impl KuCoinConnector {
 
     /// Get current index price for a futures symbol.
     pub async fn get_futures_index_price(&self, symbol: &str) -> ExchangeResult<Value> {
-        self.rate_limit_wait(weights::DEFAULT).await;
+        self.rate_limit_wait(weights::DEFAULT, false).await;
         let base_url = self.urls.rest_url(AccountType::FuturesCross);
         let path = format!("/api/v1/index-price/{}/current", symbol);
         let url = format!("{}{}", base_url, path);
@@ -514,7 +553,7 @@ impl KuCoinConnector {
 
     /// Get current premium index for a futures symbol.
     pub async fn get_futures_premium_index(&self, symbol: &str) -> ExchangeResult<Value> {
-        self.rate_limit_wait(weights::DEFAULT).await;
+        self.rate_limit_wait(weights::DEFAULT, false).await;
         let base_url = self.urls.rest_url(AccountType::FuturesCross);
         let path = format!("/api/v1/premium-index/{}/current", symbol);
         let url = format!("{}{}", base_url, path);
@@ -598,8 +637,8 @@ impl ExchangeIdentity for KuCoinConnector {
 
     fn metrics(&self) -> ConnectorStats {
         let (http_requests, http_errors, last_latency_ms) = self.http.stats();
-        let (rate_used, rate_max) = if let Ok(mut limiter) = self.rate_limiter.lock() {
-            (limiter.current_weight(), limiter.max_weight())
+        let (rate_used, rate_max) = if let Ok(mut limiter) = self.limiter.lock() {
+            limiter.primary_stats()
         } else {
             (0, 0)
         };
@@ -629,6 +668,10 @@ impl ExchangeIdentity for KuCoinConnector {
 
     fn exchange_type(&self) -> ExchangeType {
         ExchangeType::Cex
+    }
+
+    fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
+        KUCOIN_RATE_CAPS
     }
 }
 

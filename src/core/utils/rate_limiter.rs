@@ -734,26 +734,27 @@ impl RuntimeLimiter {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Threshold levels for rate limit pressure.
+///
+/// Two thresholds:
+/// - **75%** — Warning: notify user, everything still passes.
+/// - **90%** — Cutoff: non-essential requests (market data) are dropped.
+///   Last 10% of budget is reserved exclusively for trading operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RateLimitPressure {
-    /// < 80% utilization — normal operation.
+    /// < 75% utilization — normal operation.
     Normal,
-    /// >= 80% — warning; UI shows amber indicator.
+    /// >= 75% — warning notification; all requests still pass.
     Warning,
-    /// >= 90% — throttle non-essential; UI shows red indicator.
-    Critical,
-    /// >= 95% — drop non-essential requests, return `RateLimitExceeded`.
-    Throttled,
+    /// >= 90% — non-essential requests dropped; last 10% reserved for trading.
+    Cutoff,
 }
 
 impl RateLimitPressure {
     /// Determine pressure level from utilization ratio.
     pub fn from_utilization(ratio: f32) -> Self {
-        if ratio >= 0.95 {
-            Self::Throttled
-        } else if ratio >= 0.90 {
-            Self::Critical
-        } else if ratio >= 0.80 {
+        if ratio >= 0.90 {
+            Self::Cutoff
+        } else if ratio >= 0.75 {
             Self::Warning
         } else {
             Self::Normal
@@ -788,21 +789,14 @@ impl RateLimitMonitor {
                     tracing::warn!(
                         exchange = self.exchange_name,
                         utilization = format!("{:.0}%", ratio * 100.0),
-                        "Rate limit warning: 80%+ budget used"
+                        "Rate limit warning: 75%+ budget used"
                     );
                 }
-                RateLimitPressure::Critical => {
+                RateLimitPressure::Cutoff => {
                     tracing::error!(
                         exchange = self.exchange_name,
                         utilization = format!("{:.0}%", ratio * 100.0),
-                        "Rate limit critical: 90%+ budget used — throttling non-essential"
-                    );
-                }
-                RateLimitPressure::Throttled => {
-                    tracing::error!(
-                        exchange = self.exchange_name,
-                        utilization = format!("{:.0}%", ratio * 100.0),
-                        "Rate limit THROTTLED: 95%+ budget used — dropping non-essential requests"
+                        "Rate limit cutoff: 90%+ used — dropping non-essential, last 10% reserved for trading"
                     );
                 }
                 RateLimitPressure::Normal => {

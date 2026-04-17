@@ -17,6 +17,7 @@
 //! Public mode gives access to all read endpoints.
 //! Authenticated mode additionally enables /orders endpoint.
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -28,6 +29,8 @@ use crate::core::{
 };
 use crate::core::traits::{ExchangeIdentity, MarketData};
 use crate::core::types::MarketDataCapabilities;
+use crate::core::types::{ConnectorStats, RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits};
+use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 
 use super::auth::{PolymarketAuth, PolymarketCredentials};
 use super::endpoints::{
@@ -40,6 +43,33 @@ use super::parser::{
     poly_market_to_symbol_info,
     price_history_to_klines, poly_orderbook_to_v5,
     interval_to_ms,
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RATE LIMIT CAPABILITIES (static — embedded in binary, no allocation)
+// ═══════════════════════════════════════════════════════════════════════════
+
+static POLYMARKET_RATE_POOLS: &[RestLimitPool] = &[RestLimitPool {
+    name: "default",
+    max_budget: 500,
+    window_seconds: 60,
+    is_weight: false,
+    has_server_headers: false,
+    server_header: None,
+    header_reports_used: false,
+}];
+
+static POLYMARKET_RATE_CAPS: RateLimitCapabilities = RateLimitCapabilities {
+    model: LimitModel::Simple,
+    rest_pools: POLYMARKET_RATE_POOLS,
+    decaying: None,
+    endpoint_weights: &[],
+    ws: WsLimits {
+        max_connections: None,
+        max_subs_per_conn: None,
+        max_msg_per_sec: None,
+        max_streams_per_conn: None,
+    },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -73,6 +103,10 @@ pub struct PolymarketConnector {
     _auth: PolymarketAuth,
     /// API base URLs
     endpoints: PolymarketEndpoints,
+    /// Runtime rate limiter (Simple model: 500 req/60s)
+    limiter: Arc<Mutex<RuntimeLimiter>>,
+    /// Pressure monitor — logs transitions, gates non-essential requests at >= 90%
+    monitor: Arc<Mutex<RateLimitMonitor>>,
 }
 
 impl PolymarketConnector {
@@ -89,6 +123,8 @@ impl PolymarketConnector {
                 .unwrap_or_default(),
             _auth: PolymarketAuth::new(),
             endpoints: PolymarketEndpoints::default(),
+            limiter: Arc::new(Mutex::new(RuntimeLimiter::from_caps(&POLYMARKET_RATE_CAPS))),
+            monitor: Arc::new(Mutex::new(RateLimitMonitor::new("Polymarket"))),
         }
     }
 
@@ -101,6 +137,8 @@ impl PolymarketConnector {
                 .unwrap_or_default(),
             _auth: PolymarketAuth::with_credentials(creds),
             endpoints: PolymarketEndpoints::default(),
+            limiter: Arc::new(Mutex::new(RuntimeLimiter::from_caps(&POLYMARKET_RATE_CAPS))),
+            monitor: Arc::new(Mutex::new(RateLimitMonitor::new("Polymarket"))),
         }
     }
 
@@ -113,6 +151,8 @@ impl PolymarketConnector {
                 .unwrap_or_default(),
             _auth: PolymarketAuth::from_env(),
             endpoints: PolymarketEndpoints::default(),
+            limiter: Arc::new(Mutex::new(RuntimeLimiter::from_caps(&POLYMARKET_RATE_CAPS))),
+            monitor: Arc::new(Mutex::new(RateLimitMonitor::new("Polymarket"))),
         }
     }
 
@@ -120,8 +160,41 @@ impl PolymarketConnector {
     // Internal HTTP helpers
     // -----------------------------------------------------------------------
 
+    /// Wait for rate limit budget. Non-essential requests are dropped at >= 90% utilization.
+    ///
+    /// Returns `true` if acquired, `false` if dropped due to cutoff pressure.
+    async fn rate_limit_wait(&self, weight: u32, essential: bool) -> bool {
+        loop {
+            let wait_time = {
+                let mut limiter = self.limiter.lock()
+                    .expect("rate limiter mutex poisoned");
+
+                let pressure = self.monitor.lock()
+                    .expect("rate monitor mutex poisoned")
+                    .check(&mut limiter);
+                if pressure >= RateLimitPressure::Cutoff && !essential {
+                    return false;
+                }
+
+                if limiter.try_acquire("default", weight) {
+                    return true;
+                }
+                limiter.time_until_ready("default", weight)
+            };
+            if wait_time > Duration::ZERO {
+                tokio::time::sleep(wait_time).await;
+            }
+        }
+    }
+
     /// GET request to any URL, returns parsed JSON
     async fn get_url(&self, url: &str) -> ExchangeResult<serde_json::Value> {
+        if !self.rate_limit_wait(1, false).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; non-essential market data request dropped".to_string(),
+            });
+        }
         let response = self
             .client
             .get(url)
@@ -347,6 +420,27 @@ impl ExchangeIdentity for PolymarketConnector {
 
     fn exchange_type(&self) -> ExchangeType {
         ExchangeType::DataProvider
+    }
+
+    fn metrics(&self) -> ConnectorStats {
+        let (rate_used, rate_max) = if let Ok(mut limiter) = self.limiter.lock() {
+            limiter.primary_stats()
+        } else {
+            (0, 0)
+        };
+        ConnectorStats {
+            http_requests: 0,
+            http_errors: 0,
+            last_latency_ms: 0,
+            rate_used,
+            rate_max,
+            rate_groups: Vec::new(),
+            ws_ping_rtt_ms: 0,
+        }
+    }
+
+    fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
+        POLYMARKET_RATE_CAPS
     }
 }
 

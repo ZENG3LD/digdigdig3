@@ -48,7 +48,8 @@ use crate::core::types::{
     LedgerEntry, LedgerFilter,
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
-use crate::core::utils::WeightRateLimiter;
+use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight};
 
 use super::endpoints::{BinanceUrls, BinanceEndpoint, format_symbol, map_kline_interval};
 use super::auth::BinanceAuth;
@@ -76,6 +77,39 @@ mod weights {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// RATE LIMIT CAPABILITIES (static — embedded in binary, no allocation)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+static BINANCE_SPOT_POOLS: &[RestLimitPool] = &[RestLimitPool {
+    name: "default",
+    max_budget: 6000,
+    window_seconds: 60,
+    is_weight: true,
+    has_server_headers: true,
+    server_header: Some("X-MBX-USED-WEIGHT-1M"),
+    header_reports_used: true,
+}];
+
+static BINANCE_DEPTH_WEIGHTS: &[EndpointWeight] = &[EndpointWeight {
+    endpoint: "depth",
+    default_weight: Some(5),
+    tiers: &[(5, 5), (10, 5), (20, 5), (50, 5), (100, 5), (500, 25), (1000, 50), (5000, 250)],
+}];
+
+static BINANCE_SPOT_RATE_CAPS: RateLimitCapabilities = RateLimitCapabilities {
+    model: LimitModel::Weight,
+    rest_pools: BINANCE_SPOT_POOLS,
+    decaying: None,
+    endpoint_weights: BINANCE_DEPTH_WEIGHTS,
+    ws: WsLimits {
+        max_connections: None,
+        max_subs_per_conn: None,
+        max_msg_per_sec: Some(5),
+        max_streams_per_conn: Some(1024),
+    },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -89,8 +123,10 @@ pub struct BinanceConnector {
     urls: BinanceUrls,
     /// Testnet mode
     testnet: bool,
-    /// Weight-based rate limiter (6000 weight per minute)
-    weight_limiter: Arc<Mutex<WeightRateLimiter>>,
+    /// Runtime rate limiter (Weight model: 6000 weight per minute)
+    limiter: Arc<Mutex<RuntimeLimiter>>,
+    /// Pressure monitor — logs transitions, gates non-essential requests at >= 90%
+    monitor: Arc<Mutex<RateLimitMonitor>>,
     /// Per-symbol precision cache (populated from get_exchange_info)
     precision: crate::core::utils::precision::PrecisionCache,
 }
@@ -124,17 +160,16 @@ impl BinanceConnector {
             }
         }
 
-        // Initialize weight limiter: 6000 weight per minute
-        let weight_limiter = Arc::new(Mutex::new(
-            WeightRateLimiter::new(6000, Duration::from_secs(60))
-        ));
+        let limiter = Arc::new(Mutex::new(RuntimeLimiter::from_caps(&BINANCE_SPOT_RATE_CAPS)));
+        let monitor = Arc::new(Mutex::new(RateLimitMonitor::new("Binance")));
 
         Ok(Self {
             http,
             auth,
             urls,
             testnet,
-            weight_limiter,
+            limiter,
+            monitor,
             precision: crate::core::utils::precision::PrecisionCache::new(),
         })
     }
@@ -227,16 +262,29 @@ impl BinanceConnector {
     // RATE LIMITING
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// Wait for rate limit if necessary before making a request
-    async fn rate_limit_wait(&self, weight: u32) {
+    /// Wait for rate limit budget. Non-essential requests are dropped at >= 90% utilization.
+    ///
+    /// Returns `true` if acquired, `false` if dropped due to cutoff pressure.
+    /// Trading endpoints should pass `essential: true` to always wait through.
+    async fn rate_limit_wait(&self, weight: u32, essential: bool) -> bool {
         loop {
             let wait_time = {
-                let mut limiter = self.weight_limiter.lock()
-                    .expect("Weight limiter mutex poisoned");
-                if limiter.try_acquire(weight) {
-                    return;
+                let mut limiter = self.limiter.lock()
+                    .expect("rate limiter mutex poisoned");
+
+                // Check pressure on every loop iteration — after server header sync
+                // the utilization may change, so we re-check before each acquire attempt.
+                let pressure = self.monitor.lock()
+                    .expect("rate monitor mutex poisoned")
+                    .check(&mut limiter);
+                if pressure >= RateLimitPressure::Cutoff && !essential {
+                    return false;
                 }
-                limiter.time_until_ready(weight)
+
+                if limiter.try_acquire("default", weight) {
+                    return true;
+                }
+                limiter.time_until_ready("default", weight)
             };
             if wait_time > Duration::ZERO {
                 tokio::time::sleep(wait_time).await;
@@ -248,15 +296,15 @@ impl BinanceConnector {
     // HTTP HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// Обновить weight limiter из заголовка ответа X-MBX-USED-WEIGHT-1M
+    /// Sync limiter from X-MBX-USED-WEIGHT-1M response header.
     fn update_weight_from_headers(&self, headers: &reqwest::header::HeaderMap) {
         if let Some(weight) = headers
             .get("X-MBX-USED-WEIGHT-1M")
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<u32>().ok())
         {
-            if let Ok(mut limiter) = self.weight_limiter.lock() {
-                limiter.update_from_server(weight);
+            if let Ok(mut limiter) = self.limiter.lock() {
+                limiter.update_from_server("default", weight);
             }
         }
     }
@@ -286,7 +334,13 @@ impl BinanceConnector {
             BinanceEndpoint::FundingRate => weights::DEFAULT,
             _ => weights::DEFAULT,
         };
-        self.rate_limit_wait(weight).await;
+        // Market data = non-essential: drop at >= 90% utilization to preserve budget for trading
+        if !self.rate_limit_wait(weight, false).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; non-essential market data request dropped".to_string(),
+            });
+        }
 
         let base_url = self.urls.rest_url(account_type);
         let path = endpoint.path();
@@ -331,7 +385,8 @@ impl BinanceConnector {
             BinanceEndpoint::FuturesSetLeverage => weights::DEFAULT,
             _ => weights::DEFAULT,
         };
-        self.rate_limit_wait(weight).await;
+        // Order placement = essential: always wait, never drop
+        self.rate_limit_wait(weight, true).await;
 
         let base_url = self.urls.rest_url(account_type);
         let path = endpoint.path();
@@ -368,7 +423,8 @@ impl BinanceConnector {
         mut params: HashMap<String, String>,
         account_type: AccountType,
     ) -> ExchangeResult<Value> {
-        self.rate_limit_wait(weights::ORDER).await;
+        // Order amend = essential: always wait, never drop
+        self.rate_limit_wait(weights::ORDER, true).await;
 
         let base_url = self.urls.rest_url(account_type);
         let path = endpoint.path();
@@ -402,7 +458,8 @@ impl BinanceConnector {
         mut params: HashMap<String, String>,
         account_type: AccountType,
     ) -> ExchangeResult<Value> {
-        self.rate_limit_wait(weights::DEFAULT).await;
+        // Batch amend = essential: always wait, never drop
+        self.rate_limit_wait(weights::DEFAULT, true).await;
 
         let base_url = self.urls.rest_url(account_type);
         let path = endpoint.path();
@@ -435,12 +492,12 @@ impl BinanceConnector {
         mut params: HashMap<String, String>,
         account_type: AccountType,
     ) -> ExchangeResult<Value> {
-        // DELETE endpoints: cancel order = weight 1
+        // DELETE endpoints: cancel order = weight 1; essential (trading)
         let weight = match endpoint {
             BinanceEndpoint::SpotCancelOrder | BinanceEndpoint::FuturesCancelOrder => weights::ORDER,
             _ => weights::DEFAULT,
         };
-        self.rate_limit_wait(weight).await;
+        self.rate_limit_wait(weight, true).await;
 
         let base_url = self.urls.rest_url(account_type);
         let path = endpoint.path();
@@ -588,7 +645,8 @@ impl BinanceConnector {
 
     /// Keepalive a spot user data stream listen key (extend 60-min TTL).
     pub async fn keepalive_listen_key(&self, listen_key: &str) -> ExchangeResult<Value> {
-        self.rate_limit_wait(weights::DEFAULT).await;
+        // Listen key keepalive is essential — losing it kills the user data stream
+        self.rate_limit_wait(weights::DEFAULT, true).await;
         let base_url = self.urls.rest_url(AccountType::Spot);
         let auth = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
@@ -638,8 +696,8 @@ impl ExchangeIdentity for BinanceConnector {
 
     fn metrics(&self) -> ConnectorStats {
         let (http_requests, http_errors, last_latency_ms) = self.http.stats();
-        let (rate_used, rate_max) = if let Ok(mut limiter) = self.weight_limiter.lock() {
-            (limiter.current_weight(), limiter.max_weight())
+        let (rate_used, rate_max) = if let Ok(mut limiter) = self.limiter.lock() {
+            limiter.primary_stats()
         } else {
             (0, 0)
         };
@@ -652,6 +710,10 @@ impl ExchangeIdentity for BinanceConnector {
             rate_groups: Vec::new(),
             ws_ping_rtt_ms: 0,
         }
+    }
+
+    fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
+        BINANCE_SPOT_RATE_CAPS
     }
 }
 

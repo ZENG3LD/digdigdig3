@@ -39,12 +39,60 @@ use crate::core::{
 use crate::core::types::{WithdrawRequest, FundsHistoryFilter, FundsRecordType};
 use crate::core::types::SymbolInfo;
 use crate::core::types::ConnectorStats;
-use crate::core::utils::GroupRateLimiter;
+use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight};
 use crate::core::utils::PrecisionCache;
 
 use super::endpoints::{UpbitUrls, UpbitEndpoint, format_symbol, map_kline_interval};
 use super::auth::{UpbitAuth, json_to_query_string};
 use super::parser::UpbitParser;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RATE LIMIT CAPABILITIES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+static UPBIT_POOLS: &[RestLimitPool] = &[
+    RestLimitPool {
+        name: "market",
+        max_budget: 10,
+        window_seconds: 1,
+        is_weight: false,
+        has_server_headers: true,
+        server_header: Some("Remaining-Req"),
+        header_reports_used: false,
+    },
+    RestLimitPool {
+        name: "account",
+        max_budget: 30,
+        window_seconds: 1,
+        is_weight: false,
+        has_server_headers: true,
+        server_header: Some("Remaining-Req"),
+        header_reports_used: false,
+    },
+    RestLimitPool {
+        name: "order",
+        max_budget: 8,
+        window_seconds: 1,
+        is_weight: false,
+        has_server_headers: true,
+        server_header: Some("Remaining-Req"),
+        header_reports_used: false,
+    },
+];
+
+static UPBIT_RATE_CAPS: RateLimitCapabilities = RateLimitCapabilities {
+    model: LimitModel::Group,
+    rest_pools: UPBIT_POOLS,
+    decaying: None,
+    endpoint_weights: &[] as &[EndpointWeight],
+    ws: WsLimits {
+        max_connections: None,
+        max_subs_per_conn: None,
+        max_msg_per_sec: Some(5),
+        max_streams_per_conn: None,
+    },
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR
@@ -58,8 +106,10 @@ pub struct UpbitConnector {
     auth: Option<UpbitAuth>,
     /// URL'ы (регион)
     urls: UpbitUrls,
-    /// Rate limiter with groups: market (10/s), account (30/s), order (8/s)
-    rate_limiter: Arc<Mutex<GroupRateLimiter>>,
+    /// Runtime rate limiter (Group model: market 10/1s + account 30/1s + order 8/1s)
+    limiter: Arc<Mutex<RuntimeLimiter>>,
+    /// Pressure monitor
+    monitor: Arc<Mutex<RateLimitMonitor>>,
     /// Per-symbol precision cache for safe price/qty formatting
     precision: PrecisionCache,
 }
@@ -83,18 +133,15 @@ impl UpbitConnector {
             .map(UpbitAuth::new)
             .transpose()?;
 
-        // Initialize group rate limiter per Upbit API limits
-        let mut group_limiter = GroupRateLimiter::new();
-        group_limiter.add_group("market", 10, Duration::from_secs(1));
-        group_limiter.add_group("account", 30, Duration::from_secs(1));
-        group_limiter.add_group("order", 8, Duration::from_secs(1));
-        let rate_limiter = Arc::new(Mutex::new(group_limiter));
+        let limiter = Arc::new(Mutex::new(RuntimeLimiter::from_caps(&UPBIT_RATE_CAPS)));
+        let monitor = Arc::new(Mutex::new(RateLimitMonitor::new("Upbit")));
 
         Ok(Self {
             http,
             auth,
             urls,
-            rate_limiter,
+            limiter,
+            monitor,
             precision: PrecisionCache::new(),
         })
     }
@@ -145,23 +192,29 @@ impl UpbitConnector {
                 _ => return,
             };
             let used = group_max.saturating_sub(remaining);
-            if let Ok(mut limiter) = self.rate_limiter.lock() {
+            if let Ok(mut limiter) = self.limiter.lock() {
                 limiter.update_from_server(&group, used);
             }
         }
     }
 
-    /// Wait for rate limit if needed, routing to the appropriate group
-    async fn rate_limit_wait(&self, group: &str, weight: u32) {
+    /// Wait for rate limit if needed, routing to the appropriate group.
+    ///
+    /// Non-essential requests (market data via "market" group) are dropped at >= 90% utilization.
+    /// Returns `true` if acquired, `false` if dropped due to cutoff pressure.
+    async fn rate_limit_wait(&self, group: &str, weight: u32, essential: bool) -> bool {
         loop {
             let wait_time = {
-                let mut limiter = self.rate_limiter.lock().expect("Mutex poisoned");
+                let mut limiter = self.limiter.lock().expect("limiter poisoned");
+                let pressure = self.monitor.lock().expect("monitor poisoned").check(&mut limiter);
+                if pressure >= RateLimitPressure::Cutoff && !essential {
+                    return false;
+                }
                 if limiter.try_acquire(group, weight) {
-                    return;
+                    return true;
                 }
                 limiter.time_until_ready(group, weight)
             };
-
             if wait_time > Duration::ZERO {
                 tokio::time::sleep(wait_time).await;
             }
@@ -175,9 +228,15 @@ impl UpbitConnector {
         params: HashMap<String, String>,
         account_type: AccountType,
     ) -> ExchangeResult<Value> {
-        // Route to appropriate rate limit group
+        // Route to appropriate rate limit group; market data is non-essential
         let group = if endpoint.requires_auth() { "account" } else { "market" };
-        self.rate_limit_wait(group, 1).await;
+        let essential = endpoint.requires_auth();
+        if !self.rate_limit_wait(group, 1, essential).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; market data request dropped".to_string(),
+            });
+        }
 
         let base_url = self.urls.rest_url(account_type);
         let mut path = endpoint.path().to_string();
@@ -229,7 +288,8 @@ impl UpbitConnector {
         body: Value,
         _account_type: AccountType,
     ) -> ExchangeResult<Value> {
-        self.rate_limit_wait("order", 1).await;
+        // Order operations are always essential
+        self.rate_limit_wait("order", 1, true).await;
 
         let base_url = self.urls.rest;
         let path = endpoint.path();
@@ -256,7 +316,8 @@ impl UpbitConnector {
         params: HashMap<String, String>,
         _account_type: AccountType,
     ) -> ExchangeResult<Value> {
-        self.rate_limit_wait("order", 1).await;
+        // Order operations are always essential
+        self.rate_limit_wait("order", 1, true).await;
 
         let base_url = self.urls.rest;
         let path = endpoint.path();
@@ -356,12 +417,9 @@ impl ExchangeIdentity for UpbitConnector {
 
     fn metrics(&self) -> ConnectorStats {
         let (http_requests, http_errors, last_latency_ms) = self.http.stats();
-        let (rate_used, rate_max, rate_groups) = if let Ok(mut limiter) = self.rate_limiter.lock() {
+        let (rate_used, rate_max, rate_groups) = if let Ok(mut limiter) = self.limiter.lock() {
             let (used, max) = limiter.primary_stats();
-            let groups = limiter.all_stats()
-                .into_iter()
-                .map(|(name, cur, mx)| (name.to_string(), cur, mx))
-                .collect();
+            let groups = limiter.group_stats();
             (used, max, groups)
         } else {
             (0, 0, Vec::new())
@@ -375,6 +433,10 @@ impl ExchangeIdentity for UpbitConnector {
             rate_groups,
             ws_ping_rtt_ms: 0,
         }
+    }
+
+    fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
+        UPBIT_RATE_CAPS
     }
 
     fn is_testnet(&self) -> bool {

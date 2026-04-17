@@ -40,12 +40,51 @@ use crate::core::{MarketDataCapabilities, TradingCapabilities, AccountCapabiliti
 use crate::core::types::ConnectorStats;
 use crate::core::types::{WithdrawRequest, FundsHistoryFilter, FundsRecordType};
 use crate::core::types::{UserTrade, UserTradeFilter};
-use crate::core::utils::SimpleRateLimiter;
+use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight};
 use crate::core::utils::PrecisionCache;
 
 use super::endpoints::{GeminiUrls, GeminiEndpoint, format_symbol, normalize_symbol, map_kline_interval};
 use super::auth::GeminiAuth;
 use super::parser::GeminiParser;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RATE LIMIT CAPABILITIES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+static GEMINI_POOLS: &[RestLimitPool] = &[
+    RestLimitPool {
+        name: "public",
+        max_budget: 120,
+        window_seconds: 60,
+        is_weight: false,
+        has_server_headers: false,
+        server_header: None,
+        header_reports_used: false,
+    },
+    RestLimitPool {
+        name: "private",
+        max_budget: 600,
+        window_seconds: 60,
+        is_weight: false,
+        has_server_headers: false,
+        server_header: None,
+        header_reports_used: false,
+    },
+];
+
+static GEMINI_RATE_CAPS: RateLimitCapabilities = RateLimitCapabilities {
+    model: LimitModel::Group,
+    rest_pools: GEMINI_POOLS,
+    decaying: None,
+    endpoint_weights: &[] as &[EndpointWeight],
+    ws: WsLimits {
+        max_connections: None,
+        max_subs_per_conn: None,
+        max_msg_per_sec: None,
+        max_streams_per_conn: None,
+    },
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR
@@ -61,10 +100,10 @@ pub struct GeminiConnector {
     urls: GeminiUrls,
     /// Testnet mode
     testnet: bool,
-    /// Public rate limiter (120 req/min = 2 req/sec)
-    public_limiter: Arc<Mutex<SimpleRateLimiter>>,
-    /// Private rate limiter (600 req/min = 10 req/sec)
-    private_limiter: Arc<Mutex<SimpleRateLimiter>>,
+    /// Runtime rate limiter (Group model: public 120/60s + private 600/60s)
+    limiter: Arc<Mutex<RuntimeLimiter>>,
+    /// Pressure monitor
+    monitor: Arc<Mutex<RateLimitMonitor>>,
     /// Per-symbol precision cache for safe price/qty formatting
     precision: PrecisionCache,
 }
@@ -85,21 +124,16 @@ impl GeminiConnector {
             .map(GeminiAuth::new)
             .transpose()?;
 
-        // Initialize rate limiters: public 120 req/min, private 600 req/min
-        let public_limiter = Arc::new(Mutex::new(
-            SimpleRateLimiter::new(120, Duration::from_secs(60))
-        ));
-        let private_limiter = Arc::new(Mutex::new(
-            SimpleRateLimiter::new(600, Duration::from_secs(60))
-        ));
+        let limiter = Arc::new(Mutex::new(RuntimeLimiter::from_caps(&GEMINI_RATE_CAPS)));
+        let monitor = Arc::new(Mutex::new(RateLimitMonitor::new("Gemini")));
 
         Ok(Self {
             http,
             auth,
             urls,
             testnet,
-            public_limiter,
-            private_limiter,
+            limiter,
+            monitor,
             precision: PrecisionCache::new(),
         })
     }
@@ -113,23 +147,25 @@ impl GeminiConnector {
     // HTTP HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// Wait for rate limit if needed
-    async fn rate_limit_wait(&self, is_private: bool) {
-        let limiter = if is_private {
-            &self.private_limiter
-        } else {
-            &self.public_limiter
-        };
-
+    /// Wait for rate limit if needed.
+    ///
+    /// Routes to "public" or "private" group. Non-essential (public) requests are
+    /// dropped at >= 90% utilization. Returns `true` if acquired, `false` if dropped.
+    async fn rate_limit_wait(&self, is_private: bool) -> bool {
+        let group = if is_private { "private" } else { "public" };
+        let essential = is_private;
         loop {
             let wait_time = {
-                let mut lim = limiter.lock().expect("Mutex poisoned");
-                if lim.try_acquire() {
-                    return;
+                let mut limiter = self.limiter.lock().expect("limiter poisoned");
+                let pressure = self.monitor.lock().expect("monitor poisoned").check(&mut limiter);
+                if pressure >= RateLimitPressure::Cutoff && !essential {
+                    return false;
                 }
-                lim.time_until_ready()
+                if limiter.try_acquire(group, 1) {
+                    return true;
+                }
+                limiter.time_until_ready(group, 1)
             };
-
             if wait_time > Duration::ZERO {
                 tokio::time::sleep(wait_time).await;
             }
@@ -142,8 +178,13 @@ impl GeminiConnector {
         endpoint: GeminiEndpoint,
         path_params: &[(&str, &str)],
     ) -> ExchangeResult<Value> {
-        // Wait for rate limit
-        self.rate_limit_wait(endpoint.requires_auth()).await;
+        // Public GET = non-essential; private GET = essential
+        if !self.rate_limit_wait(endpoint.requires_auth()).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; market data request dropped".to_string(),
+            });
+        }
 
         let base_url = self.urls.rest_url(AccountType::Spot);
         let mut path = endpoint.path().to_string();
@@ -167,7 +208,7 @@ impl GeminiConnector {
         params: HashMap<String, Value>,
         path_params: &[(&str, &str)],
     ) -> ExchangeResult<Value> {
-        // Wait for rate limit (POST is always private)
+        // POST is always private + essential
         self.rate_limit_wait(true).await;
 
         let base_url = self.urls.rest_url(AccountType::Spot);
@@ -203,22 +244,12 @@ impl ExchangeIdentity for GeminiConnector {
 
     fn metrics(&self) -> ConnectorStats {
         let (http_requests, http_errors, last_latency_ms) = self.http.stats();
-        let (rate_used, rate_max) = if let Ok(mut lim) = self.public_limiter.lock() {
-            (lim.current_count(), lim.max_requests())
+        let (rate_used, rate_max, rate_groups) = if let Ok(mut limiter) = self.limiter.lock() {
+            let (used, max) = limiter.primary_stats();
+            let groups = limiter.group_stats();
+            (used, max, groups)
         } else {
-            (0, 0)
-        };
-        let rate_groups = {
-            let pub_stats = self.public_limiter.lock()
-                .map(|mut lim| (lim.current_count(), lim.max_requests()))
-                .unwrap_or((0, 0));
-            let priv_stats = self.private_limiter.lock()
-                .map(|mut lim| (lim.current_count(), lim.max_requests()))
-                .unwrap_or((0, 0));
-            vec![
-                ("public".to_string(), pub_stats.0, pub_stats.1),
-                ("private".to_string(), priv_stats.0, priv_stats.1),
-            ]
+            (0, 0, Vec::new())
         };
         ConnectorStats {
             http_requests,
@@ -229,6 +260,10 @@ impl ExchangeIdentity for GeminiConnector {
             rate_groups,
             ws_ping_rtt_ms: 0,
         }
+    }
+
+    fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
+        GEMINI_RATE_CAPS
     }
 
     fn is_testnet(&self) -> bool {

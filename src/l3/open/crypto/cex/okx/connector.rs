@@ -47,12 +47,40 @@ use crate::core::types::{
     ConnectorStats,
     FundingPayment, FundingFilter,
     LedgerEntry, LedgerFilter,
+    RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits,
 };
-use crate::core::utils::SimpleRateLimiter;
+use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 
 use super::endpoints::{OkxUrls, OkxEndpoint, format_symbol, map_kline_interval, get_inst_type, get_trade_mode, get_account_id};
 use super::auth::OkxAuth;
 use super::parser::OkxParser;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RATE LIMIT CAPABILITIES (static — embedded in binary, no allocation)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+static OKX_RATE_POOLS: &[RestLimitPool] = &[RestLimitPool {
+    name: "default",
+    max_budget: 40,
+    window_seconds: 2,
+    is_weight: false,
+    has_server_headers: false,
+    server_header: None,
+    header_reports_used: false,
+}];
+
+static OKX_RATE_CAPS: RateLimitCapabilities = RateLimitCapabilities {
+    model: LimitModel::Simple,
+    rest_pools: OKX_RATE_POOLS,
+    decaying: None,
+    endpoint_weights: &[],
+    ws: WsLimits {
+        max_connections: None,
+        max_subs_per_conn: None,
+        max_msg_per_sec: None,
+        max_streams_per_conn: None,
+    },
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR
@@ -68,8 +96,10 @@ pub struct OkxConnector {
     urls: OkxUrls,
     /// Testnet mode
     testnet: bool,
-    /// Rate limiter (10 requests per 2 seconds = 5 rps)
-    rate_limiter: Arc<Mutex<SimpleRateLimiter>>,
+    /// Runtime rate limiter (Simple model: 40 req/2s)
+    limiter: Arc<Mutex<RuntimeLimiter>>,
+    /// Pressure monitor — logs transitions, gates non-essential requests at >= 90%
+    monitor: Arc<Mutex<RateLimitMonitor>>,
     /// Per-symbol precision cache for safe price/qty formatting
     precision: crate::core::utils::precision::PrecisionCache,
 }
@@ -90,17 +120,16 @@ impl OkxConnector {
             .map(OkxAuth::new)
             .transpose()?;
 
-        // Initialize rate limiter: 20 requests per 2 seconds (OKX public endpoint limit)
-        let rate_limiter = Arc::new(Mutex::new(
-            SimpleRateLimiter::new(20, Duration::from_secs(2))
-        ));
+        let limiter = Arc::new(Mutex::new(RuntimeLimiter::from_caps(&OKX_RATE_CAPS)));
+        let monitor = Arc::new(Mutex::new(RateLimitMonitor::new("OKX")));
 
         Ok(Self {
             http,
             auth,
             urls,
             testnet,
-            rate_limiter,
+            limiter,
+            monitor,
             precision: crate::core::utils::precision::PrecisionCache::new(),
         })
     }
@@ -114,18 +143,28 @@ impl OkxConnector {
     // HTTP HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// Wait for rate limit if needed
-    async fn rate_limit_wait(&self) {
+    /// Wait for rate limit budget. Non-essential requests are dropped at >= 90% utilization.
+    ///
+    /// Returns `true` if acquired, `false` if dropped due to cutoff pressure.
+    /// Trading endpoints should pass `essential: true` to always wait through.
+    async fn rate_limit_wait(&self, weight: u32, essential: bool) -> bool {
         loop {
             let wait_time = {
-                let mut limiter = self.rate_limiter.lock()
-                    .expect("Rate limiter mutex poisoned");
-                if limiter.try_acquire() {
-                    return;
-                }
-                limiter.time_until_ready()
-            };
+                let mut limiter = self.limiter.lock()
+                    .expect("rate limiter mutex poisoned");
 
+                let pressure = self.monitor.lock()
+                    .expect("rate monitor mutex poisoned")
+                    .check(&mut limiter);
+                if pressure >= RateLimitPressure::Cutoff && !essential {
+                    return false;
+                }
+
+                if limiter.try_acquire("default", weight) {
+                    return true;
+                }
+                limiter.time_until_ready("default", weight)
+            };
             if wait_time > Duration::ZERO {
                 tokio::time::sleep(wait_time).await;
             }
@@ -138,7 +177,12 @@ impl OkxConnector {
         endpoint: OkxEndpoint,
         params: HashMap<String, String>,
     ) -> ExchangeResult<Value> {
-        self.rate_limit_wait().await;
+        if !self.rate_limit_wait(1, false).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; non-essential market data request dropped".to_string(),
+            });
+        }
 
         let base_url = self.urls.rest_url();
         let path = endpoint.path();
@@ -178,7 +222,7 @@ impl OkxConnector {
         endpoint: OkxEndpoint,
         body: Value,
     ) -> ExchangeResult<Value> {
-        self.rate_limit_wait().await;
+        self.rate_limit_wait(1, true).await;
 
         let base_url = self.urls.rest_url();
         let path = endpoint.path();
@@ -425,8 +469,8 @@ impl ExchangeIdentity for OkxConnector {
 
     fn metrics(&self) -> ConnectorStats {
         let (http_requests, http_errors, last_latency_ms) = self.http.stats();
-        let (rate_used, rate_max) = if let Ok(mut lim) = self.rate_limiter.lock() {
-            (lim.current_count(), lim.max_requests())
+        let (rate_used, rate_max) = if let Ok(mut limiter) = self.limiter.lock() {
+            limiter.primary_stats()
         } else {
             (0, 0)
         };
@@ -456,6 +500,10 @@ impl ExchangeIdentity for OkxConnector {
 
     fn exchange_type(&self) -> ExchangeType {
         ExchangeType::Cex
+    }
+
+    fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
+        OKX_RATE_CAPS
     }
 }
 
@@ -1288,7 +1336,7 @@ impl Positions for OkxConnector {
 
                 // OKX doesn't have a specific endpoint in our enum for this; use AccountConfig as fallback
                 // We need to call the raw endpoint
-                self.rate_limit_wait().await;
+                self.rate_limit_wait(1, true).await;
                 let base_url = self.urls.rest_url();
                 let path = "/api/v5/account/position/margin-balance";
                 let url = format!("{}{}", base_url, path);
@@ -1324,7 +1372,7 @@ impl Positions for OkxConnector {
                     "amt": amount.to_string(),
                 });
 
-                self.rate_limit_wait().await;
+                self.rate_limit_wait(1, true).await;
                 let base_url = self.urls.rest_url();
                 let path = "/api/v5/account/position/margin-balance";
                 let url = format!("{}{}", base_url, path);
@@ -1363,7 +1411,7 @@ impl Positions for OkxConnector {
                     "mgnMode": mgn_mode,
                 });
 
-                self.rate_limit_wait().await;
+                self.rate_limit_wait(1, true).await;
                 let base_url = self.urls.rest_url();
                 let path = "/api/v5/trade/close-position";
                 let url = format!("{}{}", base_url, path);

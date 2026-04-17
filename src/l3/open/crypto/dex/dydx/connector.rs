@@ -35,11 +35,12 @@ use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
     FundingHistory,
 };
-use crate::core::utils::SimpleRateLimiter;
 use crate::core::types::{
     ConnectorStats, SymbolInfo, FundingPayment, FundingFilter,
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
+    RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits,
 };
+use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 
 use super::endpoints::{DydxUrls, DydxEndpoint, format_symbol, map_kline_interval};
 use super::auth::DydxAuth;
@@ -57,6 +58,33 @@ use tonic::transport::Channel;
 
 #[cfg(feature = "onchain-cosmos")]
 use crate::core::chain::cosmos::CosmosProvider;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RATE LIMIT CAPABILITIES (static — embedded in binary, no allocation)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+static DYDX_RATE_POOLS: &[RestLimitPool] = &[RestLimitPool {
+    name: "default",
+    max_budget: 100,
+    window_seconds: 10,
+    is_weight: false,
+    has_server_headers: false,
+    server_header: None,
+    header_reports_used: false,
+}];
+
+static DYDX_RATE_CAPS: RateLimitCapabilities = RateLimitCapabilities {
+    model: LimitModel::Simple,
+    rest_pools: DYDX_RATE_POOLS,
+    decaying: None,
+    endpoint_weights: &[],
+    ws: WsLimits {
+        max_connections: None,
+        max_subs_per_conn: Some(32),
+        max_msg_per_sec: None,
+        max_streams_per_conn: None,
+    },
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // MARKET CONFIG
@@ -105,8 +133,10 @@ pub struct DydxConnector {
     urls: DydxUrls,
     /// Testnet mode
     testnet: bool,
-    /// Rate limiter (conservative guard: 100 req/10s)
-    rate_limiter: Arc<Mutex<SimpleRateLimiter>>,
+    /// Runtime rate limiter (Simple model: 100 req/10s)
+    limiter: Arc<Mutex<RuntimeLimiter>>,
+    /// Pressure monitor — logs transitions, gates non-essential requests at >= 90%
+    monitor: Arc<Mutex<RateLimitMonitor>>,
     /// Optional gRPC channel to a dYdX validator node.
     ///
     /// When present, `place_order` and `cancel_order` broadcast signed
@@ -145,17 +175,16 @@ impl DydxConnector {
         let http = HttpClient::new(30_000)?; // 30 sec timeout
         let auth = DydxAuth::new(credentials.as_ref())?;
 
-        // Conservative guard: 100 requests per 10 seconds
-        let rate_limiter = Arc::new(Mutex::new(
-            SimpleRateLimiter::new(100, Duration::from_secs(10))
-        ));
+        let limiter = Arc::new(Mutex::new(RuntimeLimiter::from_caps(&DYDX_RATE_CAPS)));
+        let monitor = Arc::new(Mutex::new(RateLimitMonitor::new("dYdX")));
 
         Ok(Self {
             http,
             auth,
             urls,
             testnet,
-            rate_limiter,
+            limiter,
+            monitor,
             #[cfg(feature = "grpc")]
             grpc_channel: None,
             #[cfg(feature = "onchain-cosmos")]
@@ -173,17 +202,28 @@ impl DydxConnector {
     // HTTP HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// Wait for rate limit if needed
-    async fn rate_limit_wait(&self) {
+    /// Wait for rate limit budget. Non-essential requests are dropped at >= 90% utilization.
+    ///
+    /// Returns `true` if acquired, `false` if dropped due to cutoff pressure.
+    /// Trading endpoints should pass `essential: true` to always wait through.
+    async fn rate_limit_wait(&self, weight: u32, essential: bool) -> bool {
         loop {
             let wait_time = {
-                let mut limiter = self.rate_limiter.lock().expect("Mutex poisoned");
-                if limiter.try_acquire() {
-                    return;
-                }
-                limiter.time_until_ready()
-            };
+                let mut limiter = self.limiter.lock()
+                    .expect("rate limiter mutex poisoned");
 
+                let pressure = self.monitor.lock()
+                    .expect("rate monitor mutex poisoned")
+                    .check(&mut limiter);
+                if pressure >= RateLimitPressure::Cutoff && !essential {
+                    return false;
+                }
+
+                if limiter.try_acquire("default", weight) {
+                    return true;
+                }
+                limiter.time_until_ready("default", weight)
+            };
             if wait_time > Duration::ZERO {
                 tokio::time::sleep(wait_time).await;
             }
@@ -196,7 +236,12 @@ impl DydxConnector {
         endpoint: DydxEndpoint,
         params: HashMap<String, String>,
     ) -> ExchangeResult<Value> {
-        self.rate_limit_wait().await;
+        if !self.rate_limit_wait(1, false).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; non-essential market data request dropped".to_string(),
+            });
+        }
 
         let base_url = self.urls.indexer_rest;
         let mut path = endpoint.path().to_string();
@@ -424,8 +469,8 @@ impl ExchangeIdentity for DydxConnector {
 
     fn metrics(&self) -> ConnectorStats {
         let (http_requests, http_errors, last_latency_ms) = self.http.stats();
-        let (rate_used, rate_max) = if let Ok(mut limiter) = self.rate_limiter.lock() {
-            (limiter.current_count(), limiter.max_requests())
+        let (rate_used, rate_max) = if let Ok(mut limiter) = self.limiter.lock() {
+            limiter.primary_stats()
         } else {
             (0, 0)
         };
@@ -450,6 +495,10 @@ impl ExchangeIdentity for DydxConnector {
 
     fn supported_account_types(&self) -> Vec<AccountType> {
         vec![AccountType::FuturesCross, AccountType::FuturesIsolated]
+    }
+
+    fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
+        DYDX_RATE_CAPS
     }
 }
 

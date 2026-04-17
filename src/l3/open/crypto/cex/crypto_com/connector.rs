@@ -39,12 +39,40 @@ use crate::core::types::{
 };
 use crate::core::types::{SymbolInfo, OrderResult};
 use crate::core::types::ConnectorStats;
-use crate::core::utils::SimpleRateLimiter;
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits};
+use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 use crate::core::utils::PrecisionCache;
 
 use super::endpoints::{CryptoComUrls, CryptoComEndpoint, format_symbol, account_type_to_instrument, map_kline_interval};
 use super::auth::CryptoComAuth;
 use super::parser::CryptoComParser;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RATE LIMIT CAPABILITIES (static — embedded in binary, no allocation)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+static CRYPTO_COM_RATE_POOLS: &[RestLimitPool] = &[RestLimitPool {
+    name: "default",
+    max_budget: 100,
+    window_seconds: 1,
+    is_weight: false,
+    has_server_headers: false,
+    server_header: None,
+    header_reports_used: false,
+}];
+
+static CRYPTO_COM_RATE_CAPS: RateLimitCapabilities = RateLimitCapabilities {
+    model: LimitModel::Simple,
+    rest_pools: CRYPTO_COM_RATE_POOLS,
+    decaying: None,
+    endpoint_weights: &[],
+    ws: WsLimits {
+        max_connections: None,
+        max_subs_per_conn: Some(400),
+        max_msg_per_sec: Some(100),
+        max_streams_per_conn: None,
+    },
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR
@@ -60,8 +88,10 @@ pub struct CryptoComConnector {
     urls: CryptoComUrls,
     /// Testnet mode
     testnet: bool,
-    /// Rate limiter (100 requests per second)
-    rate_limiter: Arc<Mutex<SimpleRateLimiter>>,
+    /// Runtime rate limiter (Simple model: 100 req/1s)
+    limiter: Arc<Mutex<RuntimeLimiter>>,
+    /// Pressure monitor — logs transitions, gates non-essential requests at >= 90%
+    monitor: Arc<Mutex<RateLimitMonitor>>,
     /// Request ID counter
     request_id: Arc<AtomicI64>,
     /// Per-symbol precision cache for safe price/qty formatting
@@ -84,17 +114,16 @@ impl CryptoComConnector {
             .map(CryptoComAuth::new)
             .transpose()?;
 
-        // Initialize rate limiter: 100 requests per second
-        let rate_limiter = Arc::new(Mutex::new(
-            SimpleRateLimiter::new(100, Duration::from_secs(1))
-        ));
+        let limiter = Arc::new(Mutex::new(RuntimeLimiter::from_caps(&CRYPTO_COM_RATE_CAPS)));
+        let monitor = Arc::new(Mutex::new(RateLimitMonitor::new("Crypto.com")));
 
         Ok(Self {
             http,
             auth,
             urls,
             testnet,
-            rate_limiter,
+            limiter,
+            monitor,
             request_id: Arc::new(AtomicI64::new(1)),
             precision: PrecisionCache::new(),
         })
@@ -114,17 +143,28 @@ impl CryptoComConnector {
         self.request_id.fetch_add(1, Ordering::SeqCst)
     }
 
-    /// Wait for rate limit if needed
-    async fn rate_limit_wait(&self) {
+    /// Wait for rate limit budget. Non-essential requests are dropped at >= 90% utilization.
+    ///
+    /// Returns `true` if acquired, `false` if dropped due to cutoff pressure.
+    /// Trading endpoints should pass `essential: true` to always wait through.
+    async fn rate_limit_wait(&self, weight: u32, essential: bool) -> bool {
         loop {
             let wait_time = {
-                let mut limiter = self.rate_limiter.lock().expect("Mutex poisoned");
-                if limiter.try_acquire() {
-                    return;
-                }
-                limiter.time_until_ready()
-            };
+                let mut limiter = self.limiter.lock()
+                    .expect("rate limiter mutex poisoned");
 
+                let pressure = self.monitor.lock()
+                    .expect("rate monitor mutex poisoned")
+                    .check(&mut limiter);
+                if pressure >= RateLimitPressure::Cutoff && !essential {
+                    return false;
+                }
+
+                if limiter.try_acquire("default", weight) {
+                    return true;
+                }
+                limiter.time_until_ready("default", weight)
+            };
             if wait_time > Duration::ZERO {
                 tokio::time::sleep(wait_time).await;
             }
@@ -137,8 +177,15 @@ impl CryptoComConnector {
         endpoint: CryptoComEndpoint,
         params: Value,
     ) -> ExchangeResult<Value> {
-        // Rate limiting
-        self.rate_limit_wait().await;
+        let essential = endpoint.requires_auth();
+        if essential {
+            self.rate_limit_wait(1, true).await;
+        } else if !self.rate_limit_wait(1, false).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; non-essential market data request dropped".to_string(),
+            });
+        }
 
         let method = endpoint.method();
         let base_url = self.urls.rest_url();
@@ -213,8 +260,8 @@ impl ExchangeIdentity for CryptoComConnector {
 
     fn metrics(&self) -> ConnectorStats {
         let (http_requests, http_errors, last_latency_ms) = self.http.stats();
-        let (rate_used, rate_max) = if let Ok(mut lim) = self.rate_limiter.lock() {
-            (lim.current_count(), lim.max_requests())
+        let (rate_used, rate_max) = if let Ok(mut limiter) = self.limiter.lock() {
+            limiter.primary_stats()
         } else {
             (0, 0)
         };
@@ -242,6 +289,10 @@ impl ExchangeIdentity for CryptoComConnector {
 
     fn exchange_type(&self) -> ExchangeType {
         ExchangeType::Cex
+    }
+
+    fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
+        CRYPTO_COM_RATE_CAPS
     }
 }
 

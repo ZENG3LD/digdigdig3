@@ -41,11 +41,39 @@ use crate::core::types::{
     SubAccountOperation, SubAccountResult, SubAccount,
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
-use crate::core::utils::WeightRateLimiter;
+use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits};
 
 use super::endpoints::{MexcUrls, MexcEndpoint, format_symbol, map_kline_interval};
 use super::auth::MexcAuth;
 use super::parser::MexcParser;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RATE LIMIT CAPABILITIES (static — embedded in binary, no allocation)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+static MEXC_POOLS: &[RestLimitPool] = &[RestLimitPool {
+    name: "default",
+    max_budget: 500,
+    window_seconds: 10,
+    is_weight: true,
+    has_server_headers: true,
+    server_header: Some("X-MBX-USED-WEIGHT"),
+    header_reports_used: true,
+}];
+
+static MEXC_RATE_CAPS: RateLimitCapabilities = RateLimitCapabilities {
+    model: LimitModel::Weight,
+    rest_pools: MEXC_POOLS,
+    decaying: None,
+    endpoint_weights: &[],
+    ws: WsLimits {
+        max_connections: None,
+        max_subs_per_conn: Some(30),
+        max_msg_per_sec: Some(100),
+        max_streams_per_conn: None,
+    },
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR
@@ -57,8 +85,10 @@ pub struct MexcConnector {
     http: HttpClient,
     /// Authentication (None for public methods)
     auth: Option<MexcAuth>,
-    /// Rate limiter (500 weight per 10 seconds)
-    rate_limiter: Arc<Mutex<WeightRateLimiter>>,
+    /// Runtime rate limiter (Weight model: 500 weight per 10 seconds)
+    limiter: Arc<Mutex<RuntimeLimiter>>,
+    /// Pressure monitor — gates non-essential requests at >= 90%
+    monitor: Arc<Mutex<RateLimitMonitor>>,
     /// Per-symbol precision cache for safe price/qty formatting
     precision: crate::core::utils::precision::PrecisionCache,
 }
@@ -85,15 +115,14 @@ impl MexcConnector {
             }
         }
 
-        // Initialize rate limiter: 500 weight per 10 seconds (MEXC Spot)
-        let rate_limiter = Arc::new(Mutex::new(
-            WeightRateLimiter::new(500, Duration::from_secs(10))
-        ));
+        let limiter = Arc::new(Mutex::new(RuntimeLimiter::from_caps(&MEXC_RATE_CAPS)));
+        let monitor = Arc::new(Mutex::new(RateLimitMonitor::new("MEXC")));
 
         Ok(Self {
             http,
             auth,
-            rate_limiter,
+            limiter,
+            monitor,
             precision: crate::core::utils::precision::PrecisionCache::new(),
         })
     }
@@ -107,24 +136,35 @@ impl MexcConnector {
     // HTTP HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// Wait for rate limit if needed
-    async fn rate_limit_wait(&self) {
+    /// Wait for rate limit budget. Non-essential requests are dropped at >= 90% utilization.
+    ///
+    /// Returns `true` if acquired, `false` if dropped due to cutoff pressure.
+    /// Trading endpoints should pass `essential: true` to always wait through.
+    async fn rate_limit_wait(&self, weight: u32, essential: bool) -> bool {
         loop {
             let wait_time = {
-                let mut limiter = self.rate_limiter.lock().expect("Mutex poisoned");
-                if limiter.try_acquire(1) {
-                    return;
-                }
-                limiter.time_until_ready(1)
-            };
+                let mut limiter = self.limiter.lock()
+                    .expect("rate limiter mutex poisoned");
 
+                let pressure = self.monitor.lock()
+                    .expect("rate monitor mutex poisoned")
+                    .check(&mut limiter);
+                if pressure >= RateLimitPressure::Cutoff && !essential {
+                    return false;
+                }
+
+                if limiter.try_acquire("default", weight) {
+                    return true;
+                }
+                limiter.time_until_ready("default", weight)
+            };
             if wait_time > Duration::ZERO {
                 tokio::time::sleep(wait_time).await;
             }
         }
     }
 
-    /// Update rate limiter from MEXC response headers.
+    /// Sync limiter from MEXC response headers.
     ///
     /// MEXC reports: `X-MEXC-USED-WEIGHT-1M` = weight used in the last minute.
     fn update_weight_from_headers(&self, headers: &HeaderMap) {
@@ -134,8 +174,8 @@ impl MexcConnector {
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<u32>().ok());
         if let Some(used) = used {
-            if let Ok(mut limiter) = self.rate_limiter.lock() {
-                limiter.update_from_server(used);
+            if let Ok(mut limiter) = self.limiter.lock() {
+                limiter.update_from_server("default", used);
             }
         }
     }
@@ -146,7 +186,13 @@ impl MexcConnector {
         endpoint: MexcEndpoint,
         params: HashMap<String, String>,
     ) -> ExchangeResult<Value> {
-        self.rate_limit_wait().await;
+        // Market data = non-essential: drop at >= 90% utilization to preserve budget for trading
+        if !self.rate_limit_wait(1, false).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; non-essential market data request dropped".to_string(),
+            });
+        }
 
         let base_url = if endpoint.is_futures() {
             MexcUrls::futures_base_url()
@@ -198,7 +244,8 @@ impl MexcConnector {
         endpoint: MexcEndpoint,
         params: HashMap<String, String>,
     ) -> ExchangeResult<Value> {
-        self.rate_limit_wait().await;
+        // Order placement = essential: always wait, never drop
+        self.rate_limit_wait(1, true).await;
 
         let base_url = MexcUrls::base_url();
         let path = endpoint.path();
@@ -227,7 +274,8 @@ impl MexcConnector {
         endpoint: MexcEndpoint,
         params: HashMap<String, String>,
     ) -> ExchangeResult<Value> {
-        self.rate_limit_wait().await;
+        // Order cancellation = essential: always wait, never drop
+        self.rate_limit_wait(1, true).await;
 
         let base_url = MexcUrls::base_url();
         let path = endpoint.path();
@@ -286,8 +334,8 @@ impl ExchangeIdentity for MexcConnector {
 
     fn metrics(&self) -> ConnectorStats {
         let (http_requests, http_errors, last_latency_ms) = self.http.stats();
-        let (rate_used, rate_max) = if let Ok(mut lim) = self.rate_limiter.lock() {
-            (lim.current_weight(), lim.max_weight())
+        let (rate_used, rate_max) = if let Ok(mut limiter) = self.limiter.lock() {
+            limiter.primary_stats()
         } else {
             (0, 0)
         };
@@ -316,6 +364,10 @@ impl ExchangeIdentity for MexcConnector {
 
     fn exchange_type(&self) -> ExchangeType {
         ExchangeType::Cex
+    }
+
+    fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
+        MEXC_RATE_CAPS
     }
 }
 
@@ -379,7 +431,12 @@ impl MarketData for MexcConnector {
                 let path = format!("/api/v1/contract/depth/{}", formatted_symbol);
                 let url = format!("{}{}", base_url, path);
 
-                self.rate_limit_wait().await;
+                if !self.rate_limit_wait(1, false).await {
+                    return Err(ExchangeError::RateLimitExceeded {
+                        retry_after: None,
+                        message: "Rate limit budget >= 90% used; non-essential market data request dropped".to_string(),
+                    });
+                }
                 let response = self.http.get(&url, &HashMap::new()).await?;
                 MexcParser::check_error(&response)?;
 
@@ -457,7 +514,12 @@ impl MarketData for MexcConnector {
 
                 let url = format!("{}{}?{}", base_url, path, query);
 
-                self.rate_limit_wait().await;
+                if !self.rate_limit_wait(1, false).await {
+                    return Err(ExchangeError::RateLimitExceeded {
+                        retry_after: None,
+                        message: "Rate limit budget >= 90% used; non-essential market data request dropped".to_string(),
+                    });
+                }
                 let response = self.http.get(&url, &HashMap::new()).await?;
                 MexcParser::check_error(&response)?;
 
@@ -1219,7 +1281,7 @@ impl BatchOrders for MexcConnector {
         let path = MexcEndpoint::BatchOrders.path();
         let url = format!("{}{}", base_url, path);
 
-        self.rate_limit_wait().await;
+        self.rate_limit_wait(1, true).await;
         let body = json!({ "batchOrders": batch_orders });
         let (response, _) = self.http.post_with_response_headers(&url, &body, &headers).await?;
         MexcParser::check_error(&response)?;
@@ -1742,7 +1804,12 @@ impl MexcConnector {
         let base_url = MexcUrls::futures_base_url();
         let path = format!("{}/{}", MexcEndpoint::FuturesMarkPrice.path(), symbol);
         let url = format!("{}{}", base_url, path);
-        self.rate_limit_wait().await;
+        if !self.rate_limit_wait(1, false).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; non-essential market data request dropped".to_string(),
+            });
+        }
         let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
         self.update_weight_from_headers(&resp_headers);
         Ok(response)

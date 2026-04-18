@@ -21,9 +21,9 @@
 mod provider;
 pub use provider::*;
 
-#[cfg(feature = "onchain-evm")]
+#[cfg(feature = "evm-provider")]
 mod evm;
-#[cfg(feature = "onchain-evm")]
+#[cfg(feature = "evm-provider")]
 pub use evm::*;
 
 #[cfg(feature = "onchain-cosmos")]

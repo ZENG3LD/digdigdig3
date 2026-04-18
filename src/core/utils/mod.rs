@@ -14,6 +14,8 @@ mod encoding;
 mod time;
 mod rate_limiter;
 pub mod precision;
+#[cfg(feature = "onchain-evm")]
+pub mod crypto_evm;
 
 pub use crypto::{hmac_sha256, hmac_sha256_hex, hmac_sha384, hmac_sha512, sha256, sha512};
 pub use encoding::{encode_base64, encode_hex, encode_hex_lower};

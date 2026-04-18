@@ -1,10 +1,10 @@
 //! # HyperLiquid EIP-712 Typed Data Signing
 //!
-//! Alloy-native EIP-712 typed data signing for HyperLiquid user-signed actions.
+//! k256-native EIP-712 typed data signing for HyperLiquid user-signed actions.
 //!
 //! ## Feature Gate
 //!
-//! This module is only compiled when the `onchain-ethereum` feature is enabled.
+//! This module is only compiled when the `onchain-evm` feature is enabled.
 //!
 //! ## Background
 //!
@@ -13,32 +13,28 @@
 //! ### 1. L1 Actions (Phantom Agent)
 //! Implemented in `auth.rs` — covers all trading operations.
 //! Uses msgpack encoding + keccak256 + EIP-712 phantom agent scheme.
-//! Does NOT need alloy provider — only needs keccak256 and ECDSA signer.
 //!
 //! ### 2. User-Signed Actions
 //! Used for: withdrawals, USDC transfers (spot ↔ external wallets).
-//! Uses direct EIP-712 typed data signing with alloy's `sol!` macro types.
+//! Uses direct EIP-712 typed data signing with hand-rolled ABI encoding.
 //! Requires a wallet address and private key.
 //!
 //! This module wraps scheme 2, providing `Eip712Signer` with:
-//! - `sign_l1_action()` — re-exports the phantom agent signing from auth.rs via alloy types
-//! - `sign_user_signed_action()` — signs withdrawal/transfer actions as EIP-712 typed data
+//! - `sign_l1_action_raw()` — L1 phantom agent signing
 //! - `sign_withdraw_from_bridge()` — convenience for USDC bridge withdrawal
-//! - `sign_spot_transfer()` — convenience for spot-to-spot USDC transfer
+//! - `sign_usd_send()` — convenience for internal USDC transfer
+//! - `sign_spot_send()` — convenience for spot token transfer
 //!
 //! ## HyperLiquid EIP-712 Domain
 //!
 //! ```
 //! name: "HyperliquidSignTransaction"
 //! version: "1"
-//! chainId: 42161 (Arbitrum) or 421614 (testnet)
+//! chainId: 421614 (0x66eee) — same for mainnet and testnet
 //! verifyingContract: 0x0000000000000000000000000000000000000000
 //! ```
 
-use alloy::primitives::{keccak256, Address, B256};
-use alloy::signers::local::PrivateKeySigner;
-use alloy::signers::SignerSync;
-
+use crate::core::utils::crypto_evm::{self, EvmWallet};
 use crate::core::{Credentials, ExchangeError, ExchangeResult};
 use super::auth::SignatureComponents;
 
@@ -56,18 +52,18 @@ pub struct HyperliquidDomain {
 }
 
 impl HyperliquidDomain {
-    /// Mainnet domain (Arbitrum, chainId = 42161)
-    pub const MAINNET: Self = Self { chain_id: 42161 };
-    /// Testnet domain (Arbitrum Sepolia, chainId = 421614)
+    /// Mainnet domain (chainId = 421614 = 0x66eee — fixed for user-signed actions)
+    pub const MAINNET: Self = Self { chain_id: 421614 };
+    /// Testnet domain (chainId = 421614 = 0x66eee — same as mainnet for user-signed)
     pub const TESTNET: Self = Self { chain_id: 421614 };
 
     /// Compute the EIP-712 domain separator for user-signed actions.
     pub fn separator(&self) -> [u8; 32] {
-        let type_hash = *keccak256(
+        let type_hash = crypto_evm::keccak256(
             b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
         );
-        let name_hash = *keccak256(b"HyperliquidSignTransaction");
-        let version_hash = *keccak256(b"1");
+        let name_hash = crypto_evm::keccak256(b"HyperliquidSignTransaction");
+        let version_hash = crypto_evm::keccak256(b"1");
 
         let mut chain_id_bytes = [0u8; 32];
         chain_id_bytes[24..].copy_from_slice(&self.chain_id.to_be_bytes());
@@ -81,7 +77,7 @@ impl HyperliquidDomain {
         encoded.extend_from_slice(&chain_id_bytes);
         encoded.extend_from_slice(&verifying_contract);
 
-        *keccak256(&encoded)
+        crypto_evm::keccak256(&encoded)
     }
 }
 
@@ -179,23 +175,9 @@ impl SignedUserAction {
 /// Provides typed signing methods for withdrawal and transfer operations.
 /// For L1 trading actions (orders, cancels, leverage), use `HyperliquidAuth`
 /// from `auth.rs` directly — those use the phantom agent scheme.
-///
-/// ## Usage
-///
-/// ```ignore
-/// let signer = Eip712Signer::new(&credentials, false)?;
-///
-/// let signed = signer.sign_withdraw_from_bridge(
-///     "0xYourArbitrumAddress",
-///     "100.0",
-///     timestamp_millis(),
-/// )?;
-///
-/// // POST signed.to_request_body() to https://api.hyperliquid.xyz/exchange
-/// ```
 pub struct Eip712Signer {
-    /// alloy private key signer
-    signer: PrivateKeySigner,
+    /// k256 EVM wallet (secp256k1 keypair)
+    wallet: EvmWallet,
     /// EIP-712 domain for this network
     domain: HyperliquidDomain,
     /// Wallet address (lowercase 0x-prefixed)
@@ -214,13 +196,13 @@ impl Eip712Signer {
             ));
         }
 
-        let signer: PrivateKeySigner = credentials.api_secret.parse()
+        let wallet = EvmWallet::from_hex(&credentials.api_secret)
             .map_err(|e| ExchangeError::Auth(format!("Invalid private key: {}", e)))?;
 
         let wallet_address = if !credentials.api_key.is_empty() {
             credentials.api_key.to_lowercase()
         } else {
-            format!("0x{}", hex::encode(signer.address().as_slice()))
+            wallet.address_hex()
         };
 
         let domain = if is_testnet {
@@ -229,7 +211,7 @@ impl Eip712Signer {
             HyperliquidDomain::MAINNET
         };
 
-        Ok(Self { signer, domain, wallet_address })
+        Ok(Self { wallet, domain, wallet_address })
     }
 
     /// Wallet address (lowercase 0x-prefixed).
@@ -249,16 +231,13 @@ impl Eip712Signer {
     pub fn sign_struct_hash(&self, struct_hash: [u8; 32]) -> ExchangeResult<SignatureComponents> {
         let domain_sep = self.domain.separator();
         let final_hash = eip712_hash(&domain_sep, &struct_hash);
-        let hash_b256 = B256::from(final_hash);
 
-        let sig = self.signer
-            .sign_hash_sync(&hash_b256)
+        let sig_bytes = self.wallet.sign_prehash_recoverable(&final_hash)
             .map_err(|e| ExchangeError::Auth(format!("EIP-712 sign failed: {}", e)))?;
 
-        let bytes = sig.as_bytes();
-        let r = format!("0x{}", hex::encode(&bytes[..32]));
-        let s = format!("0x{}", hex::encode(&bytes[32..64]));
-        let v = if bytes[64] == 0 { 27u8 } else { 28u8 };
+        let r = format!("0x{}", hex::encode(&sig_bytes[..32]));
+        let s = format!("0x{}", hex::encode(&sig_bytes[32..64]));
+        let v = sig_bytes[64]; // already recovery_id + 27
 
         Ok(SignatureComponents { r, s, v })
     }
@@ -406,10 +385,6 @@ impl Eip712Signer {
 
     /// Sign an arbitrary L1 action hash using the phantom agent scheme.
     ///
-    /// This is a thin wrapper that delegates to `HyperliquidAuth::sign_l1_action`.
-    /// Provided here for completeness so callers using `Eip712Signer` don't need
-    /// to import `HyperliquidAuth` separately.
-    ///
     /// `action_bytes` — msgpack-encoded action dict.
     /// `nonce`        — monotonically increasing timestamp in ms.
     /// `vault_address` — optional vault address (20 bytes).
@@ -419,22 +394,18 @@ impl Eip712Signer {
         nonce: u64,
         vault_address: Option<&[u8; 20]>,
     ) -> ExchangeResult<SignatureComponents> {
-        // Compute phantom agent hash (same as HyperliquidAuth::sign_l1_action)
         let chain_id = self.domain.chain_id;
         let domain_sep = l1_domain_separator(chain_id);
         let connection_id = l1_connection_id(action_bytes, nonce, vault_address);
         let agent_hash = l1_agent_struct_hash(&connection_id);
         let final_hash = eip712_hash(&domain_sep, &agent_hash);
 
-        let hash_b256 = B256::from(final_hash);
-        let sig = self.signer
-            .sign_hash_sync(&hash_b256)
+        let sig_bytes = self.wallet.sign_prehash_recoverable(&final_hash)
             .map_err(|e| ExchangeError::Auth(format!("L1 sign failed: {}", e)))?;
 
-        let bytes = sig.as_bytes();
-        let r = format!("0x{}", hex::encode(&bytes[..32]));
-        let s = format!("0x{}", hex::encode(&bytes[32..64]));
-        let v = if bytes[64] == 0 { 27u8 } else { 28u8 };
+        let r = format!("0x{}", hex::encode(&sig_bytes[..32]));
+        let s = format!("0x{}", hex::encode(&sig_bytes[32..64]));
+        let v = sig_bytes[64]; // already recovery_id + 27
 
         Ok(SignatureComponents { r, s, v })
     }
@@ -446,12 +417,12 @@ impl Eip712Signer {
 
 /// `HyperliquidTransaction:WithdrawFromBridge2(string hyperliquidChain,string destination,string amount,uint64 time)`
 fn withdraw_from_bridge_struct_hash(action: &WithdrawFromBridgeAction) -> [u8; 32] {
-    let type_hash = *keccak256(
+    let type_hash = crypto_evm::keccak256(
         b"HyperliquidTransaction:WithdrawFromBridge2(string hyperliquidChain,string destination,string amount,uint64 time)"
     );
-    let chain_hash = *keccak256(action.hyperliquid_chain.as_bytes());
-    let dest_hash = *keccak256(action.destination.as_bytes());
-    let amount_hash = *keccak256(action.amount.as_bytes());
+    let chain_hash = crypto_evm::keccak256(action.hyperliquid_chain.as_bytes());
+    let dest_hash = crypto_evm::keccak256(action.destination.as_bytes());
+    let amount_hash = crypto_evm::keccak256(action.amount.as_bytes());
 
     let mut time_bytes = [0u8; 32];
     time_bytes[24..].copy_from_slice(&action.time.to_be_bytes());
@@ -463,17 +434,17 @@ fn withdraw_from_bridge_struct_hash(action: &WithdrawFromBridgeAction) -> [u8; 3
     encoded.extend_from_slice(&amount_hash);
     encoded.extend_from_slice(&time_bytes);
 
-    *keccak256(&encoded)
+    crypto_evm::keccak256(&encoded)
 }
 
 /// `HyperliquidTransaction:UsdSend(string hyperliquidChain,string destination,string amount,uint64 time)`
 fn usd_send_struct_hash(action: &UsdSendAction) -> [u8; 32] {
-    let type_hash = *keccak256(
+    let type_hash = crypto_evm::keccak256(
         b"HyperliquidTransaction:UsdSend(string hyperliquidChain,string destination,string amount,uint64 time)"
     );
-    let chain_hash = *keccak256(action.hyperliquid_chain.as_bytes());
-    let dest_hash = *keccak256(action.destination.as_bytes());
-    let amount_hash = *keccak256(action.amount.as_bytes());
+    let chain_hash = crypto_evm::keccak256(action.hyperliquid_chain.as_bytes());
+    let dest_hash = crypto_evm::keccak256(action.destination.as_bytes());
+    let amount_hash = crypto_evm::keccak256(action.amount.as_bytes());
 
     let mut time_bytes = [0u8; 32];
     time_bytes[24..].copy_from_slice(&action.time.to_be_bytes());
@@ -485,18 +456,18 @@ fn usd_send_struct_hash(action: &UsdSendAction) -> [u8; 32] {
     encoded.extend_from_slice(&amount_hash);
     encoded.extend_from_slice(&time_bytes);
 
-    *keccak256(&encoded)
+    crypto_evm::keccak256(&encoded)
 }
 
 /// `HyperliquidTransaction:SpotSend(string hyperliquidChain,string destination,string token,string amount,uint64 time)`
 fn spot_send_struct_hash(action: &SpotSendAction) -> [u8; 32] {
-    let type_hash = *keccak256(
+    let type_hash = crypto_evm::keccak256(
         b"HyperliquidTransaction:SpotSend(string hyperliquidChain,string destination,string token,string amount,uint64 time)"
     );
-    let chain_hash = *keccak256(action.hyperliquid_chain.as_bytes());
-    let dest_hash = *keccak256(action.destination.as_bytes());
-    let token_hash = *keccak256(action.token.as_bytes());
-    let amount_hash = *keccak256(action.amount.as_bytes());
+    let chain_hash = crypto_evm::keccak256(action.hyperliquid_chain.as_bytes());
+    let dest_hash = crypto_evm::keccak256(action.destination.as_bytes());
+    let token_hash = crypto_evm::keccak256(action.token.as_bytes());
+    let amount_hash = crypto_evm::keccak256(action.amount.as_bytes());
 
     let mut time_bytes = [0u8; 32];
     time_bytes[24..].copy_from_slice(&action.time.to_be_bytes());
@@ -509,20 +480,20 @@ fn spot_send_struct_hash(action: &SpotSendAction) -> [u8; 32] {
     encoded.extend_from_slice(&amount_hash);
     encoded.extend_from_slice(&time_bytes);
 
-    *keccak256(&encoded)
+    crypto_evm::keccak256(&encoded)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// L1 PHANTOM AGENT HELPERS (re-implemented to avoid auth.rs private dependency)
+// L1 PHANTOM AGENT HELPERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// EIP-712 domain separator for L1 phantom agent (`name: "Exchange"`, `version: "1"`).
 fn l1_domain_separator(chain_id: u64) -> [u8; 32] {
-    let type_hash = *keccak256(
+    let type_hash = crypto_evm::keccak256(
         b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
     );
-    let name_hash = *keccak256(b"Exchange");
-    let version_hash = *keccak256(b"1");
+    let name_hash = crypto_evm::keccak256(b"Exchange");
+    let version_hash = crypto_evm::keccak256(b"1");
 
     let mut chain_id_bytes = [0u8; 32];
     chain_id_bytes[24..].copy_from_slice(&chain_id.to_be_bytes());
@@ -534,7 +505,7 @@ fn l1_domain_separator(chain_id: u64) -> [u8; 32] {
     encoded.extend_from_slice(&chain_id_bytes);
     encoded.extend_from_slice(&[0u8; 32]); // zero verifyingContract
 
-    *keccak256(&encoded)
+    crypto_evm::keccak256(&encoded)
 }
 
 /// Compute connection ID: keccak256(action_bytes + nonce_be8 + vault_flag + [vault_bytes])
@@ -553,12 +524,12 @@ fn l1_connection_id(
         }
         None => data.push(0u8),
     }
-    *keccak256(&data)
+    crypto_evm::keccak256(&data)
 }
 
 /// EIP-712 struct hash for Agent(address source, bytes32 connectionId).
 fn l1_agent_struct_hash(connection_id: &[u8; 32]) -> [u8; 32] {
-    let type_hash = *keccak256(b"Agent(address source,bytes32 connectionId)");
+    let type_hash = crypto_evm::keccak256(b"Agent(address source,bytes32 connectionId)");
     // Phantom source: USDC contract address (sentinel used by HyperLiquid)
     let phantom_source: [u8; 20] = [
         0xa0, 0xb8, 0x69, 0x91, 0xc6, 0x21, 0x8b, 0x36, 0xc1, 0xd1,
@@ -571,7 +542,7 @@ fn l1_agent_struct_hash(connection_id: &[u8; 32]) -> [u8; 32] {
     encoded.extend_from_slice(&phantom_source);
     encoded.extend_from_slice(connection_id);
 
-    *keccak256(&encoded)
+    crypto_evm::keccak256(&encoded)
 }
 
 /// Final EIP-712 message hash: keccak256("\x19\x01" + domain_separator + struct_hash)
@@ -580,12 +551,8 @@ fn eip712_hash(domain_separator: &[u8; 32], struct_hash: &[u8; 32]) -> [u8; 32] 
     data.extend_from_slice(b"\x19\x01");
     data.extend_from_slice(domain_separator);
     data.extend_from_slice(struct_hash);
-    *keccak256(&data)
+    crypto_evm::keccak256(&data)
 }
-
-// Keep Address import used in type derivation (prevents unused import warning)
-#[allow(dead_code)]
-fn _check_address_import(_: Address) {}
 
 #[cfg(test)]
 mod tests {
@@ -600,9 +567,11 @@ mod tests {
 
     #[test]
     fn test_testnet_domain_differs_from_mainnet() {
+        // Both use chainId=421614, so they are the same for user-signed actions
+        // (mainnet vs testnet is distinguished via hyperliquidChain string field)
         let mainnet = HyperliquidDomain::MAINNET.separator();
         let testnet = HyperliquidDomain::TESTNET.separator();
-        assert_ne!(mainnet, testnet);
+        assert_eq!(mainnet, testnet);
     }
 
     #[test]

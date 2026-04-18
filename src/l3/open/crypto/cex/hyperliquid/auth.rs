@@ -16,17 +16,15 @@
 //!
 //! ## Implementation Notes
 //!
-//! - Keccak256 via `alloy::primitives::keccak256` (already a direct dependency)
-//! - ECDSA signing via `alloy::signers::local::PrivateKeySigner`
+//! - Keccak256 via `sha3::Keccak256` through `crate::core::utils::crypto_evm`
+//! - ECDSA signing via `k256` through `crate::core::utils::crypto_evm::EvmWallet`
 //! - Minimal msgpack encoder (subset needed for Hyperliquid actions)
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use alloy::primitives::keccak256 as alloy_keccak256;
-use alloy::signers::local::PrivateKeySigner;
-use alloy::signers::SignerSync;
+use crate::core::utils::crypto_evm::{self, EvmWallet};
 
 use crate::core::{
     Credentials, ExchangeResult, ExchangeError,
@@ -453,7 +451,7 @@ pub fn msgpack_twap_action(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 fn keccak(data: &[u8]) -> [u8; 32] {
-    *alloy_keccak256(data)
+    crypto_evm::keccak256(data)
 }
 
 /// EIP-712 domain separator for Hyperliquid
@@ -549,14 +547,14 @@ pub struct SignatureComponents {
 
 /// Hyperliquid authentication handler
 ///
-/// Uses EIP-712 signing via `alloy::signers::local::PrivateKeySigner`.
+/// Uses EIP-712 signing via `k256` secp256k1 primitives.
 /// Implements L1 action signing (phantom agent) for all trading operations.
 #[derive(Clone)]
 pub struct HyperliquidAuth {
     /// Ethereum wallet address (lowercase 0x-prefixed)
     wallet_address: String,
-    /// Local signer wrapping secp256k1 private key
-    signer: Arc<PrivateKeySigner>,
+    /// EVM wallet wrapping secp256k1 private key
+    signer: Arc<EvmWallet>,
     /// Nonce counter (monotonically increasing timestamp-based)
     nonce_counter: Arc<AtomicU64>,
     /// Is testnet (affects chain ID used in EIP-712 domain)
@@ -576,21 +574,21 @@ impl HyperliquidAuth {
             ));
         }
 
-        let signer: PrivateKeySigner = credentials.api_secret.parse()
+        let wallet = EvmWallet::from_hex(&credentials.api_secret)
             .map_err(|e| ExchangeError::Auth(format!("Invalid private key: {}", e)))?;
 
         // Use provided address or derive from private key
         let wallet_address = if !credentials.api_key.is_empty() {
             credentials.api_key.to_lowercase()
         } else {
-            format!("0x{}", hex::encode(signer.address().as_slice()))
+            wallet.address_hex()
         };
 
         let nonce_counter = Arc::new(AtomicU64::new(timestamp_millis()));
 
         Ok(Self {
             wallet_address,
-            signer: Arc::new(signer),
+            signer: Arc::new(wallet),
             nonce_counter,
             is_testnet: false,
         })
@@ -623,16 +621,13 @@ impl HyperliquidAuth {
     /// Sign an EIP-712 hash (32 bytes) using the secp256k1 private key.
     /// Returns r, s, v components.
     fn sign_hash(&self, hash: [u8; 32]) -> ExchangeResult<SignatureComponents> {
-        use alloy::primitives::B256;
-        let hash_b256 = B256::from(hash);
-        let sig = self.signer.sign_hash_sync(&hash_b256)
+        let sig_bytes = self.signer.sign_prehash_recoverable(&hash)
             .map_err(|e| ExchangeError::Auth(format!("Signing failed: {}", e)))?;
 
-        let bytes = sig.as_bytes();
-        let r = format!("0x{}", hex::encode(&bytes[..32]));
-        let s = format!("0x{}", hex::encode(&bytes[32..64]));
-        // alloy returns v as 0/1, Hyperliquid wants 27/28
-        let v = if bytes[64] == 0 { 27u8 } else { 28u8 };
+        let r = format!("0x{}", hex::encode(&sig_bytes[..32]));
+        let s = format!("0x{}", hex::encode(&sig_bytes[32..64]));
+        // v = recovery_id + 27; already computed in sign_prehash_recoverable
+        let v = sig_bytes[64];
 
         Ok(SignatureComponents { r, s, v })
     }
@@ -961,12 +956,6 @@ fn build_exchange_request(
 // ═══════════════════════════════════════════════════════════════════════════════
 // UTILITY FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════════════
-
-/// Get Hyperliquid chain ID
-#[allow(dead_code)]
-pub fn get_chain_id(is_testnet: bool) -> u64 {
-    if is_testnet { 421614 } else { 42161 }
-}
 
 /// Normalize a float price to Hyperliquid string format (no trailing zeros).
 /// e.g. 50000.0 → "50000.0", 0.12500 → "0.125"

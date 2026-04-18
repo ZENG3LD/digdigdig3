@@ -1,6 +1,6 @@
 [package]
 name = "digdigdig3"
-version = "0.1.29"
+version = "0.1.30"
 exclude = ["**/research/**", "contributing/**", "docs/"]
 edition = "2021"
 description = "Unified async Rust API for 44 exchange connectors — crypto, stocks, forex. REST + WebSocket."
@@ -16,11 +16,8 @@ categories = ["api-bindings", "asynchronous", "web-programming"]
 default = ["onchain-evm"]
 websocket = []
 # Canonical on-chain feature flags
-# onchain-evm: EIP-712 signing via k256+sha3 (HyperLiquid, Uniswap auth)
+# onchain-evm: EIP-712 signing via k256+sha3 (HyperLiquid auth)
 onchain-evm = ["dep:k256", "dep:sha3"]
-# evm-provider: full alloy provider stack (on-chain reads, eth_call, ERC-20 queries)
-# Only needed by connectors that submit on-chain transactions or read contract state.
-evm-provider = ["dep:alloy"]
 onchain-cosmos = ["dep:cosmrs"]
 onchain-starknet = ["dep:starknet-crypto"]
 # Backward-compat alias — onchain-ethereum is now onchain-evm
@@ -93,11 +90,6 @@ bs58 = "0.5"
 # No additional dependencies needed
 
 tracing-subscriber = "0.3.22"
-
-# EVM on-chain provider (feature-gated behind `evm-provider`)
-# Provides alloy's HTTP provider stack for eth_call, ERC-20 reads, receipts.
-# Not needed for signing-only connectors (HyperLiquid uses crypto_evm instead).
-alloy = { version = "1", features = ["providers", "rpc-types"], optional = true }
 
 # TOTP (for Angel One 2FA)
 totp-rs = "5.6"

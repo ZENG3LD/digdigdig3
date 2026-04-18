@@ -89,11 +89,9 @@ impl HttpClient {
 
     /// Создать HTTP клиент с кастомной конфигурацией retry
     pub fn with_config(timeout_ms: u64, retry_config: RetryConfig) -> ExchangeResult<Self> {
-        // Install ring as the rustls CryptoProvider. This is idempotent — if
-        // another caller already installed a provider the Err is silently
-        // ignored. Required because alloy-transport-ws compiles rustls 0.23
-        // with aws_lc_rs while reqwest uses ring; rustls 0.23 panics at TLS
-        // init unless exactly one provider is registered process-wide.
+        // Install ring as the rustls CryptoProvider. Idempotent — silently
+        // ignored if a provider is already installed. rustls 0.23 panics at
+        // TLS init unless exactly one provider is registered process-wide.
         let _ = rustls::crypto::ring::default_provider().install_default();
 
         let client = Client::builder()

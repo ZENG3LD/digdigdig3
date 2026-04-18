@@ -13,18 +13,11 @@
 //!
 //! | Feature | What it unlocks |
 //! |---------|----------------|
-//! | `onchain-evm` | `EvmProvider` — alloy-backed EVM chain provider |
-//! | `onchain-ethereum` | Alias for `onchain-evm` (backward compat) |
 //! | `onchain-cosmos` | `CosmosProvider` — Cosmos SDK chain provider (dYdX, Osmosis) |
 //! | `onchain-starknet` | `StarkNetProvider` — raw JSON-RPC StarkNet chain provider |
 
 mod provider;
 pub use provider::*;
-
-#[cfg(feature = "evm-provider")]
-mod evm;
-#[cfg(feature = "evm-provider")]
-pub use evm::*;
 
 #[cfg(feature = "onchain-cosmos")]
 pub mod cosmos;

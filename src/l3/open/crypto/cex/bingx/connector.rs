@@ -45,7 +45,7 @@ use crate::core::types::{
     DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord, FundsHistoryFilter, FundsRecordType,
     SubAccountOperation, SubAccountResult, SubAccount,
 };
-use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, OrderbookCapabilities, WsBookChannel};
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 use crate::core::utils::PrecisionCache;
 
@@ -365,6 +365,60 @@ impl ExchangeIdentity for BingxConnector {
 
     fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
         BINGX_RATE_CAPS
+    }
+
+    fn orderbook_capabilities(&self, account_type: AccountType) -> OrderbookCapabilities {
+        // Note: @incrDepth delta channel exists on BingX but our parser
+        // doesn't implement it yet. supports_delta stays false until parser
+        // supports @incrDepth subscription and parsing.
+        static SPOT_CHANNELS: &[WsBookChannel] = &[
+            WsBookChannel::snapshot("@depth5",   5,   1000),
+            WsBookChannel::snapshot("@depth10",  10,  1000),
+            WsBookChannel::snapshot("@depth20",  20,  1000),
+            WsBookChannel::snapshot("@depth50",  50,  1000),
+            WsBookChannel::snapshot("@depth100", 100, 1000),
+        ];
+        static FUTURES_CHANNELS: &[WsBookChannel] = &[
+            WsBookChannel::snapshot("@depth5",   5,   100),
+            WsBookChannel::snapshot("@depth10",  10,  100),
+            WsBookChannel::snapshot("@depth20",  20,  100),
+            WsBookChannel::snapshot("@depth50",  50,  100),
+            WsBookChannel::snapshot("@depth100", 100, 100),
+        ];
+        match account_type {
+            AccountType::FuturesCross | AccountType::FuturesIsolated => OrderbookCapabilities {
+                ws_depths: &[5, 10, 20, 50, 100],
+                ws_default_depth: Some(20),
+                rest_max_depth: Some(1000),
+                rest_depth_values: &[5, 10, 20, 50, 100, 500, 1000],
+                supports_snapshot: true,
+                supports_delta: false,
+                update_speeds_ms: &[100, 200, 500, 1000],
+                default_speed_ms: Some(100),
+                ws_channels: FUTURES_CHANNELS,
+                checksum: None,
+                has_sequence: true,
+                has_prev_sequence: false,
+                supports_aggregation: false,
+                aggregation_levels: &[],
+            },
+            _ => OrderbookCapabilities {
+                ws_depths: &[5, 10, 20, 50, 100],
+                ws_default_depth: Some(20),
+                rest_max_depth: Some(1000),
+                rest_depth_values: &[5, 10, 20, 50, 100, 500, 1000],
+                supports_snapshot: true,
+                supports_delta: false,
+                update_speeds_ms: &[1000],
+                default_speed_ms: Some(1000),
+                ws_channels: SPOT_CHANNELS,
+                checksum: None,
+                has_sequence: true,
+                has_prev_sequence: false,
+                supports_aggregation: true,
+                aggregation_levels: &[],
+            },
+        }
     }
 }
 

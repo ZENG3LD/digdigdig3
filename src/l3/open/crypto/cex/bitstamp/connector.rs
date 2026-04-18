@@ -39,7 +39,7 @@ use crate::core::types::SymbolInfo;
 use crate::core::types::ConnectorStats;
 use crate::core::types::{WithdrawRequest, FundsHistoryFilter, FundsRecordType, LedgerEntry, LedgerFilter};
 use crate::core::types::{UserTrade, UserTradeFilter};
-use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, OrderbookCapabilities, WsBookChannel};
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 use crate::core::utils::PrecisionCache;
 
@@ -409,6 +409,29 @@ impl ExchangeIdentity for BitstampConnector {
 
     fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
         BITSTAMP_RATE_CAPS
+    }
+
+    fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        static BITSTAMP_CHANNELS: &[WsBookChannel] = &[
+            WsBookChannel::snapshot("order_book",      100, 1000),
+            WsBookChannel::delta("diff_order_book",    None, None),
+        ];
+        OrderbookCapabilities {
+            ws_depths: &[],
+            ws_default_depth: None,
+            rest_max_depth: None,
+            rest_depth_values: &[],
+            supports_snapshot: true,
+            supports_delta: true,
+            update_speeds_ms: &[],
+            default_speed_ms: None,
+            ws_channels: BITSTAMP_CHANNELS,
+            checksum: None,
+            has_sequence: false,
+            has_prev_sequence: false,
+            supports_aggregation: true,
+            aggregation_levels: &["0", "1", "2"],
+        }
     }
 }
 

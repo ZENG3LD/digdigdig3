@@ -38,7 +38,7 @@ use crate::core::traits::{
 use crate::core::types::{
     ConnectorStats, SymbolInfo, FundingPayment, FundingFilter,
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
-    RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits,
+    RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, OrderbookCapabilities,
 };
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 
@@ -499,6 +499,25 @@ impl ExchangeIdentity for DydxConnector {
 
     fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
         DYDX_RATE_CAPS
+    }
+
+    fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        OrderbookCapabilities {
+            ws_depths: &[],
+            ws_default_depth: None,
+            rest_max_depth: None,
+            rest_depth_values: &[],
+            supports_snapshot: true,
+            supports_delta: true,
+            update_speeds_ms: &[],
+            default_speed_ms: None,
+            ws_channels: &[],
+            checksum: None,
+            has_sequence: true,
+            has_prev_sequence: false,
+            supports_aggregation: false,
+            aggregation_levels: &[],
+        }
     }
 }
 

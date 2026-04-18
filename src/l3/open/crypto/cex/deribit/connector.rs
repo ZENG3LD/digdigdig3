@@ -46,7 +46,7 @@ use crate::core::traits::{
 };
 use crate::core::{CancelAll, AmendOrder};
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
-use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight, DecayingLimitConfig};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight, DecayingLimitConfig, OrderbookCapabilities, WsBookChannel};
 use crate::core::utils::PrecisionCache;
 
 use super::endpoints::{DeribitUrls, DeribitMethod, format_symbol};
@@ -396,6 +396,30 @@ impl ExchangeIdentity for DeribitConnector {
 
     fn exchange_type(&self) -> ExchangeType {
         ExchangeType::Cex
+    }
+
+    fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        static DERIBIT_CHANNELS: &[WsBookChannel] = &[
+            WsBookChannel::delta("book.{instr}.{group}.{depth}.100ms", None, Some(100)),
+            WsBookChannel::delta("book.{instr}.{group}.{depth}.agg2",  None, None    ),
+            WsBookChannel::delta("book.{instr}.{group}.{depth}.raw",   None, None    ).with_auth_tier(),
+        ];
+        OrderbookCapabilities {
+            ws_depths: &[1, 10, 20],
+            ws_default_depth: Some(20),
+            rest_max_depth: Some(10000),
+            rest_depth_values: &[1, 5, 10, 20, 50, 100, 1000, 10000],
+            supports_snapshot: true,
+            supports_delta: true,
+            update_speeds_ms: &[100],
+            default_speed_ms: Some(100),
+            ws_channels: DERIBIT_CHANNELS,
+            checksum: None,
+            has_sequence: true,
+            has_prev_sequence: true,
+            supports_aggregation: true,
+            aggregation_levels: &["none", "1", "2", "5", "10", "25", "100", "250"],
+        }
     }
 }
 

@@ -10,7 +10,8 @@
 //! - Hyperliquid: ✅
 
 use crate::core::types::{
-    AccountType, ConnectorStats, ExchangeId, ExchangeType, RateLimitCapabilities,
+    AccountType, ConnectorStats, ExchangeId, ExchangeType, OrderbookCapabilities,
+    RateLimitCapabilities,
 };
 
 /// Базовая идентификация биржи
@@ -76,5 +77,14 @@ pub trait ExchangeIdentity: Send + Sync {
     /// Default is `permissive()` (unlimited) — override in each connector.
     fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
         RateLimitCapabilities::permissive()
+    }
+
+    /// Static L2 orderbook capabilities for the given account type.
+    ///
+    /// Describes REST depth limits, WebSocket channels, checksum support, etc.
+    /// Default is `permissive()` (unlimited) — override in each connector.
+    fn orderbook_capabilities(&self, account_type: AccountType) -> OrderbookCapabilities {
+        let _ = account_type;
+        OrderbookCapabilities::permissive()
     }
 }

@@ -42,7 +42,7 @@ use crate::core::types::{
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
-use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, OrderbookCapabilities, WsBookChannel};
 
 use super::endpoints::{MexcUrls, MexcEndpoint, format_symbol, map_kline_interval};
 use super::auth::MexcAuth;
@@ -368,6 +368,29 @@ impl ExchangeIdentity for MexcConnector {
 
     fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
         MEXC_RATE_CAPS
+    }
+
+    fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        static MEXC_CHANNELS: &[WsBookChannel] = &[
+            WsBookChannel::delta("aggre.depth@10ms",  None,     Some(10)  ),
+            WsBookChannel::delta("aggre.depth@100ms", None,     Some(100) ),
+        ];
+        OrderbookCapabilities {
+            ws_depths: &[5, 10, 20],
+            ws_default_depth: None,
+            rest_max_depth: Some(5000),
+            rest_depth_values: &[],
+            supports_snapshot: true,
+            supports_delta: true,
+            update_speeds_ms: &[10, 100],
+            default_speed_ms: None,
+            ws_channels: MEXC_CHANNELS,
+            checksum: None,
+            has_sequence: true,
+            has_prev_sequence: false,
+            supports_aggregation: true,
+            aggregation_levels: &[],
+        }
     }
 }
 

@@ -48,6 +48,7 @@ use crate::core::types::{
     FundingPayment, FundingFilter,
     LedgerEntry, LedgerEntryType, LedgerFilter,
     RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits,
+    OrderbookCapabilities, WsBookChannel, ChecksumInfo, ChecksumAlgorithm,
 };
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 use crate::core::utils::PrecisionCache;
@@ -316,6 +317,37 @@ impl ExchangeIdentity for BitfinexConnector {
 
     fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
         BITFINEX_RATE_CAPS
+    }
+
+    fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        static BITFINEX_CHANNELS: &[WsBookChannel] = &[
+            WsBookChannel::delta("book/P0", None, None),
+            WsBookChannel::delta("book/P1", None, None),
+            WsBookChannel::delta("book/P2", None, None),
+            WsBookChannel::delta("book/P3", None, None),
+            WsBookChannel::delta("book/P4", None, None),
+            WsBookChannel::delta("book/R0", None, None),
+        ];
+        OrderbookCapabilities {
+            ws_depths: &[1, 25, 100, 250],
+            ws_default_depth: Some(25),
+            rest_max_depth: Some(250),
+            rest_depth_values: &[1, 25, 100, 250],
+            supports_snapshot: true,
+            supports_delta: true,
+            update_speeds_ms: &[],
+            default_speed_ms: None,
+            ws_channels: BITFINEX_CHANNELS,
+            checksum: Some(ChecksumInfo {
+                algorithm: ChecksumAlgorithm::Crc32Interleaved,
+                levels_per_side: 25,
+                opt_in: true,
+            }),
+            has_sequence: false,
+            has_prev_sequence: false,
+            supports_aggregation: true,
+            aggregation_levels: &["P0", "P1", "P2", "P3", "P4", "R0"],
+        }
     }
 }
 

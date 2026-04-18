@@ -44,7 +44,7 @@ use crate::core::traits::{
 };
 use crate::core::types::ConnectorStats;
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
-use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight, DecayingLimitConfig};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight, DecayingLimitConfig, OrderbookCapabilities, WsBookChannel, ChecksumInfo, ChecksumAlgorithm};
 use crate::core::utils::precision::PrecisionCache;
 
 use super::endpoints::{KrakenUrls, KrakenEndpoint, format_symbol, map_ohlc_interval};
@@ -330,6 +330,50 @@ impl ExchangeIdentity for KrakenConnector {
 
     fn exchange_type(&self) -> ExchangeType {
         ExchangeType::Cex
+    }
+
+    fn orderbook_capabilities(&self, account_type: AccountType) -> OrderbookCapabilities {
+        static SPOT_CHANNELS: &[WsBookChannel] = &[
+            WsBookChannel::delta("book", None, None),
+        ];
+        match account_type {
+            AccountType::Spot => OrderbookCapabilities {
+                ws_depths: &[10, 25, 100, 500, 1000],
+                ws_default_depth: Some(10),
+                rest_max_depth: Some(500),
+                rest_depth_values: &[],
+                supports_snapshot: true,
+                supports_delta: true,
+                update_speeds_ms: &[],
+                default_speed_ms: None,
+                ws_channels: SPOT_CHANNELS,
+                checksum: Some(ChecksumInfo {
+                    algorithm: ChecksumAlgorithm::Crc32KrakenFormat,
+                    levels_per_side: 10,
+                    opt_in: false,
+                }),
+                has_sequence: false,
+                has_prev_sequence: false,
+                supports_aggregation: false,
+                aggregation_levels: &[],
+            },
+            _ => OrderbookCapabilities {
+                ws_depths: &[],
+                ws_default_depth: None,
+                rest_max_depth: None,
+                rest_depth_values: &[],
+                supports_snapshot: true,
+                supports_delta: true,
+                update_speeds_ms: &[],
+                default_speed_ms: None,
+                ws_channels: &[],
+                checksum: None,
+                has_sequence: true,
+                has_prev_sequence: false,
+                supports_aggregation: false,
+                aggregation_levels: &[],
+            },
+        }
     }
 }
 

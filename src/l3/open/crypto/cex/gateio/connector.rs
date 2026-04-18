@@ -45,7 +45,7 @@ use crate::core::types::{
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
-use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight, OrderbookCapabilities, WsBookChannel};
 use crate::core::utils::precision::PrecisionCache;
 
 use super::endpoints::{GateioUrls, GateioEndpoint, format_symbol, map_kline_interval};
@@ -471,6 +471,33 @@ impl ExchangeIdentity for GateioConnector {
 
     fn exchange_type(&self) -> ExchangeType {
         ExchangeType::Cex
+    }
+
+    fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        static GATEIO_CHANNELS: &[WsBookChannel] = &[
+            WsBookChannel { name: "spot.book_ticker",       depth: Some(1),   is_snapshot: true,  update_speed_ms: Some(10),  requires_auth_tier: false },
+            WsBookChannel { name: "spot.order_book_update", depth: Some(100), is_snapshot: false, update_speed_ms: Some(100), requires_auth_tier: false },
+            WsBookChannel { name: "spot.order_book_update", depth: Some(20),  is_snapshot: false, update_speed_ms: Some(20),  requires_auth_tier: false },
+            WsBookChannel { name: "spot.order_book",        depth: Some(100), is_snapshot: true,  update_speed_ms: Some(100), requires_auth_tier: false },
+            WsBookChannel { name: "spot.obu",               depth: Some(400), is_snapshot: false, update_speed_ms: Some(100), requires_auth_tier: false },
+            WsBookChannel { name: "spot.obu",               depth: Some(50),  is_snapshot: false, update_speed_ms: Some(20),  requires_auth_tier: false },
+        ];
+        OrderbookCapabilities {
+            ws_depths: &[5, 10, 20, 50, 100, 400],
+            ws_default_depth: Some(100),
+            rest_max_depth: Some(1000),
+            rest_depth_values: &[],
+            supports_snapshot: true,
+            supports_delta: true,
+            update_speeds_ms: &[10, 20, 100, 1000],
+            default_speed_ms: Some(100),
+            ws_channels: GATEIO_CHANNELS,
+            checksum: None,
+            has_sequence: true,
+            has_prev_sequence: false,
+            supports_aggregation: false,
+            aggregation_levels: &[],
+        }
     }
 }
 

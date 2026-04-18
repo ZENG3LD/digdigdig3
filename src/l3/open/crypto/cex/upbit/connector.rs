@@ -40,7 +40,7 @@ use crate::core::types::{WithdrawRequest, FundsHistoryFilter, FundsRecordType};
 use crate::core::types::SymbolInfo;
 use crate::core::types::ConnectorStats;
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
-use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight, OrderbookCapabilities};
 use crate::core::utils::PrecisionCache;
 
 use super::endpoints::{UpbitUrls, UpbitEndpoint, format_symbol, map_kline_interval};
@@ -445,6 +445,25 @@ impl ExchangeIdentity for UpbitConnector {
 
     fn supported_account_types(&self) -> Vec<AccountType> {
         vec![AccountType::Spot]
+    }
+
+    fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        OrderbookCapabilities {
+            ws_depths: &[1, 5, 15, 30],
+            ws_default_depth: Some(30),
+            rest_max_depth: Some(30),
+            rest_depth_values: &[],
+            supports_snapshot: true,
+            supports_delta: false,
+            update_speeds_ms: &[],
+            default_speed_ms: None,
+            ws_channels: &[],
+            checksum: None,
+            has_sequence: false,
+            has_prev_sequence: false,
+            supports_aggregation: true,
+            aggregation_levels: &[],
+        }
     }
 }
 

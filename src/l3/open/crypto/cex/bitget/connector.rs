@@ -47,7 +47,7 @@ use crate::core::types::{
     LedgerEntry, LedgerFilter,
 };
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
-use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight, OrderbookCapabilities, WsBookChannel, ChecksumInfo, ChecksumAlgorithm};
 
 use super::endpoints::{
     BitgetUrls, BitgetEndpoint, format_symbol, map_kline_interval,
@@ -429,6 +429,35 @@ impl ExchangeIdentity for BitgetConnector {
 
     fn exchange_type(&self) -> ExchangeType {
         ExchangeType::Cex
+    }
+
+    fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        static BITGET_CHANNELS: &[WsBookChannel] = &[
+            WsBookChannel::snapshot("books1",  1,   100),
+            WsBookChannel::snapshot("books5",  5,   150),
+            WsBookChannel::snapshot("books15", 15,  150),
+            WsBookChannel::delta("books",      None, Some(150)),
+        ];
+        OrderbookCapabilities {
+            ws_depths: &[1, 5, 15],
+            ws_default_depth: None,
+            rest_max_depth: Some(150),
+            rest_depth_values: &[],
+            supports_snapshot: true,
+            supports_delta: true,
+            update_speeds_ms: &[],
+            default_speed_ms: None,
+            ws_channels: BITGET_CHANNELS,
+            checksum: Some(ChecksumInfo {
+                algorithm: ChecksumAlgorithm::Crc32Interleaved,
+                levels_per_side: 25,
+                opt_in: false,
+            }),
+            has_sequence: true,
+            has_prev_sequence: false,
+            supports_aggregation: false,
+            aggregation_levels: &[],
+        }
     }
 }
 

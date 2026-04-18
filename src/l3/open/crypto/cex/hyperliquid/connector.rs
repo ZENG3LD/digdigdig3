@@ -38,7 +38,7 @@ use crate::core::{
 use crate::core::traits::{Trading, Account, Positions, AmendOrder, BatchOrders, CancelAll, AccountTransfers, FundingHistory};
 use crate::core::types::{ConnectorStats, SymbolInfo, AlgoOrderResponse, TransferRequest, TransferHistoryFilter, TransferResponse, FundingPayment, FundingFilter};
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
-use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, OrderbookCapabilities};
 use crate::core::utils::PrecisionCache;
 
 use super::{HyperliquidUrls, HyperliquidAuth, HyperliquidParser, HyperliquidEndpoint};
@@ -516,6 +516,25 @@ impl ExchangeIdentity for HyperliquidConnector {
 
     fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
         HYPERLIQUID_RATE_CAPS
+    }
+
+    fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        OrderbookCapabilities {
+            ws_depths: &[],
+            ws_default_depth: Some(20),
+            rest_max_depth: Some(20),
+            rest_depth_values: &[],
+            supports_snapshot: true,
+            supports_delta: false,
+            update_speeds_ms: &[],
+            default_speed_ms: Some(500),
+            ws_channels: &[],
+            checksum: None,
+            has_sequence: false,
+            has_prev_sequence: false,
+            supports_aggregation: true,
+            aggregation_levels: &["null", "2", "3", "4", "5"],
+        }
     }
 }
 

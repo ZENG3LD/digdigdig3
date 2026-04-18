@@ -41,7 +41,7 @@ use crate::core::types::ConnectorStats;
 use crate::core::types::{WithdrawRequest, FundsHistoryFilter, FundsRecordType};
 use crate::core::types::{UserTrade, UserTradeFilter};
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
-use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight, OrderbookCapabilities, WsBookChannel};
 use crate::core::utils::PrecisionCache;
 
 use super::endpoints::{GeminiUrls, GeminiEndpoint, format_symbol, normalize_symbol, map_kline_interval};
@@ -275,6 +275,35 @@ impl ExchangeIdentity for GeminiConnector {
             AccountType::Spot,
             AccountType::FuturesCross,
         ]
+    }
+
+    fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        static GEMINI_CHANNELS: &[WsBookChannel] = &[
+            WsBookChannel::snapshot("depth5",         5,  1000),
+            WsBookChannel::snapshot("depth10",        10, 1000),
+            WsBookChannel::snapshot("depth20",        20, 1000),
+            WsBookChannel::snapshot("depth5@100ms",   5,  100),
+            WsBookChannel::snapshot("depth10@100ms",  10, 100),
+            WsBookChannel::snapshot("depth20@100ms",  20, 100),
+            WsBookChannel::delta("depth",             None, Some(1000)),
+            WsBookChannel::delta("depth@100ms",       None, Some(100)),
+        ];
+        OrderbookCapabilities {
+            ws_depths: &[5, 10, 20],
+            ws_default_depth: Some(20),
+            rest_max_depth: None,
+            rest_depth_values: &[],
+            supports_snapshot: true,
+            supports_delta: true,
+            update_speeds_ms: &[100, 1000],
+            default_speed_ms: Some(1000),
+            ws_channels: GEMINI_CHANNELS,
+            checksum: None,
+            has_sequence: true,
+            has_prev_sequence: false,
+            supports_aggregation: false,
+            aggregation_levels: &[],
+        }
     }
 }
 

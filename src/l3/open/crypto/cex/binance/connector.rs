@@ -49,7 +49,7 @@ use crate::core::types::{
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
-use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight, OrderbookCapabilities};
 
 use super::endpoints::{BinanceUrls, BinanceEndpoint, format_symbol, map_kline_interval};
 use super::auth::BinanceAuth;
@@ -714,6 +714,43 @@ impl ExchangeIdentity for BinanceConnector {
 
     fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
         BINANCE_SPOT_RATE_CAPS
+    }
+
+    fn orderbook_capabilities(&self, account_type: AccountType) -> OrderbookCapabilities {
+        match account_type {
+            AccountType::Spot => OrderbookCapabilities {
+                ws_depths: &[5, 10, 20],
+                ws_default_depth: Some(20),
+                rest_max_depth: Some(5000),
+                rest_depth_values: &[],
+                supports_snapshot: true,
+                supports_delta: true,
+                update_speeds_ms: &[100, 1000],
+                default_speed_ms: Some(1000),
+                ws_channels: &[],
+                checksum: None,
+                has_sequence: true,
+                has_prev_sequence: false,
+                supports_aggregation: false,
+                aggregation_levels: &[],
+            },
+            _ => OrderbookCapabilities {
+                ws_depths: &[5, 10, 20],
+                ws_default_depth: Some(20),
+                rest_max_depth: Some(1000),
+                rest_depth_values: &[5, 10, 20, 50, 100, 500, 1000],
+                supports_snapshot: true,
+                supports_delta: true,
+                update_speeds_ms: &[100, 250, 500],
+                default_speed_ms: Some(250),
+                ws_channels: &[],
+                checksum: None,
+                has_sequence: true,
+                has_prev_sequence: true,
+                supports_aggregation: false,
+                aggregation_levels: &[],
+            },
+        }
     }
 }
 

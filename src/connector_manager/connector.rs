@@ -21,6 +21,7 @@ use async_trait::async_trait;
 use crate::core::types::{
     ConnectorStats, ExchangeId, AccountType, Symbol, SymbolInfo, Price, OrderBook, Kline, Ticker,
     ExchangeResult, MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
+    OrderbookCapabilities,
 };
 
 use crate::core::traits::{
@@ -474,6 +475,67 @@ impl ExchangeIdentity for AnyConnector {
             Self::IB(c) => c.supported_account_types(),
             Self::YahooFinance(c) => c.supported_account_types(),
             Self::CryptoCompare(c) => c.supported_account_types(),
+        }
+    }
+
+    fn orderbook_capabilities(&self, account_type: AccountType) -> OrderbookCapabilities {
+        match self {
+            // CEX
+            Self::Binance(c) => c.orderbook_capabilities(account_type),
+            Self::Bybit(c) => c.orderbook_capabilities(account_type),
+            Self::OKX(c) => c.orderbook_capabilities(account_type),
+            Self::KuCoin(c) => c.orderbook_capabilities(account_type),
+            Self::Kraken(c) => c.orderbook_capabilities(account_type),
+            Self::Coinbase(c) => c.orderbook_capabilities(account_type),
+            Self::GateIO(c) => c.orderbook_capabilities(account_type),
+            Self::Bitfinex(c) => c.orderbook_capabilities(account_type),
+            Self::Bitstamp(c) => c.orderbook_capabilities(account_type),
+            Self::Gemini(c) => c.orderbook_capabilities(account_type),
+            Self::MEXC(c) => c.orderbook_capabilities(account_type),
+            Self::HTX(c) => c.orderbook_capabilities(account_type),
+            Self::Bitget(c) => c.orderbook_capabilities(account_type),
+            Self::BingX(c) => c.orderbook_capabilities(account_type),
+            Self::CryptoCom(c) => c.orderbook_capabilities(account_type),
+            Self::Upbit(c) => c.orderbook_capabilities(account_type),
+            Self::Deribit(c) => c.orderbook_capabilities(account_type),
+            Self::HyperLiquid(c) => c.orderbook_capabilities(account_type),
+
+            // DEX
+            Self::Lighter(c) => c.orderbook_capabilities(account_type),
+            Self::Dydx(c) => c.orderbook_capabilities(account_type),
+
+            // Stocks US
+            Self::Polygon(c) => c.orderbook_capabilities(account_type),
+            Self::Finnhub(c) => c.orderbook_capabilities(account_type),
+            Self::Tiingo(c) => c.orderbook_capabilities(account_type),
+            Self::Twelvedata(c) => c.orderbook_capabilities(account_type),
+            Self::Alpaca(c) => c.orderbook_capabilities(account_type),
+
+            // Stocks India
+            Self::AngelOne(c) => c.orderbook_capabilities(account_type),
+            Self::Zerodha(c) => c.orderbook_capabilities(account_type),
+            Self::Upstox(c) => c.orderbook_capabilities(account_type),
+            Self::Dhan(c) => c.orderbook_capabilities(account_type),
+            Self::Fyers(c) => c.orderbook_capabilities(account_type),
+
+            // Stocks Other
+            Self::JQuants(c) => c.orderbook_capabilities(account_type),
+            Self::Krx(c) => c.orderbook_capabilities(account_type),
+            Self::Moex(c) => c.orderbook_capabilities(account_type),
+            Self::Tinkoff(c) => c.orderbook_capabilities(account_type),
+
+            // Forex
+            Self::Oanda(c) => c.orderbook_capabilities(account_type),
+            Self::Dukascopy(c) => c.orderbook_capabilities(account_type),
+            Self::AlphaVantage(c) => c.orderbook_capabilities(account_type),
+
+            // Prediction
+            Self::Polymarket(c) => c.orderbook_capabilities(account_type),
+
+            // Aggregators
+            Self::IB(c) => c.orderbook_capabilities(account_type),
+            Self::YahooFinance(c) => c.orderbook_capabilities(account_type),
+            Self::CryptoCompare(c) => c.orderbook_capabilities(account_type),
         }
     }
 }

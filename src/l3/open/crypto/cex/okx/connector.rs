@@ -48,6 +48,7 @@ use crate::core::types::{
     FundingPayment, FundingFilter,
     LedgerEntry, LedgerFilter,
     RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits,
+    OrderbookCapabilities, WsBookChannel, ChecksumInfo, ChecksumAlgorithm,
 };
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 
@@ -504,6 +505,36 @@ impl ExchangeIdentity for OkxConnector {
 
     fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
         OKX_RATE_CAPS
+    }
+
+    fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        static OKX_CHANNELS: &[WsBookChannel] = &[
+            WsBookChannel::snapshot("bbo-tbt",        1,   10),
+            WsBookChannel::snapshot("books5",         5,   100),
+            WsBookChannel::delta("books",             Some(400), Some(100)),
+            WsBookChannel::delta("books50-l2-tbt",    Some(50),  Some(10)).with_auth_tier(),
+            WsBookChannel::delta("books-l2-tbt",      Some(400), Some(10)).with_auth_tier(),
+        ];
+        OrderbookCapabilities {
+            ws_depths: &[1, 5, 50, 400],
+            ws_default_depth: Some(400),
+            rest_max_depth: Some(400),
+            rest_depth_values: &[],
+            supports_snapshot: true,
+            supports_delta: true,
+            update_speeds_ms: &[10, 100],
+            default_speed_ms: Some(100),
+            ws_channels: OKX_CHANNELS,
+            checksum: Some(ChecksumInfo {
+                algorithm: ChecksumAlgorithm::Crc32Interleaved,
+                levels_per_side: 25,
+                opt_in: false,
+            }),
+            has_sequence: true,
+            has_prev_sequence: true,
+            supports_aggregation: false,
+            aggregation_levels: &[],
+        }
     }
 }
 

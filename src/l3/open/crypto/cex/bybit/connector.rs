@@ -53,7 +53,7 @@ use crate::core::types::{
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
-use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, OrderbookCapabilities, WsBookChannel};
 
 use super::endpoints::{BybitUrls, BybitEndpoint, format_symbol, account_type_to_category, account_type_to_transfer_type, map_kline_interval};
 use super::auth::BybitAuth;
@@ -589,6 +589,75 @@ impl ExchangeIdentity for BybitConnector {
 
     fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
         BYBIT_RATE_CAPS
+    }
+
+    fn orderbook_capabilities(&self, account_type: AccountType) -> OrderbookCapabilities {
+        static SPOT_CHANNELS: &[WsBookChannel] = &[
+            WsBookChannel::snapshot("orderbook.1",    1,    10),
+            WsBookChannel::delta("orderbook.50",      Some(50),   Some(20)),
+            WsBookChannel::delta("orderbook.200",     Some(200),  Some(100)),
+            WsBookChannel::delta("orderbook.1000",    Some(1000), Some(200)),
+        ];
+        static LINEAR_CHANNELS: &[WsBookChannel] = &[
+            WsBookChannel::snapshot("orderbook.1",    1,    10),
+            WsBookChannel::delta("orderbook.50",      Some(50),   Some(20)),
+            WsBookChannel::delta("orderbook.200",     Some(200),  Some(100)),
+            WsBookChannel::delta("orderbook.1000",    Some(1000), Some(200)),
+        ];
+        static OPTION_CHANNELS: &[WsBookChannel] = &[
+            WsBookChannel::delta("orderbook.25",     Some(25),  Some(20)),
+            WsBookChannel::delta("orderbook.100",    Some(100), Some(100)),
+        ];
+        match account_type {
+            AccountType::Options => OrderbookCapabilities {
+                ws_depths: &[25, 100],
+                ws_default_depth: Some(25),
+                rest_max_depth: Some(25),
+                rest_depth_values: &[],
+                supports_snapshot: true,
+                supports_delta: true,
+                update_speeds_ms: &[20, 100],
+                default_speed_ms: Some(20),
+                ws_channels: OPTION_CHANNELS,
+                checksum: None,
+                has_sequence: true,
+                has_prev_sequence: false,
+                supports_aggregation: false,
+                aggregation_levels: &[],
+            },
+            AccountType::Spot => OrderbookCapabilities {
+                ws_depths: &[1, 50, 200, 1000],
+                ws_default_depth: Some(50),
+                rest_max_depth: Some(200),
+                rest_depth_values: &[],
+                supports_snapshot: true,
+                supports_delta: true,
+                update_speeds_ms: &[10, 20, 100, 200],
+                default_speed_ms: Some(20),
+                ws_channels: SPOT_CHANNELS,
+                checksum: None,
+                has_sequence: true,
+                has_prev_sequence: false,
+                supports_aggregation: false,
+                aggregation_levels: &[],
+            },
+            _ => OrderbookCapabilities {
+                ws_depths: &[1, 50, 200, 1000],
+                ws_default_depth: Some(50),
+                rest_max_depth: Some(500),
+                rest_depth_values: &[],
+                supports_snapshot: true,
+                supports_delta: true,
+                update_speeds_ms: &[10, 20, 100, 200],
+                default_speed_ms: Some(20),
+                ws_channels: LINEAR_CHANNELS,
+                checksum: None,
+                has_sequence: true,
+                has_prev_sequence: false,
+                supports_aggregation: false,
+                aggregation_levels: &[],
+            },
+        }
     }
 }
 

@@ -12,6 +12,7 @@ use crate::core::types::{
     OrderRequest, CancelRequest, OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     BalanceQuery, PositionQuery, PositionModification,
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
+    OrderbookCapabilities,
 };
 use crate::core::traits::{ExchangeIdentity, MarketData, Trading, Account, Positions};
 
@@ -123,6 +124,25 @@ impl ExchangeIdentity for MoexConnector {
     fn supported_account_types(&self) -> Vec<AccountType> {
         // MOEX ISS is data-only, but conceptually supports these markets
         vec![AccountType::Spot] // Can be extended for futures data
+    }
+
+    fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        OrderbookCapabilities {
+            ws_depths: &[20],
+            ws_default_depth: Some(20),
+            rest_max_depth: Some(20),
+            rest_depth_values: &[],
+            supports_snapshot: true,
+            supports_delta: false,
+            update_speeds_ms: &[],
+            default_speed_ms: None,
+            ws_channels: &[],
+            checksum: None,
+            has_sequence: true,
+            has_prev_sequence: false,
+            supports_aggregation: false,
+            aggregation_levels: &[],
+        }
     }
 }
 

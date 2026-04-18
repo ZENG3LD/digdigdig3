@@ -43,7 +43,7 @@ use crate::core::types::{
     SubAccountOperation, SubAccountResult, SubAccount,
 };
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
-use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, OrderbookCapabilities, WsBookChannel};
 
 use super::endpoints::{HtxUrls, HtxEndpoint, format_symbol, map_kline_interval};
 use super::auth::HtxAuth;
@@ -425,6 +425,38 @@ impl ExchangeIdentity for HtxConnector {
 
     fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
         HTX_RATE_CAPS
+    }
+
+    fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        static HTX_CHANNELS: &[WsBookChannel] = &[
+            WsBookChannel::delta("mbp.5",   Some(5),   None      ),
+            WsBookChannel::delta("mbp.10",  Some(10),  Some(100) ),
+            WsBookChannel::delta("mbp.20",  Some(20),  Some(100) ),
+            WsBookChannel::delta("mbp.150", Some(150), Some(100) ),
+            WsBookChannel::delta("mbp.400", Some(400), Some(100) ),
+            WsBookChannel::snapshot("depth.step0", 150, 100),
+            WsBookChannel::snapshot("depth.step1", 20,  100),
+            WsBookChannel::snapshot("depth.step2", 20,  100),
+            WsBookChannel::snapshot("depth.step3", 20,  100),
+            WsBookChannel::snapshot("depth.step4", 20,  100),
+            WsBookChannel::snapshot("depth.step5", 20,  100),
+        ];
+        OrderbookCapabilities {
+            ws_depths: &[5, 10, 20, 150, 400],
+            ws_default_depth: Some(20),
+            rest_max_depth: Some(150),
+            rest_depth_values: &[5, 10, 20, 30, 150],
+            supports_snapshot: true,
+            supports_delta: true,
+            update_speeds_ms: &[100],
+            default_speed_ms: Some(100),
+            ws_channels: HTX_CHANNELS,
+            checksum: None,
+            has_sequence: true,
+            has_prev_sequence: true,
+            supports_aggregation: true,
+            aggregation_levels: &["step0", "step1", "step2", "step3", "step4", "step5"],
+        }
     }
 }
 

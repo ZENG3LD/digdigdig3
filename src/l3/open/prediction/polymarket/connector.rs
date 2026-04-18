@@ -29,7 +29,7 @@ use crate::core::{
 };
 use crate::core::traits::{ExchangeIdentity, MarketData};
 use crate::core::types::MarketDataCapabilities;
-use crate::core::types::{ConnectorStats, RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits};
+use crate::core::types::{ConnectorStats, RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, OrderbookCapabilities};
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 
 use super::auth::{PolymarketAuth, PolymarketCredentials};
@@ -441,6 +441,25 @@ impl ExchangeIdentity for PolymarketConnector {
 
     fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
         POLYMARKET_RATE_CAPS
+    }
+
+    fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        OrderbookCapabilities {
+            ws_depths: &[],
+            ws_default_depth: None,
+            rest_max_depth: None,
+            rest_depth_values: &[],
+            supports_snapshot: true,
+            supports_delta: true,
+            update_speeds_ms: &[],
+            default_speed_ms: None,
+            ws_channels: &[],
+            checksum: None,
+            has_sequence: false,
+            has_prev_sequence: false,
+            supports_aggregation: false,
+            aggregation_levels: &[],
+        }
     }
 }
 

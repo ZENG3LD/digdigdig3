@@ -38,7 +38,7 @@ use crate::core::traits::{
 };
 use crate::core::types::{ConnectorStats, SymbolInfo, MarketDataCapabilities, TradingCapabilities, AccountCapabilities};
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
-use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, OrderbookCapabilities};
 
 use super::endpoints::{LighterUrls, LighterEndpoint, map_kline_interval, format_symbol, symbol_to_market_id};
 use super::auth::LighterAuth;
@@ -322,6 +322,25 @@ impl ExchangeIdentity for LighterConnector {
 
     fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
         LIGHTER_RATE_CAPS
+    }
+
+    fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        OrderbookCapabilities {
+            ws_depths: &[],
+            ws_default_depth: None,
+            rest_max_depth: Some(250),
+            rest_depth_values: &[],
+            supports_snapshot: true,
+            supports_delta: true,
+            update_speeds_ms: &[50],
+            default_speed_ms: Some(50),
+            ws_channels: &[],
+            checksum: None,
+            has_sequence: true,
+            has_prev_sequence: true,
+            supports_aggregation: false,
+            aggregation_levels: &[],
+        }
     }
 }
 

@@ -39,7 +39,7 @@ use crate::core::types::{
 };
 use crate::core::types::{SymbolInfo, OrderResult};
 use crate::core::types::ConnectorStats;
-use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, OrderbookCapabilities};
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 use crate::core::utils::PrecisionCache;
 
@@ -293,6 +293,25 @@ impl ExchangeIdentity for CryptoComConnector {
 
     fn rate_limit_capabilities(&self) -> RateLimitCapabilities {
         CRYPTO_COM_RATE_CAPS
+    }
+
+    fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        OrderbookCapabilities {
+            ws_depths: &[10, 50],
+            ws_default_depth: Some(50),
+            rest_max_depth: Some(50),
+            rest_depth_values: &[],
+            supports_snapshot: true,
+            supports_delta: true,
+            update_speeds_ms: &[100, 500],
+            default_speed_ms: Some(100),
+            ws_channels: &[],
+            checksum: None,
+            has_sequence: false,
+            has_prev_sequence: false,
+            supports_aggregation: false,
+            aggregation_levels: &[],
+        }
     }
 }
 

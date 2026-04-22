@@ -28,7 +28,7 @@ impl BinanceUrls {
 
     /// Testnet URLs
     pub const TESTNET: Self = Self {
-        spot_rest: "https://testapi.binance.vision",
+        spot_rest: "https://testnet.binance.vision",
         futures_rest: "https://testnet.binancefuture.com",
         spot_ws: "wss://testnet.binance.vision",
         futures_ws: "wss://stream.binancefuture.com",

@@ -22,10 +22,15 @@ use crate::core::types::{
     ConnectorStats, ExchangeId, AccountType, Symbol, SymbolInfo, Price, OrderBook, Kline, Ticker,
     ExchangeResult, MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
     OrderbookCapabilities,
+    ExchangeError, Order, OrderRequest, OrderHistoryFilter, CancelRequest, PlaceOrderResponse,
+    UserTrade, UserTradeFilter, Balance, BalanceQuery, AccountInfo, FeeInfo,
+    Position, PositionQuery, PositionModification, FundingRate,
+    CancelScope, CancelAllResponse, AmendRequest, OrderResult,
 };
 
 use crate::core::traits::{
-    ExchangeIdentity, MarketData, Trading, Account,
+    ExchangeIdentity, MarketData, Trading, Account, Positions,
+    CancelAll, AmendOrder, BatchOrders,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1130,6 +1135,1185 @@ impl AnyConnector {
             // Data Feeds
             Self::YahooFinance(c) => c.account_capabilities(account_type),
             Self::CryptoCompare(c) => c.account_capabilities(account_type),
+        }
+    }
+}
+
+// === Trading ===
+
+#[async_trait]
+impl Trading for AnyConnector {
+    async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
+        match self {
+            // CEX
+            Self::Binance(c) => c.place_order(req).await,
+            Self::Bybit(c) => c.place_order(req).await,
+            Self::OKX(c) => c.place_order(req).await,
+            Self::KuCoin(c) => c.place_order(req).await,
+            Self::Kraken(c) => c.place_order(req).await,
+            Self::Coinbase(c) => c.place_order(req).await,
+            Self::GateIO(c) => c.place_order(req).await,
+            Self::Bitfinex(c) => c.place_order(req).await,
+            Self::Bitstamp(c) => c.place_order(req).await,
+            Self::Gemini(c) => c.place_order(req).await,
+            Self::MEXC(c) => c.place_order(req).await,
+            Self::HTX(c) => c.place_order(req).await,
+            Self::Bitget(c) => c.place_order(req).await,
+            Self::BingX(c) => c.place_order(req).await,
+            Self::CryptoCom(c) => c.place_order(req).await,
+            Self::Upbit(c) => c.place_order(req).await,
+            Self::Deribit(c) => c.place_order(req).await,
+            Self::HyperLiquid(c) => c.place_order(req).await,
+
+            // DEX
+            Self::Lighter(c) => c.place_order(req).await,
+            Self::Dydx(c) => c.place_order(req).await,
+
+            // Stocks US
+            Self::Polygon(c) => c.place_order(req).await,
+            Self::Finnhub(c) => c.place_order(req).await,
+            Self::Tiingo(c) => c.place_order(req).await,
+            Self::Twelvedata(c) => c.place_order(req).await,
+            Self::Alpaca(c) => c.place_order(req).await,
+
+            // Stocks India
+            Self::AngelOne(c) => c.place_order(req).await,
+            Self::Zerodha(c) => c.place_order(req).await,
+            Self::Upstox(c) => c.place_order(req).await,
+            Self::Dhan(c) => c.place_order(req).await,
+            Self::Fyers(c) => c.place_order(req).await,
+
+            // Stocks Other
+            Self::JQuants(c) => c.place_order(req).await,
+            Self::Krx(c) => c.place_order(req).await,
+            Self::Moex(c) => c.place_order(req).await,
+            Self::Tinkoff(c) => c.place_order(req).await,
+
+            // Forex
+            Self::Oanda(c) => c.place_order(req).await,
+            Self::Dukascopy(c) => c.place_order(req).await,
+            Self::AlphaVantage(c) => c.place_order(req).await,
+
+            // Data Feeds
+            Self::YahooFinance(c) => c.place_order(req).await,
+            Self::CryptoCompare(c) => c.place_order(req).await,
+
+            // Brokers — no trading
+            Self::IB(_) => Err(ExchangeError::UnsupportedOperation("trading not supported".into())),
+
+            // Prediction — no trading
+            Self::Polymarket(_) => Err(ExchangeError::UnsupportedOperation("trading not supported".into())),
+        }
+    }
+
+    async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
+        match self {
+            // CEX
+            Self::Binance(c) => c.cancel_order(req).await,
+            Self::Bybit(c) => c.cancel_order(req).await,
+            Self::OKX(c) => c.cancel_order(req).await,
+            Self::KuCoin(c) => c.cancel_order(req).await,
+            Self::Kraken(c) => c.cancel_order(req).await,
+            Self::Coinbase(c) => c.cancel_order(req).await,
+            Self::GateIO(c) => c.cancel_order(req).await,
+            Self::Bitfinex(c) => c.cancel_order(req).await,
+            Self::Bitstamp(c) => c.cancel_order(req).await,
+            Self::Gemini(c) => c.cancel_order(req).await,
+            Self::MEXC(c) => c.cancel_order(req).await,
+            Self::HTX(c) => c.cancel_order(req).await,
+            Self::Bitget(c) => c.cancel_order(req).await,
+            Self::BingX(c) => c.cancel_order(req).await,
+            Self::CryptoCom(c) => c.cancel_order(req).await,
+            Self::Upbit(c) => c.cancel_order(req).await,
+            Self::Deribit(c) => c.cancel_order(req).await,
+            Self::HyperLiquid(c) => c.cancel_order(req).await,
+
+            // DEX
+            Self::Lighter(c) => c.cancel_order(req).await,
+            Self::Dydx(c) => c.cancel_order(req).await,
+
+            // Stocks US
+            Self::Polygon(c) => c.cancel_order(req).await,
+            Self::Finnhub(c) => c.cancel_order(req).await,
+            Self::Tiingo(c) => c.cancel_order(req).await,
+            Self::Twelvedata(c) => c.cancel_order(req).await,
+            Self::Alpaca(c) => c.cancel_order(req).await,
+
+            // Stocks India
+            Self::AngelOne(c) => c.cancel_order(req).await,
+            Self::Zerodha(c) => c.cancel_order(req).await,
+            Self::Upstox(c) => c.cancel_order(req).await,
+            Self::Dhan(c) => c.cancel_order(req).await,
+            Self::Fyers(c) => c.cancel_order(req).await,
+
+            // Stocks Other
+            Self::JQuants(c) => c.cancel_order(req).await,
+            Self::Krx(c) => c.cancel_order(req).await,
+            Self::Moex(c) => c.cancel_order(req).await,
+            Self::Tinkoff(c) => c.cancel_order(req).await,
+
+            // Forex
+            Self::Oanda(c) => c.cancel_order(req).await,
+            Self::Dukascopy(c) => c.cancel_order(req).await,
+            Self::AlphaVantage(c) => c.cancel_order(req).await,
+
+            // Data Feeds
+            Self::YahooFinance(c) => c.cancel_order(req).await,
+            Self::CryptoCompare(c) => c.cancel_order(req).await,
+
+            // Brokers — no trading
+            Self::IB(_) => Err(ExchangeError::UnsupportedOperation("trading not supported".into())),
+
+            // Prediction — no trading
+            Self::Polymarket(_) => Err(ExchangeError::UnsupportedOperation("trading not supported".into())),
+        }
+    }
+
+    async fn get_order(
+        &self,
+        symbol: &str,
+        order_id: &str,
+        account_type: AccountType,
+    ) -> ExchangeResult<Order> {
+        match self {
+            // CEX
+            Self::Binance(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::Bybit(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::OKX(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::KuCoin(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::Kraken(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::Coinbase(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::GateIO(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::Bitfinex(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::Bitstamp(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::Gemini(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::MEXC(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::HTX(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::Bitget(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::BingX(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::CryptoCom(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::Upbit(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::Deribit(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::HyperLiquid(c) => c.get_order(symbol, order_id, account_type).await,
+
+            // DEX
+            Self::Lighter(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::Dydx(c) => c.get_order(symbol, order_id, account_type).await,
+
+            // Stocks US
+            Self::Polygon(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::Finnhub(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::Tiingo(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::Twelvedata(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::Alpaca(c) => c.get_order(symbol, order_id, account_type).await,
+
+            // Stocks India
+            Self::AngelOne(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::Zerodha(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::Upstox(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::Dhan(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::Fyers(c) => c.get_order(symbol, order_id, account_type).await,
+
+            // Stocks Other
+            Self::JQuants(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::Krx(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::Moex(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::Tinkoff(c) => c.get_order(symbol, order_id, account_type).await,
+
+            // Forex
+            Self::Oanda(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::Dukascopy(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::AlphaVantage(c) => c.get_order(symbol, order_id, account_type).await,
+
+            // Data Feeds
+            Self::YahooFinance(c) => c.get_order(symbol, order_id, account_type).await,
+            Self::CryptoCompare(c) => c.get_order(symbol, order_id, account_type).await,
+
+            // Brokers — no trading
+            Self::IB(_) => Err(ExchangeError::UnsupportedOperation("trading not supported".into())),
+
+            // Prediction — no trading
+            Self::Polymarket(_) => Err(ExchangeError::UnsupportedOperation("trading not supported".into())),
+        }
+    }
+
+    async fn get_open_orders(
+        &self,
+        symbol: Option<&str>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        match self {
+            // CEX
+            Self::Binance(c) => c.get_open_orders(symbol, account_type).await,
+            Self::Bybit(c) => c.get_open_orders(symbol, account_type).await,
+            Self::OKX(c) => c.get_open_orders(symbol, account_type).await,
+            Self::KuCoin(c) => c.get_open_orders(symbol, account_type).await,
+            Self::Kraken(c) => c.get_open_orders(symbol, account_type).await,
+            Self::Coinbase(c) => c.get_open_orders(symbol, account_type).await,
+            Self::GateIO(c) => c.get_open_orders(symbol, account_type).await,
+            Self::Bitfinex(c) => c.get_open_orders(symbol, account_type).await,
+            Self::Bitstamp(c) => c.get_open_orders(symbol, account_type).await,
+            Self::Gemini(c) => c.get_open_orders(symbol, account_type).await,
+            Self::MEXC(c) => c.get_open_orders(symbol, account_type).await,
+            Self::HTX(c) => c.get_open_orders(symbol, account_type).await,
+            Self::Bitget(c) => c.get_open_orders(symbol, account_type).await,
+            Self::BingX(c) => c.get_open_orders(symbol, account_type).await,
+            Self::CryptoCom(c) => c.get_open_orders(symbol, account_type).await,
+            Self::Upbit(c) => c.get_open_orders(symbol, account_type).await,
+            Self::Deribit(c) => c.get_open_orders(symbol, account_type).await,
+            Self::HyperLiquid(c) => c.get_open_orders(symbol, account_type).await,
+
+            // DEX
+            Self::Lighter(c) => c.get_open_orders(symbol, account_type).await,
+            Self::Dydx(c) => c.get_open_orders(symbol, account_type).await,
+
+            // Stocks US
+            Self::Polygon(c) => c.get_open_orders(symbol, account_type).await,
+            Self::Finnhub(c) => c.get_open_orders(symbol, account_type).await,
+            Self::Tiingo(c) => c.get_open_orders(symbol, account_type).await,
+            Self::Twelvedata(c) => c.get_open_orders(symbol, account_type).await,
+            Self::Alpaca(c) => c.get_open_orders(symbol, account_type).await,
+
+            // Stocks India
+            Self::AngelOne(c) => c.get_open_orders(symbol, account_type).await,
+            Self::Zerodha(c) => c.get_open_orders(symbol, account_type).await,
+            Self::Upstox(c) => c.get_open_orders(symbol, account_type).await,
+            Self::Dhan(c) => c.get_open_orders(symbol, account_type).await,
+            Self::Fyers(c) => c.get_open_orders(symbol, account_type).await,
+
+            // Stocks Other
+            Self::JQuants(c) => c.get_open_orders(symbol, account_type).await,
+            Self::Krx(c) => c.get_open_orders(symbol, account_type).await,
+            Self::Moex(c) => c.get_open_orders(symbol, account_type).await,
+            Self::Tinkoff(c) => c.get_open_orders(symbol, account_type).await,
+
+            // Forex
+            Self::Oanda(c) => c.get_open_orders(symbol, account_type).await,
+            Self::Dukascopy(c) => c.get_open_orders(symbol, account_type).await,
+            Self::AlphaVantage(c) => c.get_open_orders(symbol, account_type).await,
+
+            // Data Feeds
+            Self::YahooFinance(c) => c.get_open_orders(symbol, account_type).await,
+            Self::CryptoCompare(c) => c.get_open_orders(symbol, account_type).await,
+
+            // Brokers — no trading
+            Self::IB(_) => Err(ExchangeError::UnsupportedOperation("trading not supported".into())),
+
+            // Prediction — no trading
+            Self::Polymarket(_) => Err(ExchangeError::UnsupportedOperation("trading not supported".into())),
+        }
+    }
+
+    async fn get_order_history(
+        &self,
+        filter: OrderHistoryFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Order>> {
+        match self {
+            // CEX
+            Self::Binance(c) => c.get_order_history(filter, account_type).await,
+            Self::Bybit(c) => c.get_order_history(filter, account_type).await,
+            Self::OKX(c) => c.get_order_history(filter, account_type).await,
+            Self::KuCoin(c) => c.get_order_history(filter, account_type).await,
+            Self::Kraken(c) => c.get_order_history(filter, account_type).await,
+            Self::Coinbase(c) => c.get_order_history(filter, account_type).await,
+            Self::GateIO(c) => c.get_order_history(filter, account_type).await,
+            Self::Bitfinex(c) => c.get_order_history(filter, account_type).await,
+            Self::Bitstamp(c) => c.get_order_history(filter, account_type).await,
+            Self::Gemini(c) => c.get_order_history(filter, account_type).await,
+            Self::MEXC(c) => c.get_order_history(filter, account_type).await,
+            Self::HTX(c) => c.get_order_history(filter, account_type).await,
+            Self::Bitget(c) => c.get_order_history(filter, account_type).await,
+            Self::BingX(c) => c.get_order_history(filter, account_type).await,
+            Self::CryptoCom(c) => c.get_order_history(filter, account_type).await,
+            Self::Upbit(c) => c.get_order_history(filter, account_type).await,
+            Self::Deribit(c) => c.get_order_history(filter, account_type).await,
+            Self::HyperLiquid(c) => c.get_order_history(filter, account_type).await,
+
+            // DEX
+            Self::Lighter(c) => c.get_order_history(filter, account_type).await,
+            Self::Dydx(c) => c.get_order_history(filter, account_type).await,
+
+            // Stocks US
+            Self::Polygon(c) => c.get_order_history(filter, account_type).await,
+            Self::Finnhub(c) => c.get_order_history(filter, account_type).await,
+            Self::Tiingo(c) => c.get_order_history(filter, account_type).await,
+            Self::Twelvedata(c) => c.get_order_history(filter, account_type).await,
+            Self::Alpaca(c) => c.get_order_history(filter, account_type).await,
+
+            // Stocks India
+            Self::AngelOne(c) => c.get_order_history(filter, account_type).await,
+            Self::Zerodha(c) => c.get_order_history(filter, account_type).await,
+            Self::Upstox(c) => c.get_order_history(filter, account_type).await,
+            Self::Dhan(c) => c.get_order_history(filter, account_type).await,
+            Self::Fyers(c) => c.get_order_history(filter, account_type).await,
+
+            // Stocks Other
+            Self::JQuants(c) => c.get_order_history(filter, account_type).await,
+            Self::Krx(c) => c.get_order_history(filter, account_type).await,
+            Self::Moex(c) => c.get_order_history(filter, account_type).await,
+            Self::Tinkoff(c) => c.get_order_history(filter, account_type).await,
+
+            // Forex
+            Self::Oanda(c) => c.get_order_history(filter, account_type).await,
+            Self::Dukascopy(c) => c.get_order_history(filter, account_type).await,
+            Self::AlphaVantage(c) => c.get_order_history(filter, account_type).await,
+
+            // Data Feeds
+            Self::YahooFinance(c) => c.get_order_history(filter, account_type).await,
+            Self::CryptoCompare(c) => c.get_order_history(filter, account_type).await,
+
+            // Brokers — no trading
+            Self::IB(_) => Err(ExchangeError::UnsupportedOperation("trading not supported".into())),
+
+            // Prediction — no trading
+            Self::Polymarket(_) => Err(ExchangeError::UnsupportedOperation("trading not supported".into())),
+        }
+    }
+
+    async fn get_user_trades(
+        &self,
+        filter: UserTradeFilter,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<UserTrade>> {
+        match self {
+            // CEX
+            Self::Binance(c) => c.get_user_trades(filter, account_type).await,
+            Self::Bybit(c) => c.get_user_trades(filter, account_type).await,
+            Self::OKX(c) => c.get_user_trades(filter, account_type).await,
+            Self::KuCoin(c) => c.get_user_trades(filter, account_type).await,
+            Self::Kraken(c) => c.get_user_trades(filter, account_type).await,
+            Self::Coinbase(c) => c.get_user_trades(filter, account_type).await,
+            Self::GateIO(c) => c.get_user_trades(filter, account_type).await,
+            Self::Bitfinex(c) => c.get_user_trades(filter, account_type).await,
+            Self::Bitstamp(c) => c.get_user_trades(filter, account_type).await,
+            Self::Gemini(c) => c.get_user_trades(filter, account_type).await,
+            Self::MEXC(c) => c.get_user_trades(filter, account_type).await,
+            Self::HTX(c) => c.get_user_trades(filter, account_type).await,
+            Self::Bitget(c) => c.get_user_trades(filter, account_type).await,
+            Self::BingX(c) => c.get_user_trades(filter, account_type).await,
+            Self::CryptoCom(c) => c.get_user_trades(filter, account_type).await,
+            Self::Upbit(c) => c.get_user_trades(filter, account_type).await,
+            Self::Deribit(c) => c.get_user_trades(filter, account_type).await,
+            Self::HyperLiquid(c) => c.get_user_trades(filter, account_type).await,
+
+            // DEX
+            Self::Lighter(c) => c.get_user_trades(filter, account_type).await,
+            Self::Dydx(c) => c.get_user_trades(filter, account_type).await,
+
+            // Stocks US
+            Self::Polygon(c) => c.get_user_trades(filter, account_type).await,
+            Self::Finnhub(c) => c.get_user_trades(filter, account_type).await,
+            Self::Tiingo(c) => c.get_user_trades(filter, account_type).await,
+            Self::Twelvedata(c) => c.get_user_trades(filter, account_type).await,
+            Self::Alpaca(c) => c.get_user_trades(filter, account_type).await,
+
+            // Stocks India
+            Self::AngelOne(c) => c.get_user_trades(filter, account_type).await,
+            Self::Zerodha(c) => c.get_user_trades(filter, account_type).await,
+            Self::Upstox(c) => c.get_user_trades(filter, account_type).await,
+            Self::Dhan(c) => c.get_user_trades(filter, account_type).await,
+            Self::Fyers(c) => c.get_user_trades(filter, account_type).await,
+
+            // Stocks Other
+            Self::JQuants(c) => c.get_user_trades(filter, account_type).await,
+            Self::Krx(c) => c.get_user_trades(filter, account_type).await,
+            Self::Moex(c) => c.get_user_trades(filter, account_type).await,
+            Self::Tinkoff(c) => c.get_user_trades(filter, account_type).await,
+
+            // Forex
+            Self::Oanda(c) => c.get_user_trades(filter, account_type).await,
+            Self::Dukascopy(c) => c.get_user_trades(filter, account_type).await,
+            Self::AlphaVantage(c) => c.get_user_trades(filter, account_type).await,
+
+            // Data Feeds
+            Self::YahooFinance(c) => c.get_user_trades(filter, account_type).await,
+            Self::CryptoCompare(c) => c.get_user_trades(filter, account_type).await,
+
+            // Brokers — no trading
+            Self::IB(_) => Err(ExchangeError::UnsupportedOperation("trading not supported".into())),
+
+            // Prediction — no trading
+            Self::Polymarket(_) => Err(ExchangeError::UnsupportedOperation("trading not supported".into())),
+        }
+    }
+
+    fn trading_capabilities(&self, account_type: AccountType) -> TradingCapabilities {
+        self.trading_capabilities(account_type)
+    }
+}
+
+// === Account ===
+
+#[async_trait]
+impl Account for AnyConnector {
+    async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
+        match self {
+            // CEX
+            Self::Binance(c) => c.get_balance(query).await,
+            Self::Bybit(c) => c.get_balance(query).await,
+            Self::OKX(c) => c.get_balance(query).await,
+            Self::KuCoin(c) => c.get_balance(query).await,
+            Self::Kraken(c) => c.get_balance(query).await,
+            Self::Coinbase(c) => c.get_balance(query).await,
+            Self::GateIO(c) => c.get_balance(query).await,
+            Self::Bitfinex(c) => c.get_balance(query).await,
+            Self::Bitstamp(c) => c.get_balance(query).await,
+            Self::Gemini(c) => c.get_balance(query).await,
+            Self::MEXC(c) => c.get_balance(query).await,
+            Self::HTX(c) => c.get_balance(query).await,
+            Self::Bitget(c) => c.get_balance(query).await,
+            Self::BingX(c) => c.get_balance(query).await,
+            Self::CryptoCom(c) => c.get_balance(query).await,
+            Self::Upbit(c) => c.get_balance(query).await,
+            Self::Deribit(c) => c.get_balance(query).await,
+            Self::HyperLiquid(c) => c.get_balance(query).await,
+
+            // DEX
+            Self::Lighter(c) => c.get_balance(query).await,
+            Self::Dydx(c) => c.get_balance(query).await,
+
+            // Stocks US
+            Self::Polygon(c) => c.get_balance(query).await,
+            Self::Finnhub(c) => c.get_balance(query).await,
+            Self::Tiingo(c) => c.get_balance(query).await,
+            Self::Twelvedata(c) => c.get_balance(query).await,
+            Self::Alpaca(c) => c.get_balance(query).await,
+
+            // Stocks India
+            Self::AngelOne(c) => c.get_balance(query).await,
+            Self::Zerodha(c) => c.get_balance(query).await,
+            Self::Upstox(c) => c.get_balance(query).await,
+            Self::Dhan(c) => c.get_balance(query).await,
+            Self::Fyers(c) => c.get_balance(query).await,
+
+            // Stocks Other
+            Self::JQuants(c) => c.get_balance(query).await,
+            Self::Krx(c) => c.get_balance(query).await,
+            Self::Moex(c) => c.get_balance(query).await,
+            Self::Tinkoff(c) => c.get_balance(query).await,
+
+            // Forex
+            Self::Oanda(c) => c.get_balance(query).await,
+            Self::Dukascopy(c) => c.get_balance(query).await,
+            Self::AlphaVantage(c) => c.get_balance(query).await,
+
+            // Data Feeds
+            Self::YahooFinance(c) => c.get_balance(query).await,
+            Self::CryptoCompare(c) => c.get_balance(query).await,
+
+            // Brokers — no account
+            Self::IB(_) => Err(ExchangeError::UnsupportedOperation("account not supported".into())),
+
+            // Prediction — no account
+            Self::Polymarket(_) => Err(ExchangeError::UnsupportedOperation("account not supported".into())),
+        }
+    }
+
+    async fn get_account_info(&self, account_type: AccountType) -> ExchangeResult<AccountInfo> {
+        match self {
+            // CEX
+            Self::Binance(c) => c.get_account_info(account_type).await,
+            Self::Bybit(c) => c.get_account_info(account_type).await,
+            Self::OKX(c) => c.get_account_info(account_type).await,
+            Self::KuCoin(c) => c.get_account_info(account_type).await,
+            Self::Kraken(c) => c.get_account_info(account_type).await,
+            Self::Coinbase(c) => c.get_account_info(account_type).await,
+            Self::GateIO(c) => c.get_account_info(account_type).await,
+            Self::Bitfinex(c) => c.get_account_info(account_type).await,
+            Self::Bitstamp(c) => c.get_account_info(account_type).await,
+            Self::Gemini(c) => c.get_account_info(account_type).await,
+            Self::MEXC(c) => c.get_account_info(account_type).await,
+            Self::HTX(c) => c.get_account_info(account_type).await,
+            Self::Bitget(c) => c.get_account_info(account_type).await,
+            Self::BingX(c) => c.get_account_info(account_type).await,
+            Self::CryptoCom(c) => c.get_account_info(account_type).await,
+            Self::Upbit(c) => c.get_account_info(account_type).await,
+            Self::Deribit(c) => c.get_account_info(account_type).await,
+            Self::HyperLiquid(c) => c.get_account_info(account_type).await,
+
+            // DEX
+            Self::Lighter(c) => c.get_account_info(account_type).await,
+            Self::Dydx(c) => c.get_account_info(account_type).await,
+
+            // Stocks US
+            Self::Polygon(c) => c.get_account_info(account_type).await,
+            Self::Finnhub(c) => c.get_account_info(account_type).await,
+            Self::Tiingo(c) => c.get_account_info(account_type).await,
+            Self::Twelvedata(c) => c.get_account_info(account_type).await,
+            Self::Alpaca(c) => c.get_account_info(account_type).await,
+
+            // Stocks India
+            Self::AngelOne(c) => c.get_account_info(account_type).await,
+            Self::Zerodha(c) => c.get_account_info(account_type).await,
+            Self::Upstox(c) => c.get_account_info(account_type).await,
+            Self::Dhan(c) => c.get_account_info(account_type).await,
+            Self::Fyers(c) => c.get_account_info(account_type).await,
+
+            // Stocks Other
+            Self::JQuants(c) => c.get_account_info(account_type).await,
+            Self::Krx(c) => c.get_account_info(account_type).await,
+            Self::Moex(c) => c.get_account_info(account_type).await,
+            Self::Tinkoff(c) => c.get_account_info(account_type).await,
+
+            // Forex
+            Self::Oanda(c) => c.get_account_info(account_type).await,
+            Self::Dukascopy(c) => c.get_account_info(account_type).await,
+            Self::AlphaVantage(c) => c.get_account_info(account_type).await,
+
+            // Data Feeds
+            Self::YahooFinance(c) => c.get_account_info(account_type).await,
+            Self::CryptoCompare(c) => c.get_account_info(account_type).await,
+
+            // Brokers — no account
+            Self::IB(_) => Err(ExchangeError::UnsupportedOperation("account not supported".into())),
+
+            // Prediction — no account
+            Self::Polymarket(_) => Err(ExchangeError::UnsupportedOperation("account not supported".into())),
+        }
+    }
+
+    async fn get_fees(&self, symbol: Option<&str>) -> ExchangeResult<FeeInfo> {
+        match self {
+            // CEX
+            Self::Binance(c) => c.get_fees(symbol).await,
+            Self::Bybit(c) => c.get_fees(symbol).await,
+            Self::OKX(c) => c.get_fees(symbol).await,
+            Self::KuCoin(c) => c.get_fees(symbol).await,
+            Self::Kraken(c) => c.get_fees(symbol).await,
+            Self::Coinbase(c) => c.get_fees(symbol).await,
+            Self::GateIO(c) => c.get_fees(symbol).await,
+            Self::Bitfinex(c) => c.get_fees(symbol).await,
+            Self::Bitstamp(c) => c.get_fees(symbol).await,
+            Self::Gemini(c) => c.get_fees(symbol).await,
+            Self::MEXC(c) => c.get_fees(symbol).await,
+            Self::HTX(c) => c.get_fees(symbol).await,
+            Self::Bitget(c) => c.get_fees(symbol).await,
+            Self::BingX(c) => c.get_fees(symbol).await,
+            Self::CryptoCom(c) => c.get_fees(symbol).await,
+            Self::Upbit(c) => c.get_fees(symbol).await,
+            Self::Deribit(c) => c.get_fees(symbol).await,
+            Self::HyperLiquid(c) => c.get_fees(symbol).await,
+
+            // DEX
+            Self::Lighter(c) => c.get_fees(symbol).await,
+            Self::Dydx(c) => c.get_fees(symbol).await,
+
+            // Stocks US
+            Self::Polygon(c) => c.get_fees(symbol).await,
+            Self::Finnhub(c) => c.get_fees(symbol).await,
+            Self::Tiingo(c) => c.get_fees(symbol).await,
+            Self::Twelvedata(c) => c.get_fees(symbol).await,
+            Self::Alpaca(c) => c.get_fees(symbol).await,
+
+            // Stocks India
+            Self::AngelOne(c) => c.get_fees(symbol).await,
+            Self::Zerodha(c) => c.get_fees(symbol).await,
+            Self::Upstox(c) => c.get_fees(symbol).await,
+            Self::Dhan(c) => c.get_fees(symbol).await,
+            Self::Fyers(c) => c.get_fees(symbol).await,
+
+            // Stocks Other
+            Self::JQuants(c) => c.get_fees(symbol).await,
+            Self::Krx(c) => c.get_fees(symbol).await,
+            Self::Moex(c) => c.get_fees(symbol).await,
+            Self::Tinkoff(c) => c.get_fees(symbol).await,
+
+            // Forex
+            Self::Oanda(c) => c.get_fees(symbol).await,
+            Self::Dukascopy(c) => c.get_fees(symbol).await,
+            Self::AlphaVantage(c) => c.get_fees(symbol).await,
+
+            // Data Feeds
+            Self::YahooFinance(c) => c.get_fees(symbol).await,
+            Self::CryptoCompare(c) => c.get_fees(symbol).await,
+
+            // Brokers — no account
+            Self::IB(_) => Err(ExchangeError::UnsupportedOperation("account not supported".into())),
+
+            // Prediction — no account
+            Self::Polymarket(_) => Err(ExchangeError::UnsupportedOperation("account not supported".into())),
+        }
+    }
+
+    fn account_capabilities(&self, account_type: AccountType) -> AccountCapabilities {
+        self.account_capabilities(account_type)
+    }
+}
+
+// === Positions ===
+
+#[async_trait]
+impl Positions for AnyConnector {
+    async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
+        match self {
+            // CEX
+            Self::Binance(c) => c.get_positions(query).await,
+            Self::Bybit(c) => c.get_positions(query).await,
+            Self::OKX(c) => c.get_positions(query).await,
+            Self::KuCoin(c) => c.get_positions(query).await,
+            Self::Kraken(c) => c.get_positions(query).await,
+            Self::Coinbase(c) => c.get_positions(query).await,
+            Self::GateIO(c) => c.get_positions(query).await,
+            Self::Bitfinex(c) => c.get_positions(query).await,
+            Self::Gemini(c) => c.get_positions(query).await,
+            Self::HTX(c) => c.get_positions(query).await,
+            Self::Bitget(c) => c.get_positions(query).await,
+            Self::BingX(c) => c.get_positions(query).await,
+            Self::CryptoCom(c) => c.get_positions(query).await,
+            Self::Deribit(c) => c.get_positions(query).await,
+            Self::HyperLiquid(c) => c.get_positions(query).await,
+
+            // DEX
+            Self::Lighter(c) => c.get_positions(query).await,
+            Self::Dydx(c) => c.get_positions(query).await,
+
+            // Stocks US
+            Self::Polygon(c) => c.get_positions(query).await,
+            Self::Finnhub(c) => c.get_positions(query).await,
+            Self::Tiingo(c) => c.get_positions(query).await,
+            Self::Twelvedata(c) => c.get_positions(query).await,
+            Self::Alpaca(c) => c.get_positions(query).await,
+
+            // Stocks India
+            Self::AngelOne(c) => c.get_positions(query).await,
+            Self::Zerodha(c) => c.get_positions(query).await,
+            Self::Upstox(c) => c.get_positions(query).await,
+            Self::Dhan(c) => c.get_positions(query).await,
+            Self::Fyers(c) => c.get_positions(query).await,
+
+            // Stocks Other
+            Self::JQuants(c) => c.get_positions(query).await,
+            Self::Krx(c) => c.get_positions(query).await,
+            Self::Moex(c) => c.get_positions(query).await,
+            Self::Tinkoff(c) => c.get_positions(query).await,
+
+            // Forex
+            Self::Oanda(c) => c.get_positions(query).await,
+            Self::Dukascopy(c) => c.get_positions(query).await,
+            Self::AlphaVantage(c) => c.get_positions(query).await,
+
+            // Data Feeds
+            Self::YahooFinance(c) => c.get_positions(query).await,
+            Self::CryptoCompare(c) => c.get_positions(query).await,
+
+            // No Positions impl
+            Self::MEXC(_) => Err(ExchangeError::UnsupportedOperation("positions not supported".into())),
+            Self::Bitstamp(_) => Err(ExchangeError::UnsupportedOperation("positions not supported".into())),
+            Self::Upbit(_) => Err(ExchangeError::UnsupportedOperation("positions not supported".into())),
+
+            // Brokers — no positions
+            Self::IB(_) => Err(ExchangeError::UnsupportedOperation("positions not supported".into())),
+
+            // Prediction — no positions
+            Self::Polymarket(_) => Err(ExchangeError::UnsupportedOperation("positions not supported".into())),
+        }
+    }
+
+    async fn get_funding_rate(
+        &self,
+        symbol: &str,
+        account_type: AccountType,
+    ) -> ExchangeResult<FundingRate> {
+        match self {
+            // CEX
+            Self::Binance(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::Bybit(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::OKX(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::KuCoin(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::Kraken(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::Coinbase(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::GateIO(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::Bitfinex(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::Gemini(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::HTX(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::Bitget(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::BingX(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::CryptoCom(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::Deribit(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::HyperLiquid(c) => c.get_funding_rate(symbol, account_type).await,
+
+            // DEX
+            Self::Lighter(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::Dydx(c) => c.get_funding_rate(symbol, account_type).await,
+
+            // Stocks US
+            Self::Polygon(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::Finnhub(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::Tiingo(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::Twelvedata(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::Alpaca(c) => c.get_funding_rate(symbol, account_type).await,
+
+            // Stocks India
+            Self::AngelOne(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::Zerodha(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::Upstox(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::Dhan(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::Fyers(c) => c.get_funding_rate(symbol, account_type).await,
+
+            // Stocks Other
+            Self::JQuants(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::Krx(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::Moex(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::Tinkoff(c) => c.get_funding_rate(symbol, account_type).await,
+
+            // Forex
+            Self::Oanda(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::Dukascopy(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::AlphaVantage(c) => c.get_funding_rate(symbol, account_type).await,
+
+            // Data Feeds
+            Self::YahooFinance(c) => c.get_funding_rate(symbol, account_type).await,
+            Self::CryptoCompare(c) => c.get_funding_rate(symbol, account_type).await,
+
+            // No Positions impl
+            Self::MEXC(_) => Err(ExchangeError::UnsupportedOperation("positions not supported".into())),
+            Self::Bitstamp(_) => Err(ExchangeError::UnsupportedOperation("positions not supported".into())),
+            Self::Upbit(_) => Err(ExchangeError::UnsupportedOperation("positions not supported".into())),
+
+            // Brokers — no positions
+            Self::IB(_) => Err(ExchangeError::UnsupportedOperation("positions not supported".into())),
+
+            // Prediction — no positions
+            Self::Polymarket(_) => Err(ExchangeError::UnsupportedOperation("positions not supported".into())),
+        }
+    }
+
+    async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
+        match self {
+            // CEX
+            Self::Binance(c) => c.modify_position(req).await,
+            Self::Bybit(c) => c.modify_position(req).await,
+            Self::OKX(c) => c.modify_position(req).await,
+            Self::KuCoin(c) => c.modify_position(req).await,
+            Self::Kraken(c) => c.modify_position(req).await,
+            Self::Coinbase(c) => c.modify_position(req).await,
+            Self::GateIO(c) => c.modify_position(req).await,
+            Self::Bitfinex(c) => c.modify_position(req).await,
+            Self::Gemini(c) => c.modify_position(req).await,
+            Self::HTX(c) => c.modify_position(req).await,
+            Self::Bitget(c) => c.modify_position(req).await,
+            Self::BingX(c) => c.modify_position(req).await,
+            Self::CryptoCom(c) => c.modify_position(req).await,
+            Self::Deribit(c) => c.modify_position(req).await,
+            Self::HyperLiquid(c) => c.modify_position(req).await,
+
+            // DEX
+            Self::Lighter(c) => c.modify_position(req).await,
+            Self::Dydx(c) => c.modify_position(req).await,
+
+            // Stocks US
+            Self::Polygon(c) => c.modify_position(req).await,
+            Self::Finnhub(c) => c.modify_position(req).await,
+            Self::Tiingo(c) => c.modify_position(req).await,
+            Self::Twelvedata(c) => c.modify_position(req).await,
+            Self::Alpaca(c) => c.modify_position(req).await,
+
+            // Stocks India
+            Self::AngelOne(c) => c.modify_position(req).await,
+            Self::Zerodha(c) => c.modify_position(req).await,
+            Self::Upstox(c) => c.modify_position(req).await,
+            Self::Dhan(c) => c.modify_position(req).await,
+            Self::Fyers(c) => c.modify_position(req).await,
+
+            // Stocks Other
+            Self::JQuants(c) => c.modify_position(req).await,
+            Self::Krx(c) => c.modify_position(req).await,
+            Self::Moex(c) => c.modify_position(req).await,
+            Self::Tinkoff(c) => c.modify_position(req).await,
+
+            // Forex
+            Self::Oanda(c) => c.modify_position(req).await,
+            Self::Dukascopy(c) => c.modify_position(req).await,
+            Self::AlphaVantage(c) => c.modify_position(req).await,
+
+            // Data Feeds
+            Self::YahooFinance(c) => c.modify_position(req).await,
+            Self::CryptoCompare(c) => c.modify_position(req).await,
+
+            // No Positions impl
+            Self::MEXC(_) => Err(ExchangeError::UnsupportedOperation("positions not supported".into())),
+            Self::Bitstamp(_) => Err(ExchangeError::UnsupportedOperation("positions not supported".into())),
+            Self::Upbit(_) => Err(ExchangeError::UnsupportedOperation("positions not supported".into())),
+
+            // Brokers — no positions
+            Self::IB(_) => Err(ExchangeError::UnsupportedOperation("positions not supported".into())),
+
+            // Prediction — no positions
+            Self::Polymarket(_) => Err(ExchangeError::UnsupportedOperation("positions not supported".into())),
+        }
+    }
+}
+
+// === CancelAll ===
+
+#[async_trait]
+impl CancelAll for AnyConnector {
+    async fn cancel_all_orders(
+        &self,
+        scope: CancelScope,
+        account_type: AccountType,
+    ) -> ExchangeResult<CancelAllResponse> {
+        match self {
+            // CEX — have native cancel-all
+            Self::Binance(c) => CancelAll::cancel_all_orders(c.as_ref(), scope, account_type).await,
+            Self::Bybit(c) => CancelAll::cancel_all_orders(c.as_ref(), scope, account_type).await,
+            Self::OKX(c) => CancelAll::cancel_all_orders(c.as_ref(), scope, account_type).await,
+            Self::KuCoin(c) => CancelAll::cancel_all_orders(c.as_ref(), scope, account_type).await,
+            Self::Kraken(c) => CancelAll::cancel_all_orders(c.as_ref(), scope, account_type).await,
+            Self::Coinbase(c) => CancelAll::cancel_all_orders(c.as_ref(), scope, account_type).await,
+            Self::GateIO(c) => CancelAll::cancel_all_orders(c.as_ref(), scope, account_type).await,
+            Self::Bitfinex(c) => CancelAll::cancel_all_orders(c.as_ref(), scope, account_type).await,
+            Self::Bitstamp(c) => CancelAll::cancel_all_orders(c.as_ref(), scope, account_type).await,
+            Self::Gemini(c) => CancelAll::cancel_all_orders(c.as_ref(), scope, account_type).await,
+            Self::MEXC(c) => CancelAll::cancel_all_orders(c.as_ref(), scope, account_type).await,
+            Self::HTX(c) => CancelAll::cancel_all_orders(c.as_ref(), scope, account_type).await,
+            Self::Bitget(c) => CancelAll::cancel_all_orders(c.as_ref(), scope, account_type).await,
+            Self::BingX(c) => CancelAll::cancel_all_orders(c.as_ref(), scope, account_type).await,
+            Self::CryptoCom(c) => CancelAll::cancel_all_orders(c.as_ref(), scope, account_type).await,
+            Self::Upbit(c) => CancelAll::cancel_all_orders(c.as_ref(), scope, account_type).await,
+            Self::Deribit(c) => CancelAll::cancel_all_orders(c.as_ref(), scope, account_type).await,
+            Self::HyperLiquid(c) => CancelAll::cancel_all_orders(c.as_ref(), scope, account_type).await,
+
+            // Stocks US
+            Self::Alpaca(c) => CancelAll::cancel_all_orders(c.as_ref(), scope, account_type).await,
+
+            // Stocks India
+            Self::Upstox(c) => CancelAll::cancel_all_orders(c.as_ref(), scope, account_type).await,
+
+            // DEX — no cancel-all
+            Self::Lighter(_) | Self::Dydx(_) => Err(ExchangeError::UnsupportedOperation(
+                "cancel_all not supported".into(),
+            )),
+
+            // Stocks US — no cancel-all
+            Self::Polygon(_) | Self::Finnhub(_) | Self::Tiingo(_) | Self::Twelvedata(_) => {
+                Err(ExchangeError::UnsupportedOperation("cancel_all not supported".into()))
+            }
+
+            // Stocks India — no cancel-all
+            Self::AngelOne(_) | Self::Zerodha(_) | Self::Dhan(_) | Self::Fyers(_) => {
+                Err(ExchangeError::UnsupportedOperation("cancel_all not supported".into()))
+            }
+
+            // Stocks Other — no cancel-all
+            Self::JQuants(_) | Self::Krx(_) | Self::Moex(_) | Self::Tinkoff(_) => {
+                Err(ExchangeError::UnsupportedOperation("cancel_all not supported".into()))
+            }
+
+            // Forex — no cancel-all
+            Self::Oanda(_) | Self::Dukascopy(_) | Self::AlphaVantage(_) => {
+                Err(ExchangeError::UnsupportedOperation("cancel_all not supported".into()))
+            }
+
+            // Prediction — no cancel-all
+            Self::Polymarket(_) => {
+                Err(ExchangeError::UnsupportedOperation("cancel_all not supported".into()))
+            }
+
+            // Brokers — no cancel-all
+            Self::IB(_) => {
+                Err(ExchangeError::UnsupportedOperation("cancel_all not supported".into()))
+            }
+
+            // Data Feeds — no cancel-all
+            Self::YahooFinance(_) | Self::CryptoCompare(_) => {
+                Err(ExchangeError::UnsupportedOperation("cancel_all not supported".into()))
+            }
+        }
+    }
+}
+
+// === AmendOrder ===
+
+#[async_trait]
+impl AmendOrder for AnyConnector {
+    async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
+        match self {
+            // CEX — have native amend
+            Self::Binance(c) => c.amend_order(req).await,
+            Self::Bybit(c) => c.amend_order(req).await,
+            Self::OKX(c) => c.amend_order(req).await,
+            Self::KuCoin(c) => c.amend_order(req).await,
+            Self::Kraken(c) => c.amend_order(req).await,
+            Self::GateIO(c) => c.amend_order(req).await,
+            Self::Bitfinex(c) => c.amend_order(req).await,
+            Self::Bitstamp(c) => c.amend_order(req).await,
+            Self::Bitget(c) => c.amend_order(req).await,
+            Self::BingX(c) => c.amend_order(req).await,
+            Self::CryptoCom(c) => c.amend_order(req).await,
+            Self::Upbit(c) => c.amend_order(req).await,
+            Self::Deribit(c) => c.amend_order(req).await,
+            Self::HyperLiquid(c) => c.amend_order(req).await,
+
+            // Stocks US
+            Self::Alpaca(c) => c.amend_order(req).await,
+
+            // Stocks India
+            Self::Upstox(c) => c.amend_order(req).await,
+            Self::Zerodha(c) => c.amend_order(req).await,
+            Self::AngelOne(c) => c.amend_order(req).await,
+            Self::Dhan(c) => c.amend_order(req).await,
+            Self::Fyers(c) => c.amend_order(req).await,
+
+            // Stocks Russia
+            Self::Tinkoff(c) => c.amend_order(req).await,
+
+            // Forex
+            Self::Oanda(c) => c.amend_order(req).await,
+
+            // CEX — no amend
+            Self::Coinbase(_) | Self::Gemini(_) | Self::MEXC(_) | Self::HTX(_) => {
+                Err(ExchangeError::UnsupportedOperation("amend_order not supported".into()))
+            }
+
+            // DEX — no amend
+            Self::Lighter(_) | Self::Dydx(_) => {
+                Err(ExchangeError::UnsupportedOperation("amend_order not supported".into()))
+            }
+
+            // Stocks US — no amend
+            Self::Polygon(_) | Self::Finnhub(_) | Self::Tiingo(_) | Self::Twelvedata(_) => {
+                Err(ExchangeError::UnsupportedOperation("amend_order not supported".into()))
+            }
+
+            // Stocks Other — no amend
+            Self::JQuants(_) | Self::Krx(_) | Self::Moex(_) => {
+                Err(ExchangeError::UnsupportedOperation("amend_order not supported".into()))
+            }
+
+            // Forex — no amend
+            Self::Dukascopy(_) | Self::AlphaVantage(_) => {
+                Err(ExchangeError::UnsupportedOperation("amend_order not supported".into()))
+            }
+
+            // Prediction — no amend
+            Self::Polymarket(_) => {
+                Err(ExchangeError::UnsupportedOperation("amend_order not supported".into()))
+            }
+
+            // Brokers — no amend
+            Self::IB(_) => {
+                Err(ExchangeError::UnsupportedOperation("amend_order not supported".into()))
+            }
+
+            // Data Feeds — no amend
+            Self::YahooFinance(_) | Self::CryptoCompare(_) => {
+                Err(ExchangeError::UnsupportedOperation("amend_order not supported".into()))
+            }
+        }
+    }
+}
+
+// === BatchOrders ===
+
+#[async_trait]
+impl BatchOrders for AnyConnector {
+    async fn place_orders_batch(
+        &self,
+        orders: Vec<OrderRequest>,
+    ) -> ExchangeResult<Vec<OrderResult>> {
+        match self {
+            // CEX — have native batch
+            Self::Binance(c) => c.place_orders_batch(orders).await,
+            Self::Bybit(c) => c.place_orders_batch(orders).await,
+            Self::OKX(c) => c.place_orders_batch(orders).await,
+            Self::KuCoin(c) => c.place_orders_batch(orders).await,
+            Self::Kraken(c) => c.place_orders_batch(orders).await,
+            Self::GateIO(c) => c.place_orders_batch(orders).await,
+            Self::Bitfinex(c) => c.place_orders_batch(orders).await,
+            Self::MEXC(c) => c.place_orders_batch(orders).await,
+            Self::HTX(c) => c.place_orders_batch(orders).await,
+            Self::Bitget(c) => c.place_orders_batch(orders).await,
+            Self::BingX(c) => c.place_orders_batch(orders).await,
+            Self::CryptoCom(c) => c.place_orders_batch(orders).await,
+            Self::HyperLiquid(c) => c.place_orders_batch(orders).await,
+
+            // Stocks India — have batch
+            Self::Upstox(c) => c.place_orders_batch(orders).await,
+            Self::Fyers(c) => c.place_orders_batch(orders).await,
+
+            // CEX — no batch
+            Self::Coinbase(_)
+            | Self::Bitstamp(_)
+            | Self::Gemini(_)
+            | Self::Upbit(_)
+            | Self::Deribit(_) => {
+                Err(ExchangeError::UnsupportedOperation("place_orders_batch not supported".into()))
+            }
+
+            // DEX — no batch
+            Self::Lighter(_) | Self::Dydx(_) => {
+                Err(ExchangeError::UnsupportedOperation("place_orders_batch not supported".into()))
+            }
+
+            // Stocks US — no batch
+            Self::Polygon(_)
+            | Self::Finnhub(_)
+            | Self::Tiingo(_)
+            | Self::Twelvedata(_)
+            | Self::Alpaca(_) => {
+                Err(ExchangeError::UnsupportedOperation("place_orders_batch not supported".into()))
+            }
+
+            // Stocks India — no batch
+            Self::AngelOne(_) | Self::Zerodha(_) | Self::Dhan(_) => {
+                Err(ExchangeError::UnsupportedOperation("place_orders_batch not supported".into()))
+            }
+
+            // Stocks Other — no batch
+            Self::JQuants(_) | Self::Krx(_) | Self::Moex(_) | Self::Tinkoff(_) => {
+                Err(ExchangeError::UnsupportedOperation("place_orders_batch not supported".into()))
+            }
+
+            // Forex — no batch
+            Self::Oanda(_) | Self::Dukascopy(_) | Self::AlphaVantage(_) => {
+                Err(ExchangeError::UnsupportedOperation("place_orders_batch not supported".into()))
+            }
+
+            // Prediction — no batch
+            Self::Polymarket(_) => {
+                Err(ExchangeError::UnsupportedOperation("place_orders_batch not supported".into()))
+            }
+
+            // Brokers — no batch
+            Self::IB(_) => {
+                Err(ExchangeError::UnsupportedOperation("place_orders_batch not supported".into()))
+            }
+
+            // Data Feeds — no batch
+            Self::YahooFinance(_) | Self::CryptoCompare(_) => {
+                Err(ExchangeError::UnsupportedOperation("place_orders_batch not supported".into()))
+            }
+        }
+    }
+
+    async fn cancel_orders_batch(
+        &self,
+        order_ids: Vec<String>,
+        symbol: Option<&str>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<OrderResult>> {
+        match self {
+            // CEX — have native batch
+            Self::Binance(c) => c.cancel_orders_batch(order_ids, symbol, account_type).await,
+            Self::Bybit(c) => c.cancel_orders_batch(order_ids, symbol, account_type).await,
+            Self::OKX(c) => c.cancel_orders_batch(order_ids, symbol, account_type).await,
+            Self::KuCoin(c) => c.cancel_orders_batch(order_ids, symbol, account_type).await,
+            Self::Kraken(c) => c.cancel_orders_batch(order_ids, symbol, account_type).await,
+            Self::GateIO(c) => c.cancel_orders_batch(order_ids, symbol, account_type).await,
+            Self::Bitfinex(c) => c.cancel_orders_batch(order_ids, symbol, account_type).await,
+            Self::MEXC(c) => c.cancel_orders_batch(order_ids, symbol, account_type).await,
+            Self::HTX(c) => c.cancel_orders_batch(order_ids, symbol, account_type).await,
+            Self::Bitget(c) => c.cancel_orders_batch(order_ids, symbol, account_type).await,
+            Self::BingX(c) => c.cancel_orders_batch(order_ids, symbol, account_type).await,
+            Self::CryptoCom(c) => c.cancel_orders_batch(order_ids, symbol, account_type).await,
+            Self::HyperLiquid(c) => c.cancel_orders_batch(order_ids, symbol, account_type).await,
+
+            // Stocks India — have batch
+            Self::Upstox(c) => c.cancel_orders_batch(order_ids, symbol, account_type).await,
+            Self::Fyers(c) => c.cancel_orders_batch(order_ids, symbol, account_type).await,
+
+            // CEX — no batch
+            Self::Coinbase(_)
+            | Self::Bitstamp(_)
+            | Self::Gemini(_)
+            | Self::Upbit(_)
+            | Self::Deribit(_) => Err(ExchangeError::UnsupportedOperation(
+                "cancel_orders_batch not supported".into(),
+            )),
+
+            // DEX — no batch
+            Self::Lighter(_) | Self::Dydx(_) => Err(ExchangeError::UnsupportedOperation(
+                "cancel_orders_batch not supported".into(),
+            )),
+
+            // Stocks US — no batch
+            Self::Polygon(_)
+            | Self::Finnhub(_)
+            | Self::Tiingo(_)
+            | Self::Twelvedata(_)
+            | Self::Alpaca(_) => Err(ExchangeError::UnsupportedOperation(
+                "cancel_orders_batch not supported".into(),
+            )),
+
+            // Stocks India — no batch
+            Self::AngelOne(_) | Self::Zerodha(_) | Self::Dhan(_) => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "cancel_orders_batch not supported".into(),
+                ))
+            }
+
+            // Stocks Other — no batch
+            Self::JQuants(_) | Self::Krx(_) | Self::Moex(_) | Self::Tinkoff(_) => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "cancel_orders_batch not supported".into(),
+                ))
+            }
+
+            // Forex — no batch
+            Self::Oanda(_) | Self::Dukascopy(_) | Self::AlphaVantage(_) => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "cancel_orders_batch not supported".into(),
+                ))
+            }
+
+            // Prediction — no batch
+            Self::Polymarket(_) => Err(ExchangeError::UnsupportedOperation(
+                "cancel_orders_batch not supported".into(),
+            )),
+
+            // Brokers — no batch
+            Self::IB(_) => Err(ExchangeError::UnsupportedOperation(
+                "cancel_orders_batch not supported".into(),
+            )),
+
+            // Data Feeds — no batch
+            Self::YahooFinance(_) | Self::CryptoCompare(_) => Err(
+                ExchangeError::UnsupportedOperation("cancel_orders_batch not supported".into()),
+            ),
+        }
+    }
+
+    fn max_batch_place_size(&self) -> usize {
+        match self {
+            Self::Binance(c) => c.max_batch_place_size(),
+            Self::Bybit(c) => c.max_batch_place_size(),
+            Self::OKX(c) => c.max_batch_place_size(),
+            Self::KuCoin(c) => c.max_batch_place_size(),
+            Self::Kraken(c) => c.max_batch_place_size(),
+            Self::GateIO(c) => c.max_batch_place_size(),
+            Self::Bitfinex(c) => c.max_batch_place_size(),
+            Self::MEXC(c) => c.max_batch_place_size(),
+            Self::HTX(c) => c.max_batch_place_size(),
+            Self::Bitget(c) => c.max_batch_place_size(),
+            Self::BingX(c) => c.max_batch_place_size(),
+            Self::CryptoCom(c) => c.max_batch_place_size(),
+            Self::HyperLiquid(c) => c.max_batch_place_size(),
+            Self::Upstox(c) => c.max_batch_place_size(),
+            Self::Fyers(c) => c.max_batch_place_size(),
+            _ => 0,
+        }
+    }
+
+    fn max_batch_cancel_size(&self) -> usize {
+        match self {
+            Self::Binance(c) => c.max_batch_cancel_size(),
+            Self::Bybit(c) => c.max_batch_cancel_size(),
+            Self::OKX(c) => c.max_batch_cancel_size(),
+            Self::KuCoin(c) => c.max_batch_cancel_size(),
+            Self::Kraken(c) => c.max_batch_cancel_size(),
+            Self::GateIO(c) => c.max_batch_cancel_size(),
+            Self::Bitfinex(c) => c.max_batch_cancel_size(),
+            Self::MEXC(c) => c.max_batch_cancel_size(),
+            Self::HTX(c) => c.max_batch_cancel_size(),
+            Self::Bitget(c) => c.max_batch_cancel_size(),
+            Self::BingX(c) => c.max_batch_cancel_size(),
+            Self::CryptoCom(c) => c.max_batch_cancel_size(),
+            Self::HyperLiquid(c) => c.max_batch_cancel_size(),
+            Self::Upstox(c) => c.max_batch_cancel_size(),
+            Self::Fyers(c) => c.max_batch_cancel_size(),
+            _ => 0,
         }
     }
 }

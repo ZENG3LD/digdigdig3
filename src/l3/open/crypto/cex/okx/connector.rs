@@ -34,6 +34,7 @@ use crate::core::types::{
     TransferRequest, TransferHistoryFilter, TransferResponse,
     DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord, FundsHistoryFilter, FundsRecordType,
     SubAccountOperation, SubAccountResult,
+    Liquidation,
 };
 use crate::core::types::OcoResponse;
 use crate::core::types::SymbolInfo;
@@ -392,6 +393,60 @@ impl OkxConnector {
             params.insert("limit".to_string(), l.to_string());
         }
         self.get(OkxEndpoint::LongShortRatio, params).await
+    }
+
+    /// Get liquidation orders from OKX public endpoint.
+    ///
+    /// Endpoint: `GET /api/v5/public/liquidation-orders` — no auth.
+    ///
+    /// - `inst_type`: `"SWAP"` | `"FUTURES"` | `"MARGIN"` | `"OPTION"`.
+    /// - `inst_family`: e.g. `"BTC-USDT"` (for FUTURES/SWAP by family).
+    /// - `inst_id`: specific instrument id, e.g. `"BTC-USDT-SWAP"`.
+    /// - `state`: `"unfilled"` | `"filled"`.
+    /// - `before` / `after`: pagination cursors (string ms).
+    /// - `limit`: max records (default 20, max 100).
+    pub async fn get_liquidation_orders(
+        &self,
+        inst_type: &str,
+        inst_family: Option<&str>,
+        inst_id: Option<&str>,
+        state: Option<&str>,
+        before: Option<&str>,
+        after: Option<&str>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Vec<Liquidation>> {
+        let mut params = HashMap::new();
+        params.insert("instType".to_string(), inst_type.to_string());
+        if let Some(f) = inst_family {
+            params.insert("instFamily".to_string(), f.to_string());
+        }
+        if let Some(id) = inst_id {
+            params.insert("instId".to_string(), id.to_string());
+        }
+        if let Some(s) = state {
+            params.insert("state".to_string(), s.to_string());
+        }
+        if let Some(b) = before {
+            params.insert("before".to_string(), b.to_string());
+        }
+        if let Some(a) = after {
+            params.insert("after".to_string(), a.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        let v = self.get(OkxEndpoint::PublicLiquidationOrders, params).await?;
+        OkxParser::parse_liquidations(&v)
+    }
+
+    /// Get mark price for a specific instrument.
+    ///
+    /// Endpoint: `GET /api/v5/public/mark-price` — no auth.
+    pub async fn get_mark_price(&self, inst_id: &str, inst_type: &str) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("instId".to_string(), inst_id.to_string());
+        params.insert("instType".to_string(), inst_type.to_string());
+        self.get(OkxEndpoint::MarkPrice, params).await
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

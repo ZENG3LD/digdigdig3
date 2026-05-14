@@ -111,6 +111,10 @@ pub enum OkxEndpoint {
     OpenInterest,
     /// GET /api/v5/rubik/stat/contracts/long-short-account-ratio
     LongShortRatio,
+    /// GET /api/v5/public/liquidation-orders
+    PublicLiquidationOrders,
+    /// GET /api/v5/public/mark-price
+    MarkPrice,
 
     // === FILL/TRADE HISTORY ===
     /// GET /api/v5/trade/fills — recent fills (signed)
@@ -202,6 +206,8 @@ impl OkxEndpoint {
             // Market Data Extensions
             Self::OpenInterest => "/api/v5/public/open-interest",
             Self::LongShortRatio => "/api/v5/rubik/stat/contracts/long-short-account-ratio",
+            Self::PublicLiquidationOrders => "/api/v5/public/liquidation-orders",
+            Self::MarkPrice => "/api/v5/public/mark-price",
 
             // Fill/Trade History
             Self::FillsHistory => "/api/v5/trade/fills",
@@ -256,7 +262,9 @@ impl OkxEndpoint {
             | Self::FundingRate
             | Self::FundingRateHistory
             | Self::OpenInterest
-            | Self::LongShortRatio => false,
+            | Self::LongShortRatio
+            | Self::PublicLiquidationOrders
+            | Self::MarkPrice => false,
 
             // Private endpoints
             _ => true,

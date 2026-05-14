@@ -29,6 +29,7 @@ use crate::core::types::{
     UserTrade,
     FundingPayment, LedgerEntry, LedgerEntryType,
     AccountType,
+    Liquidation,
 };
 use crate::core::types::AlgoOrderResponse;
 use crate::core::types::{
@@ -1314,6 +1315,89 @@ impl OkxParser {
             });
         }
         Ok(entries)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // LIQUIDATIONS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse liquidation orders from `GET /api/v5/public/liquidation-orders`.
+    ///
+    /// OKX response format:
+    /// ```json
+    /// {
+    ///   "code": "0",
+    ///   "data": [{
+    ///     "instId": "BTC-USDT-SWAP",
+    ///     "details": [{
+    ///       "side": "buy",
+    ///       "posSide": "long",
+    ///       "sz": "0.5",
+    ///       "fillPx": "50000.0",
+    ///       "ts": "1700000000000"
+    ///     }]
+    ///   }]
+    /// }
+    /// ```
+    ///
+    /// Side semantics (same as plan convention):
+    /// - `"buy"` order → long position being liquidated → `TradeSide::Buy`
+    /// - `"sell"` order → short position being liquidated → `TradeSide::Sell`
+    pub fn parse_liquidations(response: &Value) -> ExchangeResult<Vec<Liquidation>> {
+        let parse_f64 = |v: &Value| -> Option<f64> {
+            v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
+        };
+
+        let data = Self::extract_data(response)?;
+        let outer_arr = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array in liquidation-orders data".to_string()))?;
+
+        let mut result = Vec::new();
+
+        for outer in outer_arr {
+            let inst_id = outer.get("instId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let details = match outer.get("details").and_then(|d| d.as_array()) {
+                Some(d) => d,
+                None => continue,
+            };
+
+            for detail in details {
+                let side_str = detail.get("side").and_then(|s| s.as_str()).unwrap_or("buy");
+                let price = match detail.get("fillPx")
+                    .or_else(|| detail.get("bkPx"))
+                    .and_then(|v| parse_f64(v))
+                {
+                    Some(p) => p,
+                    None => continue,
+                };
+                let quantity = match detail.get("sz").and_then(|v| parse_f64(v)) {
+                    Some(q) => q,
+                    None => continue,
+                };
+                let timestamp: i64 = detail.get("ts")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse().ok())
+                    .or_else(|| detail.get("ts").and_then(|v| v.as_i64()))
+                    .unwrap_or(0);
+
+                // "buy" order = long being liquidated; "sell" order = short being liquidated
+                let side = match side_str {
+                    "buy" => TradeSide::Buy,
+                    _ => TradeSide::Sell,
+                };
+
+                result.push(Liquidation {
+                    symbol: inst_id.clone(),
+                    side,
+                    price,
+                    quantity,
+                    timestamp,
+                    value: Some(price * quantity),
+                });
+            }
+        }
+
+        Ok(result)
     }
 }
 

@@ -263,9 +263,9 @@ impl OkxWebSocket {
                                         value.get("data").and_then(|d| d.as_array())
                                     {
                                         for data in data_arr {
-                                            let event =
+                                            let events =
                                                 Self::parse_channel_data(channel, data, action);
-                                            if let Some(ev) = event {
+                                            for ev in events {
                                                 let tx_guard = broadcast_tx.lock().unwrap();
                                                 if let Some(ref tx) = *tx_guard {
                                                     let _ = tx.send(Ok(ev));
@@ -294,18 +294,64 @@ impl OkxWebSocket {
         });
     }
 
-    /// Parse channel data to [`StreamEvent`].
+    /// Parse channel data to 0-N [`StreamEvent`]s.
     ///
     /// `action` is taken from the top-level `"action"` field of the OKX push
     /// message.  OKX sets it to `"snapshot"` for the initial full book and
     /// `"update"` for incremental deltas.
-    fn parse_channel_data(channel: &str, data: &Value, action: Option<&str>) -> Option<StreamEvent> {
+    ///
+    /// Most channels return exactly one event. The `tickers` channel returns
+    /// the primary Ticker plus any supplementary FundingRate/MarkPrice/
+    /// OpenInterestUpdate events when those fields are present (linear/inverse).
+    fn parse_channel_data(channel: &str, data: &Value, action: Option<&str>) -> Vec<StreamEvent> {
+        let parse_f64_field = |v: &Value| -> Option<f64> {
+            v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
+        };
+
         match channel {
-            "tickers" => OkxParser::parse_ws_ticker(data)
-                .ok()
-                .map(StreamEvent::Ticker),
+            "tickers" => {
+                let mut events = Vec::new();
+                if let Ok(ticker) = OkxParser::parse_ws_ticker(data) {
+                    let symbol = ticker.symbol.clone();
+                    let ts = ticker.timestamp;
+                    events.push(StreamEvent::Ticker(ticker));
+
+                    // Supplementary events from linear/inverse SWAP/FUTURES tickers
+                    if let Some(rate) = data.get("fundingRate").and_then(|v| parse_f64_field(v)) {
+                        let next_funding_time = data.get("nextFundingTime")
+                            .and_then(|v| parse_f64_field(v))
+                            .map(|ms| ms as i64);
+                        events.push(StreamEvent::FundingRate {
+                            symbol: symbol.clone(),
+                            rate,
+                            next_funding_time,
+                            timestamp: ts,
+                        });
+                    }
+                    if let Some(mark_price) = data.get("markPx").and_then(|v| parse_f64_field(v)) {
+                        let index_price = data.get("indexPx").and_then(|v| parse_f64_field(v));
+                        events.push(StreamEvent::MarkPrice {
+                            symbol: symbol.clone(),
+                            mark_price,
+                            index_price,
+                            timestamp: ts,
+                        });
+                    }
+                    if let Some(open_interest) = data.get("openInterest").and_then(|v| parse_f64_field(v)) {
+                        let open_interest_value = data.get("openInterestValue")
+                            .and_then(|v| parse_f64_field(v));
+                        events.push(StreamEvent::OpenInterestUpdate {
+                            symbol,
+                            open_interest,
+                            open_interest_value,
+                            timestamp: ts,
+                        });
+                    }
+                }
+                events
+            }
             "books" | "books5" | "books-l2-tbt" | "books50-l2-tbt" => {
-                let (asks, bids) = OkxParser::parse_ws_orderbook(data).ok()?;
+                let Ok((asks, bids)) = OkxParser::parse_ws_orderbook(data) else { return vec![] };
                 let timestamp = OkxParser::get_i64(data, "ts").unwrap_or(0);
 
                 // OKX sequences: seqId → first_update_id, prevSeqId → prev_update_id
@@ -326,7 +372,7 @@ impl OkxWebSocket {
                         transaction_time: None,
                         checksum,
                     };
-                    Some(StreamEvent::OrderbookSnapshot(orderbook))
+                    vec![StreamEvent::OrderbookSnapshot(orderbook)]
                 } else {
                     // "update" or anything else → delta
                     let delta = OrderbookDelta {
@@ -339,33 +385,101 @@ impl OkxWebSocket {
                         event_time: Some(timestamp),
                         checksum,
                     };
-                    Some(StreamEvent::OrderbookDelta(delta))
+                    vec![StreamEvent::OrderbookDelta(delta)]
                 }
             }
             "trades" => OkxParser::parse_ws_trade(data)
                 .ok()
-                .map(StreamEvent::Trade),
+                .map(StreamEvent::Trade)
+                .into_iter()
+                .collect(),
             "candle1m" | "candle5m" | "candle15m" | "candle30m" | "candle1H"
             | "candle4H" | "candle1D" => OkxParser::parse_ws_kline(data)
                 .ok()
-                .map(StreamEvent::Kline),
+                .map(StreamEvent::Kline)
+                .into_iter()
+                .collect(),
             "orders" => OkxParser::parse_ws_order_update(data)
                 .ok()
-                .map(StreamEvent::OrderUpdate),
+                .map(StreamEvent::OrderUpdate)
+                .into_iter()
+                .collect(),
             "account" => {
                 if let Some(details) = data.get("details").and_then(|d| d.as_array()) {
                     for detail in details {
                         if let Ok(event) = OkxParser::parse_ws_balance_update(detail) {
-                            return Some(StreamEvent::BalanceUpdate(event));
+                            return vec![StreamEvent::BalanceUpdate(event)];
                         }
                     }
                 }
-                None
+                vec![]
             }
             "positions" => OkxParser::parse_ws_position_update(data)
                 .ok()
-                .map(StreamEvent::PositionUpdate),
-            _ => None,
+                .map(StreamEvent::PositionUpdate)
+                .into_iter()
+                .collect(),
+            "mark-price" => {
+                // OKX WS mark-price: { markPx, instId, ts }
+                let symbol = data.get("instId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let Some(mark_price) = data.get("markPx").and_then(|v| parse_f64_field(v)) else {
+                    return vec![];
+                };
+                let timestamp = data.get("ts")
+                    .and_then(|v| parse_f64_field(v))
+                    .map(|ms| ms as i64)
+                    .unwrap_or(0);
+                vec![StreamEvent::MarkPrice { symbol, mark_price, index_price: None, timestamp }]
+            }
+            "funding-rate" => {
+                // OKX WS funding-rate: { fundingRate, instId, fundingTime, nextFundingTime }
+                let symbol = data.get("instId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let Some(rate) = data.get("fundingRate").and_then(|v| parse_f64_field(v)) else {
+                    return vec![];
+                };
+                let next_funding_time = data.get("nextFundingTime")
+                    .and_then(|v| parse_f64_field(v))
+                    .map(|ms| ms as i64);
+                let timestamp = data.get("fundingTime")
+                    .and_then(|v| parse_f64_field(v))
+                    .map(|ms| ms as i64)
+                    .unwrap_or(0);
+                vec![StreamEvent::FundingRate { symbol, rate, next_funding_time, timestamp }]
+            }
+            "liquidation-orders" => {
+                // OKX WS liquidation-orders: { instId, details: [{side, sz, fillPx/bkPx, ts}] }
+                use crate::core::types::TradeSide;
+                let symbol = data.get("instId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let Some(details) = data.get("details").and_then(|d| d.as_array()) else {
+                    return vec![];
+                };
+                let Some(detail) = details.first() else { return vec![] };
+                let side_str = detail.get("side").and_then(|s| s.as_str()).unwrap_or("buy");
+                let Some(price) = detail.get("fillPx")
+                    .or_else(|| detail.get("bkPx"))
+                    .and_then(|v| parse_f64_field(v)) else { return vec![] };
+                let Some(quantity) = detail.get("sz").and_then(|v| parse_f64_field(v)) else {
+                    return vec![];
+                };
+                let timestamp: i64 = detail.get("ts")
+                    .and_then(|v| parse_f64_field(v))
+                    .map(|ms| ms as i64)
+                    .unwrap_or(0);
+                // "buy" = long being liquidated; "sell" = short being liquidated
+                let side = match side_str {
+                    "buy" => TradeSide::Buy,
+                    _ => TradeSide::Sell,
+                };
+                vec![StreamEvent::Liquidation {
+                    symbol,
+                    side,
+                    price,
+                    quantity,
+                    timestamp,
+                    value: Some(price * quantity),
+                }]
+            }
+            _ => vec![],
         }
     }
 
@@ -494,9 +608,11 @@ impl WebSocketConnector for OkxWebSocket {
             },
             crate::core::StreamType::MarkPrice => "mark-price",
             crate::core::StreamType::FundingRate => "funding-rate",
+            crate::core::StreamType::Liquidation => "liquidation-orders",
             crate::core::StreamType::OrderUpdate => "orders",
             crate::core::StreamType::BalanceUpdate => "account",
             crate::core::StreamType::PositionUpdate => "positions",
+            _ => "",
         };
 
         // For OKX the instId depends on account type.
@@ -532,9 +648,11 @@ impl WebSocketConnector for OkxWebSocket {
             crate::core::StreamType::Kline { interval: _ } => "candle1H",
             crate::core::StreamType::MarkPrice => "mark-price",
             crate::core::StreamType::FundingRate => "funding-rate",
+            crate::core::StreamType::Liquidation => "liquidation-orders",
             crate::core::StreamType::OrderUpdate => "orders",
             crate::core::StreamType::BalanceUpdate => "account",
             crate::core::StreamType::PositionUpdate => "positions",
+            _ => "",
         };
 
         // Use the same account_type that was used in subscribe().

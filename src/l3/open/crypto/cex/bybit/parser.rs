@@ -1030,6 +1030,82 @@ impl BybitParser {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // MARKET DATA EXTENSIONS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse open interest list from `GET /v5/market/open-interest`.
+    ///
+    /// Response: `result.list = [{ openInterest, openInterestValue, timestamp }, ...]`
+    pub fn parse_open_interest_list(json: &Value, symbol: &str) -> ExchangeResult<Vec<crate::core::types::OpenInterest>> {
+        let result = Self::extract_result(json)?;
+        let list = result["list"].as_array()
+            .ok_or_else(|| ExchangeError::Parse("Missing result.list in open-interest".to_string()))?;
+
+        let records = list.iter()
+            .map(|item| {
+                let open_interest = item["openInterest"].as_str()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                let open_interest_value = item["openInterestValue"].as_str()
+                    .and_then(|s| s.parse::<f64>().ok());
+                let timestamp = item["timestamp"].as_str()
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .unwrap_or(0);
+                crate::core::types::OpenInterest {
+                    symbol: symbol.to_string(),
+                    open_interest,
+                    open_interest_value,
+                    timestamp,
+                }
+            })
+            .collect();
+
+        Ok(records)
+    }
+
+    /// Parse long/short ratio list from `GET /v5/market/account-ratio`.
+    ///
+    /// Response: `result.list = [{ buyRatio, sellRatio, timestamp }, ...]`
+    pub fn parse_long_short_ratios(json: &Value, symbol: &str, ratio_type: &str) -> ExchangeResult<Vec<LongShortRatio>> {
+        let result = Self::extract_result(json)?;
+        let list = result["list"].as_array()
+            .ok_or_else(|| ExchangeError::Parse("Missing result.list in account-ratio".to_string()))?;
+
+        let records = list.iter()
+            .map(|item| {
+                let long_ratio = item["buyRatio"].as_str()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                let short_ratio = item["sellRatio"].as_str()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                let ratio = if short_ratio != 0.0 { Some(long_ratio / short_ratio) } else { None };
+                let timestamp = item["timestamp"].as_str()
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .unwrap_or(0);
+                LongShortRatio {
+                    symbol: symbol.to_string(),
+                    ratio_type: ratio_type.to_string(),
+                    long_ratio,
+                    short_ratio,
+                    ratio,
+                    timestamp,
+                }
+            })
+            .collect();
+
+        Ok(records)
+    }
+
+    /// Parse mark/index/premium kline list.
+    ///
+    /// All three endpoints share the same response list format as `/v5/market/kline`:
+    /// `result.list = [[timestamp, open, high, low, close, volume, turnover], ...]`
+    pub fn parse_mark_price_kline(json: &Value) -> ExchangeResult<Vec<Kline>> {
+        Self::parse_klines(json)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // ACCOUNT LEDGER
     // ═══════════════════════════════════════════════════════════════════════════
 

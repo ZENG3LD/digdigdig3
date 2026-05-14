@@ -441,6 +441,76 @@ impl BybitWebSocket {
             let kline = Self::parse_kline_ws(data)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
             Ok(vec![StreamEvent::Kline(kline)])
+        } else if topic.starts_with("tickers_lt.") {
+            // Leveraged token ticker: "tickers_lt.<symbol>"
+            // Bybit pushes { nav, navTime, symbol } for leveraged tokens.
+            // Emit Ticker using nav as last_price; skip silently if parse fails.
+            let symbol = topic.trim_start_matches("tickers_lt.").to_string();
+            let last_price = data["nav"].as_str()
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let timestamp = data["navTime"].as_i64().unwrap_or(0);
+            let ticker = crate::core::Ticker {
+                symbol,
+                last_price,
+                bid_price: None,
+                ask_price: None,
+                high_24h: None,
+                low_24h: None,
+                volume_24h: None,
+                quote_volume_24h: None,
+                price_change_24h: None,
+                price_change_percent_24h: None,
+                timestamp,
+            };
+            Ok(vec![StreamEvent::Ticker(ticker)])
+        } else if topic.starts_with("insurance.") {
+            // Insurance fund: "insurance.<coin>"
+            // Bybit pushes { symbols: [{ symbol, walletBalance, prevWalletBalance }] }
+            // or top-level { symbol, walletBalance, ... }
+            let coin = topic.trim_start_matches("insurance.").to_string();
+            let balance = data["walletBalance"].as_str()
+                .and_then(|s| s.parse::<f64>().ok())
+                .or_else(|| {
+                    // Some Bybit docs show an array variant under "symbols"
+                    data["symbols"].as_array()
+                        .and_then(|arr| arr.first())
+                        .and_then(|item| item["walletBalance"].as_str())
+                        .and_then(|s| s.parse::<f64>().ok())
+                })
+                .unwrap_or(0.0);
+            let timestamp = data["updateTime"].as_i64()
+                .or_else(|| data["ts"].as_i64())
+                .unwrap_or(0);
+            Ok(vec![StreamEvent::InsuranceFund { symbol: coin, balance, timestamp }])
+        } else if topic.starts_with("mark_price_kline.") {
+            // Topic: "mark_price_kline.<interval>.<symbol>"
+            // Split: parts[0]=mark_price_kline, parts[1]=interval, parts[2]=symbol
+            let rest = topic.trim_start_matches("mark_price_kline.");
+            let (interval, symbol) = rest.split_once('.')
+                .map(|(i, s)| (i.to_string(), s.to_string()))
+                .unwrap_or_else(|| (String::new(), rest.to_string()));
+            let kline = Self::parse_kline_ws(data)
+                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+            Ok(vec![StreamEvent::MarkPriceKline { symbol, interval, kline }])
+        } else if topic.starts_with("index_price_kline.") {
+            // Topic: "index_price_kline.<interval>.<symbol>"
+            let rest = topic.trim_start_matches("index_price_kline.");
+            let (interval, symbol) = rest.split_once('.')
+                .map(|(i, s)| (i.to_string(), s.to_string()))
+                .unwrap_or_else(|| (String::new(), rest.to_string()));
+            let kline = Self::parse_kline_ws(data)
+                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+            Ok(vec![StreamEvent::IndexPriceKline { symbol, interval, kline }])
+        } else if topic.starts_with("premium_index_price_kline.") {
+            // Topic: "premium_index_price_kline.<interval>.<symbol>"
+            let rest = topic.trim_start_matches("premium_index_price_kline.");
+            let (interval, symbol) = rest.split_once('.')
+                .map(|(i, s)| (i.to_string(), s.to_string()))
+                .unwrap_or_else(|| (String::new(), rest.to_string()));
+            let kline = Self::parse_kline_ws(data)
+                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+            Ok(vec![StreamEvent::PremiumIndexKline { symbol, interval, kline }])
         } else if topic == "order" {
             let event = Self::parse_order_update_ws(data)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
@@ -544,6 +614,27 @@ impl BybitWebSocket {
             StreamType::OrderUpdate => "order".to_string(),
             StreamType::BalanceUpdate => "wallet".to_string(),
             StreamType::PositionUpdate => "position".to_string(),
+            StreamType::InsuranceFund => {
+                // Bybit insurance fund topic is per-coin: "insurance.<coin>"
+                // The symbol base asset is used as the coin identifier.
+                let coin = request.symbol.base.to_uppercase();
+                format!("insurance.{}", coin)
+            }
+            StreamType::MarkPriceKline { interval } => {
+                let symbol = format_symbol(&request.symbol, account_type);
+                // TODO: verify topic format — documented as mark_price_kline.<interval>.<symbol>
+                format!("mark_price_kline.{}.{}", interval, symbol)
+            }
+            StreamType::IndexPriceKline { interval } => {
+                let symbol = format_symbol(&request.symbol, account_type);
+                // TODO: verify topic format — documented as index_price_kline.<interval>.<symbol>
+                format!("index_price_kline.{}.{}", interval, symbol)
+            }
+            StreamType::PremiumIndexKline { interval } => {
+                let symbol = format_symbol(&request.symbol, account_type);
+                // TODO: verify topic format — documented as premium_index_price_kline.<interval>.<symbol>
+                format!("premium_index_price_kline.{}.{}", interval, symbol)
+            }
             // OpenInterest, LongShortRatio, AggTrade, CompositeIndex not supported
             // as dedicated Bybit WS topics — use REST polling for these.
             _ => String::new(),

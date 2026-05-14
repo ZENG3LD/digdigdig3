@@ -388,98 +388,146 @@ impl BybitConnector {
     // MARKET DATA EXTENSIONS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// Get open interest for a symbol.
+    /// Get open interest history for a symbol.
     ///
-    /// `interval_time`: e.g. `"5min"`, `"15min"`, `"30min"`, `"1h"`, `"4h"`, `"1d"`.
+    /// `category`: `"linear"` | `"inverse"`.
+    /// `interval_time`: `"5min"` | `"15min"` | `"30min"` | `"1h"` | `"4h"` | `"1d"`.
     pub async fn get_open_interest(
         &self,
+        category: &str,
         symbol: &str,
         interval_time: &str,
-        account_type: AccountType,
         limit: Option<u32>,
-    ) -> ExchangeResult<Value> {
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<crate::core::types::OpenInterest>> {
         let mut params = HashMap::new();
-        params.insert("category".to_string(), account_type_to_category(account_type).to_string());
+        params.insert("category".to_string(), category.to_string());
         params.insert("symbol".to_string(), symbol.to_string());
         params.insert("intervalTime".to_string(), interval_time.to_string());
         if let Some(l) = limit {
             params.insert("limit".to_string(), l.to_string());
         }
-        self.get(BybitEndpoint::OpenInterest, params).await
+        if let Some(st) = start_time {
+            params.insert("startTime".to_string(), st.to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("endTime".to_string(), et.to_string());
+        }
+        let response = self.get(BybitEndpoint::OpenInterest, params).await?;
+        BybitParser::parse_open_interest_list(&response, symbol)
     }
 
     /// Get long/short ratio for a symbol.
     ///
-    /// `period`: e.g. `"5min"`, `"15min"`, `"30min"`, `"1h"`, `"4h"`, `"1d"`.
+    /// `category`: `"linear"` | `"inverse"`. Bybit `ratio_type` is always `"account"`.
+    /// `period`: `"5min"` | `"15min"` | `"30min"` | `"1h"` | `"4h"` | `"1d"`.
     pub async fn get_long_short_ratio(
         &self,
+        category: &str,
         symbol: &str,
         period: &str,
-        account_type: AccountType,
         limit: Option<u32>,
-    ) -> ExchangeResult<Value> {
+    ) -> ExchangeResult<Vec<crate::core::types::LongShortRatio>> {
         let mut params = HashMap::new();
-        params.insert("category".to_string(), account_type_to_category(account_type).to_string());
+        params.insert("category".to_string(), category.to_string());
         params.insert("symbol".to_string(), symbol.to_string());
         params.insert("period".to_string(), period.to_string());
         if let Some(l) = limit {
             params.insert("limit".to_string(), l.to_string());
         }
-        self.get(BybitEndpoint::LongShortRatio, params).await
+        let response = self.get(BybitEndpoint::LongShortRatio, params).await?;
+        BybitParser::parse_long_short_ratios(&response, symbol, "account")
     }
 
     /// Get mark price kline data.
+    ///
+    /// `category`: `"linear"` | `"inverse"`.
+    /// `interval`: standard interval string (e.g. `"1m"`, `"1h"`, `"1d"`).
     pub async fn get_mark_price_kline(
         &self,
+        category: &str,
         symbol: &str,
         interval: &str,
-        account_type: AccountType,
         limit: Option<u32>,
-    ) -> ExchangeResult<Value> {
+        start: Option<i64>,
+        end: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
         let mut params = HashMap::new();
-        params.insert("category".to_string(), account_type_to_category(account_type).to_string());
+        params.insert("category".to_string(), category.to_string());
         params.insert("symbol".to_string(), symbol.to_string());
         params.insert("interval".to_string(), map_kline_interval(interval).to_string());
         if let Some(l) = limit {
             params.insert("limit".to_string(), l.to_string());
         }
-        self.get(BybitEndpoint::MarkPriceKline, params).await
+        if let Some(st) = start {
+            params.insert("start".to_string(), st.to_string());
+        }
+        if let Some(et) = end {
+            params.insert("end".to_string(), et.to_string());
+        }
+        let response = self.get(BybitEndpoint::MarkPriceKline, params).await?;
+        BybitParser::parse_mark_price_kline(&response)
     }
 
     /// Get index price kline data.
+    ///
+    /// `category`: `"linear"` | `"inverse"`.
+    /// `interval`: standard interval string (e.g. `"1m"`, `"1h"`, `"1d"`).
     pub async fn get_index_price_kline(
         &self,
+        category: &str,
         symbol: &str,
         interval: &str,
-        account_type: AccountType,
         limit: Option<u32>,
-    ) -> ExchangeResult<Value> {
+        start: Option<i64>,
+        end: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
         let mut params = HashMap::new();
-        params.insert("category".to_string(), account_type_to_category(account_type).to_string());
+        params.insert("category".to_string(), category.to_string());
         params.insert("symbol".to_string(), symbol.to_string());
         params.insert("interval".to_string(), map_kline_interval(interval).to_string());
         if let Some(l) = limit {
             params.insert("limit".to_string(), l.to_string());
         }
-        self.get(BybitEndpoint::IndexPriceKline, params).await
+        if let Some(st) = start {
+            params.insert("start".to_string(), st.to_string());
+        }
+        if let Some(et) = end {
+            params.insert("end".to_string(), et.to_string());
+        }
+        let response = self.get(BybitEndpoint::IndexPriceKline, params).await?;
+        BybitParser::parse_mark_price_kline(&response)
     }
 
     /// Get premium index price kline data.
+    ///
+    /// `category`: `"linear"` | `"inverse"`.
+    /// `interval`: standard interval string (e.g. `"1m"`, `"1h"`, `"1d"`).
     pub async fn get_premium_index_kline(
         &self,
+        category: &str,
         symbol: &str,
         interval: &str,
-        account_type: AccountType,
         limit: Option<u32>,
-    ) -> ExchangeResult<Value> {
+        start: Option<i64>,
+        end: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
         let mut params = HashMap::new();
-        params.insert("category".to_string(), account_type_to_category(account_type).to_string());
+        params.insert("category".to_string(), category.to_string());
         params.insert("symbol".to_string(), symbol.to_string());
         params.insert("interval".to_string(), map_kline_interval(interval).to_string());
         if let Some(l) = limit {
             params.insert("limit".to_string(), l.to_string());
         }
-        self.get(BybitEndpoint::PremiumIndexKline, params).await
+        if let Some(st) = start {
+            params.insert("start".to_string(), st.to_string());
+        }
+        if let Some(et) = end {
+            params.insert("end".to_string(), et.to_string());
+        }
+        let response = self.get(BybitEndpoint::PremiumIndexKline, params).await?;
+        BybitParser::parse_mark_price_kline(&response)
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

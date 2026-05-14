@@ -84,6 +84,8 @@ pub enum StreamType {
     InsuranceFund,
     /// Basis (futures)
     Basis,
+    /// Option Greeks (delta, gamma, vega, theta, rho) and implied volatility
+    OptionGreeks,
 
     // ═══════════════════════════════════════════════════════════════════════════
     // PRIVATE STREAMS (требуют авторизации)
@@ -298,6 +300,20 @@ pub enum StreamEvent {
 
     /// Basis update (futures)
     Basis { symbol: String, basis: f64, timestamp: i64 },
+
+    /// Option Greeks and implied volatility
+    OptionGreeks {
+        symbol: String,
+        delta: Option<f64>,
+        gamma: Option<f64>,
+        vega: Option<f64>,
+        theta: Option<f64>,
+        rho: Option<f64>,
+        mark_iv: Option<f64>,
+        bid_iv: Option<f64>,
+        ask_iv: Option<f64>,
+        timestamp: i64,
+    },
 
     // ═══════════════════════════════════════════════════════════════════════════
     // PRIVATE EVENTS

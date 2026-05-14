@@ -173,6 +173,12 @@ pub enum GateioEndpoint {
     WalletLedger,
     /// GET /futures/{settle}/account_book — futures account ledger
     FuturesAccountBook,
+
+    // === NEW MARKET DATA ===
+    /// GET /futures/{settle}/contract_stats — L/S sentiment + OI + liquidations over time
+    FuturesContractStats,
+    /// GET /futures/{settle}/insurance — insurance fund balance history
+    FuturesInsurance,
 }
 
 impl GateioEndpoint {
@@ -264,6 +270,10 @@ impl GateioEndpoint {
             // Account Ledger
             Self::WalletLedger => "/wallet/ledger".to_string(),
             Self::FuturesAccountBook => format!("/futures/{}/account_book", settle.unwrap_or("usdt")),
+
+            // New Market Data
+            Self::FuturesContractStats => format!("/futures/{}/contract_stats", settle.unwrap_or("usdt")),
+            Self::FuturesInsurance => format!("/futures/{}/insurance", settle.unwrap_or("usdt")),
         }
     }
 
@@ -284,7 +294,9 @@ impl GateioEndpoint {
             | Self::SpotTrades
             | Self::FuturesTrades
             | Self::FuturesOpenInterest
-            | Self::FuturesFundingRateHistory => false,
+            | Self::FuturesFundingRateHistory
+            | Self::FuturesContractStats
+            | Self::FuturesInsurance => false,
 
             // Private endpoints
             _ => true,

@@ -578,6 +578,49 @@ impl KuCoinConnector {
         Ok(response)
     }
 
+    /// Get risk limit tiers for a futures symbol.
+    ///
+    /// `GET /api/v1/contracts/risk-limit/{symbol}` (futures domain, public)
+    ///
+    /// Verified: returns `{code: "200000", data: [{symbol, level, maxRiskLimit,
+    /// minRiskLimit, maxLeverage, initialMargin, maintainMargin}, ...]}`.
+    pub async fn get_risk_limit(&self, symbol: &str) -> ExchangeResult<Value> {
+        self.rate_limit_wait(weights::DEFAULT, false).await;
+        let base_url = self.urls.rest_url(AccountType::FuturesCross);
+        let path = format!("/api/v1/contracts/risk-limit/{}", symbol);
+        let url = format!("{}{}", base_url, path);
+        let (response, _) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
+        self.check_response(&response)?;
+        Ok(response)
+    }
+
+    /// Get historical funding rates for a futures symbol (public).
+    ///
+    /// `GET /api/v1/contract/funding-rates` (futures domain, public)
+    ///
+    /// Verified: returns `{code: "200000", data: [{symbol, fundingRate, timepoint}, ...]}`.
+    ///
+    /// # Parameters
+    /// - `symbol`: Futures symbol e.g. `XBTUSDTM`
+    /// - `from`: Start timestamp in ms (optional)
+    /// - `to`: End timestamp in ms (optional)
+    pub async fn get_historical_funding_rates(
+        &self,
+        symbol: &str,
+        from: Option<i64>,
+        to: Option<i64>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        if let Some(f) = from {
+            params.insert("from".to_string(), f.to_string());
+        }
+        if let Some(t) = to {
+            params.insert("to".to_string(), t.to_string());
+        }
+        self.get(KuCoinEndpoint::FuturesFundingRates, params, AccountType::FuturesCross).await
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // FILL / TRADE HISTORY
     // ═══════════════════════════════════════════════════════════════════════════

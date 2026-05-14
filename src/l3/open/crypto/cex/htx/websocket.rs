@@ -292,6 +292,33 @@ impl HtxWebSocket {
         Err(ExchangeError::Auth("Invalid auth response".to_string()))
     }
 
+    /// Parse a single kline tick from a WebSocket push.
+    ///
+    /// HTX WS kline tick format (inside `tick`):
+    /// `{ id, open, close, low, high, amount, vol, count }`
+    /// where `id` is a Unix timestamp in **seconds**.
+    fn parse_ws_kline_tick(data: &Value) -> Option<crate::core::types::Kline> {
+        let open_time = data["id"].as_i64()? * 1000; // seconds → ms
+        let open = data["open"].as_f64()?;
+        let high = data["high"].as_f64()?;
+        let low = data["low"].as_f64()?;
+        let close = data["close"].as_f64()?;
+        let volume = data["amount"].as_f64().unwrap_or(0.0);
+        let quote_volume = data["vol"].as_f64();
+        let trades = data["count"].as_i64().map(|c| c as u64);
+        Some(crate::core::types::Kline {
+            open_time,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            quote_volume,
+            close_time: None,
+            trades,
+        })
+    }
+
     /// Parse ticker from WebSocket data
     fn parse_ticker_from_ws_data(data: &Value, channel: &str) -> ExchangeResult<Ticker> {
         // Extract symbol from channel: "market.btcusdt.ticker" or "market.btcusdt.detail.merged"
@@ -390,6 +417,11 @@ impl HtxWebSocket {
             StreamType::Orderbook => Ok(format!("market.{}.depth.step0", symbol_str)),
             StreamType::Trade => Ok(format!("market.{}.trade.detail", symbol_str)),
             StreamType::Kline { interval } => Ok(format!("market.{}.kline.{}", symbol_str, interval)),
+            StreamType::IndexPriceKline { interval } => {
+                // HTX USDT-margined swap index kline topic: market.<contract_code>.index.<period>
+                // e.g. market.BTC-USDT.index.1min
+                Ok(format!("market.{}.index.{}", symbol_str, interval))
+            }
             StreamType::FundingRate => {
                 // HTX USDT-margined swap funding rate push topic.
                 // Verified: uses "public." prefix, same as liquidation_orders.
@@ -595,7 +627,46 @@ impl HtxWebSocket {
                                 v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
                             };
 
-                            if channel.contains(".ticker") || channel.contains(".detail") {
+                            if channel.contains(".kline.") {
+                                // Regular kline: market.<code>.kline.<period>
+                                // symbol is 2nd dot-segment, interval is 4th
+                                let parts: Vec<&str> = channel.splitn(4, '.').collect();
+                                let symbol = parts.get(1).copied().unwrap_or("").to_string();
+                                let interval = parts.get(3).copied().unwrap_or("1min").to_string();
+                                if let Some(kline) = Self::parse_ws_kline_tick(data) {
+                                    if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                                        let _ = tx.send(Ok(StreamEvent::Kline(
+                                            crate::core::types::Kline {
+                                                open_time: kline.open_time,
+                                                open: kline.open,
+                                                high: kline.high,
+                                                low: kline.low,
+                                                close: kline.close,
+                                                volume: kline.volume,
+                                                quote_volume: kline.quote_volume,
+                                                close_time: kline.close_time,
+                                                trades: kline.trades,
+                                            }
+                                        )));
+                                    }
+                                }
+                                let _ = (symbol, interval);
+                            } else if channel.contains(".index.") {
+                                // Index price kline: market.<code>.index.<period>
+                                // symbol is 2nd dot-segment, interval is 4th
+                                let parts: Vec<&str> = channel.splitn(4, '.').collect();
+                                let symbol = parts.get(1).copied().unwrap_or("").to_string();
+                                let interval = parts.get(3).copied().unwrap_or("1min").to_string();
+                                if let Some(kline) = Self::parse_ws_kline_tick(data) {
+                                    if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                                        let _ = tx.send(Ok(StreamEvent::IndexPriceKline {
+                                            symbol,
+                                            interval,
+                                            kline,
+                                        }));
+                                    }
+                                }
+                            } else if channel.contains(".ticker") || channel.contains(".detail") {
                                 if let Ok(ticker) = Self::parse_ticker_from_ws_data(data, &channel) {
                                     if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
                                         let _ = tx.send(Ok(StreamEvent::Ticker(ticker)));

@@ -124,6 +124,10 @@ pub enum HtxEndpoint {
     MarkPrice,
     /// GET /linear-swap-ex/market/history/mark_price_kline — mark price kline
     MarkPriceKline,
+    /// GET /linear-swap-api/v1/swap_elite_account_ratio — elite trader L/S ratio
+    EliteAccountRatio,
+    /// GET /linear-swap-api/v1/swap_historical_funding_rate — actual paid funding rates
+    HistoricalFundingRate,
 
     // === ALGO ORDERS ===
     /// POST /v2/algo-orders — place trailing stop or other algo orders
@@ -193,6 +197,8 @@ impl HtxEndpoint {
             Self::FundingRateHistory => "/linear-swap-api/v3/swap-funding-rate-history",
             Self::MarkPrice => "/linear-swap-api/v1/swap_index",
             Self::MarkPriceKline => "/linear-swap-ex/market/history/mark_price_kline",
+            Self::EliteAccountRatio => "/linear-swap-api/v1/swap_elite_account_ratio",
+            Self::HistoricalFundingRate => "/linear-swap-api/v1/swap_historical_funding_rate",
 
             // Algo Orders
             Self::AlgoOrders => "/v2/algo-orders",
@@ -249,7 +255,9 @@ impl HtxEndpoint {
             | Self::OpenInterest
             | Self::FundingRateHistory
             | Self::MarkPrice
-            | Self::MarkPriceKline => false,
+            | Self::MarkPriceKline
+            | Self::EliteAccountRatio
+            | Self::HistoricalFundingRate => false,
 
             // Private endpoints
             _ => true,

@@ -193,6 +193,10 @@ pub enum KuCoinEndpoint {
     // === FUTURES OPEN INTEREST ===
     /// GET /api/v1/contracts/{symbol} — futures contract details including OI (public, futures domain)
     FuturesContractDetail,
+
+    // === NEW ADDITIONS ===
+    /// GET /api/v1/contracts/risk-limit/{symbol} — risk limit tiers (public, futures domain)
+    FuturesRiskLimit,
 }
 
 impl KuCoinEndpoint {
@@ -307,6 +311,9 @@ impl KuCoinEndpoint {
 
             // Futures Open Interest (via contract detail)
             Self::FuturesContractDetail => "/api/v1/contracts/{symbol}",
+
+            // New Additions
+            Self::FuturesRiskLimit => "/api/v1/contracts/risk-limit/{symbol}",
         }
     }
 
@@ -336,6 +343,7 @@ impl KuCoinEndpoint {
             | Self::FuturesIndexPrice
             | Self::FuturesPremiumIndex
             | Self::FuturesContractDetail
+            | Self::FuturesRiskLimit
             | Self::WsPublicToken => false,
 
             // Private endpoints

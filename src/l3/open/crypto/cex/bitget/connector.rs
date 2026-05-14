@@ -2756,6 +2756,71 @@ impl AccountLedger for BitgetConnector {
     }
 }
 
+impl BitgetConnector {
+    /// Get recent public futures fills (market trades).
+    ///
+    /// `GET /api/v2/mix/market/fills-history`
+    ///
+    /// Verified: returns `[{tradeId, price, size, side, ts, symbol}]` directly as data array.
+    ///
+    /// # Parameters
+    /// - `symbol`: Futures symbol e.g. `BTCUSDT`
+    /// - `product_type`: e.g. `USDT-FUTURES`
+    /// - `limit`: Number of fills (optional, max 100)
+    pub async fn get_futures_market_fills(
+        &self,
+        symbol: &str,
+        product_type: &str,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("productType".to_string(), product_type.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(BitgetEndpoint::FuturesMarketFills, params, AccountType::FuturesCross).await
+    }
+
+    /// Get mark price OHLCV history for a futures contract.
+    ///
+    /// `GET /api/v2/mix/market/history-mark-candles`
+    ///
+    /// Verified: returns array of `[ts, open, high, low, close, vol, notional]` candles.
+    ///
+    /// # Parameters
+    /// - `symbol`: Futures symbol e.g. `BTCUSDT`
+    /// - `product_type`: e.g. `USDT-FUTURES`
+    /// - `granularity`: Candle interval e.g. `1m`, `1H`, `1D`
+    /// - `start_time`: Start timestamp in ms (optional)
+    /// - `end_time`: End timestamp in ms (optional)
+    /// - `limit`: Number of candles (optional, max 200)
+    pub async fn get_futures_mark_candles(
+        &self,
+        symbol: &str,
+        product_type: &str,
+        granularity: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("productType".to_string(), product_type.to_string());
+        params.insert("granularity".to_string(), granularity.to_string());
+        if let Some(st) = start_time {
+            params.insert("startTime".to_string(), st.to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("endTime".to_string(), et.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(BitgetEndpoint::FuturesMarkCandles, params, AccountType::FuturesCross).await
+    }
+}
+
 /// Map internal AccountType to Bitget transfer type string.
 fn bitget_account_type_str(account_type: AccountType) -> &'static str {
     match account_type {

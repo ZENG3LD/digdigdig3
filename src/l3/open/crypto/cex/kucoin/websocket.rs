@@ -455,11 +455,27 @@ impl KuCoinWebSocket {
                     .map_err(|e| WebSocketError::Parse(e.to_string()))?;
                 Ok(Some(StreamEvent::Kline(kline)))
             }
-            // Mark price
+            // Mark price (from /contract/instrument: topic, subject mark.index.price)
+            // Contains both markPrice and indexPrice fields.
             "mark.index.price" => {
                 let event = Self::parse_mark_price(data)
                     .map_err(|e| WebSocketError::Parse(e.to_string()))?;
                 Ok(Some(event))
+            }
+            // Index price tick (from /contractMarket/indexPrice: topic, subject index.price)
+            "index.price" => {
+                let event = Self::parse_index_price(data)
+                    .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+                Ok(Some(event))
+            }
+            // Advanced (triggered) orders (subject: "orderChange" on advancedOrders topic)
+            // KuCoin fires this when a stop or take-profit order triggers.
+            // Re-uses same subject as regular order updates — disambiguated at subscription level.
+            // Emit as OrderUpdate (type field distinguishes triggered vs normal).
+            "advancedOrder.detail" | "advancedOrder" => {
+                let event = Self::parse_order_update(data, account_type)
+                    .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+                Ok(Some(StreamEvent::OrderUpdate(event)))
             }
             // Funding rate
             "funding.rate" => {
@@ -569,6 +585,12 @@ impl KuCoinWebSocket {
                 let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, account_type);
                 format!("/contract/instrument:{}", symbol)
             }
+            StreamType::IndexPrice => {
+                // KuCoin Futures: /contractMarket/indexPrice:{symbol}
+                // Pushes subject "index.price" with { symbol, granularity, indexPrice, timestamp }
+                let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, account_type);
+                format!("/contractMarket/indexPrice:{}", symbol)
+            }
             StreamType::FundingRate => {
                 let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, account_type);
                 format!("/contract/instrument:{}", symbol)
@@ -660,6 +682,27 @@ impl KuCoinWebSocket {
 
     fn parse_funding_rate_ws(data: &Value) -> ExchangeResult<StreamEvent> {
         KuCoinParser::parse_ws_funding_rate(data)
+    }
+
+    /// Parse index price tick from `/contractMarket/indexPrice:` topic.
+    ///
+    /// Subject: `index.price`
+    /// Data fields: `{ symbol, granularity, indexPrice, timestamp }`
+    fn parse_index_price(data: &Value) -> ExchangeResult<StreamEvent> {
+        let parse_f64 = |v: &Value| -> Option<f64> {
+            v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
+        };
+        let symbol = data.get("symbol")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let price = data.get("indexPrice")
+            .and_then(|v| parse_f64(v))
+            .ok_or_else(|| crate::core::types::ExchangeError::Parse("Missing indexPrice".to_string()))?;
+        let timestamp = data.get("timestamp")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        Ok(StreamEvent::IndexPrice { symbol, price, timestamp })
     }
 
     fn parse_order_update(data: &Value, _account_type: AccountType) -> ExchangeResult<crate::core::OrderUpdateEvent> {

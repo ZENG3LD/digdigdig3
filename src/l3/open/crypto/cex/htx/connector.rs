@@ -230,7 +230,9 @@ impl HtxConnector {
             | HtxEndpoint::OpenInterest
             | HtxEndpoint::FundingRateHistory
             | HtxEndpoint::MarkPrice
-            | HtxEndpoint::MarkPriceKline => HtxUrls::futures_base_url(self.testnet),
+            | HtxEndpoint::MarkPriceKline
+            | HtxEndpoint::EliteAccountRatio
+            | HtxEndpoint::HistoricalFundingRate => HtxUrls::futures_base_url(self.testnet),
             _ => HtxUrls::base_url(self.testnet),
         };
         let path = endpoint.path();
@@ -2023,6 +2025,53 @@ impl HtxConnector {
         let mut params = HashMap::new();
         params.insert("contract_code".to_string(), contract_code.to_string());
         self.get(HtxEndpoint::MarkPrice, params).await
+    }
+
+    /// Get elite trader long/short account ratio for a USDT-margined contract.
+    ///
+    /// `GET /linear-swap-api/v1/swap_elite_account_ratio`
+    ///
+    /// Verified: returns `{list: [{buy_ratio, sell_ratio, locked_ratio, ts}], contract_code, ...}`
+    ///
+    /// # Parameters
+    /// - `contract_code`: Contract code e.g. `BTC-USDT`
+    /// - `period`: Period e.g. `5min`, `15min`, `30min`, `60min`, `4hour`, `1day`
+    pub async fn get_elite_account_ratio(
+        &self,
+        contract_code: &str,
+        period: &str,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("contract_code".to_string(), contract_code.to_string());
+        params.insert("period".to_string(), period.to_string());
+        self.get(HtxEndpoint::EliteAccountRatio, params).await
+    }
+
+    /// Get historical funding rates (actual paid rates) for a USDT-margined contract.
+    ///
+    /// `GET /linear-swap-api/v1/swap_historical_funding_rate`
+    ///
+    /// Verified: returns `{data: {data: [{avg_premium_index, funding_rate, funding_time, ...}]}}`.
+    ///
+    /// # Parameters
+    /// - `contract_code`: Contract code e.g. `BTC-USDT`
+    /// - `page_index`: Page index (optional, default 1)
+    /// - `page_size`: Page size (optional, default 20, max 50)
+    pub async fn get_historical_funding_rate(
+        &self,
+        contract_code: &str,
+        page_index: Option<u32>,
+        page_size: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("contract_code".to_string(), contract_code.to_string());
+        if let Some(idx) = page_index {
+            params.insert("page_index".to_string(), idx.to_string());
+        }
+        if let Some(size) = page_size {
+            params.insert("page_size".to_string(), size.to_string());
+        }
+        self.get(HtxEndpoint::HistoricalFundingRate, params).await
     }
 
     /// Get mark price kline (candlestick) data for a USDT-margined contract.

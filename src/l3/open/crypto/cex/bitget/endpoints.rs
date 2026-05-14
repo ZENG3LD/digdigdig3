@@ -166,6 +166,12 @@ pub enum BitgetEndpoint {
     FuturesSymbolPrice,
     /// GET /api/v2/spot/account/bills — spot account bill/ledger records
     SpotBills,
+
+    // === NEW MARKET DATA ===
+    /// GET /api/v2/mix/market/fills-history — recent public futures fills
+    FuturesMarketFills,
+    /// GET /api/v2/mix/market/history-mark-candles — mark price OHLCV history
+    FuturesMarkCandles,
 }
 
 impl BitgetEndpoint {
@@ -264,6 +270,9 @@ impl BitgetEndpoint {
             Self::FuturesFundingRateHistory => "/api/v2/mix/market/history-fund-rate",
             Self::FuturesSymbolPrice => "/api/v2/mix/market/symbol-price",
             Self::SpotBills => "/api/v2/spot/account/bills",
+
+            Self::FuturesMarketFills => "/api/v2/mix/market/fills-history",
+            Self::FuturesMarkCandles => "/api/v2/mix/market/history-mark-candles",
         }
     }
 
@@ -289,7 +298,9 @@ impl BitgetEndpoint {
             | Self::SpotHistoryCandles
             | Self::FuturesOpenInterest
             | Self::FuturesFundingRateHistory
-            | Self::FuturesSymbolPrice => false,
+            | Self::FuturesSymbolPrice
+            | Self::FuturesMarketFills
+            | Self::FuturesMarkCandles => false,
 
             // Private endpoints
             _ => true,

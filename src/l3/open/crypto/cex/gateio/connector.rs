@@ -2555,6 +2555,63 @@ impl GateioConnector {
         self.get(GateioEndpoint::FuturesOpenInterest, params, AccountType::FuturesCross).await
     }
 
+    /// Get futures contract stats including L/S ratio, OI, and liquidation volumes.
+    ///
+    /// `GET /api/v4/futures/usdt/contract_stats`
+    ///
+    /// Verified: returns `[{time, lsr_taker, lsr_account, long_liq_size, short_liq_size,
+    /// open_interest, mark_price, top_lsr_size, top_lsr_account, ...}]`
+    ///
+    /// # Parameters
+    /// - `contract`: Futures contract e.g. `BTC_USDT`
+    /// - `from`: Start timestamp in seconds (optional)
+    /// - `to`: End timestamp in seconds (optional)
+    /// - `interval`: Stat interval e.g. `5m`, `15m`, `30m`, `1h`, `4h`, `1d` (optional)
+    /// - `limit`: Number of entries (optional, max 100)
+    pub async fn get_contract_stats(
+        &self,
+        contract: &str,
+        from: Option<i64>,
+        to: Option<i64>,
+        interval: Option<&str>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("contract".to_string(), contract.to_string());
+        if let Some(f) = from {
+            params.insert("from".to_string(), f.to_string());
+        }
+        if let Some(t) = to {
+            params.insert("to".to_string(), t.to_string());
+        }
+        if let Some(i) = interval {
+            params.insert("interval".to_string(), i.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(GateioEndpoint::FuturesContractStats, params, AccountType::FuturesCross).await
+    }
+
+    /// Get insurance fund balance history.
+    ///
+    /// `GET /api/v4/futures/usdt/insurance`
+    ///
+    /// Verified: returns `[{b: balance_float, t: unix_seconds}, ...]`
+    ///
+    /// # Parameters
+    /// - `limit`: Number of entries (optional, max 1000)
+    pub async fn get_insurance_fund(
+        &self,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(GateioEndpoint::FuturesInsurance, params, AccountType::FuturesCross).await
+    }
+
     /// Get futures funding rate history.
     ///
     /// `GET /api/v4/futures/usdt/funding_rate`

@@ -16,10 +16,10 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use futures_util::{Stream, StreamExt, SinkExt};
+use futures_util::{Stream, StreamExt, SinkExt, stream::{SplitSink, SplitStream}};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::sync::{mpsc, broadcast, Mutex};
+use tokio::sync::{broadcast, Mutex};
 use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream, MaybeTlsStream};
 
@@ -55,6 +55,10 @@ struct IncomingMessage {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+/// Write half — used by subscribe, unsubscribe, and ping task
+type WsSink = SplitSink<WsStream, Message>;
+/// Read half — owned exclusively by the message loop task
+type WsReader = SplitStream<WsStream>;
 
 /// Hyperliquid WebSocket connector
 pub struct HyperliquidWebSocket {
@@ -64,12 +68,11 @@ pub struct HyperliquidWebSocket {
     status: Arc<Mutex<ConnectionStatus>>,
     /// Active subscriptions
     subscriptions: Arc<Mutex<HashSet<SubscriptionRequest>>>,
-    /// Event sender (internal - for message handler)
-    event_tx: Arc<Mutex<Option<mpsc::UnboundedSender<WebSocketResult<StreamEvent>>>>>,
     /// Broadcast sender (for multiple consumers, dropped on disconnect)
     broadcast_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
-    /// WebSocket stream
-    ws_stream: Arc<Mutex<Option<WsStream>>>,
+    /// WebSocket write half — shared by subscribe, unsubscribe, and ping task.
+    /// The read half is owned exclusively by the message loop task (no mutex needed).
+    ws_sink: Arc<Mutex<Option<WsSink>>>,
     /// Last ping time
     last_ping: Arc<Mutex<Instant>>,
     /// Most recent ping round-trip time in milliseconds (0 until first pong)
@@ -89,9 +92,8 @@ impl HyperliquidWebSocket {
             urls,
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
-            event_tx: Arc::new(Mutex::new(None)),
             broadcast_tx: Arc::new(StdMutex::new(None)),
-            ws_stream: Arc::new(Mutex::new(None)),
+            ws_sink: Arc::new(Mutex::new(None)),
             last_ping: Arc::new(Mutex::new(Instant::now())),
             ws_ping_rtt_ms: Arc::new(Mutex::new(0)),
         }
@@ -112,104 +114,84 @@ impl HyperliquidWebSocket {
         Ok(ws_stream)
     }
 
-    /// Start message handling task
+    /// Start message read loop.
+    ///
+    /// Takes ownership of `reader` (the `SplitStream` half) — no mutex is needed.
+    /// Runs until the WebSocket connection closes or errors.
     fn start_message_handler(
-        ws_stream: Arc<Mutex<Option<WsStream>>>,
-        event_tx: mpsc::UnboundedSender<WebSocketResult<StreamEvent>>,
+        mut reader: WsReader,
+        event_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
         status: Arc<Mutex<ConnectionStatus>>,
         last_ping: Arc<Mutex<Instant>>,
         ws_ping_rtt_ms: Arc<Mutex<u64>>,
     ) {
         tokio::spawn(async move {
-            loop {
-                let mut stream_guard = ws_stream.lock().await;
-                let stream = match stream_guard.as_mut() {
-                    Some(s) => s,
-                    None => {
-                        drop(stream_guard);
-                        sleep(Duration::from_millis(100)).await;
-                        continue;
-                    }
-                };
-
-                match stream.next().await {
-                    Some(Ok(Message::Text(text))) => {
-                        drop(stream_guard);
-                        if let Err(e) = Self::handle_message(&text, &event_tx).await {
-                            let _ = event_tx.send(Err(e));
+            while let Some(msg) = reader.next().await {
+                match msg {
+                    Ok(Message::Text(text)) => {
+                        match Self::handle_message(&text).await {
+                            Ok(events) => {
+                                let tx_guard = event_tx.lock().unwrap();
+                                if let Some(ref tx) = *tx_guard {
+                                    for event in events {
+                                        let _ = tx.send(Ok(event));
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let tx_guard = event_tx.lock().unwrap();
+                                if let Some(ref tx) = *tx_guard {
+                                    let _ = tx.send(Err(e));
+                                }
+                            }
                         }
                     }
-                    Some(Ok(Message::Pong(_))) => {
+                    Ok(Message::Pong(_)) => {
                         // Response to our client-initiated WS Ping frame — measure RTT
                         let rtt = last_ping.lock().await.elapsed().as_millis() as u64;
                         *ws_ping_rtt_ms.lock().await = rtt;
-                        drop(stream_guard);
                     }
-                    Some(Ok(Message::Ping(data))) => {
-                        // Respond to server-initiated ping with pong
-                        if let Err(e) = stream.send(Message::Pong(data)).await {
-                            drop(stream_guard);
-                            let _ = event_tx.send(Err(WebSocketError::ConnectionError(e.to_string())));
-                            break;
+                    Ok(Message::Close(_)) => {
+                        *status.lock().await = ConnectionStatus::Disconnected;
+                        break;
+                    }
+                    Err(e) => {
+                        let tx_guard = event_tx.lock().unwrap();
+                        if let Some(ref tx) = *tx_guard {
+                            let _ = tx.send(Err(WebSocketError::ConnectionError(e.to_string())));
                         }
-                        drop(stream_guard);
-                    }
-                    Some(Ok(Message::Close(_))) => {
-                        drop(stream_guard);
-                        *status.lock().await = ConnectionStatus::Disconnected;
                         break;
                     }
-                    Some(Err(e)) => {
-                        drop(stream_guard);
-                        let _ = event_tx.send(Err(WebSocketError::ConnectionError(e.to_string())));
-                        break;
-                    }
-                    None => {
-                        drop(stream_guard);
-                        *status.lock().await = ConnectionStatus::Disconnected;
-                        break;
-                    }
-                    _ => {
-                        drop(stream_guard);
-                    }
+                    _ => {}
                 }
             }
+            // Drop the broadcast sender so all BroadcastStream receivers get None
+            let _ = event_tx.lock().unwrap().take();
+            *status.lock().await = ConnectionStatus::Disconnected;
         });
     }
 
-    /// Handle incoming WebSocket message
-    async fn handle_message(
-        text: &str,
-        event_tx: &mpsc::UnboundedSender<WebSocketResult<StreamEvent>>,
-    ) -> WebSocketResult<()> {
+    /// Handle incoming WebSocket message, returning 0-N parsed events.
+    async fn handle_message(text: &str) -> WebSocketResult<Vec<StreamEvent>> {
         let msg: IncomingMessage = serde_json::from_str(text)
             .map_err(|e| WebSocketError::Parse(format!("Failed to parse message: {}", e)))?;
 
         // Get channel and data
         let channel = match msg.channel {
             Some(ch) => ch,
-            None => return Ok(()), // Ignore messages without channel
+            None => return Ok(vec![]), // Ignore messages without channel
         };
 
         let data = match msg.data {
             Some(d) => d,
-            None => return Ok(()), // Ignore messages without data
+            None => return Ok(vec![]), // Ignore messages without data
         };
 
         // Parse based on channel type
+        let mut events = Vec::new();
         match channel.as_str() {
             "activeAssetCtx" => {
-                for event in Self::parse_active_asset_ctx(&data)? {
-                    let _ = event_tx.send(Ok(event));
-                }
-            }
-            "assetCtxs" => {
-                // Snapshot/update of ALL coins' contexts at once.
-                // Data format: array of [coin_name, ctx_object] pairs or
-                // array of { coin, ctx } objects depending on API version.
-                for event in Self::parse_asset_ctxs(&data)? {
-                    let _ = event_tx.send(Ok(event));
-                }
+                events.extend(Self::parse_active_asset_ctx(&data)?);
             }
             "webData2" => {
                 // Large composite payload: mids, positions, fills, etc.
@@ -217,51 +199,41 @@ impl HyperliquidWebSocket {
                 // same as allMids. Other fields (positions, fills) are ignored
                 // as they require user context not available here.
                 if let Some(mids_val) = data.get("mids") {
-                    for event in Self::parse_all_mids(&serde_json::json!({"mids": mids_val}))? {
-                        let _ = event_tx.send(Ok(event));
-                    }
+                    events.extend(Self::parse_all_mids(&serde_json::json!({"mids": mids_val}))?);
                 }
             }
             "clearinghouseState" => {
                 // User clearinghouse state including positions and balances.
                 // Emits BalanceUpdate per balance entry and PositionUpdate per position.
-                for event in Self::parse_clearinghouse_state(&data)? {
-                    let _ = event_tx.send(Ok(event));
-                }
+                events.extend(Self::parse_clearinghouse_state(&data)?);
             }
             "liquidations" => {
                 if let Some(event) = Self::parse_liquidation(&data)? {
-                    let _ = event_tx.send(Ok(event));
+                    events.push(event);
                 }
             }
             "allMids" => {
-                for event in Self::parse_all_mids(&data)? {
-                    let _ = event_tx.send(Ok(event));
-                }
+                events.extend(Self::parse_all_mids(&data)?);
             }
             "bbo" => {
-                for event in Self::parse_bbo(&data)? {
-                    let _ = event_tx.send(Ok(event));
-                }
+                events.extend(Self::parse_bbo(&data)?);
             }
             "userFundings" => {
-                for event in Self::parse_user_fundings(&data)? {
-                    let _ = event_tx.send(Ok(event));
-                }
+                events.extend(Self::parse_user_fundings(&data)?);
             }
             "trades" => {
                 if let Some(event) = Self::parse_trades(&data)? {
-                    let _ = event_tx.send(Ok(event));
+                    events.push(event);
                 }
             }
             "l2Book" => {
                 if let Some(event) = Self::parse_l2_book(&data)? {
-                    let _ = event_tx.send(Ok(event));
+                    events.push(event);
                 }
             }
             "candle" => {
                 if let Some(event) = Self::parse_candle(&data)? {
-                    let _ = event_tx.send(Ok(event));
+                    events.push(event);
                 }
             }
             "subscriptionResponse" => {
@@ -279,7 +251,7 @@ impl HyperliquidWebSocket {
             }
         }
 
-        Ok(())
+        Ok(events)
     }
 
     /// Parse activeAssetCtx message to multiple events.
@@ -390,126 +362,6 @@ impl HyperliquidWebSocket {
                 price: idx_px,
                 timestamp: now,
             });
-        }
-
-        Ok(events)
-    }
-
-    /// Parse `assetCtxs` channel — snapshot/update of ALL coins' contexts at once.
-    ///
-    /// Hyperliquid sends the full list of perpetual asset contexts in one push.
-    /// The data can arrive as:
-    /// - An array of `[coin_name, ctx_object]` pairs (universe format), or
-    /// - An array of `{ coin, ctx }` objects (named format).
-    ///
-    /// For each coin, emits: Ticker + MarkPrice + FundingRate + OpenInterestUpdate +
-    /// IndexPrice — identical to `activeAssetCtx` but covering all coins at once.
-    fn parse_asset_ctxs(data: &Value) -> WebSocketResult<Vec<StreamEvent>> {
-        let arr = match data.as_array() {
-            Some(a) => a,
-            None => return Ok(vec![]),
-        };
-
-        let mut events = Vec::with_capacity(arr.len() * 5);
-
-        for item in arr {
-            // Support both `[coin, ctx]` tuple format and `{ coin, ctx }` object format.
-            let (coin, ctx) = if let Some(sub_arr) = item.as_array() {
-                // Tuple: [coin_string, ctx_object]
-                let coin = match sub_arr.first().and_then(|v| v.as_str()) {
-                    Some(s) => s,
-                    None => continue,
-                };
-                let ctx = match sub_arr.get(1) {
-                    Some(c) => c,
-                    None => continue,
-                };
-                (coin, ctx)
-            } else if item.is_object() {
-                // Object: { coin: "BTC", ctx: { ... } }
-                let coin = match item.get("coin").and_then(|v| v.as_str()) {
-                    Some(s) => s,
-                    None => continue,
-                };
-                let ctx = match item.get("ctx") {
-                    Some(c) => c,
-                    None => continue,
-                };
-                (coin, ctx)
-            } else {
-                continue;
-            };
-
-            let parse_f64 = |val: &Value| -> Option<f64> {
-                val.as_str().and_then(|s| s.parse().ok()).or_else(|| val.as_f64())
-            };
-
-            let mark_px = ctx.get("markPx").and_then(parse_f64).unwrap_or(0.0);
-            let mid_px = ctx.get("midPx").and_then(parse_f64);
-            let prev_day_px = ctx.get("prevDayPx").and_then(parse_f64);
-            let volume_24h = ctx.get("dayNtlVlm").and_then(parse_f64);
-            let funding_rate = ctx.get("funding").and_then(parse_f64);
-            let open_interest = ctx.get("openInterest").and_then(parse_f64);
-            let oracle_px = ctx.get("oraclePx").and_then(parse_f64);
-
-            let last_price = mid_px.unwrap_or(mark_px);
-            let now = crate::core::utils::timestamp_millis() as i64;
-
-            let (price_change_24h, price_change_percent_24h) = match prev_day_px {
-                Some(prev) if prev > 0.0 => {
-                    let change = last_price - prev;
-                    let change_pct = (change / prev) * 100.0;
-                    (Some(change), Some(change_pct))
-                }
-                _ => (None, None),
-            };
-
-            events.push(StreamEvent::Ticker(crate::core::Ticker {
-                symbol: coin.to_string(),
-                last_price,
-                bid_price: None,
-                ask_price: None,
-                high_24h: None,
-                low_24h: None,
-                volume_24h,
-                quote_volume_24h: None,
-                price_change_24h,
-                price_change_percent_24h,
-                timestamp: now,
-            }));
-
-            events.push(StreamEvent::MarkPrice {
-                symbol: coin.to_string(),
-                mark_price: mark_px,
-                index_price: oracle_px,
-                timestamp: now,
-            });
-
-            if let Some(rate) = funding_rate {
-                events.push(StreamEvent::FundingRate {
-                    symbol: coin.to_string(),
-                    rate,
-                    next_funding_time: None,
-                    timestamp: now,
-                });
-            }
-
-            if let Some(oi) = open_interest {
-                events.push(StreamEvent::OpenInterestUpdate {
-                    symbol: coin.to_string(),
-                    open_interest: oi,
-                    open_interest_value: None,
-                    timestamp: now,
-                });
-            }
-
-            if let Some(idx_px) = oracle_px {
-                events.push(StreamEvent::IndexPrice {
-                    symbol: coin.to_string(),
-                    price: idx_px,
-                    timestamp: now,
-                });
-            }
         }
 
         Ok(events)
@@ -646,10 +498,12 @@ impl HyperliquidWebSocket {
 
     /// Parse `bbo` (best bid/offer) message → Ticker with bid_price/ask_price.
     ///
-    /// Message format:
+    /// Message format (verified from Hyperliquid docs):
     /// ```json
-    /// { "coin": "BTC", "time": 1234567890, "data": { "bid": ["50100.0", "0.5"], "ask": ["50101.0", "0.3"] } }
+    /// { "coin": "BTC", "time": 1234567890, "bbo": [{"px":"50100.0","sz":"0.5","n":1}, null] }
     /// ```
+    /// `bbo` is a 2-element array: [best_bid WsLevel | null, best_ask WsLevel | null].
+    /// WsLevel = { px, sz, n } where px is price (string), sz is size (string).
     fn parse_bbo(data: &Value) -> WebSocketResult<Vec<StreamEvent>> {
         let parse_f64 = |val: &Value| -> Option<f64> {
             val.as_str().and_then(|s| s.parse().ok()).or_else(|| val.as_f64())
@@ -660,16 +514,18 @@ impl HyperliquidWebSocket {
             None => return Ok(vec![]),
         };
 
-        let bbo_data = data.get("data").unwrap_or(data);
+        // bbo field is a 2-element array: [bid_level, ask_level], each may be null
+        let bbo_arr = match data.get("bbo").and_then(|b| b.as_array()) {
+            Some(a) => a,
+            None => return Ok(vec![]),
+        };
 
-        let bid_price = bbo_data.get("bid")
-            .and_then(|b| b.as_array())
-            .and_then(|arr| arr.first())
+        let bid_price = bbo_arr.first()
+            .and_then(|level| level.get("px"))
             .and_then(parse_f64);
 
-        let ask_price = bbo_data.get("ask")
-            .and_then(|a| a.as_array())
-            .and_then(|arr| arr.first())
+        let ask_price = bbo_arr.get(1)
+            .and_then(|level| level.get("px"))
             .and_then(parse_f64);
 
         let last_price = bid_price
@@ -891,7 +747,7 @@ impl HyperliquidWebSocket {
     /// can be kept alive and so RTT can be measured via the resulting
     /// `Message::Pong` received in the message handler.
     fn start_heartbeat_task(
-        ws_stream: Arc<Mutex<Option<WsStream>>>,
+        ws_sink: Arc<Mutex<Option<WsSink>>>,
         last_ping: Arc<Mutex<Instant>>,
         status: Arc<Mutex<ConnectionStatus>>,
     ) {
@@ -908,9 +764,9 @@ impl HyperliquidWebSocket {
                 }
 
                 // Send a WS Ping frame; the message handler will record RTT on Pong
-                let mut stream_guard = ws_stream.lock().await;
-                if let Some(stream) = stream_guard.as_mut() {
-                    if stream.send(Message::Ping(vec![])).await.is_ok() {
+                let mut sink_guard = ws_sink.lock().await;
+                if let Some(sink) = sink_guard.as_mut() {
+                    if sink.send(Message::Ping(vec![])).await.is_ok() {
                         *last_ping.lock().await = Instant::now();
                     } else {
                         break;
@@ -932,49 +788,29 @@ impl WebSocketConnector for HyperliquidWebSocket {
     async fn connect(&mut self, _account_type: AccountType) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Connecting;
 
-        // Connect WebSocket
+        // Connect WebSocket and split into independent read/write halves.
         let ws_stream = self.connect_ws().await?;
-        *self.ws_stream.lock().await = Some(ws_stream);
+        let (sink, reader) = ws_stream.split();
+        *self.ws_sink.lock().await = Some(sink);
         *self.status.lock().await = ConnectionStatus::Connected;
         *self.last_ping.lock().await = Instant::now();
 
-        // Create event channel
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        *self.event_tx.lock().await = Some(tx.clone());
-
-        // Create broadcast channel and store
+        // Create broadcast channel
         let (broadcast_sender, _) = broadcast::channel(1000);
         *self.broadcast_tx.lock().unwrap() = Some(broadcast_sender);
 
-        // Start message handler
+        // Start message handler — reader is moved in, never shared via mutex.
         Self::start_message_handler(
-            self.ws_stream.clone(),
-            tx,
+            reader,
+            self.broadcast_tx.clone(),
             self.status.clone(),
             self.last_ping.clone(),
             self.ws_ping_rtt_ms.clone(),
         );
 
-        // Start forwarder task (mpsc -> broadcast)
-        let broadcast_tx = self.broadcast_tx.clone();
-        let last_ping = self.last_ping.clone();
-        tokio::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                // Update last ping time on any received message
-                *last_ping.lock().await = Instant::now();
-
-                // Forward to broadcast channel (ignore if no receivers)
-                if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
-                    let _ = tx.send(event);
-                }
-            }
-            // mpsc channel closed — drop broadcast sender
-            let _ = broadcast_tx.lock().unwrap().take();
-        });
-
-        // Start heartbeat task
+        // Start heartbeat task — uses ws_sink only, no contention with reader.
         Self::start_heartbeat_task(
-            self.ws_stream.clone(),
+            self.ws_sink.clone(),
             self.last_ping.clone(),
             self.status.clone(),
         );
@@ -985,12 +821,11 @@ impl WebSocketConnector for HyperliquidWebSocket {
     async fn disconnect(&mut self) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Disconnected;
 
-        // Close WebSocket connection
-        if let Some(mut stream) = self.ws_stream.lock().await.take() {
-            let _ = stream.close(None).await;
+        // Close the write half; the reader task owns the read half and exits naturally.
+        if let Some(mut sink) = self.ws_sink.lock().await.take() {
+            let _ = sink.close().await;
         }
 
-        *self.event_tx.lock().await = None;
         let _ = self.broadcast_tx.lock().unwrap().take();
         self.subscriptions.lock().await.clear();
         Ok(())
@@ -1015,14 +850,14 @@ impl WebSocketConnector for HyperliquidWebSocket {
         let msg_json = serde_json::to_string(&msg)
             .map_err(|e| WebSocketError::ProtocolError(e.to_string()))?;
 
-        let mut stream_guard = self.ws_stream.lock().await;
-        let stream = stream_guard.as_mut()
+        let mut sink_guard = self.ws_sink.lock().await;
+        let sink = sink_guard.as_mut()
             .ok_or_else(|| WebSocketError::ConnectionError("Not connected".to_string()))?;
 
-        stream.send(Message::Text(msg_json)).await
+        sink.send(Message::Text(msg_json)).await
             .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
 
-        drop(stream_guard);
+        drop(sink_guard);
 
         self.subscriptions.lock().await.insert(request);
 
@@ -1040,14 +875,14 @@ impl WebSocketConnector for HyperliquidWebSocket {
         let msg_json = serde_json::to_string(&msg)
             .map_err(|e| WebSocketError::ProtocolError(e.to_string()))?;
 
-        let mut stream_guard = self.ws_stream.lock().await;
-        let stream = stream_guard.as_mut()
+        let mut sink_guard = self.ws_sink.lock().await;
+        let sink = sink_guard.as_mut()
             .ok_or_else(|| WebSocketError::ConnectionError("Not connected".to_string()))?;
 
-        stream.send(Message::Text(msg_json)).await
+        sink.send(Message::Text(msg_json)).await
             .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
 
-        drop(stream_guard);
+        drop(sink_guard);
 
         self.subscriptions.lock().await.remove(&request);
 

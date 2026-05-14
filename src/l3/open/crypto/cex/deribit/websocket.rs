@@ -246,6 +246,9 @@ impl DeribitWebSocket {
                 "user.portfolio.BTC,user.portfolio.ETH,user.portfolio.USDC,user.portfolio.USDT,user.portfolio.SOL".to_string()
             }
             StreamType::PositionUpdate => "user.changes.any.any.raw".to_string(),
+            // OptionGreeks: subscribe to ticker.<instrument>.100ms — same channel that
+            // carries the `greeks` field for option instruments.
+            StreamType::OptionGreeks => format!("ticker.{}.100ms", instrument),
             _ => String::new(),
         }
     }
@@ -389,7 +392,7 @@ impl DeribitWebSocket {
         };
 
         if channel.starts_with("ticker.") {
-            let mut events: Vec<StreamEvent> = Vec::with_capacity(3);
+            let mut events: Vec<StreamEvent> = Vec::with_capacity(5);
 
             if let Ok(ticker) = DeribitParser::parse_ws_ticker(data) {
                 let symbol = ticker.symbol.clone();
@@ -413,15 +416,96 @@ impl DeribitWebSocket {
                 if let Some(mark) = get_f64("mark_price") {
                     let index = get_f64("index_price");
                     events.push(StreamEvent::MarkPrice {
-                        symbol,
+                        symbol: symbol.clone(),
                         mark_price: mark,
                         index_price: index,
+                        timestamp,
+                    });
+                }
+
+                // Emit OptionGreeks if this is an option instrument.
+                // Option names match: <CURRENCY>-<DDMMMYY>-<STRIKE>-C or -P
+                // e.g. BTC-27DEC24-50000-C, ETH-29MAR24-2000-P
+                // Also emit if the `greeks` field is present in the data.
+                let has_greeks_field = data.get("greeks").is_some();
+                let is_option_name = {
+                    let s = &symbol;
+                    s.ends_with("-C") || s.ends_with("-P")
+                };
+                if has_greeks_field || is_option_name {
+                    let greeks = data.get("greeks");
+                    let gf64 = |obj: Option<&serde_json::Value>, key: &str| -> Option<f64> {
+                        obj.and_then(|g| g.get(key)).and_then(|v| v.as_f64())
+                    };
+                    let delta = gf64(greeks, "delta");
+                    let gamma = gf64(greeks, "gamma");
+                    let vega = gf64(greeks, "vega");
+                    let theta = gf64(greeks, "theta");
+                    let rho = gf64(greeks, "rho");
+                    let mark_iv = get_f64("mark_iv");
+                    let bid_iv = get_f64("bid_iv");
+                    let ask_iv = get_f64("ask_iv");
+                    events.push(StreamEvent::OptionGreeks {
+                        symbol,
+                        delta,
+                        gamma,
+                        vega,
+                        theta,
+                        rho,
+                        mark_iv,
+                        bid_iv,
+                        ask_iv,
                         timestamp,
                     });
                 }
             }
 
             events
+        } else if channel.starts_with("quote.") {
+            // Deribit quote.<instrument> — high-frequency best bid/ask.
+            // data: { best_bid_price, best_bid_amount, best_ask_price,
+            //         best_ask_amount, instrument_name, timestamp }
+            let instrument = data.get("instrument_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(channel.strip_prefix("quote.").unwrap_or(channel));
+            let timestamp = data.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+            let bid_price = data.get("best_bid_price").and_then(|v| v.as_f64());
+            let ask_price = data.get("best_ask_price").and_then(|v| v.as_f64());
+
+            use crate::core::types::Ticker as TickerData;
+            let ticker = TickerData {
+                symbol: instrument.to_string(),
+                bid_price,
+                ask_price,
+                last_price: bid_price.unwrap_or(0.0),
+                volume_24h: None,
+                high_24h: None,
+                low_24h: None,
+                price_change_24h: None,
+                price_change_percent_24h: None,
+                quote_volume_24h: None,
+                timestamp,
+            };
+            vec![StreamEvent::Ticker(ticker)]
+        } else if channel.starts_with("estimated_delivery_price.") {
+            // Deribit estimated_delivery_price.<index> — settlement estimate.
+            // data: { price, index_name, timestamp }  (same shape as deribit_price_index)
+            let price = data.get("price").and_then(|v| v.as_f64());
+            let timestamp = data.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+            let index_name = data.get("index_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(
+                    channel.strip_prefix("estimated_delivery_price.").unwrap_or(channel)
+                );
+            if let Some(px) = price {
+                vec![StreamEvent::IndexPrice {
+                    symbol: index_name.to_string(),
+                    price: px,
+                    timestamp,
+                }]
+            } else {
+                vec![]
+            }
         } else if channel.starts_with("deribit_price_index.") {
             // data: { "timestamp": 1234, "price": 9050.25, "index_name": "btc_usd" }
             let price = data.get("price").and_then(|v| v.as_f64());

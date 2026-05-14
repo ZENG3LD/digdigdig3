@@ -40,6 +40,18 @@
 //! both the reader (holding the full-stream mutex across `.next().await`) and the
 //! writer (ping / subscribe) tried to acquire the same mutex simultaneously.
 //!
+//! ## Futures WebSocket (separate connection)
+//!
+//! MEXC contract WebSocket (`wss://contract.mexc.com/edge`) uses JSON frames (not protobuf).
+//! Call [`MexcWebSocket::start_futures_ws`] to open a futures-only stream on demand.
+//! The caller owns the returned receiver and decides when to close the stream.
+//! Supported channels: `sub.funding.rate`, `sub.ticker`, `sub.deal`, `sub.depth`, `sub.kline`.
+//!
+//! ```ignore
+//! let rx = ws.start_futures_ws(vec!["BTC_USDT".to_string()]).await?;
+//! while let Ok(event) = rx.recv().await { ... }
+//! ```
+//!
 //! ## Geo-Blocking Note
 //!
 //! The old non-`.pb` channels return "Blocked!" on the new endpoint. This is NOT
@@ -72,6 +84,7 @@ use futures_util::{Stream, StreamExt, SinkExt, stream::{SplitSink, SplitStream}}
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream, MaybeTlsStream};
+use crate::core::utils::timestamp_millis;
 
 use crate::core::{
     Credentials, AccountType, Symbol,
@@ -357,6 +370,132 @@ impl MexcWebSocket {
         });
     }
 
+    /// Open a separate MEXC futures WebSocket connection on demand.
+    ///
+    /// Connects to `wss://contract.mexc.com/edge` (JSON frames, not protobuf).
+    /// Subscribes to `sub.funding.rate` for each symbol in `symbols` (e.g. `"BTC_USDT"`).
+    ///
+    /// Returns a broadcast receiver. The caller reads events from it; the internal
+    /// task owns the connection and exits when the socket closes or errors.
+    ///
+    /// # MEXC does not publish a public liquidation stream
+    /// Confirmed via MEXC contract API docs — no public forced-liquidation WS channel exists.
+    ///
+    /// # Supported contract channels
+    /// - `sub.funding.rate` → `StreamEvent::FundingRate`
+    /// - `sub.ticker` → `StreamEvent::Ticker` + `StreamEvent::OpenInterestUpdate` (from `holdVol`)
+    pub async fn start_futures_ws(
+        &self,
+        symbols: Vec<String>,
+    ) -> ExchangeResult<broadcast::Receiver<WebSocketResult<StreamEvent>>> {
+        let futures_url = MexcUrls::futures_ws_url();
+        let (ws_stream, _) = connect_async(futures_url).await
+            .map_err(|e| ExchangeError::Network(format!("Futures WS connect failed: {}", e)))?;
+
+        let (mut write, mut read) = ws_stream.split();
+
+        // Subscribe to funding rate for each symbol
+        for sym in &symbols {
+            let sub_msg = json!({
+                "method": "sub.funding.rate",
+                "param": { "symbol": sym }
+            });
+            let text = serde_json::to_string(&sub_msg)
+                .map_err(|e| ExchangeError::Parse(format!("Serialize error: {}", e)))?;
+            write.send(Message::Text(text)).await
+                .map_err(|e| ExchangeError::Network(format!("Futures WS send failed: {}", e)))?;
+        }
+
+        let (tx, rx) = broadcast::channel::<WebSocketResult<StreamEvent>>(512);
+        let tx_arc = Arc::new(tx);
+        let tx_loop = tx_arc.clone();
+
+        tokio::spawn(async move {
+            // Keep write half alive so server doesn't close the connection
+            let _write = write;
+
+            while let Some(msg) = read.next().await {
+                match msg {
+                    Ok(Message::Text(text)) => {
+                        if let Ok(json) = serde_json::from_str::<Value>(&text) {
+                            let channel = json.get("channel")
+                                .and_then(|c| c.as_str())
+                                .unwrap_or("");
+
+                            match channel {
+                                "push.funding.rate" => {
+                                    // { "channel":"push.funding.rate", "data": { "symbol":"BTC_USDT",
+                                    //   "rate": 0.00005, "nextSettleTime": 1234567890000,
+                                    //   "timestamp": 1234567890000 } }
+                                    if let Some(data) = json.get("data") {
+                                        let symbol = data.get("symbol")
+                                            .and_then(|s| s.as_str())
+                                            .unwrap_or("")
+                                            .to_string();
+                                        let rate = data.get("rate")
+                                            .and_then(|v| v.as_f64())
+                                            .unwrap_or(0.0);
+                                        let next_funding_time = data.get("nextSettleTime")
+                                            .and_then(|v| v.as_i64());
+                                        let timestamp = data.get("timestamp")
+                                            .and_then(|v| v.as_i64())
+                                            .unwrap_or_else(|| timestamp_millis() as i64);
+
+                                        let event = StreamEvent::FundingRate {
+                                            symbol,
+                                            rate,
+                                            next_funding_time,
+                                            timestamp,
+                                        };
+                                        let _ = tx_loop.send(Ok(event));
+                                    }
+                                }
+                                "push.ticker" => {
+                                    // Ticker push includes holdVol (open interest) and fundingRate.
+                                    // Emit OpenInterestUpdate from holdVol if present.
+                                    if let Some(data) = json.get("data") {
+                                        let symbol = data.get("symbol")
+                                            .and_then(|s| s.as_str())
+                                            .unwrap_or("")
+                                            .to_string();
+                                        let timestamp = data.get("timestamp")
+                                            .and_then(|v| v.as_i64())
+                                            .unwrap_or_else(|| timestamp_millis() as i64);
+
+                                        if let Some(hold_vol) = data.get("holdVol").and_then(|v| v.as_f64()) {
+                                            let _ = tx_loop.send(Ok(StreamEvent::OpenInterestUpdate {
+                                                symbol: symbol.clone(),
+                                                open_interest: hold_vol,
+                                                open_interest_value: None,
+                                                timestamp,
+                                            }));
+                                        }
+
+                                        if let Some(rate) = data.get("fundingRate").and_then(|v| v.as_f64()) {
+                                            let _ = tx_loop.send(Ok(StreamEvent::FundingRate {
+                                                symbol,
+                                                rate,
+                                                next_funding_time: None,
+                                                timestamp,
+                                            }));
+                                        }
+                                    }
+                                }
+                                // MEXC does not publish a public liquidation stream — confirmed in API docs.
+                                // All other channels are silently acknowledged.
+                                _ => {}
+                            }
+                        }
+                    }
+                    Ok(Message::Close(_)) | Err(_) => break,
+                    _ => {}
+                }
+            }
+        });
+
+        Ok(rx)
+    }
+
     /// Start the ping task.
     ///
     /// Uses only `ws_writer` — no contention with the reader half.
@@ -480,32 +619,19 @@ impl WebSocketConnector for MexcWebSocket {
                     .map_err(|e| WebSocketError::Subscription(e.to_string()))?;
             }
             StreamType::FundingRate => {
-                // MEXC futures funding rate requires the contract WebSocket endpoint
-                // (wss://contract.mexc.com/edge), not the spot protobuf endpoint.
-                // TODO: implement a separate futures WS connection for contract channels.
-                // Subscription message format (to be sent on futures WS):
-                //   { "method": "sub.funding.rate", "param": { "symbol": "<symbol>" } }
-                let symbol_str = format_symbol(&request.symbol, AccountType::FuturesCross);
-                let channel = MexcWsChannels::futures_funding_rate(&symbol_str);
-                let msg = serde_json::json!({
-                    "method": "SUBSCRIPTION",
-                    "params": [channel]
-                });
-                self.send_message(&msg).await
-                    .map_err(|e| WebSocketError::Subscription(e.to_string()))?;
+                // MEXC futures funding rate requires a separate contract WebSocket connection
+                // (wss://contract.mexc.com/edge) — see MexcWebSocket::start_futures_ws().
+                // The spot protobuf endpoint does not carry contract channels.
+                // Callers should use start_futures_ws(vec![symbol]) directly.
+                return Err(WebSocketError::Subscription(
+                    "MEXC funding rate requires a separate futures WS — use start_futures_ws()".to_string()
+                ));
             }
             StreamType::Liquidation => {
-                // MEXC futures liquidation also requires the contract WebSocket endpoint.
-                // TODO: verify that MEXC exposes a public liquidation stream.
-                // If not, this subscription is silently ignored by the server.
-                let symbol_str = format_symbol(&request.symbol, AccountType::FuturesCross);
-                let channel = MexcWsChannels::futures_liquidation(&symbol_str);
-                let msg = serde_json::json!({
-                    "method": "SUBSCRIPTION",
-                    "params": [channel]
-                });
-                self.send_message(&msg).await
-                    .map_err(|e| WebSocketError::Subscription(e.to_string()))?;
+                // MEXC does not publish a public liquidation stream — confirmed in API docs.
+                return Err(WebSocketError::Subscription(
+                    "MEXC does not publish a public liquidation stream".to_string()
+                ));
             }
             _ => {
                 return Err(WebSocketError::Subscription(

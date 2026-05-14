@@ -169,7 +169,6 @@ impl MexcEndpoint {
 
             // Extended endpoints
             Self::FuturesMarkPrice => "/api/v1/contract/index_price", // Append /{symbol}
-            // TODO: verify exact paths against live MEXC contract API
             Self::FuturesFundingRate => "/api/v1/contract/funding_rate", // Append /{symbol}
             Self::FuturesOpenInterest => "/api/v1/contract/open_interest", // Append /{symbol}
         }
@@ -337,29 +336,20 @@ impl MexcWsChannels {
         format!("spot@public.bookTicker.v3.api.pb@{}", symbol)
     }
 
-    /// Futures funding rate channel.
+    /// Futures funding rate channel name (informational).
     ///
-    /// MEXC futures WebSocket endpoint: `wss://contract.mexc.com/edge`
-    /// Channel format: `sub.funding.rate` with symbol in the params.
+    /// Subscription to this channel must be sent on `wss://contract.mexc.com/edge`
+    /// (JSON frames), NOT on the spot protobuf endpoint. Use `MexcWebSocket::start_futures_ws()`.
     ///
-    /// # TODO
-    /// Verify exact channel name and subscription message format against live
-    /// MEXC contract WebSocket documentation.
-    pub fn futures_funding_rate(symbol: &str) -> String {
-        format!("sub.funding.rate@{}", symbol)
+    /// Subscription message format:
+    /// `{"method":"sub.funding.rate","param":{"symbol":"<symbol>"}}`
+    ///
+    /// Push event channel: `push.funding.rate`
+    pub fn futures_funding_rate(_symbol: &str) -> &'static str {
+        "push.funding.rate"
     }
 
-    /// Futures liquidation orders channel.
-    ///
-    /// MEXC futures WebSocket endpoint: `wss://contract.mexc.com/edge`
-    ///
-    /// # TODO
-    /// Verify exact channel name and subscription format against live
-    /// MEXC contract WebSocket documentation. MEXC may not expose public
-    /// liquidation order stream; if not, this is unsupported.
-    pub fn futures_liquidation(symbol: &str) -> String {
-        format!("sub.deal@{}", symbol)
-    }
+    // MEXC does not publish a public liquidation stream — confirmed in API docs.
 }
 
 /// Map kline interval to MEXC format

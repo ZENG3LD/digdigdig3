@@ -206,6 +206,11 @@ impl CoinbaseWebSocket {
                                             .ok()
                                             .map(StreamEvent::Kline)
                                     },
+                                    // Heartbeat and subscription-confirmation frames — silently
+                                    // acknowledged.  Heartbeats are server-side keepalives
+                                    // emitted after subscribing to the "heartbeats" channel.
+                                    // "subscriptions" frames confirm active channel registrations.
+                                    "heartbeats" | "subscriptions" => None,
                                     _ => None,
                                 };
                                 if let Some(event) = event {
@@ -300,6 +305,25 @@ impl WebSocketConnector for CoinbaseWebSocket {
             self.ws_writer.clone(),
             self.last_ping.clone(),
         );
+
+        // Subscribe to heartbeats channel so Coinbase sends server-side keepalive
+        // messages.  These arrive as channel="heartbeats" frames and are silently
+        // acknowledged by the message handler.  Without this subscription the server
+        // still delivers data, but the heartbeat health signal is absent.
+        {
+            let mut writer_guard = self.ws_writer.lock().await;
+            if let Some(ref mut writer) = *writer_guard {
+                // Use empty product_ids — heartbeats are connection-level, not per-product
+                let _ = Self::send_subscribe_msg(
+                    writer,
+                    &self.auth,
+                    self.use_private,
+                    "heartbeats",
+                    vec![],
+                    None,
+                ).await;
+            }
+        }
 
         Ok(())
     }

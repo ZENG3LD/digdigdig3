@@ -44,7 +44,10 @@ use crate::core::{
     ExchangeError, ExchangeResult,
     ConnectionStatus, StreamEvent, SubscriptionRequest,
 };
-use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities, WsBookChannel};
+use crate::core::types::{
+    WebSocketResult, WebSocketError, OrderbookCapabilities, WsBookChannel,
+    OrderbookDelta as OrderbookDeltaData, OrderBookLevel,
+};
 use crate::core::traits::WebSocketConnector;
 
 use super::endpoints::{BitstampUrls, format_symbol};
@@ -167,6 +170,21 @@ impl BitstampWebSocket {
     pub async fn subscribe_orderbook(&self, symbol: Symbol) -> ExchangeResult<()> {
         let pair = format_symbol(&symbol, AccountType::Spot);
         let channel = format!("order_book_{}", pair);
+        self.subscribe_channel(&channel).await
+    }
+
+    /// Subscribe to live order events (L3 — per-order lifecycle: created/changed/deleted).
+    ///
+    /// This is a legacy channel.  Prefer `diff_order_book` (`StreamType::OrderbookDelta`)
+    /// for L2 aggregated incremental updates.  Use `live_orders` only when you need
+    /// individual order-level events (e.g. to build a full L3 book).
+    ///
+    /// Events arrive as `OrderbookDelta` with a single bid or ask level per frame:
+    /// - `"order_created"` / `"order_changed"` — level with non-zero quantity
+    /// - `"order_deleted"` — level with zero quantity (remove signal)
+    pub async fn subscribe_live_orders(&self, symbol: Symbol) -> ExchangeResult<()> {
+        let pair = format_symbol(&symbol, AccountType::Spot);
+        let channel = format!("live_orders_{}", pair);
         self.subscribe_channel(&channel).await
     }
 
@@ -321,6 +339,14 @@ impl BitstampWebSocket {
                 }
             }
 
+            // Live orders (L3) — per-order lifecycle events on live_orders_{pair} channels.
+            // Each event carries a single order; map to OrderbookDelta with one level.
+            "order_created" | "order_changed" | "order_deleted" => {
+                if let Some(event) = Self::parse_live_order_message(&msg)? {
+                    let _ = event_tx.send(Ok(event));
+                }
+            }
+
             _ => {
                 // Unknown event type - silently ignore
             }
@@ -382,6 +408,74 @@ impl BitstampWebSocket {
             // Unknown channel
             Ok(None)
         }
+    }
+
+    /// Parse a `live_orders_{pair}` event into a single-level `OrderbookDelta`.
+    ///
+    /// Event data fields (all strings):
+    /// - `id` — order UUID
+    /// - `price` — price level
+    /// - `amount` — remaining amount (`"0"` on `order_deleted`)
+    /// - `order_type` — `"0"` = bid, `"1"` = ask
+    /// - `microtimestamp` — timestamp in microseconds
+    fn parse_live_order_message(msg: &IncomingMessage) -> WebSocketResult<Option<StreamEvent>> {
+        let json = serde_json::json!({
+            "channel": msg.channel,
+            "event": &msg.event,
+            "data": msg.data
+        });
+        Self::parse_live_order_from_json(&json, &msg.event)
+    }
+
+    fn parse_live_order_from_json(json: &serde_json::Value, event_name: &str) -> WebSocketResult<Option<StreamEvent>> {
+        let data = json.get("data")
+            .ok_or_else(|| WebSocketError::Parse("live_orders: missing data".to_string()))?;
+
+        // Parse price — string field
+        let price = data.get("price")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .ok_or_else(|| WebSocketError::Parse("live_orders: missing price".to_string()))?;
+
+        // Amount is "0" on deletion events
+        let amount = data.get("amount")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+
+        // order_type: "0" = bid, "1" = ask
+        let is_bid = data.get("order_type")
+            .and_then(|v| v.as_str())
+            .map(|s| s == "0")
+            .unwrap_or(true);
+
+        // Timestamp in microseconds → milliseconds
+        let timestamp_ms = data.get("microtimestamp")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<i64>().ok())
+            .map(|us| us / 1000)
+            .unwrap_or(0);
+
+        // On order_deleted the amount is "0" — consumer interprets zero-qty as removal
+        let _ = event_name; // event semantics already captured in amount
+
+        let (bids, asks) = if is_bid {
+            (vec![OrderBookLevel::new(price, amount)], vec![])
+        } else {
+            (vec![], vec![OrderBookLevel::new(price, amount)])
+        };
+        let delta = OrderbookDeltaData {
+            bids,
+            asks,
+            timestamp: timestamp_ms,
+            first_update_id: None,
+            last_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            checksum: None,
+        };
+
+        Ok(Some(StreamEvent::OrderbookDelta(delta)))
     }
 }
 

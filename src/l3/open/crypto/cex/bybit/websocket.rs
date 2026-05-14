@@ -235,13 +235,14 @@ impl BybitWebSocket {
                 match msg {
                     Ok(Message::Text(text)) => {
                         match Self::handle_message(&text, account_type) {
-                            Ok(Some(event)) => {
+                            Ok(events) => {
                                 let tx_guard = event_tx.lock().unwrap();
                                 if let Some(ref tx) = *tx_guard {
-                                    let _ = tx.send(Ok(event));
+                                    for event in events {
+                                        let _ = tx.send(Ok(event));
+                                    }
                                 }
                             }
-                            Ok(None) => {}
                             Err(e) => {
                                 let tx_guard = event_tx.lock().unwrap();
                                 if let Some(ref tx) = *tx_guard {
@@ -278,26 +279,30 @@ impl BybitWebSocket {
         });
     }
 
-    /// Handle incoming WebSocket message, returning the parsed event if any.
+    /// Handle incoming WebSocket message, returning 0-N parsed events.
+    ///
+    /// Returns a `Vec` to support multi-emit: a single WS message (e.g. tickers.*)
+    /// can produce both a `Ticker` event and supplementary `FundingRate`,
+    /// `MarkPrice`, and `OpenInterestUpdate` events.
     fn handle_message(
         text: &str,
         account_type: AccountType,
-    ) -> WebSocketResult<Option<StreamEvent>> {
+    ) -> WebSocketResult<Vec<StreamEvent>> {
         let msg: IncomingMessage = serde_json::from_str(text)
             .map_err(|e| WebSocketError::Parse(format!("Failed to parse message: {}", e)))?;
 
         // Handle control messages
         match msg.op.as_deref() {
-            Some("pong") => return Ok(None),
+            Some("pong") => return Ok(vec![]),
             Some("subscribe") => {
                 if msg.success == Some(false) {
                     return Err(WebSocketError::ProtocolError(
                         msg.ret_msg.unwrap_or_else(|| "Subscription failed".to_string())
                     ));
                 }
-                return Ok(None);
+                return Ok(vec![]);
             }
-            Some("auth") => return Ok(None),
+            Some("auth") => return Ok(vec![]),
             _ => {}
         }
 
@@ -309,46 +314,147 @@ impl BybitWebSocket {
             }
         }
 
-        Ok(None)
+        Ok(vec![])
     }
 
-    /// Parse data message to StreamEvent
+    /// Parse data message to 0-N StreamEvents.
+    ///
+    /// Most topics produce exactly one event. The `tickers.*` topic may produce
+    /// up to four events: `Ticker` plus any combination of `FundingRate`,
+    /// `MarkPrice`, and `OpenInterestUpdate` when those fields are present in
+    /// the linear/inverse ticker payload.
     fn parse_data_message(
         topic: &str,
         data: &Value,
         _account_type: AccountType,
         msg_type: Option<&str>,
-    ) -> WebSocketResult<Option<StreamEvent>> {
+    ) -> WebSocketResult<Vec<StreamEvent>> {
         if topic.starts_with("tickers.") {
+            // Bybit tickers payload may be a single object or an array of one.
+            let ticker_data = if let Some(arr) = data.as_array() {
+                arr.first().cloned().unwrap_or(data.clone())
+            } else {
+                data.clone()
+            };
             let ticker = Self::parse_ticker_ws(data)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(StreamEvent::Ticker(ticker)))
+            let mut events: Vec<StreamEvent> = vec![StreamEvent::Ticker(ticker)];
+
+            // Extract supplementary events from linear/inverse ticker fields.
+            // These fields are absent on spot tickers so we check presence.
+            let symbol = ticker_data["symbol"].as_str().unwrap_or("").to_string();
+            let ts = ticker_data["ts"].as_i64().unwrap_or(0);
+
+            // FundingRate — present on linear/inverse futures tickers
+            if let Some(rate_str) = ticker_data["fundingRate"].as_str() {
+                if let Ok(rate) = rate_str.parse::<f64>() {
+                    let next_funding_time = ticker_data["nextFundingTime"]
+                        .as_str()
+                        .and_then(|s| s.parse::<i64>().ok());
+                    events.push(StreamEvent::FundingRate {
+                        symbol: symbol.clone(),
+                        rate,
+                        next_funding_time,
+                        timestamp: ts,
+                    });
+                }
+            }
+
+            // MarkPrice — present on linear/inverse futures tickers
+            if let Some(mark_str) = ticker_data["markPrice"].as_str() {
+                if let Ok(mark_price) = mark_str.parse::<f64>() {
+                    let index_price = ticker_data["indexPrice"]
+                        .as_str()
+                        .and_then(|s| s.parse::<f64>().ok());
+                    events.push(StreamEvent::MarkPrice {
+                        symbol: symbol.clone(),
+                        mark_price,
+                        index_price,
+                        timestamp: ts,
+                    });
+                }
+            }
+
+            // OpenInterestUpdate — present on linear/inverse futures tickers
+            if let Some(oi_str) = ticker_data["openInterest"].as_str() {
+                if let Ok(open_interest) = oi_str.parse::<f64>() {
+                    let open_interest_value = ticker_data["openInterestValue"]
+                        .as_str()
+                        .and_then(|s| s.parse::<f64>().ok());
+                    events.push(StreamEvent::OpenInterestUpdate {
+                        symbol,
+                        open_interest,
+                        open_interest_value,
+                        timestamp: ts,
+                    });
+                }
+            }
+
+            Ok(events)
+        } else if topic.starts_with("liquidation.") {
+            // Bybit V5 liquidation format:
+            // {"topic":"liquidation.BTCUSDT","data":{"symbol":"BTCUSDT","side":"Buy","size":"0.5","price":"29000.5","updatedTime":1672304801000}}
+            //
+            // Side semantics (inverse from position side):
+            //   side == "Buy"  → a Buy order was placed to cover a short liquidation
+            //                    → the SHORT position was liquidated → emit TradeSide::Sell
+            //   side == "Sell" → a Sell order was placed to close a long liquidation
+            //                    → the LONG position was liquidated → emit TradeSide::Buy
+            let symbol = data["symbol"].as_str()
+                .ok_or_else(|| WebSocketError::Parse("liquidation: missing symbol".to_string()))?
+                .to_string();
+            let side_str = data["side"].as_str()
+                .ok_or_else(|| WebSocketError::Parse("liquidation: missing side".to_string()))?;
+            // Inverse mapping: forced order side → liquidated position side
+            let side = match side_str {
+                "Buy" => TradeSide::Sell,  // short was liquidated (Buy order used to close short)
+                "Sell" => TradeSide::Buy,  // long was liquidated (Sell order used to close long)
+                other => return Err(WebSocketError::Parse(format!("liquidation: unknown side: {}", other))),
+            };
+            let price = data["price"].as_str()
+                .and_then(|s| s.parse::<f64>().ok())
+                .ok_or_else(|| WebSocketError::Parse("liquidation: invalid price".to_string()))?;
+            let quantity = data["size"].as_str()
+                .and_then(|s| s.parse::<f64>().ok())
+                .ok_or_else(|| WebSocketError::Parse("liquidation: invalid size".to_string()))?;
+            let timestamp = data["updatedTime"].as_i64()
+                .ok_or_else(|| WebSocketError::Parse("liquidation: invalid updatedTime".to_string()))?;
+            let value = Some(price * quantity);
+
+            Ok(vec![StreamEvent::Liquidation {
+                symbol,
+                side,
+                price,
+                quantity,
+                timestamp,
+                value,
+            }])
         } else if topic.starts_with("publicTrade.") {
             let trade = Self::parse_trade_ws(data)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(StreamEvent::Trade(trade)))
+            Ok(vec![StreamEvent::Trade(trade)])
         } else if topic.starts_with("orderbook.") {
             let event = Self::parse_orderbook_ws(data, msg_type)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(event))
+            Ok(vec![event])
         } else if topic.starts_with("kline.") {
             let kline = Self::parse_kline_ws(data)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(StreamEvent::Kline(kline)))
+            Ok(vec![StreamEvent::Kline(kline)])
         } else if topic == "order" {
             let event = Self::parse_order_update_ws(data)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(StreamEvent::OrderUpdate(event)))
+            Ok(vec![StreamEvent::OrderUpdate(event)])
         } else if topic == "wallet" {
             let event = Self::parse_balance_update_ws(data)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(StreamEvent::BalanceUpdate(event)))
+            Ok(vec![StreamEvent::BalanceUpdate(event)])
         } else if topic == "position" {
             let event = Self::parse_position_update_ws(data)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(StreamEvent::PositionUpdate(event)))
+            Ok(vec![StreamEvent::PositionUpdate(event)])
         } else {
-            Ok(None)
+            Ok(vec![])
         }
     }
 
@@ -431,9 +537,16 @@ impl BybitWebSocket {
                 let symbol = format_symbol(&request.symbol, account_type);
                 format!("tickers.{}", symbol) // Bybit includes funding rate in ticker
             }
+            StreamType::Liquidation => {
+                let symbol = format_symbol(&request.symbol, account_type);
+                format!("liquidation.{}", symbol)
+            }
             StreamType::OrderUpdate => "order".to_string(),
             StreamType::BalanceUpdate => "wallet".to_string(),
             StreamType::PositionUpdate => "position".to_string(),
+            // OpenInterest, LongShortRatio, AggTrade, CompositeIndex not supported
+            // as dedicated Bybit WS topics — use REST polling for these.
+            _ => String::new(),
         }
     }
 

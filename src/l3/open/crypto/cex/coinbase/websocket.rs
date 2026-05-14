@@ -206,11 +206,23 @@ impl CoinbaseWebSocket {
                                             .ok()
                                             .map(StreamEvent::Kline)
                                     },
+                                    // RFQ matches — publicly visible block-trade executions.
+                                    // Shape: {"channel":"rfq_matches","events":[{
+                                    //   "type":"rfq_match","rfq_match_id":"...",
+                                    //   "product_id":"BTC-USD","side":"BUY",
+                                    //   "size":"0.1","price":"50000","time":"..."}]}
+                                    // Verified via Coinbase Advanced Trade WS docs.
+                                    "rfq_matches" => {
+                                        CoinbaseParser::parse_ws_rfq_match(&json)
+                                            .ok()
+                                    },
+                                    // ticker_batch: low-latency BBO updates, same shape as ticker.
+                                    // Already handled by the "ticker" | "ticker_batch" arm below.
                                     // Heartbeat and subscription-confirmation frames — silently
                                     // acknowledged.  Heartbeats are server-side keepalives
                                     // emitted after subscribing to the "heartbeats" channel.
                                     // "subscriptions" frames confirm active channel registrations.
-                                    "heartbeats" | "subscriptions" => None,
+                                    "heartbeats" | "subscriptions" | "status" => None,
                                     _ => None,
                                 };
                                 if let Some(event) = event {

@@ -51,7 +51,7 @@ use crate::core::{
     ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
     timestamp_millis,
 };
-use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities, WsBookChannel, ChecksumInfo, ChecksumAlgorithm};
+use crate::core::types::{WebSocketResult, WebSocketError, OrderSide, OrderbookCapabilities, WsBookChannel, ChecksumInfo, ChecksumAlgorithm};
 use crate::core::traits::WebSocketConnector;
 use crate::core::utils::SimpleRateLimiter;
 
@@ -103,6 +103,12 @@ struct SubscribeMessage {
     symbol: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     key: Option<String>,
+    /// Precision level for book channel (P0..P4 or R0 for raw L3)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prec: Option<String>,
+    /// Book length / depth for book channel (25, 100, 250)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    len: Option<String>,
 }
 
 /// Outgoing unsubscribe message
@@ -673,6 +679,55 @@ impl BitfinexWebSocket {
                     Ok(vec![])
                 }
             }
+            StreamType::OrderbookL3 => {
+                // Raw L3 book (R0 precision): entries are [ORDER_ID, PRICE, AMOUNT]
+                // Snapshot: [CHAN_ID, [[ORDER_ID, PRICE, AMOUNT], ...]]
+                // Update:   [CHAN_ID, [ORDER_ID, PRICE, AMOUNT]]
+                // When PRICE == 0 → delete the order (use ORDER_ID to locate it)
+                let symbol = format_symbol(
+                    &subscription.symbol.base,
+                    &subscription.symbol.quote,
+                    account_type,
+                );
+                let ts = timestamp_millis() as i64;
+
+                let parse_entry = |entry: &[Value]| -> Option<StreamEvent> {
+                    let order_id = entry.first().and_then(|v| v.as_i64())?.to_string();
+                    let price = entry.get(1).and_then(|v| v.as_f64())?;
+                    let amount = entry.get(2).and_then(|v| v.as_f64())?;
+                    // price == 0 → delete; otherwise create/update
+                    let action = if price == 0.0 { "delete" } else { "create" };
+                    // Positive amount = bid (buy), negative = ask (sell)
+                    let side = if amount >= 0.0 { OrderSide::Buy } else { OrderSide::Sell };
+                    Some(StreamEvent::OrderbookL3 {
+                        symbol: symbol.clone(),
+                        side,
+                        order_id,
+                        price,
+                        quantity: amount.abs(),
+                        action: action.to_string(),
+                        timestamp: ts,
+                    })
+                };
+
+                let data = &arr[1];
+                if let Some(outer) = data.as_array() {
+                    // Could be snapshot (array of arrays) or single update (array of scalars)
+                    if outer.first().and_then(|v| v.as_array()).is_some() {
+                        // Snapshot: [[ORDER_ID, PRICE, AMOUNT], ...]
+                        let events: Vec<StreamEvent> = outer
+                            .iter()
+                            .filter_map(|entry| entry.as_array().and_then(|e| parse_entry(e)))
+                            .collect();
+                        Ok(events)
+                    } else {
+                        // Single update: [ORDER_ID, PRICE, AMOUNT]
+                        Ok(parse_entry(outer).into_iter().collect())
+                    }
+                } else {
+                    Ok(vec![])
+                }
+            }
             StreamType::Kline { .. } => {
                 // Candles: [CHANNEL_ID, [MTS, OPEN, CLOSE, HIGH, LOW, VOLUME]]
                 if let Some(data) = arr[1].as_array() {
@@ -805,6 +860,105 @@ impl BitfinexWebSocket {
         }
     }
 
+    /// Subscribe to raw L3 orderbook (precision R0) for a symbol.
+    ///
+    /// Bitfinex R0 book entries: `[ORDER_ID, PRICE, AMOUNT]` where:
+    /// - `PRICE != 0` → create or update the order
+    /// - `PRICE == 0` → delete the order (use ORDER_ID to find it)
+    ///
+    /// Emits `StreamEvent::OrderbookL3` for each entry in both snapshot
+    /// and incremental update frames.
+    ///
+    /// The internal `SubscriptionRequest` uses `StreamType::OrderbookL3` so the
+    /// message handler can route R0 frames to the correct parser branch.
+    pub async fn subscribe_l3_book(&mut self, symbol: crate::core::Symbol, depth: u16) -> WebSocketResult<()> {
+        let sym_str = format_symbol(&symbol.base, &symbol.quote, self.account_type);
+        let depth_str = depth.min(250).to_string();
+
+        // Track this as an L3 subscription (reuse SubscriptionRequest with OrderbookL3 stream type)
+        let request = SubscriptionRequest {
+            symbol: symbol.clone(),
+            stream_type: StreamType::OrderbookL3,
+            depth: Some(depth as u32),
+            account_type: self.account_type,
+            update_speed_ms: None,
+        };
+        let pending_key = format!("book_r0:{}", sym_str);
+        self.pending_subs.lock().await.insert(pending_key, request.clone());
+
+        let msg = SubscribeMessage {
+            event: "subscribe".to_string(),
+            channel: "book".to_string(),
+            symbol: Some(sym_str),
+            key: None,
+            prec: Some("R0".to_string()),
+            len: Some(depth_str),
+        };
+
+        let msg_json = serde_json::to_string(&msg)
+            .map_err(|e| WebSocketError::ProtocolError(e.to_string()))?;
+
+        let write_tx_guard = self.write_tx.lock().await;
+        let tx = write_tx_guard.as_ref()
+            .ok_or_else(|| WebSocketError::ConnectionError("Not connected".to_string()))?;
+
+        tx.send(Message::Text(msg_json))
+            .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
+
+        drop(write_tx_guard);
+        self.subscriptions.lock().await.insert(request);
+
+        Ok(())
+    }
+
+    /// Subscribe to funding book for a currency (e.g. fUSD, fBTC).
+    ///
+    /// Uses the standard `book` channel with a funding symbol. The server
+    /// sends `[RATE, PERIOD, COUNT, AMOUNT]` entries. Emits `OrderbookSnapshot`
+    /// / `OrderbookDelta` events like the regular book channel.
+    pub async fn subscribe_funding_book(&mut self, currency: &str) -> WebSocketResult<()> {
+        // Funding book symbol format: "fUSD", "fBTC", etc. (already f-prefixed)
+        let funding_sym = if currency.starts_with('f') {
+            currency.to_uppercase()
+        } else {
+            format!("f{}", currency.to_uppercase())
+        };
+
+        let request = SubscriptionRequest {
+            symbol: crate::core::Symbol::new(&funding_sym, ""),
+            stream_type: StreamType::Orderbook,
+            depth: None,
+            account_type: self.account_type,
+            update_speed_ms: None,
+        };
+        let pending_key = format!("book:{}", funding_sym);
+        self.pending_subs.lock().await.insert(pending_key, request.clone());
+
+        let msg = SubscribeMessage {
+            event: "subscribe".to_string(),
+            channel: "book".to_string(),
+            symbol: Some(funding_sym),
+            key: None,
+            prec: Some("P0".to_string()),
+            len: None,
+        };
+
+        let msg_json = serde_json::to_string(&msg)
+            .map_err(|e| WebSocketError::ProtocolError(e.to_string()))?;
+
+        let write_tx_guard = self.write_tx.lock().await;
+        let tx = write_tx_guard.as_ref()
+            .ok_or_else(|| WebSocketError::ConnectionError("Not connected".to_string()))?;
+
+        tx.send(Message::Text(msg_json))
+            .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
+
+        drop(write_tx_guard);
+        self.subscriptions.lock().await.insert(request);
+
+        Ok(())
+    }
+
     /// Build channel name for subscription
     ///
     /// Returns `(channel, symbol_or_key)` where the second field is sent as `symbol`
@@ -835,6 +989,11 @@ impl BitfinexWebSocket {
                 // Bitfinex global liquidation feed — subscribe via status channel with key "liq:global".
                 // Symbol field is unused for this channel.
                 ("status".to_string(), Some("liq:global".to_string()))
+            }
+            // L3 book subscriptions go through subscribe_l3_book() directly.
+            // If someone uses the trait subscribe() path, route to book/P0 (L2 fallback).
+            StreamType::OrderbookL3 => {
+                ("book".to_string(), Some(symbol))
             }
             _ => ("".to_string(), None),
         }
@@ -946,6 +1105,8 @@ impl WebSocketConnector for BitfinexWebSocket {
                 channel,
                 symbol: None,
                 key: symbol_or_key,
+                prec: None,
+                len: None,
             }
         } else {
             SubscribeMessage {
@@ -953,6 +1114,8 @@ impl WebSocketConnector for BitfinexWebSocket {
                 channel,
                 symbol: symbol_or_key,
                 key: None,
+                prec: None,
+                len: None,
             }
         };
 

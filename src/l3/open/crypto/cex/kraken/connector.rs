@@ -295,10 +295,21 @@ impl KrakenConnector {
     /// can parse per-instrument data without an additional round-trip.
     ///
     /// Note: Kraken Spot has no open interest data — this endpoint is Futures-only.
-    pub async fn get_futures_open_interest(&self) -> ExchangeResult<Value> {
+    /// The dedicated `/openinterests` path is undocumented and returns 404 on the
+    /// live API. OI is exposed through `GET /derivatives/api/v3/tickers`.
+    /// Verified live: `GET /derivatives/api/v3/tickers?symbol=PF_XBTUSD` returns
+    /// `{"symbol":"PF_XBTUSD","openInterest":1850.266,...}`.
+    ///
+    /// `symbol` — optional futures symbol (e.g. `"PF_XBTUSD"`); when None,
+    /// returns OI for all active contracts.
+    pub async fn get_futures_open_interest(&self, symbol: Option<&str>) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(sym) = symbol {
+            params.insert("symbol".to_string(), sym.to_string());
+        }
         self.get(
             KrakenEndpoint::FuturesTickers,
-            HashMap::new(),
+            params,
             AccountType::FuturesCross,
         ).await
     }

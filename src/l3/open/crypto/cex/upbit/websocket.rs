@@ -204,12 +204,25 @@ impl UpbitWebSocket {
             .ok_or(WebSocketError::NotConnected)?;
 
         // Upbit subscription format: [ticket, type, format?]
-        let subscription = json!([
-            {"ticket": "upbit-connector"},
-            {
+        // `isOnlyRealtime: true` on the orderbook type skips the initial full
+        // snapshot and only delivers real-time incremental updates, reducing
+        // bandwidth on initial connect.
+        let type_obj = if msg_type == "orderbook" {
+            json!({
+                "type": msg_type,
+                "codes": symbols,
+                "isOnlyRealtime": true
+            })
+        } else {
+            json!({
                 "type": msg_type,
                 "codes": symbols
-            },
+            })
+        };
+
+        let subscription = json!([
+            {"ticket": "upbit-connector"},
+            type_obj,
             {"format": "DEFAULT"}
         ]);
 

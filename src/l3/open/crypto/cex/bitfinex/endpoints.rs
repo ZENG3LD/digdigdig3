@@ -96,6 +96,10 @@ pub enum BitfinexEndpoint {
     // === DERIVATIVES / FUNDING ===
     /// GET /v2/funding/stats/{symbol}/hist — historical funding stats (public)
     FundingStats,
+
+    /// GET /v2/status/deriv/{symbol}/hist — historical derivative status
+    /// (mark price, OI, funding per snapshot). Public endpoint.
+    DerivativeStatusHist,
 }
 
 impl BitfinexEndpoint {
@@ -151,6 +155,7 @@ impl BitfinexEndpoint {
 
             // Derivatives / Funding
             Self::FundingStats => "/funding/stats/{symbol}/hist",
+            Self::DerivativeStatusHist => "/status/deriv/{symbol}/hist",
         }
     }
 
@@ -165,7 +170,8 @@ impl BitfinexEndpoint {
             | Self::Trades
             | Self::Candles
             | Self::Symbols
-            | Self::FundingStats => false,
+            | Self::FundingStats
+            | Self::DerivativeStatusHist => false,
 
             // Private endpoints
             _ => true,

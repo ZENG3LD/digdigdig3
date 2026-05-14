@@ -37,6 +37,8 @@ use crate::core::{
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
 use crate::core::types::{WithdrawRequest, FundsHistoryFilter, FundsRecordType};
+use crate::core::types::StreamEvent;
+use crate::core::timestamp_millis;
 use crate::core::types::SymbolInfo;
 use crate::core::types::ConnectorStats;
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
@@ -403,6 +405,89 @@ impl UpbitConnector {
             params.insert("cursor".to_string(), c.to_string());
         }
         self.get(UpbitEndpoint::ClosedOrders, params, AccountType::Spot).await
+    }
+
+    /// Fetch all markets with detailed warning and caution flags.
+    ///
+    /// Endpoint: `GET /v1/market/all?isDetails=true`
+    ///
+    /// The `isDetails=true` parameter enables the `market_event` field which
+    /// carries per-market `warning` and `caution` maps.
+    ///
+    /// Verified live:
+    /// ```json
+    /// { "market": "BTC-BERA",
+    ///   "market_event": {
+    ///     "warning": false,
+    ///     "caution": { "PRICE_FLUCTUATIONS": false,
+    ///                  "TRADING_VOLUME_SOARING": false, ... }
+    ///   } }
+    /// ```
+    ///
+    /// Emits one `StreamEvent::MarketWarning` per market where `warning == true`
+    /// or any `caution` flag is `true`. Returns only the warning events (markets
+    /// with no active flags are silently skipped).
+    pub async fn get_markets_with_warnings(&self) -> ExchangeResult<Vec<StreamEvent>> {
+        let mut params = HashMap::new();
+        params.insert("isDetails".to_string(), "true".to_string());
+        let response = self.get(UpbitEndpoint::TradingPairs, params, AccountType::Spot).await?;
+
+        let markets = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array from /v1/market/all".to_string()))?;
+
+        let now_ms = timestamp_millis() as i64;
+        let mut events = Vec::new();
+
+        for market in markets {
+            let market_code = market.get("market")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            if market_code.is_empty() {
+                continue;
+            }
+
+            let market_event = match market.get("market_event") {
+                Some(ev) => ev,
+                None => continue,
+            };
+
+            let has_warning = market_event.get("warning")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            let active_cautions: Vec<&str> = market_event
+                .get("caution")
+                .and_then(|c| c.as_object())
+                .map(|obj| {
+                    obj.iter()
+                        .filter(|(_, v)| v.as_bool().unwrap_or(false))
+                        .map(|(k, _)| k.as_str())
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            if has_warning {
+                events.push(StreamEvent::MarketWarning {
+                    symbol: market_code.clone(),
+                    warning_kind: "market_warning".to_string(),
+                    message: "Upbit market warning flag active".to_string(),
+                    timestamp: now_ms,
+                });
+            }
+
+            for caution in active_cautions {
+                events.push(StreamEvent::MarketWarning {
+                    symbol: market_code.clone(),
+                    warning_kind: caution.to_lowercase(),
+                    message: format!("Upbit caution: {}", caution),
+                    timestamp: now_ms,
+                });
+            }
+        }
+
+        Ok(events)
     }
 }
 

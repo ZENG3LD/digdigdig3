@@ -303,6 +303,54 @@ impl BitfinexConnector {
             query,
         ).await
     }
+
+    /// Historical derivative status snapshots.
+    ///
+    /// Endpoint: `GET /v2/status/deriv/{symbol}/hist`
+    ///
+    /// Each element is a positional array matching the layout of the derivative
+    /// `status` WebSocket channel:
+    /// `[MTS, null, DERIV_PRICE, SPOT_PRICE, null, INSURANCE_FUND_BALANCE, null,
+    ///   NEXT_FUNDING_EVT_TIMESTAMP, NEXT_FUNDING_ACCRUED, NEXT_FUNDING_STEP,
+    ///   null, CURRENT_FUNDING, null, null, MARK_PRICE, null, null,
+    ///   OPEN_INTEREST, …]`
+    ///
+    /// Verified live: `GET /v2/status/deriv/tBTCF0:USTF0/hist?limit=3`
+    /// returns arrays of ~22 elements; indices match the WS `status` channel layout.
+    ///
+    /// # Parameters
+    /// - `symbol` — derivative symbol, e.g. `"tBTCF0:USTF0"`
+    /// - `start`  — start timestamp in milliseconds (optional)
+    /// - `end`    — end timestamp in milliseconds (optional)
+    /// - `limit`  — max snapshots to return, default 25, max 250 (optional)
+    /// - `sort`   — 1 = ascending, -1 = descending (optional)
+    pub async fn get_derivative_status_history(
+        &self,
+        symbol: &str,
+        start: Option<i64>,
+        end: Option<i64>,
+        limit: Option<u32>,
+        sort: Option<i8>,
+    ) -> ExchangeResult<Value> {
+        let mut query = HashMap::new();
+        if let Some(s) = start {
+            query.insert("start".to_string(), s.to_string());
+        }
+        if let Some(e) = end {
+            query.insert("end".to_string(), e.to_string());
+        }
+        if let Some(l) = limit {
+            query.insert("limit".to_string(), l.min(250).to_string());
+        }
+        if let Some(s) = sort {
+            query.insert("sort".to_string(), s.to_string());
+        }
+        self.get(
+            BitfinexEndpoint::DerivativeStatusHist,
+            &[("symbol", symbol)],
+            query,
+        ).await
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

@@ -109,6 +109,7 @@ pub enum KrakenEndpoint {
     // === FUTURES LEVERAGE ===
     FuturesSetLeverage,
 
+
     // === CUSTODIAL FUNDS (Spot) ===
     SpotDepositAddresses,   // POST /0/private/DepositAddresses
     SpotWithdraw,           // POST /0/private/Withdraw
@@ -176,6 +177,7 @@ impl KrakenEndpoint {
 
             // Futures Leverage
             Self::FuturesSetLeverage => "/derivatives/api/v3/leveragepreferences",
+
 
             // Custodial Funds
             Self::SpotDepositAddresses => "/0/private/DepositAddresses",

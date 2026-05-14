@@ -201,6 +201,41 @@ impl GeminiConnector {
         Ok(response)
     }
 
+    /// GET запрос with query parameters
+    async fn get_with_query(
+        &self,
+        endpoint: GeminiEndpoint,
+        path_params: &[(&str, &str)],
+        query: &[(&str, &str)],
+    ) -> ExchangeResult<Value> {
+        if !self.rate_limit_wait(endpoint.requires_auth()).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; market data request dropped".to_string(),
+            });
+        }
+
+        let base_url = self.urls.rest_url(AccountType::Spot);
+        let mut path = endpoint.path().to_string();
+
+        for (key, value) in path_params {
+            path = path.replace(&format!("{{{}}}", key), value);
+        }
+
+        let query_str: Vec<String> = query.iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        let url = if query_str.is_empty() {
+            format!("{}{}", base_url, path)
+        } else {
+            format!("{}{}?{}", base_url, path, query_str.join("&"))
+        };
+
+        let response = self.http.get(&url, &HashMap::new()).await?;
+        GeminiParser::check_error(&response)?;
+        Ok(response)
+    }
+
     /// POST запрос (всегда требует auth)
     async fn post(
         &self,
@@ -1049,6 +1084,45 @@ impl GeminiConnector {
     /// Get margin account summary
     pub async fn get_margin_info(&self) -> ExchangeResult<Value> {
         self.post(GeminiEndpoint::MarginAccount, HashMap::new(), &[]).await
+    }
+
+    /// Fetch recent public trades for a symbol, including break trades.
+    ///
+    /// Break trades are flagged by Gemini when trades are broken post-execution
+    /// (e.g. due to erroneous fills). When `include_breaks=true` the response
+    /// may include entries with `"break": "BrokenTrade"`.
+    ///
+    /// Endpoint: `GET /v1/trades/{symbol}?limit_trades=N&include_breaks=true`
+    ///
+    /// Verified live: `GET /v1/trades/btcusd?limit_trades=2&include_breaks=true`
+    /// returns the same shape as regular trades — each element has `timestamp`,
+    /// `timestampms`, `tid`, `price`, `amount`, `exchange`, `type`.
+    ///
+    /// Returns raw JSON value for caller flexibility (break field presence varies
+    /// and Gemini does not guarantee format stability for rarely-triggered fields).
+    pub async fn get_trades_with_breaks(
+        &self,
+        symbol: &str,
+        limit: Option<u32>,
+        since_tid: Option<i64>,
+    ) -> ExchangeResult<Value> {
+        let sym_lower = symbol.to_lowercase();
+        let limit_str;
+        let tid_str;
+        let mut query: Vec<(&str, &str)> = vec![("include_breaks", "true")];
+        if let Some(l) = limit {
+            limit_str = l.to_string();
+            query.push(("limit_trades", &limit_str));
+        }
+        if let Some(tid) = since_tid {
+            tid_str = tid.to_string();
+            query.push(("since", &tid_str));
+        }
+        self.get_with_query(
+            GeminiEndpoint::Trades,
+            &[("symbol", &sym_lower)],
+            &query,
+        ).await
     }
 }
 

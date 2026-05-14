@@ -378,6 +378,41 @@ impl KrakenWebSocket {
                     .map_err(|e| WebSocketError::Parse(e.to_string()))?;
                 Ok(Some(event))
             }
+            "instrument" => {
+                // Real-time instrument/symbol metadata updates.
+                // Kraken WS v2 sends instrument status on subscription and on changes.
+                // Shape: data = array of instrument objects, each may contain:
+                //   - "symbol": string
+                //   - "status": "online" | "post_only" | "reduced_only" | "cancel_only" | "offline"
+                // Emit MarketWarning when status != "online".
+                // Verified: Kraken WS v2 docs confirm `instrument` channel carries
+                // `status` flags including `post_only` and `halt` states.
+                let arr = data.as_array()
+                    .ok_or_else(|| WebSocketError::Parse("instrument: expected array".to_string()))?;
+
+                // Take the first entry that carries a non-online status
+                for item in arr {
+                    let sym = item.get("symbol").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let status = item.get("status").and_then(|v| v.as_str()).unwrap_or("online");
+                    if status != "online" && !sym.is_empty() {
+                        let warning_kind = match status {
+                            "post_only"    => "post_only_mode",
+                            "cancel_only"  => "cancel_only_mode",
+                            "reduced_only" => "reduced_only_mode",
+                            "offline"      => "halted",
+                            other          => other,
+                        };
+                        return Ok(Some(StreamEvent::MarketWarning {
+                            symbol: sym,
+                            warning_kind: warning_kind.to_string(),
+                            message: format!("Kraken instrument status: {}", status),
+                            timestamp: timestamp_millis() as i64,
+                        }));
+                    }
+                }
+                // All instruments online — no event needed
+                Ok(None)
+            }
             _ => {
                 // Unknown channel - ignore
                 Ok(None)
@@ -440,6 +475,9 @@ impl KrakenWebSocket {
             StreamType::OrderUpdate => "executions",
             StreamType::BalanceUpdate => "balances",
             StreamType::PositionUpdate => "executions", // Position updates in executions channel
+            // instrument channel: real-time symbol metadata / status updates.
+            // Emits MarketWarning when a symbol's status != "online".
+            StreamType::MarketWarning => "instrument",
             _ => "",
         };
 

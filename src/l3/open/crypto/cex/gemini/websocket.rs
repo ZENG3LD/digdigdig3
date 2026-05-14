@@ -268,6 +268,25 @@ impl GeminiWebSocket {
         self.subscribe("l2", vec![symbol_str.to_uppercase()]).await
     }
 
+    /// Subscribe to auction events for a symbol.
+    ///
+    /// Gemini runs daily auctions. The `auction` feed sends events during the
+    /// auction lifecycle:
+    /// - `auction_open`              — auction period begins
+    /// - `auction_indicative_price`  — current indicative price/qty updates
+    /// - `auction_result`            — final executed price and quantity
+    /// - `auction_outcome`           — post-auction summary
+    ///
+    /// Each event is emitted as `StreamEvent::AuctionEvent`.
+    ///
+    /// Verified: Gemini WS v2 docs confirm the `auction` feed carries these types.
+    /// The REST `/v1/auction/{sym}` path returns 404 on the live API (removed),
+    /// so WS is the only auction data source.
+    pub async fn subscribe_auction(&self, symbol: Symbol) -> ExchangeResult<()> {
+        let symbol_str = normalize_symbol(&format_symbol(&symbol.base, &symbol.quote, AccountType::Spot));
+        self.subscribe("auction", vec![symbol_str.to_uppercase()]).await
+    }
+
     /// Subscribe to candles
     pub async fn subscribe_candles(&self, symbol: Symbol, interval: &str) -> ExchangeResult<()> {
         self.subscribe_candles_with_account_type(symbol, interval, AccountType::Spot).await
@@ -448,6 +467,66 @@ impl GeminiWebSocket {
                 // Candle update
                 let kline = GeminiParser::parse_ws_candle(&value)?;
                 Ok(vec![StreamEvent::Kline(kline)])
+            }
+            (WebSocketType::MarketData, Some(t)) if matches!(
+                t,
+                "auction_open"
+                | "auction_indicative_price"
+                | "auction_result"
+                | "auction_outcome"
+            ) => {
+                // Auction lifecycle events.
+                // Shape (Gemini WS v2 `auction` feed):
+                //   { "type": "auction_indicative_price",
+                //     "symbol": "BTCUSD",
+                //     "auction_id": 123,
+                //     "eid": 456,
+                //     "highest_bid_price": "50100",
+                //     "lowest_ask_price": "50050",
+                //     "collar_price": "50000",
+                //     "indicative_price": "50080",
+                //     "indicative_quantity": "1.5",
+                //     "timestamp": 1609459200,
+                //     "timestampms": 1609459200000 }
+                //   { "type": "auction_result",
+                //     "symbol": "BTCUSD",
+                //     "auction_id": 123,
+                //     "eid": 457,
+                //     "result": "success",
+                //     "price": "50080",
+                //     "quantity": "1.5",
+                //     "timestamp": 1609459200,
+                //     "timestampms": 1609459200000 }
+                let symbol = value.get("symbol")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let auction_id = value.get("auction_id")
+                    .and_then(|v| v.as_i64())
+                    .map(|id| id.to_string())
+                    .unwrap_or_default();
+                let indicative_price = value.get("indicative_price")
+                    .or_else(|| value.get("price"))
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<f64>().ok());
+                let indicative_qty = value.get("indicative_quantity")
+                    .or_else(|| value.get("quantity"))
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<f64>().ok());
+                let timestamp = value.get("timestampms")
+                    .and_then(|v| v.as_i64())
+                    .or_else(|| value.get("timestamp").and_then(|v| v.as_i64()).map(|s| s * 1000))
+                    .unwrap_or(0);
+                let state = t.to_string();
+
+                Ok(vec![StreamEvent::AuctionEvent {
+                    symbol,
+                    auction_id,
+                    indicative_price,
+                    indicative_qty,
+                    state,
+                    timestamp,
+                }])
             }
 
             // Order Events

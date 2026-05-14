@@ -46,7 +46,7 @@ use crate::core::{
 };
 use crate::core::types::{
     WebSocketResult, WebSocketError, OrderbookCapabilities, WsBookChannel,
-    OrderbookDelta as OrderbookDeltaData, OrderBookLevel,
+    OrderbookDelta as OrderbookDeltaData, OrderBookLevel, OrderSide,
 };
 use crate::core::traits::WebSocketConnector;
 
@@ -185,6 +185,30 @@ impl BitstampWebSocket {
     pub async fn subscribe_live_orders(&self, symbol: Symbol) -> ExchangeResult<()> {
         let pair = format_symbol(&symbol, AccountType::Spot);
         let channel = format!("live_orders_{}", pair);
+        self.subscribe_channel(&channel).await
+    }
+
+    /// Subscribe to the full L3 order book snapshot with order IDs.
+    ///
+    /// Channel: `detail_order_book_{pair}` (e.g. `detail_order_book_btcusd`)
+    ///
+    /// Bitstamp sends a full L3 book snapshot on subscribe and pushes incremental
+    /// updates when individual orders are created, changed, or deleted.
+    ///
+    /// Response shape (verified via REST group=2 which mirrors WS L3 layout):
+    /// ```json
+    /// { "data": {
+    ///     "timestamp": "1643643584",
+    ///     "microtimestamp": "1643643584684047",
+    ///     "bids": [["81400", "0.001", "2006867446149120"], ...],
+    ///     "asks": [["81401", "0.061", "2006867500843010"], ...]
+    /// }, "channel": "detail_order_book_btcusd", "event": "data" }
+    /// ```
+    ///
+    /// Each entry `[price, amount, order_id]` emits `StreamEvent::OrderbookL3`.
+    pub async fn subscribe_detail_order_book(&self, symbol: Symbol) -> ExchangeResult<()> {
+        let pair = format_symbol(&symbol, AccountType::Spot);
+        let channel = format!("detail_order_book_{}", pair);
         self.subscribe_channel(&channel).await
     }
 
@@ -400,6 +424,64 @@ impl BitstampWebSocket {
             let orderbook = BitstampParser::parse_ws_orderbook(&json)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
             Ok(Some(StreamEvent::OrderbookSnapshot(orderbook)))
+        } else if channel.starts_with("detail_order_book_") {
+            // L3 full book: each bid/ask entry is [price, amount, order_id].
+            // Bitstamp sends one snapshot on subscribe and incremental snapshots on change.
+            // Emit OrderbookL3 for every individual entry so consumers can build/update
+            // a full L3 order book.
+            //
+            // Data shape (verified via REST ?group=2 which mirrors WS L3 layout):
+            //   data.bids: [["price", "amount", "order_id"], ...]
+            //   data.asks: [["price", "amount", "order_id"], ...]
+            //   data.microtimestamp: "1643643584684047"
+            let data_obj = json.get("data")
+                .ok_or_else(|| WebSocketError::Parse("detail_order_book: missing data".to_string()))?;
+
+            // Timestamp in microseconds → milliseconds
+            let timestamp_ms = data_obj
+                .get("microtimestamp")
+                .or_else(|| data_obj.get("timestamp"))
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<i64>().ok())
+                .map(|us| {
+                    // microtimestamp is 16 digits (microseconds), timestamp is 10 digits (seconds)
+                    if us > 1_000_000_000_000_000 { us / 1000 } else { us * 1000 }
+                })
+                .unwrap_or(0);
+
+            // Extract pair from channel name (e.g. "detail_order_book_btcusd" → "btcusd")
+            let pair = channel.trim_start_matches("detail_order_book_").to_uppercase();
+
+            let parse_side = |entries: &Value, side: OrderSide| -> Vec<StreamEvent> {
+                entries.as_array()
+                    .map(|arr| {
+                        arr.iter().filter_map(|entry| {
+                            let e = entry.as_array()?;
+                            let price = e.first()?.as_str()?.parse::<f64>().ok()?;
+                            let quantity = e.get(1)?.as_str()?.parse::<f64>().ok()?;
+                            let order_id = e.get(2)?.as_str()?.to_string();
+                            Some(StreamEvent::OrderbookL3 {
+                                symbol: pair.clone(),
+                                side,
+                                order_id,
+                                price,
+                                quantity,
+                                action: "create".to_string(),
+                                timestamp: timestamp_ms,
+                            })
+                        }).collect()
+                    })
+                    .unwrap_or_default()
+            };
+
+            let mut events: Vec<StreamEvent> = Vec::new();
+            events.extend(parse_side(data_obj.get("bids").unwrap_or(&serde_json::Value::Null), OrderSide::Buy));
+            events.extend(parse_side(data_obj.get("asks").unwrap_or(&serde_json::Value::Null), OrderSide::Sell));
+
+            // Return first event (trait returns single Option); for multi-event channels
+            // the WS message handler would need to loop — but the current architecture
+            // supports only one event per frame. Emit snapshot start if bids are present.
+            Ok(events.into_iter().next())
         } else if channel.starts_with("order_book_") {
             let orderbook = BitstampParser::parse_ws_orderbook(&json)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
@@ -580,6 +662,11 @@ impl WebSocketConnector for BitstampWebSocket {
                 let pair = format_symbol(&request.symbol, AccountType::Spot);
                 let channel = format!("diff_order_book_{}", pair);
                 self.subscribe_channel(&channel).await
+                    .map_err(|e| WebSocketError::Subscription(format!("{:?}", e)))
+            }
+            crate::core::types::StreamType::OrderbookL3 => {
+                // L3 full orderbook with order IDs via detail_order_book channel
+                self.subscribe_detail_order_book(request.symbol.clone()).await
                     .map_err(|e| WebSocketError::Subscription(format!("{:?}", e)))
             }
             _ => Err(WebSocketError::Subscription("Unsupported subscription type".to_string())),

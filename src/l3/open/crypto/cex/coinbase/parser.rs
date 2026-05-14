@@ -1185,6 +1185,77 @@ impl CoinbaseParser {
             0
         }
     }
+
+    /// Parse an `rfq_matches` WebSocket message into a `StreamEvent::BlockTrade`.
+    ///
+    /// Shape (Coinbase Advanced Trade WS, verified from API docs):
+    /// ```json
+    /// {
+    ///   "channel": "rfq_matches",
+    ///   "events": [{
+    ///     "type": "rfq_match",
+    ///     "rfq_match_id": "abc123",
+    ///     "product_id": "BTC-USD",
+    ///     "side": "BUY",
+    ///     "size": "0.1",
+    ///     "price": "50000",
+    ///     "time": "2024-01-01T00:00:00Z"
+    ///   }]
+    /// }
+    /// ```
+    pub fn parse_ws_rfq_match(json: &Value) -> ExchangeResult<StreamEvent> {
+        let events = json.get("events")
+            .and_then(|e| e.as_array())
+            .ok_or_else(|| ExchangeError::Parse("rfq_matches: missing events array".into()))?;
+
+        let event = events.first()
+            .ok_or_else(|| ExchangeError::Parse("rfq_matches: empty events array".into()))?;
+
+        let block_id = event.get("rfq_match_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let symbol = event.get("product_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let side_str = event.get("side")
+            .and_then(|v| v.as_str())
+            .unwrap_or("BUY");
+        let side = if side_str.eq_ignore_ascii_case("sell") {
+            TradeSide::Sell
+        } else {
+            TradeSide::Buy
+        };
+
+        let price = event.get("price")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+
+        let quantity = event.get("size")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+
+        let timestamp = event.get("time")
+            .and_then(|v| v.as_str())
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.timestamp_millis())
+            .unwrap_or(0);
+
+        Ok(StreamEvent::BlockTrade {
+            symbol,
+            block_id,
+            price,
+            quantity,
+            side,
+            timestamp,
+            is_iv: false,
+        })
+    }
 }
 
 #[cfg(test)]

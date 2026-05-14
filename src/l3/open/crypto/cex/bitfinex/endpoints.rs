@@ -92,6 +92,10 @@ pub enum BitfinexEndpoint {
     // === LEDGER ===
     /// POST /auth/r/ledgers/{currency}/hist  (or /auth/r/ledgers/hist for all)
     LedgerHist,
+
+    // === DERIVATIVES / FUNDING ===
+    /// GET /v2/funding/stats/{symbol}/hist — historical funding stats (public)
+    FundingStats,
 }
 
 impl BitfinexEndpoint {
@@ -144,6 +148,9 @@ impl BitfinexEndpoint {
 
             // Ledger
             Self::LedgerHist => "/auth/r/ledgers/{currency}/hist",
+
+            // Derivatives / Funding
+            Self::FundingStats => "/funding/stats/{symbol}/hist",
         }
     }
 
@@ -157,7 +164,8 @@ impl BitfinexEndpoint {
             | Self::Orderbook
             | Self::Trades
             | Self::Candles
-            | Self::Symbols => false,
+            | Self::Symbols
+            | Self::FundingStats => false,
 
             // Private endpoints
             _ => true,

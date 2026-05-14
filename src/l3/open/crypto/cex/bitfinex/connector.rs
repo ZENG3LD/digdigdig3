@@ -269,6 +269,40 @@ impl BitfinexConnector {
             "EXCHANGE "
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // DERIVATIVES MARKET DATA (public)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Get historical funding stats for a perpetual symbol.
+    ///
+    /// `symbol`: Bitfinex funding currency symbol, e.g. `"fUSD"` or `"fBTC"`.
+    /// Returns an array of `[MTS, FRR, AVG_PERIOD, FUNDING_AMOUNT, FUNDING_AMOUNT_USED, FUNDING_BELOW_THRESHOLD]`.
+    ///
+    /// REST endpoint: `GET /v2/funding/stats/{symbol}/hist`
+    pub async fn get_funding_stats(
+        &self,
+        symbol: &str,
+        limit: Option<u32>,
+        start: Option<i64>,
+        end: Option<i64>,
+    ) -> ExchangeResult<Value> {
+        let mut query = HashMap::new();
+        if let Some(l) = limit {
+            query.insert("limit".to_string(), l.to_string());
+        }
+        if let Some(s) = start {
+            query.insert("start".to_string(), s.to_string());
+        }
+        if let Some(e) = end {
+            query.insert("end".to_string(), e.to_string());
+        }
+        self.get(
+            BitfinexEndpoint::FundingStats,
+            &[("symbol", symbol)],
+            query,
+        ).await
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

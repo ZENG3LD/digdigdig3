@@ -568,37 +568,115 @@ impl BitfinexWebSocket {
 
         // Get subscription type from channel map
         let channels_guard = channels.lock().await;
-        let subscription = channels_guard.get(&chan_id);
+        let subscription = channels_guard.get(&chan_id).cloned();
+        drop(channels_guard);
+
         if let Some(sub) = subscription {
-            if let Some(event) = Self::parse_channel_data(arr, sub, account_type)? {
+            let events = Self::parse_channel_data_multi(arr, &sub, account_type)?;
+            for event in events {
                 let _ = event_tx.send(Ok(event));
             }
         }
-        drop(channels_guard);
 
         Ok(())
     }
 
-    /// Parse channel data based on subscription type
-    fn parse_channel_data(
+    /// Returns `true` if symbol matches Bitfinex perpetual derivative format (`tBASEF0:QUOTEF0`).
+    fn is_derivative_symbol(symbol: &str) -> bool {
+        symbol.starts_with('t') && symbol.contains("F0:")
+    }
+
+    /// Returns `true` if symbol matches Bitfinex funding market format (`fUSD`, `fBTC`, etc.)
+    fn is_funding_symbol(symbol: &str) -> bool {
+        symbol.starts_with('f')
+    }
+
+    /// Parse channel data, returning zero or more StreamEvents.
+    ///
+    /// Bitfinex derivative ticker channels carry extra fields (frr, mark_price, open_interest)
+    /// that map to multiple distinct StreamEvent variants. Funding ticker channels use a
+    /// different array layout. Liquidation events come from the `status` channel.
+    fn parse_channel_data_multi(
         arr: &[Value],
         subscription: &SubscriptionRequest,
-        _account_type: AccountType,
-    ) -> WebSocketResult<Option<StreamEvent>> {
+        account_type: AccountType,
+    ) -> WebSocketResult<Vec<StreamEvent>> {
+        use crate::core::timestamp_millis;
+
         if arr.len() < 2 {
-            return Ok(None);
+            return Ok(vec![]);
         }
 
         match &subscription.stream_type {
             StreamType::Ticker => {
                 // Ticker: [CHANNEL_ID, [BID, BID_SIZE, ASK, ASK_SIZE, ...]]
-                if let Some(data) = arr[1].as_array() {
-                    let ticker = BitfinexParser::parse_ws_ticker(data)
-                        .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-                    Ok(Some(StreamEvent::Ticker(ticker)))
-                } else {
-                    Ok(None)
+                let data = match arr[1].as_array() {
+                    Some(d) => d,
+                    None => return Ok(vec![]),
+                };
+                let symbol = format_symbol(
+                    &subscription.symbol.base,
+                    &subscription.symbol.quote,
+                    account_type,
+                );
+
+                if Self::is_funding_symbol(&symbol) {
+                    // Funding ticker format: [FRR, BID, BID_PERIOD, BID_SIZE, ASK, ASK_PERIOD, ASK_SIZE,
+                    //   DAILY_CHANGE, DAILY_CHANGE_PERC, LAST_PRICE, VOLUME, HIGH, LOW]
+                    // Index 0 = FRR (flash return rate — current funding rate)
+                    let frr = data.first().and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let ts = timestamp_millis() as i64;
+                    return Ok(vec![StreamEvent::FundingRate {
+                        symbol,
+                        rate: frr,
+                        next_funding_time: None,
+                        timestamp: ts,
+                    }]);
                 }
+
+                // Standard ticker (spot or derivative)
+                let mut events = Vec::new();
+                let ticker = BitfinexParser::parse_ws_ticker(data)
+                    .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+                events.push(StreamEvent::Ticker(ticker));
+
+                // Derivative symbols carry extra fields appended to the standard array.
+                // Bitfinex perpetual ticker = 12 standard fields, then:
+                //   [12] FRR, [13] BID_PERIOD, [14] ASK_PERIOD, [15] DAILY_CHANGE,
+                //   [16] DAILY_CHANGE_PERC, [17] LAST_PRICE, [18] VOLUME, [19] HIGH, [20] LOW,
+                //   [21] MFR, [22] FRRAM, [23] BID_SIZE_PERIOD, [24] ASK_SIZE_PERIOD,
+                //   [25] MARK_PRICE, [26] <unused>, [27] <unused>, [28] OPEN_INTEREST
+                if Self::is_derivative_symbol(&symbol) && data.len() > 25 {
+                    let ts = timestamp_millis() as i64;
+                    // Index 0 in standard ticker = LAST; for derivatives the extra LAST_PRICE is at [17].
+                    // FRR at position 0 of derivative-extension = data[12]
+                    if let Some(frr) = data.get(12).and_then(|v| v.as_f64()) {
+                        events.push(StreamEvent::FundingRate {
+                            symbol: symbol.clone(),
+                            rate: frr,
+                            next_funding_time: None,
+                            timestamp: ts,
+                        });
+                    }
+                    if let Some(mark_price) = data.get(25).and_then(|v| v.as_f64()) {
+                        events.push(StreamEvent::MarkPrice {
+                            symbol: symbol.clone(),
+                            mark_price,
+                            index_price: None,
+                            timestamp: ts,
+                        });
+                    }
+                    if let Some(oi) = data.get(28).and_then(|v| v.as_f64()) {
+                        events.push(StreamEvent::OpenInterestUpdate {
+                            symbol: symbol.clone(),
+                            open_interest: oi,
+                            open_interest_value: None,
+                            timestamp: ts,
+                        });
+                    }
+                }
+
+                Ok(events)
             }
             StreamType::Trade => {
                 // Trades: [CHANNEL_ID, "te", [ID, MTS, AMOUNT, PRICE]]
@@ -607,26 +685,24 @@ impl BitfinexWebSocket {
                     if let Some(data) = arr[2].as_array() {
                         let trade = BitfinexParser::parse_ws_trade(data)
                             .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-                        Ok(Some(StreamEvent::Trade(trade)))
+                        Ok(vec![StreamEvent::Trade(trade)])
                     } else {
-                        Ok(None)
+                        Ok(vec![])
                     }
                 } else if let Some(data) = arr[1].as_array() {
-                    // Snapshot
                     if let Some(first) = data.first() {
                         if first.is_array() {
-                            // Multiple trades
-                            Ok(None) // Skip snapshots for now
+                            Ok(vec![]) // Skip snapshots
                         } else {
                             let trade = BitfinexParser::parse_ws_trade(data)
                                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-                            Ok(Some(StreamEvent::Trade(trade)))
+                            Ok(vec![StreamEvent::Trade(trade)])
                         }
                     } else {
-                        Ok(None)
+                        Ok(vec![])
                     }
                 } else {
-                    Ok(None)
+                    Ok(vec![])
                 }
             }
             StreamType::Orderbook | StreamType::OrderbookDelta => {
@@ -634,9 +710,9 @@ impl BitfinexWebSocket {
                 if let Some(data) = arr[1].as_array() {
                     let event = BitfinexParser::parse_ws_orderbook_delta(data)
                         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-                    Ok(Some(event))
+                    Ok(vec![event])
                 } else {
-                    Ok(None)
+                    Ok(vec![])
                 }
             }
             StreamType::Kline { .. } => {
@@ -644,16 +720,52 @@ impl BitfinexWebSocket {
                 if let Some(data) = arr[1].as_array() {
                     let kline = BitfinexParser::parse_ws_kline(data)
                         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-                    Ok(Some(StreamEvent::Kline(kline)))
+                    Ok(vec![StreamEvent::Kline(kline)])
                 } else {
-                    Ok(None)
+                    Ok(vec![])
                 }
             }
-            _ => Ok(None),
+            StreamType::Liquidation => {
+                // Status liq:global channel format:
+                // [CHAN_ID, "tu", [POS_ID, MTS, null, SYMBOL, AMOUNT, BASE_PRICE, null, null, PRICE_LIQ, ...]]
+                // arr[1] = "tu" (trade update), arr[2] = liquidation array
+                if arr.len() < 3 {
+                    return Ok(vec![]);
+                }
+                let liq_arr = match arr[2].as_array() {
+                    Some(a) => a,
+                    None => return Ok(vec![]),
+                };
+                // liq_arr: [POS_ID=0, MTS=1, null=2, SYMBOL=3, AMOUNT=4, BASE_PRICE=5, null=6, null=7, PRICE_LIQ=8]
+                let ts = liq_arr.get(1).and_then(|v| v.as_i64()).unwrap_or_else(|| {
+                    crate::core::timestamp_millis() as i64
+                });
+                let symbol = liq_arr.get(3)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let amount = liq_arr.get(4).and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let liq_price = liq_arr.get(8).and_then(|v| v.as_f64()).unwrap_or(0.0);
+                // Positive amount = long liquidated, negative = short liquidated
+                use crate::core::types::TradeSide;
+                let side = if amount >= 0.0 { TradeSide::Buy } else { TradeSide::Sell };
+                Ok(vec![StreamEvent::Liquidation {
+                    symbol,
+                    side,
+                    price: liq_price,
+                    quantity: amount.abs(),
+                    timestamp: ts,
+                    value: None,
+                }])
+            }
+            _ => Ok(vec![]),
         }
     }
 
     /// Build channel name for subscription
+    ///
+    /// Returns `(channel, symbol_or_key)` where the second field is sent as `symbol`
+    /// for most channels or as `key` for candles and status channels.
     fn build_channel(request: &SubscriptionRequest, account_type: AccountType) -> (String, Option<String>) {
         let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, account_type);
 
@@ -667,6 +779,11 @@ impl BitfinexWebSocket {
                 // Candles use "key" instead of "symbol"
                 let key = format!("trade:{}:{}", interval, symbol);
                 ("candles".to_string(), Some(key))
+            }
+            StreamType::Liquidation => {
+                // Bitfinex global liquidation feed — subscribe via status channel with key "liq:global".
+                // Symbol field is unused for this channel.
+                ("status".to_string(), Some("liq:global".to_string()))
             }
             _ => ("".to_string(), None),
         }
@@ -771,7 +888,8 @@ impl WebSocketConnector for BitfinexWebSocket {
         // Store pending subscription before sending
         self.pending_subs.lock().await.insert(pending_key, request.clone());
 
-        let msg = if channel == "candles" {
+        // Candles and status channels use "key" instead of "symbol"
+        let msg = if channel == "candles" || channel == "status" {
             SubscribeMessage {
                 event: "subscribe".to_string(),
                 channel,

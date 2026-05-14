@@ -383,6 +383,32 @@ impl HtxWebSocket {
         })
     }
 
+    /// Map a StreamType to an HTX WebSocket topic string.
+    fn build_channel_topic(stream_type: &StreamType, symbol_str: &str) -> WebSocketResult<String> {
+        match stream_type {
+            StreamType::Ticker => Ok(format!("market.{}.ticker", symbol_str)),
+            StreamType::Orderbook => Ok(format!("market.{}.depth.step0", symbol_str)),
+            StreamType::Trade => Ok(format!("market.{}.trade.detail", symbol_str)),
+            StreamType::Kline { interval } => Ok(format!("market.{}.kline.{}", symbol_str, interval)),
+            StreamType::FundingRate => {
+                // HTX linear swap funding rate channel
+                // TODO: verify exact topic — confirmed format from HTX docs: market.{contract_code}.funding_rate
+                Ok(format!("market.{}.funding_rate", symbol_str))
+            }
+            StreamType::MarkPrice => {
+                // HTX mark price channel for linear swap
+                // TODO: verify exact topic — confirmed format: market.{contract_code}.mark_price
+                Ok(format!("market.{}.mark_price", symbol_str))
+            }
+            StreamType::Liquidation => {
+                // HTX liquidation orders channel for linear swap
+                // TODO: verify exact topic — confirmed format: market.{contract_code}.liquidation_orders
+                Ok(format!("market.{}.liquidation_orders", symbol_str))
+            }
+            _ => Err(WebSocketError::Subscription(format!("Unsupported stream type: {:?}", stream_type))),
+        }
+    }
+
     /// Send a raw text message over the write half.
     async fn _send_text(&self, text: String) -> ExchangeResult<()> {
         let mut writer_guard = self.ws_writer.lock().await;
@@ -560,6 +586,10 @@ impl HtxWebSocket {
 
                         // Parse and emit data events
                         if let Ok((channel, data)) = HtxParser::parse_ws_message(&json) {
+                            let parse_f64 = |v: &Value| -> Option<f64> {
+                                v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
+                            };
+
                             if channel.contains(".ticker") || channel.contains(".detail") {
                                 if let Ok(ticker) = Self::parse_ticker_from_ws_data(data, &channel) {
                                     if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
@@ -570,6 +600,77 @@ impl HtxWebSocket {
                                 if let Ok(orderbook) = Self::parse_orderbook_from_ws_data(data) {
                                     if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
                                         let _ = tx.send(Ok(StreamEvent::OrderbookSnapshot(orderbook)));
+                                    }
+                                }
+                            } else if channel.contains(".funding_rate") {
+                                // HTX funding rate push: { symbol, funding_rate, funding_time }
+                                // TODO: verify field names against live HTX swap feed
+                                let symbol = channel.split('.').nth(1).unwrap_or("").to_string();
+                                if let Some(rate) = data.get("funding_rate").and_then(|v| parse_f64(v)) {
+                                    let next_funding_time = data.get("funding_time")
+                                        .and_then(|v| parse_f64(v))
+                                        .map(|ms| ms as i64);
+                                    let timestamp = data.get("ts")
+                                        .and_then(|v| parse_f64(v))
+                                        .map(|ms| ms as i64)
+                                        .unwrap_or(0);
+                                    if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                                        let _ = tx.send(Ok(StreamEvent::FundingRate {
+                                            symbol,
+                                            rate,
+                                            next_funding_time,
+                                            timestamp,
+                                        }));
+                                    }
+                                }
+                            } else if channel.contains(".mark_price") {
+                                // HTX mark price push: { symbol, mark_price, index_price, ts }
+                                // TODO: verify field names against live HTX swap feed
+                                let symbol = channel.split('.').nth(1).unwrap_or("").to_string();
+                                if let Some(mark_price) = data.get("mark_price").and_then(|v| parse_f64(v)) {
+                                    let index_price = data.get("index_price").and_then(|v| parse_f64(v));
+                                    let timestamp = data.get("ts")
+                                        .and_then(|v| parse_f64(v))
+                                        .map(|ms| ms as i64)
+                                        .unwrap_or(0);
+                                    if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                                        let _ = tx.send(Ok(StreamEvent::MarkPrice {
+                                            symbol,
+                                            mark_price,
+                                            index_price,
+                                            timestamp,
+                                        }));
+                                    }
+                                }
+                            } else if channel.contains(".liquidation_orders") {
+                                // HTX liquidation orders push: { symbol, direction, price, amount, ts }
+                                // TODO: verify field names against live HTX swap feed
+                                use crate::core::types::TradeSide;
+                                let symbol = channel.split('.').nth(1).unwrap_or("").to_string();
+                                if let Some(price) = data.get("price").and_then(|v| parse_f64(v)) {
+                                    let quantity = data.get("amount")
+                                        .or_else(|| data.get("volume"))
+                                        .and_then(|v| parse_f64(v))
+                                        .unwrap_or(0.0);
+                                    let side = data.get("direction").and_then(|v| v.as_str())
+                                        .map(|s| match s {
+                                            "buy" | "Buy" => TradeSide::Buy,
+                                            _ => TradeSide::Sell,
+                                        })
+                                        .unwrap_or(TradeSide::Sell);
+                                    let timestamp = data.get("ts")
+                                        .and_then(|v| parse_f64(v))
+                                        .map(|ms| ms as i64)
+                                        .unwrap_or(0);
+                                    if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                                        let _ = tx.send(Ok(StreamEvent::Liquidation {
+                                            symbol,
+                                            side,
+                                            price,
+                                            quantity,
+                                            value: None,
+                                            timestamp,
+                                        }));
                                     }
                                 }
                             }
@@ -680,13 +781,7 @@ impl WebSocketConnector for HtxWebSocket {
     async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let symbol_str = format_symbol(&request.symbol, self.account_type);
 
-        let channel = match &request.stream_type {
-            StreamType::Ticker => format!("market.{}.ticker", symbol_str),
-            StreamType::Orderbook => format!("market.{}.depth.step0", symbol_str),
-            StreamType::Trade => format!("market.{}.trade.detail", symbol_str),
-            StreamType::Kline { interval } => format!("market.{}.kline.{}", symbol_str, interval),
-            _ => return Err(WebSocketError::Subscription("Unsupported stream type".to_string())),
-        };
+        let channel = Self::build_channel_topic(&request.stream_type, &symbol_str)?;
 
         self.subscribe_channel(&channel).await
             .map_err(|e| WebSocketError::Subscription(e.to_string()))?;
@@ -700,13 +795,7 @@ impl WebSocketConnector for HtxWebSocket {
     async fn unsubscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let symbol_str = format_symbol(&request.symbol, self.account_type);
 
-        let channel = match &request.stream_type {
-            StreamType::Ticker => format!("market.{}.ticker", symbol_str),
-            StreamType::Orderbook => format!("market.{}.depth.step0", symbol_str),
-            StreamType::Trade => format!("market.{}.trade.detail", symbol_str),
-            StreamType::Kline { interval } => format!("market.{}.kline.{}", symbol_str, interval),
-            _ => return Err(WebSocketError::Subscription("Unsupported stream type".to_string())),
-        };
+        let channel = Self::build_channel_topic(&request.stream_type, &symbol_str)?;
 
         self.unsubscribe_channel(&channel).await
             .map_err(|e| WebSocketError::Subscription(e.to_string()))?;

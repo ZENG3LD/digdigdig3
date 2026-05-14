@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     AccountType, Kline, MarginType, OrderBook, OrderSide, OrderStatus, OrderType,
     OrderbookDelta as OrderbookDeltaData, PositionSide, Price, PublicTrade, Quantity, Symbol,
-    Ticker, Timestamp,
+    Ticker, Timestamp, TradeSide,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -60,6 +60,16 @@ pub enum StreamType {
     MarkPrice,
     /// Funding rate (futures)
     FundingRate,
+    /// Public liquidation events (forced position closes)
+    Liquidation,
+    /// Open interest snapshots/updates (futures)
+    OpenInterest,
+    /// Long/short ratio (market sentiment, futures)
+    LongShortRatio,
+    /// Aggregated trade stream
+    AggTrade,
+    /// Composite index price
+    CompositeIndex,
 
     // ═══════════════════════════════════════════════════════════════════════════
     // PRIVATE STREAMS (требуют авторизации)
@@ -204,6 +214,53 @@ pub enum StreamEvent {
         symbol: String,
         rate: f64,
         next_funding_time: Option<i64>,
+        timestamp: i64,
+    },
+
+    /// Public liquidation event (forced position close)
+    Liquidation {
+        symbol: String,
+        side: TradeSide,
+        price: f64,
+        quantity: f64,
+        timestamp: i64,
+        value: Option<f64>,
+    },
+
+    /// Open interest update
+    OpenInterestUpdate {
+        symbol: String,
+        open_interest: f64,
+        open_interest_value: Option<f64>,
+        timestamp: i64,
+    },
+
+    /// Long/short ratio update
+    LongShortRatio {
+        symbol: String,
+        ratio_type: String,
+        long_ratio: f64,
+        short_ratio: f64,
+        timestamp: i64,
+    },
+
+    /// Aggregated trade (combines multiple trades at same price/time)
+    AggTrade {
+        symbol: String,
+        aggregate_id: i64,
+        price: f64,
+        quantity: f64,
+        first_trade_id: i64,
+        last_trade_id: i64,
+        side: TradeSide,
+        timestamp: i64,
+    },
+
+    /// Composite index price update
+    CompositeIndex {
+        symbol: String,
+        price: f64,
+        components: Vec<(String, f64)>,
         timestamp: i64,
     },
 

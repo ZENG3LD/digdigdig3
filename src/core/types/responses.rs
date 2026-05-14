@@ -406,12 +406,16 @@ pub struct ClosedPnlRecord {
 pub struct LongShortRatio {
     /// Trading pair.
     pub symbol: String,
+    /// Category of the ratio (e.g. "topTraderPositionRatio", "globalLongShortAccountRatio").
+    pub ratio_type: String,
     /// Fraction of long accounts/positions (0.0–1.0).
     pub long_ratio: f64,
     /// Fraction of short accounts/positions (0.0–1.0).
     pub short_ratio: f64,
+    /// Combined long/short ratio value (long_ratio / short_ratio) if provided by exchange.
+    pub ratio: Option<f64>,
     /// Unix timestamp (ms) of the snapshot.
-    pub timestamp: u64,
+    pub timestamp: i64,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

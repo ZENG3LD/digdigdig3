@@ -328,11 +328,14 @@ impl DeribitWebSocket {
                                         }
                                     }
                                 } else if method == "subscription" {
-                                    // Parse and broadcast event
-                                    if let Some(event) = Self::parse_event(&parsed) {
+                                    // Parse and broadcast all events (may be multiple per message)
+                                    let events = Self::parse_events(&parsed);
+                                    if !events.is_empty() {
                                         let tx_guard = event_tx.lock().unwrap();
                                         if let Some(ref tx) = *tx_guard {
-                                            let _ = tx.send(Ok(event));
+                                            for event in events {
+                                                let _ = tx.send(Ok(event));
+                                            }
                                         }
                                     }
                                 }
@@ -367,21 +370,87 @@ impl DeribitWebSocket {
         });
     }
 
-    /// Parse event from JSON-RPC subscription notification
-    fn parse_event(msg: &Value) -> Option<StreamEvent> {
-        let params = msg.get("params")?;
-        let channel = params.get("channel")?.as_str()?;
-        let data = params.get("data")?;
+    /// Parse all events from a JSON-RPC subscription notification.
+    ///
+    /// `ticker.*` on perpetuals emits Ticker + FundingRate (current_funding) + MarkPrice.
+    /// `deribit_price_index.*` emits IndexPrice.
+    fn parse_events(msg: &Value) -> Vec<StreamEvent> {
+        let params = match msg.get("params") {
+            Some(p) => p,
+            None => return vec![],
+        };
+        let channel = match params.get("channel").and_then(|c| c.as_str()) {
+            Some(c) => c,
+            None => return vec![],
+        };
+        let data = match params.get("data") {
+            Some(d) => d,
+            None => return vec![],
+        };
 
         if channel.starts_with("ticker.") {
-            DeribitParser::parse_ws_ticker(data).ok().map(StreamEvent::Ticker)
+            let mut events: Vec<StreamEvent> = Vec::with_capacity(3);
+
+            if let Ok(ticker) = DeribitParser::parse_ws_ticker(data) {
+                let symbol = ticker.symbol.clone();
+                let timestamp = ticker.timestamp;
+                events.push(StreamEvent::Ticker(ticker));
+
+                // Emit FundingRate from current_funding (perpetuals only)
+                let get_f64 = |key: &str| -> Option<f64> {
+                    data.get(key).and_then(|v| v.as_f64())
+                };
+                if let Some(rate) = get_f64("current_funding") {
+                    events.push(StreamEvent::FundingRate {
+                        symbol: symbol.clone(),
+                        rate,
+                        next_funding_time: None,
+                        timestamp,
+                    });
+                }
+
+                // Emit MarkPrice from mark_price
+                if let Some(mark) = get_f64("mark_price") {
+                    let index = get_f64("index_price");
+                    events.push(StreamEvent::MarkPrice {
+                        symbol,
+                        mark_price: mark,
+                        index_price: index,
+                        timestamp,
+                    });
+                }
+            }
+
+            events
+        } else if channel.starts_with("deribit_price_index.") {
+            // data: { "timestamp": 1234, "price": 9050.25, "index_name": "btc_usd" }
+            let price = data.get("price").and_then(|v| v.as_f64());
+            let timestamp = data.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+            let index_name = data.get("index_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(channel.strip_prefix("deribit_price_index.").unwrap_or(channel));
+
+            if let Some(px) = price {
+                vec![StreamEvent::IndexPrice {
+                    symbol: index_name.to_string(),
+                    price: px,
+                    timestamp,
+                }]
+            } else {
+                vec![]
+            }
         } else if channel.starts_with("book.") {
-            // parse_ws_orderbook already returns StreamEvent
-            DeribitParser::parse_ws_orderbook(data).ok()
+            DeribitParser::parse_ws_orderbook(data).ok().into_iter().collect()
         } else if channel.starts_with("trades.") {
-            DeribitParser::parse_ws_trade(data).ok().map(StreamEvent::Trade)
+            DeribitParser::parse_ws_trade(data).ok()
+                .map(StreamEvent::Trade)
+                .into_iter()
+                .collect()
         } else if channel.starts_with("user.orders.") {
-            DeribitParser::parse_ws_order_update(data).ok().map(StreamEvent::OrderUpdate)
+            DeribitParser::parse_ws_order_update(data).ok()
+                .map(StreamEvent::OrderUpdate)
+                .into_iter()
+                .collect()
         } else if channel.starts_with("user.portfolio.") {
             // data is the portfolio object: {"currency":"BTC","equity":...,"balance":...}
             let currency = channel.strip_prefix("user.portfolio.").unwrap_or("");
@@ -401,9 +470,9 @@ impl DeribitWebSocket {
                 reason: Some(crate::core::BalanceChangeReason::Other),
                 timestamp: Utc::now().timestamp_millis(),
             };
-            Some(StreamEvent::BalanceUpdate(event))
+            vec![StreamEvent::BalanceUpdate(event)]
         } else {
-            None
+            vec![]
         }
     }
 

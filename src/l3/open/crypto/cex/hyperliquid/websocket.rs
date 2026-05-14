@@ -203,6 +203,32 @@ impl HyperliquidWebSocket {
                     let _ = event_tx.send(Ok(event));
                 }
             }
+            "assetCtxs" => {
+                // Snapshot/update of ALL coins' contexts at once.
+                // Data format: array of [coin_name, ctx_object] pairs or
+                // array of { coin, ctx } objects depending on API version.
+                for event in Self::parse_asset_ctxs(&data)? {
+                    let _ = event_tx.send(Ok(event));
+                }
+            }
+            "webData2" => {
+                // Large composite payload: mids, positions, fills, etc.
+                // Partial parse — extract `mids` and emit Ticker per symbol,
+                // same as allMids. Other fields (positions, fills) are ignored
+                // as they require user context not available here.
+                if let Some(mids_val) = data.get("mids") {
+                    for event in Self::parse_all_mids(&serde_json::json!({"mids": mids_val}))? {
+                        let _ = event_tx.send(Ok(event));
+                    }
+                }
+            }
+            "clearinghouseState" => {
+                // User clearinghouse state including positions and balances.
+                // Emits BalanceUpdate per balance entry and PositionUpdate per position.
+                for event in Self::parse_clearinghouse_state(&data)? {
+                    let _ = event_tx.send(Ok(event));
+                }
+            }
             "liquidations" => {
                 if let Some(event) = Self::parse_liquidation(&data)? {
                     let _ = event_tx.send(Ok(event));
@@ -249,7 +275,7 @@ impl HyperliquidWebSocket {
                 return Err(WebSocketError::ProtocolError(error_msg.to_string()));
             }
             _ => {
-                // Unknown channel - ignore for now
+                // Unknown channel - ignore
             }
         }
 
@@ -364,6 +390,221 @@ impl HyperliquidWebSocket {
                 price: idx_px,
                 timestamp: now,
             });
+        }
+
+        Ok(events)
+    }
+
+    /// Parse `assetCtxs` channel — snapshot/update of ALL coins' contexts at once.
+    ///
+    /// Hyperliquid sends the full list of perpetual asset contexts in one push.
+    /// The data can arrive as:
+    /// - An array of `[coin_name, ctx_object]` pairs (universe format), or
+    /// - An array of `{ coin, ctx }` objects (named format).
+    ///
+    /// For each coin, emits: Ticker + MarkPrice + FundingRate + OpenInterestUpdate +
+    /// IndexPrice — identical to `activeAssetCtx` but covering all coins at once.
+    fn parse_asset_ctxs(data: &Value) -> WebSocketResult<Vec<StreamEvent>> {
+        let arr = match data.as_array() {
+            Some(a) => a,
+            None => return Ok(vec![]),
+        };
+
+        let mut events = Vec::with_capacity(arr.len() * 5);
+
+        for item in arr {
+            // Support both `[coin, ctx]` tuple format and `{ coin, ctx }` object format.
+            let (coin, ctx) = if let Some(sub_arr) = item.as_array() {
+                // Tuple: [coin_string, ctx_object]
+                let coin = match sub_arr.first().and_then(|v| v.as_str()) {
+                    Some(s) => s,
+                    None => continue,
+                };
+                let ctx = match sub_arr.get(1) {
+                    Some(c) => c,
+                    None => continue,
+                };
+                (coin, ctx)
+            } else if item.is_object() {
+                // Object: { coin: "BTC", ctx: { ... } }
+                let coin = match item.get("coin").and_then(|v| v.as_str()) {
+                    Some(s) => s,
+                    None => continue,
+                };
+                let ctx = match item.get("ctx") {
+                    Some(c) => c,
+                    None => continue,
+                };
+                (coin, ctx)
+            } else {
+                continue;
+            };
+
+            let parse_f64 = |val: &Value| -> Option<f64> {
+                val.as_str().and_then(|s| s.parse().ok()).or_else(|| val.as_f64())
+            };
+
+            let mark_px = ctx.get("markPx").and_then(parse_f64).unwrap_or(0.0);
+            let mid_px = ctx.get("midPx").and_then(parse_f64);
+            let prev_day_px = ctx.get("prevDayPx").and_then(parse_f64);
+            let volume_24h = ctx.get("dayNtlVlm").and_then(parse_f64);
+            let funding_rate = ctx.get("funding").and_then(parse_f64);
+            let open_interest = ctx.get("openInterest").and_then(parse_f64);
+            let oracle_px = ctx.get("oraclePx").and_then(parse_f64);
+
+            let last_price = mid_px.unwrap_or(mark_px);
+            let now = crate::core::utils::timestamp_millis() as i64;
+
+            let (price_change_24h, price_change_percent_24h) = match prev_day_px {
+                Some(prev) if prev > 0.0 => {
+                    let change = last_price - prev;
+                    let change_pct = (change / prev) * 100.0;
+                    (Some(change), Some(change_pct))
+                }
+                _ => (None, None),
+            };
+
+            events.push(StreamEvent::Ticker(crate::core::Ticker {
+                symbol: coin.to_string(),
+                last_price,
+                bid_price: None,
+                ask_price: None,
+                high_24h: None,
+                low_24h: None,
+                volume_24h,
+                quote_volume_24h: None,
+                price_change_24h,
+                price_change_percent_24h,
+                timestamp: now,
+            }));
+
+            events.push(StreamEvent::MarkPrice {
+                symbol: coin.to_string(),
+                mark_price: mark_px,
+                index_price: oracle_px,
+                timestamp: now,
+            });
+
+            if let Some(rate) = funding_rate {
+                events.push(StreamEvent::FundingRate {
+                    symbol: coin.to_string(),
+                    rate,
+                    next_funding_time: None,
+                    timestamp: now,
+                });
+            }
+
+            if let Some(oi) = open_interest {
+                events.push(StreamEvent::OpenInterestUpdate {
+                    symbol: coin.to_string(),
+                    open_interest: oi,
+                    open_interest_value: None,
+                    timestamp: now,
+                });
+            }
+
+            if let Some(idx_px) = oracle_px {
+                events.push(StreamEvent::IndexPrice {
+                    symbol: coin.to_string(),
+                    price: idx_px,
+                    timestamp: now,
+                });
+            }
+        }
+
+        Ok(events)
+    }
+
+    /// Parse `clearinghouseState` channel — user account state with positions and balances.
+    ///
+    /// Data structure (simplified):
+    /// ```json
+    /// {
+    ///   "assetPositions": [
+    ///     { "position": { "coin": "BTC", "szi": "0.1", "entryPx": "50000", "unrealizedPnl": "100", ... } }
+    ///   ],
+    ///   "marginSummary": { "accountValue": "10000", "totalMarginUsed": "500", ... }
+    /// }
+    /// ```
+    ///
+    /// Emits `BalanceUpdate` for the USDC account value (from `marginSummary`) and
+    /// `PositionUpdate` for each non-zero position in `assetPositions`.
+    fn parse_clearinghouse_state(data: &Value) -> WebSocketResult<Vec<StreamEvent>> {
+        let mut events = Vec::new();
+        let now = crate::core::utils::timestamp_millis() as i64;
+
+        let parse_f64 = |val: &Value| -> Option<f64> {
+            val.as_str().and_then(|s| s.parse().ok()).or_else(|| val.as_f64())
+        };
+
+        // Balance from marginSummary
+        if let Some(summary) = data.get("marginSummary") {
+            let account_value = summary.get("accountValue")
+                .and_then(parse_f64)
+                .unwrap_or(0.0);
+            let margin_used = summary.get("totalMarginUsed")
+                .and_then(parse_f64)
+                .unwrap_or(0.0);
+            events.push(StreamEvent::BalanceUpdate(crate::core::BalanceUpdateEvent {
+                asset: "USDC".to_string(),
+                free: (account_value - margin_used).max(0.0),
+                locked: margin_used,
+                total: account_value,
+                delta: None,
+                reason: None,
+                timestamp: now,
+            }));
+        }
+
+        // Positions from assetPositions
+        if let Some(positions) = data.get("assetPositions").and_then(|v| v.as_array()) {
+            for entry in positions {
+                let pos = entry.get("position").unwrap_or(entry);
+
+                let coin = match pos.get("coin").and_then(|v| v.as_str()) {
+                    Some(s) => s,
+                    None => continue,
+                };
+
+                let size_str = pos.get("szi")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("0");
+                let size: f64 = size_str.parse().unwrap_or(0.0);
+                if size == 0.0 {
+                    continue;
+                }
+
+                let entry_price = pos.get("entryPx")
+                    .and_then(parse_f64)
+                    .unwrap_or(0.0);
+                let unrealized_pnl = pos.get("unrealizedPnl")
+                    .and_then(parse_f64)
+                    .unwrap_or(0.0);
+
+                let side = if size > 0.0 {
+                    crate::core::PositionSide::Long
+                } else {
+                    crate::core::PositionSide::Short
+                };
+
+                events.push(StreamEvent::PositionUpdate(crate::core::PositionUpdateEvent {
+                    symbol: coin.to_string(),
+                    side,
+                    quantity: size.abs(),
+                    entry_price,
+                    mark_price: None,
+                    unrealized_pnl,
+                    realized_pnl: None,
+                    liquidation_price: pos.get("liquidationPx").and_then(parse_f64),
+                    leverage: pos.get("leverage")
+                        .and_then(|v| v.get("value"))
+                        .and_then(parse_f64)
+                        .map(|v| v as u32),
+                    margin_type: None,
+                    reason: None,
+                    timestamp: now,
+                }));
+            }
         }
 
         Ok(events)

@@ -248,6 +248,30 @@ impl HyperliquidConnector {
         self.info_request(InfoType::AllMids, serde_json::json!({"dex": ""})).await
     }
 
+    /// Get perpetuals metadata combined with all asset contexts in one call.
+    ///
+    /// POSTs `{"type":"metaAndAssetCtxs"}` to the `/info` endpoint.
+    /// Returns the raw JSON response which is a two-element array:
+    /// `[meta_object, array_of_asset_ctx_objects]`.
+    ///
+    /// Useful for bootstrapping: get the full universe + current mark/index prices
+    /// + funding rates + OI in a single round-trip instead of two separate calls.
+    pub async fn get_meta_and_asset_ctxs(&self) -> ExchangeResult<serde_json::Value> {
+        self.info_request(InfoType::MetaAndAssetCtxs, serde_json::json!({})).await
+    }
+
+    /// Get the clearinghouse state for a user address.
+    ///
+    /// POSTs `{"type":"clearinghouseState","user":"<address>"}` to `/info`.
+    /// Returns account value, margin summary, and all open positions.
+    /// No cryptographic signature required — only the wallet address.
+    pub async fn get_clearinghouse_state(&self, user: &str) -> ExchangeResult<serde_json::Value> {
+        self.info_request(
+            InfoType::ClearinghouseState,
+            serde_json::json!({ "user": user }),
+        ).await
+    }
+
     /// Look up the asset index for a coin symbol from metadata.
     /// Returns 0 if the symbol is not found (BTC is at index 0).
     async fn symbol_to_asset_index(&self, coin: &str) -> ExchangeResult<u32> {

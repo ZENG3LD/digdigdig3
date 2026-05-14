@@ -70,6 +70,20 @@ pub enum StreamType {
     AggTrade,
     /// Composite index price
     CompositeIndex,
+    /// Mark price kline (futures)
+    MarkPriceKline { interval: String },
+    /// Index price kline (futures)
+    IndexPriceKline { interval: String },
+    /// Premium index kline (futures)
+    PremiumIndexKline { interval: String },
+    /// Index price updates
+    IndexPrice,
+    /// Historical volatility (options)
+    HistoricalVolatility,
+    /// Insurance fund updates (futures)
+    InsuranceFund,
+    /// Basis (futures)
+    Basis,
 
     // ═══════════════════════════════════════════════════════════════════════════
     // PRIVATE STREAMS (требуют авторизации)
@@ -263,6 +277,27 @@ pub enum StreamEvent {
         components: Vec<(String, f64)>,
         timestamp: i64,
     },
+
+    /// Mark price kline update (futures)
+    MarkPriceKline { symbol: String, interval: String, kline: Kline },
+
+    /// Index price kline update (futures)
+    IndexPriceKline { symbol: String, interval: String, kline: Kline },
+
+    /// Premium index kline update (futures)
+    PremiumIndexKline { symbol: String, interval: String, kline: Kline },
+
+    /// Index price update
+    IndexPrice { symbol: String, price: f64, timestamp: i64 },
+
+    /// Historical volatility update (options)
+    HistoricalVolatility { symbol: String, volatility: f64, timestamp: i64 },
+
+    /// Insurance fund update (futures)
+    InsuranceFund { symbol: String, balance: f64, timestamp: i64 },
+
+    /// Basis update (futures)
+    Basis { symbol: String, basis: f64, timestamp: i64 },
 
     // ═══════════════════════════════════════════════════════════════════════════
     // PRIVATE EVENTS

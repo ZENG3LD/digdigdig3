@@ -546,9 +546,42 @@ impl OkxWebSocket {
                 vec![]
             }
             "opt-summary" => {
-                // OKX opt-summary: option Greeks (delta, gamma, theta, vega).
-                // No StreamEvent variant for option Greeks yet.
-                vec![]
+                // OKX opt-summary: option Greeks per option instrument.
+                // Fields: instId, delta/deltaBS, gamma/gammaBS, vega/vegaBS,
+                // theta/thetaBS, markVol (mark IV), bidVol, askVol, ts.
+                let symbol = data.get("instId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let timestamp = data.get("ts")
+                    .and_then(|v| parse_f64_field(v))
+                    .map(|ms| ms as i64)
+                    .unwrap_or(0);
+                // Prefer primary BS Greeks; fall back to alternate names.
+                let get_greek = |name: &str, alt: &str| -> Option<f64> {
+                    data.get(name)
+                        .and_then(|v| parse_f64_field(v))
+                        .or_else(|| data.get(alt).and_then(|v| parse_f64_field(v)))
+                };
+                let delta = get_greek("delta", "deltaBS");
+                let gamma = get_greek("gamma", "gammaBS");
+                let vega = get_greek("vega", "vegaBS");
+                let theta = get_greek("theta", "thetaBS");
+                let mark_iv = data.get("markVol").and_then(|v| parse_f64_field(v));
+                let bid_iv = data.get("bidVol").and_then(|v| parse_f64_field(v));
+                let ask_iv = data.get("askVol").and_then(|v| parse_f64_field(v));
+                vec![StreamEvent::OptionGreeks {
+                    symbol,
+                    delta,
+                    gamma,
+                    vega,
+                    theta,
+                    rho: None,
+                    mark_iv,
+                    bid_iv,
+                    ask_iv,
+                    timestamp,
+                }]
             }
             _ => vec![],
         }
@@ -754,6 +787,28 @@ impl WebSocketConnector for OkxWebSocket {
                     request,
                 ).await;
             }
+            crate::core::StreamType::OptionGreeks => {
+                // OKX opt-summary uses instFamily (e.g. "BTC-USD"), not instId.
+                let inst_family = format!(
+                    "{}-{}",
+                    request.symbol.base.to_uppercase(),
+                    request.symbol.quote.to_uppercase()
+                );
+                let sub_msg = json!({
+                    "op": "subscribe",
+                    "args": [{ "channel": "opt-summary", "instFamily": inst_family }]
+                });
+                let mut sink_guard = self.ws_sink.lock().await;
+                if let Some(sink) = sink_guard.as_mut() {
+                    sink.send(Message::Text(sub_msg.to_string()))
+                        .await
+                        .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
+                    self.subscriptions.lock().await.insert(request);
+                    return Ok(());
+                } else {
+                    return Err(WebSocketError::ConnectionError("Not connected".to_string()));
+                }
+            }
             _ => "",
         };
 
@@ -808,6 +863,27 @@ impl WebSocketConnector for OkxWebSocket {
                     format!("index-candle{}", okx_interval),
                     request,
                 ).await;
+            }
+            crate::core::StreamType::OptionGreeks => {
+                let inst_family = format!(
+                    "{}-{}",
+                    request.symbol.base.to_uppercase(),
+                    request.symbol.quote.to_uppercase()
+                );
+                let unsub_msg = json!({
+                    "op": "unsubscribe",
+                    "args": [{ "channel": "opt-summary", "instFamily": inst_family }]
+                });
+                let mut sink_guard = self.ws_sink.lock().await;
+                if let Some(sink) = sink_guard.as_mut() {
+                    sink.send(Message::Text(unsub_msg.to_string()))
+                        .await
+                        .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
+                    self.subscriptions.lock().await.remove(&request);
+                    return Ok(());
+                } else {
+                    return Err(WebSocketError::ConnectionError("Not connected".to_string()));
+                }
             }
             _ => "",
         };

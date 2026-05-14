@@ -353,10 +353,45 @@ impl GateioWebSocket {
             let event = GateioParser::parse_ws_position_update(data)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
             Ok(Some(StreamEvent::PositionUpdate(event)))
+        } else if channel.contains(".liquidates") {
+            // Futures liquidation channel: futures.liquidates
+            // Gate.io data format: { { contract, size, price, is_short, ts } }
+            let event = Self::parse_liquidation_ws(data)
+                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+            Ok(Some(event))
         } else {
             // Unknown channel - ignore
             Ok(None)
         }
+    }
+
+    /// Parse Gate.io liquidation push.
+    ///
+    /// Gate.io futures liquidation: channel `futures.liquidates`
+    /// data is an object or array of `{ contract, size, left, price, is_short, ts }`
+    fn parse_liquidation_ws(data: &Value) -> ExchangeResult<StreamEvent> {
+        use crate::core::types::TradeSide;
+        let parse_f64 = |v: &Value| -> Option<f64> {
+            v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
+        };
+        // data may be wrapped in an array
+        let item = if let Some(arr) = data.as_array() {
+            arr.first().cloned().unwrap_or(serde_json::Value::Null)
+        } else {
+            data.clone()
+        };
+        let symbol = item.get("contract").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let price = item.get("price").and_then(|v| parse_f64(v)).unwrap_or(0.0);
+        let quantity = item.get("size")
+            .and_then(|v| parse_f64(v))
+            .map(|v| v.abs())
+            .unwrap_or(0.0);
+        // is_short=true → short position was liquidated (forced buy to close)
+        let side = item.get("is_short").and_then(|v| v.as_bool())
+            .map(|is_short| if is_short { TradeSide::Buy } else { TradeSide::Sell })
+            .unwrap_or(TradeSide::Sell);
+        let timestamp = item.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
+        Ok(StreamEvent::Liquidation { symbol, side, price, quantity, value: None, timestamp })
     }
 
     /// Start ping task.
@@ -424,6 +459,7 @@ impl GateioWebSocket {
             StreamType::Kline { .. } => format!("{}.candlesticks", prefix),
             StreamType::MarkPrice => format!("{}.tickers", prefix), // Gate.io includes mark price in ticker
             StreamType::FundingRate => format!("{}.tickers", prefix), // Gate.io includes funding rate in ticker
+            StreamType::Liquidation => format!("{}.liquidates", prefix), // futures.liquidates
             StreamType::OrderUpdate => format!("{}.orders", prefix),
             StreamType::BalanceUpdate => format!("{}.balances", prefix),
             StreamType::PositionUpdate => format!("{}.positions", prefix),
@@ -446,6 +482,7 @@ impl GateioWebSocket {
             StreamType::Kline { interval } => vec![interval.to_string(), symbol],
             StreamType::MarkPrice => vec![symbol],
             StreamType::FundingRate => vec![symbol],
+            StreamType::Liquidation => vec![symbol],
             StreamType::OrderUpdate => vec![symbol],
             StreamType::BalanceUpdate => vec![],
             StreamType::PositionUpdate => vec![symbol],

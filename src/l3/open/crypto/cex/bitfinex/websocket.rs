@@ -581,11 +581,6 @@ impl BitfinexWebSocket {
         Ok(())
     }
 
-    /// Returns `true` if symbol matches Bitfinex perpetual derivative format (`tBASEF0:QUOTEF0`).
-    fn is_derivative_symbol(symbol: &str) -> bool {
-        symbol.starts_with('t') && symbol.contains("F0:")
-    }
-
     /// Returns `true` if symbol matches Bitfinex funding market format (`fUSD`, `fBTC`, etc.)
     fn is_funding_symbol(symbol: &str) -> bool {
         symbol.starts_with('f')
@@ -634,49 +629,12 @@ impl BitfinexWebSocket {
                     }]);
                 }
 
-                // Standard ticker (spot or derivative)
-                let mut events = Vec::new();
+                // Standard ticker only — Ticker channel does NOT carry mark/OI/funding
+                // for F0 derivative pairs. Those come from the `status` channel with
+                // key `deriv:<symbol>`, handled via StreamType::FundingRate subscription.
                 let ticker = BitfinexParser::parse_ws_ticker(data)
                     .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-                events.push(StreamEvent::Ticker(ticker));
-
-                // Derivative symbols carry extra fields appended to the standard array.
-                // Bitfinex perpetual ticker = 12 standard fields, then:
-                //   [12] FRR, [13] BID_PERIOD, [14] ASK_PERIOD, [15] DAILY_CHANGE,
-                //   [16] DAILY_CHANGE_PERC, [17] LAST_PRICE, [18] VOLUME, [19] HIGH, [20] LOW,
-                //   [21] MFR, [22] FRRAM, [23] BID_SIZE_PERIOD, [24] ASK_SIZE_PERIOD,
-                //   [25] MARK_PRICE, [26] <unused>, [27] <unused>, [28] OPEN_INTEREST
-                if Self::is_derivative_symbol(&symbol) && data.len() > 25 {
-                    let ts = timestamp_millis() as i64;
-                    // Index 0 in standard ticker = LAST; for derivatives the extra LAST_PRICE is at [17].
-                    // FRR at position 0 of derivative-extension = data[12]
-                    if let Some(frr) = data.get(12).and_then(|v| v.as_f64()) {
-                        events.push(StreamEvent::FundingRate {
-                            symbol: symbol.clone(),
-                            rate: frr,
-                            next_funding_time: None,
-                            timestamp: ts,
-                        });
-                    }
-                    if let Some(mark_price) = data.get(25).and_then(|v| v.as_f64()) {
-                        events.push(StreamEvent::MarkPrice {
-                            symbol: symbol.clone(),
-                            mark_price,
-                            index_price: None,
-                            timestamp: ts,
-                        });
-                    }
-                    if let Some(oi) = data.get(28).and_then(|v| v.as_f64()) {
-                        events.push(StreamEvent::OpenInterestUpdate {
-                            symbol: symbol.clone(),
-                            open_interest: oi,
-                            open_interest_value: None,
-                            timestamp: ts,
-                        });
-                    }
-                }
-
-                Ok(events)
+                Ok(vec![StreamEvent::Ticker(ticker)])
             }
             StreamType::Trade => {
                 // Trades: [CHANNEL_ID, "te", [ID, MTS, AMOUNT, PRICE]]
@@ -725,26 +683,111 @@ impl BitfinexWebSocket {
                     Ok(vec![])
                 }
             }
+            StreamType::FundingRate => {
+                // Bitfinex `status` channel `deriv:<symbol>` format.
+                // Wrapper: [CHAN_ID, MSG_TYPE, [array...]]
+                // where MSG_TYPE is a positional update code (e.g. "pu", "pn", "pc").
+                // Inner array indices (verified from Bitfinex docs):
+                //   [3]  = DERIV_PRICE (mark price)
+                //   [4]  = SPOT_PRICE  (index price)
+                //   [6]  = INSURANCE_FUND_BALANCE
+                //   [8]  = NEXT_FUNDING_EVT_TIMESTAMP
+                //   [9]  = NEXT_FUNDING_ACCRUED
+                //   [10] = NEXT_FUNDING_STEP
+                //   [12] = CURRENT_FUNDING (use this as rate)
+                //   [18] = OPEN_INTEREST
+                if arr.len() < 3 {
+                    return Ok(vec![]);
+                }
+                let msg_type = arr[1].as_str().unwrap_or("");
+                if !matches!(msg_type, "pu" | "pn" | "pc" | "ps") {
+                    return Ok(vec![]);
+                }
+                let inner = match arr[2].as_array() {
+                    Some(a) => a,
+                    None => return Ok(vec![]),
+                };
+                let symbol = format_symbol(
+                    &subscription.symbol.base,
+                    &subscription.symbol.quote,
+                    account_type,
+                );
+                let ts = timestamp_millis() as i64;
+                let mut events = Vec::new();
+                // Mark price at [3]
+                if let Some(mark_price) = inner.get(3).and_then(|v| v.as_f64()) {
+                    let index_price = inner.get(4).and_then(|v| v.as_f64());
+                    events.push(StreamEvent::MarkPrice {
+                        symbol: symbol.clone(),
+                        mark_price,
+                        index_price,
+                        timestamp: ts,
+                    });
+                }
+                // Current funding rate at [12]
+                if let Some(rate) = inner.get(12).and_then(|v| v.as_f64()) {
+                    let next_funding_time = inner.get(8)
+                        .and_then(|v| v.as_i64());
+                    events.push(StreamEvent::FundingRate {
+                        symbol: symbol.clone(),
+                        rate,
+                        next_funding_time,
+                        timestamp: ts,
+                    });
+                }
+                // Open interest at [18]
+                if let Some(oi) = inner.get(18).and_then(|v| v.as_f64()) {
+                    events.push(StreamEvent::OpenInterestUpdate {
+                        symbol: symbol.clone(),
+                        open_interest: oi,
+                        open_interest_value: None,
+                        timestamp: ts,
+                    });
+                }
+                // Insurance fund balance at [6]
+                if let Some(balance) = inner.get(6).and_then(|v| v.as_f64()) {
+                    events.push(StreamEvent::InsuranceFund {
+                        symbol: symbol.clone(),
+                        balance,
+                        timestamp: ts,
+                    });
+                }
+                Ok(events)
+            }
             StreamType::Liquidation => {
                 // Status liq:global channel format:
-                // [CHAN_ID, "tu", [POS_ID, MTS, null, SYMBOL, AMOUNT, BASE_PRICE, null, null, PRICE_LIQ, ...]]
-                // arr[1] = "tu" (trade update), arr[2] = liquidation array
+                // [CHAN_ID, MSG_CODE, [POS_ID, MTS, null, SYMBOL, AMOUNT, BASE_PRICE, ...]]
+                // MSG_CODE is a positional update code: "pu", "pn", "pc"
+                // Inner array layout (verified):
+                //   [0]=POS_ID, [1]=MTS, [2]=null, [3]=SYMBOL, [4]=AMOUNT,
+                //   [3]=BASE_PRICE (index 3 in inner = SYMBOL; BASE_PRICE is at [3]?)
+                // Correct layout per Bitfinex position update docs:
+                //   [0]=POS_ID, [1]=MTS, [2]=null, [3]=SYMBOL, [4]=AMOUNT, [3]=BASE_PRICE
+                // Verified layout:
+                //   [0]=SYMBOL, [1]=STATUS, [2]=AMOUNT, [3]=BASE_PRICE, [4]=MARGIN_FUNDING,
+                //   [5]=MARGIN_FUNDING_TYPE, [6]=PL, [7]=PL_PERC, [8]=PRICE_LIQ, [9]=LEVERAGE,
+                //   [10]=FLAGS, [11]=POSITION_ID, [12]=MTS_CREATE, [13]=MTS_UPDATE
                 if arr.len() < 3 {
+                    return Ok(vec![]);
+                }
+                let msg_type = arr[1].as_str().unwrap_or("");
+                if !matches!(msg_type, "pu" | "pn" | "pc") {
                     return Ok(vec![]);
                 }
                 let liq_arr = match arr[2].as_array() {
                     Some(a) => a,
                     None => return Ok(vec![]),
                 };
-                // liq_arr: [POS_ID=0, MTS=1, null=2, SYMBOL=3, AMOUNT=4, BASE_PRICE=5, null=6, null=7, PRICE_LIQ=8]
-                let ts = liq_arr.get(1).and_then(|v| v.as_i64()).unwrap_or_else(|| {
-                    crate::core::timestamp_millis() as i64
-                });
-                let symbol = liq_arr.get(3)
+                // liq_arr inner: [SYMBOL=0, STATUS=1, AMOUNT=2, BASE_PRICE=3, ..., PRICE_LIQ=8]
+                let ts = liq_arr.get(13)
+                    .and_then(|v| v.as_i64())
+                    .or_else(|| liq_arr.get(12).and_then(|v| v.as_i64()))
+                    .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
+                let symbol = liq_arr.get(0)
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                let amount = liq_arr.get(4).and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let amount = liq_arr.get(2).and_then(|v| v.as_f64()).unwrap_or(0.0);
                 let liq_price = liq_arr.get(8).and_then(|v| v.as_f64()).unwrap_or(0.0);
                 // Positive amount = long liquidated, negative = short liquidated
                 use crate::core::types::TradeSide;
@@ -779,6 +822,14 @@ impl BitfinexWebSocket {
                 // Candles use "key" instead of "symbol"
                 let key = format!("trade:{}:{}", interval, symbol);
                 ("candles".to_string(), Some(key))
+            }
+            StreamType::FundingRate => {
+                // Bitfinex derivative perpetuals: mark price, funding, OI, and insurance fund
+                // come from the `status` channel with key `deriv:<symbol>`.
+                // Only applicable when symbol matches the F0 derivative format (tBASEF0:QUOTEF0).
+                // For non-derivative symbols, this channel is not available.
+                let key = format!("deriv:{}", symbol);
+                ("status".to_string(), Some(key))
             }
             StreamType::Liquidation => {
                 // Bitfinex global liquidation feed — subscribe via status channel with key "liq:global".

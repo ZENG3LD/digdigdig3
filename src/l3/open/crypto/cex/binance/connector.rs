@@ -36,8 +36,9 @@ use crate::core::types::{
     DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord,
     FundsHistoryFilter, FundsRecordType,
     SubAccountOperation, SubAccountResult,
-    LongShortRatio, OpenInterest,
+    LongShortRatio, OpenInterest, Liquidation,
 };
+use super::parser::PremiumIndexData;
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
     CancelAll, AmendOrder, BatchOrders,
@@ -569,19 +570,27 @@ impl BinanceConnector {
     }
 
     /// Get open interest for a futures symbol.
-    pub async fn get_open_interest(&self, symbol: &str) -> ExchangeResult<Value> {
+    ///
+    /// Endpoint: `GET /fapi/v1/openInterest` — no auth.
+    pub async fn get_open_interest(&self, symbol: &str) -> ExchangeResult<OpenInterest> {
         let mut params = HashMap::new();
         params.insert("symbol".to_string(), symbol.to_string());
-        self.get(BinanceEndpoint::FuturesOpenInterest, params, AccountType::FuturesCross).await
+        let v = self.get(BinanceEndpoint::FuturesOpenInterest, params, AccountType::FuturesCross).await?;
+        BinanceParser::parse_open_interest(&v)
     }
 
     /// Get mark price and funding rate for a futures symbol.
-    pub async fn get_premium_index(&self, symbol: Option<&str>) -> ExchangeResult<Value> {
+    ///
+    /// Endpoint: `GET /fapi/v1/premiumIndex` — no auth.
+    /// When `symbol` is `None`, Binance returns an array for all symbols; this method
+    /// returns the first element in that case.
+    pub async fn get_premium_index(&self, symbol: Option<&str>) -> ExchangeResult<PremiumIndexData> {
         let mut params = HashMap::new();
         if let Some(s) = symbol {
             params.insert("symbol".to_string(), s.to_string());
         }
-        self.get(BinanceEndpoint::FuturesPremiumIndex, params, AccountType::FuturesCross).await
+        let v = self.get(BinanceEndpoint::FuturesPremiumIndex, params, AccountType::FuturesCross).await?;
+        BinanceParser::parse_premium_index(&v)
     }
 
     /// Get public liquidation orders (force-close events) for futures.
@@ -594,8 +603,6 @@ impl BinanceConnector {
     /// - `start_time`      — Unix ms inclusive lower bound.
     /// - `end_time`        — Unix ms inclusive upper bound.
     /// - `limit`           — max records (default 100, max 1000).
-    ///
-    /// Returns raw JSON array; use `BinanceParser::parse_liquidations` to convert.
     pub async fn get_force_orders(
         &self,
         symbol: Option<&str>,
@@ -603,7 +610,7 @@ impl BinanceConnector {
         start_time: Option<i64>,
         end_time: Option<i64>,
         limit: Option<u32>,
-    ) -> ExchangeResult<Value> {
+    ) -> ExchangeResult<Vec<Liquidation>> {
         let mut params = HashMap::new();
         if let Some(s) = symbol {
             params.insert("symbol".to_string(), s.to_string());
@@ -620,7 +627,8 @@ impl BinanceConnector {
         if let Some(l) = limit {
             params.insert("limit".to_string(), l.to_string());
         }
-        self.get(BinanceEndpoint::FuturesForceOrders, params, AccountType::FuturesCross).await
+        let v = self.get(BinanceEndpoint::FuturesForceOrders, params, AccountType::FuturesCross).await?;
+        BinanceParser::parse_liquidations(&v)
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1959,6 +1967,25 @@ impl Positions for BinanceConnector {
 
         let response = self.get(BinanceEndpoint::FundingRate, params, account_type).await?;
         BinanceParser::parse_funding_rate(&response)
+    }
+
+    async fn get_open_interest(
+        &self,
+        symbol: &str,
+        account_type: AccountType,
+    ) -> ExchangeResult<OpenInterest> {
+        match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Open interest not supported for Spot/Margin".to_string(),
+                ));
+            }
+            _ => {}
+        }
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        let v = self.get(BinanceEndpoint::FuturesOpenInterest, params, AccountType::FuturesCross).await?;
+        BinanceParser::parse_open_interest(&v)
     }
 
     async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {

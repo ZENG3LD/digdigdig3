@@ -19,6 +19,33 @@ use crate::core::types::{
     LongShortRatio, OpenInterest,
 };
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// PREMIUM INDEX DATA
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Typed response from `GET /fapi/v1/premiumIndex`.
+///
+/// Contains mark price, index price, estimated settle price, and funding info.
+#[derive(Debug, Clone)]
+pub struct PremiumIndexData {
+    /// Trading symbol.
+    pub symbol: String,
+    /// Current mark price.
+    pub mark_price: f64,
+    /// Current index price.
+    pub index_price: f64,
+    /// Estimated settle price (last hour average index).
+    pub estimated_settle_price: Option<f64>,
+    /// Last funding rate.
+    pub last_funding_rate: f64,
+    /// Next funding time (Unix ms).
+    pub next_funding_time: i64,
+    /// Interest rate.
+    pub interest_rate: f64,
+    /// Event timestamp (Unix ms).
+    pub timestamp: i64,
+}
+
 /// Парсер ответов Binance API
 pub struct BinanceParser;
 
@@ -1384,6 +1411,78 @@ impl BinanceParser {
         }
 
         Ok(result)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // OPEN INTEREST (SINGULAR)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse a single open interest record from `GET /fapi/v1/openInterest`.
+    ///
+    /// Binance returns: `{"openInterest":"12345.6","symbol":"BTCUSDT","time":1699999999000}`
+    pub fn parse_open_interest(value: &Value) -> ExchangeResult<OpenInterest> {
+        Self::check_error(value)?;
+
+        let symbol = Self::get_str(value, "symbol")
+            .ok_or_else(|| ExchangeError::Parse("Missing 'symbol' in openInterest response".to_string()))?
+            .to_string();
+
+        let open_interest = Self::get_f64(value, "openInterest")
+            .ok_or_else(|| ExchangeError::Parse("Missing 'openInterest' in response".to_string()))?;
+
+        let timestamp = value.get("time")
+            .and_then(|t| t.as_i64())
+            .unwrap_or(0);
+
+        Ok(OpenInterest {
+            symbol,
+            open_interest,
+            open_interest_value: None,
+            timestamp,
+        })
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PREMIUM INDEX
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse premium index data from `GET /fapi/v1/premiumIndex`.
+    ///
+    /// When `symbol` is specified Binance returns a single object; when omitted
+    /// it returns an array — this parser handles a single object.
+    pub fn parse_premium_index(value: &Value) -> ExchangeResult<PremiumIndexData> {
+        Self::check_error(value)?;
+
+        // If the response is an array, take the first element.
+        let data = if let Some(arr) = value.as_array() {
+            arr.first()
+                .ok_or_else(|| ExchangeError::Parse("Empty premiumIndex array".to_string()))?
+        } else {
+            value
+        };
+
+        let symbol = Self::get_str(data, "symbol")
+            .ok_or_else(|| ExchangeError::Parse("Missing 'symbol' in premiumIndex response".to_string()))?
+            .to_string();
+
+        let mark_price = Self::get_f64(data, "markPrice").unwrap_or(0.0);
+        let index_price = Self::get_f64(data, "indexPrice").unwrap_or(0.0);
+        let estimated_settle_price = Self::get_f64(data, "estimatedSettlePrice");
+        let last_funding_rate = Self::get_f64(data, "lastFundingRate").unwrap_or(0.0);
+        let next_funding_time = data.get("nextFundingTime").and_then(|t| t.as_i64()).unwrap_or(0);
+        let interest_rate = Self::get_f64(data, "interestRate").unwrap_or(0.0);
+        let timestamp = data.get("time").and_then(|t| t.as_i64()).unwrap_or(0);
+
+        Ok(PremiumIndexData {
+            symbol,
+            mark_price,
+            index_price,
+            estimated_settle_price,
+            last_funding_rate,
+            next_funding_time,
+            interest_rate,
+            timestamp,
+        })
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

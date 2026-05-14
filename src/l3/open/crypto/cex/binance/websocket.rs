@@ -593,6 +593,36 @@ impl BinanceWebSocket {
                     .map_err(|e| WebSocketError::Parse(e.to_string()))?;
                 Ok(Some(StreamEvent::OrderUpdate(event)))
             }
+            // Mark price kline
+            "markPriceKline" => {
+                let event = Self::parse_mark_price_kline(data)
+                    .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+                Ok(Some(event))
+            }
+            // Index price kline
+            "indexPriceKline" => {
+                let event = Self::parse_index_price_kline(data)
+                    .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+                Ok(Some(event))
+            }
+            // Premium index kline
+            "premiumIndexKline" => {
+                let event = Self::parse_premium_index_kline(data)
+                    .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+                Ok(Some(event))
+            }
+            // Composite index
+            "compositeIndex" => {
+                let event = Self::parse_composite_index(data)
+                    .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+                Ok(Some(event))
+            }
+            // Per-symbol index price
+            "indexPriceUpdate" => {
+                let event = Self::parse_index_price(data)
+                    .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+                Ok(Some(event))
+            }
             _ => {
                 // Unknown event type - ignore
                 Ok(None)
@@ -623,6 +653,13 @@ impl BinanceWebSocket {
             // but the combined-stream endpoint requires a symbol param, so we use per-symbol.
             StreamType::Liquidation => format!("{}@forceOrder", symbol),
             StreamType::AggTrade => format!("{}@aggTrade", symbol),
+            StreamType::MarkPriceKline { interval } => format!("{}@markPriceKline_{}", symbol, interval),
+            StreamType::IndexPriceKline { interval } => format!("{}@indexPriceKline_{}", symbol, interval),
+            StreamType::PremiumIndexKline { interval } => format!("{}@premiumIndexKline_{}", symbol, interval),
+            // Composite index is a market-wide array stream (no per-symbol variant for USDT-M)
+            StreamType::CompositeIndex => "!compositeIndex@arr".to_string(),
+            // Per-symbol index price stream (1-second updates)
+            StreamType::IndexPrice => format!("{}@indexPrice@1s", symbol),
             _ => String::new(), // Private streams don't use stream names
         }
     }
@@ -832,6 +869,175 @@ impl BinanceWebSocket {
             index_price: parse_f64("i"),
             timestamp: data.get("E").and_then(|e| e.as_i64()).unwrap_or(0),
         })
+    }
+
+    /// Parse `markPriceKline` WS event.
+    ///
+    /// Binance event `"e":"markPriceKline"`, kline data under `"k"` key,
+    /// same structure as regular kline but prices are mark prices.
+    fn parse_mark_price_kline(data: &Value) -> ExchangeResult<StreamEvent> {
+        use crate::core::Kline;
+
+        let k = data.get("k")
+            .ok_or_else(|| ExchangeError::Parse("Missing 'k' field in markPriceKline event".to_string()))?;
+
+        let parse_f64 = |key: &str| -> Option<f64> {
+            k.get(key).and_then(|v| v.as_str()).and_then(|s| s.parse().ok())
+                .or_else(|| k.get(key).and_then(|v| v.as_f64()))
+        };
+
+        let interval = k.get("i").and_then(|i| i.as_str()).unwrap_or("").to_string();
+        let symbol = data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string();
+
+        Ok(StreamEvent::MarkPriceKline {
+            symbol,
+            interval,
+            kline: Kline {
+                open_time: k.get("t").and_then(|t| t.as_i64()).unwrap_or(0),
+                open: parse_f64("o").unwrap_or(0.0),
+                high: parse_f64("h").unwrap_or(0.0),
+                low: parse_f64("l").unwrap_or(0.0),
+                close: parse_f64("c").unwrap_or(0.0),
+                volume: parse_f64("v").unwrap_or(0.0),
+                close_time: k.get("T").and_then(|t| t.as_i64()),
+                quote_volume: parse_f64("q"),
+                trades: k.get("n").and_then(|n| n.as_i64()).map(|n| n as u64),
+            },
+        })
+    }
+
+    /// Parse `indexPriceKline` WS event.
+    ///
+    /// Same structure as `markPriceKline` but event type is `"indexPriceKline"`.
+    fn parse_index_price_kline(data: &Value) -> ExchangeResult<StreamEvent> {
+        use crate::core::Kline;
+
+        let k = data.get("k")
+            .ok_or_else(|| ExchangeError::Parse("Missing 'k' field in indexPriceKline event".to_string()))?;
+
+        let parse_f64 = |key: &str| -> Option<f64> {
+            k.get(key).and_then(|v| v.as_str()).and_then(|s| s.parse().ok())
+                .or_else(|| k.get(key).and_then(|v| v.as_f64()))
+        };
+
+        let interval = k.get("i").and_then(|i| i.as_str()).unwrap_or("").to_string();
+        let symbol = data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string();
+
+        Ok(StreamEvent::IndexPriceKline {
+            symbol,
+            interval,
+            kline: Kline {
+                open_time: k.get("t").and_then(|t| t.as_i64()).unwrap_or(0),
+                open: parse_f64("o").unwrap_or(0.0),
+                high: parse_f64("h").unwrap_or(0.0),
+                low: parse_f64("l").unwrap_or(0.0),
+                close: parse_f64("c").unwrap_or(0.0),
+                volume: parse_f64("v").unwrap_or(0.0),
+                close_time: k.get("T").and_then(|t| t.as_i64()),
+                quote_volume: parse_f64("q"),
+                trades: k.get("n").and_then(|n| n.as_i64()).map(|n| n as u64),
+            },
+        })
+    }
+
+    /// Parse `premiumIndexKline` WS event.
+    ///
+    /// Same structure as `markPriceKline` but event type is `"premiumIndexKline"`.
+    fn parse_premium_index_kline(data: &Value) -> ExchangeResult<StreamEvent> {
+        use crate::core::Kline;
+
+        let k = data.get("k")
+            .ok_or_else(|| ExchangeError::Parse("Missing 'k' field in premiumIndexKline event".to_string()))?;
+
+        let parse_f64 = |key: &str| -> Option<f64> {
+            k.get(key).and_then(|v| v.as_str()).and_then(|s| s.parse().ok())
+                .or_else(|| k.get(key).and_then(|v| v.as_f64()))
+        };
+
+        let interval = k.get("i").and_then(|i| i.as_str()).unwrap_or("").to_string();
+        let symbol = data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string();
+
+        Ok(StreamEvent::PremiumIndexKline {
+            symbol,
+            interval,
+            kline: Kline {
+                open_time: k.get("t").and_then(|t| t.as_i64()).unwrap_or(0),
+                open: parse_f64("o").unwrap_or(0.0),
+                high: parse_f64("h").unwrap_or(0.0),
+                low: parse_f64("l").unwrap_or(0.0),
+                close: parse_f64("c").unwrap_or(0.0),
+                volume: parse_f64("v").unwrap_or(0.0),
+                close_time: k.get("T").and_then(|t| t.as_i64()),
+                quote_volume: parse_f64("q"),
+                trades: k.get("n").and_then(|n| n.as_i64()).map(|n| n as u64),
+            },
+        })
+    }
+
+    /// Parse `compositeIndex` WS event from the `!compositeIndex@arr` stream.
+    ///
+    /// Binance event: `{"e":"compositeIndex","E":timestamp,"s":"DEFIUSDT",
+    /// "p":"...","c":[{"b":"AAVE","q":"USDT","w":"0.07009900","wp":"..."},...]}`
+    ///
+    /// Components are mapped to `(symbol, weight)` pairs using the `w` (weight) field.
+    fn parse_composite_index(data: &Value) -> ExchangeResult<StreamEvent> {
+        let parse_f64_field = |key: &str| -> Option<f64> {
+            data.get(key).and_then(|v| v.as_str()).and_then(|s| s.parse().ok())
+                .or_else(|| data.get(key).and_then(|v| v.as_f64()))
+        };
+
+        let symbol = data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string();
+        let price = parse_f64_field("p").unwrap_or(0.0);
+        let timestamp = data.get("E").and_then(|e| e.as_i64()).unwrap_or(0);
+
+        let components: Vec<(String, f64)> = data.get("c")
+            .and_then(|c| c.as_array())
+            .map(|arr| {
+                arr.iter().filter_map(|item| {
+                    let base = item.get("b").and_then(|v| v.as_str()).unwrap_or("");
+                    let quote = item.get("q").and_then(|v| v.as_str()).unwrap_or("");
+                    let comp_symbol = format!("{}{}", base, quote);
+                    let weight = item.get("w")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .or_else(|| item.get("w").and_then(|v| v.as_f64()))
+                        .unwrap_or(0.0);
+                    if comp_symbol.is_empty() {
+                        None
+                    } else {
+                        Some((comp_symbol, weight))
+                    }
+                }).collect()
+            })
+            .unwrap_or_default();
+
+        Ok(StreamEvent::CompositeIndex {
+            symbol,
+            price,
+            components,
+            timestamp,
+        })
+    }
+
+    /// Parse `indexPriceUpdate` WS event from the `<symbol>@indexPrice@1s` stream.
+    ///
+    /// Binance event: `{"e":"indexPriceUpdate","E":timestamp,"i":"BTCUSDT","p":"..."}`
+    fn parse_index_price(data: &Value) -> ExchangeResult<StreamEvent> {
+        let parse_f64_field = |key: &str| -> Option<f64> {
+            data.get(key).and_then(|v| v.as_str()).and_then(|s| s.parse().ok())
+                .or_else(|| data.get(key).and_then(|v| v.as_f64()))
+        };
+
+        // Binance uses "i" for index symbol, "p" for price in this event
+        let symbol = data.get("i")
+            .and_then(|s| s.as_str())
+            .or_else(|| data.get("s").and_then(|s| s.as_str()))
+            .unwrap_or("")
+            .to_string();
+        let price = parse_f64_field("p").unwrap_or(0.0);
+        let timestamp = data.get("E").and_then(|e| e.as_i64()).unwrap_or(0);
+
+        Ok(StreamEvent::IndexPrice { symbol, price, timestamp })
     }
 
     fn parse_execution_report(data: &Value) -> ExchangeResult<crate::core::OrderUpdateEvent> {

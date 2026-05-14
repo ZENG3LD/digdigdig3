@@ -479,6 +479,42 @@ impl BitgetWebSocket {
                     .map_err(|e| WebSocketError::Parse(e.to_string()))?;
                 Ok(vec![StreamEvent::OrderUpdate(event)])
             }
+            "liq-order" => {
+                // Bitget liquidation orders channel
+                // Format: { instId, side, price, size, cTime }
+                let item = if let Some(arr) = data.as_array() {
+                    arr.first().cloned().unwrap_or(serde_json::Value::Null)
+                } else {
+                    data.clone()
+                };
+                let symbol = item.get("instId")
+                    .and_then(|v| v.as_str())
+                    .or(inst_id_fallback)
+                    .unwrap_or("")
+                    .to_string();
+                let Some(price) = item.get("price").and_then(|v| parse_f64_field(v)) else {
+                    return Ok(vec![]);
+                };
+                let quantity = item.get("size").and_then(|v| parse_f64_field(v)).unwrap_or(0.0);
+                let side = item.get("side").and_then(|v| v.as_str())
+                    .map(|s| match s {
+                        "buy" | "Buy" => TradeSide::Buy,
+                        _ => TradeSide::Sell,
+                    })
+                    .unwrap_or(TradeSide::Sell);
+                let timestamp = item.get("cTime")
+                    .and_then(|v| parse_f64_field(v))
+                    .map(|ms| ms as i64)
+                    .unwrap_or(0);
+                Ok(vec![StreamEvent::Liquidation {
+                    symbol,
+                    side,
+                    price,
+                    quantity,
+                    value: None,
+                    timestamp,
+                }])
+            }
             "fill" => {
                 // Bitget fill channel - skip for now
                 Ok(vec![])
@@ -637,6 +673,10 @@ impl BitgetWebSocket {
             }
             StreamType::PositionUpdate => {
                 ("positions", "default".to_string())
+            }
+            StreamType::Liquidation => {
+                let symbol = format!("{}{}", request.symbol.base.to_uppercase(), request.symbol.quote.to_uppercase());
+                ("liq-order", symbol)
             }
             _ => ("", String::new()),
         };

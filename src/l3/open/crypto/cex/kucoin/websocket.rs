@@ -485,6 +485,12 @@ impl KuCoinWebSocket {
                     .map_err(|e| WebSocketError::Parse(e.to_string()))?;
                 Ok(Some(StreamEvent::PositionUpdate(event)))
             }
+            // Liquidation orders (futures)
+            "liquidationOrders" | "liquidation" => {
+                let event = Self::parse_liquidation(data, msg)
+                    .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+                Ok(Some(event))
+            }
             _ => {
                 // Unknown subject - ignore
                 Ok(None)
@@ -582,6 +588,10 @@ impl KuCoinWebSocket {
             StreamType::PositionUpdate => {
                 "/contract/positionAll".to_string()
             }
+            StreamType::Liquidation => {
+                let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, account_type);
+                format!("/contractMarket/liquidationOrders:{}", symbol)
+            }
             _ => String::new(),
         }
     }
@@ -662,6 +672,46 @@ impl KuCoinWebSocket {
 
     fn parse_position_update(data: &Value) -> ExchangeResult<crate::core::PositionUpdateEvent> {
         KuCoinParser::parse_ws_position_update(data)
+    }
+
+    /// Parse KuCoin liquidation order push.
+    ///
+    /// KuCoin futures liquidation topic: `/contractMarket/liquidationOrders:{symbol}`
+    /// subject: `liquidationOrders`
+    /// data fields: { symbol, side, price, size, ts }
+    fn parse_liquidation(data: &Value, msg: &IncomingMessage) -> ExchangeResult<StreamEvent> {
+        use crate::core::types::TradeSide;
+        let parse_f64 = |v: &Value| -> Option<f64> {
+            v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
+        };
+        // symbol from data or topic
+        let symbol = data.get("symbol")
+            .and_then(|v| v.as_str())
+            .or_else(|| {
+                // extract from topic "/contractMarket/liquidationOrders:XBTUSDTM"
+                msg.topic.as_deref().and_then(|t| t.split(':').nth(1))
+            })
+            .unwrap_or("")
+            .to_string();
+        let price = data.get("price")
+            .and_then(|v| parse_f64(v))
+            .unwrap_or(0.0);
+        let quantity = data.get("size")
+            .or_else(|| data.get("amount"))
+            .and_then(|v| parse_f64(v))
+            .unwrap_or(0.0);
+        let side = data.get("side")
+            .and_then(|v| v.as_str())
+            .map(|s| match s.to_lowercase().as_str() {
+                "buy" => TradeSide::Buy,
+                _ => TradeSide::Sell,
+            })
+            .unwrap_or(TradeSide::Sell);
+        let timestamp = data.get("ts")
+            .and_then(|v| parse_f64(v))
+            .map(|ms| ms as i64)
+            .unwrap_or(0);
+        Ok(StreamEvent::Liquidation { symbol, side, price, quantity, value: None, timestamp })
     }
 }
 

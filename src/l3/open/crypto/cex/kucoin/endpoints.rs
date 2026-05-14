@@ -189,6 +189,10 @@ pub enum KuCoinEndpoint {
     // === ACCOUNT LEDGER ===
     /// GET /api/v1/accounts/ledgers — spot/main account ledger (paginated)
     SpotLedger,
+
+    // === FUTURES OPEN INTEREST ===
+    /// GET /api/v1/contracts/{symbol} — futures contract details including OI (public, futures domain)
+    FuturesContractDetail,
 }
 
 impl KuCoinEndpoint {
@@ -300,6 +304,9 @@ impl KuCoinEndpoint {
 
             // Account Ledger
             Self::SpotLedger => "/api/v1/accounts/ledgers",
+
+            // Futures Open Interest (via contract detail)
+            Self::FuturesContractDetail => "/api/v1/contracts/{symbol}",
         }
     }
 
@@ -328,6 +335,7 @@ impl KuCoinEndpoint {
             | Self::FuturesMarkPrice
             | Self::FuturesIndexPrice
             | Self::FuturesPremiumIndex
+            | Self::FuturesContractDetail
             | Self::WsPublicToken => false,
 
             // Private endpoints

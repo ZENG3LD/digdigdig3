@@ -562,6 +562,22 @@ impl KuCoinConnector {
         Ok(response)
     }
 
+    /// Get open interest for a futures symbol via contract detail.
+    ///
+    /// `GET /api/v1/contracts/{symbol}` (futures domain, public)
+    ///
+    /// Returns the full contract detail object which contains `openInterest`
+    /// (number of open contracts) and `openInterestValue` (in USD).
+    pub async fn get_open_interest(&self, symbol: &str) -> ExchangeResult<Value> {
+        self.rate_limit_wait(weights::DEFAULT, false).await;
+        let base_url = self.urls.rest_url(AccountType::FuturesCross);
+        let path = format!("/api/v1/contracts/{}", symbol);
+        let url = format!("{}{}", base_url, path);
+        let (response, _) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
+        self.check_response(&response)?;
+        Ok(response)
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // FILL / TRADE HISTORY
     // ═══════════════════════════════════════════════════════════════════════════

@@ -464,6 +464,20 @@ impl BybitWebSocket {
                 timestamp,
             };
             Ok(vec![StreamEvent::Ticker(ticker)])
+        } else if topic.starts_with("kline_lt.") {
+            // Leveraged token kline: "kline_lt.<interval>.<symbol>"
+            // Same kline structure as regular kline — emit as StreamEvent::Kline.
+            // The Kline struct carries OHLCV data only; symbol routing is handled
+            // at the subscription layer via the original topic string.
+            let kline = Self::parse_kline_ws(data)
+                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+            Ok(vec![StreamEvent::Kline(kline)])
+        } else if topic.starts_with("instrument_info.") || topic.starts_with("instrument-info.") {
+            // Periodic snapshot/delta of contract metadata (price filter, lot size,
+            // taker/maker fees, max leverage, deliveryFeeRate, status).
+            // No tight StreamEvent fit — acknowledged silently, not emitted.
+            // Extend StreamEvent types if per-symbol metadata events are needed later.
+            Ok(vec![])
         } else if topic.starts_with("insurance.") {
             // Insurance fund: "insurance.<coin>"
             // Bybit pushes { symbols: [{ symbol, walletBalance, prevWalletBalance }] }

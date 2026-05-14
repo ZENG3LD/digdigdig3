@@ -122,6 +122,7 @@ pub enum InfoType {
     UserRateLimit,          // Get rate limit status
     HistoricalOrders,       // Get historical orders
     UserFunding,            // Get historical funding payments for the account
+    PredictedFundings,      // Get predicted (next epoch) funding rates for all assets
 }
 
 impl InfoType {
@@ -146,6 +147,7 @@ impl InfoType {
             Self::UserRateLimit => "userRateLimit",
             Self::HistoricalOrders => "historicalOrders",
             Self::UserFunding => "userFunding",
+            Self::PredictedFundings => "predictedFundings",
         }
     }
 }

@@ -199,7 +199,7 @@ impl HyperliquidWebSocket {
         // Parse based on channel type
         match channel.as_str() {
             "activeAssetCtx" => {
-                if let Some(event) = Self::parse_active_asset_ctx(&data)? {
+                for event in Self::parse_active_asset_ctx(&data)? {
                     let _ = event_tx.send(Ok(event));
                 }
             }
@@ -209,7 +209,17 @@ impl HyperliquidWebSocket {
                 }
             }
             "allMids" => {
-                if let Some(event) = Self::parse_all_mids(&data)? {
+                for event in Self::parse_all_mids(&data)? {
+                    let _ = event_tx.send(Ok(event));
+                }
+            }
+            "bbo" => {
+                for event in Self::parse_bbo(&data)? {
+                    let _ = event_tx.send(Ok(event));
+                }
+            }
+            "userFundings" => {
+                for event in Self::parse_user_fundings(&data)? {
                     let _ = event_tx.send(Ok(event));
                 }
             }
@@ -246,10 +256,12 @@ impl HyperliquidWebSocket {
         Ok(())
     }
 
-    /// Parse activeAssetCtx message to Ticker event.
+    /// Parse activeAssetCtx message to multiple events.
     ///
     /// This channel provides per-coin 24h stats including dayNtlVlm, prevDayPx,
     /// markPx, and midPx — far richer than allMids which only has mid-prices.
+    ///
+    /// Emits: Ticker, MarkPrice, FundingRate, OpenInterestUpdate, IndexPrice (oraclePx).
     ///
     /// Message format:
     /// ```json
@@ -268,7 +280,7 @@ impl HyperliquidWebSocket {
     ///   }
     /// }
     /// ```
-    fn parse_active_asset_ctx(data: &Value) -> WebSocketResult<Option<StreamEvent>> {
+    fn parse_active_asset_ctx(data: &Value) -> WebSocketResult<Vec<StreamEvent>> {
         let coin = data.get("coin")
             .and_then(|c| c.as_str())
             .ok_or_else(|| WebSocketError::Parse("Missing 'coin' in activeAssetCtx".to_string()))?;
@@ -284,8 +296,12 @@ impl HyperliquidWebSocket {
         let mid_px = ctx.get("midPx").and_then(parse_f64);
         let prev_day_px = ctx.get("prevDayPx").and_then(parse_f64);
         let volume_24h = ctx.get("dayNtlVlm").and_then(parse_f64);
+        let funding_rate = ctx.get("funding").and_then(parse_f64);
+        let open_interest = ctx.get("openInterest").and_then(parse_f64);
+        let oracle_px = ctx.get("oraclePx").and_then(parse_f64);
 
         let last_price = mid_px.unwrap_or(mark_px);
+        let now = crate::core::utils::timestamp_millis() as i64;
 
         let (price_change_24h, price_change_percent_24h) = match prev_day_px {
             Some(prev) if prev > 0.0 => {
@@ -296,7 +312,10 @@ impl HyperliquidWebSocket {
             _ => (None, None),
         };
 
-        let ticker = crate::core::Ticker {
+        let mut events = Vec::with_capacity(5);
+
+        // Ticker
+        events.push(StreamEvent::Ticker(crate::core::Ticker {
             symbol: coin.to_string(),
             last_price,
             bid_price: None,
@@ -307,45 +326,178 @@ impl HyperliquidWebSocket {
             quote_volume_24h: None,
             price_change_24h,
             price_change_percent_24h,
-            timestamp: crate::core::utils::timestamp_millis() as i64,
-        };
+            timestamp: now,
+        }));
 
-        Ok(Some(StreamEvent::Ticker(ticker)))
+        // MarkPrice
+        events.push(StreamEvent::MarkPrice {
+            symbol: coin.to_string(),
+            mark_price: mark_px,
+            index_price: oracle_px,
+            timestamp: now,
+        });
+
+        // FundingRate
+        if let Some(rate) = funding_rate {
+            events.push(StreamEvent::FundingRate {
+                symbol: coin.to_string(),
+                rate,
+                next_funding_time: None,
+                timestamp: now,
+            });
+        }
+
+        // OpenInterestUpdate
+        if let Some(oi) = open_interest {
+            events.push(StreamEvent::OpenInterestUpdate {
+                symbol: coin.to_string(),
+                open_interest: oi,
+                open_interest_value: None,
+                timestamp: now,
+            });
+        }
+
+        // IndexPrice (oraclePx)
+        if let Some(idx_px) = oracle_px {
+            events.push(StreamEvent::IndexPrice {
+                symbol: coin.to_string(),
+                price: idx_px,
+                timestamp: now,
+            });
+        }
+
+        Ok(events)
     }
 
-    /// Parse allMids message to Ticker events
-    fn parse_all_mids(data: &Value) -> WebSocketResult<Option<StreamEvent>> {
+    /// Parse allMids message — emits one Ticker per symbol in the `mids` object.
+    fn parse_all_mids(data: &Value) -> WebSocketResult<Vec<StreamEvent>> {
         // Format: { "mids": { "BTC": "50123.45", "ETH": "2500.67", ... } }
         let mids = data.get("mids")
             .and_then(|m| m.as_object())
             .ok_or_else(|| WebSocketError::Parse("Missing 'mids' object".to_string()))?;
 
-        // For now, we'll just take the first symbol
-        // In a real implementation, we'd emit multiple events or filter by subscription
-        if let Some((symbol, price_val)) = mids.iter().next() {
-            let price = price_val.as_str()
+        let now = crate::core::utils::timestamp_millis() as i64;
+        let mut events = Vec::with_capacity(mids.len());
+
+        for (symbol, price_val) in mids.iter() {
+            if let Some(price) = price_val.as_str()
                 .and_then(|s| s.parse::<f64>().ok())
                 .or_else(|| price_val.as_f64())
-                .ok_or_else(|| WebSocketError::Parse("Invalid price format".to_string()))?;
-
-            let ticker = crate::core::Ticker {
-                symbol: symbol.clone(),
-                last_price: price,
-                bid_price: None,
-                ask_price: None,
-                high_24h: None,
-                low_24h: None,
-                volume_24h: None,
-                quote_volume_24h: None,
-                price_change_24h: None,
-                price_change_percent_24h: None,
-                timestamp: crate::core::utils::timestamp_millis() as i64,
-            };
-
-            return Ok(Some(StreamEvent::Ticker(ticker)));
+            {
+                events.push(StreamEvent::Ticker(crate::core::Ticker {
+                    symbol: symbol.clone(),
+                    last_price: price,
+                    bid_price: None,
+                    ask_price: None,
+                    high_24h: None,
+                    low_24h: None,
+                    volume_24h: None,
+                    quote_volume_24h: None,
+                    price_change_24h: None,
+                    price_change_percent_24h: None,
+                    timestamp: now,
+                }));
+            }
         }
 
-        Ok(None)
+        Ok(events)
+    }
+
+    /// Parse `bbo` (best bid/offer) message → Ticker with bid_price/ask_price.
+    ///
+    /// Message format:
+    /// ```json
+    /// { "coin": "BTC", "time": 1234567890, "data": { "bid": ["50100.0", "0.5"], "ask": ["50101.0", "0.3"] } }
+    /// ```
+    fn parse_bbo(data: &Value) -> WebSocketResult<Vec<StreamEvent>> {
+        let parse_f64 = |val: &Value| -> Option<f64> {
+            val.as_str().and_then(|s| s.parse().ok()).or_else(|| val.as_f64())
+        };
+
+        let coin = match data.get("coin").and_then(|c| c.as_str()) {
+            Some(s) => s,
+            None => return Ok(vec![]),
+        };
+
+        let bbo_data = data.get("data").unwrap_or(data);
+
+        let bid_price = bbo_data.get("bid")
+            .and_then(|b| b.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(parse_f64);
+
+        let ask_price = bbo_data.get("ask")
+            .and_then(|a| a.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(parse_f64);
+
+        let last_price = bid_price
+            .zip(ask_price)
+            .map(|(b, a)| (b + a) / 2.0)
+            .or(bid_price)
+            .or(ask_price)
+            .unwrap_or(0.0);
+
+        let now = crate::core::utils::timestamp_millis() as i64;
+
+        Ok(vec![StreamEvent::Ticker(crate::core::Ticker {
+            symbol: coin.to_string(),
+            last_price,
+            bid_price,
+            ask_price,
+            high_24h: None,
+            low_24h: None,
+            volume_24h: None,
+            quote_volume_24h: None,
+            price_change_24h: None,
+            price_change_percent_24h: None,
+            timestamp: now,
+        })])
+    }
+
+    /// Parse `userFundings` message → FundingRate events per funding entry.
+    ///
+    /// Message format:
+    /// ```json
+    /// { "fundings": [ { "coin": "BTC", "fundingRate": "0.000012", "time": 1234567890 }, ... ] }
+    /// ```
+    fn parse_user_fundings(data: &Value) -> WebSocketResult<Vec<StreamEvent>> {
+        let parse_f64 = |val: &Value| -> Option<f64> {
+            val.as_str().and_then(|s| s.parse().ok()).or_else(|| val.as_f64())
+        };
+
+        let fundings = data.get("fundings")
+            .and_then(|f| f.as_array())
+            .map(|a| a.as_slice())
+            .unwrap_or(&[]);
+
+        let mut events = Vec::with_capacity(fundings.len());
+
+        for entry in fundings {
+            let coin = match entry.get("coin").and_then(|c| c.as_str()) {
+                Some(s) => s,
+                None => continue,
+            };
+            let rate = match entry.get("fundingRate")
+                .and_then(parse_f64)
+                .or_else(|| entry.get("funding").and_then(parse_f64))
+            {
+                Some(r) => r,
+                None => continue,
+            };
+            let timestamp = entry.get("time")
+                .and_then(|t| t.as_i64())
+                .unwrap_or_else(|| crate::core::utils::timestamp_millis() as i64);
+
+            events.push(StreamEvent::FundingRate {
+                symbol: coin.to_string(),
+                rate,
+                next_funding_time: None,
+                timestamp,
+            });
+        }
+
+        Ok(events)
     }
 
     /// Parse trades message

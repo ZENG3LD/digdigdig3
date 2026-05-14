@@ -1929,3 +1929,18 @@ impl FundingHistory for HyperliquidConnector {
         HyperliquidParser::parse_funding_payments(&response)
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EXTENDED METHODS (Hyperliquid-specific)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+impl HyperliquidConnector {
+    /// Get predicted (next-epoch) funding rates for all perpetual assets.
+    ///
+    /// POSTs `{"type": "predictedFundings"}` to the info endpoint.
+    /// Returns the raw JSON value — callers can parse the array of
+    /// `[coin, [[venue, predicted_rate], ...]]` entries as needed.
+    pub async fn get_predicted_fundings(&self) -> ExchangeResult<serde_json::Value> {
+        self.info_request(InfoType::PredictedFundings, serde_json::json!({})).await
+    }
+}

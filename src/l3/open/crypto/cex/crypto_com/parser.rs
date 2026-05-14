@@ -222,6 +222,24 @@ impl CryptoComParser {
         })
     }
 
+    /// Parse insurance fund balance from `public/get-insurance` response.
+    ///
+    /// Returns `(instrument_type, balance_usd)` from the first data entry.
+    pub fn parse_insurance(response: &Value) -> ExchangeResult<(String, f64)> {
+        Self::check_response(response)?;
+        let result = Self::extract_result(response)?;
+        let data = result.get("data")
+            .and_then(|d| d.as_array())
+            .and_then(|arr| arr.first())
+            .ok_or_else(|| ExchangeError::Parse("No insurance data".to_string()))?;
+
+        let instrument_type = Self::get_str(data, "instrument_type")
+            .unwrap_or("")
+            .to_string();
+        let balance = Self::require_f64(data, "balance")?;
+        Ok((instrument_type, balance))
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // TRADING
     // ═══════════════════════════════════════════════════════════════════════════

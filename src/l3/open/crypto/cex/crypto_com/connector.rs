@@ -247,6 +247,31 @@ impl CryptoComConnector {
         CryptoComParser::check_response(&response)?;
         Ok(response)
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // DERIVATIVES MARKET DATA (public)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Get expired futures settlement prices.
+    ///
+    /// `instrument_type`: `"FUTURE"` or `"FUTURE_COMBO"`.
+    /// Returns the settlement price for recently expired futures contracts.
+    pub async fn get_expired_settlement_price(
+        &self,
+        instrument_type: &str,
+    ) -> ExchangeResult<Value> {
+        let params = json!({ "instrument_type": instrument_type });
+        self.request(CryptoComEndpoint::GetExpiredSettlementPrice, params).await
+    }
+
+    /// Get insurance fund balance.
+    ///
+    /// `instrument_type`: `"PERPETUAL_SWAP"` or `"FUTURE"`.
+    /// Returns the current insurance fund balance used to cover losses on liquidations.
+    pub async fn get_insurance(&self, instrument_type: &str) -> ExchangeResult<Value> {
+        let params = json!({ "instrument_type": instrument_type });
+        self.request(CryptoComEndpoint::GetInsurance, params).await
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

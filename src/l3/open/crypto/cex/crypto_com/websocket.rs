@@ -101,6 +101,14 @@ pub enum WsEvent {
     Ticker(Value),
     OrderBook(Value),
     Trade(Value),
+    /// Mark price update (`mark.<instrument>` channel)
+    MarkPrice(Value),
+    /// Index price update (`index.<instrument>` channel)
+    IndexPrice(Value),
+    /// Funding rate update (`funding.<instrument>` channel)
+    Funding(Value),
+    /// Settlement price update (`settlement.<instrument>` channel)
+    Settlement(Value),
     UserOrder(Value),
     UserBalance(Value),
     Heartbeat,
@@ -372,6 +380,41 @@ impl CryptoComWebSocket {
                 let trade = super::parser::CryptoComParser::parse_ws_trade(data).ok()?;
                 Some(StreamEvent::Trade(trade))
             }
+            WsEvent::MarkPrice(data) => {
+                // mark.<instrument> — fields: i (symbol), mp (mark price), ip (index price), t (timestamp)
+                let symbol = data.get("i").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let mark_price = data.get("mp")
+                    .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64()))
+                    .unwrap_or(0.0);
+                let index_price = data.get("ip")
+                    .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64()));
+                let timestamp = data.get("t").and_then(|v| v.as_i64()).unwrap_or(0);
+                Some(StreamEvent::MarkPrice { symbol, mark_price, index_price, timestamp })
+            }
+            WsEvent::IndexPrice(data) => {
+                // index.<instrument> — fields: i (symbol), v (value), t (timestamp)
+                let symbol = data.get("i").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let price = data.get("v")
+                    .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64()))
+                    .unwrap_or(0.0);
+                let timestamp = data.get("t").and_then(|v| v.as_i64()).unwrap_or(0);
+                Some(StreamEvent::IndexPrice { symbol, price, timestamp })
+            }
+            WsEvent::Funding(data) => {
+                // funding.<instrument> — fields: i (symbol), fr (funding rate), t (timestamp)
+                let symbol = data.get("i").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let rate = data.get("fr")
+                    .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64()))
+                    .unwrap_or(0.0);
+                let timestamp = data.get("t").and_then(|v| v.as_i64()).unwrap_or(0);
+                Some(StreamEvent::FundingRate { symbol, rate, next_funding_time: None, timestamp })
+            }
+            WsEvent::Settlement(_) => {
+                // settlement.<instrument> — periodic settlement for futures/perpetuals.
+                // No dedicated StreamEvent for settlement; emit as MarkPrice with settlement price.
+                // Callers needing raw settlement data should listen to the legacy WsEvent channel.
+                None
+            }
             WsEvent::UserOrder(_) | WsEvent::UserBalance(_) => {
                 // Private stream events - not parsed to StreamEvent yet
                 None
@@ -462,6 +505,10 @@ impl CryptoComWebSocket {
             "ticker" => Some(WsEvent::Ticker(data)),
             "book" => Some(WsEvent::OrderBook(data)),
             "trade" => Some(WsEvent::Trade(data)),
+            "mark" => Some(WsEvent::MarkPrice(data)),
+            "index" => Some(WsEvent::IndexPrice(data)),
+            "funding" => Some(WsEvent::Funding(data)),
+            "settlement" => Some(WsEvent::Settlement(data)),
             "user.order" => Some(WsEvent::UserOrder(data)),
             "user.balance" => Some(WsEvent::UserBalance(data)),
             _ => None,
@@ -583,6 +630,26 @@ impl CryptoComWebSocket {
         self.subscribe_channels(vec![channel]).await
     }
 
+    /// Subscribe to mark price channel (`mark.<instrument>`)
+    pub async fn subscribe_mark_price(&mut self, instrument_name: &str) -> ExchangeResult<()> {
+        let channel = format!("mark.{}", instrument_name);
+        self.subscribe_channels(vec![channel]).await
+    }
+
+    /// Subscribe to index price channel (`index.<instrument>`)
+    pub async fn subscribe_index_price(&mut self, instrument_name: &str) -> ExchangeResult<()> {
+        let channel = format!("index.{}", instrument_name);
+        self.subscribe_channels(vec![channel]).await
+    }
+
+    /// Subscribe to funding rate channel (`funding.<instrument>`)
+    ///
+    /// Only applicable to perpetual instruments (e.g. `BTCUSD-PERP`).
+    pub async fn subscribe_funding_rate(&mut self, instrument_name: &str) -> ExchangeResult<()> {
+        let channel = format!("funding.{}", instrument_name);
+        self.subscribe_channels(vec![channel]).await
+    }
+
     /// Subscribe to user balance updates
     pub async fn subscribe_user_balance(&mut self) -> ExchangeResult<()> {
         if !self.is_user_stream {
@@ -659,6 +726,12 @@ impl CryptoComWebSocket {
                 vec![format!("book.{}.{}", symbol_str, depth)]
             }
             StreamType::Kline { interval } => vec![format!("candlestick.{}.{}", interval, symbol_str)],
+            StreamType::MarkPrice => vec![
+                format!("mark.{}", symbol_str),
+                format!("index.{}", symbol_str),
+            ],
+            StreamType::FundingRate => vec![format!("funding.{}", symbol_str)],
+            StreamType::IndexPrice => vec![format!("index.{}", symbol_str)],
             StreamType::OrderUpdate => vec![format!("user.order.{}", symbol_str)],
             StreamType::BalanceUpdate => vec!["user.balance".to_string()],
             _ => vec![],

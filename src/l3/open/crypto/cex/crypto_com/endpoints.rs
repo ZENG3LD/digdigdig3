@@ -61,6 +61,10 @@ pub enum CryptoComEndpoint {
     GetTrades,
     GetTickers,
     GetValuations,
+    /// GET public/get-expired-settlement-price — settlement price for expired futures
+    GetExpiredSettlementPrice,
+    /// GET public/get-insurance — insurance fund balance
+    GetInsurance,
 
     // === TRADING ===
     CreateOrder,
@@ -126,6 +130,8 @@ impl CryptoComEndpoint {
             Self::GetTrades => "public/get-trades",
             Self::GetTickers => "public/get-tickers",
             Self::GetValuations => "public/get-valuations",
+            Self::GetExpiredSettlementPrice => "public/get-expired-settlement-price",
+            Self::GetInsurance => "public/get-insurance",
 
             // Trading
             Self::CreateOrder => "private/create-order",

@@ -86,6 +86,24 @@ pub enum StreamType {
     Basis,
     /// Option Greeks (delta, gamma, vega, theta, rho) and implied volatility
     OptionGreeks,
+    /// Volatility index (e.g. DVOL)
+    VolatilityIndex,
+    /// Block trade / RFQ event
+    BlockTrade,
+    /// Auction event (indicative price, matched state)
+    AuctionEvent,
+    /// Market warning / halt notification
+    MarketWarning,
+    /// Full order-level (L3) orderbook update
+    OrderbookL3,
+    /// Settlement event (expiry/delivery)
+    SettlementEvent,
+    /// Risk limit tier update
+    RiskLimit,
+    /// Predicted funding rate before settlement
+    PredictedFunding,
+    /// Funding settlement (actual paid rate)
+    FundingSettlement,
 
     // ═══════════════════════════════════════════════════════════════════════════
     // PRIVATE STREAMS (требуют авторизации)
@@ -312,6 +330,88 @@ pub enum StreamEvent {
         mark_iv: Option<f64>,
         bid_iv: Option<f64>,
         ask_iv: Option<f64>,
+        timestamp: i64,
+    },
+
+    /// Volatility index (e.g. DVOL.BTC)
+    VolatilityIndex {
+        symbol: String,
+        value: f64,
+        timestamp: i64,
+    },
+
+    /// Block trade / RFQ event
+    BlockTrade {
+        symbol: String,
+        block_id: String,
+        price: f64,
+        quantity: f64,
+        side: TradeSide,
+        timestamp: i64,
+        is_iv: bool,
+    },
+
+    /// Auction event (indicative price, matched state)
+    AuctionEvent {
+        symbol: String,
+        auction_id: String,
+        indicative_price: Option<f64>,
+        indicative_qty: Option<f64>,
+        state: String,
+        timestamp: i64,
+    },
+
+    /// Market warning / halt notification
+    MarketWarning {
+        symbol: String,
+        warning_kind: String,
+        message: String,
+        timestamp: i64,
+    },
+
+    /// Full order-level (L3) orderbook update
+    OrderbookL3 {
+        symbol: String,
+        side: OrderSide,
+        order_id: String,
+        price: f64,
+        quantity: f64,
+        action: String,
+        timestamp: i64,
+    },
+
+    /// Settlement event (expiry/delivery)
+    SettlementEvent {
+        symbol: String,
+        settlement_price: f64,
+        settlement_time: i64,
+        timestamp: i64,
+    },
+
+    /// Risk limit tier update
+    RiskLimit {
+        symbol: String,
+        tier: u32,
+        max_leverage: f64,
+        max_position_value: f64,
+        maintenance_margin_rate: f64,
+        initial_margin_rate: f64,
+        timestamp: i64,
+    },
+
+    /// Predicted funding rate before settlement
+    PredictedFunding {
+        symbol: String,
+        predicted_rate: f64,
+        next_funding_time: i64,
+        timestamp: i64,
+    },
+
+    /// Funding settlement (actual paid rate)
+    FundingSettlement {
+        symbol: String,
+        settled_rate: f64,
+        settlement_time: i64,
         timestamp: i64,
     },
 

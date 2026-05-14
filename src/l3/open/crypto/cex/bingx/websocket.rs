@@ -551,6 +551,7 @@ impl BingxWebSocket {
                 let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, _account_type);
                 format!("{}@fundingRate", symbol)
             }
+            _ => String::new(),
         }
     }
 

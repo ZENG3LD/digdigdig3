@@ -427,6 +427,7 @@ impl GateioWebSocket {
             StreamType::OrderUpdate => format!("{}.orders", prefix),
             StreamType::BalanceUpdate => format!("{}.balances", prefix),
             StreamType::PositionUpdate => format!("{}.positions", prefix),
+            _ => String::new(),
         }
     }
 
@@ -448,6 +449,7 @@ impl GateioWebSocket {
             StreamType::OrderUpdate => vec![symbol],
             StreamType::BalanceUpdate => vec![],
             StreamType::PositionUpdate => vec![symbol],
+            _ => vec![],
         }
     }
 

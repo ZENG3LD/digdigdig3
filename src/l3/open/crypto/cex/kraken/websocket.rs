@@ -440,6 +440,7 @@ impl KrakenWebSocket {
             StreamType::OrderUpdate => "executions",
             StreamType::BalanceUpdate => "balances",
             StreamType::PositionUpdate => "executions", // Position updates in executions channel
+            _ => "",
         };
 
         // Format symbol as BTC/USD (Kraken v2 WebSocket format)

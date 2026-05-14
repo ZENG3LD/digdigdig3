@@ -235,6 +235,7 @@ fn subscription_id(request: &SubscriptionRequest) -> String {
         StreamType::OrderUpdate => "order-update",
         StreamType::BalanceUpdate => "balance-update",
         StreamType::PositionUpdate => "position-update",
+        _ => "other",
     };
     format!("{}-{}", stream_name, ticker)
 }

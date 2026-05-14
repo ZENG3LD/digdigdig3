@@ -582,6 +582,7 @@ impl KuCoinWebSocket {
             StreamType::PositionUpdate => {
                 "/contract/positionAll".to_string()
             }
+            _ => String::new(),
         }
     }
 

@@ -294,15 +294,18 @@ impl BybitWebSocket {
         // Handle control messages
         match msg.op.as_deref() {
             Some("pong") => return Ok(vec![]),
-            Some("subscribe") => {
+            Some("ping") => return Ok(vec![]),
+            Some("subscribe") | Some("unsubscribe") => {
                 if msg.success == Some(false) {
                     return Err(WebSocketError::ProtocolError(
-                        msg.ret_msg.unwrap_or_else(|| "Subscription failed".to_string())
+                        msg.ret_msg.unwrap_or_else(|| "Subscribe/unsubscribe failed".to_string())
                     ));
                 }
                 return Ok(vec![]);
             }
             Some("auth") => return Ok(vec![]),
+            // Any other op-keyed message is a control frame — not a data event.
+            Some(_) if msg.topic.is_none() => return Ok(vec![]),
             _ => {}
         }
 
@@ -336,9 +339,14 @@ impl BybitWebSocket {
             } else {
                 data.clone()
             };
-            let ticker = Self::parse_ticker_ws(data)
-                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            let mut events: Vec<StreamEvent> = vec![StreamEvent::Ticker(ticker)];
+            // Delta updates may omit required fields (symbol, lastPrice) — skip Ticker
+            // emission for those; still extract supplementary events from present fields.
+            let ticker_opt = Self::parse_ticker_ws(data).ok();
+            let mut events: Vec<StreamEvent> = if let Some(ticker) = ticker_opt {
+                vec![StreamEvent::Ticker(ticker)]
+            } else {
+                vec![]
+            };
 
             // Extract supplementary events from linear/inverse ticker fields.
             // These fields are absent on spot tickers so we check presence.
@@ -480,16 +488,17 @@ impl BybitWebSocket {
             Ok(vec![])
         } else if topic.starts_with("insurance.") {
             // Insurance fund: "insurance.<coin>"
-            // Bybit pushes { symbols: [{ symbol, walletBalance, prevWalletBalance }] }
-            // or top-level { symbol, walletBalance, ... }
+            // Bybit V5 wire format (verified):
+            //   top-level fields: coin (string), balance (string)
+            //   inner array: symbols (plural) — [{ symbol, balance, ... }]
             let coin = topic.trim_start_matches("insurance.").to_string();
-            let balance = data["walletBalance"].as_str()
+            let balance = data["balance"].as_str()
                 .and_then(|s| s.parse::<f64>().ok())
                 .or_else(|| {
-                    // Some Bybit docs show an array variant under "symbols"
+                    // Inner array variant under "symbols" (plural)
                     data["symbols"].as_array()
                         .and_then(|arr| arr.first())
-                        .and_then(|item| item["walletBalance"].as_str())
+                        .and_then(|item| item["balance"].as_str())
                         .and_then(|s| s.parse::<f64>().ok())
                 })
                 .unwrap_or(0.0);
@@ -497,34 +506,6 @@ impl BybitWebSocket {
                 .or_else(|| data["ts"].as_i64())
                 .unwrap_or(0);
             Ok(vec![StreamEvent::InsuranceFund { symbol: coin, balance, timestamp }])
-        } else if topic.starts_with("mark_price_kline.") {
-            // Topic: "mark_price_kline.<interval>.<symbol>"
-            // Split: parts[0]=mark_price_kline, parts[1]=interval, parts[2]=symbol
-            let rest = topic.trim_start_matches("mark_price_kline.");
-            let (interval, symbol) = rest.split_once('.')
-                .map(|(i, s)| (i.to_string(), s.to_string()))
-                .unwrap_or_else(|| (String::new(), rest.to_string()));
-            let kline = Self::parse_kline_ws(data)
-                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(vec![StreamEvent::MarkPriceKline { symbol, interval, kline }])
-        } else if topic.starts_with("index_price_kline.") {
-            // Topic: "index_price_kline.<interval>.<symbol>"
-            let rest = topic.trim_start_matches("index_price_kline.");
-            let (interval, symbol) = rest.split_once('.')
-                .map(|(i, s)| (i.to_string(), s.to_string()))
-                .unwrap_or_else(|| (String::new(), rest.to_string()));
-            let kline = Self::parse_kline_ws(data)
-                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(vec![StreamEvent::IndexPriceKline { symbol, interval, kline }])
-        } else if topic.starts_with("premium_index_price_kline.") {
-            // Topic: "premium_index_price_kline.<interval>.<symbol>"
-            let rest = topic.trim_start_matches("premium_index_price_kline.");
-            let (interval, symbol) = rest.split_once('.')
-                .map(|(i, s)| (i.to_string(), s.to_string()))
-                .unwrap_or_else(|| (String::new(), rest.to_string()));
-            let kline = Self::parse_kline_ws(data)
-                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(vec![StreamEvent::PremiumIndexKline { symbol, interval, kline }])
         } else if topic == "order" {
             let event = Self::parse_order_update_ws(data)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
@@ -634,21 +615,9 @@ impl BybitWebSocket {
                 let coin = request.symbol.base.to_uppercase();
                 format!("insurance.{}", coin)
             }
-            StreamType::MarkPriceKline { interval } => {
-                let symbol = format_symbol(&request.symbol, account_type);
-                // TODO: verify topic format — documented as mark_price_kline.<interval>.<symbol>
-                format!("mark_price_kline.{}.{}", interval, symbol)
-            }
-            StreamType::IndexPriceKline { interval } => {
-                let symbol = format_symbol(&request.symbol, account_type);
-                // TODO: verify topic format — documented as index_price_kline.<interval>.<symbol>
-                format!("index_price_kline.{}.{}", interval, symbol)
-            }
-            StreamType::PremiumIndexKline { interval } => {
-                let symbol = format_symbol(&request.symbol, account_type);
-                // TODO: verify topic format — documented as premium_index_price_kline.<interval>.<symbol>
-                format!("premium_index_price_kline.{}.{}", interval, symbol)
-            }
+            // MarkPriceKline, IndexPriceKline, PremiumIndexKline: Bybit V5 does NOT
+            // provide these as WebSocket topics — they are REST-only endpoints.
+            // Use get_mark_price_kline() / get_index_price_kline() / get_premium_index_price_kline().
             // OpenInterest, LongShortRatio, AggTrade, CompositeIndex not supported
             // as dedicated Bybit WS topics — use REST polling for these.
             _ => String::new(),

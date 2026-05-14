@@ -363,11 +363,10 @@ impl BitgetWebSocket {
         if let (Some(action), Some(arg), Some(data)) = (&msg.action, &msg.arg, &msg.data) {
             // Only parse if we have valid data
             match Self::parse_data_message(action, arg, data, account_type) {
-                Ok(Some(event)) => {
-                    let _ = event_tx.send(Ok(event));
-                }
-                Ok(None) => {
-                    // No event generated, that's fine
+                Ok(events) => {
+                    for event in events {
+                        let _ = event_tx.send(Ok(event));
+                    }
                 }
                 Err(_e) => {
                     // Silently skip unrecognised data messages — parse errors on
@@ -381,13 +380,19 @@ impl BitgetWebSocket {
         Ok(())
     }
 
-    /// Parse data message to StreamEvent
+    /// Parse data message to 0-N StreamEvents.
+    ///
+    /// Most channels return exactly one event. The `ticker` channel may return
+    /// up to four events: `Ticker` plus `FundingRate`, `MarkPrice`, and
+    /// `OpenInterestUpdate` when those fields are present in futures tickers.
     fn parse_data_message(
         _action: &str,
         arg: &Value,
         data: &Value,
         _account_type: AccountType,
-    ) -> WebSocketResult<Option<StreamEvent>> {
+    ) -> WebSocketResult<Vec<StreamEvent>> {
+        use crate::core::types::TradeSide;
+
         // Extract channel from arg
         let channel = arg.get("channel")
             .and_then(|c| c.as_str())
@@ -396,51 +401,155 @@ impl BitgetWebSocket {
         // Extract instId from arg as fallback symbol identifier
         let inst_id_fallback = arg.get("instId").and_then(|v| v.as_str());
 
+        let parse_f64_field = |v: &Value| -> Option<f64> {
+            v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
+        };
+
         // Match by channel to determine event type
         match channel {
             "ticker" => {
                 let ticker = BitgetParser::parse_ws_ticker(data)
                     .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-                Ok(Some(StreamEvent::Ticker(ticker)))
+
+                let mut events: Vec<StreamEvent> = Vec::with_capacity(4);
+                let symbol = ticker.symbol.clone();
+                let ts = ticker.timestamp;
+                events.push(StreamEvent::Ticker(ticker));
+
+                // Get underlying ticker_data object for supplementary fields
+                let ticker_data = if let Some(arr) = data.as_array() {
+                    arr.first().cloned().unwrap_or(serde_json::Value::Null)
+                } else {
+                    data.clone()
+                };
+
+                // FundingRate — present on futures tickers
+                if let Some(rate) = ticker_data.get("fundingRate").and_then(|v| parse_f64_field(v)) {
+                    let next_funding_time = ticker_data.get("fundingTime")
+                        .and_then(|v| parse_f64_field(v))
+                        .map(|ms| ms as i64);
+                    events.push(StreamEvent::FundingRate {
+                        symbol: symbol.clone(),
+                        rate,
+                        next_funding_time,
+                        timestamp: ts,
+                    });
+                }
+
+                // MarkPrice — present on futures tickers (markPr field)
+                if let Some(mark_price) = ticker_data.get("markPr").and_then(|v| parse_f64_field(v)) {
+                    let index_price = ticker_data.get("indexPr").and_then(|v| parse_f64_field(v));
+                    events.push(StreamEvent::MarkPrice {
+                        symbol: symbol.clone(),
+                        mark_price,
+                        index_price,
+                        timestamp: ts,
+                    });
+                }
+
+                // OpenInterestUpdate — holdingAmount is OI in base contracts
+                if let Some(open_interest) = ticker_data.get("holdingAmount").and_then(|v| parse_f64_field(v)) {
+                    events.push(StreamEvent::OpenInterestUpdate {
+                        symbol,
+                        open_interest,
+                        open_interest_value: None,
+                        timestamp: ts,
+                    });
+                }
+
+                Ok(events)
             }
             "trade" => {
                 let trade = BitgetParser::parse_ws_trade(data, inst_id_fallback)
                     .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-                Ok(Some(StreamEvent::Trade(trade)))
+                Ok(vec![StreamEvent::Trade(trade)])
             }
             "books" | "books5" | "books15" => {
                 let delta = BitgetParser::parse_ws_orderbook_delta(data)
                     .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-                Ok(Some(delta))
+                Ok(vec![delta])
             }
             channel if channel.starts_with("candle") => {
                 let kline = BitgetParser::parse_ws_kline(data)
                     .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-                Ok(Some(StreamEvent::Kline(kline)))
+                Ok(vec![StreamEvent::Kline(kline)])
             }
             "orders" => {
                 let event = BitgetParser::parse_ws_order_update(data)
                     .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-                Ok(Some(StreamEvent::OrderUpdate(event)))
+                Ok(vec![StreamEvent::OrderUpdate(event)])
             }
             "fill" => {
-                // Bitget fill channel - could be mapped to trade or order update
-                // For now, skip
-                Ok(None)
+                // Bitget fill channel - skip for now
+                Ok(vec![])
             }
             "account" => {
                 let event = BitgetParser::parse_ws_balance_update(data)
                     .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-                Ok(Some(StreamEvent::BalanceUpdate(event)))
+                Ok(vec![StreamEvent::BalanceUpdate(event)])
             }
             "positions" => {
                 let event = BitgetParser::parse_ws_position_update(data)
                     .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-                Ok(Some(StreamEvent::PositionUpdate(event)))
+                Ok(vec![StreamEvent::PositionUpdate(event)])
+            }
+            "funding-rate" => {
+                // Bitget dedicated funding-rate channel
+                let ticker_data = if let Some(arr) = data.as_array() {
+                    arr.first().cloned().unwrap_or(serde_json::Value::Null)
+                } else {
+                    data.clone()
+                };
+                let symbol = ticker_data.get("symbol")
+                    .or_else(|| ticker_data.get("instId"))
+                    .and_then(|v| v.as_str())
+                    .or(inst_id_fallback)
+                    .unwrap_or("")
+                    .to_string();
+                let Some(rate) = ticker_data.get("fundingRate").and_then(|v| parse_f64_field(v)) else {
+                    return Ok(vec![]);
+                };
+                let next_funding_time = ticker_data.get("fundingTime")
+                    .and_then(|v| parse_f64_field(v))
+                    .map(|ms| ms as i64);
+                let timestamp = ticker_data.get("ts")
+                    .and_then(|v| parse_f64_field(v))
+                    .map(|ms| ms as i64)
+                    .unwrap_or(0);
+                Ok(vec![StreamEvent::FundingRate { symbol, rate, next_funding_time, timestamp }])
+            }
+            "mark-price" => {
+                // Bitget dedicated mark-price channel
+                let ticker_data = if let Some(arr) = data.as_array() {
+                    arr.first().cloned().unwrap_or(serde_json::Value::Null)
+                } else {
+                    data.clone()
+                };
+                let symbol = ticker_data.get("symbol")
+                    .or_else(|| ticker_data.get("instId"))
+                    .and_then(|v| v.as_str())
+                    .or(inst_id_fallback)
+                    .unwrap_or("")
+                    .to_string();
+                let Some(mark_price) = ticker_data.get("markPr")
+                    .or_else(|| ticker_data.get("markPrice"))
+                    .and_then(|v| parse_f64_field(v)) else {
+                    return Ok(vec![]);
+                };
+                let index_price = ticker_data.get("indexPr")
+                    .or_else(|| ticker_data.get("indexPrice"))
+                    .and_then(|v| parse_f64_field(v));
+                let timestamp = ticker_data.get("ts")
+                    .and_then(|v| parse_f64_field(v))
+                    .map(|ms| ms as i64)
+                    .unwrap_or(0);
+                Ok(vec![StreamEvent::MarkPrice { symbol, mark_price, index_price, timestamp }])
             }
             _ => {
                 // Unknown channel - ignore
-                Ok(None)
+                // Suppress unused import warning
+                let _ = TradeSide::Buy;
+                Ok(vec![])
             }
         }
     }
@@ -529,6 +638,7 @@ impl BitgetWebSocket {
             StreamType::PositionUpdate => {
                 ("positions", "default".to_string())
             }
+            _ => ("", String::new()),
         };
 
         vec![SubscriptionArg {

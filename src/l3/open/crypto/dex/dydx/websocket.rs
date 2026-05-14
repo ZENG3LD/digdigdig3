@@ -485,7 +485,6 @@ impl DydxWebSocket {
                     .unwrap_or(now);
 
                 let liquidity = fill.get("liquidity").and_then(|v| v.as_str()).unwrap_or("");
-                let fill_type = fill.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
                 // Represent fill as an OrderUpdate with filled_quantity set
                 events.push(StreamEvent::OrderUpdate(OrderUpdateEvent {
@@ -507,9 +506,9 @@ impl DydxWebSocket {
                     timestamp,
                 }));
 
-                // Detect liquidation: taker fill with "LIQUIDAT" in type
-                let is_liquidation = liquidity.eq_ignore_ascii_case("TAKER")
-                    && fill_type.to_uppercase().contains("LIQUIDAT");
+                // Detect liquidation: fill where liquidity field == "LIQUIDATED"
+                // (verified from dYdX v4 Indexer API docs — not based on fill `type`).
+                let is_liquidation = liquidity.eq_ignore_ascii_case("LIQUIDATED");
 
                 if is_liquidation {
                     let liq_side = match fill.get("side").and_then(|v| v.as_str()) {

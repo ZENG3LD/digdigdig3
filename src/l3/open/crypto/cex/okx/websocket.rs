@@ -788,7 +788,7 @@ impl WebSocketConnector for OkxWebSocket {
                 ).await;
             }
             crate::core::StreamType::OptionGreeks => {
-                // OKX opt-summary uses instFamily (e.g. "BTC-USD"), not instId.
+                // OKX opt-summary uses uly (e.g. "BTC-USD"), not instId.
                 let inst_family = format!(
                     "{}-{}",
                     request.symbol.base.to_uppercase(),
@@ -796,7 +796,7 @@ impl WebSocketConnector for OkxWebSocket {
                 );
                 let sub_msg = json!({
                     "op": "subscribe",
-                    "args": [{ "channel": "opt-summary", "instFamily": inst_family }]
+                    "args": [{ "channel": "opt-summary", "uly": inst_family }]
                 });
                 let mut sink_guard = self.ws_sink.lock().await;
                 if let Some(sink) = sink_guard.as_mut() {
@@ -872,7 +872,7 @@ impl WebSocketConnector for OkxWebSocket {
                 );
                 let unsub_msg = json!({
                     "op": "unsubscribe",
-                    "args": [{ "channel": "opt-summary", "instFamily": inst_family }]
+                    "args": [{ "channel": "opt-summary", "uly": inst_family }]
                 });
                 let mut sink_guard = self.ws_sink.lock().await;
                 if let Some(sink) = sink_guard.as_mut() {

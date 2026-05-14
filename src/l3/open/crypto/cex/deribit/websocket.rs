@@ -487,15 +487,15 @@ impl DeribitWebSocket {
                 timestamp,
             };
             vec![StreamEvent::Ticker(ticker)]
-        } else if channel.starts_with("estimated_delivery_price.") {
-            // Deribit estimated_delivery_price.<index> — settlement estimate.
+        } else if channel.starts_with("estimated_expiration_price.") {
+            // Deribit estimated_expiration_price.<index> — settlement estimate.
             // data: { price, index_name, timestamp }  (same shape as deribit_price_index)
             let price = data.get("price").and_then(|v| v.as_f64());
             let timestamp = data.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
             let index_name = data.get("index_name")
                 .and_then(|v| v.as_str())
                 .unwrap_or(
-                    channel.strip_prefix("estimated_delivery_price.").unwrap_or(channel)
+                    channel.strip_prefix("estimated_expiration_price.").unwrap_or(channel)
                 );
             if let Some(px) = price {
                 vec![StreamEvent::IndexPrice {
@@ -518,6 +518,24 @@ impl DeribitWebSocket {
                 vec![StreamEvent::IndexPrice {
                     symbol: index_name.to_string(),
                     price: px,
+                    timestamp,
+                }]
+            } else {
+                vec![]
+            }
+        } else if channel.starts_with("perpetual.") {
+            // Deribit perpetual.<instrument>.<interval> — interest rate for perpetuals.
+            // data: { interest_rate, timestamp, instrument_name }
+            // Emit as FundingRate (Deribit calls it interest_rate, equivalent concept).
+            let timestamp = data.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+            let instrument = data.get("instrument_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(channel.split('.').nth(1).unwrap_or(""));
+            if let Some(rate) = data.get("interest_rate").and_then(|v| v.as_f64()) {
+                vec![StreamEvent::FundingRate {
+                    symbol: instrument.to_string(),
+                    rate,
+                    next_funding_time: None,
                     timestamp,
                 }]
             } else {

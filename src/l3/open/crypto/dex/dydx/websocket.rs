@@ -304,7 +304,11 @@ impl DydxWebSocket {
                 // The v4_markets channel is global and contains ALL markets.
                 // Pass the target symbol so the parser extracts only the subscribed market.
                 match DydxParser::parse_ws_ticker(&data, target_ticker_symbol) {
-                    Ok(ticker) => Some(Ok(StreamEvent::Ticker(ticker))),
+                    Ok(ticker) => {
+                        // Return only the primary Ticker event here.
+                        // The caller (start_message_loop) handles multi-emit via parse_v4_markets_events.
+                        Some(Ok(StreamEvent::Ticker(ticker)))
+                    }
                     Err(_) => None, // Symbol not present in this update — skip silently.
                 }
             }
@@ -402,6 +406,16 @@ impl DydxWebSocket {
                                 .unwrap_or_default()
                         };
 
+                        // For v4_markets, emit Ticker + FundingRate + IndexPrice (multi-emit).
+                        // For all other channels, emit a single event via handle_message.
+                        if !ticker_sym.is_empty() && text.contains("v4_markets") {
+                            let extra = Self::parse_v4_markets_extra(&text, &ticker_sym);
+                            if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                                for event in extra {
+                                    let _ = tx.send(Ok(event));
+                                }
+                            }
+                        }
                         if let Some(event) = Self::handle_message(&text, &ticker_sym) {
                             if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
                                 let _ = tx.send(event);
@@ -446,6 +460,63 @@ impl DydxWebSocket {
     fn channel_requires_id(channel: &str) -> bool {
         // v4_markets and v4_blockheight do not require an id
         !matches!(channel, "v4_markets" | "v4_blockheight")
+    }
+
+    /// Extract FundingRate and IndexPrice events from a raw `v4_markets` message.
+    ///
+    /// `v4_markets` pushes `nextFundingRate` and `oraclePrice` per market.
+    /// The Ticker is already emitted by `handle_message`; this method emits
+    /// the additional derivative events so consumers get the full picture.
+    fn parse_v4_markets_extra(text: &str, target_symbol: &str) -> Vec<StreamEvent> {
+        let data: serde_json::Value = match serde_json::from_str(text) {
+            Ok(v) => v,
+            Err(_) => return vec![],
+        };
+
+        let contents = match data.get("contents") {
+            Some(c) => c,
+            None => return vec![],
+        };
+
+        // Support both snapshot (contents.markets.{SYM}) and delta (contents IS the map)
+        let markets = contents.get("markets")
+            .and_then(|m| m.as_object())
+            .or_else(|| contents.as_object());
+
+        let market = match markets.and_then(|m| m.get(target_symbol)) {
+            Some(m) => m,
+            None => return vec![],
+        };
+
+        let get_f64_str = |key: &str| -> Option<f64> {
+            market.get(key).and_then(|v| {
+                v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+            })
+        };
+
+        let now = crate::core::utils::timestamp_millis() as i64;
+        let mut events = Vec::with_capacity(2);
+
+        // FundingRate
+        if let Some(rate) = get_f64_str("nextFundingRate") {
+            events.push(StreamEvent::FundingRate {
+                symbol: target_symbol.to_string(),
+                rate,
+                next_funding_time: None,
+                timestamp: now,
+            });
+        }
+
+        // IndexPrice (oraclePrice)
+        if let Some(idx_px) = get_f64_str("oraclePrice") {
+            events.push(StreamEvent::IndexPrice {
+                symbol: target_symbol.to_string(),
+                price: idx_px,
+                timestamp: now,
+            });
+        }
+
+        events
     }
 }
 

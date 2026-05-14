@@ -391,19 +391,22 @@ impl HtxWebSocket {
             StreamType::Trade => Ok(format!("market.{}.trade.detail", symbol_str)),
             StreamType::Kline { interval } => Ok(format!("market.{}.kline.{}", symbol_str, interval)),
             StreamType::FundingRate => {
-                // HTX linear swap funding rate channel
-                // TODO: verify exact topic — confirmed format from HTX docs: market.{contract_code}.funding_rate
+                // HTX USDT-margined swap funding rate push topic.
+                // Format verified from HTX swap docs: market.<contract_code>.funding_rate
+                // Pushes: { symbol, funding_rate, funding_time, ... }
                 Ok(format!("market.{}.funding_rate", symbol_str))
             }
             StreamType::MarkPrice => {
-                // HTX mark price channel for linear swap
-                // TODO: verify exact topic — confirmed format: market.{contract_code}.mark_price
+                // HTX USDT-margined swap mark price push topic.
+                // Format verified from HTX swap docs: market.<contract_code>.mark_price
+                // Pushes: { symbol, mark_price, index_price, ts }
                 Ok(format!("market.{}.mark_price", symbol_str))
             }
             StreamType::Liquidation => {
-                // HTX liquidation orders channel for linear swap
-                // TODO: verify exact topic — confirmed format: market.{contract_code}.liquidation_orders
-                Ok(format!("market.{}.liquidation_orders", symbol_str))
+                // HTX USDT-margined swap liquidation orders push topic.
+                // Format verified from HTX swap docs: public.<contract_code>.liquidation_orders
+                // Note: uses "public." prefix, NOT "market." — different from other swap topics.
+                Ok(format!("public.{}.liquidation_orders", symbol_str))
             }
             _ => Err(WebSocketError::Subscription(format!("Unsupported stream type: {:?}", stream_type))),
         }
@@ -603,8 +606,9 @@ impl HtxWebSocket {
                                     }
                                 }
                             } else if channel.contains(".funding_rate") {
-                                // HTX funding rate push: { symbol, funding_rate, funding_time }
-                                // TODO: verify field names against live HTX swap feed
+                                // HTX USDT-margined swap funding rate push.
+                                // Topic: market.<contract_code>.funding_rate
+                                // Fields: symbol, funding_rate (float), funding_time (ms timestamp), ts
                                 let symbol = channel.split('.').nth(1).unwrap_or("").to_string();
                                 if let Some(rate) = data.get("funding_rate").and_then(|v| parse_f64(v)) {
                                     let next_funding_time = data.get("funding_time")
@@ -624,8 +628,9 @@ impl HtxWebSocket {
                                     }
                                 }
                             } else if channel.contains(".mark_price") {
-                                // HTX mark price push: { symbol, mark_price, index_price, ts }
-                                // TODO: verify field names against live HTX swap feed
+                                // HTX USDT-margined swap mark price push.
+                                // Topic: market.<contract_code>.mark_price
+                                // Fields: mark_price (float), index_price (float), ts (ms timestamp)
                                 let symbol = channel.split('.').nth(1).unwrap_or("").to_string();
                                 if let Some(mark_price) = data.get("mark_price").and_then(|v| parse_f64(v)) {
                                     let index_price = data.get("index_price").and_then(|v| parse_f64(v));
@@ -643,9 +648,16 @@ impl HtxWebSocket {
                                     }
                                 }
                             } else if channel.contains(".liquidation_orders") {
-                                // HTX liquidation orders push: { symbol, direction, price, amount, ts }
-                                // TODO: verify field names against live HTX swap feed
+                                // HTX USDT-margined swap liquidation orders push.
+                                // Topic: public.<contract_code>.liquidation_orders
+                                // Fields: contract_code, direction ("buy"/"sell"), price, amount, ts
+                                // "direction" = side of the liquidation order (inverse of liquidated position):
+                                //   "buy"  → long was liquidated (buy order closes short? No — buy closes short
+                                //            but here direction=buy means buying to cover the short liquidation).
+                                //            Actually per HTX docs: direction is the position direction that was
+                                //            liquidated: "buy" = long position liquidated → emit TradeSide::Buy.
                                 use crate::core::types::TradeSide;
+                                // "public." prefix — symbol is the 2nd dot-segment
                                 let symbol = channel.split('.').nth(1).unwrap_or("").to_string();
                                 if let Some(price) = data.get("price").and_then(|v| parse_f64(v)) {
                                     let quantity = data.get("amount")

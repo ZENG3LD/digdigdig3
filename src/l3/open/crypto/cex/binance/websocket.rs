@@ -522,11 +522,17 @@ impl BinanceWebSocket {
                     .map_err(|e| WebSocketError::Parse(e.to_string()))?;
                 Ok(Some(StreamEvent::Trade(trade)))
             }
-            // Aggregate trade
+            // Aggregate trade — emits AggTrade (not Trade)
             "aggTrade" => {
-                let trade = Self::parse_agg_trade(data)
+                let event = Self::parse_agg_trade_event(data)
                     .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-                Ok(Some(StreamEvent::Trade(trade)))
+                Ok(Some(event))
+            }
+            // Forced liquidation order
+            "forceOrder" => {
+                let event = Self::parse_force_order(data)
+                    .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+                Ok(Some(event))
             }
             // Depth update (incremental)
             "depthUpdate" => {
@@ -613,6 +619,10 @@ impl BinanceWebSocket {
             StreamType::Kline { interval } => format!("{}@kline_{}", symbol, interval),
             StreamType::MarkPrice => format!("{}@markPrice", symbol),
             StreamType::FundingRate => format!("{}@markPrice", symbol), // Binance includes funding in mark price stream
+            // Per-symbol liquidation stream; Binance also has market-wide "!forceOrder@arr"
+            // but the combined-stream endpoint requires a symbol param, so we use per-symbol.
+            StreamType::Liquidation => format!("{}@forceOrder", symbol),
+            StreamType::AggTrade => format!("{}@aggTrade", symbol),
             _ => String::new(), // Private streams don't use stream names
         }
     }
@@ -683,8 +693,13 @@ impl BinanceWebSocket {
         })
     }
 
-    fn parse_agg_trade(data: &Value) -> ExchangeResult<crate::core::PublicTrade> {
-        use crate::core::PublicTrade;
+    /// Parse aggTrade WS event into `StreamEvent::AggTrade`.
+    ///
+    /// Binance fields: `a` aggregate_id, `s` symbol, `p` price, `q` qty,
+    /// `f` first_trade_id, `l` last_trade_id, `T` trade_time, `m` is_buyer_maker.
+    /// `m=true` → buyer was maker → taker sold → side = Sell.
+    /// `m=false` → buyer was taker → side = Buy.
+    fn parse_agg_trade_event(data: &Value) -> ExchangeResult<StreamEvent> {
         use crate::core::types::TradeSide;
 
         let parse_f64 = |key: &str| -> Option<f64> {
@@ -692,21 +707,59 @@ impl BinanceWebSocket {
                 .or_else(|| data.get(key).and_then(|v| v.as_f64()))
         };
 
-        // is_buyer_maker = true means buyer was maker (sell side), false means buyer was taker (buy side)
         let is_buyer_maker = data.get("m").and_then(|m| m.as_bool()).unwrap_or(false);
-        let side = if is_buyer_maker {
-            TradeSide::Sell
-        } else {
-            TradeSide::Buy
-        };
+        let side = if is_buyer_maker { TradeSide::Sell } else { TradeSide::Buy };
 
-        Ok(PublicTrade {
-            id: data.get("a").and_then(|a| a.as_i64()).map(|a| a.to_string()).unwrap_or_default(),
+        Ok(StreamEvent::AggTrade {
             symbol: data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+            aggregate_id: data.get("a").and_then(|a| a.as_i64()).unwrap_or(0),
             price: parse_f64("p").unwrap_or(0.0),
             quantity: parse_f64("q").unwrap_or(0.0),
+            first_trade_id: data.get("f").and_then(|f| f.as_i64()).unwrap_or(0),
+            last_trade_id: data.get("l").and_then(|l| l.as_i64()).unwrap_or(0),
             side,
             timestamp: data.get("T").and_then(|t| t.as_i64()).unwrap_or(0),
+        })
+    }
+
+    /// Parse forceOrder WS event into `StreamEvent::Liquidation`.
+    ///
+    /// Binance sends: `{"e":"forceOrder","E":event_time,"o":{...order fields...}}`.
+    /// Order `S` field is the side of the liquidation *order* — opposite to the
+    /// liquidated position: `S="SELL"` → long position liquidated → `TradeSide::Buy`;
+    /// `S="BUY"` → short position liquidated → `TradeSide::Sell`.
+    fn parse_force_order(data: &Value) -> ExchangeResult<StreamEvent> {
+        use crate::core::types::TradeSide;
+
+        let o = data.get("o")
+            .ok_or_else(|| ExchangeError::Parse("Missing 'o' field in forceOrder event".to_string()))?;
+
+        let parse_f64 = |key: &str| -> Option<f64> {
+            o.get(key).and_then(|v| v.as_str()).and_then(|s| s.parse().ok())
+                .or_else(|| o.get(key).and_then(|v| v.as_f64()))
+        };
+
+        let symbol = o.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string();
+
+        // Order S = side of the liquidation order, opposite of the liquidated position.
+        // S="SELL" means long was liquidated (exchange sells to close the long).
+        // S="BUY"  means short was liquidated (exchange buys to close the short).
+        let side = match o.get("S").and_then(|s| s.as_str()).unwrap_or("") {
+            "SELL" => TradeSide::Buy,  // long liquidated
+            _      => TradeSide::Sell, // short liquidated
+        };
+
+        let price = parse_f64("ap").unwrap_or_else(|| parse_f64("p").unwrap_or(0.0));
+        let quantity = parse_f64("q").unwrap_or(0.0);
+        let timestamp = o.get("T").and_then(|t| t.as_i64()).unwrap_or(0);
+
+        Ok(StreamEvent::Liquidation {
+            symbol,
+            side,
+            price,
+            quantity,
+            timestamp,
+            value: Some(price * quantity),
         })
     }
 

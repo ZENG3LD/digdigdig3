@@ -16,6 +16,7 @@ use crate::core::types::{
     UserTrade,
     FundingPayment, LedgerEntry, LedgerEntryType,
     AccountType,
+    LongShortRatio, OpenInterest,
 };
 
 /// Парсер ответов Binance API
@@ -1291,6 +1292,98 @@ impl BinanceParser {
             });
         }
         Ok(entries)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // LONG/SHORT RATIOS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse long/short ratio array from any of the four Binance endpoints.
+    ///
+    /// `ratio_type` must be one of: `"top_account"`, `"top_position"`,
+    /// `"global_account"`, `"taker"`.
+    ///
+    /// Per-endpoint field differences:
+    /// - `top_account` / `global_account`: `longAccount`, `shortAccount`, `longShortRatio`
+    /// - `top_position`: `longPosition`, `shortPosition`, `longShortRatio`
+    /// - `taker`: `buySellRatio`, `buyVol`, `sellVol`
+    pub fn parse_long_short_ratios(value: &Value, ratio_type: &str) -> ExchangeResult<Vec<LongShortRatio>> {
+        let arr = value.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected JSON array for long/short ratios".to_string()))?;
+
+        let mut result = Vec::with_capacity(arr.len());
+
+        for item in arr {
+            let symbol = Self::get_str(item, "symbol").unwrap_or("").to_string();
+            let timestamp = item.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0);
+
+            let (long_ratio, short_ratio, ratio) = if ratio_type == "taker" {
+                // Taker endpoint: buyVol / sellVol for ratios, buySellRatio as raw ratio
+                let buy_vol = Self::get_f64(item, "buyVol").unwrap_or(0.0);
+                let sell_vol = Self::get_f64(item, "sellVol").unwrap_or(0.0);
+                let total = buy_vol + sell_vol;
+                let (lr, sr) = if total > 0.0 {
+                    (buy_vol / total, sell_vol / total)
+                } else {
+                    (0.5, 0.5)
+                };
+                let ratio_val = Self::get_f64(item, "buySellRatio");
+                (lr, sr, ratio_val)
+            } else if ratio_type == "top_position" {
+                let lr = Self::get_f64(item, "longPosition").unwrap_or(0.0);
+                let sr = Self::get_f64(item, "shortPosition").unwrap_or(0.0);
+                let ratio_val = Self::get_f64(item, "longShortRatio");
+                (lr, sr, ratio_val)
+            } else {
+                // top_account, global_account
+                let lr = Self::get_f64(item, "longAccount").unwrap_or(0.0);
+                let sr = Self::get_f64(item, "shortAccount").unwrap_or(0.0);
+                let ratio_val = Self::get_f64(item, "longShortRatio");
+                (lr, sr, ratio_val)
+            };
+
+            result.push(LongShortRatio {
+                symbol,
+                ratio_type: ratio_type.to_string(),
+                long_ratio,
+                short_ratio,
+                ratio,
+                timestamp,
+            });
+        }
+
+        Ok(result)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // OPEN INTEREST HISTORY
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse open interest history array from `GET /futures/data/openInterestHist`.
+    ///
+    /// Binance returns: `[{"symbol":"BTCUSDT","sumOpenInterest":"12345.6",
+    /// "sumOpenInterestValue":"987654321.0","timestamp":1583139600000}]`
+    pub fn parse_open_interest_history(value: &Value) -> ExchangeResult<Vec<OpenInterest>> {
+        let arr = value.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected JSON array for OI history".to_string()))?;
+
+        let mut result = Vec::with_capacity(arr.len());
+
+        for item in arr {
+            let symbol = Self::get_str(item, "symbol").unwrap_or("").to_string();
+            let open_interest = Self::get_f64(item, "sumOpenInterest").unwrap_or(0.0);
+            let open_interest_value = Self::get_f64(item, "sumOpenInterestValue");
+            let timestamp = item.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0);
+
+            result.push(OpenInterest {
+                symbol,
+                open_interest,
+                open_interest_value,
+                timestamp,
+            });
+        }
+
+        Ok(result)
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

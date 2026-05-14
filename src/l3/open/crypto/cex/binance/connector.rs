@@ -36,6 +36,7 @@ use crate::core::types::{
     DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord,
     FundsHistoryFilter, FundsRecordType,
     SubAccountOperation, SubAccountResult,
+    LongShortRatio, OpenInterest,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
@@ -620,6 +621,147 @@ impl BinanceConnector {
             params.insert("limit".to_string(), l.to_string());
         }
         self.get(BinanceEndpoint::FuturesForceOrders, params, AccountType::FuturesCross).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // LONG/SHORT RATIOS + OI HISTORY
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Get top trader long/short account ratio history.
+    ///
+    /// Endpoint: `GET /futures/data/topLongShortAccountRatio` — no auth.
+    ///
+    /// `period`: `"5m"` | `"15m"` | `"30m"` | `"1h"` | `"2h"` | `"4h"` | `"6h"` | `"12h"` | `"1d"`.
+    pub async fn get_top_long_short_account_ratio(
+        &self,
+        symbol: &str,
+        period: &str,
+        limit: Option<u32>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<LongShortRatio>> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("period".to_string(), period.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        if let Some(s) = start_time {
+            params.insert("startTime".to_string(), s.to_string());
+        }
+        if let Some(e) = end_time {
+            params.insert("endTime".to_string(), e.to_string());
+        }
+        let v = self.get(BinanceEndpoint::FuturesLongShortRatio, params, AccountType::FuturesCross).await?;
+        BinanceParser::parse_long_short_ratios(&v, "top_account")
+    }
+
+    /// Get top trader long/short position ratio history.
+    ///
+    /// Endpoint: `GET /futures/data/topLongShortPositionRatio` — no auth.
+    pub async fn get_top_long_short_position_ratio(
+        &self,
+        symbol: &str,
+        period: &str,
+        limit: Option<u32>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<LongShortRatio>> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("period".to_string(), period.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        if let Some(s) = start_time {
+            params.insert("startTime".to_string(), s.to_string());
+        }
+        if let Some(e) = end_time {
+            params.insert("endTime".to_string(), e.to_string());
+        }
+        let v = self.get(BinanceEndpoint::FuturesTopLongShortPositionRatio, params, AccountType::FuturesCross).await?;
+        BinanceParser::parse_long_short_ratios(&v, "top_position")
+    }
+
+    /// Get global long/short account ratio history.
+    ///
+    /// Endpoint: `GET /futures/data/globalLongShortAccountRatio` — no auth.
+    pub async fn get_global_long_short_account_ratio(
+        &self,
+        symbol: &str,
+        period: &str,
+        limit: Option<u32>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<LongShortRatio>> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("period".to_string(), period.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        if let Some(s) = start_time {
+            params.insert("startTime".to_string(), s.to_string());
+        }
+        if let Some(e) = end_time {
+            params.insert("endTime".to_string(), e.to_string());
+        }
+        let v = self.get(BinanceEndpoint::FuturesGlobalLongShortAccountRatio, params, AccountType::FuturesCross).await?;
+        BinanceParser::parse_long_short_ratios(&v, "global_account")
+    }
+
+    /// Get taker long/short volume ratio history.
+    ///
+    /// Endpoint: `GET /futures/data/takerlongshortRatio` — no auth.
+    pub async fn get_taker_long_short_ratio(
+        &self,
+        symbol: &str,
+        period: &str,
+        limit: Option<u32>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<LongShortRatio>> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("period".to_string(), period.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        if let Some(s) = start_time {
+            params.insert("startTime".to_string(), s.to_string());
+        }
+        if let Some(e) = end_time {
+            params.insert("endTime".to_string(), e.to_string());
+        }
+        let v = self.get(BinanceEndpoint::FuturesTakerLongShortRatio, params, AccountType::FuturesCross).await?;
+        BinanceParser::parse_long_short_ratios(&v, "taker")
+    }
+
+    /// Get open interest history.
+    ///
+    /// Endpoint: `GET /futures/data/openInterestHist` — no auth.
+    pub async fn get_open_interest_history(
+        &self,
+        symbol: &str,
+        period: &str,
+        limit: Option<u32>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<OpenInterest>> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("period".to_string(), period.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        if let Some(s) = start_time {
+            params.insert("startTime".to_string(), s.to_string());
+        }
+        if let Some(e) = end_time {
+            params.insert("endTime".to_string(), e.to_string());
+        }
+        let v = self.get(BinanceEndpoint::FuturesOpenInterestHist, params, AccountType::FuturesCross).await?;
+        BinanceParser::parse_open_interest_history(&v)
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

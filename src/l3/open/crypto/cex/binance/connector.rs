@@ -583,6 +583,45 @@ impl BinanceConnector {
         self.get(BinanceEndpoint::FuturesPremiumIndex, params, AccountType::FuturesCross).await
     }
 
+    /// Get public liquidation orders (force-close events) for futures.
+    ///
+    /// Endpoint: `GET /fapi/v1/forceOrders` — no authentication required.
+    ///
+    /// # Parameters
+    /// - `symbol`          — filter by symbol (e.g. `"BTCUSDT"`); returns all symbols when `None`.
+    /// - `auto_close_type` — `"LIQUIDATION"` (forced liq) or `"ADL"` (auto-deleveraging).
+    /// - `start_time`      — Unix ms inclusive lower bound.
+    /// - `end_time`        — Unix ms inclusive upper bound.
+    /// - `limit`           — max records (default 100, max 1000).
+    ///
+    /// Returns raw JSON array; use `BinanceParser::parse_liquidations` to convert.
+    pub async fn get_force_orders(
+        &self,
+        symbol: Option<&str>,
+        auto_close_type: Option<&str>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        if let Some(s) = symbol {
+            params.insert("symbol".to_string(), s.to_string());
+        }
+        if let Some(t) = auto_close_type {
+            params.insert("autoCloseType".to_string(), t.to_string());
+        }
+        if let Some(s) = start_time {
+            params.insert("startTime".to_string(), s.to_string());
+        }
+        if let Some(e) = end_time {
+            params.insert("endTime".to_string(), e.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(BinanceEndpoint::FuturesForceOrders, params, AccountType::FuturesCross).await
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // FILL / TRADE HISTORY
     // ═══════════════════════════════════════════════════════════════════════════

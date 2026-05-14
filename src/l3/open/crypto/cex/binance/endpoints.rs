@@ -148,6 +148,8 @@ pub enum BinanceEndpoint {
     FuturesPremiumIndex,
     /// GET /futures/data/topLongShortAccountRatio — long/short ratio
     FuturesLongShortRatio,
+    /// GET /fapi/v1/forceOrders — public liquidation orders (force-close events)
+    FuturesForceOrders,
 
     // === FILL/TRADE HISTORY ===
     /// GET /api/v3/myTrades — spot trade fills (signed)
@@ -267,6 +269,7 @@ impl BinanceEndpoint {
             Self::FuturesOpenInterestHist => "/futures/data/openInterestHist",
             Self::FuturesPremiumIndex => "/fapi/v1/premiumIndex",
             Self::FuturesLongShortRatio => "/futures/data/topLongShortAccountRatio",
+            Self::FuturesForceOrders => "/fapi/v1/forceOrders",
 
             // Fill/Trade History
             Self::SpotMyTrades => "/api/v3/myTrades",
@@ -319,7 +322,8 @@ impl BinanceEndpoint {
             | Self::FuturesOpenInterest
             | Self::FuturesOpenInterestHist
             | Self::FuturesPremiumIndex
-            | Self::FuturesLongShortRatio => false,
+            | Self::FuturesLongShortRatio
+            | Self::FuturesForceOrders => false,
 
             // Private endpoints
             _ => true,

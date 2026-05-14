@@ -1292,6 +1292,65 @@ impl BinanceParser {
         }
         Ok(entries)
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // LIQUIDATIONS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse a liquidation orders array returned by `GET /fapi/v1/forceOrders`.
+    ///
+    /// Binance response is a JSON array of objects with fields:
+    /// ```json
+    /// [{"symbol":"BTCUSDT","side":"BUY","price":"28000","origQty":"0.01",
+    ///   "executedQty":"0.01","time":1699999999000,"autoCloseType":"LIQUIDATION",...}]
+    /// ```
+    ///
+    /// `side` semantics: `"BUY"` means the exchange bought (short was liquidated);
+    /// `"SELL"` means the exchange sold (long was liquidated).
+    pub fn parse_liquidations(response: &Value) -> ExchangeResult<Vec<crate::core::types::Liquidation>> {
+        use crate::core::types::{Liquidation, TradeSide};
+
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected JSON array for liquidations".to_string()))?;
+
+        let mut result = Vec::with_capacity(arr.len());
+        for item in arr {
+            let symbol = Self::get_str(item, "symbol")
+                .ok_or_else(|| ExchangeError::Parse("Missing 'symbol' in liquidation".to_string()))?
+                .to_string();
+
+            let side_str = Self::get_str(item, "side")
+                .ok_or_else(|| ExchangeError::Parse("Missing 'side' in liquidation".to_string()))?;
+            let side = match side_str {
+                "BUY" => TradeSide::Buy,
+                "SELL" => TradeSide::Sell,
+                other => return Err(ExchangeError::Parse(
+                    format!("Unknown liquidation side '{}'", other)
+                )),
+            };
+
+            let price = Self::require_f64(item, "price")?;
+
+            // Binance uses "origQty" for order quantity; fall back to "executedQty"
+            let quantity = Self::get_f64(item, "origQty")
+                .or_else(|| Self::get_f64(item, "executedQty"))
+                .ok_or_else(|| ExchangeError::Parse("Missing quantity in liquidation".to_string()))?;
+
+            let timestamp = item.get("time")
+                .and_then(|v| v.as_i64())
+                .ok_or_else(|| ExchangeError::Parse("Missing 'time' in liquidation".to_string()))?;
+
+            result.push(Liquidation {
+                symbol,
+                side,
+                price,
+                quantity,
+                timestamp,
+                value: Some(price * quantity),
+            });
+        }
+        Ok(result)
+    }
 }
 
 #[cfg(test)]

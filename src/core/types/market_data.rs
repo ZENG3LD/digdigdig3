@@ -239,3 +239,32 @@ pub enum TradeSide {
     /// Продавец был taker (цена пошла вниз)
     Sell,
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LIQUIDATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Public liquidation event (forced position close).
+///
+/// Available from exchanges with public liquidation feeds (Binance Futures
+/// `/fapi/v1/forceOrders`, Bybit/Hyperliquid streams).
+///
+/// Semantics of `side`:
+/// - `Buy`  — a **long** position was liquidated (forced sell into market).
+/// - `Sell` — a **short** position was liquidated (forced buy into market).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Liquidation {
+    /// Trading pair symbol (e.g. "BTCUSDT").
+    pub symbol: String,
+    /// Side of the LIQUIDATED position.
+    /// `Buy` = long was liquidated (exchange sold); `Sell` = short was liquidated (exchange bought).
+    pub side: TradeSide,
+    /// Fill price of the liquidation order.
+    pub price: f64,
+    /// Fill quantity in base asset.
+    pub quantity: f64,
+    /// Event timestamp in milliseconds.
+    pub timestamp: i64,
+    /// Quote value (price × quantity). `None` when not provided by exchange.
+    pub value: Option<f64>,
+}

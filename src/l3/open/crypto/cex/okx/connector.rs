@@ -35,6 +35,7 @@ use crate::core::types::{
     DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord, FundsHistoryFilter, FundsRecordType,
     SubAccountOperation, SubAccountResult,
     Liquidation,
+    OpenInterest, LongShortRatio,
 };
 use crate::core::types::OcoResponse;
 use crate::core::types::SymbolInfo;
@@ -362,27 +363,52 @@ impl OkxConnector {
     // MARKET DATA EXTENSIONS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// Get open interest for a futures instrument.
-    pub async fn get_open_interest(&self, inst_id: &str) -> ExchangeResult<Value> {
+    /// Get open interest for a futures instrument type.
+    ///
+    /// Endpoint: `GET /api/v5/public/open-interest` — no auth.
+    ///
+    /// - `inst_type`: `"SWAP"` | `"FUTURES"` | `"OPTION"` | `"MARGIN"` (required).
+    /// - `inst_family`: e.g. `"BTC-USDT"` — filter by instrument family (optional).
+    /// - `inst_id`: specific instrument id, e.g. `"BTC-USDT-SWAP"` (optional).
+    pub async fn get_open_interest(
+        &self,
+        inst_type: &str,
+        inst_family: Option<&str>,
+        inst_id: Option<&str>,
+    ) -> ExchangeResult<Vec<OpenInterest>> {
         let mut params = HashMap::new();
-        params.insert("instId".to_string(), inst_id.to_string());
-        self.get(OkxEndpoint::OpenInterest, params).await
+        params.insert("instType".to_string(), inst_type.to_string());
+        if let Some(f) = inst_family {
+            params.insert("instFamily".to_string(), f.to_string());
+        }
+        if let Some(id) = inst_id {
+            params.insert("instId".to_string(), id.to_string());
+        }
+        let response = self.get(OkxEndpoint::OpenInterest, params).await?;
+        OkxParser::parse_open_interest_list(&response)
     }
 
     /// Get long/short account ratio for a futures contract.
     ///
-    /// `period`: e.g. `"5m"`, `"1H"`, `"4H"`, `"1D"`.
+    /// Endpoint: `GET /api/v5/rubik/stat/contracts/long-short-account-ratio` — no auth.
+    ///
+    /// - `ccy`: base currency, e.g. `"BTC"` (required by OKX).
+    /// - `period`: e.g. `"5m"`, `"1H"`, `"4H"`, `"1D"` (optional, default `"5m"`).
+    /// - `begin` / `end`: Unix timestamps in ms (optional).
+    /// - `limit`: max records (optional, default 5, max 500).
     pub async fn get_long_short_ratio(
         &self,
-        inst_id: &str,
-        period: &str,
-        begin: Option<i64>,
-        end: Option<i64>,
+        ccy: &str,
+        period: Option<&str>,
+        begin: Option<&str>,
+        end: Option<&str>,
         limit: Option<u32>,
-    ) -> ExchangeResult<Value> {
+    ) -> ExchangeResult<Vec<LongShortRatio>> {
         let mut params = HashMap::new();
-        params.insert("instId".to_string(), inst_id.to_string());
-        params.insert("period".to_string(), period.to_string());
+        params.insert("ccy".to_string(), ccy.to_string());
+        if let Some(p) = period {
+            params.insert("period".to_string(), p.to_string());
+        }
         if let Some(b) = begin {
             params.insert("begin".to_string(), b.to_string());
         }
@@ -392,7 +418,8 @@ impl OkxConnector {
         if let Some(l) = limit {
             params.insert("limit".to_string(), l.to_string());
         }
-        self.get(OkxEndpoint::LongShortRatio, params).await
+        let response = self.get(OkxEndpoint::LongShortRatio, params).await?;
+        OkxParser::parse_long_short_ratio_list(&response, ccy)
     }
 
     /// Get liquidation orders from OKX public endpoint.

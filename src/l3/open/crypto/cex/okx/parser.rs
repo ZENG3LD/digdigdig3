@@ -30,6 +30,7 @@ use crate::core::types::{
     FundingPayment, LedgerEntry, LedgerEntryType,
     AccountType,
     Liquidation,
+    OpenInterest, LongShortRatio,
 };
 use crate::core::types::AlgoOrderResponse;
 use crate::core::types::{
@@ -550,6 +551,30 @@ impl OkxParser {
             close: Self::parse_f64(&candle[4]).unwrap_or(0.0),
             volume: Self::parse_f64(&candle[5]).unwrap_or(0.0),
             quote_volume: Self::parse_f64(&candle[6]),
+            close_time: None,
+            trades: None,
+        })
+    }
+
+    /// Parse a mark-price or index-price candle from a WS data array.
+    ///
+    /// OKX format: `[ts, open, high, low, close, confirm]` — no volume fields.
+    pub fn parse_ws_price_candle(data: &Value) -> ExchangeResult<Kline> {
+        let candle = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Price candle data is not an array".to_string()))?;
+
+        if candle.len() < 5 {
+            return Err(ExchangeError::Parse("Incomplete price candle data".to_string()));
+        }
+
+        Ok(Kline {
+            open_time: Self::parse_i64(&candle[0]).unwrap_or(0),
+            open: Self::parse_f64(&candle[1]).unwrap_or(0.0),
+            high: Self::parse_f64(&candle[2]).unwrap_or(0.0),
+            low: Self::parse_f64(&candle[3]).unwrap_or(0.0),
+            close: Self::parse_f64(&candle[4]).unwrap_or(0.0),
+            volume: 0.0,
+            quote_volume: None,
             close_time: None,
             trades: None,
         })
@@ -1397,6 +1422,80 @@ impl OkxParser {
             }
         }
 
+        Ok(result)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // OPEN INTEREST
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse `GET /api/v5/public/open-interest` response.
+    ///
+    /// OKX format: `data = [{ instId, oi, oiCcy, ts }, ...]`
+    /// - `oi`    — open interest in contracts
+    /// - `oiCcy` — open interest in the base currency (optional, may be empty)
+    pub fn parse_open_interest_list(response: &Value) -> ExchangeResult<Vec<OpenInterest>> {
+        let data = Self::extract_data(response)?;
+        let arr = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("'data' is not an array".to_string()))?;
+
+        let mut result = Vec::with_capacity(arr.len());
+        for item in arr {
+            let symbol = Self::get_str(item, "instId").unwrap_or("").to_string();
+            let open_interest = Self::get_f64(item, "oi").unwrap_or(0.0);
+            let open_interest_value = Self::get_f64(item, "oiCcy").filter(|&v| v != 0.0);
+            let timestamp = Self::get_i64(item, "ts").unwrap_or(0);
+            result.push(OpenInterest {
+                symbol,
+                open_interest,
+                open_interest_value,
+                timestamp,
+            });
+        }
+        Ok(result)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // LONG/SHORT RATIO
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse `GET /api/v5/rubik/stat/contracts/long-short-account-ratio` response.
+    ///
+    /// OKX format: `data = [{ ts, longsShortsPosRatio }, ...]`
+    /// - `longsShortsPosRatio` — string, longs/shorts position ratio
+    ///
+    /// The endpoint returns only the combined ratio; individual long/short
+    /// fractions are derived as: long = ratio / (1 + ratio), short = 1 / (1 + ratio).
+    pub fn parse_long_short_ratio_list(
+        response: &Value,
+        symbol: &str,
+    ) -> ExchangeResult<Vec<LongShortRatio>> {
+        let data = Self::extract_data(response)?;
+        let arr = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("'data' is not an array".to_string()))?;
+
+        let mut result = Vec::with_capacity(arr.len());
+        for item in arr {
+            let timestamp = Self::get_i64(item, "ts").unwrap_or(0);
+            // OKX field name for account ratio endpoint
+            let ratio = Self::get_f64(item, "longsShortsPosRatio")
+                .or_else(|| Self::get_f64(item, "longShortAcctRatio"))
+                .unwrap_or(1.0);
+
+            // Derive long/short fractions from the combined ratio.
+            // ratio = long_pct / short_pct, and long_pct + short_pct = 1.0
+            let long_ratio = ratio / (1.0 + ratio);
+            let short_ratio = 1.0 - long_ratio;
+
+            result.push(LongShortRatio {
+                symbol: symbol.to_string(),
+                ratio_type: "account".to_string(),
+                long_ratio,
+                short_ratio,
+                ratio: Some(ratio),
+                timestamp,
+            });
+        }
         Ok(result)
     }
 }

@@ -259,12 +259,18 @@ impl OkxWebSocket {
                                 {
                                     // Extract top-level action ("snapshot" | "update")
                                     let action = value.get("action").and_then(|a| a.as_str());
+                                    // Extract instId from arg for channels where data
+                                    // array items don't carry the symbol (e.g. candles).
+                                    let arg_inst_id = arg.get("instId")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
                                     if let Some(data_arr) =
                                         value.get("data").and_then(|d| d.as_array())
                                     {
                                         for data in data_arr {
-                                            let events =
-                                                Self::parse_channel_data(channel, data, action);
+                                            let events = Self::parse_channel_data(
+                                                channel, data, action, arg_inst_id,
+                                            );
                                             for ev in events {
                                                 let tx_guard = broadcast_tx.lock().unwrap();
                                                 if let Some(ref tx) = *tx_guard {
@@ -300,10 +306,18 @@ impl OkxWebSocket {
     /// message.  OKX sets it to `"snapshot"` for the initial full book and
     /// `"update"` for incremental deltas.
     ///
+    /// `arg_inst_id` is the `instId` from the subscription `arg` object; used
+    /// by candle channels where the data array does not contain the symbol.
+    ///
     /// Most channels return exactly one event. The `tickers` channel returns
     /// the primary Ticker plus any supplementary FundingRate/MarkPrice/
     /// OpenInterestUpdate events when those fields are present (linear/inverse).
-    fn parse_channel_data(channel: &str, data: &Value, action: Option<&str>) -> Vec<StreamEvent> {
+    fn parse_channel_data(
+        channel: &str,
+        data: &Value,
+        action: Option<&str>,
+        arg_inst_id: &str,
+    ) -> Vec<StreamEvent> {
         let parse_f64_field = |v: &Value| -> Option<f64> {
             v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
         };
@@ -479,6 +493,63 @@ impl OkxWebSocket {
                     value: Some(price * quantity),
                 }]
             }
+            "index-tickers" => {
+                // OKX WS index-tickers: { instId, idxPx, ts }
+                // Maps to StreamType::IndexPrice
+                let symbol = data.get("instId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let Some(price) = data.get("idxPx").and_then(|v| parse_f64_field(v)) else {
+                    return vec![];
+                };
+                let timestamp = data.get("ts")
+                    .and_then(|v| parse_f64_field(v))
+                    .map(|ms| ms as i64)
+                    .unwrap_or(0);
+                vec![StreamEvent::IndexPrice { symbol, price, timestamp }]
+            }
+            ch if ch.starts_with("mark-price-candle") => {
+                // OKX WS mark-price-candle<interval>: data is [ ts, o, h, l, c, confirm ]
+                // Maps to StreamType::MarkPriceKline { interval }
+                let Ok(kline) = OkxParser::parse_ws_price_candle(data) else { return vec![] };
+                // Recover interval from channel name: "mark-price-candle1m" → "1m"
+                let interval = ch.trim_start_matches("mark-price-candle").to_string();
+                // Symbol comes from the subscription arg, not the data array.
+                vec![StreamEvent::MarkPriceKline {
+                    symbol: arg_inst_id.to_string(),
+                    interval,
+                    kline,
+                }]
+            }
+            ch if ch.starts_with("index-candle") => {
+                // OKX WS index-candle<interval>: data is [ ts, o, h, l, c, confirm ]
+                // Maps to StreamType::IndexPriceKline { interval }
+                let Ok(kline) = OkxParser::parse_ws_price_candle(data) else { return vec![] };
+                let interval = ch.trim_start_matches("index-candle").to_string();
+                vec![StreamEvent::IndexPriceKline {
+                    symbol: arg_inst_id.to_string(),
+                    interval,
+                    kline,
+                }]
+            }
+            ch if ch.starts_with("funding-rate-candle") => {
+                // TODO: OKX funding-rate-candle<interval> — funding rate values over time.
+                // No direct StreamEvent variant fits (FundingRate is a scalar, not OHLC).
+                // Defer: leave unhandled until a FundingRateKline variant is added.
+                let _ = ch;
+                vec![]
+            }
+            "estimated-price" => {
+                // OKX option settlement estimated price — no matching StreamEvent variant.
+                vec![]
+            }
+            "price-limit" => {
+                // OKX price-limit pushes upper/lower price bounds — no matching StreamEvent variant.
+                vec![]
+            }
+            "opt-summary" => {
+                // OKX opt-summary: option Greeks (delta, gamma, theta, vega).
+                // No StreamEvent variant for option Greeks yet.
+                vec![]
+            }
             _ => vec![],
         }
     }
@@ -500,6 +571,58 @@ impl OkxWebSocket {
     /// WebSocket task.
     pub fn ping_rtt_handle(&self) -> Arc<Mutex<u64>> {
         self.ws_ping_rtt_ms.clone()
+    }
+
+    /// Send a subscribe message for a dynamically-named channel (e.g. mark-price-candle1m).
+    async fn subscribe_dynamic_channel(
+        &mut self,
+        channel: String,
+        request: SubscriptionRequest,
+    ) -> WebSocketResult<()> {
+        let account_type = request.account_type;
+        let inst_id = format_symbol(&request.symbol.base, &request.symbol.quote, account_type);
+
+        let sub_msg = json!({
+            "op": "subscribe",
+            "args": [{ "channel": channel, "instId": inst_id }]
+        });
+
+        let mut sink_guard = self.ws_sink.lock().await;
+        if let Some(sink) = sink_guard.as_mut() {
+            sink.send(Message::Text(sub_msg.to_string()))
+                .await
+                .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
+            self.subscriptions.lock().await.insert(request);
+            Ok(())
+        } else {
+            Err(WebSocketError::ConnectionError("Not connected".to_string()))
+        }
+    }
+
+    /// Send an unsubscribe message for a dynamically-named channel.
+    async fn unsubscribe_dynamic_channel(
+        &mut self,
+        channel: String,
+        request: SubscriptionRequest,
+    ) -> WebSocketResult<()> {
+        let account_type = request.account_type;
+        let inst_id = format_symbol(&request.symbol.base, &request.symbol.quote, account_type);
+
+        let unsub_msg = json!({
+            "op": "unsubscribe",
+            "args": [{ "channel": channel, "instId": inst_id }]
+        });
+
+        let mut sink_guard = self.ws_sink.lock().await;
+        if let Some(sink) = sink_guard.as_mut() {
+            sink.send(Message::Text(unsub_msg.to_string()))
+                .await
+                .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
+            self.subscriptions.lock().await.remove(&request);
+            Ok(())
+        } else {
+            Err(WebSocketError::ConnectionError("Not connected".to_string()))
+        }
     }
 }
 
@@ -612,6 +735,25 @@ impl WebSocketConnector for OkxWebSocket {
             crate::core::StreamType::OrderUpdate => "orders",
             crate::core::StreamType::BalanceUpdate => "account",
             crate::core::StreamType::PositionUpdate => "positions",
+            crate::core::StreamType::IndexPrice => "index-tickers",
+            crate::core::StreamType::MarkPriceKline { interval } => {
+                // Map internal interval to OKX mark-price-candle<interval> channel.
+                // OKX intervals: 1m, 3m, 5m, 15m, 30m, 1H, 2H, 4H, 6H, 12H, 1D, etc.
+                let okx_interval = super::endpoints::map_kline_interval(interval.as_str());
+                // Return a leaked string; channel string lifetime is 'static for the match arm.
+                // Since we can't easily return a dynamic &'static str here, use a known set.
+                return self.subscribe_dynamic_channel(
+                    format!("mark-price-candle{}", okx_interval),
+                    request,
+                ).await;
+            }
+            crate::core::StreamType::IndexPriceKline { interval } => {
+                let okx_interval = super::endpoints::map_kline_interval(interval.as_str());
+                return self.subscribe_dynamic_channel(
+                    format!("index-candle{}", okx_interval),
+                    request,
+                ).await;
+            }
             _ => "",
         };
 
@@ -652,6 +794,21 @@ impl WebSocketConnector for OkxWebSocket {
             crate::core::StreamType::OrderUpdate => "orders",
             crate::core::StreamType::BalanceUpdate => "account",
             crate::core::StreamType::PositionUpdate => "positions",
+            crate::core::StreamType::IndexPrice => "index-tickers",
+            crate::core::StreamType::MarkPriceKline { interval } => {
+                let okx_interval = super::endpoints::map_kline_interval(interval.as_str());
+                return self.unsubscribe_dynamic_channel(
+                    format!("mark-price-candle{}", okx_interval),
+                    request,
+                ).await;
+            }
+            crate::core::StreamType::IndexPriceKline { interval } => {
+                let okx_interval = super::endpoints::map_kline_interval(interval.as_str());
+                return self.unsubscribe_dynamic_channel(
+                    format!("index-candle{}", okx_interval),
+                    request,
+                ).await;
+            }
             _ => "",
         };
 

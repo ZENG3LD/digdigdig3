@@ -1224,6 +1224,52 @@ impl Positions for BingxConnector {
             )),
         }
     }
+
+    /// Get open interest for a perpetual/futures symbol.
+    ///
+    /// Endpoint: `GET /openApi/swap/v2/quote/openInterest`
+    /// Response: `{"code":0,"data":{"openInterest":"<value>","symbol":"<sym>","time":<ms>}}`
+    async fn get_open_interest(
+        &self,
+        symbol: &str,
+        account_type: AccountType,
+    ) -> ExchangeResult<crate::core::types::OpenInterest> {
+        match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                return Err(ExchangeError::UnsupportedOperation(
+                    "Open interest not supported for Spot/Margin".to_string()
+                ));
+            }
+            _ => {}
+        }
+
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+
+        let response = self.get(BingxEndpoint::SwapOpenInterest, params, account_type).await?;
+        self.check_response(&response)?;
+
+        let data = response.get("data")
+            .ok_or_else(|| ExchangeError::Parse("Missing data field in openInterest response".to_string()))?;
+
+        let oi_str = data.get("openInterest")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ExchangeError::Parse("Missing openInterest field".to_string()))?;
+
+        let open_interest = oi_str.parse::<f64>()
+            .map_err(|_| ExchangeError::Parse(format!("Invalid openInterest value: {}", oi_str)))?;
+
+        let timestamp = data.get("time")
+            .and_then(|v| v.as_i64())
+            .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
+
+        Ok(crate::core::types::OpenInterest {
+            symbol: symbol.to_string(),
+            open_interest,
+            open_interest_value: None,
+            timestamp,
+        })
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

@@ -283,6 +283,25 @@ impl KrakenConnector {
         }
         self.post(KrakenEndpoint::TradesHistory, params, AccountType::Spot).await
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FUTURES DERIVATIVES DATA (public)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Get open interest for all Kraken Futures instruments.
+    ///
+    /// Calls `GET /derivatives/api/v3/tickers` (Kraken Futures REST) and extracts
+    /// `openInterest` for each instrument. Returns the raw JSON array so callers
+    /// can parse per-instrument data without an additional round-trip.
+    ///
+    /// Note: Kraken Spot has no open interest data — this endpoint is Futures-only.
+    pub async fn get_futures_open_interest(&self) -> ExchangeResult<Value> {
+        self.get(
+            KrakenEndpoint::FuturesTickers,
+            HashMap::new(),
+            AccountType::FuturesCross,
+        ).await
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

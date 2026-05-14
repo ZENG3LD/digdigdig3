@@ -830,14 +830,49 @@ impl KrakenWebSocket {
     }
 
     fn parse_trade_execution(data: &Value) -> ExchangeResult<StreamEvent> {
-        // Trade execution (partial fill or full fill)
-        let order_id = data.get("order_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ExchangeError::Parse("Missing order_id".to_string()))?;
+        // Trade execution (partial fill or full fill).
+        // Kraken Futures `executions` feed includes a `reason` field:
+        //   "liquidation" → forced position close (emit Liquidation event)
+        //   other values   → normal fill (emit OrderUpdate)
 
         let symbol = data.get("symbol")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ExchangeError::Parse("Missing symbol".to_string()))?;
+
+        let timestamp_str = data.get("timestamp")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ExchangeError::Parse("Missing timestamp".to_string()))?;
+
+        let timestamp = chrono::DateTime::parse_from_rfc3339(timestamp_str)
+            .map(|dt| dt.timestamp_millis())
+            .unwrap_or(timestamp_millis() as i64);
+
+        let reason = data.get("reason").and_then(|v| v.as_str()).unwrap_or("");
+
+        if reason == "liquidation" {
+            // Forced position close — map to Liquidation event
+            let side = data.get("side")
+                .and_then(|v| v.as_str())
+                .map(|s| match s {
+                    "sell" => TradeSide::Sell,
+                    _ => TradeSide::Buy,
+                })
+                .unwrap_or(TradeSide::Buy);
+            let price = data.get("last_price").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let quantity = data.get("last_qty").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            return Ok(StreamEvent::Liquidation {
+                symbol: symbol.to_string(),
+                side,
+                price,
+                quantity,
+                timestamp,
+                value: Some(price * quantity),
+            });
+        }
+
+        let order_id = data.get("order_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ExchangeError::Parse("Missing order_id".to_string()))?;
 
         let side = data.get("side")
             .and_then(|v| v.as_str())
@@ -860,14 +895,6 @@ impl KrakenWebSocket {
         let trade_id = data.get("exec_id")
             .and_then(|v| v.as_str())
             .map(String::from);
-
-        let timestamp_str = data.get("timestamp")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ExchangeError::Parse("Missing timestamp".to_string()))?;
-
-        let timestamp = chrono::DateTime::parse_from_rfc3339(timestamp_str)
-            .map(|dt| dt.timestamp_millis())
-            .unwrap_or(timestamp_millis() as i64);
 
         Ok(StreamEvent::OrderUpdate(crate::core::OrderUpdateEvent {
             order_id: order_id.to_string(),

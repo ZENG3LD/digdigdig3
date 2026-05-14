@@ -116,11 +116,11 @@ pub enum HtxEndpoint {
     // === EXTENDED ENDPOINTS ===
     /// GET /v1/order/orders/{order-id}/matchresults — fills for a specific order (signed)
     OrderMatchResults,
-    /// GET /linear-swap-api/v1/swap-open-interest — USDT-margined open interest
+    /// GET /linear-swap-api/v1/swap_open_interest — USDT-margined open interest
     OpenInterest,
     /// GET /linear-swap-api/v3/swap-funding-rate-history — historical funding rates
     FundingRateHistory,
-    /// GET /linear-swap-ex/market/index — mark price + index price
+    /// GET /linear-swap-api/v1/swap_index — index price (mark price context)
     MarkPrice,
     /// GET /linear-swap-ex/market/history/mark_price_kline — mark price kline
     MarkPriceKline,
@@ -189,9 +189,9 @@ impl HtxEndpoint {
 
             // Extended endpoints
             Self::OrderMatchResults => "/v1/order/orders/{order-id}/matchresults",
-            Self::OpenInterest => "/linear-swap-api/v1/swap-open-interest",
+            Self::OpenInterest => "/linear-swap-api/v1/swap_open_interest",
             Self::FundingRateHistory => "/linear-swap-api/v3/swap-funding-rate-history",
-            Self::MarkPrice => "/linear-swap-ex/market/index",
+            Self::MarkPrice => "/linear-swap-api/v1/swap_index",
             Self::MarkPriceKline => "/linear-swap-ex/market/history/mark_price_kline",
 
             // Algo Orders

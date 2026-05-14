@@ -392,15 +392,17 @@ impl HtxWebSocket {
             StreamType::Kline { interval } => Ok(format!("market.{}.kline.{}", symbol_str, interval)),
             StreamType::FundingRate => {
                 // HTX USDT-margined swap funding rate push topic.
-                // Format verified from HTX swap docs: market.<contract_code>.funding_rate
+                // Verified: uses "public." prefix, same as liquidation_orders.
                 // Pushes: { symbol, funding_rate, funding_time, ... }
-                Ok(format!("market.{}.funding_rate", symbol_str))
+                Ok(format!("public.{}.funding_rate", symbol_str))
             }
             StreamType::MarkPrice => {
-                // HTX USDT-margined swap mark price push topic.
-                // Format verified from HTX swap docs: market.<contract_code>.mark_price
-                // Pushes: { symbol, mark_price, index_price, ts }
-                Ok(format!("market.{}.mark_price", symbol_str))
+                // No direct WS mark price topic on HTX — market.<code>.mark_price
+                // does not exist as a standalone push channel; mark_price_kline is
+                // kline-only. Use mark_price_kline REST or derive from ticker instead.
+                Err(WebSocketError::Subscription(
+                    "HTX: no direct WS mark price — use mark_price_kline REST or derive from ticker".to_string()
+                ))
             }
             StreamType::Liquidation => {
                 // HTX USDT-margined swap liquidation orders push topic.
@@ -623,26 +625,6 @@ impl HtxWebSocket {
                                             symbol,
                                             rate,
                                             next_funding_time,
-                                            timestamp,
-                                        }));
-                                    }
-                                }
-                            } else if channel.contains(".mark_price") {
-                                // HTX USDT-margined swap mark price push.
-                                // Topic: market.<contract_code>.mark_price
-                                // Fields: mark_price (float), index_price (float), ts (ms timestamp)
-                                let symbol = channel.split('.').nth(1).unwrap_or("").to_string();
-                                if let Some(mark_price) = data.get("mark_price").and_then(|v| parse_f64(v)) {
-                                    let index_price = data.get("index_price").and_then(|v| parse_f64(v));
-                                    let timestamp = data.get("ts")
-                                        .and_then(|v| parse_f64(v))
-                                        .map(|ms| ms as i64)
-                                        .unwrap_or(0);
-                                    if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
-                                        let _ = tx.send(Ok(StreamEvent::MarkPrice {
-                                            symbol,
-                                            mark_price,
-                                            index_price,
                                             timestamp,
                                         }));
                                     }

@@ -359,6 +359,18 @@ impl GateioWebSocket {
             let event = Self::parse_liquidation_ws(data)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
             Ok(Some(event))
+        } else if channel.contains(".auto_deleverages") {
+            // Futures auto-deleverage (ADL) channel: futures.auto_deleverages
+            // An ADL is a forced position close at index price during a cascade.
+            // It is NOT a normal user liquidation but the net effect is the same:
+            // a position is closed at an involuntary price.
+            // Emitted as StreamEvent::Liquidation with a comment below noting ADL semantics.
+            //
+            // Data per event: entry_price, fill_price, position_size, trade_size,
+            // time, user, order_id, contract.
+            let event = Self::parse_auto_deleverage_ws(data)
+                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+            Ok(Some(event))
         } else {
             // Unknown channel - ignore
             Ok(None)
@@ -392,6 +404,59 @@ impl GateioWebSocket {
             .unwrap_or(TradeSide::Sell);
         let timestamp = item.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
         Ok(StreamEvent::Liquidation { symbol, side, price, quantity, value: None, timestamp })
+    }
+
+    /// Parse Gate.io `futures.auto_deleverages` push.
+    ///
+    /// Auto-deleverage (ADL): the exchange forcibly closes a profitable counterparty
+    /// position to cover an insolvent liquidated position during a cascade. This is
+    /// distinct from a normal liquidation (`futures.liquidates`) but the outcome is
+    /// an involuntary forced close, so we emit `StreamEvent::Liquidation`.
+    ///
+    /// Gate.io ADL fields: `entry_price`, `fill_price`, `position_size`,
+    /// `trade_size`, `time`, `user`, `order_id`, `contract`.
+    ///
+    /// Side is inferred from `position_size` sign (positive = long, negative = short).
+    fn parse_auto_deleverage_ws(data: &Value) -> ExchangeResult<StreamEvent> {
+        use crate::core::types::TradeSide;
+        let parse_f64 = |v: &Value| -> Option<f64> {
+            v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
+        };
+        // data may be wrapped in an array
+        let item = if let Some(arr) = data.as_array() {
+            arr.first().cloned().unwrap_or(serde_json::Value::Null)
+        } else {
+            data.clone()
+        };
+        let symbol = item.get("contract").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        // fill_price is the actual execution price; fall back to entry_price
+        let price = item.get("fill_price")
+            .and_then(|v| parse_f64(v))
+            .or_else(|| item.get("entry_price").and_then(|v| parse_f64(v)))
+            .unwrap_or(0.0);
+        // trade_size = how much was closed; fall back to position_size magnitude
+        let quantity = item.get("trade_size")
+            .and_then(|v| parse_f64(v))
+            .map(|v| v.abs())
+            .or_else(|| item.get("position_size").and_then(|v| parse_f64(v)).map(|v| v.abs()))
+            .unwrap_or(0.0);
+        // position_size sign: positive = long was deleveraged, negative = short was deleveraged
+        let position_size = item.get("position_size").and_then(|v| parse_f64(v)).unwrap_or(0.0);
+        // Auto-deleverage: exchange closes the deleveraged position.
+        // positive position_size → long position closed → forced sell → TradeSide::Sell
+        // negative position_size → short position closed → forced buy  → TradeSide::Buy
+        let side = if position_size >= 0.0 { TradeSide::Sell } else { TradeSide::Buy };
+        let timestamp = item.get("time").and_then(|v| v.as_i64()).unwrap_or(0);
+        // Note: this is an auto-deleverage (ADL), not a user liquidation.
+        // The affected party is a profitable counterparty, not an insolvent account.
+        Ok(StreamEvent::Liquidation {
+            symbol,
+            side,
+            price,
+            quantity,
+            value: None,
+            timestamp,
+        })
     }
 
     /// Start ping task.

@@ -34,8 +34,14 @@ use crate::core::{
     AccountType, ExchangeResult,
     ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
 };
-use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities};
+use crate::core::types::{
+    WebSocketResult, WebSocketError, OrderbookCapabilities,
+    OrderUpdateEvent, PositionUpdateEvent,
+    OrderSide, OrderType, OrderStatus, PositionSide,
+    TradeSide,
+};
 use crate::core::traits::WebSocketConnector;
+use crate::core::utils::timestamp_millis;
 
 use super::endpoints::{DydxUrls, normalize_symbol};
 use super::parser::DydxParser;
@@ -321,16 +327,14 @@ impl DydxWebSocket {
             }
             "v4_subaccounts" | "v4_parent_subaccounts" => {
                 // Private channels: orders, fills, positions for a subaccount.
-                // These carry complex nested objects (fills, perpetualPositions, orders).
-                // Parse as OrderUpdate / PositionUpdate once private-stream types are
-                // added to DydxParser.  Until then acknowledge without emitting.
-                let _ = &data;
+                // Parse each entry and emit OrderUpdate / PositionUpdate / Liquidation.
+                // Multiple events may be emitted per message via the multi-emit path
+                // in start_message_loop (parse_subaccount_events).
+                // Return None here — start_message_loop handles the multi-emit directly.
                 None
             }
             "v4_blockheight" => {
-                // Block height updates: {"height":"12345678","time":"..."}
-                // No matching StreamEvent variant yet — acknowledged silently.
-                let _ = &data;
+                // Block height + time. No matching StreamEvent variant — acknowledged silently.
                 None
             }
             _ => None,
@@ -343,6 +347,242 @@ impl DydxWebSocket {
     ///
     /// `subscriptions` is used to resolve the active ticker symbol for the global
     /// `v4_markets` channel so that only data for the subscribed market is forwarded.
+    /// Parse a `v4_subaccounts` or `v4_parent_subaccounts` channel message into
+    /// zero or more `StreamEvent`s.
+    ///
+    /// Emits per entry:
+    /// - `contents.orders[]`           → `StreamEvent::OrderUpdate`
+    /// - `contents.fills[]`            → `StreamEvent::OrderUpdate` (fill representation)
+    /// - `contents.fills[]` where liquidity=="TAKER" and type contains "LIQUIDAT"
+    ///                                 → additionally `StreamEvent::Liquidation`
+    /// - `contents.perpetualPositions[]` → `StreamEvent::PositionUpdate`
+    fn parse_subaccount_events(text: &str) -> Vec<StreamEvent> {
+        let data: Value = match serde_json::from_str(text) {
+            Ok(v) => v,
+            Err(_) => return vec![],
+        };
+
+        let contents = match data.get("contents") {
+            Some(c) => c,
+            None => return vec![],
+        };
+
+        let now = timestamp_millis() as i64;
+        let mut events: Vec<StreamEvent> = Vec::new();
+
+        // ── orders ───────────────────────────────────────────────────────────
+        if let Some(orders) = contents.get("orders").and_then(|o| o.as_array()) {
+            for order in orders {
+                let order_id = order.get("orderId")
+                    .or_else(|| order.get("id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let client_order_id = order.get("clientId")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let symbol = order.get("market")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                let side = match order.get("side").and_then(|v| v.as_str()) {
+                    Some("BUY") => OrderSide::Buy,
+                    _ => OrderSide::Sell,
+                };
+
+                let order_type = match order.get("type").and_then(|v| v.as_str()) {
+                    Some("MARKET") => OrderType::Market,
+                    _ => {
+                        let p = order.get("price")
+                            .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok())
+                                .or_else(|| v.as_f64()))
+                            .unwrap_or(0.0);
+                        OrderType::Limit { price: p }
+                    }
+                };
+
+                let status = match order.get("status").and_then(|v| v.as_str()) {
+                    Some("OPEN") => OrderStatus::Open,
+                    Some("FILLED") => OrderStatus::Filled,
+                    Some("CANCELED") => OrderStatus::Canceled,
+                    Some("BEST_EFFORT_CANCELED") => OrderStatus::Canceled,
+                    Some("BEST_EFFORT_OPENED") => OrderStatus::Open,
+                    _ => OrderStatus::New,
+                };
+
+                let price = order.get("price")
+                    .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok())
+                        .or_else(|| v.as_f64()));
+                let quantity = order.get("size")
+                    .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok())
+                        .or_else(|| v.as_f64()))
+                    .unwrap_or(0.0);
+
+                let timestamp = order.get("updatedAt")
+                    .or_else(|| order.get("createdAt"))
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.timestamp_millis())
+                    .unwrap_or(now);
+
+                events.push(StreamEvent::OrderUpdate(OrderUpdateEvent {
+                    order_id,
+                    client_order_id,
+                    symbol,
+                    side,
+                    order_type,
+                    status,
+                    price,
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    last_fill_price: None,
+                    last_fill_quantity: None,
+                    last_fill_commission: None,
+                    commission_asset: None,
+                    trade_id: None,
+                    timestamp,
+                }));
+            }
+        }
+
+        // ── fills ─────────────────────────────────────────────────────────────
+        if let Some(fills) = contents.get("fills").and_then(|f| f.as_array()) {
+            for fill in fills {
+                let order_id = fill.get("orderId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let fill_id = fill.get("id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let symbol = fill.get("market")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                let side = match fill.get("side").and_then(|v| v.as_str()) {
+                    Some("BUY") => OrderSide::Buy,
+                    _ => OrderSide::Sell,
+                };
+
+                let price = fill.get("price")
+                    .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok())
+                        .or_else(|| v.as_f64()));
+                let fill_qty = fill.get("size")
+                    .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok())
+                        .or_else(|| v.as_f64()))
+                    .unwrap_or(0.0);
+                let fee = fill.get("fee")
+                    .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok())
+                        .or_else(|| v.as_f64()));
+
+                let timestamp = fill.get("createdAt")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.timestamp_millis())
+                    .unwrap_or(now);
+
+                let liquidity = fill.get("liquidity").and_then(|v| v.as_str()).unwrap_or("");
+                let fill_type = fill.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+                // Represent fill as an OrderUpdate with filled_quantity set
+                events.push(StreamEvent::OrderUpdate(OrderUpdateEvent {
+                    order_id: order_id.clone(),
+                    client_order_id: None,
+                    symbol: symbol.clone(),
+                    side,
+                    order_type: OrderType::Market,
+                    status: OrderStatus::Filled,
+                    price,
+                    quantity: fill_qty,
+                    filled_quantity: fill_qty,
+                    average_price: price,
+                    last_fill_price: price,
+                    last_fill_quantity: Some(fill_qty),
+                    last_fill_commission: fee,
+                    commission_asset: Some("USDC".to_string()),
+                    trade_id: fill_id,
+                    timestamp,
+                }));
+
+                // Detect liquidation: taker fill with "LIQUIDAT" in type
+                let is_liquidation = liquidity.eq_ignore_ascii_case("TAKER")
+                    && fill_type.to_uppercase().contains("LIQUIDAT");
+
+                if is_liquidation {
+                    let liq_side = match fill.get("side").and_then(|v| v.as_str()) {
+                        Some("BUY") => TradeSide::Buy,
+                        _ => TradeSide::Sell,
+                    };
+                    events.push(StreamEvent::Liquidation {
+                        symbol,
+                        side: liq_side,
+                        price: price.unwrap_or(0.0),
+                        quantity: fill_qty,
+                        timestamp,
+                        value: price.map(|p| p * fill_qty),
+                    });
+                }
+            }
+        }
+
+        // ── perpetualPositions ────────────────────────────────────────────────
+        if let Some(positions) = contents.get("perpetualPositions").and_then(|p| p.as_array()) {
+            for pos in positions {
+                let symbol = pos.get("market")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                let pos_side = match pos.get("side").and_then(|v| v.as_str()) {
+                    Some("LONG") => PositionSide::Long,
+                    Some("SHORT") => PositionSide::Short,
+                    _ => PositionSide::Both,
+                };
+
+                let quantity = pos.get("size")
+                    .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok())
+                        .or_else(|| v.as_f64()))
+                    .unwrap_or(0.0);
+                let entry_price = pos.get("entryPrice")
+                    .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok())
+                        .or_else(|| v.as_f64()))
+                    .unwrap_or(0.0);
+                let unrealized_pnl = pos.get("unrealizedPnl")
+                    .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok())
+                        .or_else(|| v.as_f64()))
+                    .unwrap_or(0.0);
+                let realized_pnl = pos.get("realizedPnl")
+                    .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok())
+                        .or_else(|| v.as_f64()));
+
+                let timestamp = pos.get("createdAtHeight")
+                    .and_then(|v| v.as_str())
+                    .and_then(|_| None) // block height, not a timestamp — use now
+                    .unwrap_or(now);
+
+                events.push(StreamEvent::PositionUpdate(PositionUpdateEvent {
+                    symbol,
+                    side: pos_side,
+                    quantity,
+                    entry_price,
+                    mark_price: None,
+                    unrealized_pnl,
+                    realized_pnl,
+                    liquidation_price: None,
+                    leverage: None,
+                    margin_type: None,
+                    reason: None,
+                    timestamp,
+                }));
+            }
+        }
+
+        events
+    }
+
     /// Start periodic WS-frame ping task (every 5 seconds) for RTT measurement.
     fn start_ping_task(
         ws_sink: Arc<Mutex<Option<WsSink>>>,
@@ -406,8 +646,7 @@ impl DydxWebSocket {
                                 .unwrap_or_default()
                         };
 
-                        // For v4_markets, emit Ticker + FundingRate + IndexPrice (multi-emit).
-                        // For all other channels, emit a single event via handle_message.
+                        // Multi-emit for v4_markets: Ticker + FundingRate + IndexPrice.
                         if !ticker_sym.is_empty() && text.contains("v4_markets") {
                             let extra = Self::parse_v4_markets_extra(&text, &ticker_sym);
                             if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
@@ -416,7 +655,18 @@ impl DydxWebSocket {
                                 }
                             }
                         }
-                        if let Some(event) = Self::handle_message(&text, &ticker_sym) {
+
+                        // Multi-emit for v4_subaccounts / v4_parent_subaccounts:
+                        // OrderUpdate, PositionUpdate, Liquidation.
+                        if text.contains("v4_subaccounts") || text.contains("v4_parent_subaccounts") {
+                            let sub_events = Self::parse_subaccount_events(&text);
+                            if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                                for event in sub_events {
+                                    let _ = tx.send(Ok(event));
+                                }
+                            }
+                            // parse_channel_data returns None for these channels — skip handle_message.
+                        } else if let Some(event) = Self::handle_message(&text, &ticker_sym) {
                             if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
                                 let _ = tx.send(event);
                             }

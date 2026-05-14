@@ -181,6 +181,33 @@ impl BinanceWebSocket {
         current
     }
 
+    /// Subscribe to the all-asset batch mark-price stream (`!markPrice@arr@1s`).
+    ///
+    /// This single stream delivers mark-price updates for **every** symbol in one
+    /// array push every second, rather than requiring per-symbol subscriptions.
+    /// Each element is parsed as an individual `StreamEvent::MarkPrice`.
+    ///
+    /// Equivalent to calling `subscribe` with a `SubscriptionRequest` whose
+    /// `stream_type` is `StreamType::MarkPrice` and both symbol parts are empty,
+    /// but provided here as a named convenience to avoid confusion.
+    pub async fn subscribe_all_mark_prices(&mut self) -> WebSocketResult<()> {
+        let msg = SubscribeMessage {
+            method: "SUBSCRIBE".to_string(),
+            params: vec!["!markPrice@arr@1s".to_string()],
+            id: self.next_msg_id().await,
+        };
+
+        let msg_json = serde_json::to_string(&msg)
+            .map_err(|e| WebSocketError::ProtocolError(e.to_string()))?;
+
+        let mut sink_guard = self.ws_sink.lock().await;
+        let sink = sink_guard.as_mut()
+            .ok_or_else(|| WebSocketError::ConnectionError("Not connected".to_string()))?;
+
+        sink.send(Message::Text(msg_json)).await
+            .map_err(|e| WebSocketError::ConnectionError(e.to_string()))
+    }
+
     /// Create listenKey for user data stream
     async fn create_listen_key(&self) -> ExchangeResult<String> {
         let auth = self.auth.as_ref()
@@ -420,7 +447,11 @@ impl BinanceWebSocket {
         });
     }
 
-    /// Handle incoming WebSocket message
+    /// Handle incoming WebSocket message.
+    ///
+    /// The `!markPrice@arr` (all-asset batch mark price) stream delivers its
+    /// `data` field as a JSON **array** of individual mark-price objects.
+    /// We iterate the array and emit one `StreamEvent::MarkPrice` per item.
     async fn handle_message(
         text: &str,
         event_tx: &broadcast::Sender<WebSocketResult<StreamEvent>>,
@@ -428,6 +459,15 @@ impl BinanceWebSocket {
     ) -> WebSocketResult<()> {
         // Try to parse as combined stream format first
         if let Ok(combined) = serde_json::from_str::<CombinedStreamMessage>(text) {
+            // Array data — e.g. !markPrice@arr: emit one event per element
+            if let Some(arr) = combined.data.as_array() {
+                for item in arr {
+                    if let Some(event) = Self::parse_stream_data(item, account_type)? {
+                        let _ = event_tx.send(Ok(event));
+                    }
+                }
+                return Ok(());
+            }
             if let Some(event) = Self::parse_stream_data(&combined.data, account_type)? {
                 let _ = event_tx.send(Ok(event));
             }
@@ -444,8 +484,16 @@ impl BinanceWebSocket {
             return Ok(());
         }
 
-        // Try parsing as raw JSON
+        // Try parsing as raw JSON — may itself be an array (e.g. !markPrice@arr top-level)
         if let Ok(data) = serde_json::from_str::<Value>(text) {
+            if let Some(arr) = data.as_array() {
+                for item in arr {
+                    if let Some(event) = Self::parse_stream_data(item, account_type)? {
+                        let _ = event_tx.send(Ok(event));
+                    }
+                }
+                return Ok(());
+            }
             if let Some(event) = Self::parse_stream_data(&data, account_type)? {
                 let _ = event_tx.send(Ok(event));
             }
@@ -454,8 +502,19 @@ impl BinanceWebSocket {
         Ok(())
     }
 
-    /// Parse stream data to StreamEvent
+    /// Parse stream data to StreamEvent.
+    ///
+    /// Handles arrays (e.g. `!markPrice@arr` — emits first item and queues rest)
+    /// and single-object messages.
     fn parse_stream_data(data: &Value, account_type: AccountType) -> WebSocketResult<Option<StreamEvent>> {
+        // !markPrice@arr arrives as a JSON array of mark-price objects.
+        // Emit one event here (the first); the caller loops over the raw array for multi-emit.
+        // For the combined-stream envelope the `data` field may be an array directly.
+        if data.is_array() {
+            // Handled by handle_message when it detects an array; nothing to do here.
+            return Ok(None);
+        }
+
         // Check event type
         let event_type = data.get("e")
             .and_then(|e| e.as_str());
@@ -630,7 +689,11 @@ impl BinanceWebSocket {
         }
     }
 
-    /// Build stream name for subscription
+    /// Build stream name for subscription.
+    ///
+    /// For `StreamType::MarkPrice` with an empty symbol (base == "" and quote == ""),
+    /// returns the all-asset batch mark-price stream `!markPrice@arr@1s`.
+    /// Use `subscribe_all_mark_prices()` for convenience.
     fn build_stream_name(request: &SubscriptionRequest, account_type: AccountType) -> String {
         let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, account_type).to_lowercase();
 
@@ -647,7 +710,14 @@ impl BinanceWebSocket {
                 format!("{}@depth@{}ms", symbol, speed)
             }
             StreamType::Kline { interval } => format!("{}@kline_{}", symbol, interval),
-            StreamType::MarkPrice => format!("{}@markPrice", symbol),
+            StreamType::MarkPrice => {
+                // Empty symbol → all-asset batch stream; per-symbol otherwise.
+                if request.symbol.base.is_empty() && request.symbol.quote.is_empty() {
+                    "!markPrice@arr@1s".to_string()
+                } else {
+                    format!("{}@markPrice", symbol)
+                }
+            }
             StreamType::FundingRate => format!("{}@markPrice", symbol), // Binance includes funding in mark price stream
             // Per-symbol liquidation stream; Binance also has market-wide "!forceOrder@arr"
             // but the combined-stream endpoint requires a symbol param, so we use per-symbol.

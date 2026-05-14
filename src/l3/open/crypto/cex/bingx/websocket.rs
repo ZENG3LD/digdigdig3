@@ -503,10 +503,96 @@ impl BingxWebSocket {
             let event = BingxParser::parse_ws_position_update(data)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
             Ok(Some(StreamEvent::PositionUpdate(event)))
+        } else if data_type.ends_with("@markPrice") {
+            // Mark price stream — data: { symbol, markPrice, indexPrice, ts }
+            let event = Self::parse_mark_price_ws(data_type, data)?;
+            Ok(Some(event))
+        } else if data_type.ends_with("@fundingRate") {
+            // Funding rate stream — data: { symbol, fundingRate, nextFundingTime, ts }
+            let event = Self::parse_funding_rate_ws(data_type, data)?;
+            Ok(Some(event))
+        } else if data_type.ends_with("@forceOrder") || data_type == "forceOrder" {
+            // Liquidation orders stream — data: { symbol, side, price, origQty, ... }
+            let event = Self::parse_force_order_ws(data_type, data, account_type)?;
+            Ok(Some(event))
         } else {
             // Unknown stream type - ignore
             Ok(None)
         }
+    }
+
+    /// Parse BingX mark price WebSocket push.
+    ///
+    /// BingX swap mark price channel: `{symbol}@markPrice`
+    /// data fields: { symbol?, markPrice, indexPrice?, ts? }
+    fn parse_mark_price_ws(data_type: &str, data: &Value) -> WebSocketResult<StreamEvent> {
+        let parse_f64 = |v: &Value| -> Option<f64> {
+            v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
+        };
+        // Extract symbol from data_type prefix "BTCUSDT@markPrice"
+        let symbol = data_type.split('@').next().unwrap_or("").to_string();
+        let Some(mark_price) = data.get("markPrice").and_then(|v| parse_f64(v)) else {
+            return Err(WebSocketError::Parse("Missing markPrice in BingX markPrice push".to_string()));
+        };
+        let index_price = data.get("indexPrice").and_then(|v| parse_f64(v));
+        let timestamp = data.get("ts")
+            .or_else(|| data.get("time"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        Ok(StreamEvent::MarkPrice { symbol, mark_price, index_price, timestamp })
+    }
+
+    /// Parse BingX funding rate WebSocket push.
+    ///
+    /// BingX swap funding rate channel: `{symbol}@fundingRate`
+    /// data fields: { symbol?, fundingRate, nextFundingTime?, ts? }
+    fn parse_funding_rate_ws(data_type: &str, data: &Value) -> WebSocketResult<StreamEvent> {
+        let parse_f64 = |v: &Value| -> Option<f64> {
+            v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
+        };
+        let symbol = data_type.split('@').next().unwrap_or("").to_string();
+        let Some(rate) = data.get("fundingRate").and_then(|v| parse_f64(v)) else {
+            return Err(WebSocketError::Parse("Missing fundingRate in BingX fundingRate push".to_string()));
+        };
+        let next_funding_time = data.get("nextFundingTime").and_then(|v| v.as_i64());
+        let timestamp = data.get("ts")
+            .or_else(|| data.get("time"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        Ok(StreamEvent::FundingRate { symbol, rate, next_funding_time, timestamp })
+    }
+
+    /// Parse BingX forceOrder (liquidation) WebSocket push.
+    ///
+    /// BingX swap forced order channel: `{symbol}@forceOrder`
+    /// data fields: { symbol?, side, price, origQty, ts? }
+    fn parse_force_order_ws(data_type: &str, data: &Value, _account_type: AccountType) -> WebSocketResult<StreamEvent> {
+        use crate::core::types::TradeSide;
+        let parse_f64 = |v: &Value| -> Option<f64> {
+            v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
+        };
+        let symbol = data.get("symbol")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| data_type.split('@').next().unwrap_or("").to_string());
+        let Some(price) = data.get("price").and_then(|v| parse_f64(v)) else {
+            return Err(WebSocketError::Parse("Missing price in BingX forceOrder push".to_string()));
+        };
+        let quantity = data.get("origQty")
+            .or_else(|| data.get("qty"))
+            .and_then(|v| parse_f64(v))
+            .unwrap_or(0.0);
+        let side = data.get("side").and_then(|v| v.as_str())
+            .map(|s| match s.to_uppercase().as_str() {
+                "BUY" | "LONG" => TradeSide::Buy,
+                _ => TradeSide::Sell,
+            })
+            .unwrap_or(TradeSide::Sell);
+        let timestamp = data.get("transactTime")
+            .or_else(|| data.get("ts"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        Ok(StreamEvent::Liquidation { symbol, side, price, quantity, value: None, timestamp })
     }
 
     /// Build dataType string for subscription
@@ -550,6 +636,10 @@ impl BingxWebSocket {
             StreamType::FundingRate => {
                 let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, _account_type);
                 format!("{}@fundingRate", symbol)
+            }
+            StreamType::Liquidation => {
+                let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, _account_type);
+                format!("{}@forceOrder", symbol)
             }
             _ => String::new(),
         }

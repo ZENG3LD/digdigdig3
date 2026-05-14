@@ -537,9 +537,52 @@ impl OkxWebSocket {
                 let _ = ch;
                 vec![]
             }
+            "block-trades" => {
+                // OKX block-trades WS channel.
+                // Wire format (verified via REST /api/v5/public/block-trades):
+                //   { instId, tradeId, px, sz, side, ts, fillVol, fwdPx, markPx, idxPx, groupId }
+                // Emit StreamEvent::BlockTrade. fillVol is IV (implied vol) when non-empty.
+                use crate::core::types::TradeSide;
+                let symbol = data.get("instId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let Some(price) = data.get("px").and_then(|v| parse_f64_field(v)) else {
+                    return vec![];
+                };
+                let Some(quantity) = data.get("sz").and_then(|v| parse_f64_field(v)) else {
+                    return vec![];
+                };
+                let side = match data.get("side").and_then(|v| v.as_str()).unwrap_or("buy") {
+                    "sell" => TradeSide::Sell,
+                    _ => TradeSide::Buy,
+                };
+                let timestamp = data.get("ts")
+                    .and_then(|v| parse_f64_field(v))
+                    .map(|ms| ms as i64)
+                    .unwrap_or(0);
+                let block_id = data.get("tradeId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let is_iv = data.get("fillVol")
+                    .and_then(|v| v.as_str())
+                    .map(|s| !s.is_empty())
+                    .unwrap_or(false);
+                vec![StreamEvent::BlockTrade { symbol, block_id, price, quantity, side, timestamp, is_iv }]
+            }
             "estimated-price" => {
-                // OKX option settlement estimated price — no matching StreamEvent variant.
-                vec![]
+                // OKX estimated-price channel: estimated delivery/settlement price for options.
+                // Wire format: { instId, settlePx, ts }
+                // Emit StreamEvent::SettlementEvent.
+                let symbol = data.get("instId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let Some(settlement_price) = data.get("settlePx").and_then(|v| parse_f64_field(v)) else {
+                    return vec![];
+                };
+                let timestamp = data.get("ts")
+                    .and_then(|v| parse_f64_field(v))
+                    .map(|ms| ms as i64)
+                    .unwrap_or(0);
+                vec![StreamEvent::SettlementEvent {
+                    symbol,
+                    settlement_price,
+                    settlement_time: timestamp, // estimated, not final
+                    timestamp,
+                }]
             }
             "price-limit" => {
                 // OKX price-limit pushes upper/lower price bounds — no matching StreamEvent variant.
@@ -765,6 +808,8 @@ impl WebSocketConnector for OkxWebSocket {
             crate::core::StreamType::MarkPrice => "mark-price",
             crate::core::StreamType::FundingRate => "funding-rate",
             crate::core::StreamType::Liquidation => "liquidation-orders",
+            crate::core::StreamType::BlockTrade => "block-trades",
+            crate::core::StreamType::SettlementEvent => "estimated-price",
             crate::core::StreamType::OrderUpdate => "orders",
             crate::core::StreamType::BalanceUpdate => "account",
             crate::core::StreamType::PositionUpdate => "positions",
@@ -846,6 +891,8 @@ impl WebSocketConnector for OkxWebSocket {
             crate::core::StreamType::MarkPrice => "mark-price",
             crate::core::StreamType::FundingRate => "funding-rate",
             crate::core::StreamType::Liquidation => "liquidation-orders",
+            crate::core::StreamType::BlockTrade => "block-trades",
+            crate::core::StreamType::SettlementEvent => "estimated-price",
             crate::core::StreamType::OrderUpdate => "orders",
             crate::core::StreamType::BalanceUpdate => "account",
             crate::core::StreamType::PositionUpdate => "positions",

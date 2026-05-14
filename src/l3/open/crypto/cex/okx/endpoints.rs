@@ -159,6 +159,12 @@ pub enum OkxEndpoint {
     SubAccountTransfer,
     /// GET /api/v5/account/subaccount/balances
     SubAccountBalances,
+
+    // === MARKET DATA EXTRAS ===
+    /// GET /api/v5/public/position-tiers — risk/margin tier info per symbol family
+    PositionTiers,
+    /// GET /api/v5/finance/savings/lending-rate-history — savings lending rate history
+    LendingRateHistory,
 }
 
 impl OkxEndpoint {
@@ -242,6 +248,10 @@ impl OkxEndpoint {
             Self::SubAccountList => "/api/v5/users/subaccount/list",
             Self::SubAccountTransfer => "/api/v5/asset/subaccount/transfer",
             Self::SubAccountBalances => "/api/v5/account/subaccount/balances",
+
+            // Market Data Extras
+            Self::PositionTiers => "/api/v5/public/position-tiers",
+            Self::LendingRateHistory => "/api/v5/finance/savings/lending-rate-history",
         }
     }
 
@@ -264,7 +274,9 @@ impl OkxEndpoint {
             | Self::OpenInterest
             | Self::LongShortRatio
             | Self::PublicLiquidationOrders
-            | Self::MarkPrice => false,
+            | Self::MarkPrice
+            | Self::PositionTiers
+            | Self::LendingRateHistory => false,
 
             // Private endpoints
             _ => true,

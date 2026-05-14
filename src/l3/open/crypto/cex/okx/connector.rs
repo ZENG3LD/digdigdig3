@@ -539,6 +539,112 @@ impl OkxConnector {
         }
         self.get(OkxEndpoint::FillsArchive, params).await
     }
+
+    /// Get risk/margin position tiers for a symbol family.
+    ///
+    /// Endpoint: `GET /api/v5/public/position-tiers` — public, no auth.
+    ///
+    /// # Parameters
+    /// - `inst_type`   — `"SWAP"` | `"FUTURES"` | `"OPTION"` | `"MARGIN"`.
+    /// - `td_mode`     — `"cross"` | `"isolated"`.
+    /// - `uly`         — underlying (e.g. `"BTC-USD"`). Required for SWAP/FUTURES/OPTION.
+    /// - `inst_family` — alternative to uly (e.g. `"BTC-USD"`).
+    /// - `inst_id`     — specific instrument (e.g. `"BTC-USDT-SWAP"`).
+    /// - `ccy`         — settlement currency (required for MARGIN; e.g. `"BTC"`).
+    /// - `tier`        — specific tier number (optional).
+    pub async fn get_position_tiers(
+        &self,
+        inst_type: &str,
+        td_mode: &str,
+        uly: Option<&str>,
+        inst_family: Option<&str>,
+        inst_id: Option<&str>,
+        ccy: Option<&str>,
+        tier: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("instType".to_string(), inst_type.to_string());
+        params.insert("tdMode".to_string(), td_mode.to_string());
+        if let Some(u) = uly {
+            params.insert("uly".to_string(), u.to_string());
+        }
+        if let Some(f) = inst_family {
+            params.insert("instFamily".to_string(), f.to_string());
+        }
+        if let Some(id) = inst_id {
+            params.insert("instId".to_string(), id.to_string());
+        }
+        if let Some(c) = ccy {
+            params.insert("ccy".to_string(), c.to_string());
+        }
+        if let Some(t) = tier {
+            params.insert("tier".to_string(), t.to_string());
+        }
+        self.get(OkxEndpoint::PositionTiers, params).await
+    }
+
+    /// Get funding rate history.
+    ///
+    /// Endpoint: `GET /api/v5/public/funding-rate-history` — public, no auth.
+    /// Already available via trait method; this convenience method exposes
+    /// `before`/`after` cursor parameters for finer pagination control.
+    ///
+    /// # Parameters
+    /// - `inst_id` — perpetual swap instrument (e.g. `"BTC-USDT-SWAP"`).
+    /// - `before`  — pagination cursor: only records with fundingTime > before.
+    /// - `after`   — pagination cursor: only records with fundingTime < after.
+    /// - `limit`   — max records (default 100, max 400).
+    pub async fn get_funding_rate_history(
+        &self,
+        inst_id: &str,
+        before: Option<i64>,
+        after: Option<i64>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("instId".to_string(), inst_id.to_string());
+        if let Some(b) = before {
+            params.insert("before".to_string(), b.to_string());
+        }
+        if let Some(a) = after {
+            params.insert("after".to_string(), a.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(OkxEndpoint::FundingRateHistory, params).await
+    }
+
+    /// Get savings/lending rate history for a currency.
+    ///
+    /// Endpoint: `GET /api/v5/finance/savings/lending-rate-history` — public, no auth.
+    /// Returns historical lending rates with timestamps.
+    ///
+    /// # Parameters
+    /// - `ccy`    — currency (e.g. `"BTC"`, `"USDT"`).
+    /// - `after`  — pagination cursor (fundingTime < after).
+    /// - `before` — pagination cursor (fundingTime > before).
+    /// - `limit`  — max records (default 100, max 100).
+    pub async fn get_lending_rate_history(
+        &self,
+        ccy: &str,
+        after: Option<i64>,
+        before: Option<i64>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("ccy".to_string(), ccy.to_string());
+        if let Some(a) = after {
+            params.insert("after".to_string(), a.to_string());
+        }
+        if let Some(b) = before {
+            params.insert("before".to_string(), b.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(OkxEndpoint::LendingRateHistory, params).await
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

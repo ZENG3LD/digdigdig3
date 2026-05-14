@@ -589,6 +589,50 @@ impl BybitConnector {
         }
         self.get(BybitEndpoint::ClosedPnl, params).await
     }
+
+    /// Get institutional loan product information.
+    ///
+    /// Endpoint: `GET /v5/ins-loan/product-infos` — public, no auth required.
+    /// Returns the list of loan products with leverage and symbol info.
+    pub async fn get_institutional_loan_products(&self) -> ExchangeResult<Value> {
+        self.get(BybitEndpoint::InsLoanProducts, HashMap::new()).await
+    }
+
+    /// Get risk limit tiers for a symbol.
+    ///
+    /// Endpoint: `GET /v5/market/risk-limit` — public, no auth required.
+    /// `category`: `"linear"` | `"inverse"`.
+    /// Returns tier list with `riskLimitValue`, `maintenanceMargin`, `initialMargin`, `maxLeverage`.
+    pub async fn get_risk_limit(
+        &self,
+        category: &str,
+        symbol: &str,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("category".to_string(), category.to_string());
+        params.insert("symbol".to_string(), symbol.to_string());
+        self.get(BybitEndpoint::RiskLimit, params).await
+    }
+
+    /// Get futures delivery reference price.
+    ///
+    /// Endpoint: `GET /v5/market/delivery-price` — public, no auth required.
+    /// `category`: `"inverse"` for coin-margined futures.
+    /// `symbol`: e.g. `"BTCUSD"` for coin-margined.
+    pub async fn get_delivery_price(
+        &self,
+        category: &str,
+        symbol: &str,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("category".to_string(), category.to_string());
+        params.insert("symbol".to_string(), symbol.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(BybitEndpoint::DeliveryPrice, params).await
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

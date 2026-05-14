@@ -829,6 +829,221 @@ impl BinanceConnector {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // BASIS HISTORY
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Get basis history (futures premium / discount to index).
+    ///
+    /// Endpoint: `GET /futures/data/basis` on `fapi.binance.com` — no auth.
+    ///
+    /// # Parameters
+    /// - `pair`           — e.g. `"BTCUSDT"` (USDT-M) or `"BTCUSD"` (coin-M).
+    /// - `contract_type`  — `"PERPETUAL"` | `"CURRENT_QUARTER"` | `"NEXT_QUARTER"`.
+    /// - `period`         — `"5m"` | `"15m"` | `"30m"` | `"1h"` | `"2h"` | `"4h"` | `"6h"` | `"12h"` | `"1d"`.
+    /// - `limit`          — max records (default 30, max 500).
+    /// - `start_time`     — Unix ms.
+    /// - `end_time`       — Unix ms.
+    pub async fn get_basis_history(
+        &self,
+        pair: &str,
+        contract_type: &str,
+        period: &str,
+        limit: Option<u32>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("pair".to_string(), pair.to_string());
+        params.insert("contractType".to_string(), contract_type.to_string());
+        params.insert("period".to_string(), period.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        if let Some(s) = start_time {
+            params.insert("startTime".to_string(), s.to_string());
+        }
+        if let Some(e) = end_time {
+            params.insert("endTime".to_string(), e.to_string());
+        }
+        self.get(BinanceEndpoint::BasisHistory, params, AccountType::FuturesCross).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INSURANCE FUND INCOME
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Get insurance fund income records (signed endpoint).
+    ///
+    /// Endpoint: `GET /fapi/v1/income` with `incomeType=INSURANCE_CLEAR`.
+    /// Requires API key + secret. The caller's account must have made at least
+    /// one transaction for the signed endpoint to return data.
+    ///
+    /// # Parameters
+    /// - `start_time` — Unix ms lower bound.
+    /// - `end_time`   — Unix ms upper bound.
+    /// - `limit`      — max records (default 100, max 1000).
+    pub async fn get_insurance_fund_income(
+        &self,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Value> {
+        let mut params = HashMap::new();
+        params.insert("incomeType".to_string(), "INSURANCE_CLEAR".to_string());
+        if let Some(s) = start_time {
+            params.insert("startTime".to_string(), s.to_string());
+        }
+        if let Some(e) = end_time {
+            params.insert("endTime".to_string(), e.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        self.get(BinanceEndpoint::InsuranceFundIncome, params, AccountType::FuturesCross).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // COIN-MARGINED (DAPI) ENDPOINTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Make a raw GET request to the coin-margined (DAPI) base URL.
+    ///
+    /// Used internally for CM endpoints that are not reachable via the USDT-M
+    /// `fapi.binance.com` host.
+    async fn get_cm(
+        &self,
+        endpoint: BinanceEndpoint,
+        mut params: HashMap<String, String>,
+    ) -> ExchangeResult<Value> {
+        self.rate_limit_wait(weights::DEFAULT, false).await;
+
+        let base_url = self.urls.coin_futures_rest;
+        let path = endpoint.path();
+
+        let headers = if endpoint.requires_auth() {
+            let auth = self.auth.as_ref()
+                .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
+            auth.sign_request(&mut params)
+        } else {
+            HashMap::new()
+        };
+
+        let query = if params.is_empty() {
+            String::new()
+        } else {
+            let qs: Vec<String> = params.iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect();
+            format!("?{}", qs.join("&"))
+        };
+
+        let url = format!("{}{}{}", base_url, path, query);
+        let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &headers).await?;
+        self.update_weight_from_headers(&resp_headers);
+        BinanceParser::check_error(&response)?;
+        Ok(response)
+    }
+
+    /// Get open interest for a coin-margined symbol.
+    ///
+    /// Endpoint: `GET /dapi/v1/openInterest` — no auth.
+    /// `symbol`: e.g. `"BTCUSD_PERP"`.
+    pub async fn get_open_interest_cm(&self, symbol: &str) -> ExchangeResult<OpenInterest> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        let v = self.get_cm(BinanceEndpoint::CmOpenInterest, params).await?;
+        BinanceParser::parse_open_interest(&v)
+    }
+
+    /// Get public liquidation orders for coin-margined futures.
+    ///
+    /// Endpoint: `GET /dapi/v1/forceOrders` — no auth.
+    pub async fn get_force_orders_cm(
+        &self,
+        symbol: Option<&str>,
+        auto_close_type: Option<&str>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Vec<Liquidation>> {
+        let mut params = HashMap::new();
+        if let Some(s) = symbol {
+            params.insert("symbol".to_string(), s.to_string());
+        }
+        if let Some(t) = auto_close_type {
+            params.insert("autoCloseType".to_string(), t.to_string());
+        }
+        if let Some(s) = start_time {
+            params.insert("startTime".to_string(), s.to_string());
+        }
+        if let Some(e) = end_time {
+            params.insert("endTime".to_string(), e.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        let v = self.get_cm(BinanceEndpoint::CmForceOrders, params).await?;
+        BinanceParser::parse_liquidations(&v)
+    }
+
+    /// Get funding rate history for coin-margined futures.
+    ///
+    /// Endpoint: `GET /dapi/v1/fundingRate` — no auth.
+    /// `symbol`: e.g. `"BTCUSD_PERP"`.
+    pub async fn get_funding_rate_cm(
+        &self,
+        symbol: &str,
+        limit: Option<u32>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<FundingRate>> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        if let Some(s) = start_time {
+            params.insert("startTime".to_string(), s.to_string());
+        }
+        if let Some(e) = end_time {
+            params.insert("endTime".to_string(), e.to_string());
+        }
+        let v = self.get_cm(BinanceEndpoint::CmFundingRate, params).await?;
+        BinanceParser::parse_funding_rates(&v)
+    }
+
+    /// Get open interest history for coin-margined futures.
+    ///
+    /// Endpoint: `GET /futures/data/openInterestHist` on `dapi.binance.com` — no auth.
+    /// `pair`: e.g. `"BTCUSD"`. `contract_type`: `"PERPETUAL"` | `"CURRENT_QUARTER"`.
+    /// `period`: `"5m"` | `"15m"` | `"30m"` | `"1h"` | `"2h"` | `"4h"` | `"6h"` | `"12h"` | `"1d"`.
+    pub async fn get_open_interest_history_cm(
+        &self,
+        pair: &str,
+        contract_type: &str,
+        period: &str,
+        limit: Option<u32>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<OpenInterest>> {
+        let mut params = HashMap::new();
+        params.insert("pair".to_string(), pair.to_string());
+        params.insert("contractType".to_string(), contract_type.to_string());
+        params.insert("period".to_string(), period.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        if let Some(s) = start_time {
+            params.insert("startTime".to_string(), s.to_string());
+        }
+        if let Some(e) = end_time {
+            params.insert("endTime".to_string(), e.to_string());
+        }
+        let v = self.get_cm(BinanceEndpoint::CmOpenInterestHist, params).await?;
+        BinanceParser::parse_open_interest_history(&v)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // LISTEN KEY MANAGEMENT
     // ═══════════════════════════════════════════════════════════════════════════
 

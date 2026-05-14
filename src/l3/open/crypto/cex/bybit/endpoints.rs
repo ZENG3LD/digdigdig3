@@ -133,6 +133,14 @@ pub enum BybitEndpoint {
     // === ACCOUNT LEDGER / FUNDING HISTORY ===
     /// GET /v5/account/transaction-log — full ledger (all types incl. SETTLEMENT)
     TransactionLog,
+
+    // === MARKET DATA EXTRAS ===
+    /// GET /v5/ins-loan/product-infos — institutional loan products
+    InsLoanProducts,
+    /// GET /v5/market/risk-limit — risk limit tiers per symbol
+    RiskLimit,
+    /// GET /v5/market/delivery-price — futures delivery reference price
+    DeliveryPrice,
 }
 
 impl BybitEndpoint {
@@ -205,6 +213,11 @@ impl BybitEndpoint {
 
             // Account Ledger / Funding History
             Self::TransactionLog => "/v5/account/transaction-log",
+
+            // Market Data Extras
+            Self::InsLoanProducts => "/v5/ins-loan/product-infos",
+            Self::RiskLimit => "/v5/market/risk-limit",
+            Self::DeliveryPrice => "/v5/market/delivery-price",
         }
     }
 
@@ -248,7 +261,9 @@ impl BybitEndpoint {
             | Self::LongShortRatio
             | Self::MarkPriceKline
             | Self::IndexPriceKline
-            | Self::PremiumIndexKline => false,
+            | Self::PremiumIndexKline
+            | Self::RiskLimit
+            | Self::DeliveryPrice => false,
 
             // Private endpoints
             _ => true,

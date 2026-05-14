@@ -13,6 +13,8 @@ use crate::core::types::AccountType;
 pub struct BinanceUrls {
     pub spot_rest: &'static str,
     pub futures_rest: &'static str,
+    /// Coin-margined (DAPI) REST base URL
+    pub coin_futures_rest: &'static str,
     pub spot_ws: &'static str,
     pub futures_ws: &'static str,
 }
@@ -22,6 +24,7 @@ impl BinanceUrls {
     pub const MAINNET: Self = Self {
         spot_rest: "https://api.binance.com",
         futures_rest: "https://fapi.binance.com",
+        coin_futures_rest: "https://dapi.binance.com",
         spot_ws: "wss://stream.binance.com:9443",
         futures_ws: "wss://fstream.binance.com",
     };
@@ -30,6 +33,7 @@ impl BinanceUrls {
     pub const TESTNET: Self = Self {
         spot_rest: "https://testapi.binance.vision",
         futures_rest: "https://testnet.binancefuture.com",
+        coin_futures_rest: "https://testnet.binancefuture.com",
         spot_ws: "wss://testnet.binance.vision",
         futures_ws: "wss://stream.binancefuture.com",
     };
@@ -196,6 +200,26 @@ pub enum BinanceEndpoint {
     SubAccountTransfer,
     /// Get sub-account assets/balance: GET /sapi/v3/sub-account/assets
     SubAccountAssets,
+
+    // === COIN-MARGINED (DAPI) — base URL: dapi.binance.com ===
+    /// GET /dapi/v1/openInterest — coin-margined open interest
+    CmOpenInterest,
+    /// GET /dapi/v1/forceOrders — coin-margined force orders (public)
+    CmForceOrders,
+    /// GET /dapi/v1/fundingRate — coin-margined funding rate history
+    CmFundingRate,
+    /// GET /dapi/v1/deliveryPrice — coin-margined delivery price (requires auth)
+    CmDeliveryPrice,
+    /// GET /futures/data/openInterestHist — coin-margined OI history (via dapi host)
+    CmOpenInterestHist,
+
+    // === BASIS HISTORY ===
+    /// GET /futures/data/basis — basis (futures premium) history (via fapi host)
+    BasisHistory,
+
+    // === INSURANCE FUND INCOME ===
+    /// GET /fapi/v1/income (incomeType=INSURANCE_CLEAR) — insurance fund income (signed)
+    InsuranceFundIncome,
 }
 
 impl BinanceEndpoint {
@@ -304,6 +328,19 @@ impl BinanceEndpoint {
             Self::SubAccountList => "/sapi/v1/sub-account/list",
             Self::SubAccountTransfer => "/sapi/v1/sub-account/universalTransfer",
             Self::SubAccountAssets => "/sapi/v3/sub-account/assets",
+
+            // Coin-margined (DAPI)
+            Self::CmOpenInterest => "/dapi/v1/openInterest",
+            Self::CmForceOrders => "/dapi/v1/forceOrders",
+            Self::CmFundingRate => "/dapi/v1/fundingRate",
+            Self::CmDeliveryPrice => "/dapi/v1/deliveryPrice",
+            Self::CmOpenInterestHist => "/futures/data/openInterestHist",
+
+            // Basis history
+            Self::BasisHistory => "/futures/data/basis",
+
+            // Insurance fund income
+            Self::InsuranceFundIncome => "/fapi/v1/income",
         }
     }
 
@@ -335,7 +372,12 @@ impl BinanceEndpoint {
             | Self::FuturesTopLongShortPositionRatio
             | Self::FuturesGlobalLongShortAccountRatio
             | Self::FuturesTakerLongShortRatio
-            | Self::FuturesForceOrders => false,
+            | Self::FuturesForceOrders
+            | Self::CmOpenInterest
+            | Self::CmForceOrders
+            | Self::CmFundingRate
+            | Self::CmOpenInterestHist
+            | Self::BasisHistory => false,
 
             // Private endpoints
             _ => true,

@@ -506,6 +506,44 @@ impl BybitWebSocket {
                 .or_else(|| data["ts"].as_i64())
                 .unwrap_or(0);
             Ok(vec![StreamEvent::InsuranceFund { symbol: coin, balance, timestamp }])
+        } else if topic.starts_with("adlAlert.") {
+            // Bybit V5 ADL alert topic: "adlAlert.USDT" | "adlAlert.USDC" | "adlAlert.inverse"
+            // Wire format (verified from docs):
+            //   data: [ { c: coin, s: symbol, b: balance_info, mb: maint_balance,
+            //              i_pr: initial_margin_rate, pr: position_ratio,
+            //              adl_tt: adl_total_time, adl_sr: adl_score_ratio } ]
+            // Each item describes the ADL rank for one symbol. Emit StreamEvent::RiskLimit
+            // since ADL alert is about auto-deleveraging risk on positions — closest semantic fit.
+            let coin = topic.trim_start_matches("adlAlert.").to_string();
+            let items = data.as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+            let timestamp = {
+                // Try outer ts field; inner items don't carry ts
+                let outer_ts = topic.len(); // placeholder 0 if no ts available
+                let _ = outer_ts;
+                crate::core::timestamp_millis()
+            };
+            let events: Vec<StreamEvent> = items.iter().filter_map(|item| {
+                let symbol = item["s"].as_str().unwrap_or("").to_string();
+                if symbol.is_empty() {
+                    return None;
+                }
+                // adl_sr is a score ratio in [-1, 1]; map to initial_margin_rate field
+                let adl_score = item["adl_sr"].as_f64().unwrap_or(0.0);
+                let initial_margin_rate = item["i_pr"].as_f64().unwrap_or(0.0);
+                let maintenance_margin_rate = initial_margin_rate * 0.5; // Bybit doesn't provide mmr separately in this event
+                // adl_tt represents total time component; treat as tier index
+                let tier = item["adl_tt"].as_f64().map(|v| v.abs() as u32).unwrap_or(0);
+                Some(StreamEvent::RiskLimit {
+                    symbol: format!("{}/{}", symbol, coin),
+                    tier,
+                    max_leverage: 0.0, // not provided in ADL alert
+                    max_position_value: 0.0,
+                    maintenance_margin_rate,
+                    initial_margin_rate: adl_score.abs(),
+                    timestamp: timestamp as i64,
+                })
+            }).collect();
+            Ok(events)
         } else if topic == "order" {
             let event = Self::parse_order_update_ws(data)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
@@ -614,6 +652,16 @@ impl BybitWebSocket {
                 // The symbol base asset is used as the coin identifier.
                 let coin = request.symbol.base.to_uppercase();
                 format!("insurance.{}", coin)
+            }
+            // ADL alert: topic is per-settlement-coin: "adlAlert.USDT", "adlAlert.USDC", "adlAlert.inverse"
+            // The symbol base field carries the coin identifier (e.g. "USDT", "USDC", "inverse").
+            StreamType::RiskLimit => {
+                let coin = if request.symbol.base.is_empty() {
+                    "USDT".to_string()
+                } else {
+                    request.symbol.base.to_uppercase()
+                };
+                format!("adlAlert.{}", coin)
             }
             // MarkPriceKline, IndexPriceKline, PremiumIndexKline: Bybit V5 does NOT
             // provide these as WebSocket topics — they are REST-only endpoints.

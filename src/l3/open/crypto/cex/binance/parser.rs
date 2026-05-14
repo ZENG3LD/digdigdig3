@@ -248,6 +248,21 @@ impl BinanceParser {
         })
     }
 
+    /// Parse an array of funding rate records (CM `/dapi/v1/fundingRate` response).
+    ///
+    /// Each element: `{symbol, fundingTime, fundingRate, markPrice}`.
+    pub fn parse_funding_rates(response: &Value) -> ExchangeResult<Vec<FundingRate>> {
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected JSON array for funding rates".to_string()))?;
+        let result = arr.iter().map(|item| FundingRate {
+            symbol: Self::get_str(item, "symbol").unwrap_or("").to_string(),
+            rate: Self::get_f64(item, "fundingRate").unwrap_or(0.0),
+            next_funding_time: item.get("fundingTime").and_then(|t| t.as_i64()),
+            timestamp: item.get("fundingTime").and_then(|t| t.as_i64()).unwrap_or(0),
+        }).collect();
+        Ok(result)
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // TRADING
     // ═══════════════════════════════════════════════════════════════════════════

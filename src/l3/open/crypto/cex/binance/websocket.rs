@@ -181,6 +181,29 @@ impl BinanceWebSocket {
         current
     }
 
+    /// Subscribe to the market-wide all-symbol forced-liquidation stream (`!forceOrder@arr`).
+    ///
+    /// This single stream delivers forced-close (liquidation) events for **every** symbol
+    /// in real time, rather than requiring per-symbol subscriptions.
+    /// Each `forceOrder` event is parsed as an individual `StreamEvent::Liquidation`.
+    pub async fn subscribe_all_liquidations(&mut self) -> WebSocketResult<()> {
+        let msg = SubscribeMessage {
+            method: "SUBSCRIBE".to_string(),
+            params: vec!["!forceOrder@arr".to_string()],
+            id: self.next_msg_id().await,
+        };
+
+        let msg_json = serde_json::to_string(&msg)
+            .map_err(|e| WebSocketError::ProtocolError(e.to_string()))?;
+
+        let mut sink_guard = self.ws_sink.lock().await;
+        let sink = sink_guard.as_mut()
+            .ok_or_else(|| WebSocketError::ConnectionError("Not connected".to_string()))?;
+
+        sink.send(Message::Text(msg_json)).await
+            .map_err(|e| WebSocketError::ConnectionError(e.to_string()))
+    }
+
     /// Subscribe to the all-asset batch mark-price stream (`!markPrice@arr@1s`).
     ///
     /// This single stream delivers mark-price updates for **every** symbol in one
@@ -719,9 +742,16 @@ impl BinanceWebSocket {
                 }
             }
             StreamType::FundingRate => format!("{}@markPrice", symbol), // Binance includes funding in mark price stream
-            // Per-symbol liquidation stream; Binance also has market-wide "!forceOrder@arr"
-            // but the combined-stream endpoint requires a symbol param, so we use per-symbol.
-            StreamType::Liquidation => format!("{}@forceOrder", symbol),
+            // Per-symbol liquidation stream. When symbol is empty (base == "" and quote == ""),
+            // subscribe to the market-wide `!forceOrder@arr` stream that delivers forced-close
+            // events for every symbol in one push. Use subscribe_all_liquidations() as convenience.
+            StreamType::Liquidation => {
+                if request.symbol.base.is_empty() && request.symbol.quote.is_empty() {
+                    "!forceOrder@arr".to_string()
+                } else {
+                    format!("{}@forceOrder", symbol)
+                }
+            }
             StreamType::AggTrade => format!("{}@aggTrade", symbol),
             StreamType::MarkPriceKline { interval } => format!("{}@markPriceKline_{}", symbol, interval),
             StreamType::IndexPriceKline { interval } => format!("{}@indexPriceKline_{}", symbol, interval),

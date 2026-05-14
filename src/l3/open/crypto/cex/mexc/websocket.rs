@@ -479,6 +479,34 @@ impl WebSocketConnector for MexcWebSocket {
                 self.subscribe_orderbook(request.symbol.clone()).await
                     .map_err(|e| WebSocketError::Subscription(e.to_string()))?;
             }
+            StreamType::FundingRate => {
+                // MEXC futures funding rate requires the contract WebSocket endpoint
+                // (wss://contract.mexc.com/edge), not the spot protobuf endpoint.
+                // TODO: implement a separate futures WS connection for contract channels.
+                // Subscription message format (to be sent on futures WS):
+                //   { "method": "sub.funding.rate", "param": { "symbol": "<symbol>" } }
+                let symbol_str = format_symbol(&request.symbol, AccountType::FuturesCross);
+                let channel = MexcWsChannels::futures_funding_rate(&symbol_str);
+                let msg = serde_json::json!({
+                    "method": "SUBSCRIPTION",
+                    "params": [channel]
+                });
+                self.send_message(&msg).await
+                    .map_err(|e| WebSocketError::Subscription(e.to_string()))?;
+            }
+            StreamType::Liquidation => {
+                // MEXC futures liquidation also requires the contract WebSocket endpoint.
+                // TODO: verify that MEXC exposes a public liquidation stream.
+                // If not, this subscription is silently ignored by the server.
+                let symbol_str = format_symbol(&request.symbol, AccountType::FuturesCross);
+                let channel = MexcWsChannels::futures_liquidation(&symbol_str);
+                let msg = serde_json::json!({
+                    "method": "SUBSCRIPTION",
+                    "params": [channel]
+                });
+                self.send_message(&msg).await
+                    .map_err(|e| WebSocketError::Subscription(e.to_string()))?;
+            }
             _ => {
                 return Err(WebSocketError::Subscription(
                     format!("Unsupported stream type: {:?}", request.stream_type)

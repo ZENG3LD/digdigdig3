@@ -103,6 +103,12 @@ pub enum MexcEndpoint {
     // === EXTENDED ENDPOINTS ===
     /// GET /api/v1/contract/index_price/{symbol} — index and mark price
     FuturesMarkPrice,
+    /// GET /api/v1/contract/funding_rate/{symbol} — current funding rate
+    /// TODO: verify exact path against live MEXC contract API
+    FuturesFundingRate,
+    /// GET /api/v1/contract/open_interest/{symbol} — open interest for a contract
+    /// TODO: verify exact path against live MEXC contract API
+    FuturesOpenInterest,
 }
 
 impl MexcEndpoint {
@@ -163,6 +169,9 @@ impl MexcEndpoint {
 
             // Extended endpoints
             Self::FuturesMarkPrice => "/api/v1/contract/index_price", // Append /{symbol}
+            // TODO: verify exact paths against live MEXC contract API
+            Self::FuturesFundingRate => "/api/v1/contract/funding_rate", // Append /{symbol}
+            Self::FuturesOpenInterest => "/api/v1/contract/open_interest", // Append /{symbol}
         }
     }
 
@@ -209,7 +218,9 @@ impl MexcEndpoint {
             | Self::FuturesKlines
             | Self::FuturesRecentTrades
             | Self::FuturesContractInfo
-            | Self::FuturesMarkPrice => false,
+            | Self::FuturesMarkPrice
+            | Self::FuturesFundingRate
+            | Self::FuturesOpenInterest => false,
 
             // Private endpoints
             _ => true,
@@ -227,6 +238,8 @@ impl MexcEndpoint {
             | Self::FuturesRecentTrades
             | Self::FuturesContractInfo
             | Self::FuturesMarkPrice
+            | Self::FuturesFundingRate
+            | Self::FuturesOpenInterest
         )
     }
 
@@ -322,6 +335,30 @@ impl MexcWsChannels {
     /// Example: `spot@public.bookTicker.v3.api.pb@BTCUSDT`
     pub fn book_ticker(symbol: &str) -> String {
         format!("spot@public.bookTicker.v3.api.pb@{}", symbol)
+    }
+
+    /// Futures funding rate channel.
+    ///
+    /// MEXC futures WebSocket endpoint: `wss://contract.mexc.com/edge`
+    /// Channel format: `sub.funding.rate` with symbol in the params.
+    ///
+    /// # TODO
+    /// Verify exact channel name and subscription message format against live
+    /// MEXC contract WebSocket documentation.
+    pub fn futures_funding_rate(symbol: &str) -> String {
+        format!("sub.funding.rate@{}", symbol)
+    }
+
+    /// Futures liquidation orders channel.
+    ///
+    /// MEXC futures WebSocket endpoint: `wss://contract.mexc.com/edge`
+    ///
+    /// # TODO
+    /// Verify exact channel name and subscription format against live
+    /// MEXC contract WebSocket documentation. MEXC may not expose public
+    /// liquidation order stream; if not, this is unsupported.
+    pub fn futures_liquidation(symbol: &str) -> String {
+        format!("sub.deal@{}", symbol)
     }
 }
 

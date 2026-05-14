@@ -1837,6 +1837,48 @@ impl MexcConnector {
         self.update_weight_from_headers(&resp_headers);
         Ok(response)
     }
+
+    /// Get current funding rate for a futures contract.
+    ///
+    /// `GET /api/v1/contract/funding_rate/{symbol}` (MEXC futures domain)
+    ///
+    /// # TODO
+    /// Verify exact endpoint path against live MEXC contract API documentation.
+    pub async fn get_funding_rate(&self, symbol: &str) -> ExchangeResult<Value> {
+        let base_url = MexcUrls::futures_base_url();
+        let path = format!("{}/{}", MexcEndpoint::FuturesFundingRate.path(), symbol);
+        let url = format!("{}{}", base_url, path);
+        if !self.rate_limit_wait(1, false).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; non-essential market data request dropped".to_string(),
+            });
+        }
+        let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
+        self.update_weight_from_headers(&resp_headers);
+        Ok(response)
+    }
+
+    /// Get open interest for a futures contract.
+    ///
+    /// `GET /api/v1/contract/open_interest/{symbol}` (MEXC futures domain)
+    ///
+    /// # TODO
+    /// Verify exact endpoint path against live MEXC contract API documentation.
+    pub async fn get_open_interest(&self, symbol: &str) -> ExchangeResult<Value> {
+        let base_url = MexcUrls::futures_base_url();
+        let path = format!("{}/{}", MexcEndpoint::FuturesOpenInterest.path(), symbol);
+        let url = format!("{}{}", base_url, path);
+        if !self.rate_limit_wait(1, false).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; non-essential market data request dropped".to_string(),
+            });
+        }
+        let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
+        self.update_weight_from_headers(&resp_headers);
+        Ok(response)
+    }
 }
 
 /// Map internal AccountType to MEXC's transfer account type string.

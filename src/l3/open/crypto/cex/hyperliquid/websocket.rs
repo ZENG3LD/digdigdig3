@@ -27,7 +27,7 @@ use crate::core::{
     AccountType, ConnectionStatus, StreamEvent, StreamType,
     SubscriptionRequest,
 };
-use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities};
+use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities, TradeSide};
 use crate::core::traits::WebSocketConnector;
 
 use super::{HyperliquidUrls, HyperliquidParser};
@@ -200,6 +200,11 @@ impl HyperliquidWebSocket {
         match channel.as_str() {
             "activeAssetCtx" => {
                 if let Some(event) = Self::parse_active_asset_ctx(&data)? {
+                    let _ = event_tx.send(Ok(event));
+                }
+            }
+            "liquidations" => {
+                if let Some(event) = Self::parse_liquidation(&data)? {
                     let _ = event_tx.send(Ok(event));
                 }
             }
@@ -382,6 +387,65 @@ impl HyperliquidWebSocket {
         }
 
         Ok(None)
+    }
+
+    /// Parse liquidation event from Hyperliquid `liquidations` channel.
+    ///
+    /// Hyperliquid format:
+    /// ```json
+    /// {
+    ///   "coin": "BTC",
+    ///   "side": "B",
+    ///   "px": "50000.0",
+    ///   "sz": "0.01",
+    ///   "time": 1700000000000
+    /// }
+    /// ```
+    /// Side mapping: "B"/"Buy" = buy-side forced order → short was liquidated → emit TradeSide::Sell
+    ///               "A"/"Sell" = sell-side forced order → long was liquidated → emit TradeSide::Buy
+    fn parse_liquidation(data: &Value) -> WebSocketResult<Option<StreamEvent>> {
+        let parse_f64 = |val: &Value| -> Option<f64> {
+            val.as_str().and_then(|s| s.parse().ok()).or_else(|| val.as_f64())
+        };
+
+        let symbol = match data.get("coin").and_then(|c| c.as_str()) {
+            Some(s) => s.to_string(),
+            None => return Ok(None),
+        };
+        let side_str = match data.get("side").and_then(|s| s.as_str()) {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+        let price = match data.get("px").and_then(|v| parse_f64(v)) {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+        let quantity = match data.get("sz").and_then(|v| parse_f64(v)) {
+            Some(q) => q,
+            None => return Ok(None),
+        };
+        let timestamp = data.get("time")
+            .or_else(|| data.get("ts"))
+            .and_then(|t| t.as_i64())
+            .unwrap_or(0);
+
+        // "B"/"Buy" = buy order (forced) → short position was liquidated
+        // "A"/"Sell" = sell order (forced) → long position was liquidated
+        let side = match side_str {
+            "B" | "Buy" => TradeSide::Sell,
+            _ => TradeSide::Buy,
+        };
+
+        let value = Some(price * quantity);
+
+        Ok(Some(StreamEvent::Liquidation {
+            symbol,
+            side,
+            price,
+            quantity,
+            timestamp,
+            value,
+        }))
     }
 
     /// Build subscription object for Hyperliquid

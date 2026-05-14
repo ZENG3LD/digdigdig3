@@ -215,6 +215,9 @@ impl HyperliquidWebSocket {
             "allMids" => {
                 events.extend(Self::parse_all_mids(&data)?);
             }
+            "userNonFundingLedgerUpdates" => {
+                events.extend(Self::parse_non_funding_ledger(&data)?);
+            }
             "bbo" => {
                 events.extend(Self::parse_bbo(&data)?);
             }
@@ -597,6 +600,68 @@ impl HyperliquidWebSocket {
         Ok(events)
     }
 
+    /// Parse `userNonFundingLedgerUpdates` message → BalanceUpdate per entry.
+    ///
+    /// Subscription: `{"type":"userNonFundingLedgerUpdates","user":"<addr>"}`.
+    /// Each entry in the array has: `time`, `hash`, `delta` (typed sub-object).
+    ///
+    /// Delta types: `"deposit"`, `"withdrawal"`, `"internalTransfer"`,
+    /// `"spotTransfer"`, `"accountClassTransfer"`, `"spotGenesis"`, `"subAccountTransfer"`.
+    ///
+    /// All known delta types carry `"usdc"` (or `"amount"` for spot) as the value.
+    /// We emit one `BalanceUpdate` per entry with the USDC delta value.
+    fn parse_non_funding_ledger(data: &Value) -> WebSocketResult<Vec<StreamEvent>> {
+        let parse_f64 = |val: &Value| -> Option<f64> {
+            val.as_str().and_then(|s| s.parse().ok()).or_else(|| val.as_f64())
+        };
+
+        let entries = match data.as_array() {
+            Some(arr) => arr,
+            None => return Ok(vec![]),
+        };
+
+        let mut events = Vec::with_capacity(entries.len());
+
+        for entry in entries {
+            let timestamp = entry.get("time")
+                .and_then(|v| v.as_i64())
+                .unwrap_or_else(|| crate::core::utils::timestamp_millis() as i64);
+
+            let delta = match entry.get("delta") {
+                Some(d) => d,
+                None => continue,
+            };
+
+            let delta_type = delta.get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+
+            // Extract the USDC value. Most delta types use "usdc"; spot uses "usdcValue".
+            let amount = delta.get("usdc")
+                .and_then(parse_f64)
+                .or_else(|| delta.get("usdcValue").and_then(parse_f64))
+                .unwrap_or(0.0);
+
+            let reason = Some(match delta_type {
+                "deposit" => crate::core::BalanceChangeReason::Deposit,
+                "withdrawal" | "withdraw" => crate::core::BalanceChangeReason::Withdraw,
+                _ => crate::core::BalanceChangeReason::Other,
+            });
+
+            events.push(StreamEvent::BalanceUpdate(crate::core::BalanceUpdateEvent {
+                asset: "USDC".to_string(),
+                free: amount,
+                locked: 0.0,
+                total: amount,
+                delta: Some(amount),
+                reason,
+                timestamp,
+            }));
+        }
+
+        Ok(events)
+    }
+
     /// Parse trades message
     fn parse_trades(data: &Value) -> WebSocketResult<Option<StreamEvent>> {
         // Format: [ { "coin": "BTC", "side": "B", "px": "50123.45", "sz": "0.5", ... } ]
@@ -933,6 +998,51 @@ impl WebSocketConnector for HyperliquidWebSocket {
             supports_aggregation: true,
             aggregation_levels: &["null", "2", "3", "4", "5"],
         }
+    }
+}
+
+impl HyperliquidWebSocket {
+    /// Subscribe to `allMids` channel — all coin mid prices in one snapshot.
+    ///
+    /// Sends `{"method":"subscribe","subscription":{"type":"allMids","dex":""}}`.
+    /// Events arrive on the broadcast channel as `StreamEvent::Ticker` per coin.
+    pub async fn subscribe_all_mids(&mut self) -> WebSocketResult<()> {
+        let msg = SubscribeMessage {
+            method: "subscribe".to_string(),
+            subscription: serde_json::json!({ "type": "allMids", "dex": "" }),
+        };
+        let msg_json = serde_json::to_string(&msg)
+            .map_err(|e| WebSocketError::ProtocolError(e.to_string()))?;
+
+        let mut sink_guard = self.ws_sink.lock().await;
+        let sink = sink_guard.as_mut()
+            .ok_or_else(|| WebSocketError::ConnectionError("Not connected".to_string()))?;
+        sink.send(Message::Text(msg_json)).await
+            .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Subscribe to `userNonFundingLedgerUpdates` for a wallet address.
+    ///
+    /// Sends `{"method":"subscribe","subscription":{"type":"userNonFundingLedgerUpdates","user":"<addr>"}}`.
+    /// Events arrive on the broadcast channel as `StreamEvent::BalanceUpdate` per ledger entry.
+    pub async fn subscribe_non_funding_ledger(&mut self, user_address: &str) -> WebSocketResult<()> {
+        let msg = SubscribeMessage {
+            method: "subscribe".to_string(),
+            subscription: serde_json::json!({
+                "type": "userNonFundingLedgerUpdates",
+                "user": user_address
+            }),
+        };
+        let msg_json = serde_json::to_string(&msg)
+            .map_err(|e| WebSocketError::ProtocolError(e.to_string()))?;
+
+        let mut sink_guard = self.ws_sink.lock().await;
+        let sink = sink_guard.as_mut()
+            .ok_or_else(|| WebSocketError::ConnectionError("Not connected".to_string()))?;
+        sink.send(Message::Text(msg_json)).await
+            .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
+        Ok(())
     }
 }
 

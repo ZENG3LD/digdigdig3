@@ -1094,6 +1094,24 @@ impl LighterConnector {
         params.insert("value".to_string(), value);
         self.get(LighterEndpoint::WithdrawalDelays, params, 300).await
     }
+
+    /// Get all markets with full parameter snapshot.
+    ///
+    /// Calls `GET /api/v1/orderBooks` and returns the `order_books` array.
+    /// Each element contains: `symbol`, `market_id`, `market_type` (`"perp"` or `"spot"`),
+    /// `status`, `taker_fee`, `maker_fee`, `min_base_amount`, `min_quote_amount`,
+    /// `supported_size_decimals`, `supported_price_decimals`.
+    ///
+    /// Verified from live mainnet endpoint.
+    pub async fn get_markets(&self) -> ExchangeResult<Value> {
+        let response = self.get(LighterEndpoint::OrderBooks, HashMap::new(), 300).await?;
+        let markets = response.get("order_books")
+            .cloned()
+            .ok_or_else(|| ExchangeError::Parse(
+                "Missing 'order_books' field in orderBooks response".to_string()
+            ))?;
+        Ok(markets)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

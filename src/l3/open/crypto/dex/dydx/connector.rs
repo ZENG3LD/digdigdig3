@@ -42,7 +42,7 @@ use crate::core::types::{
 };
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 
-use super::endpoints::{DydxUrls, DydxEndpoint, format_symbol, map_kline_interval};
+use super::endpoints::{DydxUrls, DydxEndpoint, format_symbol, map_kline_interval, normalize_symbol};
 use super::auth::DydxAuth;
 use super::parser::DydxParser;
 
@@ -1903,6 +1903,48 @@ impl FundingHistory for DydxConnector {
 
         let response = self.get(DydxEndpoint::FundingPayments, params).await?;
         DydxParser::parse_funding_payments(&response)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EXTENDED METHODS (dYdX-specific)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+impl DydxConnector {
+    /// Get all perpetual markets with full parameter snapshot.
+    ///
+    /// Calls `GET /v4/perpetualMarkets` and returns the raw `markets` map as a
+    /// `serde_json::Value`.  Each key is the market ticker (e.g. `"BTC-USD"`) and
+    /// each value contains: `oraclePrice`, `nextFundingRate`, `openInterest`,
+    /// `tickSize`, `stepSize`, `initialMarginFraction`, `status`, etc.
+    ///
+    /// Callers can derive `PredictedFunding` + `RiskLimit` events from this snapshot.
+    pub async fn get_markets(&self) -> ExchangeResult<serde_json::Value> {
+        let response = self.get(DydxEndpoint::PerpetualMarkets, HashMap::new()).await?;
+        let markets = response.get("markets")
+            .cloned()
+            .ok_or_else(|| ExchangeError::Parse("Missing 'markets' field in perpetualMarkets response".to_string()))?;
+        Ok(markets)
+    }
+
+    /// Get historical funding rates for a perpetual market.
+    ///
+    /// Calls `GET /v4/historicalFunding/{market}` with optional `limit`.
+    /// Returns parsed `Vec<FundingRate>` ordered newest-first (as returned by the Indexer).
+    ///
+    /// Each entry has: `ticker`, `rate`, `price`, `effectiveAt` (ISO 8601), `effectiveAtHeight`.
+    pub async fn get_historical_funding(
+        &self,
+        market: &str,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Vec<FundingRate>> {
+        let mut params = HashMap::new();
+        params.insert("market".to_string(), normalize_symbol(market));
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        let response = self.get(DydxEndpoint::HistoricalFunding, params).await?;
+        DydxParser::parse_historical_funding(&response)
     }
 }
 

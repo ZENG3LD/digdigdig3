@@ -1967,4 +1967,46 @@ impl HyperliquidConnector {
     pub async fn get_predicted_fundings(&self) -> ExchangeResult<serde_json::Value> {
         self.info_request(InfoType::PredictedFundings, serde_json::json!({})).await
     }
+
+    /// Get vault details for a vault address.
+    ///
+    /// POSTs `{"type":"vaultDetails","vaultAddress":"<addr>"}` to `/info`.
+    /// Returns `null` for unknown vaults, or a JSON object with vault state.
+    /// No authentication required.
+    pub async fn get_vault_details(&self, vault_address: &str) -> ExchangeResult<serde_json::Value> {
+        self.info_request(
+            InfoType::VaultDetails,
+            serde_json::json!({ "vaultAddress": vault_address }),
+        ).await
+    }
+
+    /// Get spot metadata combined with all spot asset contexts in one call.
+    ///
+    /// POSTs `{"type":"spotMetaAndAssetCtxs"}` to the `/info` endpoint.
+    /// Returns a two-element array: `[spot_meta_object, array_of_spot_asset_ctx_objects]`.
+    /// Shape mirrors `metaAndAssetCtxs` but for spot markets.
+    pub async fn get_spot_meta_and_asset_ctxs(&self) -> ExchangeResult<serde_json::Value> {
+        self.info_request(InfoType::SpotMetaAndAssetCtxs, serde_json::json!({})).await
+    }
+
+    /// Get non-funding ledger entries for a user (deposits, withdrawals, internal transfers).
+    ///
+    /// POSTs `{"type":"userNonFundingLedgerUpdates","user":"<addr>","startTime":<ms>}` to `/info`.
+    /// Returns an array of ledger entries ordered by time ascending.
+    /// No authentication required — only the wallet address.
+    pub async fn get_non_funding_ledger_updates(
+        &self,
+        user: &str,
+        start_time: i64,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<serde_json::Value> {
+        let mut params = serde_json::json!({
+            "user": user,
+            "startTime": start_time,
+        });
+        if let Some(end) = end_time {
+            params["endTime"] = serde_json::Value::from(end);
+        }
+        self.info_request(InfoType::UserNonFundingLedgerUpdates, params).await
+    }
 }

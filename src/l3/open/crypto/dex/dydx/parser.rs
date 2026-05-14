@@ -651,6 +651,50 @@ impl DydxParser {
         }
         Ok(payments)
     }
+
+    /// Parse historical funding rates from `GET /v4/historicalFunding/{market}`.
+    ///
+    /// Response shape:
+    /// ```json
+    /// {"historicalFunding":[
+    ///   {"ticker":"BTC-USD","rate":"-0.000038","price":"81407.5",
+    ///    "effectiveAt":"2026-05-14T21:00:00.500Z","effectiveAtHeight":"88827285"}
+    /// ]}
+    /// ```
+    pub fn parse_historical_funding(response: &Value) -> ExchangeResult<Vec<FundingRate>> {
+        let list = response.get("historicalFunding")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse(
+                "Missing 'historicalFunding' array in response".to_string(),
+            ))?;
+
+        let mut rates = Vec::with_capacity(list.len());
+        for item in list {
+            let symbol = item.get("ticker")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let rate = item.get("rate")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+
+            let timestamp = item.get("effectiveAt")
+                .and_then(|v| v.as_str())
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.timestamp_millis())
+                .unwrap_or(0);
+
+            rates.push(FundingRate {
+                symbol,
+                rate,
+                next_funding_time: None,
+                timestamp,
+            });
+        }
+        Ok(rates)
+    }
 }
 
 #[cfg(test)]

@@ -573,6 +573,81 @@ impl DeribitWebSocket {
                 timestamp: Utc::now().timestamp_millis(),
             };
             vec![StreamEvent::BalanceUpdate(event)]
+        } else if channel.starts_with("deribit_volatility_index.") {
+            // Deribit deribit_volatility_index.<index_name> — DVOL index value.
+            // data: { "index_name": "btc_usd", "volatility": 62.5, "timestamp": 1234567890 }
+            let index_name = data.get("index_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(
+                    channel.strip_prefix("deribit_volatility_index.").unwrap_or(channel)
+                );
+            let timestamp = data.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+            if let Some(value) = data.get("volatility").and_then(|v| v.as_f64()) {
+                vec![StreamEvent::VolatilityIndex {
+                    symbol: index_name.to_string(),
+                    value,
+                    timestamp,
+                }]
+            } else {
+                vec![]
+            }
+        } else if channel.starts_with("markprice.options.") {
+            // Deribit markprice.options.<index_name> — array of option mark prices.
+            // data is an array: [{ "instrument_name": "BTC-27DEC24-50000-C",
+            //                      "mark_price": 0.015, "mark_iv": 62.5,
+            //                      "timestamp": 1234 }, ...]
+            if let Some(arr) = data.as_array() {
+                arr.iter().filter_map(|item| {
+                    let symbol = item.get("instrument_name")
+                        .and_then(|v| v.as_str())?
+                        .to_string();
+                    let mark = item.get("mark_price").and_then(|v| v.as_f64())?;
+                    let timestamp = item.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+                    Some(StreamEvent::MarkPrice {
+                        symbol,
+                        mark_price: mark,
+                        index_price: None,
+                        timestamp,
+                    })
+                }).collect()
+            } else {
+                vec![]
+            }
+        } else if channel == "block_trade_confirmations" {
+            // Deribit block_trade_confirmations — confirmed block trades.
+            // data: { "trade_id": "BT-123", "instrument_name": "BTC-PERPETUAL",
+            //         "price": 81000.0, "amount": 10.0, "direction": "buy",
+            //         "block_trade_id": "BT-123", "iv": null, "timestamp": 1234 }
+            let symbol = data.get("instrument_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let block_id = data.get("block_trade_id")
+                .or_else(|| data.get("trade_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let price = data.get("price").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let quantity = data.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let timestamp = data.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+            let is_iv = data.get("iv").and_then(|v| v.as_f64()).is_some();
+            let side = match data.get("direction").and_then(|v| v.as_str()) {
+                Some("buy") => crate::core::types::TradeSide::Buy,
+                _ => crate::core::types::TradeSide::Sell,
+            };
+            if !symbol.is_empty() {
+                vec![StreamEvent::BlockTrade {
+                    symbol,
+                    block_id,
+                    price,
+                    quantity,
+                    side,
+                    timestamp,
+                    is_iv,
+                }]
+            } else {
+                vec![]
+            }
         } else {
             vec![]
         }
@@ -651,6 +726,34 @@ impl DeribitWebSocket {
                 }
             }
         });
+    }
+}
+
+impl DeribitWebSocket {
+    /// Subscribe to the Deribit volatility index channel for an index (e.g. `"btc_usd"`).
+    ///
+    /// Channel name: `deribit_volatility_index.<index_name>`.
+    /// Events arrive as `StreamEvent::VolatilityIndex`.
+    pub async fn subscribe_volatility_index(&mut self, index_name: &str) -> ExchangeResult<()> {
+        let channel = format!("deribit_volatility_index.{}", index_name);
+        self.subscribe_channels(vec![channel], false).await
+    }
+
+    /// Subscribe to mark prices for all options on an index (e.g. `"btc_usd"`).
+    ///
+    /// Channel name: `markprice.options.<index_name>`.
+    /// Events arrive as `StreamEvent::MarkPrice` per option instrument.
+    pub async fn subscribe_options_mark_prices(&mut self, index_name: &str) -> ExchangeResult<()> {
+        let channel = format!("markprice.options.{}", index_name);
+        self.subscribe_channels(vec![channel], false).await
+    }
+
+    /// Subscribe to the public block trade confirmations channel.
+    ///
+    /// Channel name: `block_trade_confirmations`.
+    /// Events arrive as `StreamEvent::BlockTrade`.
+    pub async fn subscribe_block_trades(&mut self) -> ExchangeResult<()> {
+        self.subscribe_channels(vec!["block_trade_confirmations".to_string()], false).await
     }
 }
 

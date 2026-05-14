@@ -123,6 +123,9 @@ pub enum InfoType {
     HistoricalOrders,       // Get historical orders
     UserFunding,            // Get historical funding payments for the account
     PredictedFundings,      // Get predicted (next epoch) funding rates for all assets
+    VaultDetails,           // Get details for a vault address
+    SpotMetaAndAssetCtxs,   // Get spot metadata combined with asset contexts
+    UserNonFundingLedgerUpdates, // Get non-funding ledger entries (deposits, withdrawals, transfers)
 }
 
 impl InfoType {
@@ -148,6 +151,9 @@ impl InfoType {
             Self::HistoricalOrders => "historicalOrders",
             Self::UserFunding => "userFunding",
             Self::PredictedFundings => "predictedFundings",
+            Self::VaultDetails => "vaultDetails",
+            Self::SpotMetaAndAssetCtxs => "spotMetaAndAssetCtxs",
+            Self::UserNonFundingLedgerUpdates => "userNonFundingLedgerUpdates",
         }
     }
 }

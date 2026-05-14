@@ -883,7 +883,9 @@ impl BitfinexWebSocket {
             account_type: self.account_type,
             update_speed_ms: None,
         };
-        let pending_key = format!("book_r0:{}", sym_str);
+        // Server sends back {"event":"subscribed","channel":"book","symbol":"tBTCUSD",...}
+        // So pending key must match format!("{}:{}", channel, symbol) = "book:tBTCUSD".
+        let pending_key = format!("book:{}", sym_str);
         self.pending_subs.lock().await.insert(pending_key, request.clone());
 
         let msg = SubscribeMessage {

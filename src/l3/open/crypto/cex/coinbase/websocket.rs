@@ -378,6 +378,9 @@ impl WebSocketConnector for CoinbaseWebSocket {
             StreamType::Orderbook | StreamType::OrderbookDelta => "level2",
             StreamType::Trade => "market_trades",
             StreamType::Kline { .. } => "candles",
+            // Coinbase publicly visible block-trade executions via RFQ matching engine.
+            // Verified: Coinbase Advanced Trade WS docs list "rfq_matches" as a public channel.
+            StreamType::BlockTrade => "rfq_matches",
             _ => return Err(WebSocketError::ProtocolError(format!("Stream type {:?} not supported", request.stream_type))),
         };
 

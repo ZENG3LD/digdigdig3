@@ -95,6 +95,9 @@ pub struct OkxWebSocket {
     ws_ping_rtt_ms: Arc<Mutex<u64>>,
     /// Connected to private channel
     is_private: bool,
+    /// Connect to the business WebSocket endpoint (required for mark-price-candle,
+    /// index-candle, and similar channels that are not on the public endpoint).
+    is_business: bool,
 }
 
 impl OkxWebSocket {
@@ -125,7 +128,21 @@ impl OkxWebSocket {
             last_ping: Arc::new(Mutex::new(Instant::now())),
             ws_ping_rtt_ms: Arc::new(Mutex::new(0)),
             is_private: false,
+            is_business: false,
         })
+    }
+
+    /// Create new OKX WebSocket connector for the **business** endpoint.
+    ///
+    /// Use this for channels served on `wss://.../ws/v5/business`:
+    /// `mark-price-candle*`, `index-candle*`, `funding-rate-candle*`.
+    pub async fn new_business(
+        credentials: Option<Credentials>,
+        testnet: bool,
+    ) -> ExchangeResult<Self> {
+        let mut ws = Self::new(credentials, testnet).await?;
+        ws.is_business = true;
+        Ok(ws)
     }
 
     /// Send the OKX WebSocket login message via `sink`.
@@ -537,8 +554,8 @@ impl OkxWebSocket {
                 let _ = ch;
                 vec![]
             }
-            "block-trades" => {
-                // OKX block-trades WS channel.
+            "public-block-trades" | "block-trades" => {
+                // OKX public-block-trades WS channel.
                 // Wire format (verified via REST /api/v5/public/block-trades):
                 //   { instId, tradeId, px, sz, side, ts, fillVol, fwdPx, markPx, idxPx, groupId }
                 // Emit StreamEvent::BlockTrade. fillVol is IV (implied vol) when non-empty.
@@ -709,10 +726,13 @@ impl OkxWebSocket {
 #[async_trait]
 impl WebSocketConnector for OkxWebSocket {
     async fn connect(&mut self, _account_type: AccountType) -> WebSocketResult<()> {
-        // Determine URL (private vs public channel).
+        // Determine URL: private > business > public.
         let url = if self.auth.is_some() {
             self.is_private = true;
             self.urls.ws_url(true)
+        } else if self.is_business {
+            self.is_private = false;
+            self.urls.ws_business
         } else {
             self.is_private = false;
             self.urls.ws_url(false)
@@ -807,19 +827,75 @@ impl WebSocketConnector for OkxWebSocket {
             },
             crate::core::StreamType::MarkPrice => "mark-price",
             crate::core::StreamType::FundingRate => "funding-rate",
-            crate::core::StreamType::Liquidation => "liquidation-orders",
-            crate::core::StreamType::BlockTrade => "block-trades",
-            crate::core::StreamType::SettlementEvent => "estimated-price",
+            crate::core::StreamType::Liquidation => {
+                // OKX liquidation-orders channel uses instType, not instId.
+                // Docs: {"channel":"liquidation-orders","instType":"SWAP"}
+                let sub_msg = json!({
+                    "op": "subscribe",
+                    "args": [{ "channel": "liquidation-orders", "instType": "SWAP" }]
+                });
+                let mut sink_guard = self.ws_sink.lock().await;
+                if let Some(sink) = sink_guard.as_mut() {
+                    sink.send(Message::Text(sub_msg.to_string()))
+                        .await
+                        .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
+                    self.subscriptions.lock().await.insert(request);
+                    return Ok(());
+                } else {
+                    return Err(WebSocketError::ConnectionError("Not connected".to_string()));
+                }
+            }
+            crate::core::StreamType::BlockTrade => {
+                // OKX public block-trades channel is "public-block-trades" with instId.
+                // Docs: {"channel":"public-block-trades","instId":"BTC-USDT-SWAP"}
+                let account_type = request.account_type;
+                let inst_id = format_symbol(&request.symbol.base, &request.symbol.quote, account_type);
+                let sub_msg = json!({
+                    "op": "subscribe",
+                    "args": [{ "channel": "public-block-trades", "instId": inst_id }]
+                });
+                let mut sink_guard = self.ws_sink.lock().await;
+                if let Some(sink) = sink_guard.as_mut() {
+                    sink.send(Message::Text(sub_msg.to_string()))
+                        .await
+                        .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
+                    self.subscriptions.lock().await.insert(request);
+                    return Ok(());
+                } else {
+                    return Err(WebSocketError::ConnectionError("Not connected".to_string()));
+                }
+            }
+            crate::core::StreamType::SettlementEvent => {
+                // OKX estimated-price requires instType + instFamily, not instId.
+                // Docs: {"channel":"estimated-price","instType":"FUTURES","instFamily":"BTC-USD"}
+                let inst_family = format!(
+                    "{}-{}",
+                    request.symbol.base.to_uppercase(),
+                    request.symbol.quote.to_uppercase()
+                );
+                let sub_msg = json!({
+                    "op": "subscribe",
+                    "args": [{ "channel": "estimated-price", "instType": "FUTURES", "instFamily": inst_family }]
+                });
+                let mut sink_guard = self.ws_sink.lock().await;
+                if let Some(sink) = sink_guard.as_mut() {
+                    sink.send(Message::Text(sub_msg.to_string()))
+                        .await
+                        .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
+                    self.subscriptions.lock().await.insert(request);
+                    return Ok(());
+                } else {
+                    return Err(WebSocketError::ConnectionError("Not connected".to_string()));
+                }
+            }
             crate::core::StreamType::OrderUpdate => "orders",
             crate::core::StreamType::BalanceUpdate => "account",
             crate::core::StreamType::PositionUpdate => "positions",
             crate::core::StreamType::IndexPrice => "index-tickers",
             crate::core::StreamType::MarkPriceKline { interval } => {
-                // Map internal interval to OKX mark-price-candle<interval> channel.
+                // mark-price-candle channels live on the business WS endpoint.
                 // OKX intervals: 1m, 3m, 5m, 15m, 30m, 1H, 2H, 4H, 6H, 12H, 1D, etc.
                 let okx_interval = super::endpoints::map_kline_interval(interval.as_str());
-                // Return a leaked string; channel string lifetime is 'static for the match arm.
-                // Since we can't easily return a dynamic &'static str here, use a known set.
                 return self.subscribe_dynamic_channel(
                     format!("mark-price-candle{}", okx_interval),
                     request,
@@ -890,9 +966,61 @@ impl WebSocketConnector for OkxWebSocket {
             crate::core::StreamType::Kline { interval: _ } => "candle1H",
             crate::core::StreamType::MarkPrice => "mark-price",
             crate::core::StreamType::FundingRate => "funding-rate",
-            crate::core::StreamType::Liquidation => "liquidation-orders",
-            crate::core::StreamType::BlockTrade => "block-trades",
-            crate::core::StreamType::SettlementEvent => "estimated-price",
+            crate::core::StreamType::Liquidation => {
+                let unsub_msg = json!({
+                    "op": "unsubscribe",
+                    "args": [{ "channel": "liquidation-orders", "instType": "SWAP" }]
+                });
+                let mut sink_guard = self.ws_sink.lock().await;
+                if let Some(sink) = sink_guard.as_mut() {
+                    sink.send(Message::Text(unsub_msg.to_string()))
+                        .await
+                        .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
+                    self.subscriptions.lock().await.remove(&request);
+                    return Ok(());
+                } else {
+                    return Err(WebSocketError::ConnectionError("Not connected".to_string()));
+                }
+            }
+            crate::core::StreamType::BlockTrade => {
+                let account_type = request.account_type;
+                let inst_id = format_symbol(&request.symbol.base, &request.symbol.quote, account_type);
+                let unsub_msg = json!({
+                    "op": "unsubscribe",
+                    "args": [{ "channel": "public-block-trades", "instId": inst_id }]
+                });
+                let mut sink_guard = self.ws_sink.lock().await;
+                if let Some(sink) = sink_guard.as_mut() {
+                    sink.send(Message::Text(unsub_msg.to_string()))
+                        .await
+                        .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
+                    self.subscriptions.lock().await.remove(&request);
+                    return Ok(());
+                } else {
+                    return Err(WebSocketError::ConnectionError("Not connected".to_string()));
+                }
+            }
+            crate::core::StreamType::SettlementEvent => {
+                let inst_family = format!(
+                    "{}-{}",
+                    request.symbol.base.to_uppercase(),
+                    request.symbol.quote.to_uppercase()
+                );
+                let unsub_msg = json!({
+                    "op": "unsubscribe",
+                    "args": [{ "channel": "estimated-price", "instType": "FUTURES", "instFamily": inst_family }]
+                });
+                let mut sink_guard = self.ws_sink.lock().await;
+                if let Some(sink) = sink_guard.as_mut() {
+                    sink.send(Message::Text(unsub_msg.to_string()))
+                        .await
+                        .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
+                    self.subscriptions.lock().await.remove(&request);
+                    return Ok(());
+                } else {
+                    return Err(WebSocketError::ConnectionError("Not connected".to_string()));
+                }
+            }
             crate::core::StreamType::OrderUpdate => "orders",
             crate::core::StreamType::BalanceUpdate => "account",
             crate::core::StreamType::PositionUpdate => "positions",

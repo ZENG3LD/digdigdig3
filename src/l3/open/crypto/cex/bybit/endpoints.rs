@@ -263,7 +263,9 @@ impl BybitEndpoint {
             | Self::IndexPriceKline
             | Self::PremiumIndexKline
             | Self::RiskLimit
-            | Self::DeliveryPrice => false,
+            | Self::DeliveryPrice
+            // Institutional loan product list — verified: no API key required
+            | Self::InsLoanProducts => false,
 
             // Private endpoints
             _ => true,

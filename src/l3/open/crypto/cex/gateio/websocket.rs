@@ -340,12 +340,20 @@ impl GateioWebSocket {
             let kline = Self::parse_kline_ws(data)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
             if symbol_name.starts_with("mark_") {
-                // Determine interval from channel payload — not directly in the message.
                 // Emit as MarkPriceKline with the clean symbol (strip "mark_" prefix).
                 let clean_symbol = symbol_name.strip_prefix("mark_").unwrap_or(symbol_name).to_string();
                 Ok(Some(StreamEvent::MarkPriceKline {
                     symbol: clean_symbol,
-                    interval: String::new(), // interval not available in push data
+                    interval: String::new(), // interval not in push data
+                    kline,
+                }))
+            } else if symbol_name.starts_with("premium_index_") {
+                // Premium index klines use "premium_index_CONTRACT" prefix on futures.candlesticks.
+                // Emit as PremiumIndex — closest match is IndexPriceKline.
+                let clean_symbol = symbol_name.strip_prefix("premium_index_").unwrap_or(symbol_name).to_string();
+                Ok(Some(StreamEvent::IndexPriceKline {
+                    symbol: clean_symbol,
+                    interval: String::new(),
                     kline,
                 }))
             } else {
@@ -373,9 +381,8 @@ impl GateioWebSocket {
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
             Ok(Some(event))
         } else if channel.contains(".premium_index") {
-            // Gate.io futures premium index channel: futures.premium_index
-            // Pushes current premium (mark/spot ratio - 1) as a kline-like object.
-            // Emit as FundingRate event using the premium rate as the current rate.
+            // Kept for backwards compatibility — Gate.io removed this channel.
+            // Premium index klines now come via futures.candlesticks with "premium_index_" prefix.
             let event = Self::parse_premium_index_ws(data)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
             Ok(Some(event))
@@ -580,8 +587,9 @@ impl GateioWebSocket {
             StreamType::Kline { .. } | StreamType::MarkPriceKline { .. } => format!("{}.candlesticks", prefix),
             StreamType::MarkPrice => format!("{}.tickers", prefix), // Gate.io includes mark price in ticker
             StreamType::FundingRate => format!("{}.tickers", prefix), // Gate.io includes funding rate in ticker
-            // Gate.io futures.premium_index: push stream of premium index kline ticks
-            StreamType::PremiumIndexKline { .. } => "futures.premium_index".to_string(),
+            // Gate.io uses futures.candlesticks with "premium_index_CONTRACT" prefix
+            // for premium index klines (no separate futures.premium_index channel).
+            StreamType::PremiumIndexKline { .. } => format!("{}.candlesticks", prefix),
             StreamType::Liquidation => format!("{}.liquidates", prefix), // futures.liquidates
             StreamType::OrderUpdate => format!("{}.orders", prefix),
             StreamType::BalanceUpdate => format!("{}.balances", prefix),
@@ -608,9 +616,9 @@ impl GateioWebSocket {
             StreamType::MarkPriceKline { interval } => vec![interval.to_string(), format!("mark_{}", symbol)],
             StreamType::MarkPrice => vec![symbol],
             StreamType::FundingRate => vec![symbol],
-            // Premium index: payload is interval + symbol
-            // Gate.io premium index channel uses kline-style payload: [interval, contract]
-            StreamType::PremiumIndexKline { interval } => vec![interval.to_string(), symbol],
+            // Gate.io premium index uses futures.candlesticks with "premium_index_CONTRACT" prefix.
+            // Docs: prefix contract with "premium_index_" to subscribe premium index klines.
+            StreamType::PremiumIndexKline { interval } => vec![interval.to_string(), format!("premium_index_{}", symbol)],
             StreamType::Liquidation => vec![symbol],
             StreamType::OrderUpdate => vec![symbol],
             StreamType::BalanceUpdate => vec![],

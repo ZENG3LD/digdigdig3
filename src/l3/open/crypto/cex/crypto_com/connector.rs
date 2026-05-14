@@ -266,10 +266,11 @@ impl CryptoComConnector {
 
     /// Get insurance fund balance.
     ///
-    /// `instrument_type`: `"PERPETUAL_SWAP"` or `"FUTURE"`.
+    /// `instrument_name`: contract name e.g. `"BTCUSD-PERP"` or `"ETHUSD-PERP"`.
+    /// Verified: Crypto.com `public/get-insurance` requires `instrument_name`, not `instrument_type`.
     /// Returns the current insurance fund balance used to cover losses on liquidations.
-    pub async fn get_insurance(&self, instrument_type: &str) -> ExchangeResult<Value> {
-        let params = json!({ "instrument_type": instrument_type });
+    pub async fn get_insurance(&self, instrument_name: &str) -> ExchangeResult<Value> {
+        let params = json!({ "instrument_name": instrument_name });
         self.request(CryptoComEndpoint::GetInsurance, params).await
     }
 }

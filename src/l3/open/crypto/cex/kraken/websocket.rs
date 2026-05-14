@@ -381,14 +381,11 @@ impl KrakenWebSocket {
             "instrument" => {
                 // Real-time instrument/symbol metadata updates.
                 // Kraken WS v2 sends instrument status on subscription and on changes.
-                // Shape: data = array of instrument objects, each may contain:
-                //   - "symbol": string
-                //   - "status": "online" | "post_only" | "reduced_only" | "cancel_only" | "offline"
+                // Shape: data = OBJECT {assets:[...], pairs:[{symbol, status, ...}, ...]}
+                // Not an array — must descend into data["pairs"].
                 // Emit MarketWarning when status != "online".
-                // Verified: Kraken WS v2 docs confirm `instrument` channel carries
-                // `status` flags including `post_only` and `halt` states.
-                let arr = data.as_array()
-                    .ok_or_else(|| WebSocketError::Parse("instrument: expected array".to_string()))?;
+                let pairs = data.get("pairs").and_then(|v| v.as_array());
+                let arr: &[serde_json::Value] = pairs.map(|v| v.as_slice()).unwrap_or(&[]);
 
                 // Take the first entry that carries a non-online status
                 for item in arr {

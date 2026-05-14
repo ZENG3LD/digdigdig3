@@ -402,16 +402,25 @@ impl BybitWebSocket {
         } else if topic.starts_with("liquidation.") {
             // Bybit V5 liquidation format:
             // {"topic":"liquidation.BTCUSDT","data":{"symbol":"BTCUSDT","side":"Buy","size":"0.5","price":"29000.5","updatedTime":1672304801000}}
+            // In some delivery variants `data` may be an array — unwrap to first element.
             //
             // Side semantics (inverse from position side):
             //   side == "Buy"  → a Buy order was placed to cover a short liquidation
             //                    → the SHORT position was liquidated → emit TradeSide::Sell
             //   side == "Sell" → a Sell order was placed to close a long liquidation
             //                    → the LONG position was liquidated → emit TradeSide::Buy
-            let symbol = data["symbol"].as_str()
+            let item = if let Some(arr) = data.as_array() {
+                match arr.first() {
+                    Some(v) => v,
+                    None => return Ok(vec![]),
+                }
+            } else {
+                data
+            };
+            let symbol = item["symbol"].as_str()
                 .ok_or_else(|| WebSocketError::Parse("liquidation: missing symbol".to_string()))?
                 .to_string();
-            let side_str = data["side"].as_str()
+            let side_str = item["side"].as_str()
                 .ok_or_else(|| WebSocketError::Parse("liquidation: missing side".to_string()))?;
             // Inverse mapping: forced order side → liquidated position side
             let side = match side_str {
@@ -419,13 +428,13 @@ impl BybitWebSocket {
                 "Sell" => TradeSide::Buy,  // long was liquidated (Sell order used to close long)
                 other => return Err(WebSocketError::Parse(format!("liquidation: unknown side: {}", other))),
             };
-            let price = data["price"].as_str()
+            let price = item["price"].as_str()
                 .and_then(|s| s.parse::<f64>().ok())
                 .ok_or_else(|| WebSocketError::Parse("liquidation: invalid price".to_string()))?;
-            let quantity = data["size"].as_str()
+            let quantity = item["size"].as_str()
                 .and_then(|s| s.parse::<f64>().ok())
                 .ok_or_else(|| WebSocketError::Parse("liquidation: invalid size".to_string()))?;
-            let timestamp = data["updatedTime"].as_i64()
+            let timestamp = item["updatedTime"].as_i64()
                 .ok_or_else(|| WebSocketError::Parse("liquidation: invalid updatedTime".to_string()))?;
             let value = Some(price * quantity);
 

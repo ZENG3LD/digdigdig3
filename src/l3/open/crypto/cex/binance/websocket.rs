@@ -726,8 +726,9 @@ impl BinanceWebSocket {
             StreamType::MarkPriceKline { interval } => format!("{}@markPriceKline_{}", symbol, interval),
             StreamType::IndexPriceKline { interval } => format!("{}@indexPriceKline_{}", symbol, interval),
             StreamType::PremiumIndexKline { interval } => format!("{}@premiumIndexKline_{}", symbol, interval),
-            // Composite index is a market-wide array stream (no per-symbol variant for USDT-M)
-            StreamType::CompositeIndex => "!compositeIndex@arr".to_string(),
+            // Composite index: per-symbol only — `<symbol>@compositeIndex`.
+            // The global `!compositeIndex@arr` stream does NOT exist; only per-symbol subscriptions work.
+            StreamType::CompositeIndex => format!("{}@compositeIndex", symbol),
             // Per-symbol index price stream (1-second updates)
             StreamType::IndexPrice => format!("{}@indexPrice@1s", symbol),
             _ => String::new(), // Private streams don't use stream names
@@ -1044,12 +1045,13 @@ impl BinanceWebSocket {
         })
     }
 
-    /// Parse `compositeIndex` WS event from the `!compositeIndex@arr` stream.
+    /// Parse `compositeIndex` WS event from the `<symbol>@compositeIndex` stream.
     ///
     /// Binance event: `{"e":"compositeIndex","E":timestamp,"s":"DEFIUSDT",
-    /// "p":"...","c":[{"b":"AAVE","q":"USDT","w":"0.07009900","wp":"..."},...]}`
+    /// "p":"...","c":[{"b":"AAVE","q":"USDT","w":"0.07009900","W":"0.07009900","i":"..."},...]}`
     ///
-    /// Components are mapped to `(symbol, weight)` pairs using the `w` (weight) field.
+    /// Components: `w` = weight, `W` = weight percent (uppercase), `i` = index price per token.
+    /// We use `W` (weight percent) as the weight value per Binance API docs.
     fn parse_composite_index(data: &Value) -> ExchangeResult<StreamEvent> {
         let parse_f64_field = |key: &str| -> Option<f64> {
             data.get(key).and_then(|v| v.as_str()).and_then(|s| s.parse().ok())
@@ -1067,9 +1069,13 @@ impl BinanceWebSocket {
                     let base = item.get("b").and_then(|v| v.as_str()).unwrap_or("");
                     let quote = item.get("q").and_then(|v| v.as_str()).unwrap_or("");
                     let comp_symbol = format!("{}{}", base, quote);
-                    let weight = item.get("w")
+                    // Use W (weight percent, uppercase) per Binance API docs
+                    let weight = item.get("W")
                         .and_then(|v| v.as_str())
                         .and_then(|s| s.parse::<f64>().ok())
+                        .or_else(|| item.get("W").and_then(|v| v.as_f64()))
+                        // Fall back to w (absolute weight) if W missing
+                        .or_else(|| item.get("w").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()))
                         .or_else(|| item.get("w").and_then(|v| v.as_f64()))
                         .unwrap_or(0.0);
                     if comp_symbol.is_empty() {

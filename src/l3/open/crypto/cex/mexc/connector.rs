@@ -1905,3 +1905,35 @@ fn interval_to_ms(interval: &str) -> i64 {
         _ => 3_600_000,
     }
 }
+
+// MEXC Spot connector — no futures/positions support in v5 yet.
+#[async_trait]
+impl crate::core::traits::Positions for MexcConnector {
+    async fn get_positions(
+        &self,
+        _query: crate::core::types::PositionQuery,
+    ) -> ExchangeResult<Vec<crate::core::types::Position>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "MEXC positions not implemented in v5".into(),
+        ))
+    }
+
+    async fn get_funding_rate(
+        &self,
+        _symbol: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<crate::core::types::FundingRate> {
+        Err(ExchangeError::UnsupportedOperation(
+            "MEXC funding rate not implemented in v5".into(),
+        ))
+    }
+
+    async fn modify_position(
+        &self,
+        _req: crate::core::types::PositionModification,
+    ) -> ExchangeResult<()> {
+        Err(ExchangeError::UnsupportedOperation(
+            "MEXC position modification not implemented in v5".into(),
+        ))
+    }
+}

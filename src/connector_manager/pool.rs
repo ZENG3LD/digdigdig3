@@ -20,16 +20,17 @@
 //! ## Usage
 //!
 //! ```ignore
-//! use connectors_v5::connector_manager::{ConnectorPool, AnyConnector};
+//! use connectors_v5::connector_manager::ConnectorPool;
 //! use connectors_v5::core::types::ExchangeId;
+//! use connectors_v5::CoreConnector;
 //! use std::sync::Arc;
 //!
 //! // Create pool
 //! let pool = ConnectorPool::new();
 //!
 //! // Insert connectors
-//! pool.insert(ExchangeId::Binance, Arc::new(AnyConnector::Binance(binance)));
-//! pool.insert(ExchangeId::KuCoin, Arc::new(AnyConnector::KuCoin(kucoin)));
+//! pool.insert(ExchangeId::Binance, Arc::new(binance) as Arc<dyn CoreConnector>);
+//! pool.insert(ExchangeId::KuCoin, Arc::new(kucoin) as Arc<dyn CoreConnector>);
 //!
 //! // Get connector (lock-free read, cheap Arc clone)
 //! if let Some(connector) = pool.get(&ExchangeId::Binance) {
@@ -45,8 +46,7 @@
 use dashmap::DashMap;
 use std::sync::Arc;
 
-use crate::connector_manager::AnyConnector;
-use crate::core::traits::MarketData;
+use crate::core::traits::CoreConnector;
 use crate::core::types::{
     AccountCapabilities, AccountType, ExchangeId, MarketDataCapabilities, TradingCapabilities,
 };
@@ -67,7 +67,7 @@ use crate::core::types::{
 ///
 /// ```ignore
 /// let pool = ConnectorPool::new();
-/// pool.insert(ExchangeId::Binance, Arc::new(connector));
+/// pool.insert(ExchangeId::Binance, Arc::new(connector) as Arc<dyn CoreConnector>);
 ///
 /// if let Some(connector) = pool.get(&ExchangeId::Binance) {
 ///     // Use connector...
@@ -76,7 +76,7 @@ use crate::core::types::{
 #[derive(Clone)]
 pub struct ConnectorPool {
     /// Active connector instances (lock-free reads)
-    connectors: Arc<DashMap<ExchangeId, Arc<AnyConnector>>>,
+    connectors: Arc<DashMap<ExchangeId, Arc<dyn CoreConnector>>>,
 }
 
 impl ConnectorPool {
@@ -115,7 +115,7 @@ impl ConnectorPool {
     /// let old = pool.insert(ExchangeId::Binance, Arc::new(connector));
     /// assert!(old.is_none()); // First insert
     /// ```
-    pub fn insert(&self, id: ExchangeId, connector: Arc<AnyConnector>) -> Option<Arc<AnyConnector>> {
+    pub fn insert(&self, id: ExchangeId, connector: Arc<dyn CoreConnector>) -> Option<Arc<dyn CoreConnector>> {
         self.connectors.insert(id, connector)
     }
 
@@ -130,7 +130,7 @@ impl ConnectorPool {
     ///
     /// # Returns
     ///
-    /// `Some(Arc<AnyConnector>)` if found, `None` otherwise.
+    /// `Some(Arc<dyn CoreConnector>)` if found, `None` otherwise.
     ///
     /// # Examples
     ///
@@ -139,7 +139,7 @@ impl ConnectorPool {
     ///     let price = connector.get_price(symbol, account_type).await?;
     /// }
     /// ```
-    pub fn get(&self, id: &ExchangeId) -> Option<Arc<AnyConnector>> {
+    pub fn get(&self, id: &ExchangeId) -> Option<Arc<dyn CoreConnector>> {
         self.connectors.get(id).map(|entry| entry.value().clone())
     }
 
@@ -151,7 +151,7 @@ impl ConnectorPool {
     ///
     /// # Returns
     ///
-    /// `Some(Arc<AnyConnector>)` if the connector was found and removed, `None` otherwise.
+    /// `Some(Arc<dyn CoreConnector>)` if the connector was found and removed, `None` otherwise.
     ///
     /// # Examples
     ///
@@ -160,7 +160,7 @@ impl ConnectorPool {
     ///     println!("Removed Binance connector");
     /// }
     /// ```
-    pub fn remove(&self, id: &ExchangeId) -> Option<Arc<AnyConnector>> {
+    pub fn remove(&self, id: &ExchangeId) -> Option<Arc<dyn CoreConnector>> {
         self.connectors.remove(id).map(|(_, connector)| connector)
     }
 
@@ -234,7 +234,7 @@ impl ConnectorPool {
 
     /// Iterate over all connectors in the pool.
     ///
-    /// Returns an iterator that yields references to (ExchangeId, Arc<AnyConnector>) pairs.
+    /// Returns an iterator that yields references to (ExchangeId, Arc<dyn CoreConnector>) pairs.
     /// The iterator holds read locks on individual shards, so it's efficient for iteration
     /// while allowing concurrent reads from other threads.
     ///
@@ -245,7 +245,7 @@ impl ConnectorPool {
     ///     println!("{:?} is active", entry.key());
     /// }
     /// ```
-    pub fn iter(&self) -> dashmap::iter::Iter<'_, ExchangeId, Arc<AnyConnector>> {
+    pub fn iter(&self) -> dashmap::iter::Iter<'_, ExchangeId, Arc<dyn CoreConnector>> {
         self.connectors.iter()
     }
 
@@ -385,7 +385,7 @@ impl ConnectorPoolBuilder {
     /// let builder = ConnectorPoolBuilder::new()
     ///     .with_connector(ExchangeId::Binance, Arc::new(connector));
     /// ```
-    pub fn with_connector(self, id: ExchangeId, connector: Arc<AnyConnector>) -> Self {
+    pub fn with_connector(self, id: ExchangeId, connector: Arc<dyn CoreConnector>) -> Self {
         self.pool.insert(id, connector);
         self
     }
@@ -424,23 +424,23 @@ mod tests {
 
     /// Helper function to create a mock OKX connector for testing.
     /// Uses OKX's public API to avoid credentials.
-    fn create_mock_okx() -> Arc<AnyConnector> {
+    fn create_mock_okx() -> Arc<dyn CoreConnector> {
         // Use tokio runtime to call async constructor
         let rt = tokio::runtime::Runtime::new().unwrap();
         let connector = rt.block_on(async {
             OkxConnector::public(true).await.unwrap()
         });
-        Arc::new(AnyConnector::OKX(Arc::new(connector)))
+        Arc::new(connector) as Arc<dyn CoreConnector>
     }
 
     /// Helper function to create a second mock connector (using same OKX).
     /// In real usage, this would be a different exchange.
-    fn create_mock_okx_2() -> Arc<AnyConnector> {
+    fn create_mock_okx_2() -> Arc<dyn CoreConnector> {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let connector = rt.block_on(async {
             OkxConnector::public(false).await.unwrap()
         });
-        Arc::new(AnyConnector::OKX(Arc::new(connector)))
+        Arc::new(connector) as Arc<dyn CoreConnector>
     }
 
     #[test]

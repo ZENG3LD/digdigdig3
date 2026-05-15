@@ -668,3 +668,117 @@ impl MarketData for PolymarketConnector {
         }
     }
 }
+
+// Polymarket is a prediction market — no standard trading/account/positions support.
+#[async_trait]
+impl crate::core::traits::Trading for PolymarketConnector {
+    async fn place_order(
+        &self,
+        _req: crate::core::types::OrderRequest,
+    ) -> ExchangeResult<crate::core::types::PlaceOrderResponse> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Polymarket order placement not supported via standard Trading trait".into(),
+        ))
+    }
+
+    async fn cancel_order(
+        &self,
+        _req: crate::core::types::CancelRequest,
+    ) -> ExchangeResult<crate::core::types::Order> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Polymarket cancel order not supported via standard Trading trait".into(),
+        ))
+    }
+
+    async fn get_order(
+        &self,
+        _symbol: &str,
+        _order_id: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<crate::core::types::Order> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Polymarket get_order not supported via standard Trading trait".into(),
+        ))
+    }
+
+    async fn get_open_orders(
+        &self,
+        _symbol: Option<&str>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Polymarket get_open_orders not supported via standard Trading trait".into(),
+        ))
+    }
+
+    async fn get_order_history(
+        &self,
+        _filter: crate::core::types::OrderHistoryFilter,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::Order>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Polymarket get_order_history not supported via standard Trading trait".into(),
+        ))
+    }
+}
+
+#[async_trait]
+impl crate::core::traits::Account for PolymarketConnector {
+    async fn get_balance(
+        &self,
+        _query: crate::core::types::BalanceQuery,
+    ) -> ExchangeResult<Vec<crate::core::types::Balance>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Polymarket get_balance not supported via standard Account trait".into(),
+        ))
+    }
+
+    async fn get_account_info(
+        &self,
+        _account_type: AccountType,
+    ) -> ExchangeResult<crate::core::types::AccountInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Polymarket get_account_info not supported".into(),
+        ))
+    }
+
+    async fn get_fees(
+        &self,
+        _symbol: Option<&str>,
+    ) -> ExchangeResult<crate::core::types::FeeInfo> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Polymarket get_fees not supported".into(),
+        ))
+    }
+}
+
+#[async_trait]
+impl crate::core::traits::Positions for PolymarketConnector {
+    async fn get_positions(
+        &self,
+        _query: crate::core::types::PositionQuery,
+    ) -> ExchangeResult<Vec<crate::core::types::Position>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Polymarket has no positions in the traditional sense".into(),
+        ))
+    }
+
+    async fn get_funding_rate(
+        &self,
+        _symbol: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<crate::core::types::FundingRate> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Polymarket has no funding rate".into(),
+        ))
+    }
+
+    async fn modify_position(
+        &self,
+        _req: crate::core::types::PositionModification,
+    ) -> ExchangeResult<()> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Polymarket has no position modification".into(),
+        ))
+    }
+}

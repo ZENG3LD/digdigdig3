@@ -52,7 +52,6 @@
 use std::sync::Arc;
 
 use crate::connector_manager::ConnectorPool;
-use crate::core::traits::MarketData;
 use crate::core::types::{
     AccountType, ExchangeError, ExchangeId, ExchangeResult, Kline, OrderBook, Price, Symbol,
     Ticker,
@@ -604,13 +603,13 @@ pub struct BestBidAsk {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::connector_manager::AnyConnector;
+    use crate::core::traits::CoreConnector;
     use crate::l3::open::crypto::cex::okx::OkxConnector;
 
     /// Helper to create a mock OKX connector for testing
-    async fn create_mock_connector() -> Arc<AnyConnector> {
+    async fn create_mock_connector() -> Arc<dyn CoreConnector> {
         let connector = OkxConnector::public(true).await.unwrap();
-        Arc::new(AnyConnector::OKX(Arc::new(connector)))
+        Arc::new(connector) as Arc<dyn CoreConnector>
     }
 
     /// Helper to create a pool with mock connectors

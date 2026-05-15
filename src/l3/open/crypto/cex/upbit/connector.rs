@@ -1366,3 +1366,35 @@ impl UpbitConnector {
         self.delete(UpbitEndpoint::CancelWithdraw, params, AccountType::Spot).await
     }
 }
+
+// Upbit is spot-only — no futures/positions support.
+#[async_trait::async_trait]
+impl crate::core::traits::Positions for UpbitConnector {
+    async fn get_positions(
+        &self,
+        _query: crate::core::types::PositionQuery,
+    ) -> crate::core::types::ExchangeResult<Vec<crate::core::types::Position>> {
+        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+            "Upbit is spot-only: no positions".into(),
+        ))
+    }
+
+    async fn get_funding_rate(
+        &self,
+        _symbol: &str,
+        _account_type: crate::core::types::AccountType,
+    ) -> crate::core::types::ExchangeResult<crate::core::types::FundingRate> {
+        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+            "Upbit is spot-only: no funding rate".into(),
+        ))
+    }
+
+    async fn modify_position(
+        &self,
+        _req: crate::core::types::PositionModification,
+    ) -> crate::core::types::ExchangeResult<()> {
+        Err(crate::core::types::ExchangeError::UnsupportedOperation(
+            "Upbit is spot-only: no position modification".into(),
+        ))
+    }
+}

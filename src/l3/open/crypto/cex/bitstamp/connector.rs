@@ -1145,3 +1145,35 @@ impl AccountLedger for BitstampConnector {
     }
 }
 
+// Bitstamp is spot-only — no futures/positions support.
+#[async_trait]
+impl crate::core::traits::Positions for BitstampConnector {
+    async fn get_positions(
+        &self,
+        _query: crate::core::types::PositionQuery,
+    ) -> ExchangeResult<Vec<crate::core::types::Position>> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Bitstamp is spot-only: no positions".into(),
+        ))
+    }
+
+    async fn get_funding_rate(
+        &self,
+        _symbol: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<crate::core::types::FundingRate> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Bitstamp is spot-only: no funding rate".into(),
+        ))
+    }
+
+    async fn modify_position(
+        &self,
+        _req: crate::core::types::PositionModification,
+    ) -> ExchangeResult<()> {
+        Err(ExchangeError::UnsupportedOperation(
+            "Bitstamp is spot-only: no position modification".into(),
+        ))
+    }
+}
+

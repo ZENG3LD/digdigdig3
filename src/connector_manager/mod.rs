@@ -66,3 +66,4 @@ pub use pool::{ConnectorPool, ConnectorPoolBuilder};
 pub use aggregator::{BestBidAsk, ConnectorAggregator, ConnectorAggregatorBuilder};
 pub use config::{ConnectorConfig, ConnectorConfigManager, ExchangeCredentials};
 pub use factory::ConnectorFactory;
+pub use crate::core::traits::CoreConnector;

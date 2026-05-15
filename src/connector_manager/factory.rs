@@ -47,8 +47,7 @@
 
 use std::sync::Arc;
 use crate::core::types::{ExchangeId, ExchangeResult, ExchangeError};
-use crate::core::traits::Credentials;
-use crate::connector_manager::AnyConnector;
+use crate::core::traits::{Credentials, CoreConnector};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR IMPORTS - CEX
@@ -173,70 +172,70 @@ impl ConnectorFactory {
     /// let connector = ConnectorFactory::create_public(ExchangeId::Binance, false).await?;
     /// let price = connector.get_price(symbol, AccountType::Spot).await?;
     /// ```
-    pub async fn create_public(id: ExchangeId, testnet: bool) -> ExchangeResult<Arc<AnyConnector>> {
+    pub async fn create_public(id: ExchangeId, testnet: bool) -> ExchangeResult<Arc<dyn CoreConnector>> {
         match id {
             // ═══════════════════════════════════════════════════════════════════════
             // CEX - Pattern A: ::public(testnet: bool)
             // ═══════════════════════════════════════════════════════════════════════
             ExchangeId::Binance => {
                 let c = BinanceConnector::public(testnet).await?;
-                Ok(Arc::new(AnyConnector::Binance(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Bybit => {
                 let c = BybitConnector::public(testnet).await?;
-                Ok(Arc::new(AnyConnector::Bybit(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::OKX => {
                 let c = OkxConnector::public(testnet).await?;
-                Ok(Arc::new(AnyConnector::OKX(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::KuCoin => {
                 let c = KuCoinConnector::public(testnet).await?;
-                Ok(Arc::new(AnyConnector::KuCoin(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Kraken => {
                 let c = KrakenConnector::public(testnet).await?;
-                Ok(Arc::new(AnyConnector::Kraken(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::GateIO => {
                 let c = GateioConnector::public(testnet).await?;
-                Ok(Arc::new(AnyConnector::GateIO(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Bitfinex => {
                 let c = BitfinexConnector::public(testnet).await?;
-                Ok(Arc::new(AnyConnector::Bitfinex(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::MEXC => {
                 let c = MexcConnector::public().await?;
-                Ok(Arc::new(AnyConnector::MEXC(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::HTX => {
                 let c = HtxConnector::public(testnet).await?;
-                Ok(Arc::new(AnyConnector::HTX(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::BingX => {
                 let c = BingxConnector::public(testnet).await?;
-                Ok(Arc::new(AnyConnector::BingX(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::CryptoCom => {
                 let c = CryptoComConnector::public(testnet).await?;
-                Ok(Arc::new(AnyConnector::CryptoCom(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Upbit => {
                 let c = UpbitConnector::public().await?;
-                Ok(Arc::new(AnyConnector::Upbit(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Deribit => {
                 let c = DeribitConnector::public(testnet).await?;
-                Ok(Arc::new(AnyConnector::Deribit(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::HyperLiquid => {
                 let c = HyperliquidConnector::public(testnet).await?;
-                Ok(Arc::new(AnyConnector::HyperLiquid(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Dydx => {
                 let c = DydxConnector::public(testnet).await?;
-                Ok(Arc::new(AnyConnector::Dydx(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
 
             // ═══════════════════════════════════════════════════════════════════════
@@ -244,19 +243,19 @@ impl ConnectorFactory {
             // ═══════════════════════════════════════════════════════════════════════
             ExchangeId::Bitget => {
                 let c = BitgetConnector::public().await?;
-                Ok(Arc::new(AnyConnector::Bitget(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Bitstamp => {
                 let c = BitstampConnector::public().await?;
-                Ok(Arc::new(AnyConnector::Bitstamp(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Coinbase => {
                 let c = CoinbaseConnector::public().await?;
-                Ok(Arc::new(AnyConnector::Coinbase(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Gemini => {
                 let c = GeminiConnector::public(testnet).await?;
-                Ok(Arc::new(AnyConnector::Gemini(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
 
             // ═══════════════════════════════════════════════════════════════════════
@@ -264,7 +263,7 @@ impl ConnectorFactory {
             // ═══════════════════════════════════════════════════════════════════════
             ExchangeId::Lighter => {
                 let c = LighterConnector::public(testnet).await?;
-                Ok(Arc::new(AnyConnector::Lighter(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             // ═══════════════════════════════════════════════════════════════════════
             // STOCKS - Pattern C: ::crypto_only() for public, ::from_env() for auth
@@ -272,7 +271,7 @@ impl ConnectorFactory {
             ExchangeId::Alpaca => {
                 // Create crypto-only connector (works without API keys)
                 let c = AlpacaConnector::crypto_only();
-                Ok(Arc::new(AnyConnector::Alpaca(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
 
             // ═══════════════════════════════════════════════════════════════════════
@@ -280,7 +279,7 @@ impl ConnectorFactory {
             // ═══════════════════════════════════════════════════════════════════════
             ExchangeId::YahooFinance => {
                 let c = YahooFinanceConnector::new();
-                Ok(Arc::new(AnyConnector::YahooFinance(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::DefiLlama => {
                 Err(ExchangeError::UnsupportedOperation(
@@ -289,7 +288,7 @@ impl ConnectorFactory {
             }
             ExchangeId::Polymarket => {
                 let c = PolymarketConnector::public();
-                Ok(Arc::new(AnyConnector::Polymarket(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
 
             // ═══════════════════════════════════════════════════════════════════════
@@ -312,7 +311,7 @@ impl ConnectorFactory {
             }
             ExchangeId::Twelvedata => {
                 let c = TwelvedataConnector::demo();
-                Ok(Arc::new(AnyConnector::Twelvedata(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::AlphaVantage => {
                 Err(ExchangeError::Auth(
@@ -321,7 +320,7 @@ impl ConnectorFactory {
             }
             ExchangeId::CryptoCompare => {
                 let c = CryptoCompareConnector::public();
-                Ok(Arc::new(AnyConnector::CryptoCompare(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             // ═══════════════════════════════════════════════════════════════════════
             // BROKERS - Require Authentication
@@ -358,7 +357,7 @@ impl ConnectorFactory {
             }
             ExchangeId::Dukascopy => {
                 let c = DukascopyConnector::new();
-                Ok(Arc::new(AnyConnector::Dukascopy(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::JQuants => {
                 Err(ExchangeError::Auth(
@@ -368,11 +367,11 @@ impl ConnectorFactory {
             ExchangeId::Krx => {
                 #[allow(deprecated)]
                 let c = KrxConnector::new_public();
-                Ok(Arc::new(AnyConnector::Krx(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Moex => {
                 let c = MoexConnector::new_public();
-                Ok(Arc::new(AnyConnector::Moex(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Tinkoff => {
                 Err(ExchangeError::Auth(
@@ -459,7 +458,7 @@ impl ConnectorFactory {
     pub async fn create_authenticated(
         id: ExchangeId,
         credentials: Credentials,
-    ) -> ExchangeResult<Arc<AnyConnector>> {
+    ) -> ExchangeResult<Arc<dyn CoreConnector>> {
         let testnet = credentials.testnet;
         match id {
             // ═══════════════════════════════════════════════════════════════════════
@@ -467,61 +466,61 @@ impl ConnectorFactory {
             // ═══════════════════════════════════════════════════════════════════════
             ExchangeId::Binance => {
                 let c = BinanceConnector::new(Some(credentials), testnet).await?;
-                Ok(Arc::new(AnyConnector::Binance(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Bybit => {
                 let c = BybitConnector::new(Some(credentials), testnet).await?;
-                Ok(Arc::new(AnyConnector::Bybit(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::OKX => {
                 let c = OkxConnector::new(Some(credentials), testnet).await?;
-                Ok(Arc::new(AnyConnector::OKX(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::KuCoin => {
                 let c = KuCoinConnector::new(Some(credentials), testnet).await?;
-                Ok(Arc::new(AnyConnector::KuCoin(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Kraken => {
                 let c = KrakenConnector::new(Some(credentials), testnet).await?;
-                Ok(Arc::new(AnyConnector::Kraken(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::GateIO => {
                 let c = GateioConnector::new(Some(credentials), testnet).await?;
-                Ok(Arc::new(AnyConnector::GateIO(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Bitfinex => {
                 let c = BitfinexConnector::new(Some(credentials), testnet).await?;
-                Ok(Arc::new(AnyConnector::Bitfinex(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::MEXC => {
                 let c = MexcConnector::new(Some(credentials)).await?;
-                Ok(Arc::new(AnyConnector::MEXC(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::HTX => {
                 let c = HtxConnector::new(Some(credentials), testnet).await?;
-                Ok(Arc::new(AnyConnector::HTX(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::BingX => {
                 let c = BingxConnector::new(Some(credentials), testnet).await?;
-                Ok(Arc::new(AnyConnector::BingX(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::CryptoCom => {
                 let c = CryptoComConnector::new(Some(credentials), testnet).await?;
-                Ok(Arc::new(AnyConnector::CryptoCom(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Upbit => {
                 // Upbit requires region parameter: "kr" (Korea) or "sg" (Singapore)
                 // Default to "kr" for authenticated
                 let c = UpbitConnector::new(Some(credentials), "kr").await?;
-                Ok(Arc::new(AnyConnector::Upbit(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Deribit => {
                 let c = DeribitConnector::new(Some(credentials), testnet).await?;
-                Ok(Arc::new(AnyConnector::Deribit(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::HyperLiquid => {
                 let c = HyperliquidConnector::new(Some(credentials), testnet).await?;
-                Ok(Arc::new(AnyConnector::HyperLiquid(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
 
             // ═══════════════════════════════════════════════════════════════════════
@@ -529,19 +528,19 @@ impl ConnectorFactory {
             // ═══════════════════════════════════════════════════════════════════════
             ExchangeId::Bitget => {
                 let c = BitgetConnector::new(Some(credentials), testnet).await?;
-                Ok(Arc::new(AnyConnector::Bitget(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Bitstamp => {
                 let c = BitstampConnector::new(Some(credentials)).await?;
-                Ok(Arc::new(AnyConnector::Bitstamp(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Coinbase => {
                 let c = CoinbaseConnector::new(Some(credentials)).await?;
-                Ok(Arc::new(AnyConnector::Coinbase(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Gemini => {
                 let c = GeminiConnector::new(Some(credentials), testnet).await?;
-                Ok(Arc::new(AnyConnector::Gemini(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
 
             // ═══════════════════════════════════════════════════════════════════════
@@ -549,7 +548,7 @@ impl ConnectorFactory {
             // ═══════════════════════════════════════════════════════════════════════
             ExchangeId::Dydx => {
                 let c = DydxConnector::new(Some(credentials), testnet).await?;
-                Ok(Arc::new(AnyConnector::Dydx(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
 
             // ═══════════════════════════════════════════════════════════════════════
@@ -566,7 +565,7 @@ impl ConnectorFactory {
             ExchangeId::AlphaVantage => {
                 let auth = AlphaVantageAuth::new(credentials.api_key);
                 let c = AlphaVantageConnector::new(auth);
-                Ok(Arc::new(AnyConnector::AlphaVantage(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
 
             // ═══════════════════════════════════════════════════════════════════════
@@ -576,7 +575,7 @@ impl ConnectorFactory {
                 // CryptoCompare constructor is sync and needs CryptoCompareAuth
                 let auth = crate::l2::paid::cryptocompare::CryptoCompareAuth::new(credentials.api_key);
                 let c = CryptoCompareConnector::new(auth);
-                Ok(Arc::new(AnyConnector::CryptoCompare(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             // ═══════════════════════════════════════════════════════════════════════
             // STOCKS US - Pattern: ::new(api_key)
@@ -584,22 +583,22 @@ impl ConnectorFactory {
             ExchangeId::Polygon => {
                 // Polygon::new takes (credentials, testnet)
                 let c = PolygonConnector::new(credentials, testnet).await?;
-                Ok(Arc::new(AnyConnector::Polygon(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Finnhub => {
                 // Finnhub::new takes full credentials
                 let c = FinnhubConnector::new(credentials).await?;
-                Ok(Arc::new(AnyConnector::Finnhub(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Tiingo => {
                 // Tiingo::new takes full credentials
                 let c = TiingoConnector::new(credentials).await?;
-                Ok(Arc::new(AnyConnector::Tiingo(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Twelvedata => {
                 // Twelvedata constructor is sync (not async)
                 let c = TwelvedataConnector::new(credentials.api_key);
-                Ok(Arc::new(AnyConnector::Twelvedata(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
 
             // ═══════════════════════════════════════════════════════════════════════
@@ -636,7 +635,7 @@ impl ConnectorFactory {
             }
             ExchangeId::Dhan => {
                 let c = DhanConnector::new(credentials, testnet).await?;
-                Ok(Arc::new(AnyConnector::Dhan(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Fyers => {
                 // Fyers uses special auth type
@@ -736,7 +735,7 @@ impl ConnectorFactory {
                     String::new(), // passphrase field — not available in standard Credentials
                 );
                 let c = PolymarketConnector::authenticated(poly_creds);
-                Ok(Arc::new(AnyConnector::Polymarket(Arc::new(c))))
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
 
             // ═══════════════════════════════════════════════════════════════════════
@@ -794,7 +793,7 @@ mod tests {
         assert!(result.is_ok(), "Should create Binance public connector");
 
         let connector = result.unwrap();
-        assert_eq!(connector.id(), ExchangeId::Binance);
+        assert_eq!(connector.exchange_id(), ExchangeId::Binance);
     }
 
     /// Test creating authenticated connector
@@ -809,7 +808,7 @@ mod tests {
         // May fail due to invalid credentials, but should not panic
         match result {
             Ok(connector) => {
-                assert_eq!(connector.id(), ExchangeId::Binance);
+                assert_eq!(connector.exchange_id(), ExchangeId::Binance);
             }
             Err(e) => {
                 println!("Expected error with test credentials: {:?}", e);
@@ -896,7 +895,7 @@ mod tests {
         // May fail due to invalid credentials, but should not panic
         match result {
             Ok(connector) => {
-                assert_eq!(connector.id(), ExchangeId::OKX);
+                assert_eq!(connector.exchange_id(), ExchangeId::OKX);
             }
             Err(e) => {
                 println!("Expected error with test credentials: {:?}", e);
@@ -911,7 +910,7 @@ mod tests {
         assert!(result.is_ok());
 
         let connector = result.unwrap();
-        assert_eq!(connector.id(), ExchangeId::Bybit);
+        assert_eq!(connector.exchange_id(), ExchangeId::Bybit);
         // Note: is_testnet() is on ExchangeIdentity trait, which AnyConnector implements
     }
 
@@ -922,8 +921,8 @@ mod tests {
         let conn2 = ConnectorFactory::create_public(ExchangeId::Bybit, false).await.unwrap();
         let conn3 = ConnectorFactory::create_public(ExchangeId::OKX, false).await.unwrap();
 
-        assert_eq!(conn1.id(), ExchangeId::Binance);
-        assert_eq!(conn2.id(), ExchangeId::Bybit);
-        assert_eq!(conn3.id(), ExchangeId::OKX);
+        assert_eq!(conn1.exchange_id(), ExchangeId::Binance);
+        assert_eq!(conn2.exchange_id(), ExchangeId::Bybit);
+        assert_eq!(conn3.exchange_id(), ExchangeId::OKX);
     }
 }

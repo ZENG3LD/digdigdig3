@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::core::types::{ExchangeId, ExchangeResult};
-use crate::core::traits::Credentials;
-use crate::connector_manager::{AnyConnector, ConnectorFactory, ConnectorRegistry, Features};
+use crate::core::traits::{Credentials, CoreConnector};
+use crate::connector_manager::{ConnectorFactory, ConnectorRegistry, Features};
 
 use super::env_loader;
 
@@ -62,7 +62,7 @@ impl TestHarness {
     /// Create a public (unauthenticated) connector for `id`.
     ///
     /// Pass `testnet: true` to use the exchange's testnet/sandbox environment.
-    pub async fn create_public(&self, id: ExchangeId, testnet: bool) -> ExchangeResult<Arc<AnyConnector>> {
+    pub async fn create_public(&self, id: ExchangeId, testnet: bool) -> ExchangeResult<Arc<dyn CoreConnector>> {
         ConnectorFactory::create_public(id, testnet).await
     }
 
@@ -73,7 +73,7 @@ impl TestHarness {
     pub async fn create_authenticated(
         &self,
         id: ExchangeId,
-    ) -> Option<ExchangeResult<Arc<AnyConnector>>> {
+    ) -> Option<ExchangeResult<Arc<dyn CoreConnector>>> {
         let creds = self.credentials.get(&id)?.clone();
         Some(ConnectorFactory::create_authenticated(id, creds).await)
     }

@@ -83,11 +83,27 @@ pub use operations::{
 /// }
 /// ```
 pub trait CoreConnector:
-    ExchangeIdentity + MarketData + Trading + Account + Positions + Send + Sync
+    ExchangeIdentity
+    + MarketData
+    + MarketDataPublic
+    + Trading
+    + Account
+    + Positions
+    + Send
+    + Sync
+    + 'static
 {
 }
 
 impl<T> CoreConnector for T where
-    T: ExchangeIdentity + MarketData + Trading + Account + Positions + Send + Sync
+    T: ExchangeIdentity
+        + MarketData
+        + MarketDataPublic
+        + Trading
+        + Account
+        + Positions
+        + Send
+        + Sync
+        + 'static
 {
 }

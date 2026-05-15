@@ -67,27 +67,6 @@ pub trait Positions: ExchangeIdentity {
         ))
     }
 
-    /// Get the historical funding rate for a perpetual contract symbol.
-    ///
-    /// Returns funding rate records between the given time bounds, up to `limit`.
-    ///
-    /// Default implementation returns `UnsupportedOperation`.
-    ///
-    /// ~16/24: Binance Futures, Bybit, OKX, KuCoin, GateIO, Bitget, BingX,
-    /// Phemex, MEXC, HTX, CryptoCom, Deribit, HyperLiquid, Lighter, Paradex, dYdX.
-    async fn get_funding_rate_history(
-        &self,
-        symbol: &str,
-        start_time: Option<u64>,
-        end_time: Option<u64>,
-        limit: Option<u32>,
-    ) -> ExchangeResult<Vec<FundingRate>> {
-        let _ = (symbol, start_time, end_time, limit);
-        Err(crate::core::types::ExchangeError::UnsupportedOperation(
-            "get_funding_rate_history not implemented".into(),
-        ))
-    }
-
     /// Get the current mark price (and optionally index price + funding rate)
     /// for a perpetual/futures symbol.
     ///

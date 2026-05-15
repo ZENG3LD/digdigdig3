@@ -2759,19 +2759,6 @@ impl MarketDataPublic for BybitConnector {
         self.get_index_price_kline(category, &sym_str, interval, limit, None, end_time).await
     }
 
-    async fn get_funding_rate_history(
-        &self,
-        symbol: &Symbol,
-        start_time: Option<i64>,
-        end_time: Option<i64>,
-        limit: Option<u32>,
-        account_type: AccountType,
-    ) -> ExchangeResult<Vec<FundingRate>> {
-        let category = account_type_to_category(account_type);
-        let sym_str = format_symbol(symbol, account_type);
-        self.get_funding_rate_history(category, &sym_str, start_time, end_time, limit).await
-    }
-
     async fn get_long_short_ratio_history(
         &self,
         symbol: &Symbol,
@@ -2785,5 +2772,18 @@ impl MarketDataPublic for BybitConnector {
         let category = account_type_to_category(account_type);
         let sym_str = format_symbol(symbol, account_type);
         self.get_long_short_ratio(category, &sym_str, period, limit).await
+    }
+
+    async fn get_funding_rate_history(
+        &self,
+        symbol: &Symbol,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<FundingRate>> {
+        let category = account_type_to_category(account_type);
+        let sym_str = format_symbol(symbol, account_type);
+        self.get_funding_rate_history(category, &sym_str, start_time, end_time, limit).await
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! All methods have default impls returning `UnsupportedOperation`. Each exchange
 //! overrides only the methods it natively supports. Callers consume via
-//! `AnyConnector` without runtime casts.
+//! `Arc<dyn CoreConnector>` through dynamic dispatch.
 
 use async_trait::async_trait;
 
@@ -14,7 +14,7 @@ use crate::core::types::{
 /// Extended public market data — derivatives analytics, liquidations, OI, funding history.
 ///
 /// All methods default to `UnsupportedOperation`. Connectors override only
-/// the methods they natively support. Callers use this trait via `AnyConnector`.
+/// the methods they natively support. Callers use this trait via `Arc<dyn CoreConnector>`.
 #[async_trait]
 pub trait MarketDataPublic: Send + Sync {
     /// Recent public trades for a symbol.

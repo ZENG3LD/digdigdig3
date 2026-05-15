@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! ConnectorPool
-//!   ├── DashMap<ExchangeId, Arc<AnyConnector>>  [Lock-free reads]
+//!   ├── DashMap<ExchangeId, Arc<dyn CoreConnector>>  [Lock-free reads]
 //!   └── Methods: insert, get, remove, iter, etc.
 //! ```
 //!

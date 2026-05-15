@@ -1,10 +1,10 @@
 //! Stub `MarketDataPublic` impls for every connector type.
 //!
 //! Each empty body inherits the trait's default `UnsupportedOperation` methods.
-//! Per-exchange overrides arrive in Phase A2 and replace these stubs in their
-//! respective module files.
+//! Per-exchange overrides arrive in subsequent phases and replace these stubs
+//! in their respective connector files.
 
-use crate::core::traits::MarketDataPublic;
+use super::MarketDataPublic;
 
 // CEX — Binance, Bybit, OKX, Lighter have real impls in their connector.rs files
 use crate::l3::open::crypto::cex::kucoin::KuCoinConnector;

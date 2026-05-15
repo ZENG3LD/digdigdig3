@@ -38,6 +38,7 @@
 mod identity;
 mod market_data;
 mod market_data_public;
+mod market_data_public_stubs;
 mod trading;
 mod account;
 mod positions;

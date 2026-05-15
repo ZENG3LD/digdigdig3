@@ -4,61 +4,42 @@
 //!
 //! ## Architecture
 //!
-//! This module provides a single enum-based type `AnyConnector` that wraps
-//! all exchange connectors and implements all core traits via delegation.
+//! Connectors are dispatched through `Arc<dyn CoreConnector>` — a trait object
+//! that composes all core sub-traits (ExchangeIdentity, MarketData, MarketDataPublic,
+//! Trading, Account, Positions, etc.) with Send + Sync + 'static bounds.
 //!
 //! ## Components
 //!
-//! - `AnyConnector` - Enum wrapper for all connectors (51+ variants)
-//! - Macros - Code generation for trait delegation
+//! - `ConnectorPool` - Lock-free pool of `Arc<dyn CoreConnector>` by exchange
+//! - `ConnectorFactory` - Constructs and wraps connectors from config
+//! - `ConnectorAggregator` - Fan-out aggregation across multiple connectors
+//! - `ConnectorRegistry` - Static metadata (supported features, categories)
+//! - `ConnectorConfig` - Credentials and config management
 //!
 //! ## Usage
 //!
 //! ```ignore
-//! use connectors_v5::connector_manager::AnyConnector;
+//! use connectors_v5::connector_manager::{ConnectorFactory, CoreConnector};
 //! use std::sync::Arc;
 //!
-//! // Wrap any connector in the enum
-//! let connector = AnyConnector::Binance(Arc::new(binance_connector));
+//! // Build a connector through the factory
+//! let connector: Arc<dyn CoreConnector> = factory.create_connector(exchange_id, credentials).await?;
 //!
 //! // Use core trait methods
 //! let price = connector.get_price(symbol, AccountType::Spot).await?;
-//! let balance = connector.get_balance(crate::core::types::BalanceQuery { asset: None, account_type: AccountType::Spot }).await?;
+//! let balance = connector.get_balance(query).await?;
 //!
 //! // Get connector metadata
 //! let id = connector.id();
 //! let name = connector.exchange_name();
 //! ```
-//!
-//! ## Benefits
-//!
-//! 1. **Type Safety** - Compile-time guarantees for all connectors
-//! 2. **No Dynamic Dispatch** - Enum match is faster than `dyn Trait`
-//! 3. **Cheap Cloning** - Arc wrapper makes cloning O(1)
-//! 4. **Single Type** - Store heterogeneous connectors in collections
-//!
-//! ## Trait Coverage
-//!
-//! Currently implemented:
-//! - `ExchangeIdentity` - 3/3 methods (exchange_id, is_testnet, supported_account_types)
-//! - `MarketData` - 5/5 methods (get_price, get_orderbook, get_klines, get_ticker, ping)
-//!
-//! To be added:
-//! - `Trading` - market_order, limit_order, cancel_order, etc.
-//! - `Account` - get_balance, get_account_info
-//! - `Positions` - get_positions, get_funding_rate, set_leverage
 
-#[macro_use]
-mod macros;
-mod connector;
-mod market_data_public_stubs;
 mod registry;
 mod pool;
 mod aggregator;
 mod config;
 mod factory;
 
-pub use connector::AnyConnector;
 pub use registry::{
     AuthType, ConnectorCategory, ConnectorMetadata, ConnectorRegistry, Features,
 };

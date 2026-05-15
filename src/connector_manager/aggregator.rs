@@ -487,8 +487,8 @@ impl ConnectorAggregator {
     // Account Operations
     // ═══════════════════════════════════════════════════════════════════════════
     //
-    // NOTE: These methods require Account trait to be implemented on AnyConnector.
-    // TODO: Uncomment when Account trait is delegated in connector.rs
+    // NOTE: These methods require Account trait to be callable on Arc<dyn CoreConnector>.
+    // TODO: Uncomment when Account aggregation is wired up
     //
     // /// Get balance from a specific exchange.
     // pub async fn get_balance(...) -> ExchangeResult<Vec<Balance>> { ... }
@@ -500,8 +500,8 @@ impl ConnectorAggregator {
     // Trading Operations
     // ═══════════════════════════════════════════════════════════════════════════
     //
-    // NOTE: These methods require Trading trait to be implemented on AnyConnector.
-    // TODO: Uncomment when Trading trait is delegated in connector.rs
+    // NOTE: These methods require Trading trait to be callable on Arc<dyn CoreConnector>.
+    // TODO: Uncomment when Trading aggregation is wired up
     //
     // /// Place a market order on a specific exchange.
     // pub async fn place_market_order(...) -> ExchangeResult<Order> { ... }

@@ -163,7 +163,7 @@ impl ConnectorFactory {
     ///
     /// # Returns
     ///
-    /// * `Ok(Arc<AnyConnector>)` - Wrapped connector instance
+    /// * `Ok(Arc<dyn CoreConnector>)` - Wrapped connector instance
     /// * `Err(ExchangeError)` - If connector creation fails or requires auth
     ///
     /// # Example
@@ -439,7 +439,7 @@ impl ConnectorFactory {
     ///
     /// # Returns
     ///
-    /// * `Ok(Arc<AnyConnector>)` - Wrapped authenticated connector instance
+    /// * `Ok(Arc<dyn CoreConnector>)` - Wrapped authenticated connector instance
     /// * `Err(ExchangeError)` - If connector creation fails
     ///
     /// # Example
@@ -911,7 +911,7 @@ mod tests {
 
         let connector = result.unwrap();
         assert_eq!(connector.exchange_id(), ExchangeId::Bybit);
-        // Note: is_testnet() is on ExchangeIdentity trait, which AnyConnector implements
+        // Note: is_testnet() is on ExchangeIdentity, available via Arc<dyn CoreConnector>
     }
 
     /// Test multiple connector creation (cloning Arc is cheap)

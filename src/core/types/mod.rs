@@ -5,6 +5,7 @@
 
 mod capabilities;
 mod common;
+mod extended_market_data;
 mod market_data;
 mod trading;
 mod websocket;
@@ -17,6 +18,14 @@ pub use capabilities::{
     EndpointWeight, RestLimitPool, DecayingLimitConfig, WsLimits,
 };
 pub use common::*;
+pub use extended_market_data::{
+    AggTrade,
+    HistoricalVolatility, VolatilityIndex, Basis, IndexPrice, CompositeIndex,
+    InsuranceFund, SettlementEvent, BlockTrade,
+    OrderBookSide, L3Action, OrderbookL3Event,
+    RiskLimit, PredictedFunding, FundingSettlement,
+    AuctionEvent, MarketWarning, OptionGreeks,
+};
 pub use market_data::*;
 pub use trading::*;
 pub use websocket::*;

@@ -72,6 +72,14 @@ pub use core::{
     ConnectionStatus, StreamType, SubscriptionRequest, StreamEvent,
     OrderUpdateEvent, BalanceUpdateEvent, PositionUpdateEvent,
 
+    // Extended market data types (source of truth for derivatives/options feeds)
+    AggTrade,
+    HistoricalVolatility, VolatilityIndex, Basis, IndexPrice, CompositeIndex,
+    InsuranceFund, SettlementEvent, BlockTrade,
+    OrderBookSide, L3Action, OrderbookL3Event,
+    RiskLimit, PredictedFunding, FundingSettlement,
+    AuctionEvent, MarketWarning, OptionGreeks,
+
     // Utils
     hmac_sha256, hmac_sha512, sha256, sha512,
     encode_base64, encode_hex, encode_hex_lower,

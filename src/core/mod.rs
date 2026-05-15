@@ -95,6 +95,13 @@ pub use types::{
     ClosedPnlRecord, LongShortRatio,
     FundingPayment, FundingFilter,
     LedgerEntry, LedgerEntryType, LedgerFilter,
+    // Extended market data (derivatives/options feeds — source of truth)
+    AggTrade,
+    HistoricalVolatility, VolatilityIndex, Basis, IndexPrice, CompositeIndex,
+    InsuranceFund, SettlementEvent, BlockTrade,
+    OrderBookSide, L3Action, OrderbookL3Event,
+    RiskLimit, PredictedFunding, FundingSettlement,
+    AuctionEvent, MarketWarning, OptionGreeks,
     // WebSocket
     ConnectionStatus, StreamType, SubscriptionRequest, StreamEvent,
     OrderUpdateEvent, BalanceUpdateEvent, PositionUpdateEvent,

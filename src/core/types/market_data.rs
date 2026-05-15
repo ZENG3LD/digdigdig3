@@ -94,7 +94,7 @@ impl From<(f64, f64)> for OrderBookLevel {
 }
 
 /// Снепшот стакана
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OrderBook {
     /// Bids - отсортированы по убыванию цены
     pub bids: Vec<OrderBookLevel>,
@@ -134,10 +134,62 @@ impl OrderBook {
             checksum: None,
         }
     }
+
+    /// Construct from tuple slices — convenience for tests.
+    pub fn from_tuples(bids: &[(f64, f64)], asks: &[(f64, f64)], timestamp: i64) -> Self {
+        Self {
+            bids: bids.iter().map(|&(p, s)| OrderBookLevel::new(p, s)).collect(),
+            asks: asks.iter().map(|&(p, s)| OrderBookLevel::new(p, s)).collect(),
+            timestamp,
+            sequence: None,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
+        }
+    }
+
+    /// Best bid level (highest price).
+    pub fn best_bid(&self) -> Option<&OrderBookLevel> {
+        self.bids.first()
+    }
+
+    /// Best ask level (lowest price).
+    pub fn best_ask(&self) -> Option<&OrderBookLevel> {
+        self.asks.first()
+    }
+
+    /// Mid price: (best_bid + best_ask) / 2.
+    pub fn mid_price(&self) -> Option<f64> {
+        match (self.best_bid(), self.best_ask()) {
+            (Some(b), Some(a)) => Some((b.price + a.price) / 2.0),
+            _ => None,
+        }
+    }
+
+    /// Spread: best_ask - best_bid.
+    pub fn spread(&self) -> Option<f64> {
+        match (self.best_bid(), self.best_ask()) {
+            (Some(b), Some(a)) => Some(a.price - b.price),
+            _ => None,
+        }
+    }
+
+    /// Sum of bid sizes up to `levels` levels.
+    pub fn bid_depth(&self, levels: usize) -> f64 {
+        self.bids.iter().take(levels).map(|l| l.size).sum()
+    }
+
+    /// Sum of ask sizes up to `levels` levels.
+    pub fn ask_depth(&self, levels: usize) -> f64 {
+        self.asks.iter().take(levels).map(|l| l.size).sum()
+    }
 }
 
 /// Incremental order-book update.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OrderbookDelta {
     pub bids: Vec<OrderBookLevel>,
     pub asks: Vec<OrderBookLevel>,
@@ -152,6 +204,33 @@ pub struct OrderbookDelta {
     pub event_time: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checksum: Option<i64>,
+}
+
+impl OrderbookDelta {
+    /// Levels that were removed on bid side (size == 0.0).
+    pub fn removed_bids(&self) -> impl Iterator<Item = f64> + '_ {
+        self.bids.iter().filter(|l| l.size == 0.0).map(|l| l.price)
+    }
+
+    /// Levels that were removed on ask side (size == 0.0).
+    pub fn removed_asks(&self) -> impl Iterator<Item = f64> + '_ {
+        self.asks.iter().filter(|l| l.size == 0.0).map(|l| l.price)
+    }
+
+    /// Levels that were added or updated on bid side (size > 0.0).
+    pub fn updated_bids(&self) -> impl Iterator<Item = &OrderBookLevel> {
+        self.bids.iter().filter(|l| l.size > 0.0)
+    }
+
+    /// Levels that were added or updated on ask side (size > 0.0).
+    pub fn updated_asks(&self) -> impl Iterator<Item = &OrderBookLevel> {
+        self.asks.iter().filter(|l| l.size > 0.0)
+    }
+
+    /// Total number of changed levels across both sides.
+    pub fn total_changes(&self) -> usize {
+        self.bids.len() + self.asks.len()
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -267,4 +346,12 @@ pub struct Liquidation {
     pub timestamp: i64,
     /// Quote value (price × quantity). `None` when not provided by exchange.
     pub value: Option<f64>,
+}
+
+impl Liquidation {
+    /// Quote value — uses `self.value` when present, otherwise `price * quantity`.
+    #[inline]
+    pub fn quote_value(&self) -> f64 {
+        self.value.unwrap_or(self.price * self.quantity)
+    }
 }

@@ -779,7 +779,7 @@ impl HtxWebSocket {
 
 #[async_trait]
 impl WebSocketConnector for HtxWebSocket {
-    async fn connect(&mut self, _account_type: AccountType) -> WebSocketResult<()> {
+    async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
         // Determine if we need private or public endpoint
         let private = self.auth.is_some();
 
@@ -827,7 +827,7 @@ impl WebSocketConnector for HtxWebSocket {
         Ok(())
     }
 
-    async fn disconnect(&mut self) -> WebSocketResult<()> {
+    async fn disconnect(&self) -> WebSocketResult<()> {
         // Close the write half. The message loop task owns the read half and will
         // detect the close frame / stream termination naturally and exit on its own.
         if let Some(mut writer) = self.ws_writer.lock().await.take() {
@@ -847,7 +847,7 @@ impl WebSocketConnector for HtxWebSocket {
         }
     }
 
-    async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let symbol_str = format_symbol(&request.symbol, self.account_type);
 
         let channel = Self::build_channel_topic(&request.stream_type, &symbol_str)?;
@@ -861,7 +861,7 @@ impl WebSocketConnector for HtxWebSocket {
         Ok(())
     }
 
-    async fn unsubscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let symbol_str = format_symbol(&request.symbol, self.account_type);
 
         let channel = Self::build_channel_topic(&request.stream_type, &symbol_str)?;

@@ -394,7 +394,7 @@ impl UpbitWebSocket {
 
 #[async_trait]
 impl WebSocketConnector for UpbitWebSocket {
-    async fn connect(&mut self, _account_type: AccountType) -> WebSocketResult<()> {
+    async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
         // Rate limit WebSocket connections to avoid 429 errors
         let limiter = get_global_ws_limiter();
         loop {
@@ -446,7 +446,7 @@ impl WebSocketConnector for UpbitWebSocket {
         Ok(())
     }
 
-    async fn disconnect(&mut self) -> WebSocketResult<()> {
+    async fn disconnect(&self) -> WebSocketResult<()> {
         let mut ws_lock = self.ws_stream.lock().await;
         if let Some(ws) = ws_lock.as_mut() {
             ws.close(None).await
@@ -465,7 +465,7 @@ impl WebSocketConnector for UpbitWebSocket {
             .unwrap_or(ConnectionStatus::Disconnected)
     }
 
-    async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         self.subscriptions.lock().await.insert(request.clone());
 
         // Upbit symbol format is QUOTE-BASE (e.g. "USDT-BTC" for the BTC/USDT pair).
@@ -491,7 +491,7 @@ impl WebSocketConnector for UpbitWebSocket {
         Ok(())
     }
 
-    async fn unsubscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         // Upbit doesn't support unsubscribe - need to reconnect
         self.subscriptions.lock().await.remove(&request);
         Err(WebSocketError::UnsupportedOperation("Upbit doesn't support unsubscribe - reconnect required".to_string()))

@@ -858,7 +858,7 @@ impl DydxWebSocket {
 
 #[async_trait]
 impl WebSocketConnector for DydxWebSocket {
-    async fn connect(&mut self, _account_type: AccountType) -> WebSocketResult<()> {
+    async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
         // Connect to WebSocket
         let (ws_stream, _) = connect_async(&self.url).await
             .map_err(|e| WebSocketError::ConnectionError(format!("Connection failed: {}", e)))?;
@@ -897,7 +897,7 @@ impl WebSocketConnector for DydxWebSocket {
         Ok(())
     }
 
-    async fn disconnect(&mut self) -> WebSocketResult<()> {
+    async fn disconnect(&self) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Disconnected;
 
         let mut sink_guard = self.ws_sink.lock().await;
@@ -920,7 +920,7 @@ impl WebSocketConnector for DydxWebSocket {
         }
     }
 
-    async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let channel = match &request.stream_type {
             StreamType::Ticker => "v4_markets",
             StreamType::Orderbook => "v4_orderbook",
@@ -945,7 +945,7 @@ impl WebSocketConnector for DydxWebSocket {
         Ok(())
     }
 
-    async fn unsubscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let channel = match &request.stream_type {
             StreamType::Ticker => "v4_markets",
             StreamType::Orderbook => "v4_orderbook",

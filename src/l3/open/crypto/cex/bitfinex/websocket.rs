@@ -187,8 +187,8 @@ pub struct BitfinexWebSocket {
     auth: Option<BitfinexAuth>,
     /// URLs (mainnet only for now)
     _urls: BitfinexUrls,
-    /// Current account type
-    account_type: AccountType,
+    /// Current account type (set via connect, read by pub helpers)
+    account_type: Arc<Mutex<AccountType>>,
     /// Connection status
     status: Arc<Mutex<ConnectionStatus>>,
     /// Active subscriptions
@@ -231,7 +231,7 @@ impl BitfinexWebSocket {
         Ok(Self {
             auth,
             _urls: urls,
-            account_type,
+            account_type: Arc::new(Mutex::new(account_type)),
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
             channels: Arc::new(Mutex::new(HashMap::new())),
@@ -874,8 +874,9 @@ impl BitfinexWebSocket {
     ///
     /// The internal `SubscriptionRequest` uses `StreamType::OrderbookL3` so the
     /// message handler can route R0 frames to the correct parser branch.
-    pub async fn subscribe_l3_book(&mut self, symbol: crate::core::Symbol, depth: u16) -> WebSocketResult<()> {
-        let sym_str = format_symbol(&symbol.base, &symbol.quote, self.account_type);
+    pub async fn subscribe_l3_book(&self, symbol: crate::core::Symbol, depth: u16) -> WebSocketResult<()> {
+        let account_type = *self.account_type.lock().await;
+        let sym_str = format_symbol(&symbol.base, &symbol.quote, account_type);
         let depth_str = depth.min(250).to_string();
 
         // Track this as an L3 subscription (reuse SubscriptionRequest with OrderbookL3 stream type)
@@ -883,7 +884,7 @@ impl BitfinexWebSocket {
             symbol: symbol.clone(),
             stream_type: StreamType::OrderbookL3,
             depth: Some(depth as u32),
-            account_type: self.account_type,
+            account_type,
             update_speed_ms: None,
         };
         // Server sends back {"event":"subscribed","channel":"book","symbol":"tBTCUSD",...}
@@ -921,7 +922,7 @@ impl BitfinexWebSocket {
     /// Uses the standard `book` channel with a funding symbol. The server
     /// sends `[RATE, PERIOD, COUNT, AMOUNT]` entries. Emits `OrderbookSnapshot`
     /// / `OrderbookDelta` events like the regular book channel.
-    pub async fn subscribe_funding_book(&mut self, currency: &str) -> WebSocketResult<()> {
+    pub async fn subscribe_funding_book(&self, currency: &str) -> WebSocketResult<()> {
         // Funding book symbol format: "fUSD", "fBTC", etc.
         // The 'f' prefix must remain lowercase; only the currency code is uppercased.
         // e.g. "USD" → "fUSD", "fUSD" → "fUSD" (not "FUSD").
@@ -936,7 +937,7 @@ impl BitfinexWebSocket {
             symbol: crate::core::Symbol::new(&funding_sym, ""),
             stream_type: StreamType::Orderbook,
             depth: None,
-            account_type: self.account_type,
+            account_type: *self.account_type.lock().await,
             update_speed_ms: None,
         };
         let pending_key = format!("book:{}", funding_sym);
@@ -1014,9 +1015,9 @@ impl BitfinexWebSocket {
 
 #[async_trait]
 impl WebSocketConnector for BitfinexWebSocket {
-    async fn connect(&mut self, account_type: AccountType) -> WebSocketResult<()> {
+    async fn connect(&self, account_type: AccountType) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Connecting;
-        self.account_type = account_type;
+        *self.account_type.lock().await = account_type;
 
         // Connect WebSocket
         let mut ws_stream = self.connect_ws().await
@@ -1073,7 +1074,7 @@ impl WebSocketConnector for BitfinexWebSocket {
         Ok(())
     }
 
-    async fn disconnect(&mut self) -> WebSocketResult<()> {
+    async fn disconnect(&self) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Disconnected;
         *self.ws_stream.lock().await = None;
         *self.event_tx.lock().await = None;
@@ -1092,8 +1093,8 @@ impl WebSocketConnector for BitfinexWebSocket {
         }
     }
 
-    async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
-        let (channel, symbol_or_key) = Self::build_channel(&request, self.account_type);
+    async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
+        let (channel, symbol_or_key) = Self::build_channel(&request, *self.account_type.lock().await);
 
         if channel.is_empty() {
             return Err(WebSocketError::ProtocolError("Unsupported stream type".to_string()));
@@ -1145,7 +1146,7 @@ impl WebSocketConnector for BitfinexWebSocket {
         Ok(())
     }
 
-    async fn unsubscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         // Find channel ID for this subscription
         let channels_guard = self.channels.lock().await;
         let chan_id = channels_guard.iter()

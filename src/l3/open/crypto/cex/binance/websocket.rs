@@ -114,8 +114,8 @@ pub struct BinanceWebSocket {
     auth: Option<BinanceAuth>,
     /// URLs (mainnet/testnet)
     urls: BinanceUrls,
-    /// Current account type
-    account_type: AccountType,
+    /// Current account type (set via connect, read by subscribe/unsubscribe)
+    account_type: Arc<Mutex<AccountType>>,
     /// Connection status
     status: Arc<Mutex<ConnectionStatus>>,
     /// Active subscriptions
@@ -160,7 +160,7 @@ impl BinanceWebSocket {
             http,
             auth,
             urls,
-            account_type,
+            account_type: Arc::new(Mutex::new(account_type)),
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
             event_tx: Arc::new(StdMutex::new(None)),
@@ -186,7 +186,7 @@ impl BinanceWebSocket {
     /// This single stream delivers forced-close (liquidation) events for **every** symbol
     /// in real time, rather than requiring per-symbol subscriptions.
     /// Each `forceOrder` event is parsed as an individual `StreamEvent::Liquidation`.
-    pub async fn subscribe_all_liquidations(&mut self) -> WebSocketResult<()> {
+    pub async fn subscribe_all_liquidations(&self) -> WebSocketResult<()> {
         let msg = SubscribeMessage {
             method: "SUBSCRIBE".to_string(),
             params: vec!["!forceOrder@arr".to_string()],
@@ -213,7 +213,7 @@ impl BinanceWebSocket {
     /// Equivalent to calling `subscribe` with a `SubscriptionRequest` whose
     /// `stream_type` is `StreamType::MarkPrice` and both symbol parts are empty,
     /// but provided here as a named convenience to avoid confusion.
-    pub async fn subscribe_all_mark_prices(&mut self) -> WebSocketResult<()> {
+    pub async fn subscribe_all_mark_prices(&self) -> WebSocketResult<()> {
         let msg = SubscribeMessage {
             method: "SUBSCRIBE".to_string(),
             params: vec!["!markPrice@arr@1s".to_string()],
@@ -236,8 +236,9 @@ impl BinanceWebSocket {
         let auth = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required for private channels".to_string()))?;
 
-        let base_url = self.urls.rest_url(self.account_type);
-        let endpoint = match self.account_type {
+        let account_type = *self.account_type.lock().await;
+        let base_url = self.urls.rest_url(account_type);
+        let endpoint = match account_type {
             AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotListenKey,
             AccountType::FuturesCross | AccountType::FuturesIsolated => BinanceEndpoint::FuturesListenKey,
             _ => BinanceEndpoint::SpotListenKey,
@@ -266,8 +267,9 @@ impl BinanceWebSocket {
         let auth = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
 
-        let base_url = self.urls.rest_url(self.account_type);
-        let endpoint = match self.account_type {
+        let account_type = *self.account_type.lock().await;
+        let base_url = self.urls.rest_url(account_type);
+        let endpoint = match account_type {
             AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotListenKey,
             AccountType::FuturesCross | AccountType::FuturesIsolated => BinanceEndpoint::FuturesListenKey,
             _ => BinanceEndpoint::SpotListenKey,
@@ -359,7 +361,7 @@ impl BinanceWebSocket {
             }
         }
 
-        let ws_base = self.urls.ws_url(self.account_type);
+        let ws_base = self.urls.ws_url(*self.account_type.lock().await);
 
         // Determine if we need private stream
         let needs_private = self.auth.is_some();
@@ -1380,9 +1382,9 @@ impl BinanceWebSocket {
 
 #[async_trait]
 impl WebSocketConnector for BinanceWebSocket {
-    async fn connect(&mut self, account_type: AccountType) -> WebSocketResult<()> {
+    async fn connect(&self, account_type: AccountType) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Connecting;
-        self.account_type = account_type;
+        *self.account_type.lock().await = account_type;
 
         // Connect WebSocket
         let ws_stream = self.connect_ws().await
@@ -1417,7 +1419,7 @@ impl WebSocketConnector for BinanceWebSocket {
         Ok(())
     }
 
-    async fn disconnect(&mut self) -> WebSocketResult<()> {
+    async fn disconnect(&self) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Disconnected;
         *self.ws_sink.lock().await = None;
         let _ = self.event_tx.lock().unwrap().take();
@@ -1433,7 +1435,7 @@ impl WebSocketConnector for BinanceWebSocket {
         }
     }
 
-    async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         // Check if private stream
         if Self::is_private(&request.stream_type) {
             // Private streams don't need explicit subscription - they're automatic with listenKey
@@ -1442,7 +1444,7 @@ impl WebSocketConnector for BinanceWebSocket {
         }
 
         // Build stream name
-        let stream_name = Self::build_stream_name(&request, self.account_type);
+        let stream_name = Self::build_stream_name(&request, *self.account_type.lock().await);
 
         let msg = SubscribeMessage {
             method: "SUBSCRIBE".to_string(),
@@ -1467,14 +1469,14 @@ impl WebSocketConnector for BinanceWebSocket {
         Ok(())
     }
 
-    async fn unsubscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         // Check if private stream
         if Self::is_private(&request.stream_type) {
             self.subscriptions.lock().await.remove(&request);
             return Ok(());
         }
 
-        let stream_name = Self::build_stream_name(&request, self.account_type);
+        let stream_name = Self::build_stream_name(&request, *self.account_type.lock().await);
 
         let msg = SubscribeMessage {
             method: "UNSUBSCRIBE".to_string(),

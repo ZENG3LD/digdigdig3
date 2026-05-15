@@ -820,7 +820,7 @@ impl LighterWebSocket {
 
 #[async_trait]
 impl WebSocketConnector for LighterWebSocket {
-    async fn connect(&mut self, _account_type: AccountType) -> WebSocketResult<()> {
+    async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
         self.connect_ws().await?;
         self.start_message_loop().await;
         self.start_forwarder();
@@ -828,7 +828,7 @@ impl WebSocketConnector for LighterWebSocket {
         Ok(())
     }
 
-    async fn disconnect(&mut self) -> WebSocketResult<()> {
+    async fn disconnect(&self) -> WebSocketResult<()> {
         self.disconnect_ws().await
     }
 
@@ -841,7 +841,7 @@ impl WebSocketConnector for LighterWebSocket {
         }
     }
 
-    async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         // Map StreamType + Symbol to Lighter channel name using numeric market IDs
         // Lighter channels: order_book/{market_id}, trade/{market_id}, market_stats/{market_id}
         let channel = build_channel(&request.stream_type, &request.symbol.base)?;
@@ -858,7 +858,7 @@ impl WebSocketConnector for LighterWebSocket {
         Ok(())
     }
 
-    async fn unsubscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         // Map StreamType + Symbol to Lighter channel name using numeric market IDs
         let channel = build_channel(&request.stream_type, &request.symbol.base)?;
 

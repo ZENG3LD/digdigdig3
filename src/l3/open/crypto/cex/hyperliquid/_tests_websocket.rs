@@ -51,7 +51,7 @@ async fn test_orderbook_capabilities() {
 #[tokio::test]
 #[ignore]
 async fn test_subscribe_orderbook() {
-    let mut ws = HyperliquidWebSocket::new(false);
+    let ws = HyperliquidWebSocket::new(false);
 
     let connect_result = timeout(Duration::from_secs(10), ws.connect(AccountType::FuturesCross)).await;
 
@@ -122,7 +122,7 @@ async fn test_subscribe_orderbook() {
 #[tokio::test]
 #[ignore]
 async fn test_subscribe_trades() {
-    let mut ws = HyperliquidWebSocket::new(false);
+    let ws = HyperliquidWebSocket::new(false);
 
     let connect_result = timeout(Duration::from_secs(10), ws.connect(AccountType::FuturesCross)).await;
 

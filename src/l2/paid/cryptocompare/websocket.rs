@@ -684,7 +684,7 @@ impl CryptoCompareWebSocket {
 
 #[async_trait]
 impl WebSocketConnector for CryptoCompareWebSocket {
-    async fn connect(&mut self, _account_type: AccountType) -> WebSocketResult<()> {
+    async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Connecting;
 
         let url = self.ws_url();
@@ -716,7 +716,7 @@ impl WebSocketConnector for CryptoCompareWebSocket {
         Ok(())
     }
 
-    async fn disconnect(&mut self) -> WebSocketResult<()> {
+    async fn disconnect(&self) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Disconnected;
 
         // Close the writer to signal the handler task to stop
@@ -738,7 +738,7 @@ impl WebSocketConnector for CryptoCompareWebSocket {
         }
     }
 
-    async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let sub_string = Self::build_sub_string(&request)?;
 
         Self::send_action(&self.ws_writer, "SubAdd", vec![sub_string]).await?;
@@ -747,7 +747,7 @@ impl WebSocketConnector for CryptoCompareWebSocket {
         Ok(())
     }
 
-    async fn unsubscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let sub_string = Self::build_sub_string(&request)?;
 
         Self::send_action(&self.ws_writer, "SubRemove", vec![sub_string]).await?;

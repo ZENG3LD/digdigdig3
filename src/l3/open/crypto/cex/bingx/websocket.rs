@@ -153,8 +153,8 @@ pub struct BingxWebSocket {
     auth: Option<BingxAuth>,
     /// Base REST URL for listen key endpoints
     base_url: &'static str,
-    /// Current account type
-    account_type: AccountType,
+    /// Current account type (set via connect, read by subscribe/unsubscribe)
+    account_type: Arc<Mutex<AccountType>>,
     /// Connection status
     status: Arc<Mutex<ConnectionStatus>>,
     /// Active subscriptions
@@ -197,7 +197,7 @@ impl BingxWebSocket {
             http,
             auth,
             base_url,
-            account_type,
+            account_type: Arc::new(Mutex::new(account_type)),
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
             event_tx: Arc::new(StdMutex::new(None)),
@@ -711,9 +711,9 @@ impl BingxWebSocket {
 
 #[async_trait]
 impl WebSocketConnector for BingxWebSocket {
-    async fn connect(&mut self, account_type: AccountType) -> WebSocketResult<()> {
+    async fn connect(&self, account_type: AccountType) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Connecting;
-        self.account_type = account_type;
+        *self.account_type.lock().await = account_type;
 
         // Check if we need private channel (listen key)
         let listen_key = if self.auth.is_some() {
@@ -763,7 +763,7 @@ impl WebSocketConnector for BingxWebSocket {
         Ok(())
     }
 
-    async fn disconnect(&mut self) -> WebSocketResult<()> {
+    async fn disconnect(&self) -> WebSocketResult<()> {
         // Close the write half. The message loop task owns the read half and will
         // detect the close frame / stream termination naturally and exit on its own.
         if let Some(mut writer) = self.ws_writer.lock().await.take() {
@@ -783,8 +783,8 @@ impl WebSocketConnector for BingxWebSocket {
         }
     }
 
-    async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
-        let data_type = Self::build_data_type(&request, self.account_type);
+    async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
+        let data_type = Self::build_data_type(&request, *self.account_type.lock().await);
 
         let msg = SubscribeMessage {
             id: Uuid::new_v4().to_string(),
@@ -812,8 +812,8 @@ impl WebSocketConnector for BingxWebSocket {
         Ok(())
     }
 
-    async fn unsubscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
-        let data_type = Self::build_data_type(&request, self.account_type);
+    async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
+        let data_type = Self::build_data_type(&request, *self.account_type.lock().await);
 
         let msg = SubscribeMessage {
             id: Uuid::new_v4().to_string(),

@@ -166,8 +166,8 @@ pub struct KuCoinWebSocket {
     auth: Option<KuCoinAuth>,
     /// URLs (mainnet/testnet)
     urls: KuCoinUrls,
-    /// Current account type
-    account_type: AccountType,
+    /// Current account type (set via connect, read by subscribe/unsubscribe)
+    account_type: Arc<Mutex<AccountType>>,
     /// Connection status
     status: Arc<Mutex<ConnectionStatus>>,
     /// Active subscriptions
@@ -225,7 +225,7 @@ impl KuCoinWebSocket {
             http,
             auth,
             urls,
-            account_type,
+            account_type: Arc::new(Mutex::new(account_type)),
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
             event_tx: Arc::new(StdMutex::new(None)),
@@ -239,7 +239,7 @@ impl KuCoinWebSocket {
 
     /// Get WebSocket token (public or private)
     async fn get_token(&self, private: bool) -> ExchangeResult<(String, String, Duration)> {
-        let base_url = self.urls.rest_url(self.account_type);
+        let base_url = self.urls.rest_url(*self.account_type.lock().await);
         let endpoint = if private {
             KuCoinEndpoint::WsPrivateToken
         } else {
@@ -764,9 +764,9 @@ impl KuCoinWebSocket {
 
 #[async_trait]
 impl WebSocketConnector for KuCoinWebSocket {
-    async fn connect(&mut self, account_type: AccountType) -> WebSocketResult<()> {
+    async fn connect(&self, account_type: AccountType) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Connecting;
-        self.account_type = account_type;
+        *self.account_type.lock().await = account_type;
 
         // Determine if we need private token
         let needs_private = self.auth.is_some();
@@ -813,7 +813,7 @@ impl WebSocketConnector for KuCoinWebSocket {
         Ok(())
     }
 
-    async fn disconnect(&mut self) -> WebSocketResult<()> {
+    async fn disconnect(&self) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Disconnected;
         *self.ws_writer.lock().await = None;
         let _ = self.event_tx.lock().unwrap().take();
@@ -829,11 +829,12 @@ impl WebSocketConnector for KuCoinWebSocket {
         }
     }
 
-    async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         // Wait for rate limit (weight 1 for subscriptions)
         Self::ws_rate_limit_wait(1).await;
 
-        let topic = Self::build_topic(&request, self.account_type);
+        let account_type = *self.account_type.lock().await;
+        let topic = Self::build_topic(&request, account_type);
         let is_private = Self::is_private(&request.stream_type);
 
         let msg = OutgoingMessage {
@@ -858,10 +859,10 @@ impl WebSocketConnector for KuCoinWebSocket {
         // For Spot ticker, also subscribe to snapshot channel for 24h stats.
         // /market/snapshot:{symbol} sends changeRate, changePrice, high, low, vol, volValue.
         if matches!(request.stream_type, StreamType::Ticker)
-            && matches!(self.account_type, AccountType::Spot | AccountType::Margin)
+            && matches!(account_type, AccountType::Spot | AccountType::Margin)
         {
             Self::ws_rate_limit_wait(1).await;
-            let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, self.account_type);
+            let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, account_type);
             let snapshot_topic = format!("/market/snapshot:{}", symbol);
             let snapshot_msg = OutgoingMessage {
                 id: timestamp_millis().to_string(),
@@ -884,11 +885,11 @@ impl WebSocketConnector for KuCoinWebSocket {
         Ok(())
     }
 
-    async fn unsubscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         // Wait for rate limit (weight 1 for unsubscriptions)
         Self::ws_rate_limit_wait(1).await;
 
-        let topic = Self::build_topic(&request, self.account_type);
+        let topic = Self::build_topic(&request, *self.account_type.lock().await);
         let is_private = Self::is_private(&request.stream_type);
 
         let msg = OutgoingMessage {

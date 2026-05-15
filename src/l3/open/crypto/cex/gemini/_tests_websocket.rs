@@ -62,7 +62,7 @@ async fn test_orderbook_capabilities() {
 #[tokio::test]
 #[ignore]
 async fn test_subscribe_orderbook() {
-    let mut ws = match GeminiWebSocket::new_market_data(false).await {
+    let ws = match GeminiWebSocket::new_market_data(false).await {
         Ok(w) => w,
         Err(e) => {
             println!("Failed to create WebSocket: {:?}", e);
@@ -72,7 +72,7 @@ async fn test_subscribe_orderbook() {
 
     let connect_result = timeout(
         Duration::from_secs(10),
-        WebSocketConnector::connect(&mut ws, AccountType::Spot),
+        WebSocketConnector::connect(&ws, AccountType::Spot),
     ).await;
 
     match connect_result {
@@ -81,11 +81,11 @@ async fn test_subscribe_orderbook() {
 
             // Gemini does not use depth parameter
             let sub = SubscriptionRequest::new(btc_usd(), StreamType::Orderbook);
-            let result = WebSocketConnector::subscribe(&mut ws, sub).await;
+            let result = WebSocketConnector::subscribe(&ws, sub).await;
 
             if result.is_err() {
                 println!("Subscribe failed: {:?}", result.err());
-                let _ = WebSocketConnector::disconnect(&mut ws).await;
+                let _ = WebSocketConnector::disconnect(&ws).await;
                 return;
             }
 
@@ -131,7 +131,7 @@ async fn test_subscribe_orderbook() {
                 println!("Received orderbook delta (no snapshot assertions): {:?}", ob_event);
             }
 
-            let _ = WebSocketConnector::disconnect(&mut ws).await;
+            let _ = WebSocketConnector::disconnect(&ws).await;
             println!("Gemini orderbook subscription works");
         }
         Ok(Err(e)) => println!("Connection failed: {:?}", e),
@@ -142,7 +142,7 @@ async fn test_subscribe_orderbook() {
 #[tokio::test]
 #[ignore]
 async fn test_subscribe_trades() {
-    let mut ws = match GeminiWebSocket::new_market_data(false).await {
+    let ws = match GeminiWebSocket::new_market_data(false).await {
         Ok(w) => w,
         Err(e) => {
             println!("Failed to create WebSocket: {:?}", e);
@@ -152,17 +152,17 @@ async fn test_subscribe_trades() {
 
     let connect_result = timeout(
         Duration::from_secs(10),
-        WebSocketConnector::connect(&mut ws, AccountType::Spot),
+        WebSocketConnector::connect(&ws, AccountType::Spot),
     ).await;
 
     match connect_result {
         Ok(Ok(())) => {
             let sub = SubscriptionRequest::new(btc_usd(), StreamType::Trade);
-            let result = WebSocketConnector::subscribe(&mut ws, sub).await;
+            let result = WebSocketConnector::subscribe(&ws, sub).await;
 
             if result.is_err() {
                 println!("Subscribe failed: {:?}", result.err());
-                let _ = WebSocketConnector::disconnect(&mut ws).await;
+                let _ = WebSocketConnector::disconnect(&ws).await;
                 return;
             }
 
@@ -177,7 +177,7 @@ async fn test_subscribe_trades() {
                 println!("No trade event received within timeout (market may be slow)");
             }
 
-            let _ = WebSocketConnector::disconnect(&mut ws).await;
+            let _ = WebSocketConnector::disconnect(&ws).await;
             println!("Gemini trades subscription works");
         }
         Ok(Err(e)) => println!("Connection failed: {:?}", e),

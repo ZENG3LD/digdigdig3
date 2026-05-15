@@ -435,7 +435,7 @@ impl AlpacaWebSocket {
 
 #[async_trait]
 impl WebSocketConnector for AlpacaWebSocket {
-    async fn connect(&mut self, _account_type: AccountType) -> WebSocketResult<()> {
+    async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
         *self.status.write().await = ConnectionStatus::Connecting;
 
         match self.do_connect().await {
@@ -450,7 +450,7 @@ impl WebSocketConnector for AlpacaWebSocket {
         }
     }
 
-    async fn disconnect(&mut self) -> WebSocketResult<()> {
+    async fn disconnect(&self) -> WebSocketResult<()> {
         *self.status.write().await = ConnectionStatus::Disconnected;
         // Drop the broadcast sender so subscribers see the stream close
         let _ = self.broadcast_tx.lock().unwrap().take();
@@ -465,7 +465,7 @@ impl WebSocketConnector for AlpacaWebSocket {
         }
     }
 
-    async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let status = self.status.read().await;
         if *status != ConnectionStatus::Connected {
             return Err(WebSocketError::NotConnected);
@@ -482,7 +482,7 @@ impl WebSocketConnector for AlpacaWebSocket {
         Ok(())
     }
 
-    async fn unsubscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         self.subscriptions.write().await.retain(|sub| sub != &request);
         Ok(())
     }
@@ -528,7 +528,7 @@ impl AlpacaWebSocket {
     ///
     /// Note: Sending requires the write-half to still be alive. This records
     /// the intent; wire the writer refactor to actually deliver the message.
-    pub async fn subscribe_news(&mut self, symbols: Vec<String>) -> WebSocketResult<()> {
+    pub async fn subscribe_news(&self, symbols: Vec<String>) -> WebSocketResult<()> {
         let msg = Self::build_subscribe_message(&[AlpacaChannel::News(symbols)]);
         // Record the subscription locally (actual WS send requires write-half refactor).
         self.subscriptions
@@ -542,7 +542,7 @@ impl AlpacaWebSocket {
     /// Subscribe to trading halt / status updates.
     ///
     /// Format: `{"action": "subscribe", "statuses": ["AAPL"]}`
-    pub async fn subscribe_status(&mut self, symbols: Vec<String>) -> WebSocketResult<()> {
+    pub async fn subscribe_status(&self, symbols: Vec<String>) -> WebSocketResult<()> {
         let msg = Self::build_subscribe_message(&[AlpacaChannel::Statuses(symbols)]);
         let _ = msg;
         Ok(())
@@ -551,7 +551,7 @@ impl AlpacaWebSocket {
     /// Subscribe to LULD (Limit Up Limit Down) bands.
     ///
     /// Format: `{"action": "subscribe", "lulds": ["AAPL"]}`
-    pub async fn subscribe_luld(&mut self, symbols: Vec<String>) -> WebSocketResult<()> {
+    pub async fn subscribe_luld(&self, symbols: Vec<String>) -> WebSocketResult<()> {
         let msg = Self::build_subscribe_message(&[AlpacaChannel::Lulds(symbols)]);
         let _ = msg;
         Ok(())
@@ -561,7 +561,7 @@ impl AlpacaWebSocket {
     ///
     /// Only applicable when connected to the trading stream (`AlpacaWebSocket::trading()`).
     /// Format: `{"action": "listen", "data": {"streams": ["trade_updates"]}}`
-    pub async fn subscribe_trade_updates(&mut self) -> WebSocketResult<()> {
+    pub async fn subscribe_trade_updates(&self) -> WebSocketResult<()> {
         let _msg = serde_json::json!({
             "action": "listen",
             "data": { "streams": ["trade_updates"] }
@@ -586,7 +586,7 @@ mod tests {
     #[tokio::test]
     async fn test_subscribe_before_connect() {
         let auth = AlpacaAuth::new("test_key", "test_secret");
-        let mut ws = AlpacaWebSocket::new(auth);
+        let ws = AlpacaWebSocket::new(auth);
 
         let request = SubscriptionRequest::ticker(Symbol::new("AAPL", "USD"));
         let result = ws.subscribe(request).await;

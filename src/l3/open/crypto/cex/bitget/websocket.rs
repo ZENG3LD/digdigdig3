@@ -137,8 +137,8 @@ pub struct BitgetWebSocket {
     auth: Option<BitgetAuth>,
     /// URLs (mainnet/testnet)
     urls: BitgetUrls,
-    /// Current account type
-    account_type: AccountType,
+    /// Current account type (set via connect, read by subscribe/unsubscribe)
+    account_type: Arc<Mutex<AccountType>>,
     /// Connection status
     status: Arc<Mutex<ConnectionStatus>>,
     /// Active subscriptions
@@ -177,7 +177,7 @@ impl BitgetWebSocket {
         Ok(Self {
             auth,
             urls,
-            account_type,
+            account_type: Arc::new(Mutex::new(account_type)),
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
             event_tx: Arc::new(StdMutex::new(None)),
@@ -703,9 +703,9 @@ impl BitgetWebSocket {
 
 #[async_trait]
 impl WebSocketConnector for BitgetWebSocket {
-    async fn connect(&mut self, account_type: AccountType) -> WebSocketResult<()> {
+    async fn connect(&self, account_type: AccountType) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Connecting;
-        self.account_type = account_type;
+        *self.account_type.lock().await = account_type;
 
         // Determine if we need private channel
         let needs_private = self.auth.is_some();
@@ -751,7 +751,7 @@ impl WebSocketConnector for BitgetWebSocket {
         Ok(())
     }
 
-    async fn disconnect(&mut self) -> WebSocketResult<()> {
+    async fn disconnect(&self) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Disconnected;
         *self.ws_stream.lock().await = None;
         let _ = self.event_tx.lock().unwrap().take();
@@ -767,7 +767,7 @@ impl WebSocketConnector for BitgetWebSocket {
         }
     }
 
-    async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let is_private = Self::is_private(&request.stream_type);
 
         // Check authentication for private channels
@@ -791,7 +791,7 @@ impl WebSocketConnector for BitgetWebSocket {
             limiter_guard.try_acquire();
         }
 
-        let args = Self::build_subscription_args(&request, self.account_type);
+        let args = Self::build_subscription_args(&request, *self.account_type.lock().await);
 
         let msg = SubscribeMessage {
             op: "subscribe".to_string(),
@@ -815,7 +815,7 @@ impl WebSocketConnector for BitgetWebSocket {
         Ok(())
     }
 
-    async fn unsubscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         // Rate limit before sending unsubscription
         let limiter = get_global_ws_limiter();
         let wait_time = {
@@ -832,7 +832,7 @@ impl WebSocketConnector for BitgetWebSocket {
             limiter_guard.try_acquire();
         }
 
-        let args = Self::build_subscription_args(&request, self.account_type);
+        let args = Self::build_subscription_args(&request, *self.account_type.lock().await);
 
         let msg = SubscribeMessage {
             op: "unsubscribe".to_string(),

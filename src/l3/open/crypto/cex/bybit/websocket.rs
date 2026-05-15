@@ -134,8 +134,8 @@ pub struct BybitWebSocket {
     auth: Option<BybitAuth>,
     /// Testnet mode
     testnet: bool,
-    /// Current account type
-    account_type: AccountType,
+    /// Current account type (set via connect, read by subscribe/unsubscribe)
+    account_type: Arc<Mutex<AccountType>>,
     /// Connection status
     status: Arc<Mutex<ConnectionStatus>>,
     /// Active subscriptions
@@ -166,7 +166,7 @@ impl BybitWebSocket {
         Ok(Self {
             auth,
             testnet,
-            account_type,
+            account_type: Arc::new(Mutex::new(account_type)),
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
             event_tx: Arc::new(StdMutex::new(None)),
@@ -998,9 +998,9 @@ impl BybitWebSocket {
 
 #[async_trait]
 impl WebSocketConnector for BybitWebSocket {
-    async fn connect(&mut self, account_type: AccountType) -> WebSocketResult<()> {
+    async fn connect(&self, account_type: AccountType) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Connecting;
-        self.account_type = account_type;
+        *self.account_type.lock().await = account_type;
 
         // Public channels always use the public URL.
         let needs_private = false;
@@ -1044,7 +1044,7 @@ impl WebSocketConnector for BybitWebSocket {
         Ok(())
     }
 
-    async fn disconnect(&mut self) -> WebSocketResult<()> {
+    async fn disconnect(&self) -> WebSocketResult<()> {
         // Close the write half. The message loop owns the read half and will exit
         // naturally when it detects the close. The ping task will exit on next
         // failed send.
@@ -1065,10 +1065,10 @@ impl WebSocketConnector for BybitWebSocket {
         }
     }
 
-    async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         Self::ws_rate_limit_wait(1).await;
 
-        let topic = Self::build_topic(&request, self.account_type);
+        let topic = Self::build_topic(&request, *self.account_type.lock().await);
 
         let msg = OutgoingMessage {
             op: "subscribe".to_string(),
@@ -1085,10 +1085,10 @@ impl WebSocketConnector for BybitWebSocket {
         Ok(())
     }
 
-    async fn unsubscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         Self::ws_rate_limit_wait(1).await;
 
-        let topic = Self::build_topic(&request, self.account_type);
+        let topic = Self::build_topic(&request, *self.account_type.lock().await);
 
         let msg = OutgoingMessage {
             op: "unsubscribe".to_string(),

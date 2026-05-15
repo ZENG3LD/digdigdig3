@@ -270,9 +270,9 @@ pub struct MoexWebSocket {
     /// Active subscriptions
     subscriptions: Arc<RwLock<HashSet<SubscriptionRequest>>>,
     /// Command sender for the WebSocket loop
-    command_tx: Option<mpsc::UnboundedSender<WsCommand>>,
+    command_tx: Arc<Mutex<Option<mpsc::UnboundedSender<WsCommand>>>>,
     /// Event receiver (wrapped for sharing)
-    event_rx: Option<Arc<Mutex<mpsc::UnboundedReceiver<WebSocketResult<StreamEvent>>>>>,
+    event_rx: Arc<Mutex<Option<Arc<Mutex<mpsc::UnboundedReceiver<WebSocketResult<StreamEvent>>>>>>>,
     /// Debug mode
     debug: bool,
 }
@@ -287,8 +287,8 @@ impl MoexWebSocket {
             endpoints: MoexEndpoints::default(),
             status: Arc::new(RwLock::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(RwLock::new(HashSet::new())),
-            command_tx: None,
-            event_rx: None,
+            command_tx: Arc::new(Mutex::new(None)),
+            event_rx: Arc::new(Mutex::new(None)),
             debug,
         }
     }
@@ -1019,7 +1019,7 @@ impl MoexWebSocket {
 #[async_trait]
 impl WebSocketConnector for MoexWebSocket {
     /// Connect to MOEX STOMP WebSocket
-    async fn connect(&mut self, _account_type: AccountType) -> WebSocketResult<()> {
+    async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
         // Check current status
         {
             let guard = self.status.read().await;
@@ -1040,8 +1040,8 @@ impl WebSocketConnector for MoexWebSocket {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::unbounded_channel();
 
-        self.command_tx = Some(command_tx);
-        self.event_rx = Some(Arc::new(Mutex::new(event_rx)));
+        *self.command_tx.lock().await = Some(command_tx);
+        *self.event_rx.lock().await = Some(Arc::new(Mutex::new(event_rx)));
 
         // Clone state for the spawned task
         let auth = self.auth.clone();
@@ -1081,7 +1081,8 @@ impl WebSocketConnector for MoexWebSocket {
                     ConnectionStatus::Disconnected if saw_connecting => {
                         // Was connecting but went back to disconnected - connection failed.
                         // Try to extract the actual error from the event channel.
-                        if let Some(rx) = &self.event_rx {
+                        let event_rx_guard = self.event_rx.lock().await;
+                        if let Some(rx) = &*event_rx_guard {
                             let mut rx_guard = rx.lock().await;
                             if let Ok(Err(ws_err)) = rx_guard.try_recv() {
                                 return Err(ws_err);
@@ -1101,8 +1102,8 @@ impl WebSocketConnector for MoexWebSocket {
     }
 
     /// Disconnect from MOEX WebSocket
-    async fn disconnect(&mut self) -> WebSocketResult<()> {
-        if let Some(tx) = self.command_tx.take() {
+    async fn disconnect(&self) -> WebSocketResult<()> {
+        if let Some(tx) = self.command_tx.lock().await.take() {
             let _ = tx.send(WsCommand::Disconnect);
         }
 
@@ -1117,7 +1118,7 @@ impl WebSocketConnector for MoexWebSocket {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
-        self.event_rx = None;
+        *self.event_rx.lock().await = None;
         Ok(())
     }
 
@@ -1130,8 +1131,8 @@ impl WebSocketConnector for MoexWebSocket {
     }
 
     /// Subscribe to a data stream
-    async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
-        if let Some(tx) = &self.command_tx {
+    async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
+        if let Some(tx) = &*self.command_tx.lock().await {
             tx.send(WsCommand::Subscribe(request))
                 .map_err(|_| WebSocketError::SendError("Command channel closed".to_string()))?;
             Ok(())
@@ -1141,8 +1142,8 @@ impl WebSocketConnector for MoexWebSocket {
     }
 
     /// Unsubscribe from a data stream
-    async fn unsubscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
-        if let Some(tx) = &self.command_tx {
+    async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
+        if let Some(tx) = &*self.command_tx.lock().await {
             tx.send(WsCommand::Unsubscribe(request))
                 .map_err(|_| WebSocketError::SendError("Command channel closed".to_string()))?;
             Ok(())
@@ -1153,12 +1154,13 @@ impl WebSocketConnector for MoexWebSocket {
 
     /// Get event stream
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        let rx = self.event_rx.clone();
+        let event_rx_outer = self.event_rx.clone();
 
-        Box::pin(futures_util::stream::unfold(rx, |rx| async move {
+        Box::pin(futures_util::stream::unfold(event_rx_outer, |event_rx_outer| async move {
+            let rx = event_rx_outer.lock().await.clone();
             if let Some(rx) = rx {
                 let mut guard = rx.lock().await;
-                guard.recv().await.map(|event| (event, Some(rx.clone())))
+                guard.recv().await.map(|event| (event, event_rx_outer))
             } else {
                 None
             }

@@ -38,19 +38,19 @@ use crate::core::types::{
 #[async_trait]
 pub trait WebSocketConnector: Send + Sync {
     /// Подключиться к WebSocket
-    async fn connect(&mut self, account_type: AccountType) -> WebSocketResult<()>;
+    async fn connect(&self, account_type: AccountType) -> WebSocketResult<()>;
 
     /// Отключиться от WebSocket
-    async fn disconnect(&mut self) -> WebSocketResult<()>;
+    async fn disconnect(&self) -> WebSocketResult<()>;
 
     /// Получить текущий статус подключения
     fn connection_status(&self) -> ConnectionStatus;
 
     /// Подписаться на поток данных
-    async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()>;
+    async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()>;
 
     /// Отписаться от потока данных
-    async fn unsubscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()>;
+    async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()>;
 
     /// Получить поток событий
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>>;
@@ -97,22 +97,22 @@ pub trait WebSocketExt: WebSocketConnector {
     // ═══════════════════════════════════════════════════════════════════════════
 
     /// Подписаться на тикер
-    async fn subscribe_ticker(&mut self, symbol: Symbol) -> WebSocketResult<()> {
+    async fn subscribe_ticker(&self, symbol: Symbol) -> WebSocketResult<()> {
         self.subscribe(SubscriptionRequest::ticker(symbol)).await
     }
 
     /// Подписаться на сделки
-    async fn subscribe_trades(&mut self, symbol: Symbol) -> WebSocketResult<()> {
+    async fn subscribe_trades(&self, symbol: Symbol) -> WebSocketResult<()> {
         self.subscribe(SubscriptionRequest::trade(symbol)).await
     }
 
     /// Подписаться на стакан
-    async fn subscribe_orderbook(&mut self, symbol: Symbol) -> WebSocketResult<()> {
+    async fn subscribe_orderbook(&self, symbol: Symbol) -> WebSocketResult<()> {
         self.subscribe(SubscriptionRequest::orderbook(symbol)).await
     }
 
     /// Подписаться на свечи
-    async fn subscribe_klines(&mut self, symbol: Symbol, interval: &str) -> WebSocketResult<()> {
+    async fn subscribe_klines(&self, symbol: Symbol, interval: &str) -> WebSocketResult<()> {
         self.subscribe(SubscriptionRequest::kline(symbol, interval)).await
     }
 
@@ -121,7 +121,7 @@ pub trait WebSocketExt: WebSocketConnector {
     // ═══════════════════════════════════════════════════════════════════════════
 
     /// Подписаться на обновления ордеров (private)
-    async fn subscribe_orders(&mut self) -> WebSocketResult<()> {
+    async fn subscribe_orders(&self) -> WebSocketResult<()> {
         self.subscribe(SubscriptionRequest::new(
             Symbol::empty(),
             StreamType::OrderUpdate,
@@ -130,7 +130,7 @@ pub trait WebSocketExt: WebSocketConnector {
     }
 
     /// Подписаться на обновления баланса (private)
-    async fn subscribe_balance(&mut self) -> WebSocketResult<()> {
+    async fn subscribe_balance(&self) -> WebSocketResult<()> {
         self.subscribe(SubscriptionRequest::new(
             Symbol::empty(),
             StreamType::BalanceUpdate,
@@ -139,7 +139,7 @@ pub trait WebSocketExt: WebSocketConnector {
     }
 
     /// Подписаться на обновления позиций (private, futures)
-    async fn subscribe_positions(&mut self) -> WebSocketResult<()> {
+    async fn subscribe_positions(&self) -> WebSocketResult<()> {
         self.subscribe(SubscriptionRequest::new(
             Symbol::empty(),
             StreamType::PositionUpdate,

@@ -142,8 +142,8 @@ pub struct CryptoComWebSocket {
     message_id: Arc<Mutex<i64>>,
     /// Connection status
     is_connected: Arc<Mutex<bool>>,
-    /// Current account type
-    account_type: AccountType,
+    /// Current account type (set via connect, read by subscribe/unsubscribe)
+    account_type: Arc<Mutex<AccountType>>,
     /// Last time a WS-level ping was sent (for RTT measurement)
     last_ping: Arc<Mutex<Instant>>,
     /// Round-trip time of the last WebSocket ping/pong in milliseconds
@@ -165,7 +165,7 @@ impl CryptoComWebSocket {
             trait_subscriptions: Arc::new(Mutex::new(HashSet::new())),
             message_id: Arc::new(Mutex::new(1)),
             is_connected: Arc::new(Mutex::new(false)),
-            account_type: AccountType::Spot,
+            account_type: Arc::new(Mutex::new(AccountType::Spot)),
             last_ping: Arc::new(Mutex::new(Instant::now())),
             ws_ping_rtt_ms: Arc::new(Mutex::new(0)),
         }
@@ -189,7 +189,7 @@ impl CryptoComWebSocket {
     }
 
     /// Connect to WebSocket
-    pub async fn connect(&mut self) -> ExchangeResult<()> {
+    pub async fn connect(&self) -> ExchangeResult<()> {
         let url = self.get_ws_url();
 
         // Connect to WebSocket
@@ -653,25 +653,25 @@ impl CryptoComWebSocket {
     }
 
     /// Subscribe to ticker channel
-    pub async fn subscribe_ticker(&mut self, instrument_name: &str) -> ExchangeResult<()> {
+    pub async fn subscribe_ticker(&self, instrument_name: &str) -> ExchangeResult<()> {
         let channel = format!("ticker.{}", instrument_name);
         self.subscribe_channels(vec![channel]).await
     }
 
     /// Subscribe to orderbook channel
-    pub async fn subscribe_orderbook(&mut self, instrument_name: &str, depth: u32) -> ExchangeResult<()> {
+    pub async fn subscribe_orderbook(&self, instrument_name: &str, depth: u32) -> ExchangeResult<()> {
         let channel = format!("book.{}.{}", instrument_name, depth);
         self.subscribe_channels(vec![channel]).await
     }
 
     /// Subscribe to trade channel
-    pub async fn subscribe_trades(&mut self, instrument_name: &str) -> ExchangeResult<()> {
+    pub async fn subscribe_trades(&self, instrument_name: &str) -> ExchangeResult<()> {
         let channel = format!("trade.{}", instrument_name);
         self.subscribe_channels(vec![channel]).await
     }
 
     /// Subscribe to user order updates
-    pub async fn subscribe_user_orders(&mut self, instrument_name: &str) -> ExchangeResult<()> {
+    pub async fn subscribe_user_orders(&self, instrument_name: &str) -> ExchangeResult<()> {
         if !self.is_user_stream {
             return Err(ExchangeError::UnsupportedOperation(
                 "User orders require user stream".to_string()
@@ -682,13 +682,13 @@ impl CryptoComWebSocket {
     }
 
     /// Subscribe to mark price channel (`mark.<instrument>`)
-    pub async fn subscribe_mark_price(&mut self, instrument_name: &str) -> ExchangeResult<()> {
+    pub async fn subscribe_mark_price(&self, instrument_name: &str) -> ExchangeResult<()> {
         let channel = format!("mark.{}", instrument_name);
         self.subscribe_channels(vec![channel]).await
     }
 
     /// Subscribe to index price channel (`index.<instrument>`)
-    pub async fn subscribe_index_price(&mut self, instrument_name: &str) -> ExchangeResult<()> {
+    pub async fn subscribe_index_price(&self, instrument_name: &str) -> ExchangeResult<()> {
         let channel = format!("index.{}", instrument_name);
         self.subscribe_channels(vec![channel]).await
     }
@@ -696,7 +696,7 @@ impl CryptoComWebSocket {
     /// Subscribe to funding rate channel (`funding.<instrument>`)
     ///
     /// Only applicable to perpetual instruments (e.g. `BTCUSD-PERP`).
-    pub async fn subscribe_funding_rate(&mut self, instrument_name: &str) -> ExchangeResult<()> {
+    pub async fn subscribe_funding_rate(&self, instrument_name: &str) -> ExchangeResult<()> {
         let channel = format!("funding.{}", instrument_name);
         self.subscribe_channels(vec![channel]).await
     }
@@ -705,7 +705,7 @@ impl CryptoComWebSocket {
     ///
     /// Emits next-interval predicted funding rate. Only for perpetual instruments.
     /// Pushes `StreamEvent::PredictedFunding`.
-    pub async fn subscribe_estimated_funding(&mut self, instrument_name: &str) -> ExchangeResult<()> {
+    pub async fn subscribe_estimated_funding(&self, instrument_name: &str) -> ExchangeResult<()> {
         let channel = format!("estimatedfunding.{}", instrument_name);
         self.subscribe_channels(vec![channel]).await
     }
@@ -714,13 +714,13 @@ impl CryptoComWebSocket {
     ///
     /// Emits `StreamEvent::SettlementEvent` on settlement. For perpetuals this fires
     /// at each funding settlement; for futures at expiry.
-    pub async fn subscribe_settlement(&mut self, instrument_name: &str) -> ExchangeResult<()> {
+    pub async fn subscribe_settlement(&self, instrument_name: &str) -> ExchangeResult<()> {
         let channel = format!("settlement.{}", instrument_name);
         self.subscribe_channels(vec![channel]).await
     }
 
     /// Subscribe to user balance updates
-    pub async fn subscribe_user_balance(&mut self) -> ExchangeResult<()> {
+    pub async fn subscribe_user_balance(&self) -> ExchangeResult<()> {
         if !self.is_user_stream {
             return Err(ExchangeError::UnsupportedOperation(
                 "User balance requires user stream".to_string()
@@ -730,7 +730,7 @@ impl CryptoComWebSocket {
     }
 
     /// Subscribe to channels
-    async fn subscribe_channels(&mut self, channels: Vec<String>) -> ExchangeResult<()> {
+    async fn subscribe_channels(&self, channels: Vec<String>) -> ExchangeResult<()> {
         let id = self.next_id().await;
         let nonce = timestamp_millis();
 
@@ -820,7 +820,7 @@ impl CryptoComWebSocket {
     }
 
     /// Disconnect
-    pub async fn disconnect(&mut self) -> ExchangeResult<()> {
+    pub async fn disconnect(&self) -> ExchangeResult<()> {
         *self.is_connected.lock().await = false;
         *self.ws_stream.lock().await = None;
         let _ = self.stream_broadcast_tx.lock().unwrap().take();
@@ -835,8 +835,8 @@ impl CryptoComWebSocket {
 
 #[async_trait]
 impl WebSocketConnector for CryptoComWebSocket {
-    async fn connect(&mut self, account_type: AccountType) -> WebSocketResult<()> {
-        self.account_type = account_type;
+    async fn connect(&self, account_type: AccountType) -> WebSocketResult<()> {
+        *self.account_type.lock().await = account_type;
 
         // Determine stream type based on account type
         // User stream requires private WS; otherwise use market WS
@@ -874,7 +874,7 @@ impl WebSocketConnector for CryptoComWebSocket {
         Ok(())
     }
 
-    async fn disconnect(&mut self) -> WebSocketResult<()> {
+    async fn disconnect(&self) -> WebSocketResult<()> {
         *self.is_connected.lock().await = false;
         *self.ws_stream.lock().await = None;
         let _ = self.stream_broadcast_tx.lock().unwrap().take();
@@ -897,8 +897,8 @@ impl WebSocketConnector for CryptoComWebSocket {
         }
     }
 
-    async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
-        let channels = Self::build_channel(&request, self.account_type);
+    async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
+        let channels = Self::build_channel(&request, *self.account_type.lock().await);
         if channels.is_empty() {
             return Err(WebSocketError::UnsupportedOperation(
                 format!("Unsupported stream type: {:?}", request.stream_type),
@@ -912,8 +912,8 @@ impl WebSocketConnector for CryptoComWebSocket {
         Ok(())
     }
 
-    async fn unsubscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
-        let channels = Self::build_channel(&request, self.account_type);
+    async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
+        let channels = Self::build_channel(&request, *self.account_type.lock().await);
         if channels.is_empty() {
             return Err(WebSocketError::UnsupportedOperation(
                 format!("Unsupported stream type: {:?}", request.stream_type),

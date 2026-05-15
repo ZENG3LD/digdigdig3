@@ -289,7 +289,7 @@ impl TiingoWebSocket {
 
 #[async_trait]
 impl WebSocketConnector for TiingoWebSocket {
-    async fn connect(&mut self, _account_type: AccountType) -> WebSocketResult<()> {
+    async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
         *self.status.write().await = ConnectionStatus::Connecting;
 
         match self.do_connect().await {
@@ -304,7 +304,7 @@ impl WebSocketConnector for TiingoWebSocket {
         }
     }
 
-    async fn disconnect(&mut self) -> WebSocketResult<()> {
+    async fn disconnect(&self) -> WebSocketResult<()> {
         *self.status.write().await = ConnectionStatus::Disconnected;
         let _ = self.broadcast_tx.lock().unwrap().take();
         self.subscriptions.write().await.clear();
@@ -318,7 +318,7 @@ impl WebSocketConnector for TiingoWebSocket {
             .unwrap_or(ConnectionStatus::Disconnected)
     }
 
-    async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let status = self.status.read().await;
         if *status != ConnectionStatus::Connected {
             return Err(WebSocketError::NotConnected);
@@ -329,7 +329,7 @@ impl WebSocketConnector for TiingoWebSocket {
         Ok(())
     }
 
-    async fn unsubscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         self.subscriptions
             .write()
             .await
@@ -454,7 +454,7 @@ mod tests {
     #[tokio::test]
     async fn test_subscribe_before_connect() {
         let auth = make_auth();
-        let mut ws = TiingoWebSocket::new_iex(auth);
+        let ws = TiingoWebSocket::new_iex(auth);
         use crate::core::types::Symbol;
         let req = SubscriptionRequest::ticker(Symbol::new("AAPL", "USD"));
         let result = ws.subscribe(req).await;

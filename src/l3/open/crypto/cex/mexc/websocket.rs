@@ -116,7 +116,7 @@ pub struct MexcWebSocket {
     /// Authentication (None for public channels only)
     _auth: Option<()>, // MEXC doesn't use WebSocket auth for public channels
     /// Current account type
-    account_type: AccountType,
+    account_type: Arc<Mutex<AccountType>>,
     /// Connection status
     status: Arc<Mutex<ConnectionStatus>>,
     /// Active subscriptions
@@ -140,7 +140,7 @@ impl MexcWebSocket {
     pub async fn new(_credentials: Option<Credentials>) -> ExchangeResult<Self> {
         Ok(Self {
             _auth: None, // MEXC doesn't use auth for public WebSocket
-            account_type: AccountType::Spot, // Default
+            account_type: Arc::new(Mutex::new(AccountType::Spot)),
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
             event_tx: Arc::new(StdMutex::new(None)),
@@ -171,7 +171,7 @@ impl MexcWebSocket {
 
     /// Subscribe to ticker stream (miniTicker, protobuf format).
     pub async fn subscribe_ticker(&self, symbol: Symbol) -> ExchangeResult<()> {
-        let symbol_str = format_symbol(&symbol, self.account_type);
+        let symbol_str = format_symbol(&symbol, *self.account_type.lock().await);
         let stream_name = MexcWsChannels::mini_ticker(&symbol_str);
 
         let msg = json!({
@@ -199,7 +199,7 @@ impl MexcWebSocket {
     /// MEXC uses 100ms-batched incremental depth updates via the
     /// `spot@public.aggre.depth.v3.api.pb@100ms@{SYMBOL}` channel.
     pub async fn subscribe_orderbook(&self, symbol: Symbol) -> ExchangeResult<()> {
-        let symbol_str = format_symbol(&symbol, self.account_type);
+        let symbol_str = format_symbol(&symbol, *self.account_type.lock().await);
         let stream_name = MexcWsChannels::aggre_depth(&symbol_str);
 
         let msg = json!({
@@ -223,7 +223,7 @@ impl MexcWebSocket {
 
     /// Subscribe to trades stream (aggregated deals, protobuf format).
     pub async fn subscribe_trades(&self, symbol: Symbol) -> ExchangeResult<()> {
-        let symbol_str = format_symbol(&symbol, self.account_type);
+        let symbol_str = format_symbol(&symbol, *self.account_type.lock().await);
         let stream_name = MexcWsChannels::aggre_deals(&symbol_str);
 
         let msg = json!({
@@ -543,8 +543,8 @@ impl MexcWebSocket {
 
 #[async_trait]
 impl WebSocketConnector for MexcWebSocket {
-    async fn connect(&mut self, account_type: AccountType) -> WebSocketResult<()> {
-        self.account_type = account_type;
+    async fn connect(&self, account_type: AccountType) -> WebSocketResult<()> {
+        *self.account_type.lock().await = account_type;
 
         *self.status.lock().await = ConnectionStatus::Connecting;
 
@@ -584,7 +584,7 @@ impl WebSocketConnector for MexcWebSocket {
         Ok(())
     }
 
-    async fn disconnect(&mut self) -> WebSocketResult<()> {
+    async fn disconnect(&self) -> WebSocketResult<()> {
         // Close the write half. The message loop task owns the read half and will
         // detect the close frame / stream termination naturally and exit on its own.
         // The ping task will fail on its next send attempt and also exit.
@@ -604,7 +604,7 @@ impl WebSocketConnector for MexcWebSocket {
             .unwrap_or(ConnectionStatus::Disconnected)
     }
 
-    async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         match request.stream_type {
             StreamType::Ticker => {
                 self.subscribe_ticker(request.symbol.clone()).await
@@ -642,9 +642,9 @@ impl WebSocketConnector for MexcWebSocket {
         Ok(())
     }
 
-    async fn unsubscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         // Build the same channel name that was used during subscribe, then send UNSUBSCRIPTION
-        let symbol_str = format_symbol(&request.symbol, self.account_type);
+        let symbol_str = format_symbol(&request.symbol, *self.account_type.lock().await);
 
         let channel = match &request.stream_type {
             StreamType::Ticker => MexcWsChannels::mini_ticker(&symbol_str),

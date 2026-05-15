@@ -549,13 +549,13 @@ impl GeminiWebSocket {
 
 #[async_trait]
 impl WebSocketConnector for GeminiWebSocket {
-    async fn connect(&mut self, _account_type: AccountType) -> WebSocketResult<()> {
-        Self::connect(self).await
+    async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
+        self.connect().await
             .map_err(|e| WebSocketError::ConnectionError(e.to_string()))
     }
 
-    async fn disconnect(&mut self) -> WebSocketResult<()> {
-        Self::disconnect(self).await
+    async fn disconnect(&self) -> WebSocketResult<()> {
+        self.disconnect().await
             .map_err(|e| WebSocketError::ConnectionError(e.to_string()))
     }
 
@@ -566,7 +566,7 @@ impl WebSocketConnector for GeminiWebSocket {
             .unwrap_or(ConnectionStatus::Disconnected)
     }
 
-    async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         match request.stream_type {
             StreamType::Ticker => {
                 // Gemini doesn't have a dedicated ticker stream.
@@ -593,7 +593,7 @@ impl WebSocketConnector for GeminiWebSocket {
         }
     }
 
-    async fn unsubscribe(&mut self, _request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn unsubscribe(&self, _request: SubscriptionRequest) -> WebSocketResult<()> {
         // Gemini doesn't support unsubscribe - need to reconnect
         Err(WebSocketError::Subscription("Unsubscribe not supported by Gemini".to_string()))
     }

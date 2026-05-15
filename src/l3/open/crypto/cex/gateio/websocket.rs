@@ -137,8 +137,8 @@ pub struct GateioWebSocket {
     auth: Option<GateioAuth>,
     /// Testnet mode
     _testnet: bool,
-    /// Current account type
-    account_type: AccountType,
+    /// Current account type (set via connect, read by subscribe/unsubscribe)
+    account_type: Arc<Mutex<AccountType>>,
     /// Connection status
     status: Arc<Mutex<ConnectionStatus>>,
     /// Active subscriptions
@@ -181,7 +181,7 @@ impl GateioWebSocket {
         Ok(Self {
             auth,
             _testnet: testnet,
-            account_type,
+            account_type: Arc::new(Mutex::new(account_type)),
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
             event_tx: Arc::new(StdMutex::new(None)),
@@ -753,9 +753,9 @@ impl GateioWebSocket {
 
 #[async_trait]
 impl WebSocketConnector for GateioWebSocket {
-    async fn connect(&mut self, account_type: AccountType) -> WebSocketResult<()> {
+    async fn connect(&self, account_type: AccountType) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Connecting;
-        self.account_type = account_type;
+        *self.account_type.lock().await = account_type;
 
         // Connect WebSocket
         let ws_url = self.urls.ws_url(account_type);
@@ -796,7 +796,7 @@ impl WebSocketConnector for GateioWebSocket {
         Ok(())
     }
 
-    async fn disconnect(&mut self) -> WebSocketResult<()> {
+    async fn disconnect(&self) -> WebSocketResult<()> {
         // Close the write half. The message loop task owns the read half and will
         // detect the close / stream termination naturally and exit on its own.
         // The ping task will fail on its next send attempt and also exit.
@@ -817,12 +817,13 @@ impl WebSocketConnector for GateioWebSocket {
         }
     }
 
-    async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         // Wait for rate limit (weight 1 for subscriptions)
         Self::ws_rate_limit_wait(1).await;
 
-        let channel = Self::build_channel(&request, self.account_type);
-        let payload = Self::build_payload(&request, self.account_type);
+        let account_type = *self.account_type.lock().await;
+        let channel = Self::build_channel(&request, account_type);
+        let payload = Self::build_payload(&request, account_type);
         let timestamp = timestamp_seconds() as i64;
 
         // Build message
@@ -860,12 +861,13 @@ impl WebSocketConnector for GateioWebSocket {
         Ok(())
     }
 
-    async fn unsubscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         // Wait for rate limit (weight 1 for unsubscriptions)
         Self::ws_rate_limit_wait(1).await;
 
-        let channel = Self::build_channel(&request, self.account_type);
-        let payload = Self::build_payload(&request, self.account_type);
+        let account_type = *self.account_type.lock().await;
+        let channel = Self::build_channel(&request, account_type);
+        let payload = Self::build_payload(&request, account_type);
 
         let msg = OutgoingMessage {
             time: timestamp_seconds() as i64,

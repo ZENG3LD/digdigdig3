@@ -58,7 +58,7 @@ async fn test_orderbook_capabilities() {
 #[tokio::test]
 #[ignore]
 async fn test_subscribe_orderbook() {
-    let mut ws = match GateioWebSocket::new(None, false, AccountType::Spot).await {
+    let ws = match GateioWebSocket::new(None, false, AccountType::Spot).await {
         Ok(w) => w,
         Err(e) => {
             println!("Failed to create WebSocket: {:?}", e);
@@ -135,7 +135,7 @@ async fn test_subscribe_orderbook() {
 #[tokio::test]
 #[ignore]
 async fn test_subscribe_trades() {
-    let mut ws = match GateioWebSocket::new(None, false, AccountType::Spot).await {
+    let ws = match GateioWebSocket::new(None, false, AccountType::Spot).await {
         Ok(w) => w,
         Err(e) => {
             println!("Failed to create WebSocket: {:?}", e);
@@ -184,7 +184,7 @@ async fn test_orderbook_depth_levels() {
     for depth in &depths {
         println!("Testing Gate.io depth={}...", depth);
 
-        let mut ws = match GateioWebSocket::new(None, false, AccountType::Spot).await {
+        let ws = match GateioWebSocket::new(None, false, AccountType::Spot).await {
             Ok(w) => w,
             Err(e) => {
                 println!("Failed to create WebSocket for depth={}: {:?}", depth, e);

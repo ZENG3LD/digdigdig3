@@ -291,7 +291,7 @@ impl CoinbaseWebSocket {
 
 #[async_trait]
 impl WebSocketConnector for CoinbaseWebSocket {
-    async fn connect(&mut self, _account_type: AccountType) -> WebSocketResult<()> {
+    async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
         let (ws_read, ws_write) = self.connect_ws().await
             .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
 
@@ -340,7 +340,7 @@ impl WebSocketConnector for CoinbaseWebSocket {
         Ok(())
     }
 
-    async fn disconnect(&mut self) -> WebSocketResult<()> {
+    async fn disconnect(&self) -> WebSocketResult<()> {
         if let Some(mut writer) = self.ws_writer.lock().await.take() {
             let _ = writer.close().await;
         }
@@ -357,7 +357,7 @@ impl WebSocketConnector for CoinbaseWebSocket {
     }
 
     async fn subscribe(
-        &mut self,
+        &self,
         request: SubscriptionRequest,
     ) -> WebSocketResult<()> {
         let mut writer_guard = self.ws_writer.lock().await;
@@ -403,7 +403,7 @@ impl WebSocketConnector for CoinbaseWebSocket {
     }
 
     async fn unsubscribe(
-        &mut self,
+        &self,
         request: SubscriptionRequest,
     ) -> WebSocketResult<()> {
         self.subscriptions.lock().await.remove(&request);

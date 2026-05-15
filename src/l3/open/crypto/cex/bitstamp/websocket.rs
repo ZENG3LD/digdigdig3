@@ -567,7 +567,7 @@ impl BitstampWebSocket {
 
 #[async_trait]
 impl WebSocketConnector for BitstampWebSocket {
-    async fn connect(&mut self, _account_type: AccountType) -> WebSocketResult<()> {
+    async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Connecting;
 
         let url = BitstampUrls::ws_url();
@@ -625,7 +625,7 @@ impl WebSocketConnector for BitstampWebSocket {
         Ok(())
     }
 
-    async fn disconnect(&mut self) -> WebSocketResult<()> {
+    async fn disconnect(&self) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Disconnected;
         *self.ws_writer.lock().await = None;
         *self.event_tx.lock().await = None;
@@ -640,7 +640,7 @@ impl WebSocketConnector for BitstampWebSocket {
         }
     }
 
-    async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let result = match request.stream_type {
             crate::core::types::StreamType::Ticker => {
                 // Ticker -> diff_order_book (high frequency, reliable)
@@ -680,7 +680,7 @@ impl WebSocketConnector for BitstampWebSocket {
         result
     }
 
-    async fn unsubscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         self.subscriptions.lock().await.remove(&request);
         Ok(())
     }

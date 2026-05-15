@@ -850,7 +850,7 @@ impl HyperliquidWebSocket {
 
 #[async_trait]
 impl WebSocketConnector for HyperliquidWebSocket {
-    async fn connect(&mut self, _account_type: AccountType) -> WebSocketResult<()> {
+    async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Connecting;
 
         // Connect WebSocket and split into independent read/write halves.
@@ -883,7 +883,7 @@ impl WebSocketConnector for HyperliquidWebSocket {
         Ok(())
     }
 
-    async fn disconnect(&mut self) -> WebSocketResult<()> {
+    async fn disconnect(&self) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Disconnected;
 
         // Close the write half; the reader task owns the read half and exits naturally.
@@ -904,7 +904,7 @@ impl WebSocketConnector for HyperliquidWebSocket {
         }
     }
 
-    async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let subscription = Self::build_subscription(&request);
 
         let msg = SubscribeMessage {
@@ -929,7 +929,7 @@ impl WebSocketConnector for HyperliquidWebSocket {
         Ok(())
     }
 
-    async fn unsubscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let subscription = Self::build_subscription(&request);
 
         let msg = SubscribeMessage {
@@ -1006,7 +1006,7 @@ impl HyperliquidWebSocket {
     ///
     /// Sends `{"method":"subscribe","subscription":{"type":"allMids","dex":""}}`.
     /// Events arrive on the broadcast channel as `StreamEvent::Ticker` per coin.
-    pub async fn subscribe_all_mids(&mut self) -> WebSocketResult<()> {
+    pub async fn subscribe_all_mids(&self) -> WebSocketResult<()> {
         let msg = SubscribeMessage {
             method: "subscribe".to_string(),
             subscription: serde_json::json!({ "type": "allMids", "dex": "" }),
@@ -1026,7 +1026,7 @@ impl HyperliquidWebSocket {
     ///
     /// Sends `{"method":"subscribe","subscription":{"type":"userNonFundingLedgerUpdates","user":"<addr>"}}`.
     /// Events arrive on the broadcast channel as `StreamEvent::BalanceUpdate` per ledger entry.
-    pub async fn subscribe_non_funding_ledger(&mut self, user_address: &str) -> WebSocketResult<()> {
+    pub async fn subscribe_non_funding_ledger(&self, user_address: &str) -> WebSocketResult<()> {
         let msg = SubscribeMessage {
             method: "subscribe".to_string(),
             subscription: serde_json::json!({

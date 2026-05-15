@@ -734,7 +734,7 @@ impl DeribitWebSocket {
     ///
     /// Channel name: `deribit_volatility_index.<index_name>`.
     /// Events arrive as `StreamEvent::VolatilityIndex`.
-    pub async fn subscribe_volatility_index(&mut self, index_name: &str) -> ExchangeResult<()> {
+    pub async fn subscribe_volatility_index(&self, index_name: &str) -> ExchangeResult<()> {
         let channel = format!("deribit_volatility_index.{}", index_name);
         self.subscribe_channels(vec![channel], false).await
     }
@@ -743,7 +743,7 @@ impl DeribitWebSocket {
     ///
     /// Channel name: `markprice.options.<index_name>`.
     /// Events arrive as `StreamEvent::MarkPrice` per option instrument.
-    pub async fn subscribe_options_mark_prices(&mut self, index_name: &str) -> ExchangeResult<()> {
+    pub async fn subscribe_options_mark_prices(&self, index_name: &str) -> ExchangeResult<()> {
         let channel = format!("markprice.options.{}", index_name);
         self.subscribe_channels(vec![channel], false).await
     }
@@ -752,7 +752,7 @@ impl DeribitWebSocket {
     ///
     /// Channel name: `block_trade_confirmations`.
     /// Events arrive as `StreamEvent::BlockTrade`.
-    pub async fn subscribe_block_trades(&mut self) -> ExchangeResult<()> {
+    pub async fn subscribe_block_trades(&self) -> ExchangeResult<()> {
         self.subscribe_channels(vec!["block_trade_confirmations".to_string()], false).await
     }
 }
@@ -763,7 +763,7 @@ impl DeribitWebSocket {
 
 #[async_trait]
 impl WebSocketConnector for DeribitWebSocket {
-    async fn connect(&mut self, _account_type: AccountType) -> WebSocketResult<()> {
+    async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
         // Update status
         *self.status.lock().await = ConnectionStatus::Connecting;
 
@@ -822,7 +822,7 @@ impl WebSocketConnector for DeribitWebSocket {
         Ok(())
     }
 
-    async fn disconnect(&mut self) -> WebSocketResult<()> {
+    async fn disconnect(&self) -> WebSocketResult<()> {
         // Close the write half. The message loop task owns the read half and will
         // detect the close frame / stream termination naturally and exit on its own.
         // The heartbeat task will fail on its next send attempt and also exit.
@@ -848,7 +848,7 @@ impl WebSocketConnector for DeribitWebSocket {
         }
     }
 
-    async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         // Check connection
         if self.connection_status() != ConnectionStatus::Connected {
             return Err(WebSocketError::NotConnected);
@@ -875,7 +875,7 @@ impl WebSocketConnector for DeribitWebSocket {
         Ok(())
     }
 
-    async fn unsubscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         // Build channel name
         let channel = self.build_channel_name(&request);
 

@@ -835,7 +835,7 @@ fn test_mexc_note() -> RestTally {
 /// Subscribe to a channel, listen for `duration`, count events by variant name.
 /// Returns (subscribed_ok, event_count, parse_error_count, channel_label).
 async fn ws_listen<W>(
-    ws: &mut W,
+    ws: &W,
     request: SubscriptionRequest,
     duration: Duration,
     channel_label: &str,
@@ -894,13 +894,13 @@ async fn test_binance_ws() -> WsTally {
     // Channel 1: forceOrder (liquidations)
     {
         tally.channels += 1;
-        let mut ws = match BinanceWebSocket::new(None, false, AccountType::FuturesCross).await {
+        let ws = match BinanceWebSocket::new(None, false, AccountType::FuturesCross).await {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
         if ws.connect(AccountType::FuturesCross).await.is_ok() {
             let req = SubscriptionRequest::new(btc_futures.clone(), StreamType::Liquidation);
-            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "btcusdt@forceOrder").await;
+            let (ok, n, err, label) = ws_listen(&ws, req, duration, "btcusdt@forceOrder").await;
             if ok { tally.subscribed += 1; }
             tally.events += n;
             tally.parse_errors += err;
@@ -914,13 +914,13 @@ async fn test_binance_ws() -> WsTally {
     // Channel 2: aggTrade
     {
         tally.channels += 1;
-        let mut ws = match BinanceWebSocket::new(None, false, AccountType::FuturesCross).await {
+        let ws = match BinanceWebSocket::new(None, false, AccountType::FuturesCross).await {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
         if ws.connect(AccountType::FuturesCross).await.is_ok() {
             let req = SubscriptionRequest::new(btc_futures.clone(), StreamType::AggTrade);
-            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "btcusdt@aggTrade").await;
+            let (ok, n, err, label) = ws_listen(&ws, req, duration, "btcusdt@aggTrade").await;
             if ok { tally.subscribed += 1; }
             tally.events += n;
             tally.parse_errors += err;
@@ -932,13 +932,13 @@ async fn test_binance_ws() -> WsTally {
     // Channel 3: markPriceKline_1m
     {
         tally.channels += 1;
-        let mut ws = match BinanceWebSocket::new(None, false, AccountType::FuturesCross).await {
+        let ws = match BinanceWebSocket::new(None, false, AccountType::FuturesCross).await {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
         if ws.connect(AccountType::FuturesCross).await.is_ok() {
             let req = SubscriptionRequest::new(btc_futures.clone(), StreamType::MarkPriceKline { interval: "1m".to_string() });
-            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "btcusdt@markPriceKline_1m").await;
+            let (ok, n, err, label) = ws_listen(&ws, req, duration, "btcusdt@markPriceKline_1m").await;
             if ok { tally.subscribed += 1; }
             tally.events += n;
             tally.parse_errors += err;
@@ -950,13 +950,13 @@ async fn test_binance_ws() -> WsTally {
     // Channel 4: !compositeIndex@arr
     {
         tally.channels += 1;
-        let mut ws = match BinanceWebSocket::new(None, false, AccountType::FuturesCross).await {
+        let ws = match BinanceWebSocket::new(None, false, AccountType::FuturesCross).await {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
         if ws.connect(AccountType::FuturesCross).await.is_ok() {
             let req = SubscriptionRequest::new(Symbol::empty(), StreamType::CompositeIndex);
-            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "!compositeIndex@arr").await;
+            let (ok, n, err, label) = ws_listen(&ws, req, duration, "!compositeIndex@arr").await;
             if ok { tally.subscribed += 1; }
             tally.events += n;
             tally.parse_errors += err;
@@ -968,14 +968,14 @@ async fn test_binance_ws() -> WsTally {
     // NEW Channel 5: !forceOrder@arr global liquidation stream (empty symbol)
     {
         tally.channels += 1;
-        let mut ws = match BinanceWebSocket::new(None, false, AccountType::FuturesCross).await {
+        let ws = match BinanceWebSocket::new(None, false, AccountType::FuturesCross).await {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
         if ws.connect(AccountType::FuturesCross).await.is_ok() {
             // Global liquidation: subscribe with empty symbol triggers !forceOrder@arr
             let req = SubscriptionRequest::new(Symbol::empty(), StreamType::Liquidation);
-            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "!forceOrder@arr (global)").await;
+            let (ok, n, err, label) = ws_listen(&ws, req, duration, "!forceOrder@arr (global)").await;
             if ok { tally.subscribed += 1; }
             tally.events += n;
             tally.parse_errors += err;
@@ -1004,13 +1004,13 @@ async fn test_bybit_ws() -> WsTally {
     // Channel 1: tickers.BTCUSDT (linear)
     {
         tally.channels += 1;
-        let mut ws = match BybitWebSocket::new(None, false, AccountType::FuturesCross).await {
+        let ws = match BybitWebSocket::new(None, false, AccountType::FuturesCross).await {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
         if ws.connect(AccountType::FuturesCross).await.is_ok() {
             let req = SubscriptionRequest::new(btc.clone(), StreamType::Ticker);
-            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "tickers.BTCUSDT(linear)").await;
+            let (ok, n, err, label) = ws_listen(&ws, req, duration, "tickers.BTCUSDT(linear)").await;
             if ok { tally.subscribed += 1; }
             tally.events += n;
             tally.parse_errors += err;
@@ -1022,13 +1022,13 @@ async fn test_bybit_ws() -> WsTally {
     // Channel 2: liquidation.BTCUSDT
     {
         tally.channels += 1;
-        let mut ws = match BybitWebSocket::new(None, false, AccountType::FuturesCross).await {
+        let ws = match BybitWebSocket::new(None, false, AccountType::FuturesCross).await {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
         if ws.connect(AccountType::FuturesCross).await.is_ok() {
             let req = SubscriptionRequest::new(btc.clone(), StreamType::Liquidation);
-            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "liquidation.BTCUSDT").await;
+            let (ok, n, err, label) = ws_listen(&ws, req, duration, "liquidation.BTCUSDT").await;
             if ok { tally.subscribed += 1; }
             tally.events += n;
             tally.parse_errors += err;
@@ -1040,13 +1040,13 @@ async fn test_bybit_ws() -> WsTally {
     // Channel 3: insurance.USDT
     {
         tally.channels += 1;
-        let mut ws = match BybitWebSocket::new(None, false, AccountType::FuturesCross).await {
+        let ws = match BybitWebSocket::new(None, false, AccountType::FuturesCross).await {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
         if ws.connect(AccountType::FuturesCross).await.is_ok() {
             let req = SubscriptionRequest::new(Symbol::new("USDT", ""), StreamType::InsuranceFund);
-            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "insurance.USDT").await;
+            let (ok, n, err, label) = ws_listen(&ws, req, duration, "insurance.USDT").await;
             if ok { tally.subscribed += 1; }
             tally.events += n;
             tally.parse_errors += err;
@@ -1059,14 +1059,14 @@ async fn test_bybit_ws() -> WsTally {
     // adlAlert uses settlement coin not symbol — use USDT coin
     {
         tally.channels += 1;
-        let mut ws = match BybitWebSocket::new(None, false, AccountType::FuturesCross).await {
+        let ws = match BybitWebSocket::new(None, false, AccountType::FuturesCross).await {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
         if ws.connect(AccountType::FuturesCross).await.is_ok() {
             // RiskLimit maps to adlAlert.<coin> — use USDT settlement coin
             let req = SubscriptionRequest::new(Symbol::new("USDT", ""), StreamType::RiskLimit);
-            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "adlAlert.USDT").await;
+            let (ok, n, err, label) = ws_listen(&ws, req, duration, "adlAlert.USDT").await;
             if ok { tally.subscribed += 1; }
             tally.events += n;
             tally.parse_errors += err;
@@ -1095,14 +1095,14 @@ async fn test_okx_ws() -> WsTally {
     // Channel 1: tickers BTC-USDT-SWAP
     {
         tally.channels += 1;
-        let mut ws = match OkxWebSocket::new(None, false).await {
+        let ws = match OkxWebSocket::new(None, false).await {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
         let mut req = SubscriptionRequest::new(btc_swap.clone(), StreamType::Ticker);
         req.account_type = AccountType::FuturesCross;
         if ws.connect(AccountType::FuturesCross).await.is_ok() {
-            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "tickers BTC-USDT-SWAP").await;
+            let (ok, n, err, label) = ws_listen(&ws, req, duration, "tickers BTC-USDT-SWAP").await;
             if ok { tally.subscribed += 1; }
             tally.events += n;
             tally.parse_errors += err;
@@ -1114,14 +1114,14 @@ async fn test_okx_ws() -> WsTally {
     // Channel 2: liquidation-orders instType=SWAP
     {
         tally.channels += 1;
-        let mut ws = match OkxWebSocket::new(None, false).await {
+        let ws = match OkxWebSocket::new(None, false).await {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
         let mut req = SubscriptionRequest::new(btc_swap.clone(), StreamType::Liquidation);
         req.account_type = AccountType::FuturesCross;
         if ws.connect(AccountType::FuturesCross).await.is_ok() {
-            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "liquidation-orders BTC-USDT-SWAP").await;
+            let (ok, n, err, label) = ws_listen(&ws, req, duration, "liquidation-orders BTC-USDT-SWAP").await;
             if ok { tally.subscribed += 1; }
             tally.events += n;
             tally.parse_errors += err;
@@ -1133,14 +1133,14 @@ async fn test_okx_ws() -> WsTally {
     // Channel 3: index-tickers BTC-USDT
     {
         tally.channels += 1;
-        let mut ws = match OkxWebSocket::new(None, false).await {
+        let ws = match OkxWebSocket::new(None, false).await {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
         let mut req = SubscriptionRequest::new(btc_swap.clone(), StreamType::IndexPrice);
         req.account_type = AccountType::Spot;
         if ws.connect(AccountType::Spot).await.is_ok() {
-            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "index-tickers BTC-USDT").await;
+            let (ok, n, err, label) = ws_listen(&ws, req, duration, "index-tickers BTC-USDT").await;
             if ok { tally.subscribed += 1; }
             tally.events += n;
             tally.parse_errors += err;
@@ -1152,14 +1152,14 @@ async fn test_okx_ws() -> WsTally {
     // Channel 4: mark-price-candle1m BTC-USDT-SWAP (business WS endpoint)
     {
         tally.channels += 1;
-        let mut ws = match OkxWebSocket::new_business(None, false).await {
+        let ws = match OkxWebSocket::new_business(None, false).await {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
         let mut req = SubscriptionRequest::new(btc_swap.clone(), StreamType::MarkPriceKline { interval: "1m".to_string() });
         req.account_type = AccountType::FuturesCross;
         if ws.connect(AccountType::FuturesCross).await.is_ok() {
-            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "mark-price-candle1m BTC-USDT-SWAP").await;
+            let (ok, n, err, label) = ws_listen(&ws, req, duration, "mark-price-candle1m BTC-USDT-SWAP").await;
             if ok { tally.subscribed += 1; }
             tally.events += n;
             tally.parse_errors += err;
@@ -1171,14 +1171,14 @@ async fn test_okx_ws() -> WsTally {
     // NEW Channel 5: block-trades instType=SWAP
     {
         tally.channels += 1;
-        let mut ws = match OkxWebSocket::new(None, false).await {
+        let ws = match OkxWebSocket::new(None, false).await {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
         let mut req = SubscriptionRequest::new(btc_swap.clone(), StreamType::BlockTrade);
         req.account_type = AccountType::FuturesCross;
         if ws.connect(AccountType::FuturesCross).await.is_ok() {
-            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "block-trades BTC-USDT-SWAP").await;
+            let (ok, n, err, label) = ws_listen(&ws, req, duration, "block-trades BTC-USDT-SWAP").await;
             if ok { tally.subscribed += 1; }
             tally.events += n;
             tally.parse_errors += err;
@@ -1190,7 +1190,7 @@ async fn test_okx_ws() -> WsTally {
     // NEW Channel 6: estimated-price instType=OPTION uly=BTC-USD (SettlementEvent)
     {
         tally.channels += 1;
-        let mut ws = match OkxWebSocket::new(None, false).await {
+        let ws = match OkxWebSocket::new(None, false).await {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
@@ -1198,7 +1198,7 @@ async fn test_okx_ws() -> WsTally {
         let mut req = SubscriptionRequest::new(Symbol::new("BTC", "USD"), StreamType::SettlementEvent);
         req.account_type = AccountType::FuturesCross;
         if ws.connect(AccountType::FuturesCross).await.is_ok() {
-            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "estimated-price BTC-USD (OPTIONS)").await;
+            let (ok, n, err, label) = ws_listen(&ws, req, duration, "estimated-price BTC-USD (OPTIONS)").await;
             if ok { tally.subscribed += 1; }
             tally.events += n;
             tally.parse_errors += err;
@@ -1227,7 +1227,7 @@ async fn test_hyperliquid_ws() -> WsTally {
     // Channel 1: activeAssetCtx coin=BTC
     {
         tally.channels += 1;
-        let mut ws = HyperliquidWebSocket::new(false);
+        let ws = HyperliquidWebSocket::new(false);
         if ws.connect(AccountType::FuturesCross).await.is_ok() {
             let req = SubscriptionRequest::new(btc.clone(), StreamType::Ticker);
             match ws.subscribe(req).await {
@@ -1264,7 +1264,7 @@ async fn test_hyperliquid_ws() -> WsTally {
     // NEW Channel 2: allMids — should emit Vec<Ticker>
     {
         tally.channels += 1;
-        let mut ws = HyperliquidWebSocket::new(false);
+        let ws = HyperliquidWebSocket::new(false);
         if ws.connect(AccountType::FuturesCross).await.is_ok() {
             match ws.subscribe_all_mids().await {
                 Ok(_) => {
@@ -1317,13 +1317,13 @@ async fn test_deribit_ws() -> WsTally {
     // Channel 1: ticker.BTC-PERPETUAL.raw
     {
         tally.channels += 1;
-        let mut ws = match DeribitWebSocket::new(None, false, AccountType::FuturesCross).await {
+        let ws = match DeribitWebSocket::new(None, false, AccountType::FuturesCross).await {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
         if ws.connect(AccountType::FuturesCross).await.is_ok() {
             let req = SubscriptionRequest::new(btc_perp.clone(), StreamType::Ticker);
-            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "ticker.BTC-PERPETUAL.raw").await;
+            let (ok, n, err, label) = ws_listen(&ws, req, duration, "ticker.BTC-PERPETUAL.raw").await;
             if ok { tally.subscribed += 1; }
             tally.events += n;
             tally.parse_errors += err;
@@ -1337,7 +1337,7 @@ async fn test_deribit_ws() -> WsTally {
     // NEW Channel 2: deribit_volatility_index.btc_usd
     {
         tally.channels += 1;
-        let mut ws = match DeribitWebSocket::new(None, false, AccountType::FuturesCross).await {
+        let ws = match DeribitWebSocket::new(None, false, AccountType::FuturesCross).await {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
@@ -1372,7 +1372,7 @@ async fn test_deribit_ws() -> WsTally {
     // NEW Channel 3: markprice.options.btc_usd
     {
         tally.channels += 1;
-        let mut ws = match DeribitWebSocket::new(None, false, AccountType::FuturesCross).await {
+        let ws = match DeribitWebSocket::new(None, false, AccountType::FuturesCross).await {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
@@ -1407,7 +1407,7 @@ async fn test_deribit_ws() -> WsTally {
     // NEW Channel 4: block_trade_confirmations
     {
         tally.channels += 1;
-        let mut ws = match DeribitWebSocket::new(None, false, AccountType::FuturesCross).await {
+        let ws = match DeribitWebSocket::new(None, false, AccountType::FuturesCross).await {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
@@ -1462,7 +1462,7 @@ async fn test_htx_ws() -> WsTally {
     {
         tally.channels += 1;
         let ws_result = HtxWebSocket::new(None, false, AccountType::FuturesCross);
-        let mut ws = match ws_result {
+        let ws = match ws_result {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
@@ -1471,7 +1471,7 @@ async fn test_htx_ws() -> WsTally {
                 Symbol::new("BTC", "USDT"),
                 StreamType::Kline { interval: "1min".to_string() },
             );
-            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "market.BTC-USDT.kline.1min").await;
+            let (ok, n, err, label) = ws_listen(&ws, req, duration, "market.BTC-USDT.kline.1min").await;
             if ok { tally.subscribed += 1; }
             tally.events += n;
             tally.parse_errors += err;
@@ -1502,7 +1502,7 @@ async fn test_kucoin_ws() -> WsTally {
     {
         tally.channels += 1;
         let ws_result = KuCoinWebSocket::new(None, false, AccountType::FuturesCross).await;
-        let mut ws = match ws_result {
+        let ws = match ws_result {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
@@ -1513,7 +1513,7 @@ async fn test_kucoin_ws() -> WsTally {
                 StreamType::IndexPrice,
             );
             req.account_type = AccountType::FuturesCross;
-            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "/contractMarket/indexPrice:XBTUSDTM").await;
+            let (ok, n, err, label) = ws_listen(&ws, req, duration, "/contractMarket/indexPrice:XBTUSDTM").await;
             if ok { tally.subscribed += 1; }
             tally.events += n;
             tally.parse_errors += err;
@@ -1547,7 +1547,7 @@ async fn test_gateio_ws() -> WsTally {
     {
         tally.channels += 1;
         let ws_result = GateioWebSocket::new(None, false, AccountType::FuturesCross).await;
-        let mut ws = match ws_result {
+        let ws = match ws_result {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
@@ -1556,7 +1556,7 @@ async fn test_gateio_ws() -> WsTally {
                 Symbol::new("BTC", "USDT"),
                 StreamType::Kline { interval: "1m".to_string() },
             );
-            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "futures.candlesticks BTC_USDT 1m").await;
+            let (ok, n, err, label) = ws_listen(&ws, req, duration, "futures.candlesticks BTC_USDT 1m").await;
             if ok { tally.subscribed += 1; }
             tally.events += n;
             tally.parse_errors += err;
@@ -1587,11 +1587,11 @@ async fn test_crypto_com_ws() -> WsTally {
     // NEW Channel 1: estimatedfunding.BTCUSD-PERP — PredictedFunding
     {
         tally.channels += 1;
-        let mut ws = CryptoComWebSocket::new(None, false);
+        let ws = CryptoComWebSocket::new(None, false);
         // CryptoComWebSocket::connect() takes no AccountType arg
         if ws.connect().await.is_ok() {
             let req = SubscriptionRequest::new(btcusd_perp.clone(), StreamType::PredictedFunding);
-            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "estimatedfunding.BTCUSD-PERP").await;
+            let (ok, n, err, label) = ws_listen(&ws, req, duration, "estimatedfunding.BTCUSD-PERP").await;
             if ok { tally.subscribed += 1; }
             tally.events += n;
             tally.parse_errors += err;
@@ -1605,10 +1605,10 @@ async fn test_crypto_com_ws() -> WsTally {
     // NEW Channel 2: settlement.BTCUSD-PERP — SettlementEvent (likely quiet)
     {
         tally.channels += 1;
-        let mut ws = CryptoComWebSocket::new(None, false);
+        let ws = CryptoComWebSocket::new(None, false);
         if ws.connect().await.is_ok() {
             let req = SubscriptionRequest::new(btcusd_perp.clone(), StreamType::SettlementEvent);
-            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "settlement.BTCUSD-PERP").await;
+            let (ok, n, err, label) = ws_listen(&ws, req, duration, "settlement.BTCUSD-PERP").await;
             if ok { tally.subscribed += 1; }
             tally.events += n;
             tally.parse_errors += err;
@@ -1637,7 +1637,7 @@ async fn test_bitfinex_ws() -> WsTally {
     {
         tally.channels += 1;
         let ws_result = BitfinexWebSocket::new(None, false, AccountType::Spot).await;
-        let mut ws = match ws_result {
+        let ws = match ws_result {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
@@ -1675,7 +1675,7 @@ async fn test_bitfinex_ws() -> WsTally {
     {
         tally.channels += 1;
         let ws_result = BitfinexWebSocket::new(None, false, AccountType::Spot).await;
-        let mut ws = match ws_result {
+        let ws = match ws_result {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
@@ -1712,7 +1712,7 @@ async fn test_bitfinex_ws() -> WsTally {
     {
         tally.channels += 1;
         let ws_result = BitfinexWebSocket::new(None, false, AccountType::FuturesCross).await;
-        let mut ws = match ws_result {
+        let ws = match ws_result {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
@@ -1721,7 +1721,7 @@ async fn test_bitfinex_ws() -> WsTally {
             // format_symbol("BTC", "USDT", FuturesCross) = "tBTCF0:USTF0" (correct).
             let mut req = SubscriptionRequest::new(Symbol::new("BTC", "USDT"), StreamType::FundingRate);
             req.account_type = AccountType::FuturesCross;
-            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "status deriv:tBTCF0:USTF0").await;
+            let (ok, n, err, label) = ws_listen(&ws, req, duration, "status deriv:tBTCF0:USTF0").await;
             if ok { tally.subscribed += 1; }
             tally.events += n;
             tally.parse_errors += err;
@@ -1806,13 +1806,13 @@ async fn test_bitstamp_ws() -> WsTally {
     {
         tally.channels += 1;
         let ws_result = BitstampWebSocket::new().await;
-        let mut ws = match ws_result {
+        let ws = match ws_result {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
         if ws.connect(AccountType::Spot).await.is_ok() {
             let req = SubscriptionRequest::new(Symbol::new("BTC", "USD"), StreamType::OrderbookL3);
-            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "detail_order_book_btcusd").await;
+            let (ok, n, err, label) = ws_listen(&ws, req, duration, "detail_order_book_btcusd").await;
             if ok { tally.subscribed += 1; }
             tally.events += n;
             tally.parse_errors += err;
@@ -1850,13 +1850,13 @@ async fn test_coinbase_ws() -> WsTally {
     // Subscribe to Ticker to confirm WS connectivity is working.
     {
         let ws_result = CoinbaseWebSocket::new(None).await;
-        let mut ws = match ws_result {
+        let ws = match ws_result {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
         if ws.connect(AccountType::Spot).await.is_ok() {
             let req = SubscriptionRequest::new(Symbol::new("BTC", "USD"), StreamType::Ticker);
-            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "ticker BTC-USD (connectivity check)").await;
+            let (ok, n, err, label) = ws_listen(&ws, req, duration, "ticker BTC-USD (connectivity check)").await;
             if ok { tally.subscribed += 1; }
             tally.events += n;
             tally.parse_errors += err;
@@ -1887,14 +1887,14 @@ async fn test_kraken_ws() -> WsTally {
     {
         tally.channels += 1;
         let ws_result = KrakenWebSocket::new(None, AccountType::Spot).await;
-        let mut ws = match ws_result {
+        let ws = match ws_result {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
         if ws.connect(AccountType::Spot).await.is_ok() {
             // MarketWarning maps to the "instrument" channel on Kraken
             let req = SubscriptionRequest::new(Symbol::new("BTC", "USD"), StreamType::MarketWarning);
-            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "instrument (MarketWarning)").await;
+            let (ok, n, err, label) = ws_listen(&ws, req, duration, "instrument (MarketWarning)").await;
             if ok { tally.subscribed += 1; }
             tally.events += n;
             tally.parse_errors += err;

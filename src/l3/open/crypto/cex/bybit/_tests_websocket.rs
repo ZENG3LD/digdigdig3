@@ -47,7 +47,7 @@ async fn test_websocket_connect_public_spot() {
         return;
     }
 
-    let mut ws = result.unwrap();
+    let ws = result.unwrap();
 
     let connect_result = timeout(Duration::from_secs(10), ws.connect(AccountType::Spot)).await;
 
@@ -79,7 +79,7 @@ async fn test_subscribe_orderbook_spot() {
     // Bybit V5 valid orderbook depths: 1, 50, 200, 500.
     // Depth 20 is NOT valid and causes "Invalid topic" protocol errors.
     // This test explicitly uses depth=50 to verify the correct subscription path.
-    let mut ws = match BybitWebSocket::new(None, false, AccountType::Spot).await {
+    let ws = match BybitWebSocket::new(None, false, AccountType::Spot).await {
         Ok(w) => w,
         Err(e) => {
             println!("Failed to create WebSocket: {:?}", e);
@@ -160,7 +160,7 @@ async fn test_subscribe_orderbook_spot() {
 #[tokio::test]
 #[ignore]
 async fn test_subscribe_trades_spot() {
-    let mut ws = match BybitWebSocket::new(None, false, AccountType::Spot).await {
+    let ws = match BybitWebSocket::new(None, false, AccountType::Spot).await {
         Ok(w) => w,
         Err(e) => {
             println!("Failed to create WebSocket: {:?}", e);
@@ -207,7 +207,7 @@ async fn test_subscribe_trades_spot() {
 #[tokio::test]
 #[ignore]
 async fn test_subscribe_ticker_spot() {
-    let mut ws = match BybitWebSocket::new(None, false, AccountType::Spot).await {
+    let ws = match BybitWebSocket::new(None, false, AccountType::Spot).await {
         Ok(w) => w,
         Err(e) => {
             println!("Failed to create WebSocket: {:?}", e);
@@ -269,7 +269,7 @@ async fn test_subscribe_ticker_spot() {
 #[tokio::test]
 #[ignore]
 async fn test_multiple_subscriptions() {
-    let mut ws = match BybitWebSocket::new(None, false, AccountType::Spot).await {
+    let ws = match BybitWebSocket::new(None, false, AccountType::Spot).await {
         Ok(w) => w,
         Err(e) => {
             println!("Failed to create WebSocket: {:?}", e);

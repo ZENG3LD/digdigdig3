@@ -486,7 +486,7 @@ impl Default for YahooFinanceWebSocket {
 
 #[async_trait]
 impl WebSocketConnector for YahooFinanceWebSocket {
-    async fn connect(&mut self, _account_type: crate::core::types::AccountType) -> WebSocketResult<()> {
+    async fn connect(&self, _account_type: crate::core::types::AccountType) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Connecting;
 
         tracing::info!("Yahoo WS: connecting to {}", WS_URL);
@@ -522,7 +522,7 @@ impl WebSocketConnector for YahooFinanceWebSocket {
         Ok(())
     }
 
-    async fn disconnect(&mut self) -> WebSocketResult<()> {
+    async fn disconnect(&self) -> WebSocketResult<()> {
         tracing::info!("Yahoo WS: disconnecting");
 
         // Drop the command sender -- this signals the handler to shut down
@@ -546,7 +546,7 @@ impl WebSocketConnector for YahooFinanceWebSocket {
         }
     }
 
-    async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         // Yahoo Finance WebSocket only supports ticker data
         match &request.stream_type {
             StreamType::Ticker => {}
@@ -586,7 +586,7 @@ impl WebSocketConnector for YahooFinanceWebSocket {
         Ok(())
     }
 
-    async fn unsubscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let yahoo_symbol = Self::symbol_to_yahoo(&request.symbol);
 
         // Build unsubscribe JSON

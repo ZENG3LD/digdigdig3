@@ -60,13 +60,13 @@ async fn test_orderbook_capabilities() {
 #[tokio::test]
 #[ignore]
 async fn test_subscribe_orderbook() {
-    let mut ws = CryptoComWebSocket::new(None, false);
+    let ws = CryptoComWebSocket::new(None, false);
 
     // Allow extra time: Crypto.com requires 1s delay after connect
     // Use trait method explicitly to avoid ambiguity with inherent connect()
     let connect_result = timeout(
         Duration::from_secs(15),
-        WebSocketConnector::connect(&mut ws, AccountType::Spot),
+        WebSocketConnector::connect(&ws, AccountType::Spot),
     ).await;
 
     match connect_result {
@@ -75,11 +75,11 @@ async fn test_subscribe_orderbook() {
 
             let mut sub = SubscriptionRequest::new(btc_usdt(), StreamType::Orderbook);
             sub.depth = Some(10);
-            let result = WebSocketConnector::subscribe(&mut ws, sub).await;
+            let result = WebSocketConnector::subscribe(&ws, sub).await;
 
             if result.is_err() {
                 println!("Subscribe failed: {:?}", result.err());
-                let _ = WebSocketConnector::disconnect(&mut ws).await;
+                let _ = WebSocketConnector::disconnect(&ws).await;
                 return;
             }
 
@@ -125,7 +125,7 @@ async fn test_subscribe_orderbook() {
                 println!("Received orderbook delta (no snapshot assertions): {:?}", ob_event);
             }
 
-            let _ = WebSocketConnector::disconnect(&mut ws).await;
+            let _ = WebSocketConnector::disconnect(&ws).await;
             println!("Crypto.com orderbook subscription works");
         }
         Ok(Err(e)) => println!("Connection failed: {:?}", e),
@@ -136,21 +136,21 @@ async fn test_subscribe_orderbook() {
 #[tokio::test]
 #[ignore]
 async fn test_subscribe_trades() {
-    let mut ws = CryptoComWebSocket::new(None, false);
+    let ws = CryptoComWebSocket::new(None, false);
 
     let connect_result = timeout(
         Duration::from_secs(15),
-        WebSocketConnector::connect(&mut ws, AccountType::Spot),
+        WebSocketConnector::connect(&ws, AccountType::Spot),
     ).await;
 
     match connect_result {
         Ok(Ok(())) => {
             let sub = SubscriptionRequest::new(btc_usdt(), StreamType::Trade);
-            let result = WebSocketConnector::subscribe(&mut ws, sub).await;
+            let result = WebSocketConnector::subscribe(&ws, sub).await;
 
             if result.is_err() {
                 println!("Subscribe failed: {:?}", result.err());
-                let _ = WebSocketConnector::disconnect(&mut ws).await;
+                let _ = WebSocketConnector::disconnect(&ws).await;
                 return;
             }
 
@@ -165,7 +165,7 @@ async fn test_subscribe_trades() {
                 println!("No trade event received within timeout (market may be slow)");
             }
 
-            let _ = WebSocketConnector::disconnect(&mut ws).await;
+            let _ = WebSocketConnector::disconnect(&ws).await;
             println!("Crypto.com trades subscription works");
         }
         Ok(Err(e)) => println!("Connection failed: {:?}", e),
@@ -182,11 +182,11 @@ async fn test_orderbook_depth_levels() {
     for depth in &depths {
         println!("Testing Crypto.com depth={}...", depth);
 
-        let mut ws = CryptoComWebSocket::new(None, false);
+        let ws = CryptoComWebSocket::new(None, false);
 
         let connect_result = timeout(
             Duration::from_secs(15),
-            WebSocketConnector::connect(&mut ws, AccountType::Spot),
+            WebSocketConnector::connect(&ws, AccountType::Spot),
         ).await;
 
         match connect_result {
@@ -194,9 +194,9 @@ async fn test_orderbook_depth_levels() {
                 let mut sub = SubscriptionRequest::new(btc_usdt(), StreamType::Orderbook);
                 sub.depth = Some(*depth);
 
-                if WebSocketConnector::subscribe(&mut ws, sub).await.is_err() {
+                if WebSocketConnector::subscribe(&ws, sub).await.is_err() {
                     println!("Subscribe failed for depth={}", depth);
-                    let _ = WebSocketConnector::disconnect(&mut ws).await;
+                    let _ = WebSocketConnector::disconnect(&ws).await;
                     continue;
                 }
 
@@ -217,7 +217,7 @@ async fn test_orderbook_depth_levels() {
                     Err(_) => println!("Depth={}: timeout", depth),
                 }
 
-                let _ = WebSocketConnector::disconnect(&mut ws).await;
+                let _ = WebSocketConnector::disconnect(&ws).await;
             }
             Ok(Err(e)) => println!("Connection failed for depth={}: {:?}", depth, e),
             Err(_) => println!("Connection timeout for depth={}", depth),

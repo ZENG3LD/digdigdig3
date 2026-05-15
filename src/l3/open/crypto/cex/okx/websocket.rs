@@ -93,11 +93,11 @@ pub struct OkxWebSocket {
     last_ping: Arc<Mutex<Instant>>,
     /// WebSocket ping round-trip time in milliseconds (0 = not measured yet).
     ws_ping_rtt_ms: Arc<Mutex<u64>>,
-    /// Connected to private channel
-    is_private: bool,
+    /// Connected to private channel (set during connect)
+    is_private: Arc<Mutex<bool>>,
     /// Connect to the business WebSocket endpoint (required for mark-price-candle,
     /// index-candle, and similar channels that are not on the public endpoint).
-    is_business: bool,
+    is_business: Arc<Mutex<bool>>,
 }
 
 impl OkxWebSocket {
@@ -127,8 +127,8 @@ impl OkxWebSocket {
             ws_reader: Arc::new(Mutex::new(None)),
             last_ping: Arc::new(Mutex::new(Instant::now())),
             ws_ping_rtt_ms: Arc::new(Mutex::new(0)),
-            is_private: false,
-            is_business: false,
+            is_private: Arc::new(Mutex::new(false)),
+            is_business: Arc::new(Mutex::new(false)),
         })
     }
 
@@ -140,8 +140,8 @@ impl OkxWebSocket {
         credentials: Option<Credentials>,
         testnet: bool,
     ) -> ExchangeResult<Self> {
-        let mut ws = Self::new(credentials, testnet).await?;
-        ws.is_business = true;
+        let ws = Self::new(credentials, testnet).await?;
+        *ws.is_business.lock().await = true;
         Ok(ws)
     }
 
@@ -668,7 +668,7 @@ impl OkxWebSocket {
 
     /// Send a subscribe message for a dynamically-named channel (e.g. mark-price-candle1m).
     async fn subscribe_dynamic_channel(
-        &mut self,
+        &self,
         channel: String,
         request: SubscriptionRequest,
     ) -> WebSocketResult<()> {
@@ -694,7 +694,7 @@ impl OkxWebSocket {
 
     /// Send an unsubscribe message for a dynamically-named channel.
     async fn unsubscribe_dynamic_channel(
-        &mut self,
+        &self,
         channel: String,
         request: SubscriptionRequest,
     ) -> WebSocketResult<()> {
@@ -725,16 +725,17 @@ impl OkxWebSocket {
 
 #[async_trait]
 impl WebSocketConnector for OkxWebSocket {
-    async fn connect(&mut self, _account_type: AccountType) -> WebSocketResult<()> {
+    async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
         // Determine URL: private > business > public.
+        let is_business = *self.is_business.lock().await;
         let url = if self.auth.is_some() {
-            self.is_private = true;
+            *self.is_private.lock().await = true;
             self.urls.ws_url(true)
-        } else if self.is_business {
-            self.is_private = false;
+        } else if is_business {
+            *self.is_private.lock().await = false;
             self.urls.ws_business
         } else {
-            self.is_private = false;
+            *self.is_private.lock().await = false;
             self.urls.ws_url(false)
         };
 
@@ -751,7 +752,7 @@ impl WebSocketConnector for OkxWebSocket {
         let (mut sink, reader) = ws_stream.split();
 
         // Send login before storing halves (only the sink is needed here).
-        if self.is_private {
+        if *self.is_private.lock().await {
             self.send_login(&mut sink).await?;
         }
 
@@ -778,7 +779,7 @@ impl WebSocketConnector for OkxWebSocket {
         Ok(())
     }
 
-    async fn disconnect(&mut self) -> WebSocketResult<()> {
+    async fn disconnect(&self) -> WebSocketResult<()> {
         // Send a close frame via the sink, then drop both halves.
         {
             let mut sink_guard = self.ws_sink.lock().await;
@@ -793,7 +794,7 @@ impl WebSocketConnector for OkxWebSocket {
         Ok(())
     }
 
-    async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let channel = match &request.stream_type {
             crate::core::StreamType::Ticker => "tickers",
             crate::core::StreamType::Orderbook => {
@@ -957,7 +958,7 @@ impl WebSocketConnector for OkxWebSocket {
         }
     }
 
-    async fn unsubscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let channel = match &request.stream_type {
             crate::core::StreamType::Ticker => "tickers",
             crate::core::StreamType::Orderbook => "books",

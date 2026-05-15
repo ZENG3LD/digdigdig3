@@ -56,7 +56,7 @@ async fn test_orderbook_capabilities() {
 #[tokio::test]
 #[ignore]
 async fn test_subscribe_orderbook() {
-    let mut ws = match BingxWebSocket::new(None, false, AccountType::Spot).await {
+    let ws = match BingxWebSocket::new(None, false, AccountType::Spot).await {
         Ok(w) => w,
         Err(e) => {
             println!("Failed to create WebSocket: {:?}", e);
@@ -132,7 +132,7 @@ async fn test_subscribe_orderbook() {
 #[tokio::test]
 #[ignore]
 async fn test_subscribe_trades() {
-    let mut ws = match BingxWebSocket::new(None, false, AccountType::Spot).await {
+    let ws = match BingxWebSocket::new(None, false, AccountType::Spot).await {
         Ok(w) => w,
         Err(e) => {
             println!("Failed to create WebSocket: {:?}", e);

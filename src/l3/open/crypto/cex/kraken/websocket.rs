@@ -130,8 +130,8 @@ type WsReader = SplitStream<WsStream>;
 pub struct KrakenWebSocket {
     /// Authentication token (None for public channels only)
     token: Option<String>,
-    /// Current account type
-    account_type: AccountType,
+    /// Current account type (set via connect)
+    account_type: Arc<Mutex<AccountType>>,
     /// Connection status
     status: Arc<Mutex<ConnectionStatus>>,
     /// Active subscriptions
@@ -161,7 +161,7 @@ impl KrakenWebSocket {
     ) -> ExchangeResult<Self> {
         Ok(Self {
             token,
-            account_type,
+            account_type: Arc::new(Mutex::new(account_type)),
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
             event_tx: Arc::new(StdMutex::new(None)),
@@ -985,10 +985,10 @@ impl KrakenWebSocket {
 
 #[async_trait]
 impl WebSocketConnector for KrakenWebSocket {
-    async fn connect(&mut self, account_type: AccountType) -> WebSocketResult<()> {
+    async fn connect(&self, account_type: AccountType) -> WebSocketResult<()> {
         eprintln!("[KRAKEN WS] Connecting...");
         *self.status.lock().await = ConnectionStatus::Connecting;
-        self.account_type = account_type;
+        *self.account_type.lock().await = account_type;
 
         // Determine if we need private connection
         let needs_private = self.token.is_some();
@@ -1048,7 +1048,7 @@ impl WebSocketConnector for KrakenWebSocket {
         Ok(())
     }
 
-    async fn disconnect(&mut self) -> WebSocketResult<()> {
+    async fn disconnect(&self) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Disconnected;
         *self.ws_writer.lock().await = None;
         let _ = self.event_tx.lock().unwrap().take();
@@ -1065,7 +1065,7 @@ impl WebSocketConnector for KrakenWebSocket {
         }
     }
 
-    async fn subscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         // Check connection status first
         let status = *self.status.lock().await;
         if status != ConnectionStatus::Connected {
@@ -1113,7 +1113,7 @@ impl WebSocketConnector for KrakenWebSocket {
         Ok(())
     }
 
-    async fn unsubscribe(&mut self, request: SubscriptionRequest) -> WebSocketResult<()> {
+    async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         // Wait for rate limit (weight 1 for unsubscriptions)
         Self::ws_rate_limit_wait(1).await;
 

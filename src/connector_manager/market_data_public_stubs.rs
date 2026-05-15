@@ -6,10 +6,7 @@
 
 use crate::core::traits::MarketDataPublic;
 
-// CEX
-use crate::l3::open::crypto::cex::binance::BinanceConnector;
-use crate::l3::open::crypto::cex::bybit::BybitConnector;
-use crate::l3::open::crypto::cex::okx::OkxConnector;
+// CEX — Binance, Bybit, OKX, Lighter have real impls in their connector.rs files
 use crate::l3::open::crypto::cex::kucoin::KuCoinConnector;
 use crate::l3::open::crypto::cex::kraken::KrakenConnector;
 use crate::l3::open::crypto::cex::coinbase::CoinbaseConnector;
@@ -26,8 +23,7 @@ use crate::l3::open::crypto::cex::upbit::UpbitConnector;
 use crate::l3::open::crypto::cex::deribit::DeribitConnector;
 use crate::l3::open::crypto::cex::hyperliquid::HyperliquidConnector;
 
-// DEX
-use crate::l3::open::crypto::dex::lighter::LighterConnector;
+// DEX — Lighter has real impl in its connector.rs
 use crate::l3::open::crypto::dex::dydx::DydxConnector;
 
 // Stocks US
@@ -69,9 +65,6 @@ use crate::l2::paid::cryptocompare::CryptoCompareConnector;
 // CEX stubs
 // ═══════════════════════════════════════════════════════════════════════════════
 
-impl MarketDataPublic for BinanceConnector {}
-impl MarketDataPublic for BybitConnector {}
-impl MarketDataPublic for OkxConnector {}
 impl MarketDataPublic for KuCoinConnector {}
 impl MarketDataPublic for KrakenConnector {}
 impl MarketDataPublic for CoinbaseConnector {}
@@ -92,7 +85,6 @@ impl MarketDataPublic for HyperliquidConnector {}
 // DEX stubs
 // ═══════════════════════════════════════════════════════════════════════════════
 
-impl MarketDataPublic for LighterConnector {}
 impl MarketDataPublic for DydxConnector {}
 
 // ═══════════════════════════════════════════════════════════════════════════════

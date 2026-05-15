@@ -44,6 +44,7 @@ use crate::core::traits::{
     CancelAll, AmendOrder, BatchOrders,
     AccountTransfers, CustodialFunds, SubAccounts,
     FundingHistory, AccountLedger,
+    MarketDataPublic,
 };
 use crate::core::types::{
     ConnectorStats,
@@ -2244,5 +2245,62 @@ impl AccountLedger for OkxConnector {
         }
 
         Ok(entries)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MarketDataPublic trait impl
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl MarketDataPublic for OkxConnector {
+    async fn get_liquidation_history(
+        &self,
+        symbol: Option<&Symbol>,
+        _start_time: Option<i64>,
+        _end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::Liquidation>> {
+        let inst_type = get_inst_type(account_type);
+        let inst_id = symbol.map(|s| format_symbol(&s.base, &s.quote, account_type));
+        // OKX liquidation-orders endpoint uses cursor pagination (before/after), not time range.
+        self.get_liquidation_orders(inst_type, None, inst_id.as_deref(), Some("filled"), None, None, limit).await
+    }
+
+    async fn get_long_short_ratio_history(
+        &self,
+        symbol: &Symbol,
+        period: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<LongShortRatio>> {
+        // OKX long/short ratio uses base currency (ccy), not inst_id.
+        let begin_str = start_time.map(|t| t.to_string());
+        let end_str = end_time.map(|t| t.to_string());
+        self.get_long_short_ratio(
+            &symbol.base.to_uppercase(),
+            Some(period),
+            begin_str.as_deref(),
+            end_str.as_deref(),
+            limit,
+        ).await
+    }
+
+    async fn get_funding_rate_history(
+        &self,
+        symbol: &Symbol,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<FundingRate>> {
+        let inst_id = format_symbol(&symbol.base, &symbol.quote, account_type);
+        // OKX uses before/after cursors by fundingTime:
+        //   after  = only records with fundingTime < after  (upper bound → end_time)
+        //   before = only records with fundingTime > before (lower bound → start_time)
+        self.get_funding_rate_history(&inst_id, end_time, start_time, limit).await
     }
 }

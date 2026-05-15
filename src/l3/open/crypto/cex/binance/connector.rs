@@ -29,7 +29,9 @@ use crate::core::{
     AmendRequest, CancelAllResponse, OrderResult,
     MarginType,
     UserTrade, UserTradeFilter,
+    PublicTrade,
 };
+use crate::core::types::{MarkPrice, TradeSide};
 use crate::core::types::{
     ConnectorStats, SymbolInfo,
     TransferRequest, TransferHistoryFilter, TransferResponse,
@@ -44,6 +46,7 @@ use crate::core::traits::{
     CancelAll, AmendOrder, BatchOrders,
     AccountTransfers, CustodialFunds, SubAccounts,
     FundingHistory, AccountLedger,
+    MarketDataPublic,
 };
 use crate::core::types::{
     FundingPayment, FundingFilter,
@@ -2951,5 +2954,118 @@ impl AccountLedger for BinanceConnector {
         }
 
         Ok(entries)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MarketDataPublic trait impl
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl MarketDataPublic for BinanceConnector {
+    async fn get_recent_trades(
+        &self,
+        symbol: &Symbol,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<PublicTrade>> {
+        let sym_str = format_symbol(&symbol.base, &symbol.quote, account_type);
+        let raw = self.get_recent_trades(&sym_str, limit, account_type).await?;
+
+        let arr = raw.as_array().ok_or_else(|| {
+            ExchangeError::Parse("get_recent_trades: expected array".into())
+        })?;
+
+        let mut result = Vec::with_capacity(arr.len());
+        for item in arr {
+            let parse_f64 = |key: &str| -> f64 {
+                item.get(key)
+                    .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64()))
+                    .unwrap_or(0.0)
+            };
+
+            let is_buyer_maker = item.get("isBuyerMaker")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            result.push(PublicTrade {
+                id: item.get("id")
+                    .and_then(|v| v.as_i64())
+                    .map(|id| id.to_string())
+                    .unwrap_or_default(),
+                symbol: sym_str.clone(),
+                price: parse_f64("price"),
+                quantity: parse_f64("qty"),
+                side: if is_buyer_maker { TradeSide::Sell } else { TradeSide::Buy },
+                timestamp: item.get("time").and_then(|v| v.as_i64()).unwrap_or(0),
+            });
+        }
+        Ok(result)
+    }
+
+    async fn get_liquidation_history(
+        &self,
+        symbol: Option<&Symbol>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Liquidation>> {
+        let sym_str = symbol.map(|s| format_symbol(&s.base, &s.quote, account_type));
+        self.get_force_orders(sym_str.as_deref(), None, start_time, end_time, limit).await
+    }
+
+    async fn get_open_interest_history(
+        &self,
+        symbol: &Symbol,
+        period: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<OpenInterest>> {
+        let sym_str = format_symbol(&symbol.base, &symbol.quote, account_type);
+        self.get_open_interest_history(&sym_str, period, limit, start_time, end_time).await
+    }
+
+    async fn get_premium_index(
+        &self,
+        symbol: Option<&Symbol>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<MarkPrice>> {
+        let sym_str = symbol.map(|s| format_symbol(&s.base, &s.quote, account_type));
+        let data = self.get_premium_index(sym_str.as_deref()).await?;
+        Ok(vec![MarkPrice {
+            symbol: data.symbol,
+            mark_price: data.mark_price,
+            index_price: Some(data.index_price),
+            funding_rate: Some(data.last_funding_rate),
+            timestamp: data.timestamp,
+        }])
+    }
+
+    async fn get_long_short_ratio_history(
+        &self,
+        symbol: &Symbol,
+        period: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::LongShortRatio>> {
+        let sym_str = format_symbol(&symbol.base, &symbol.quote, account_type);
+        self.get_top_long_short_account_ratio(&sym_str, period, limit, start_time, end_time).await
+    }
+
+    async fn get_funding_rate_history(
+        &self,
+        symbol: &Symbol,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::FundingRate>> {
+        let sym_str = format_symbol(&symbol.base, &symbol.quote, account_type);
+        self.get_funding_rate_history(&sym_str, start_time, end_time, limit).await
     }
 }

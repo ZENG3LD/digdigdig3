@@ -35,6 +35,7 @@ use crate::core::{
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
+    MarketDataPublic,
 };
 use crate::core::types::{ConnectorStats, SymbolInfo, MarketDataCapabilities, TradingCapabilities, AccountCapabilities};
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
@@ -1436,6 +1437,23 @@ impl LighterConnector {
         let response = self.http.get_with_headers(&url, &HashMap::new(), &headers).await?;
         self.check_response(&response)?;
         Ok(response)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MarketDataPublic trait impl
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl MarketDataPublic for LighterConnector {
+    async fn get_recent_trades(
+        &self,
+        symbol: &Symbol,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<PublicTrade>> {
+        let sym_str = format_symbol(&symbol.base, &symbol.quote, account_type);
+        self.get_recent_trades(&sym_str, account_type, limit).await
     }
 }
 

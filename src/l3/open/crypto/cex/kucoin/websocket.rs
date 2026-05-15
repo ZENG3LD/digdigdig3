@@ -9,6 +9,14 @@
 //! - Subscription management
 //! - Message parsing to StreamEvent
 //!
+//! ## Architecture
+//!
+//! The WebSocket stream is split into independent read and write halves at connect
+//! time. The write half is stored behind a mutex for shared access by ping replies
+//! and subscribe/unsubscribe calls. The read half is owned exclusively by the
+//! message loop task — no mutex contention on reads, eliminating the deadlock that
+//! occurred when the old pattern held `ws_stream.lock()` across `.next().await`.
+//!
 //! ## Usage
 //!
 //! ```ignore
@@ -31,7 +39,7 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use futures_util::{Stream, StreamExt, SinkExt};
+use futures_util::{Stream, StreamExt, SinkExt, stream::{SplitSink, SplitStream}};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, Mutex};
@@ -145,6 +153,10 @@ struct IncomingMessage {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+/// Write half — used by ping, subscribe, and unsubscribe
+type WsSink = SplitSink<WsStream, Message>;
+/// Read half — owned exclusively by the message loop task
+type WsReader = SplitStream<WsStream>;
 
 /// KuCoin WebSocket connector
 pub struct KuCoinWebSocket {
@@ -163,8 +175,9 @@ pub struct KuCoinWebSocket {
     /// Broadcast sender — behind StdMutex so event_stream() can subscribe
     /// without contending with the async message loop.
     event_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
-    /// WebSocket stream
-    ws_stream: Arc<Mutex<Option<WsStream>>>,
+    /// WebSocket write half — shared by ping task, subscribe, and unsubscribe.
+    /// The read half is owned exclusively by the message loop task (no mutex needed).
+    ws_writer: Arc<Mutex<Option<WsSink>>>,
     /// Ping interval (milliseconds)
     ping_interval: Arc<Mutex<Duration>>,
     /// Last ping time
@@ -216,7 +229,7 @@ impl KuCoinWebSocket {
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
             event_tx: Arc::new(StdMutex::new(None)),
-            ws_stream: Arc::new(Mutex::new(None)),
+            ws_writer: Arc::new(Mutex::new(None)),
             ping_interval: Arc::new(Mutex::new(Duration::from_millis(18000))),
             last_ping: Arc::new(Mutex::new(Instant::now())),
             token_info: Arc::new(Mutex::new(None)),
@@ -302,9 +315,12 @@ impl KuCoinWebSocket {
         Ok(ws_stream)
     }
 
-    /// Start message handling task
+    /// Start message handling task.
+    ///
+    /// Takes ownership of the read half so the loop never contends with
+    /// subscribe/ping writes that use the separate `ws_writer` mutex.
     fn start_message_handler(
-        ws_stream: Arc<Mutex<Option<WsStream>>>,
+        mut reader: WsReader,
         event_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
         status: Arc<Mutex<ConnectionStatus>>,
         account_type: AccountType,
@@ -313,19 +329,8 @@ impl KuCoinWebSocket {
     ) {
         tokio::spawn(async move {
             loop {
-                let mut stream_guard = ws_stream.lock().await;
-                let stream = match stream_guard.as_mut() {
-                    Some(s) => s,
-                    None => {
-                        drop(stream_guard);
-                        sleep(Duration::from_millis(100)).await;
-                        continue;
-                    }
-                };
-
-                match stream.next().await {
+                match reader.next().await {
                     Some(Ok(Message::Text(text))) => {
-                        drop(stream_guard);
                         match Self::handle_message_broadcast(&text, account_type, &last_ping, &ws_ping_rtt_ms).await {
                             Ok(Some(event)) => {
                                 let tx_guard = event_tx.lock().unwrap();
@@ -342,27 +347,18 @@ impl KuCoinWebSocket {
                             }
                         }
                     }
-                    Some(Ok(Message::Close(_))) => {
-                        drop(stream_guard);
+                    Some(Ok(Message::Close(_))) | None => {
                         *status.lock().await = ConnectionStatus::Disconnected;
                         break;
                     }
                     Some(Err(e)) => {
-                        drop(stream_guard);
                         let tx_guard = event_tx.lock().unwrap();
                         if let Some(ref tx) = *tx_guard {
                             let _ = tx.send(Err(WebSocketError::ConnectionError(e.to_string())));
                         }
                         break;
                     }
-                    None => {
-                        drop(stream_guard);
-                        *status.lock().await = ConnectionStatus::Disconnected;
-                        break;
-                    }
-                    _ => {
-                        drop(stream_guard);
-                    }
+                    Some(Ok(_)) => {} // binary / ping / pong frames — ignore
                 }
             }
             // Drop the broadcast sender so all BroadcastStream receivers get None
@@ -514,9 +510,11 @@ impl KuCoinWebSocket {
         }
     }
 
-    /// Start ping task
+    /// Start ping task.
+    ///
+    /// Uses the write half only — never contends with the reader task.
     fn start_ping_task(
-        ws_stream: Arc<Mutex<Option<WsStream>>>,
+        ws_writer: Arc<Mutex<Option<WsSink>>>,
         ping_interval: Arc<Mutex<Duration>>,
         last_ping: Arc<Mutex<Instant>>,
     ) {
@@ -528,15 +526,15 @@ impl KuCoinWebSocket {
                 let last = *last_ping.lock().await;
 
                 if last.elapsed() >= interval {
-                    let mut stream_guard = ws_stream.lock().await;
-                    if let Some(stream) = stream_guard.as_mut() {
+                    let mut writer_guard = ws_writer.lock().await;
+                    if let Some(writer) = writer_guard.as_mut() {
                         let ping = PingMessage {
                             id: timestamp_millis().to_string(),
                             msg_type: "ping".to_string(),
                         };
 
                         let msg_json = serde_json::to_string(&ping).expect("JSON serialization should never fail for valid struct");
-                        if stream.send(Message::Text(msg_json)).await.is_ok() {
+                        if writer.send(Message::Text(msg_json)).await.is_ok() {
                             *last_ping.lock().await = Instant::now();
                         }
                     }
@@ -586,10 +584,12 @@ impl KuCoinWebSocket {
                 format!("/contract/instrument:{}", symbol)
             }
             StreamType::IndexPrice => {
-                // KuCoin Futures: /contractMarket/indexPrice:{symbol}
-                // Pushes subject "index.price" with { symbol, granularity, indexPrice, timestamp }
+                // KuCoin Futures: /contract/instrument:{symbol}
+                // Pushes subject "mark.index.price" with { markPrice, indexPrice, granularity, timestamp }
+                // NOTE: /contractMarket/indexPrice: does NOT exist (returns 404).
+                // Index price arrives via /contract/instrument: alongside mark price.
                 let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, account_type);
-                format!("/contractMarket/indexPrice:{}", symbol)
+                format!("/contract/instrument:{}", symbol)
             }
             StreamType::FundingRate => {
                 let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, account_type);
@@ -779,20 +779,23 @@ impl WebSocketConnector for KuCoinWebSocket {
         *self.token_info.lock().await = Some((token.clone(), endpoint.clone()));
         *self.ping_interval.lock().await = ping_interval;
 
-        // Connect WebSocket
+        // Connect WebSocket and split into independent read/write halves.
+        // The write half goes behind a mutex (shared by ping + subscribe).
+        // The read half is handed directly to the message loop task (no mutex).
         let ws_stream = self.connect_ws(&token, &endpoint).await
             .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
 
-        *self.ws_stream.lock().await = Some(ws_stream);
+        let (writer, reader) = ws_stream.split();
+        *self.ws_writer.lock().await = Some(writer);
         *self.status.lock().await = ConnectionStatus::Connected;
 
         // Create broadcast channel and store sender
         let (tx, _) = broadcast::channel(1000);
         *self.event_tx.lock().unwrap() = Some(tx);
 
-        // Start message handler
+        // Start message handler (owns the reader — zero lock contention)
         Self::start_message_handler(
-            self.ws_stream.clone(),
+            reader,
             self.event_tx.clone(),
             self.status.clone(),
             account_type,
@@ -800,9 +803,9 @@ impl WebSocketConnector for KuCoinWebSocket {
             self.ws_ping_rtt_ms.clone(),
         );
 
-        // Start ping task
+        // Start ping task (uses write half only)
         Self::start_ping_task(
-            self.ws_stream.clone(),
+            self.ws_writer.clone(),
             self.ping_interval.clone(),
             self.last_ping.clone(),
         );
@@ -812,7 +815,7 @@ impl WebSocketConnector for KuCoinWebSocket {
 
     async fn disconnect(&mut self) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Disconnected;
-        *self.ws_stream.lock().await = None;
+        *self.ws_writer.lock().await = None;
         let _ = self.event_tx.lock().unwrap().take();
         self.subscriptions.lock().await.clear();
         Ok(())
@@ -845,10 +848,10 @@ impl WebSocketConnector for KuCoinWebSocket {
             .map_err(|e| WebSocketError::ProtocolError(e.to_string()))?;
 
         {
-            let mut stream_guard = self.ws_stream.lock().await;
-            let stream = stream_guard.as_mut()
+            let mut writer_guard = self.ws_writer.lock().await;
+            let writer = writer_guard.as_mut()
                 .ok_or_else(|| WebSocketError::ConnectionError("Not connected".to_string()))?;
-            stream.send(Message::Text(msg_json)).await
+            writer.send(Message::Text(msg_json)).await
                 .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
         }
 
@@ -869,10 +872,10 @@ impl WebSocketConnector for KuCoinWebSocket {
             };
             let snapshot_json = serde_json::to_string(&snapshot_msg)
                 .map_err(|e| WebSocketError::ProtocolError(e.to_string()))?;
-            let mut stream_guard = self.ws_stream.lock().await;
-            let stream = stream_guard.as_mut()
+            let mut writer_guard = self.ws_writer.lock().await;
+            let writer = writer_guard.as_mut()
                 .ok_or_else(|| WebSocketError::ConnectionError("Not connected".to_string()))?;
-            stream.send(Message::Text(snapshot_json)).await
+            writer.send(Message::Text(snapshot_json)).await
                 .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
         }
 
@@ -899,14 +902,13 @@ impl WebSocketConnector for KuCoinWebSocket {
         let msg_json = serde_json::to_string(&msg)
             .map_err(|e| WebSocketError::ProtocolError(e.to_string()))?;
 
-        let mut stream_guard = self.ws_stream.lock().await;
-        let stream = stream_guard.as_mut()
-            .ok_or_else(|| WebSocketError::ConnectionError("Not connected".to_string()))?;
-
-        stream.send(Message::Text(msg_json)).await
-            .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
-
-        drop(stream_guard);
+        {
+            let mut writer_guard = self.ws_writer.lock().await;
+            let writer = writer_guard.as_mut()
+                .ok_or_else(|| WebSocketError::ConnectionError("Not connected".to_string()))?;
+            writer.send(Message::Text(msg_json)).await
+                .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
+        }
 
         self.subscriptions.lock().await.remove(&request);
 

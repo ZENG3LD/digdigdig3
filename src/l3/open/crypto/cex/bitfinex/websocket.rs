@@ -740,38 +740,42 @@ impl BitfinexWebSocket {
             }
             StreamType::FundingRate => {
                 // Bitfinex `status` channel `deriv:<symbol>` format.
-                // Wrapper: [CHAN_ID, MSG_TYPE, [array...]]
-                // where MSG_TYPE is a positional update code (e.g. "pu", "pn", "pc").
-                // Inner array indices (verified from Bitfinex docs):
-                //   [3]  = DERIV_PRICE (mark price)
-                //   [4]  = SPOT_PRICE  (index price)
-                //   [6]  = INSURANCE_FUND_BALANCE
-                //   [8]  = NEXT_FUNDING_EVT_TIMESTAMP
-                //   [9]  = NEXT_FUNDING_ACCRUED
-                //   [10] = NEXT_FUNDING_STEP
-                //   [12] = CURRENT_FUNDING (use this as rate)
-                //   [18] = OPEN_INTEREST
-                if arr.len() < 3 {
+                // Wrapper (verified by live probe 2026-05-15):
+                //   [CHAN_ID, [inner_array]]  — 2 elements, no msg_type string.
+                //
+                // Inner array indices (verified by live probe, 23 elements):
+                //   [0]  = TIMESTAMP (ms)
+                //   [2]  = DERIV_PRICE (mark price)
+                //   [3]  = SPOT_PRICE (index price)
+                //   [5]  = INSURANCE_FUND_BALANCE
+                //   [7]  = NEXT_FUNDING_EVT_TIMESTAMP (ms)
+                //   [8]  = NEXT_FUNDING_ACCRUED
+                //   [11] = CURRENT_FUNDING (rate)
+                //   [17] = OPEN_INTEREST
+                if arr.len() < 2 {
                     return Ok(vec![]);
                 }
-                let msg_type = arr[1].as_str().unwrap_or("");
-                if !matches!(msg_type, "pu" | "pn" | "pc" | "ps") {
-                    return Ok(vec![]);
-                }
-                let inner = match arr[2].as_array() {
+                // Inner data is directly at arr[1] (no msg_type string)
+                let inner = match arr[1].as_array() {
                     Some(a) => a,
                     None => return Ok(vec![]),
                 };
+                // Ignore heartbeat arrays (they are typically short / contain strings)
+                if inner.len() < 3 {
+                    return Ok(vec![]);
+                }
                 let symbol = format_symbol(
                     &subscription.symbol.base,
                     &subscription.symbol.quote,
                     account_type,
                 );
-                let ts = timestamp_millis() as i64;
+                let ts = inner.first()
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or_else(|| timestamp_millis() as i64);
                 let mut events = Vec::new();
-                // Mark price at [3]
-                if let Some(mark_price) = inner.get(3).and_then(|v| v.as_f64()) {
-                    let index_price = inner.get(4).and_then(|v| v.as_f64());
+                // Mark price at [2]
+                if let Some(mark_price) = inner.get(2).and_then(|v| v.as_f64()) {
+                    let index_price = inner.get(3).and_then(|v| v.as_f64());
                     events.push(StreamEvent::MarkPrice {
                         symbol: symbol.clone(),
                         mark_price,
@@ -779,10 +783,9 @@ impl BitfinexWebSocket {
                         timestamp: ts,
                     });
                 }
-                // Current funding rate at [12]
-                if let Some(rate) = inner.get(12).and_then(|v| v.as_f64()) {
-                    let next_funding_time = inner.get(8)
-                        .and_then(|v| v.as_i64());
+                // Current funding rate at [11]
+                if let Some(rate) = inner.get(11).and_then(|v| v.as_f64()) {
+                    let next_funding_time = inner.get(7).and_then(|v| v.as_i64());
                     events.push(StreamEvent::FundingRate {
                         symbol: symbol.clone(),
                         rate,
@@ -790,8 +793,8 @@ impl BitfinexWebSocket {
                         timestamp: ts,
                     });
                 }
-                // Open interest at [18]
-                if let Some(oi) = inner.get(18).and_then(|v| v.as_f64()) {
+                // Open interest at [17]
+                if let Some(oi) = inner.get(17).and_then(|v| v.as_f64()) {
                     events.push(StreamEvent::OpenInterestUpdate {
                         symbol: symbol.clone(),
                         open_interest: oi,
@@ -799,8 +802,8 @@ impl BitfinexWebSocket {
                         timestamp: ts,
                     });
                 }
-                // Insurance fund balance at [6]
-                if let Some(balance) = inner.get(6).and_then(|v| v.as_f64()) {
+                // Insurance fund balance at [5]
+                if let Some(balance) = inner.get(5).and_then(|v| v.as_f64()) {
                     events.push(StreamEvent::InsuranceFund {
                         symbol: symbol.clone(),
                         balance,
@@ -919,9 +922,12 @@ impl BitfinexWebSocket {
     /// sends `[RATE, PERIOD, COUNT, AMOUNT]` entries. Emits `OrderbookSnapshot`
     /// / `OrderbookDelta` events like the regular book channel.
     pub async fn subscribe_funding_book(&mut self, currency: &str) -> WebSocketResult<()> {
-        // Funding book symbol format: "fUSD", "fBTC", etc. (already f-prefixed)
-        let funding_sym = if currency.starts_with('f') {
-            currency.to_uppercase()
+        // Funding book symbol format: "fUSD", "fBTC", etc.
+        // The 'f' prefix must remain lowercase; only the currency code is uppercased.
+        // e.g. "USD" → "fUSD", "fUSD" → "fUSD" (not "FUSD").
+        let funding_sym = if currency.starts_with('f') || currency.starts_with('F') {
+            let code = &currency[1..]; // strip the 'f'/'F' prefix
+            format!("f{}", code.to_uppercase())
         } else {
             format!("f{}", currency.to_uppercase())
         };

@@ -417,10 +417,14 @@ impl HtxWebSocket {
             StreamType::Orderbook => Ok(format!("market.{}.depth.step0", symbol_str)),
             StreamType::Trade => Ok(format!("market.{}.trade.detail", symbol_str)),
             StreamType::Kline { interval } => Ok(format!("market.{}.kline.{}", symbol_str, interval)),
-            StreamType::IndexPriceKline { interval } => {
-                // HTX USDT-margined swap index kline topic: market.<contract_code>.index.<period>
-                // e.g. market.BTC-USDT.index.1min
-                Ok(format!("market.{}.index.{}", symbol_str, interval))
+            StreamType::IndexPriceKline { .. } => {
+                // HTX does not expose an index price kline channel on any WebSocket endpoint.
+                // All tested variants (market.X.index.Y, market.X.mark_price.Y, etc.) return
+                // "invalid topic" from the server (verified by live probe 2026-05-15).
+                // Use the REST endpoint /linear-swap-ex/market/history/mark_price_kline instead.
+                Err(WebSocketError::Subscription(
+                    "HTX: IndexPriceKline not available via WebSocket — use REST mark_price_kline endpoint".to_string()
+                ))
             }
             StreamType::FundingRate => {
                 // HTX USDT-margined swap funding rate push topic.

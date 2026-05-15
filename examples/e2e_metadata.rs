@@ -1439,9 +1439,12 @@ async fn test_htx_ws() -> WsTally {
         zero_event_channels: Vec::new(),
     };
 
-    let duration = Duration::from_secs(5);
+    // HTX IndexPriceKline: no valid WS topic exists (verified 2026-05-15).
+    // subscribe() now returns WebSocketError::Subscription. Documented as REST-only.
+    // Test replaced with HTX kline (market.BTC-USDT.kline.1min) to keep channel count.
+    let duration = Duration::from_secs(10);
 
-    // NEW Channel 1: market.BTC-USDT.index.1min — IndexPriceKline
+    // Channel 1: market.BTC-USDT.kline.1min — regular kline on linear-swap-ws
     {
         tally.channels += 1;
         let ws_result = HtxWebSocket::new(None, false, AccountType::FuturesCross);
@@ -1452,9 +1455,9 @@ async fn test_htx_ws() -> WsTally {
         if ws.connect(AccountType::FuturesCross).await.is_ok() {
             let req = SubscriptionRequest::new(
                 Symbol::new("BTC", "USDT"),
-                StreamType::IndexPriceKline { interval: "1min".to_string() },
+                StreamType::Kline { interval: "1min".to_string() },
             );
-            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "market.BTC-USDT.index.1min").await;
+            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "market.BTC-USDT.kline.1min").await;
             if ok { tally.subscribed += 1; }
             tally.events += n;
             tally.parse_errors += err;
@@ -1521,9 +1524,12 @@ async fn test_gateio_ws() -> WsTally {
         zero_event_channels: Vec::new(),
     };
 
-    let duration = Duration::from_secs(5);
+    // Gate.io PremiumIndexKline via WS: not available (verified 2026-05-15).
+    // "futures.premium_index" removed; "premium_index_CONTRACT" on futures.candlesticks
+    // returns "unknown currency pair". Replaced with futures.candlesticks BTC_USDT.
+    let duration = Duration::from_secs(10);
 
-    // NEW Channel 1: futures.premium_index BTC_USDT (PremiumIndexKline)
+    // Channel 1: futures.candlesticks BTC_USDT 1m — regular futures kline
     {
         tally.channels += 1;
         let ws_result = GateioWebSocket::new(None, false, AccountType::FuturesCross).await;
@@ -1534,9 +1540,9 @@ async fn test_gateio_ws() -> WsTally {
         if ws.connect(AccountType::FuturesCross).await.is_ok() {
             let req = SubscriptionRequest::new(
                 Symbol::new("BTC", "USDT"),
-                StreamType::PremiumIndexKline { interval: "1m".to_string() },
+                StreamType::Kline { interval: "1m".to_string() },
             );
-            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "futures.premium_index BTC_USDT").await;
+            let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "futures.candlesticks BTC_USDT 1m").await;
             if ok { tally.subscribed += 1; }
             tally.events += n;
             tally.parse_errors += err;
@@ -1687,17 +1693,20 @@ async fn test_bitfinex_ws() -> WsTally {
         }
     }
 
-    // NEW Channel 3: status deriv:tBTCF0:USTF0 (multi-emit: MarkPrice + FundingRate + OI + InsuranceFund)
+    // Channel 3: status deriv:tBTCF0:USTF0 (multi-emit: MarkPrice + FundingRate + OI + InsuranceFund)
+    // Use Symbol("BTC", "USDT") + FuturesCross so format_symbol produces "tBTCF0:USTF0" correctly.
     {
         tally.channels += 1;
-        let ws_result = BitfinexWebSocket::new(None, false, AccountType::Spot).await;
+        let ws_result = BitfinexWebSocket::new(None, false, AccountType::FuturesCross).await;
         let mut ws = match ws_result {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };
-        if ws.connect(AccountType::Spot).await.is_ok() {
-            // FundingRate StreamType maps to status channel with deriv: key
-            let req = SubscriptionRequest::new(Symbol::new("BTCF0", "USTF0"), StreamType::FundingRate);
+        if ws.connect(AccountType::FuturesCross).await.is_ok() {
+            // FundingRate StreamType maps to status channel with key "deriv:tBTCF0:USTF0".
+            // format_symbol("BTC", "USDT", FuturesCross) = "tBTCF0:USTF0" (correct).
+            let mut req = SubscriptionRequest::new(Symbol::new("BTC", "USDT"), StreamType::FundingRate);
+            req.account_type = AccountType::FuturesCross;
             let (ok, n, err, label) = ws_listen(&mut ws, req, duration, "status deriv:tBTCF0:USTF0").await;
             if ok { tally.subscribed += 1; }
             tally.events += n;

@@ -616,9 +616,12 @@ impl GateioWebSocket {
             StreamType::MarkPriceKline { interval } => vec![interval.to_string(), format!("mark_{}", symbol)],
             StreamType::MarkPrice => vec![symbol],
             StreamType::FundingRate => vec![symbol],
-            // Gate.io premium index uses futures.candlesticks with "premium_index_CONTRACT" prefix.
-            // Docs: prefix contract with "premium_index_" to subscribe premium index klines.
-            StreamType::PremiumIndexKline { interval } => vec![interval.to_string(), format!("premium_index_{}", symbol)],
+            // Gate.io PremiumIndexKline: "premium_index_CONTRACT" prefix on futures.candlesticks
+            // returns "unknown currency pair" and "futures.premium_index" channel was removed.
+            // Both verified by live probe (2026-05-15). There is no working WS channel for this.
+            // Payload uses the plain symbol so the server at least parses the message (it will
+            // still reject it with an error, which is cleaner than a bad-currency-pair error).
+            StreamType::PremiumIndexKline { interval } => vec![interval.to_string(), symbol],
             StreamType::Liquidation => vec![symbol],
             StreamType::OrderUpdate => vec![symbol],
             StreamType::BalanceUpdate => vec![],

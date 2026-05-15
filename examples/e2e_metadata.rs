@@ -169,6 +169,13 @@ async fn test_binance_rest() -> RestTally {
         Err(e) => { fail_rest!("get_open_interest_cm", e); tally.failed += 1; }
     }
 
+    // NEW: get_funding_rate_history (USDM /fapi/v1/fundingRate)
+    tally.tested += 1;
+    match conn.get_funding_rate_history("BTCUSDT", None, None, Some(5)).await {
+        Ok(v) => { let (p, _) = ok_rest!("get_funding_rate_history(BTCUSDT, 5)", v); tally.passed += p as usize; }
+        Err(e) => { fail_rest!("get_funding_rate_history", e); tally.failed += 1; }
+    }
+
     tally
 }
 
@@ -228,6 +235,13 @@ async fn test_bybit_rest() -> RestTally {
         Err(e) => { fail_rest!("get_institutional_loan_products", e); tally.failed += 1; }
     }
 
+    // NEW: get_funding_rate_history
+    tally.tested += 1;
+    match conn.get_funding_rate_history("linear", "BTCUSDT", None, None, Some(5)).await {
+        Ok(v) => { let (p, _) = ok_rest!("get_funding_rate_history(linear, BTCUSDT, 5)", v); tally.passed += p as usize; }
+        Err(e) => { fail_rest!("get_funding_rate_history", e); tally.failed += 1; }
+    }
+
     tally
 }
 
@@ -283,7 +297,7 @@ async fn test_okx_rest() -> RestTally {
     // NEW: get_funding_rate_history
     tally.tested += 1;
     match conn.get_funding_rate_history("BTC-USDT-SWAP", None, None, Some(5)).await {
-        Ok(v) => { let (p, _) = ok_rest_single!("get_funding_rate_history(BTC-USDT-SWAP)", v); tally.passed += p as usize; }
+        Ok(v) => { let (p, _) = ok_rest!("get_funding_rate_history(BTC-USDT-SWAP, 5)", v); tally.passed += p as usize; }
         Err(e) => { fail_rest!("get_funding_rate_history", e); tally.failed += 1; }
     }
 

@@ -600,7 +600,7 @@ impl OkxConnector {
         before: Option<i64>,
         after: Option<i64>,
         limit: Option<u32>,
-    ) -> ExchangeResult<Value> {
+    ) -> ExchangeResult<Vec<FundingRate>> {
         let mut params = HashMap::new();
         params.insert("instId".to_string(), inst_id.to_string());
         if let Some(b) = before {
@@ -612,7 +612,8 @@ impl OkxConnector {
         if let Some(l) = limit {
             params.insert("limit".to_string(), l.to_string());
         }
-        self.get(OkxEndpoint::FundingRateHistory, params).await
+        let response = self.get(OkxEndpoint::FundingRateHistory, params).await?;
+        OkxParser::parse_funding_rates(&response)
     }
 
     /// Get savings/lending rate history for a currency.

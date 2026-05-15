@@ -418,6 +418,35 @@ impl BybitConnector {
         BybitParser::parse_open_interest_list(&response, symbol)
     }
 
+    /// Get historical funding rates.
+    ///
+    /// Endpoint: `GET /v5/market/funding/history` — no auth.
+    /// `category`: `"linear"` | `"inverse"`. `symbol`: e.g. `"BTCUSDT"`.
+    /// `limit`: max 200 (default 200). `start_time` / `end_time`: Unix ms.
+    pub async fn get_funding_rate_history(
+        &self,
+        category: &str,
+        symbol: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Vec<FundingRate>> {
+        let mut params = HashMap::new();
+        params.insert("category".to_string(), category.to_string());
+        params.insert("symbol".to_string(), symbol.to_string());
+        if let Some(t) = start_time {
+            params.insert("startTime".to_string(), t.to_string());
+        }
+        if let Some(t) = end_time {
+            params.insert("endTime".to_string(), t.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        let response = self.get(BybitEndpoint::FundingRate, params).await?;
+        BybitParser::parse_funding_rates(&response)
+    }
+
     /// Get long/short ratio for a symbol.
     ///
     /// `category`: `"linear"` | `"inverse"`. Bybit `ratio_type` is always `"account"`.

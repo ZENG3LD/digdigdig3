@@ -1591,6 +1591,23 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_funding_rates() {
+        let response = json!([
+            {"symbol":"BTCUSDT","fundingRate":"0.00010000","fundingTime":1601365200000i64,"markPrice":"42000.5"},
+            {"symbol":"BTCUSDT","fundingRate":"-0.00005000","fundingTime":1601394000000i64,"markPrice":"42100.0"}
+        ]);
+
+        let rates = BinanceParser::parse_funding_rates(&response).unwrap();
+        assert_eq!(rates.len(), 2);
+        assert_eq!(rates[0].symbol, "BTCUSDT");
+        assert!((rates[0].rate - 0.0001).abs() < 1e-9);
+        assert_eq!(rates[0].timestamp, 1601365200000);
+        assert_eq!(rates[0].next_funding_time, Some(1601365200000));
+        assert!((rates[1].rate - (-0.00005)).abs() < 1e-9);
+        assert_eq!(rates[1].timestamp, 1601394000000);
+    }
+
+    #[test]
     fn test_parse_ticker() {
         let response = json!({
             "symbol": "BTCUSDT",

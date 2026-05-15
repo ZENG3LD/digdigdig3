@@ -375,6 +375,22 @@ impl BybitParser {
         })
     }
 
+    /// Parse an array of funding rate records (`/v5/market/funding/history`).
+    ///
+    /// Response: `result.list = [{ symbol, fundingRate, fundingRateTimestamp }]`.
+    pub fn parse_funding_rates(json: &Value) -> ExchangeResult<Vec<FundingRate>> {
+        let result = Self::extract_result(json)?;
+        let list = result["list"].as_array()
+            .ok_or_else(|| ExchangeError::Parse("Missing result.list".into()))?;
+        let rates = list.iter().map(|item| FundingRate {
+            symbol: item["symbol"].as_str().unwrap_or("").to_string(),
+            rate: item["fundingRate"].as_str().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0),
+            next_funding_time: None,
+            timestamp: item["fundingRateTimestamp"].as_str().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0),
+        }).collect();
+        Ok(rates)
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════════
     // EXCHANGE INFO PARSERS
     // ═══════════════════════════════════════════════════════════════════════════════
@@ -1162,6 +1178,29 @@ impl BybitParser {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn test_parse_funding_rates() {
+        let json = json!({
+            "retCode": 0,
+            "retMsg": "OK",
+            "result": {
+                "category": "linear",
+                "list": [
+                    {"symbol":"BTCUSDT","fundingRate":"0.00010000","fundingRateTimestamp":"1672531200000"},
+                    {"symbol":"BTCUSDT","fundingRate":"-0.00005000","fundingRateTimestamp":"1672560000000"}
+                ]
+            }
+        });
+
+        let rates = BybitParser::parse_funding_rates(&json).unwrap();
+        assert_eq!(rates.len(), 2);
+        assert_eq!(rates[0].symbol, "BTCUSDT");
+        assert!((rates[0].rate - 0.0001).abs() < 1e-9);
+        assert_eq!(rates[0].timestamp, 1672531200000);
+        assert!((rates[1].rate - (-0.00005)).abs() < 1e-9);
+        assert_eq!(rates[1].timestamp, 1672560000000);
+    }
 
     #[test]
     fn test_parse_ticker() {

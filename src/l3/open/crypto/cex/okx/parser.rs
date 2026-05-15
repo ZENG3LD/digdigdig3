@@ -275,6 +275,22 @@ impl OkxParser {
         })
     }
 
+    /// Parse an array of historical funding rates (`/api/v5/public/funding-rate-history`).
+    ///
+    /// Each item in `data`: `{instType, instId, fundingRate, realizedRate, fundingTime, method}`.
+    pub fn parse_funding_rates(response: &Value) -> ExchangeResult<Vec<FundingRate>> {
+        let data = Self::extract_data(response)?;
+        let arr = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("'data' is not an array".to_string()))?;
+        let rates = arr.iter().map(|item| FundingRate {
+            symbol: Self::get_str(item, "instId").unwrap_or("").to_string(),
+            rate: Self::get_f64(item, "fundingRate").unwrap_or(0.0),
+            next_funding_time: None,
+            timestamp: Self::get_i64(item, "fundingTime").unwrap_or(0),
+        }).collect();
+        Ok(rates)
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // TRADING
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1526,6 +1542,27 @@ mod tests {
         let ticker = OkxParser::parse_ticker(&response).unwrap();
         assert_eq!(ticker.symbol, "BTC-USDT");
         assert_eq!(ticker.last_price, 43250.5);
+    }
+
+    #[test]
+    fn test_parse_funding_rates() {
+        let response = json!({
+            "code": "0",
+            "msg": "",
+            "data": [
+                {"instType":"SWAP","instId":"BTC-USDT-SWAP","fundingRate":"0.00010000","realizedRate":"0.00012","fundingTime":"1597026383085","method":"current_period"},
+                {"instType":"SWAP","instId":"BTC-USDT-SWAP","fundingRate":"-0.00005000","realizedRate":"-0.00004","fundingTime":"1597055183085","method":"current_period"}
+            ]
+        });
+
+        let rates = OkxParser::parse_funding_rates(&response).unwrap();
+        assert_eq!(rates.len(), 2);
+        assert_eq!(rates[0].symbol, "BTC-USDT-SWAP");
+        assert!((rates[0].rate - 0.0001).abs() < 1e-9);
+        assert_eq!(rates[0].timestamp, 1597026383085);
+        assert_eq!(rates[0].next_funding_time, None);
+        assert!((rates[1].rate - (-0.00005)).abs() < 1e-9);
+        assert_eq!(rates[1].timestamp, 1597055183085);
     }
 
     #[test]

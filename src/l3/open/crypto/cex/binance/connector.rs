@@ -593,6 +593,34 @@ impl BinanceConnector {
         BinanceParser::parse_premium_index(&v)
     }
 
+    /// Get historical funding rates for USDM perpetual futures.
+    ///
+    /// Endpoint: `GET /fapi/v1/fundingRate` — no auth.
+    /// `symbol`: e.g. `"BTCUSDT"`. `limit`: default 100, max 1000.
+    /// `start_time` / `end_time`: Unix ms; when both omitted Binance returns the most
+    /// recent `limit` entries.
+    pub async fn get_funding_rate_history(
+        &self,
+        symbol: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+    ) -> ExchangeResult<Vec<FundingRate>> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        if let Some(t) = start_time {
+            params.insert("startTime".to_string(), t.to_string());
+        }
+        if let Some(t) = end_time {
+            params.insert("endTime".to_string(), t.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        let v = self.get(BinanceEndpoint::FundingRate, params, AccountType::FuturesCross).await?;
+        BinanceParser::parse_funding_rates(&v)
+    }
+
     /// Get public liquidation orders (force-close events) for futures.
     ///
     /// Endpoint: `GET /fapi/v1/forceOrders` — no authentication required.

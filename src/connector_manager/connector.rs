@@ -26,10 +26,11 @@ use crate::core::types::{
     UserTrade, UserTradeFilter, Balance, BalanceQuery, AccountInfo, FeeInfo,
     Position, PositionQuery, PositionModification, FundingRate,
     CancelScope, CancelAllResponse, AmendRequest, OrderResult,
+    PublicTrade, Liquidation, OpenInterest, MarkPrice, LongShortRatio,
 };
 
 use crate::core::traits::{
-    ExchangeIdentity, MarketData, Trading, Account, Positions,
+    ExchangeIdentity, MarketData, MarketDataPublic, Trading, Account, Positions,
     CancelAll, AmendOrder, BatchOrders,
 };
 
@@ -993,6 +994,504 @@ impl MarketData for AnyConnector {
             Self::IB(c) => c.market_data_capabilities(account_type),
             Self::YahooFinance(c) => c.market_data_capabilities(account_type),
             Self::CryptoCompare(c) => c.market_data_capabilities(account_type),
+        }
+    }
+}
+
+// === MarketDataPublic ===
+
+#[async_trait]
+impl MarketDataPublic for AnyConnector {
+    async fn get_recent_trades(
+        &self,
+        symbol: &Symbol,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<PublicTrade>> {
+        match self {
+            // CEX
+            Self::Binance(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::Bybit(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::OKX(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::KuCoin(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::Kraken(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::Coinbase(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::GateIO(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::Bitfinex(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::Bitstamp(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::Gemini(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::MEXC(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::HTX(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::Bitget(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::BingX(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::CryptoCom(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::Upbit(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::Deribit(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::HyperLiquid(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            // DEX
+            Self::Lighter(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::Dydx(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            // Stocks US
+            Self::Polygon(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::Finnhub(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::Tiingo(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::Twelvedata(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::Alpaca(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            // Stocks India
+            Self::AngelOne(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::Zerodha(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::Upstox(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::Dhan(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::Fyers(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            // Stocks Other
+            Self::JQuants(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::Krx(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::Moex(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::Tinkoff(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            // Forex
+            Self::Oanda(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::Dukascopy(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::AlphaVantage(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            // Prediction
+            Self::Polymarket(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            // Brokers
+            Self::IB(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            // Data Feeds
+            Self::YahooFinance(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+            Self::CryptoCompare(c) => MarketDataPublic::get_recent_trades(&**c, symbol, limit, account_type).await,
+        }
+    }
+
+    async fn get_liquidation_history(
+        &self,
+        symbol: Option<&Symbol>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Liquidation>> {
+        match self {
+            // CEX
+            Self::Binance(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Bybit(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::OKX(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::KuCoin(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Kraken(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Coinbase(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::GateIO(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Bitfinex(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Bitstamp(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Gemini(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::MEXC(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::HTX(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Bitget(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::BingX(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::CryptoCom(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Upbit(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Deribit(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::HyperLiquid(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            // DEX
+            Self::Lighter(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Dydx(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            // Stocks US
+            Self::Polygon(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Finnhub(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Tiingo(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Twelvedata(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Alpaca(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            // Stocks India
+            Self::AngelOne(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Zerodha(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Upstox(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Dhan(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Fyers(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            // Stocks Other
+            Self::JQuants(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Krx(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Moex(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Tinkoff(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            // Forex
+            Self::Oanda(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Dukascopy(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::AlphaVantage(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            // Prediction
+            Self::Polymarket(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            // Brokers
+            Self::IB(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            // Data Feeds
+            Self::YahooFinance(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::CryptoCompare(c) => MarketDataPublic::get_liquidation_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+        }
+    }
+
+    async fn get_open_interest_history(
+        &self,
+        symbol: &Symbol,
+        period: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<OpenInterest>> {
+        match self {
+            // CEX
+            Self::Binance(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Bybit(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::OKX(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::KuCoin(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Kraken(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Coinbase(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::GateIO(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Bitfinex(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Bitstamp(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Gemini(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::MEXC(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::HTX(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Bitget(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::BingX(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::CryptoCom(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Upbit(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Deribit(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::HyperLiquid(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            // DEX
+            Self::Lighter(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Dydx(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            // Stocks US
+            Self::Polygon(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Finnhub(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Tiingo(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Twelvedata(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Alpaca(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            // Stocks India
+            Self::AngelOne(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Zerodha(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Upstox(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Dhan(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Fyers(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            // Stocks Other
+            Self::JQuants(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Krx(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Moex(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Tinkoff(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            // Forex
+            Self::Oanda(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Dukascopy(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::AlphaVantage(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            // Prediction
+            Self::Polymarket(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            // Brokers
+            Self::IB(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            // Data Feeds
+            Self::YahooFinance(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::CryptoCompare(c) => MarketDataPublic::get_open_interest_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+        }
+    }
+
+    async fn get_premium_index(
+        &self,
+        symbol: Option<&Symbol>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<MarkPrice>> {
+        match self {
+            // CEX
+            Self::Binance(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::Bybit(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::OKX(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::KuCoin(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::Kraken(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::Coinbase(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::GateIO(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::Bitfinex(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::Bitstamp(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::Gemini(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::MEXC(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::HTX(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::Bitget(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::BingX(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::CryptoCom(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::Upbit(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::Deribit(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::HyperLiquid(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            // DEX
+            Self::Lighter(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::Dydx(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            // Stocks US
+            Self::Polygon(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::Finnhub(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::Tiingo(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::Twelvedata(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::Alpaca(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            // Stocks India
+            Self::AngelOne(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::Zerodha(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::Upstox(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::Dhan(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::Fyers(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            // Stocks Other
+            Self::JQuants(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::Krx(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::Moex(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::Tinkoff(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            // Forex
+            Self::Oanda(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::Dukascopy(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::AlphaVantage(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            // Prediction
+            Self::Polymarket(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            // Brokers
+            Self::IB(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            // Data Feeds
+            Self::YahooFinance(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+            Self::CryptoCompare(c) => MarketDataPublic::get_premium_index(&**c, symbol, account_type).await,
+        }
+    }
+
+    async fn get_long_short_ratio_history(
+        &self,
+        symbol: &Symbol,
+        period: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<LongShortRatio>> {
+        match self {
+            // CEX
+            Self::Binance(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Bybit(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::OKX(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::KuCoin(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Kraken(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Coinbase(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::GateIO(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Bitfinex(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Bitstamp(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Gemini(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::MEXC(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::HTX(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Bitget(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::BingX(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::CryptoCom(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Upbit(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Deribit(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::HyperLiquid(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            // DEX
+            Self::Lighter(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Dydx(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            // Stocks US
+            Self::Polygon(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Finnhub(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Tiingo(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Twelvedata(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Alpaca(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            // Stocks India
+            Self::AngelOne(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Zerodha(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Upstox(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Dhan(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Fyers(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            // Stocks Other
+            Self::JQuants(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Krx(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Moex(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Tinkoff(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            // Forex
+            Self::Oanda(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::Dukascopy(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::AlphaVantage(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            // Prediction
+            Self::Polymarket(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            // Brokers
+            Self::IB(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            // Data Feeds
+            Self::YahooFinance(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+            Self::CryptoCompare(c) => MarketDataPublic::get_long_short_ratio_history(&**c, symbol, period, start_time, end_time, limit, account_type).await,
+        }
+    }
+
+    async fn get_mark_price_klines(
+        &self,
+        symbol: &Symbol,
+        interval: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
+        match self {
+            // CEX
+            Self::Binance(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Bybit(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::OKX(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::KuCoin(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Kraken(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Coinbase(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::GateIO(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Bitfinex(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Bitstamp(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Gemini(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::MEXC(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::HTX(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Bitget(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::BingX(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::CryptoCom(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Upbit(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Deribit(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::HyperLiquid(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            // DEX
+            Self::Lighter(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Dydx(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            // Stocks US
+            Self::Polygon(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Finnhub(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Tiingo(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Twelvedata(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Alpaca(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            // Stocks India
+            Self::AngelOne(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Zerodha(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Upstox(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Dhan(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Fyers(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            // Stocks Other
+            Self::JQuants(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Krx(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Moex(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Tinkoff(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            // Forex
+            Self::Oanda(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Dukascopy(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::AlphaVantage(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            // Prediction
+            Self::Polymarket(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            // Brokers
+            Self::IB(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            // Data Feeds
+            Self::YahooFinance(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::CryptoCompare(c) => MarketDataPublic::get_mark_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+        }
+    }
+
+    async fn get_index_price_klines(
+        &self,
+        symbol: &Symbol,
+        interval: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
+        match self {
+            // CEX
+            Self::Binance(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Bybit(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::OKX(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::KuCoin(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Kraken(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Coinbase(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::GateIO(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Bitfinex(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Bitstamp(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Gemini(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::MEXC(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::HTX(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Bitget(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::BingX(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::CryptoCom(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Upbit(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Deribit(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::HyperLiquid(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            // DEX
+            Self::Lighter(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Dydx(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            // Stocks US
+            Self::Polygon(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Finnhub(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Tiingo(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Twelvedata(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Alpaca(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            // Stocks India
+            Self::AngelOne(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Zerodha(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Upstox(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Dhan(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Fyers(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            // Stocks Other
+            Self::JQuants(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Krx(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Moex(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Tinkoff(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            // Forex
+            Self::Oanda(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::Dukascopy(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::AlphaVantage(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            // Prediction
+            Self::Polymarket(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            // Brokers
+            Self::IB(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            // Data Feeds
+            Self::YahooFinance(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+            Self::CryptoCompare(c) => MarketDataPublic::get_index_price_klines(&**c, symbol, interval, limit, account_type, end_time).await,
+        }
+    }
+
+    async fn get_funding_rate_history(
+        &self,
+        symbol: &Symbol,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<FundingRate>> {
+        match self {
+            // CEX
+            Self::Binance(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Bybit(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::OKX(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::KuCoin(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Kraken(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Coinbase(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::GateIO(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Bitfinex(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Bitstamp(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Gemini(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::MEXC(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::HTX(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Bitget(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::BingX(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::CryptoCom(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Upbit(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Deribit(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::HyperLiquid(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            // DEX
+            Self::Lighter(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Dydx(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            // Stocks US
+            Self::Polygon(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Finnhub(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Tiingo(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Twelvedata(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Alpaca(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            // Stocks India
+            Self::AngelOne(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Zerodha(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Upstox(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Dhan(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Fyers(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            // Stocks Other
+            Self::JQuants(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Krx(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Moex(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Tinkoff(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            // Forex
+            Self::Oanda(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::Dukascopy(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::AlphaVantage(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            // Prediction
+            Self::Polymarket(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            // Brokers
+            Self::IB(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            // Data Feeds
+            Self::YahooFinance(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
+            Self::CryptoCompare(c) => MarketDataPublic::get_funding_rate_history(&**c, symbol, start_time, end_time, limit, account_type).await,
         }
     }
 }

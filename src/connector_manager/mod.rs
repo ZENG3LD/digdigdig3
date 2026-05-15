@@ -51,6 +51,7 @@
 #[macro_use]
 mod macros;
 mod connector;
+mod market_data_public_stubs;
 mod registry;
 mod pool;
 mod aggregator;

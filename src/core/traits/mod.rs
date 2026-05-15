@@ -37,6 +37,7 @@
 
 mod identity;
 mod market_data;
+mod market_data_public;
 mod trading;
 mod account;
 mod positions;
@@ -46,6 +47,7 @@ mod operations;
 
 pub use identity::ExchangeIdentity;
 pub use market_data::MarketData;
+pub use market_data_public::MarketDataPublic;
 pub use trading::Trading;
 pub use account::Account;
 pub use positions::Positions;

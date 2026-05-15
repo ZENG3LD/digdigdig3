@@ -38,25 +38,50 @@ use crate::core::types::{
 #[async_trait]
 pub trait WebSocketConnector: Send + Sync {
     /// Подключиться к WebSocket
-    async fn connect(&self, account_type: AccountType) -> WebSocketResult<()>;
+    async fn connect(&self, account_type: AccountType) -> WebSocketResult<()> {
+        let _ = account_type;
+        Err(crate::core::types::WebSocketError::UnsupportedOperation(
+            "WebSocket not supported".into(),
+        ))
+    }
 
     /// Отключиться от WebSocket
-    async fn disconnect(&self) -> WebSocketResult<()>;
+    async fn disconnect(&self) -> WebSocketResult<()> {
+        Err(crate::core::types::WebSocketError::UnsupportedOperation(
+            "WebSocket not supported".into(),
+        ))
+    }
 
     /// Получить текущий статус подключения
-    fn connection_status(&self) -> ConnectionStatus;
+    fn connection_status(&self) -> ConnectionStatus {
+        ConnectionStatus::Disconnected
+    }
 
     /// Подписаться на поток данных
-    async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()>;
+    async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
+        let _ = request;
+        Err(crate::core::types::WebSocketError::UnsupportedOperation(
+            "WebSocket not supported".into(),
+        ))
+    }
 
     /// Отписаться от потока данных
-    async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()>;
+    async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
+        let _ = request;
+        Err(crate::core::types::WebSocketError::UnsupportedOperation(
+            "WebSocket not supported".into(),
+        ))
+    }
 
     /// Получить поток событий
-    fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>>;
+    fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
+        Box::pin(futures_util::stream::empty())
+    }
 
     /// Получить список активных подписок
-    fn active_subscriptions(&self) -> Vec<SubscriptionRequest>;
+    fn active_subscriptions(&self) -> Vec<SubscriptionRequest> {
+        Vec::new()
+    }
 
     /// Проверить наличие подписки
     fn has_subscription(&self, request: &SubscriptionRequest) -> bool {

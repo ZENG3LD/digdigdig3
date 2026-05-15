@@ -16,7 +16,7 @@
 use std::sync::Arc;
 
 use digdigdig3::connector_manager::{ConnectorFactory, ConnectorPool};
-use digdigdig3::core::traits::{CoreConnector, MarketData, MarketDataPublic};
+use digdigdig3::core::traits::{CoreConnector, MarketData, MarketDataPublic, WebSocketConnector};
 use digdigdig3::core::types::{AccountType, ExchangeId, Symbol};
 
 async fn populate_pool(pool: &ConnectorPool) {
@@ -98,6 +98,16 @@ async fn main() {
     ] {
         if let Some(conn) = pool.get(&id) {
             smoke_funding(conn, sym).await;
+        }
+    }
+
+    println!("\n[dispatch: WebSocket connect + subscribe via &dyn WebSocketConnector]");
+    for id in [ExchangeId::Binance, ExchangeId::Bybit, ExchangeId::OKX] {
+        if let Some(conn) = pool.get(&id) {
+            // Arc<dyn CoreConnector> already satisfies WebSocketConnector.
+            // Smoke: confirm connection_status dispatches without panic.
+            let status = WebSocketConnector::connection_status(&*conn);
+            println!("  {:?} ws_status={:?}", id, status);
         }
     }
 

@@ -43,6 +43,7 @@ mod trading;
 mod account;
 mod positions;
 mod websocket;
+mod websocket_stubs;
 mod auth;
 mod operations;
 
@@ -90,6 +91,7 @@ pub trait CoreConnector:
     + Trading
     + Account
     + Positions
+    + WebSocketConnector
     + Send
     + Sync
     + 'static
@@ -103,6 +105,7 @@ impl<T> CoreConnector for T where
         + Trading
         + Account
         + Positions
+        + WebSocketConnector
         + Send
         + Sync
         + 'static

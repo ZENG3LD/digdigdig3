@@ -31,6 +31,7 @@ mod endpoints;
 mod auth;
 mod parser;
 mod connector;
+pub(crate) mod protocol;
 mod websocket;
 
 #[cfg(test)]

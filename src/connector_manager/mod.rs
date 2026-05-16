@@ -40,6 +40,7 @@ mod ws_pool;
 mod aggregator;
 mod config;
 mod factory;
+mod hub;
 
 pub use registry::{
     AuthType, ConnectorCategory, ConnectorMetadata, ConnectorRegistry, Features,
@@ -49,4 +50,5 @@ pub use ws_pool::WebSocketPool;
 pub use aggregator::{BestBidAsk, ConnectorAggregator, ConnectorAggregatorBuilder};
 pub use config::{ConnectorConfig, ConnectorConfigManager, ExchangeCredentials};
 pub use factory::ConnectorFactory;
+pub use hub::ExchangeHub;
 pub use crate::core::traits::CoreConnector;

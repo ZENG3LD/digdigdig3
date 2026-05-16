@@ -25,6 +25,7 @@ mod endpoints;
 mod auth;
 mod parser;
 mod connector;
+mod protocol;
 mod websocket;
 
 pub use endpoints::{BitgetEndpoint, BitgetUrls};

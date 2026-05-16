@@ -345,8 +345,19 @@ impl DeribitConnector {
         symbol.base.to_uppercase()
     }
 
-    /// Instrument name from symbol
-    fn instrument_from_symbol(symbol: &Symbol, account_type: AccountType) -> String {
+    /// Instrument name from symbol.
+    ///
+    /// Returns `Err(UnsupportedOperation)` when `account_type == Options` and `symbol`
+    /// has no `raw` override — options require a concrete instrument_name like
+    /// `BTC-30MAY26-50000-C` that a generic Symbol cannot encode.
+    fn instrument_from_symbol(
+        symbol: &Symbol,
+        account_type: AccountType,
+    ) -> crate::core::ExchangeResult<String> {
+        // If the caller supplied a raw instrument name, honour it for all account types.
+        if let Some(raw) = symbol.raw() {
+            return Ok(raw.to_string());
+        }
         format_symbol(&symbol.base, &symbol.quote, account_type)
     }
 }
@@ -451,7 +462,7 @@ impl MarketData for DeribitConnector {
     }
 
     async fn get_price(&self, symbol: Symbol, account_type: AccountType) -> ExchangeResult<Price> {
-        let instrument_name = Self::instrument_from_symbol(&symbol, account_type);
+        let instrument_name = Self::instrument_from_symbol(&symbol, account_type)?;
 
         let mut params = HashMap::new();
         params.insert("instrument_name".to_string(), json!(instrument_name));
@@ -466,7 +477,7 @@ impl MarketData for DeribitConnector {
         depth: Option<u16>,
         account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        let instrument_name = Self::instrument_from_symbol(&symbol, account_type);
+        let instrument_name = Self::instrument_from_symbol(&symbol, account_type)?;
 
         let mut params = HashMap::new();
         params.insert("instrument_name".to_string(), json!(instrument_name));
@@ -486,7 +497,7 @@ impl MarketData for DeribitConnector {
         account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let instrument_name = Self::instrument_from_symbol(&symbol, account_type);
+        let instrument_name = Self::instrument_from_symbol(&symbol, account_type)?;
 
         let (resolution, interval_ms): (&str, u64) = match interval {
             "1m"  => ("1",   60_000),
@@ -522,7 +533,7 @@ impl MarketData for DeribitConnector {
     }
 
     async fn get_ticker(&self, symbol: Symbol, account_type: AccountType) -> ExchangeResult<Ticker> {
-        let instrument_name = Self::instrument_from_symbol(&symbol, account_type);
+        let instrument_name = Self::instrument_from_symbol(&symbol, account_type)?;
 
         let mut params = HashMap::new();
         params.insert("instrument_name".to_string(), json!(instrument_name));
@@ -593,7 +604,7 @@ impl Trading for DeribitConnector {
         let side = req.side;
         let quantity = req.quantity;
         let account_type = req.account_type;
-        let instrument_name = Self::instrument_from_symbol(&symbol, account_type);
+        let instrument_name = Self::instrument_from_symbol(&symbol, account_type)?;
 
         let method = match side {
             OrderSide::Buy => DeribitMethod::Buy,
@@ -826,7 +837,7 @@ impl Trading for DeribitConnector {
 
         if let Some(sym) = &filter.symbol {
             // sym is already a Symbol struct
-            let instrument_name = Self::instrument_from_symbol(sym, account_type);
+            let instrument_name = Self::instrument_from_symbol(sym, account_type)?;
             params.insert("instrument_name".to_string(), json!(instrument_name));
         } else {
             // Default to BTC currency if no symbol specified
@@ -886,7 +897,7 @@ impl Trading for DeribitConnector {
         let mut params = HashMap::new();
 
         if let Some(sym) = symbol {
-            let instrument_name = Self::instrument_from_symbol(&sym, account_type);
+            let instrument_name = Self::instrument_from_symbol(&sym, account_type)?;
             params.insert("instrument_name".to_string(), json!(instrument_name));
             let response = self.rpc_call(DeribitMethod::GetOpenOrdersByInstrument, params).await?;
             DeribitParser::parse_orders(&response)
@@ -910,7 +921,7 @@ impl Trading for DeribitConnector {
             let instrument_name = if symbol_str.contains('/') {
                 let parts: Vec<&str> = symbol_str.splitn(2, '/').collect();
                 let sym = crate::core::Symbol::new(parts[0], *parts.get(1).unwrap_or(&"USD"));
-                Self::instrument_from_symbol(&sym, account_type)
+                Self::instrument_from_symbol(&sym, account_type)?
             } else {
                 symbol_str.clone()
             };
@@ -1052,7 +1063,7 @@ impl Positions for DeribitConnector {
 
         if let Some(sym) = symbol {
             // Get single position
-            let instrument_name = Self::instrument_from_symbol(&sym, account_type);
+            let instrument_name = Self::instrument_from_symbol(&sym, account_type)?;
             params.insert("instrument_name".to_string(), json!(instrument_name));
 
             let response = self.rpc_call(DeribitMethod::GetPosition, params).await?;
@@ -1079,7 +1090,7 @@ impl Positions for DeribitConnector {
             crate::core::Symbol { base: symbol.to_string(), quote: String::new(), raw: Some(symbol.to_string()) }
         };
 
-        let instrument_name = Self::instrument_from_symbol(&symbol_obj, account_type);
+        let instrument_name = Self::instrument_from_symbol(&symbol_obj, account_type)?;
 
         let mut params = HashMap::new();
         params.insert("instrument_name".to_string(), json!(instrument_name));
@@ -1110,7 +1121,7 @@ impl Positions for DeribitConnector {
         match req {
             PositionModification::ClosePosition { ref symbol, account_type } => {
                 let symbol = symbol.clone();
-                let instrument_name = Self::instrument_from_symbol(&symbol, account_type);
+                let instrument_name = Self::instrument_from_symbol(&symbol, account_type)?;
 
                 let mut params = HashMap::new();
                 params.insert("instrument_name".to_string(), json!(instrument_name));
@@ -1165,7 +1176,7 @@ impl CancelAll for DeribitConnector {
 
             CancelScope::All { symbol: Some(sym) } | CancelScope::BySymbol { symbol: sym } => {
                 // Cancel all orders for a specific instrument
-                let instrument_name = Self::instrument_from_symbol(&sym, account_type);
+                let instrument_name = Self::instrument_from_symbol(&sym, account_type)?;
                 let mut params = HashMap::new();
                 params.insert("instrument_name".to_string(), json!(instrument_name));
 

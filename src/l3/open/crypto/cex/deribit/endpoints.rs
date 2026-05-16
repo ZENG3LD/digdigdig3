@@ -8,7 +8,7 @@
 //! - Parameters: Named objects (no positional parameters)
 //! - All requests via POST (even queries)
 
-use crate::core::types::AccountType;
+use crate::core::types::{AccountType, ExchangeError, ExchangeResult};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // URLs
@@ -230,18 +230,18 @@ impl DeribitMethod {
 /// use connectors_v5::core::types::AccountType;
 ///
 /// // Perpetual futures
-/// assert_eq!(format_symbol("BTC", "USD", AccountType::FuturesCross), "BTC-PERPETUAL");
-/// assert_eq!(format_symbol("ETH", "USD", AccountType::FuturesCross), "ETH-PERPETUAL");
+/// assert_eq!(format_symbol("BTC", "USD", AccountType::FuturesCross).unwrap(), "BTC-PERPETUAL");
+/// assert_eq!(format_symbol("ETH", "USD", AccountType::FuturesCross).unwrap(), "ETH-PERPETUAL");
 ///
 /// // Linear perpetuals (USDC-settled)
-/// assert_eq!(format_symbol("SOL", "USDC", AccountType::FuturesCross), "SOL_USDC-PERPETUAL");
+/// assert_eq!(format_symbol("SOL", "USDC", AccountType::FuturesCross).unwrap(), "SOL_USDC-PERPETUAL");
 /// ```
-pub fn format_symbol(base: &str, quote: &str, account_type: AccountType) -> String {
+pub fn format_symbol(base: &str, quote: &str, account_type: AccountType) -> ExchangeResult<String> {
     match account_type {
         AccountType::Spot => {
             // Deribit has very limited spot (mainly derivatives exchange)
             // For consistency, use hyphen separator
-            format!("{}-{}", base.to_uppercase(), quote.to_uppercase())
+            Ok(format!("{}-{}", base.to_uppercase(), quote.to_uppercase()))
         }
         AccountType::FuturesCross | AccountType::FuturesIsolated => {
             let base = base.to_uppercase();
@@ -249,21 +249,32 @@ pub fn format_symbol(base: &str, quote: &str, account_type: AccountType) -> Stri
 
             // Linear perpetuals (USDC-settled): BASE_USDC-PERPETUAL
             if quote == "USDC" {
-                format!("{}_USDC-PERPETUAL", base)
+                Ok(format!("{}_USDC-PERPETUAL", base))
             }
             // Inverse perpetuals (BTC/ETH-settled): BASE-PERPETUAL
             else {
-                format!("{}-PERPETUAL", base)
+                Ok(format!("{}-PERPETUAL", base))
             }
         }
         AccountType::Margin => {
             // Deribit doesn't have traditional margin trading
             // Default to perpetual format
-            format!("{}-PERPETUAL", base.to_uppercase())
+            Ok(format!("{}-PERPETUAL", base.to_uppercase()))
+        }
+        AccountType::Options => {
+            // Deribit options require a specific instrument_name encoding expiry, strike, and side
+            // (e.g. "BTC-30MAY26-50000-C"). A generic Symbol with only base/quote cannot encode
+            // these fields. Callers must use Symbol::with_raw("BTC-30MAY26-50000-C") to supply
+            // the full instrument name directly.
+            Err(ExchangeError::UnsupportedOperation(
+                "Deribit options require specific instrument_name (e.g. BTC-30MAY26-50000-C); \
+                 generic Symbol not supported. Use Symbol::with_raw(\"<instrument>\") to bypass."
+                    .to_string(),
+            ))
         }
         _ => {
             // Unsupported account types default to spot format
-            format!("{}-{}", base.to_uppercase(), quote.to_uppercase())
+            Ok(format!("{}-{}", base.to_uppercase(), quote.to_uppercase()))
         }
     }
 }
@@ -314,29 +325,43 @@ mod tests {
     fn test_format_symbol() {
         // Inverse perpetuals
         assert_eq!(
-            format_symbol("BTC", "USD", AccountType::FuturesCross),
+            format_symbol("BTC", "USD", AccountType::FuturesCross).unwrap(),
             "BTC-PERPETUAL"
         );
         assert_eq!(
-            format_symbol("ETH", "USD", AccountType::FuturesCross),
+            format_symbol("ETH", "USD", AccountType::FuturesCross).unwrap(),
             "ETH-PERPETUAL"
         );
 
         // Linear perpetuals (USDC)
         assert_eq!(
-            format_symbol("SOL", "USDC", AccountType::FuturesCross),
+            format_symbol("SOL", "USDC", AccountType::FuturesCross).unwrap(),
             "SOL_USDC-PERPETUAL"
         );
         assert_eq!(
-            format_symbol("XRP", "USDC", AccountType::FuturesCross),
+            format_symbol("XRP", "USDC", AccountType::FuturesCross).unwrap(),
             "XRP_USDC-PERPETUAL"
         );
 
         // Spot (limited on Deribit)
         assert_eq!(
-            format_symbol("BTC", "USDC", AccountType::Spot),
+            format_symbol("BTC", "USDC", AccountType::Spot).unwrap(),
             "BTC-USDC"
         );
+    }
+
+    #[test]
+    fn test_deribit_options_generic_symbol_unsupported() {
+        // Generic Symbol with only base/quote cannot encode expiry/strike/side for options.
+        // format_symbol must return UnsupportedOperation for AccountType::Options.
+        let result = format_symbol("BTC", "USD", AccountType::Options);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            crate::core::types::ExchangeError::UnsupportedOperation(msg) => {
+                assert!(msg.contains("instrument_name"), "error should mention instrument_name");
+            }
+            other => panic!("expected UnsupportedOperation, got {:?}", other),
+        }
     }
 
     #[test]

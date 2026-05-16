@@ -1819,6 +1819,7 @@ impl DydxConnector {
             crate::core::Symbol {
                 base: parts.first().copied().unwrap_or(s).to_string(),
                 quote: parts.get(1).copied().unwrap_or("USD").to_string(),
+                raw: None,
             }
         });
 

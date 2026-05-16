@@ -174,30 +174,57 @@ impl GateioParser {
         let mut klines = Vec::with_capacity(arr.len());
 
         for item in arr {
-            let candle = item.as_array()
-                .ok_or_else(|| ExchangeError::Parse("Kline is not an array".to_string()))?;
+            if item.is_array() {
+                let candle = item.as_array().expect("checked is_array");
 
-            if candle.len() < 6 {
-                continue;
+                if candle.len() < 6 {
+                    continue;
+                }
+
+                // Gate.io spot format: [time, volume, close, high, low, open, quote_volume]
+                //                        0      1       2      3    4     5         6
+                let open_time = candle[0].as_str()
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .unwrap_or(0) * 1000; // seconds to ms
+
+                klines.push(Kline {
+                    open_time,
+                    open: Self::parse_f64(&candle[5]).unwrap_or(0.0),     // index 5
+                    close: Self::parse_f64(&candle[2]).unwrap_or(0.0),    // index 2
+                    high: Self::parse_f64(&candle[3]).unwrap_or(0.0),     // index 3
+                    low: Self::parse_f64(&candle[4]).unwrap_or(0.0),      // index 4
+                    volume: Self::parse_f64(&candle[1]).unwrap_or(0.0),   // index 1
+                    quote_volume: candle.get(6).and_then(Self::parse_f64), // index 6
+                    close_time: None,
+                    trades: None,
+                });
+            } else if item.is_object() {
+                // Gate.io futures format: {"t":ts,"v":vol,"c":"close","h":"high","l":"low","o":"open","sum":"quote_vol"}
+                let parse_num = |v: &Value| -> f64 {
+                    v.as_str()
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .or_else(|| v.as_f64())
+                        .unwrap_or(0.0)
+                };
+
+                let ts = item["t"].as_i64()
+                    .ok_or_else(|| ExchangeError::Parse("kline.t missing".to_string()))?;
+                let open_time = ts * 1000; // seconds to ms
+
+                klines.push(Kline {
+                    open_time,
+                    open: parse_num(&item["o"]),
+                    close: parse_num(&item["c"]),
+                    high: parse_num(&item["h"]),
+                    low: parse_num(&item["l"]),
+                    volume: parse_num(&item["v"]),
+                    quote_volume: item.get("sum").map(parse_num),
+                    close_time: None,
+                    trades: None,
+                });
+            } else {
+                return Err(ExchangeError::Parse("Kline element not array or object".to_string()));
             }
-
-            // Gate.io format: [time, volume, close, high, low, open, quote_volume]
-            //                   0      1       2      3    4     5         6
-            let open_time = candle[0].as_str()
-                .and_then(|s| s.parse::<i64>().ok())
-                .unwrap_or(0) * 1000; // seconds to ms
-
-            klines.push(Kline {
-                open_time,
-                open: Self::parse_f64(&candle[5]).unwrap_or(0.0),     // index 5
-                close: Self::parse_f64(&candle[2]).unwrap_or(0.0),    // index 2
-                high: Self::parse_f64(&candle[3]).unwrap_or(0.0),     // index 3
-                low: Self::parse_f64(&candle[4]).unwrap_or(0.0),      // index 4
-                volume: Self::parse_f64(&candle[1]).unwrap_or(0.0),   // index 1
-                quote_volume: candle.get(6).and_then(Self::parse_f64), // index 6
-                close_time: None,
-                trades: None,
-            });
         }
 
         // Gate.io returns oldest first (ascending timestamps) — no reverse needed
@@ -1017,6 +1044,27 @@ mod tests {
         assert!((kline.high - 8550.24).abs() < f64::EPSILON);
         assert!((kline.low - 8527.17).abs() < f64::EPSILON);
         assert!((kline.volume - 123.456).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_parse_klines_gateio_futures_object_form() {
+        // Gate.io futures /api/v4/futures/{settle}/candlesticks returns objects, not arrays
+        let response = json!([
+            {"t": 1716000000i64, "v": 5432, "c": "69500.0", "h": "70000.0", "l": "68000.0", "o": "68200.0", "sum": "374235000.0"},
+            {"t": 1716003600i64, "v": 3210, "c": "69800.0", "h": "70200.0", "l": "69400.0", "o": "69500.0", "sum": "224100000.0"}
+        ]);
+
+        let klines = GateioParser::parse_klines(&response).unwrap();
+        assert_eq!(klines.len(), 2);
+
+        let k = &klines[0];
+        assert_eq!(k.open_time, 1716000000_i64 * 1000);
+        assert!((k.open - 68200.0).abs() < f64::EPSILON);
+        assert!((k.close - 69500.0).abs() < f64::EPSILON);
+        assert!((k.high - 70000.0).abs() < f64::EPSILON);
+        assert!((k.low - 68000.0).abs() < f64::EPSILON);
+        assert!((k.volume - 5432.0).abs() < f64::EPSILON);
+        assert!((k.quote_volume.unwrap() - 374235000.0).abs() < 0.001);
     }
 
     #[test]

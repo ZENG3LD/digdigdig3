@@ -95,8 +95,16 @@ impl HtxParser {
     pub fn parse_ticker(json: &Value, symbol: &str) -> ExchangeResult<Ticker> {
         let tick = Self::extract_result_v1(json)?;
 
-        let last_price = tick["close"].as_f64()
-            .ok_or_else(|| ExchangeError::Parse("Invalid close price".into()))?;
+        // HTX futures (linear-swap) returns last_px instead of close.
+        // Values may be numbers or numeric strings depending on endpoint variant.
+        let parse_price_field = |v: &Value| -> Option<f64> {
+            v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        };
+        let last_price = parse_price_field(&tick["close"])
+            .or_else(|| parse_price_field(&tick["last_px"]))
+            .or_else(|| parse_price_field(&tick["last"]))
+            .or_else(|| parse_price_field(&tick["price"]))
+            .ok_or_else(|| ExchangeError::Parse("Invalid close price (tried close/last_px/last/price)".into()))?;
 
         let bid_price = tick["bid"].as_array()
             .and_then(|arr| arr.first())
@@ -652,6 +660,34 @@ mod tests {
         assert_eq!(ticker.ask_price, Some(49500.0));
         assert_eq!(ticker.high_24h, Some(50000.0));
         assert_eq!(ticker.low_24h, Some(47500.0));
+    }
+
+    #[test]
+    fn test_parse_ticker_htx_futures() {
+        // HTX linear-swap /linear-swap-ex/market/detail/merged returns last_px instead of close.
+        // Numeric fields are numbers (same as spot), only the close field name differs.
+        let json = json!({
+            "status": "ok",
+            "ch": "market.BTC-USDT.detail.merged",
+            "ts": 1716000000000i64,
+            "tick": {
+                "id": 1716000000i64,
+                "amount": 5432.1,
+                "count": 12345,
+                "open": 68000.0,
+                "last_px": 69500.0,
+                "low": 67000.0,
+                "high": 70000.0,
+                "vol": 374235000.0,
+                "bid": [69499.0, 0.5],
+                "ask": [69500.0, 0.3]
+            }
+        });
+
+        let ticker = HtxParser::parse_ticker(&json, "BTC-USDT").unwrap();
+        assert_eq!(ticker.last_price, 69500.0);
+        assert_eq!(ticker.high_24h, Some(70000.0));
+        assert_eq!(ticker.low_24h, Some(67000.0));
     }
 
     #[test]

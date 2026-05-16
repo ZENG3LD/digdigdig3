@@ -190,6 +190,11 @@ impl StarkNetProvider {
         Self::new("https://alpha-sepolia.starknet.io", "SN_SEPOLIA")
     }
 
+    /// Chain ID string (e.g. `"SN_MAIN"` or `"SN_SEPOLIA"`).
+    pub fn chain_id(&self) -> &str {
+        &self.chain_id
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Internal JSON-RPC helpers
     // ─────────────────────────────────────────────────────────────────────────
@@ -544,7 +549,7 @@ mod tests {
     fn test_chain_family_sepolia() {
         let provider = StarkNetProvider::sepolia();
         assert_eq!(provider.chain_family(), ChainFamily::StarkNet);
-        assert_eq!(provider.chain_id, "SN_SEPOLIA");
+        assert_eq!(provider.chain_id(), "SN_SEPOLIA");
     }
 
     #[test]
@@ -579,7 +584,7 @@ mod tests {
     fn test_mainnet_rpc_url() {
         let p = StarkNetProvider::mainnet();
         assert_eq!(p.rpc_url, "https://alpha-mainnet.starknet.io");
-        assert_eq!(p.chain_id, "SN_MAIN");
+        assert_eq!(p.chain_id(), "SN_MAIN");
     }
 
     #[test]

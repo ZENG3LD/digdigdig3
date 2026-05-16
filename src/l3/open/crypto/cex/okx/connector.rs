@@ -2264,8 +2264,14 @@ impl MarketDataPublic for OkxConnector {
     ) -> ExchangeResult<Vec<crate::core::types::Liquidation>> {
         let inst_type = get_inst_type(account_type);
         let inst_id = symbol.map(|s| format_symbol(&s.base, &s.quote, account_type));
+        // OKX /public/liquidation-orders requires instFamily or uly for SWAP/FUTURES/OPTION.
+        // instFamily format: "BTC-USDT" (USDT-margined) or "BTC-USD" (coin-margined).
+        // This connector maps FuturesCross/FuturesIsolated to SWAP (USDT-margined), so use base-quote.
+        let inst_family = symbol.map(|s| {
+            format!("{}-{}", s.base.to_uppercase(), s.quote.to_uppercase())
+        });
         // OKX liquidation-orders endpoint uses cursor pagination (before/after), not time range.
-        self.get_liquidation_orders(inst_type, None, inst_id.as_deref(), Some("filled"), None, None, limit).await
+        self.get_liquidation_orders(inst_type, inst_family.as_deref(), inst_id.as_deref(), Some("filled"), None, None, limit).await
     }
 
     async fn get_long_short_ratio_history(
@@ -2364,5 +2370,30 @@ impl crate::core::traits::HasCapabilities for OkxConnector {
             has_ws_mark_price: true,
             has_ws_funding_rate: true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::core::Symbol;
+
+    #[test]
+    fn test_okx_liquidation_instfamily_derivation() {
+        // Replicates the instFamily derivation logic from get_liquidation_history.
+        let symbol = Symbol::new("BTC", "USDT");
+        let inst_family = format!(
+            "{}-{}",
+            symbol.base.to_uppercase(),
+            symbol.quote.to_uppercase()
+        );
+        assert_eq!(inst_family, "BTC-USDT");
+
+        let eth_symbol = Symbol::new("ETH", "USDT");
+        let eth_family = format!(
+            "{}-{}",
+            eth_symbol.base.to_uppercase(),
+            eth_symbol.quote.to_uppercase()
+        );
+        assert_eq!(eth_family, "ETH-USDT");
     }
 }

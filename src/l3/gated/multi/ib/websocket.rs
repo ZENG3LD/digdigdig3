@@ -26,6 +26,11 @@ impl IBWebSocket {
         }
     }
 
+    /// WebSocket URL this connector was constructed with.
+    pub fn ws_url(&self) -> &str {
+        &self.ws_url
+    }
+
     /// Connect to WebSocket (placeholder)
     pub async fn connect(&self) -> ExchangeResult<()> {
         Err(ExchangeError::UnsupportedOperation(
@@ -55,6 +60,6 @@ mod tests {
     #[test]
     fn test_websocket_creation() {
         let ws = IBWebSocket::new("wss://localhost:5000/v1/api/ws");
-        assert_eq!(ws.ws_url, "wss://localhost:5000/v1/api/ws");
+        assert_eq!(ws.ws_url(), "wss://localhost:5000/v1/api/ws");
     }
 }

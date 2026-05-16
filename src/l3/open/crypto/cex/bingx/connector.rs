@@ -1243,8 +1243,21 @@ impl Positions for BingxConnector {
             _ => {}
         }
 
+        // BingX swap requires "BTC-USDT" format; callers may pass "BTCUSDT" (raw concat).
+        let formatted_symbol = if symbol.contains('-') {
+            symbol.to_string()
+        } else if let Some(base) = symbol.strip_suffix("USDT") {
+            format!("{}-USDT", base)
+        } else if let Some(base) = symbol.strip_suffix("USDC") {
+            format!("{}-USDC", base)
+        } else if let Some(base) = symbol.strip_suffix("BTC") {
+            format!("{}-BTC", base)
+        } else {
+            symbol.to_string()
+        };
+
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("symbol".to_string(), formatted_symbol);
 
         let response = self.get(BingxEndpoint::SwapOpenInterest, params, account_type).await?;
         self.check_response(&response)?;
@@ -2148,5 +2161,32 @@ impl crate::core::traits::HasCapabilities for BingxConnector {
             has_ws_orderbook: true, has_ws_ticker: true,
             has_ws_mark_price: false, has_ws_funding_rate: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Replicate the symbol normalization logic from get_open_interest.
+    fn normalize_bingx_swap_symbol(symbol: &str) -> String {
+        if symbol.contains('-') {
+            symbol.to_string()
+        } else if let Some(base) = symbol.strip_suffix("USDT") {
+            format!("{}-USDT", base)
+        } else if let Some(base) = symbol.strip_suffix("USDC") {
+            format!("{}-USDC", base)
+        } else if let Some(base) = symbol.strip_suffix("BTC") {
+            format!("{}-BTC", base)
+        } else {
+            symbol.to_string()
+        }
+    }
+
+    #[test]
+    fn test_bingx_open_interest_symbol_format() {
+        assert_eq!(normalize_bingx_swap_symbol("BTCUSDT"), "BTC-USDT");
+        assert_eq!(normalize_bingx_swap_symbol("ETHUSDT"), "ETH-USDT");
+        assert_eq!(normalize_bingx_swap_symbol("SOLUSDC"), "SOL-USDC");
+        assert_eq!(normalize_bingx_swap_symbol("BTC-USDT"), "BTC-USDT");
+        assert_eq!(normalize_bingx_swap_symbol("ETH-USDT"), "ETH-USDT");
     }
 }

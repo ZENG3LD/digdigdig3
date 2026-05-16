@@ -33,7 +33,7 @@ fn btc_usdt() -> Symbol {
 #[tokio::test]
 #[ignore]
 async fn test_orderbook_capabilities() {
-    let ws = match OkxWebSocket::new(None, false).await {
+    let ws = match OkxWebSocket::new(None, false, AccountType::Spot).await {
         Ok(w) => w,
         Err(e) => {
             println!("Failed to create WebSocket: {:?}", e);
@@ -58,7 +58,7 @@ async fn test_orderbook_capabilities() {
 #[tokio::test]
 #[ignore]
 async fn test_subscribe_orderbook() {
-    let ws = match OkxWebSocket::new(None, false).await {
+    let ws = match OkxWebSocket::new(None, false, AccountType::Spot).await {
         Ok(w) => w,
         Err(e) => {
             println!("Failed to create WebSocket: {:?}", e);
@@ -135,7 +135,7 @@ async fn test_subscribe_orderbook() {
 #[tokio::test]
 #[ignore]
 async fn test_subscribe_trades() {
-    let ws = match OkxWebSocket::new(None, false).await {
+    let ws = match OkxWebSocket::new(None, false, AccountType::Spot).await {
         Ok(w) => w,
         Err(e) => {
             println!("Failed to create WebSocket: {:?}", e);
@@ -184,7 +184,7 @@ async fn test_orderbook_depth_levels() {
     for depth in &depths {
         println!("Testing OKX depth={}...", depth);
 
-        let ws = match OkxWebSocket::new(None, false).await {
+        let ws = match OkxWebSocket::new(None, false, AccountType::Spot).await {
             Ok(w) => w,
             Err(e) => {
                 println!("Failed to create WebSocket for depth={}: {:?}", depth, e);

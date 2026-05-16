@@ -884,7 +884,7 @@ impl ConnectorFactory {
             // CEX — new(credentials, testnet) — no account_type param
             // ═══════════════════════════════════════════════════════════════════
             ExchangeId::OKX => {
-                let ws = OkxWebSocket::new(None, testnet).await?;
+                let ws = OkxWebSocket::new(None, testnet, account_type).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
             // ═══════════════════════════════════════════════════════════════════

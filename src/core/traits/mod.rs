@@ -69,6 +69,7 @@ pub use operations::{
     FundingHistory, AccountLedger,
 };
 pub use has_capabilities::HasCapabilities;
+pub use crate::core::websocket::CapabilityProvider;
 // ═══════════════════════════════════════════════════════════════════════════════
 // COMPOSITE TRAIT
 // ═══════════════════════════════════════════════════════════════════════════════

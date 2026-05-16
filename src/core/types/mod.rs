@@ -38,3 +38,7 @@ pub use responses::{
     FundingPayment, FundingFilter,
     LedgerEntry, LedgerEntryType, LedgerFilter,
 };
+
+// ── Wave 0: WebSocket framework types ────────────────────────────────────────
+// Re-exported so callers can use `digdigdig3::core::types::StreamKind` etc.
+pub use crate::core::websocket::{KlineInterval, StreamKind, StreamSpec, SupportLevel};

@@ -36,6 +36,7 @@
 
 mod registry;
 mod pool;
+mod ws_pool;
 mod aggregator;
 mod config;
 mod factory;
@@ -44,6 +45,7 @@ pub use registry::{
     AuthType, ConnectorCategory, ConnectorMetadata, ConnectorRegistry, Features,
 };
 pub use pool::{ConnectorPool, ConnectorPoolBuilder};
+pub use ws_pool::WebSocketPool;
 pub use aggregator::{BestBidAsk, ConnectorAggregator, ConnectorAggregatorBuilder};
 pub use config::{ConnectorConfig, ConnectorConfigManager, ExchangeCredentials};
 pub use factory::ConnectorFactory;

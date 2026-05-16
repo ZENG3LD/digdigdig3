@@ -43,7 +43,6 @@ mod trading;
 mod account;
 mod positions;
 mod websocket;
-mod websocket_stubs;
 mod auth;
 mod operations;
 
@@ -91,11 +90,20 @@ pub trait CoreConnector:
     + Trading
     + Account
     + Positions
-    + WebSocketConnector
     + Send
     + Sync
     + 'static
 {
+    /// Downcast to a concrete connector for exchange-specific inherent methods.
+    ///
+    /// Example:
+    /// ```ignore
+    /// let conn = pool.get(&ExchangeId::Binance)?;
+    /// if let Some(binance) = conn.as_any().downcast_ref::<BinanceConnector>() {
+    ///     let basis = binance.get_basis_history("BTCUSDT", "PERPETUAL", "5m", None, None, None).await?;
+    /// }
+    /// ```
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 impl<T> CoreConnector for T where
@@ -105,9 +113,11 @@ impl<T> CoreConnector for T where
         + Trading
         + Account
         + Positions
-        + WebSocketConnector
         + Send
         + Sync
         + 'static
 {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }

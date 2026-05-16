@@ -46,8 +46,8 @@
 //! - Load credentials from environment variables
 
 use std::sync::Arc;
-use crate::core::types::{ExchangeId, ExchangeResult, ExchangeError};
-use crate::core::traits::{Credentials, CoreConnector};
+use crate::core::types::{AccountType, ExchangeId, ExchangeResult, ExchangeError};
+use crate::core::traits::{Credentials, CoreConnector, WebSocketConnector};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR IMPORTS - CEX
@@ -121,6 +121,43 @@ use crate::l3::open::prediction::polymarket::PolymarketConnector;
 
 use crate::l1::free::yahoo::YahooFinanceConnector;
 use crate::l2::paid::cryptocompare::CryptoCompareConnector;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WEBSOCKET IMPORTS - CEX
+// ═══════════════════════════════════════════════════════════════════════════════
+
+use crate::l3::open::crypto::cex::binance::BinanceWebSocket;
+use crate::l3::open::crypto::cex::bybit::BybitWebSocket;
+use crate::l3::open::crypto::cex::okx::OkxWebSocket;
+use crate::l3::open::crypto::cex::kucoin::KuCoinWebSocket;
+use crate::l3::open::crypto::cex::kraken::KrakenWebSocket;
+use crate::l3::open::crypto::cex::gateio::GateioWebSocket;
+use crate::l3::open::crypto::cex::bitfinex::BitfinexWebSocket;
+use crate::l3::open::crypto::cex::bitstamp::BitstampWebSocket;
+use crate::l3::open::crypto::cex::gemini::GeminiWebSocket;
+use crate::l3::open::crypto::cex::mexc::MexcWebSocket;
+use crate::l3::open::crypto::cex::htx::HtxWebSocket;
+use crate::l3::open::crypto::cex::bitget::BitgetWebSocket;
+use crate::l3::open::crypto::cex::bingx::BingxWebSocket;
+use crate::l3::open::crypto::cex::crypto_com::CryptoComWebSocket;
+use crate::l3::open::crypto::cex::upbit::UpbitWebSocket;
+use crate::l3::open::crypto::cex::deribit::DeribitWebSocket;
+use crate::l3::open::crypto::cex::hyperliquid::HyperliquidWebSocket;
+use crate::l3::open::crypto::cex::coinbase::CoinbaseWebSocket;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WEBSOCKET IMPORTS - DEX
+// ═══════════════════════════════════════════════════════════════════════════════
+
+use crate::l3::open::crypto::dex::dydx::DydxWebSocket;
+use crate::l3::open::crypto::dex::lighter::LighterWebSocket;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WEBSOCKET IMPORTS - DATA FEEDS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+use crate::l1::free::yahoo::YahooFinanceWebSocket;
+use crate::l2::paid::cryptocompare::CryptoCompareWebSocket;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR FACTORY
@@ -773,6 +810,255 @@ impl ConnectorFactory {
                     "Custom exchange IDs not supported by factory - create manually".into()
                 ))
             }
+        }
+    }
+
+    /// Create a public WebSocket connector for any supported exchange.
+    ///
+    /// Returns `Arc<dyn WebSocketConnector>` ready to `connect()`. All
+    /// connectors are created with `None` credentials (public streams only).
+    /// For private streams, construct the concrete `*WebSocket` struct directly.
+    ///
+    /// Exchanges that require credentials for WS construction (Alpaca, Dhan, IB,
+    /// Tiingo, Moex, Polygon) return `Err(ExchangeError::UnsupportedOperation)`.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The exchange identifier
+    /// * `account_type` - Account type (spot, futures, etc.) — affects WS URL on
+    ///   many exchanges (Binance, Bybit, Bitfinex, Gate.io, …)
+    /// * `testnet` - Whether to connect to testnet endpoint
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let ws = ConnectorFactory::create_websocket(
+    ///     ExchangeId::Binance,
+    ///     AccountType::Spot,
+    ///     false,
+    /// ).await?;
+    /// ws.connect(AccountType::Spot).await?;
+    /// ```
+    pub async fn create_websocket(
+        id: ExchangeId,
+        account_type: AccountType,
+        testnet: bool,
+    ) -> ExchangeResult<Arc<dyn WebSocketConnector>> {
+        match id {
+            // ═══════════════════════════════════════════════════════════════════
+            // CEX — new(credentials, testnet, account_type)
+            // ═══════════════════════════════════════════════════════════════════
+            ExchangeId::Binance => {
+                let ws = BinanceWebSocket::new(None, testnet, account_type).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::Bybit => {
+                let ws = BybitWebSocket::new(None, testnet, account_type).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::GateIO => {
+                let ws = GateioWebSocket::new(None, testnet, account_type).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::Bitfinex => {
+                let ws = BitfinexWebSocket::new(None, testnet, account_type).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::Bitget => {
+                let ws = BitgetWebSocket::new(None, testnet, account_type).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::BingX => {
+                let ws = BingxWebSocket::new(None, testnet, account_type).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::Deribit => {
+                let ws = DeribitWebSocket::new(None, testnet, account_type).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::KuCoin => {
+                let ws = KuCoinWebSocket::new(None, testnet, account_type).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            // ═══════════════════════════════════════════════════════════════════
+            // CEX — new(credentials, testnet) — no account_type param
+            // ═══════════════════════════════════════════════════════════════════
+            ExchangeId::OKX => {
+                let ws = OkxWebSocket::new(None, testnet).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            // ═══════════════════════════════════════════════════════════════════
+            // CEX — sync new(credentials, testnet, account_type)
+            // ═══════════════════════════════════════════════════════════════════
+            ExchangeId::HTX => {
+                let ws = HtxWebSocket::new(None, testnet, account_type)?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            // ═══════════════════════════════════════════════════════════════════
+            // CEX — new(credentials) — no testnet, no account_type
+            // ═══════════════════════════════════════════════════════════════════
+            ExchangeId::Coinbase => {
+                let ws = CoinbaseWebSocket::new(None).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            // ═══════════════════════════════════════════════════════════════════
+            // CEX — new() — no credentials
+            // ═══════════════════════════════════════════════════════════════════
+            ExchangeId::Bitstamp => {
+                let ws = BitstampWebSocket::new().await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::MEXC => {
+                let ws = MexcWebSocket::new(None).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            // ═══════════════════════════════════════════════════════════════════
+            // CEX — Gemini: new_market_data(testnet)
+            // ═══════════════════════════════════════════════════════════════════
+            ExchangeId::Gemini => {
+                let ws = GeminiWebSocket::new_market_data(testnet).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            // ═══════════════════════════════════════════════════════════════════
+            // CEX — Kraken: new(token, account_type) — no credentials for public
+            // ═══════════════════════════════════════════════════════════════════
+            ExchangeId::Kraken => {
+                let ws = KrakenWebSocket::new(None, account_type).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            // ═══════════════════════════════════════════════════════════════════
+            // CEX — Upbit: new(credentials, region)
+            // ═══════════════════════════════════════════════════════════════════
+            ExchangeId::Upbit => {
+                let ws = UpbitWebSocket::new(None, "sg").await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            // ═══════════════════════════════════════════════════════════════════
+            // CEX — HyperLiquid: sync new(is_testnet)
+            // ═══════════════════════════════════════════════════════════════════
+            ExchangeId::HyperLiquid => {
+                let ws = HyperliquidWebSocket::new(testnet);
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            // ═══════════════════════════════════════════════════════════════════
+            // CEX — CryptoCom: sync new(auth, is_user_stream)
+            // ═══════════════════════════════════════════════════════════════════
+            ExchangeId::CryptoCom => {
+                let ws = CryptoComWebSocket::new(None, false);
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            // ═══════════════════════════════════════════════════════════════════
+            // DEX — DyDx: new(testnet, account_type)
+            // ═══════════════════════════════════════════════════════════════════
+            ExchangeId::Dydx => {
+                let ws = DydxWebSocket::new(testnet, account_type).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            // ═══════════════════════════════════════════════════════════════════
+            // DEX — Lighter: public(testnet)
+            // ═══════════════════════════════════════════════════════════════════
+            ExchangeId::Lighter => {
+                let ws = LighterWebSocket::public(testnet).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            // ═══════════════════════════════════════════════════════════════════
+            // PREDICTION — Polymarket: ClobWebSocket does not impl WebSocketConnector
+            // ═══════════════════════════════════════════════════════════════════
+            ExchangeId::Polymarket => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "Polymarket ClobWebSocket does not implement WebSocketConnector — use ClobWebSocket directly".into()
+                ))
+            }
+            // ═══════════════════════════════════════════════════════════════════
+            // DATA FEEDS — public constructors
+            // ═══════════════════════════════════════════════════════════════════
+            ExchangeId::YahooFinance => {
+                let ws = YahooFinanceWebSocket::new();
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::CryptoCompare => {
+                let ws = CryptoCompareWebSocket::new();
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::Twelvedata => {
+                // TwelvedataWebSocket requires an API key — no public no-key constructor
+                Err(ExchangeError::UnsupportedOperation(
+                    "TwelvedataWebSocket requires an API key — construct directly with TwelvedataWebSocket::new(api_key)".into()
+                ))
+            }
+            // ═══════════════════════════════════════════════════════════════════
+            // DATA FEEDS — require credentials (auth not accessible from factory)
+            // ═══════════════════════════════════════════════════════════════════
+            ExchangeId::Finnhub => {
+                // FinnhubWebSocket::new(credentials) — requires API key
+                Err(ExchangeError::UnsupportedOperation(
+                    "FinnhubWebSocket requires credentials — construct directly with FinnhubWebSocket::new(credentials)".into()
+                ))
+            }
+            ExchangeId::Polygon => {
+                // PolygonWebSocket::new(credentials, realtime) — requires API key
+                Err(ExchangeError::UnsupportedOperation(
+                    "PolygonWebSocket requires credentials — construct directly with PolygonWebSocket::new(credentials, realtime)".into()
+                ))
+            }
+            ExchangeId::Tiingo => {
+                // TiingoWebSocket requires TiingoAuth (internal type, not re-exported)
+                Err(ExchangeError::UnsupportedOperation(
+                    "TiingoWebSocket requires TiingoAuth — construct directly via TiingoWebSocket::new_iex/new_forex/new_crypto".into()
+                ))
+            }
+            ExchangeId::Moex => {
+                // MoexWebSocket::new_public() is available — use it
+                Err(ExchangeError::UnsupportedOperation(
+                    "MoexWebSocket requires MoexAuth — construct directly with MoexWebSocket::new_public()".into()
+                ))
+            }
+            // ═══════════════════════════════════════════════════════════════════
+            // GATED — require credentials, no public WS
+            // ═══════════════════════════════════════════════════════════════════
+            ExchangeId::Alpaca => {
+                // AlpacaWebSocket::new(AlpacaAuth) — auth not re-exported
+                Err(ExchangeError::UnsupportedOperation(
+                    "AlpacaWebSocket requires AlpacaAuth — construct directly with AlpacaWebSocket::new(auth)".into()
+                ))
+            }
+            ExchangeId::Dhan => {
+                // DhanWebSocket::new(access_token)
+                Err(ExchangeError::UnsupportedOperation(
+                    "DhanWebSocket requires access token — construct directly with DhanWebSocket::new(token)".into()
+                ))
+            }
+            ExchangeId::Ib => {
+                // IBWebSocket::new(ws_url)
+                Err(ExchangeError::UnsupportedOperation(
+                    "IBWebSocket requires a TWS/Gateway URL — construct directly with IBWebSocket::new(url)".into()
+                ))
+            }
+            // ═══════════════════════════════════════════════════════════════════
+            // No WebSocket implementation
+            // ═══════════════════════════════════════════════════════════════════
+            ExchangeId::AlphaVantage
+            | ExchangeId::AngelOne
+            | ExchangeId::Zerodha
+            | ExchangeId::Upstox
+            | ExchangeId::Fyers
+            | ExchangeId::Oanda
+            | ExchangeId::Dukascopy
+            | ExchangeId::JQuants
+            | ExchangeId::Krx
+            | ExchangeId::Tinkoff
+            | ExchangeId::Futu
+            | ExchangeId::Bls
+            | ExchangeId::Coinglass
+            | ExchangeId::WhaleAlert
+            | ExchangeId::Fred
+            | ExchangeId::Bitquery
+            | ExchangeId::DefiLlama => Err(ExchangeError::UnsupportedOperation(
+                format!("{id:?} has no WebSocket implementation in digdigdig3")
+            )),
+            ExchangeId::Custom(_) => Err(ExchangeError::UnsupportedOperation(
+                "Custom exchange IDs not supported by WebSocket factory".into()
+            )),
         }
     }
 }

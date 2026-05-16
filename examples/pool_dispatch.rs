@@ -15,8 +15,8 @@
 
 use std::sync::Arc;
 
-use digdigdig3::connector_manager::{ConnectorFactory, ConnectorPool};
-use digdigdig3::core::traits::{CoreConnector, MarketData, MarketDataPublic, WebSocketConnector};
+use digdigdig3::connector_manager::{ConnectorFactory, ConnectorPool, WebSocketPool};
+use digdigdig3::core::traits::{CoreConnector, MarketData, MarketDataPublic};
 use digdigdig3::core::types::{AccountType, ExchangeId, Symbol};
 
 async fn populate_pool(pool: &ConnectorPool) {
@@ -101,15 +101,31 @@ async fn main() {
         }
     }
 
-    println!("\n[dispatch: WebSocket connect + subscribe via &dyn WebSocketConnector]");
-    for id in [ExchangeId::Binance, ExchangeId::Bybit, ExchangeId::OKX] {
-        if let Some(conn) = pool.get(&id) {
-            // Arc<dyn CoreConnector> already satisfies WebSocketConnector.
-            // Smoke: confirm connection_status dispatches without panic.
-            let status = WebSocketConnector::connection_status(&*conn);
-            println!("  {:?} ws_status={:?}", id, status);
+    println!("\n[as_any downcast: exchange-specific Binance method]");
+    if let Some(conn) = pool.get(&ExchangeId::Binance) {
+        use digdigdig3::l3::open::crypto::cex::binance::BinanceConnector;
+        if let Some(binance) = conn.as_any().downcast_ref::<BinanceConnector>() {
+            match binance.get_basis_history("BTCUSDT", "PERPETUAL", "5m", Some(3), None, None).await {
+                Ok(v) => println!("  OK  Binance.get_basis_history -> {} items", v.as_array().map(|a| a.len()).unwrap_or(0)),
+                Err(e) => println!("  ERR Binance.get_basis_history: {}", e),
+            }
+        } else {
+            println!("  downcast to BinanceConnector failed");
         }
     }
 
-    println!("\n── Done. Pool dispatch works through Arc<dyn CoreConnector>. ──\n");
+    println!("\n[WebSocketPool dispatch]");
+    let ws_pool = WebSocketPool::new();
+    for id in [ExchangeId::Binance, ExchangeId::Bybit, ExchangeId::OKX] {
+        match ConnectorFactory::create_websocket(id, AccountType::Spot, false).await {
+            Ok(ws) => {
+                ws_pool.insert(id, AccountType::Spot, ws.clone());
+                println!("  + {:?} ws inserted, status={:?}", id, ws.connection_status());
+            }
+            Err(e) => println!("  ! {:?} ws factory failed: {}", id, e),
+        }
+    }
+    println!("  ws_pool.len() = {}", ws_pool.len());
+
+    println!("\n── Done. REST surface via Arc<dyn CoreConnector>, WS via separate pool. ──\n");
 }

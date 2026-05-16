@@ -2304,3 +2304,65 @@ impl MarketDataPublic for OkxConnector {
         self.get_funding_rate_history(&inst_id, end_time, start_time, limit).await
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HAS CAPABILITIES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+impl crate::core::traits::HasCapabilities for OkxConnector {
+    fn capabilities(&self) -> crate::core::types::ConnectorCapabilities {
+        crate::core::types::ConnectorCapabilities {
+            // MarketData
+            has_ticker: true,
+            has_orderbook: true,
+            has_klines: true,
+            has_recent_trades: false,
+            has_exchange_info: true,
+            // MarketDataPublic (verified overrides: get_liquidation_history,
+            //   get_long_short_ratio_history, get_funding_rate_history)
+            has_liquidation_history: true,
+            has_long_short_ratio_history: true,
+            has_funding_rate_history: true,
+            has_open_interest_history: false,
+            has_premium_index: false,
+            has_mark_price_klines: false,
+            has_index_price_klines: false,
+            // Trading
+            has_market_order: true,
+            has_limit_order: true,
+            has_open_orders: true,
+            has_order_history: true,
+            has_user_trades: true,
+            // Positions
+            has_positions: true,
+            has_mark_price: true,
+            has_modify_position: true,
+            has_closed_pnl: false,
+            has_long_short_ratio: true,
+            // Operations
+            has_cancel_all: true,
+            has_amend_order: true,
+            has_batch_place: true,
+            has_batch_cancel: true,
+            max_batch_place_size: 20,
+            max_batch_cancel_size: 20,
+            // Account
+            has_balance: true,
+            has_account_info: true,
+            has_fees: true,
+            has_transfers: true,
+            has_deposit_withdraw: true,
+            has_sub_accounts: true,
+            has_funding_payments: true,
+            has_ledger: true,
+            // WebSocket
+            has_websocket: true,
+            has_ws_klines: true,
+            has_ws_trades: true,
+            has_ws_orderbook: true,
+            has_ws_ticker: true,
+            has_ws_mark_price: true,
+            has_ws_funding_rate: true,
+        }
+    }
+}

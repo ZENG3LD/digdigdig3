@@ -16,7 +16,7 @@
 use std::sync::Arc;
 
 use digdigdig3::connector_manager::{ConnectorFactory, ConnectorPool, WebSocketPool};
-use digdigdig3::core::traits::{CoreConnector, MarketData, MarketDataPublic, BatchOrders};
+use digdigdig3::core::traits::{CoreConnector, HasCapabilities, MarketData, MarketDataPublic, BatchOrders};
 use digdigdig3::core::types::{AccountType, ExchangeId, Symbol};
 
 async fn populate_pool(pool: &ConnectorPool) {
@@ -131,6 +131,18 @@ async fn main() {
     if let Some(conn) = pool.get(&ExchangeId::Binance) {
         let max = BatchOrders::max_batch_place_size(&*conn);
         println!("  Binance max_batch_place_size = {}", max);
+    }
+
+    println!("\n[capability discovery via pool]");
+    for id in [ExchangeId::Binance, ExchangeId::Bybit, ExchangeId::OKX] {
+        if let Some(conn) = pool.get(&id) {
+            let caps = HasCapabilities::capabilities(&*conn);
+            println!(
+                "  {:?}: batch_place={} (max={}), funding_history={}, transfers={}, ws={}",
+                id, caps.has_batch_place, caps.max_batch_place_size,
+                caps.has_funding_rate_history, caps.has_transfers, caps.has_websocket
+            );
+        }
     }
 
     println!("\n── Done. REST surface via Arc<dyn CoreConnector>, WS via separate pool. ──\n");

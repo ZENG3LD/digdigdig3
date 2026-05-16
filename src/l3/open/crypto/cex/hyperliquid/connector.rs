@@ -2010,3 +2010,31 @@ impl HyperliquidConnector {
         self.info_request(InfoType::UserNonFundingLedgerUpdates, params).await
     }
 }
+
+impl crate::core::traits::HasCapabilities for HyperliquidConnector {
+    fn capabilities(&self) -> crate::core::types::ConnectorCapabilities {
+        crate::core::types::ConnectorCapabilities {
+            has_ticker: true, has_orderbook: true, has_klines: true,
+            has_recent_trades: false, has_exchange_info: true,
+            has_liquidation_history: false, has_open_interest_history: false,
+            has_premium_index: false, has_long_short_ratio_history: false,
+            has_funding_rate_history: false, has_mark_price_klines: false,
+            has_index_price_klines: false,
+            has_market_order: true, has_limit_order: true,
+            has_open_orders: true, has_order_history: true, has_user_trades: true,
+            // DEX: positions exist, mark price available via websocket, no position modify
+            has_positions: true, has_mark_price: true, has_modify_position: false,
+            has_closed_pnl: false, has_long_short_ratio: false,
+            // DEX: no transfers, no deposit/withdraw, no sub-accounts
+            has_cancel_all: true, has_amend_order: true,
+            has_batch_place: true, has_batch_cancel: false,
+            max_batch_place_size: 10, max_batch_cancel_size: 10,
+            has_balance: true, has_account_info: true, has_fees: true,
+            has_transfers: true, has_deposit_withdraw: false, has_sub_accounts: false,
+            has_funding_payments: true, has_ledger: false,
+            has_websocket: true, has_ws_klines: false, has_ws_trades: true,
+            has_ws_orderbook: true, has_ws_ticker: true,
+            has_ws_mark_price: true, has_ws_funding_rate: true,
+        }
+    }
+}

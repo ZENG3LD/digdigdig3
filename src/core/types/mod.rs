@@ -16,6 +16,7 @@ pub use capabilities::{
     ChecksumAlgorithm, ChecksumInfo, WsBookChannel, OrderbookCapabilities,
     RateLimitCapabilities, LimitModel,
     EndpointWeight, RestLimitPool, DecayingLimitConfig, WsLimits,
+    ConnectorCapabilities,
 };
 pub use common::*;
 pub use extended_market_data::{

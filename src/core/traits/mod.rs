@@ -48,6 +48,8 @@ mod websocket;
 mod auth;
 mod operations;
 mod operations_stubs;
+mod has_capabilities;
+pub mod has_capabilities_stubs;
 
 pub use identity::ExchangeIdentity;
 pub use market_data::MarketData;
@@ -66,6 +68,7 @@ pub use operations::{
     AccountTransfers, CustodialFunds, SubAccounts,
     FundingHistory, AccountLedger,
 };
+pub use has_capabilities::HasCapabilities;
 // ═══════════════════════════════════════════════════════════════════════════════
 // COMPOSITE TRAIT
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -98,6 +101,7 @@ pub trait CoreConnector:
     + SubAccounts
     + FundingHistory
     + AccountLedger
+    + HasCapabilities
     + Send
     + Sync
     + 'static
@@ -129,6 +133,7 @@ impl<T> CoreConnector for T where
         + SubAccounts
         + FundingHistory
         + AccountLedger
+        + HasCapabilities
         + Send
         + Sync
         + 'static

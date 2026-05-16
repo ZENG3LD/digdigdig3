@@ -804,3 +804,76 @@ impl Default for RateLimitCapabilities {
         Self::permissive()
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// UNIFIED CONNECTOR CAPABILITIES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Unified declarative surface map for a connector.
+///
+/// Returned by `HasCapabilities::capabilities()`. The pool uses this to filter
+/// connectors before dispatching — no UnsupportedOperation surprises at runtime.
+///
+/// All fields default to `false` / `0` via `#[derive(Default)]`.
+/// Every connector must explicitly populate these via `HasCapabilities`.
+#[derive(Debug, Clone, Default)]
+pub struct ConnectorCapabilities {
+    // ── MarketData ────────────────────────────────────────────────────────────
+    pub has_ticker: bool,
+    pub has_orderbook: bool,
+    pub has_klines: bool,
+    pub has_recent_trades: bool,
+    pub has_exchange_info: bool,
+
+    // ── MarketDataPublic ──────────────────────────────────────────────────────
+    pub has_liquidation_history: bool,
+    pub has_open_interest_history: bool,
+    pub has_premium_index: bool,
+    pub has_long_short_ratio_history: bool,
+    pub has_mark_price_klines: bool,
+    pub has_index_price_klines: bool,
+    pub has_funding_rate_history: bool,
+
+    // ── Trading ───────────────────────────────────────────────────────────────
+    pub has_market_order: bool,
+    pub has_limit_order: bool,
+    pub has_open_orders: bool,
+    pub has_order_history: bool,
+    pub has_user_trades: bool,
+
+    // ── Positions (Futures) ───────────────────────────────────────────────────
+    pub has_positions: bool,
+    pub has_mark_price: bool,
+    pub has_modify_position: bool,
+    pub has_closed_pnl: bool,
+    pub has_long_short_ratio: bool,
+
+    // ── CancelAll / AmendOrder / BatchOrders ──────────────────────────────────
+    pub has_cancel_all: bool,
+    pub has_amend_order: bool,
+    pub has_batch_place: bool,
+    pub has_batch_cancel: bool,
+    pub max_batch_place_size: usize,
+    pub max_batch_cancel_size: usize,
+
+    // ── Account / Transfers / Funds / SubAccounts ─────────────────────────────
+    pub has_balance: bool,
+    pub has_account_info: bool,
+    pub has_fees: bool,
+    pub has_transfers: bool,
+    pub has_deposit_withdraw: bool,
+    pub has_sub_accounts: bool,
+
+    // ── FundingHistory / AccountLedger ────────────────────────────────────────
+    pub has_funding_payments: bool,
+    pub has_ledger: bool,
+
+    // ── WebSocket ─────────────────────────────────────────────────────────────
+    pub has_websocket: bool,
+    pub has_ws_klines: bool,
+    pub has_ws_trades: bool,
+    pub has_ws_orderbook: bool,
+    pub has_ws_ticker: bool,
+    pub has_ws_mark_price: bool,
+    pub has_ws_funding_rate: bool,
+}

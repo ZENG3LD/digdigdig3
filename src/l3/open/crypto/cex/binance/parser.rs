@@ -17,6 +17,7 @@ use crate::core::types::{
     FundingPayment, LedgerEntry, LedgerEntryType,
     AccountType,
     LongShortRatio, OpenInterest,
+    StreamEvent,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1557,6 +1558,378 @@ impl BinanceParser {
             });
         }
         Ok(result)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // WEBSOCKET PARSERS (called from BinanceProtocol)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse WS trade event `{"e":"trade",...}`.
+    pub fn parse_ws_trade(data: &Value) -> ExchangeResult<crate::core::PublicTrade> {
+        use crate::core::PublicTrade;
+        use crate::core::types::TradeSide;
+
+        let parse_f64 = |key: &str| -> Option<f64> {
+            data.get(key)
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .or_else(|| data.get(key).and_then(|v| v.as_f64()))
+        };
+
+        let is_buyer_maker = data.get("m").and_then(|m| m.as_bool()).unwrap_or(false);
+        let side = if is_buyer_maker { TradeSide::Sell } else { TradeSide::Buy };
+
+        Ok(PublicTrade {
+            id: data.get("t").and_then(|t| t.as_i64()).map(|t| t.to_string()).unwrap_or_default(),
+            symbol: data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+            price: parse_f64("p").unwrap_or(0.0),
+            quantity: parse_f64("q").unwrap_or(0.0),
+            side,
+            timestamp: data.get("T").and_then(|t| t.as_i64()).unwrap_or(0),
+        })
+    }
+
+    /// Parse WS kline event `{"e":"kline","k":{...}}`.
+    pub fn parse_ws_kline(data: &Value) -> ExchangeResult<Kline> {
+        let k = data
+            .get("k")
+            .ok_or_else(|| ExchangeError::Parse("Missing 'k' field in kline event".to_string()))?;
+
+        let parse_f64 = |key: &str| -> Option<f64> {
+            k.get(key)
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .or_else(|| k.get(key).and_then(|v| v.as_f64()))
+        };
+
+        Ok(Kline {
+            open_time: k.get("t").and_then(|t| t.as_i64()).unwrap_or(0),
+            open: parse_f64("o").unwrap_or(0.0),
+            high: parse_f64("h").unwrap_or(0.0),
+            low: parse_f64("l").unwrap_or(0.0),
+            close: parse_f64("c").unwrap_or(0.0),
+            volume: parse_f64("v").unwrap_or(0.0),
+            close_time: k.get("T").and_then(|t| t.as_i64()),
+            quote_volume: parse_f64("q"),
+            trades: k.get("n").and_then(|n| n.as_i64()).map(|n| n as u64),
+        })
+    }
+
+    /// Parse WS `markPriceKline` event.
+    pub fn parse_ws_mark_price_kline(data: &Value) -> ExchangeResult<StreamEvent> {
+        let k = data.get("k").ok_or_else(|| {
+            ExchangeError::Parse("Missing 'k' in markPriceKline".to_string())
+        })?;
+
+        let parse_f64 = |key: &str| -> Option<f64> {
+            k.get(key)
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .or_else(|| k.get(key).and_then(|v| v.as_f64()))
+        };
+
+        Ok(StreamEvent::MarkPriceKline {
+            symbol: data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+            interval: k.get("i").and_then(|i| i.as_str()).unwrap_or("").to_string(),
+            kline: Kline {
+                open_time: k.get("t").and_then(|t| t.as_i64()).unwrap_or(0),
+                open: parse_f64("o").unwrap_or(0.0),
+                high: parse_f64("h").unwrap_or(0.0),
+                low: parse_f64("l").unwrap_or(0.0),
+                close: parse_f64("c").unwrap_or(0.0),
+                volume: parse_f64("v").unwrap_or(0.0),
+                close_time: k.get("T").and_then(|t| t.as_i64()),
+                quote_volume: parse_f64("q"),
+                trades: k.get("n").and_then(|n| n.as_i64()).map(|n| n as u64),
+            },
+        })
+    }
+
+    /// Parse WS `indexPriceKline` event.
+    pub fn parse_ws_index_price_kline(data: &Value) -> ExchangeResult<StreamEvent> {
+        let k = data.get("k").ok_or_else(|| {
+            ExchangeError::Parse("Missing 'k' in indexPriceKline".to_string())
+        })?;
+
+        let parse_f64 = |key: &str| -> Option<f64> {
+            k.get(key)
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .or_else(|| k.get(key).and_then(|v| v.as_f64()))
+        };
+
+        Ok(StreamEvent::IndexPriceKline {
+            symbol: data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+            interval: k.get("i").and_then(|i| i.as_str()).unwrap_or("").to_string(),
+            kline: Kline {
+                open_time: k.get("t").and_then(|t| t.as_i64()).unwrap_or(0),
+                open: parse_f64("o").unwrap_or(0.0),
+                high: parse_f64("h").unwrap_or(0.0),
+                low: parse_f64("l").unwrap_or(0.0),
+                close: parse_f64("c").unwrap_or(0.0),
+                volume: parse_f64("v").unwrap_or(0.0),
+                close_time: k.get("T").and_then(|t| t.as_i64()),
+                quote_volume: parse_f64("q"),
+                trades: k.get("n").and_then(|n| n.as_i64()).map(|n| n as u64),
+            },
+        })
+    }
+
+    /// Parse WS `premiumIndexKline` event.
+    pub fn parse_ws_premium_index_kline(data: &Value) -> ExchangeResult<StreamEvent> {
+        let k = data.get("k").ok_or_else(|| {
+            ExchangeError::Parse("Missing 'k' in premiumIndexKline".to_string())
+        })?;
+
+        let parse_f64 = |key: &str| -> Option<f64> {
+            k.get(key)
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .or_else(|| k.get(key).and_then(|v| v.as_f64()))
+        };
+
+        Ok(StreamEvent::PremiumIndexKline {
+            symbol: data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+            interval: k.get("i").and_then(|i| i.as_str()).unwrap_or("").to_string(),
+            kline: Kline {
+                open_time: k.get("t").and_then(|t| t.as_i64()).unwrap_or(0),
+                open: parse_f64("o").unwrap_or(0.0),
+                high: parse_f64("h").unwrap_or(0.0),
+                low: parse_f64("l").unwrap_or(0.0),
+                close: parse_f64("c").unwrap_or(0.0),
+                volume: parse_f64("v").unwrap_or(0.0),
+                close_time: k.get("T").and_then(|t| t.as_i64()),
+                quote_volume: parse_f64("q"),
+                trades: k.get("n").and_then(|n| n.as_i64()).map(|n| n as u64),
+            },
+        })
+    }
+
+    /// Parse WS `executionReport` (spot order update).
+    pub fn parse_ws_execution_report(data: &Value) -> ExchangeResult<crate::core::OrderUpdateEvent> {
+        use crate::core::{OrderUpdateEvent, OrderSide, OrderType, OrderStatus};
+
+        let parse_f64 = |key: &str| -> Option<f64> {
+            data.get(key)
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .or_else(|| data.get(key).and_then(|v| v.as_f64()))
+        };
+
+        let side = match data.get("S").and_then(|s| s.as_str()).unwrap_or("BUY") {
+            "SELL" => OrderSide::Sell,
+            _ => OrderSide::Buy,
+        };
+
+        let order_type = match data.get("o").and_then(|o| o.as_str()).unwrap_or("LIMIT") {
+            "MARKET" => OrderType::Market,
+            _ => OrderType::Limit { price: 0.0 },
+        };
+
+        let status = match data.get("X").and_then(|x| x.as_str()).unwrap_or("NEW") {
+            "NEW" => OrderStatus::New,
+            "PARTIALLY_FILLED" => OrderStatus::PartiallyFilled,
+            "FILLED" => OrderStatus::Filled,
+            "CANCELED" => OrderStatus::Canceled,
+            "REJECTED" => OrderStatus::Rejected,
+            "EXPIRED" => OrderStatus::Expired,
+            _ => OrderStatus::New,
+        };
+
+        let filled_qty = parse_f64("z").unwrap_or(0.0);
+        let avg_price = if filled_qty > 0.0 {
+            parse_f64("Z").map(|q| q / filled_qty)
+        } else {
+            None
+        };
+
+        Ok(OrderUpdateEvent {
+            order_id: data.get("i").and_then(|i| i.as_i64()).map(|i| i.to_string()).unwrap_or_default(),
+            client_order_id: data.get("c").and_then(|c| c.as_str()).map(String::from),
+            symbol: data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+            side,
+            order_type,
+            status,
+            price: parse_f64("p"),
+            quantity: parse_f64("q").unwrap_or(0.0),
+            filled_quantity: filled_qty,
+            average_price: avg_price,
+            last_fill_price: parse_f64("L"),
+            last_fill_quantity: parse_f64("l"),
+            last_fill_commission: parse_f64("n"),
+            commission_asset: data.get("N").and_then(|n| n.as_str()).map(String::from),
+            trade_id: data.get("t").and_then(|t| t.as_i64()).map(|t| t.to_string()),
+            timestamp: data.get("E").and_then(|e| e.as_i64()).unwrap_or(0),
+        })
+    }
+
+    /// Parse WS `ORDER_TRADE_UPDATE` (futures order update).
+    pub fn parse_ws_futures_order_update(data: &Value) -> ExchangeResult<crate::core::OrderUpdateEvent> {
+        use crate::core::{OrderUpdateEvent, OrderSide, OrderType, OrderStatus};
+
+        let order = data
+            .get("o")
+            .ok_or_else(|| ExchangeError::Parse("Missing 'o' in ORDER_TRADE_UPDATE".to_string()))?;
+
+        let parse_f64 = |key: &str| -> Option<f64> {
+            order.get(key)
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .or_else(|| order.get(key).and_then(|v| v.as_f64()))
+        };
+
+        let side = match order.get("S").and_then(|s| s.as_str()).unwrap_or("BUY") {
+            "SELL" => OrderSide::Sell,
+            _ => OrderSide::Buy,
+        };
+
+        let order_type = match order.get("o").and_then(|o| o.as_str()).unwrap_or("LIMIT") {
+            "MARKET" => OrderType::Market,
+            _ => OrderType::Limit { price: 0.0 },
+        };
+
+        let status = match order.get("X").and_then(|x| x.as_str()).unwrap_or("NEW") {
+            "NEW" => OrderStatus::New,
+            "PARTIALLY_FILLED" => OrderStatus::PartiallyFilled,
+            "FILLED" => OrderStatus::Filled,
+            "CANCELED" => OrderStatus::Canceled,
+            "REJECTED" => OrderStatus::Rejected,
+            "EXPIRED" => OrderStatus::Expired,
+            _ => OrderStatus::New,
+        };
+
+        Ok(OrderUpdateEvent {
+            order_id: order.get("i").and_then(|i| i.as_i64()).map(|i| i.to_string()).unwrap_or_default(),
+            client_order_id: order.get("c").and_then(|c| c.as_str()).map(String::from),
+            symbol: order.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+            side,
+            order_type,
+            status,
+            price: parse_f64("p"),
+            quantity: parse_f64("q").unwrap_or(0.0),
+            filled_quantity: parse_f64("z").unwrap_or(0.0),
+            average_price: parse_f64("ap"),
+            last_fill_price: parse_f64("L"),
+            last_fill_quantity: parse_f64("l"),
+            last_fill_commission: parse_f64("n"),
+            commission_asset: order.get("N").and_then(|n| n.as_str()).map(String::from),
+            trade_id: order.get("t").and_then(|t| t.as_i64()).map(|t| t.to_string()),
+            timestamp: data.get("E").and_then(|e| e.as_i64()).unwrap_or(0),
+        })
+    }
+
+    /// Parse WS `outboundAccountPosition` (spot balance).
+    pub fn parse_ws_account_position(data: &Value) -> ExchangeResult<Option<crate::core::BalanceUpdateEvent>> {
+        use crate::core::BalanceUpdateEvent;
+
+        let balances = data
+            .get("B")
+            .and_then(|b| b.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'B' in outboundAccountPosition".to_string()))?;
+
+        for balance in balances {
+            let asset = balance.get("a").and_then(|a| a.as_str()).unwrap_or("");
+            let free: f64 = balance.get("f").and_then(|f| f.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            let locked: f64 = balance.get("l").and_then(|l| l.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+
+            if free > 0.0 || locked > 0.0 {
+                return Ok(Some(BalanceUpdateEvent {
+                    asset: asset.to_string(),
+                    free,
+                    locked,
+                    total: free + locked,
+                    delta: None,
+                    reason: None,
+                    timestamp: data.get("E").and_then(|e| e.as_i64()).unwrap_or(0),
+                }));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Parse WS `balanceUpdate` event.
+    pub fn parse_ws_balance_update(data: &Value) -> ExchangeResult<crate::core::BalanceUpdateEvent> {
+        use crate::core::BalanceUpdateEvent;
+
+        let parse_f64 = |key: &str| -> Option<f64> {
+            data.get(key)
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .or_else(|| data.get(key).and_then(|v| v.as_f64()))
+        };
+
+        Ok(BalanceUpdateEvent {
+            asset: data.get("a").and_then(|a| a.as_str()).unwrap_or("").to_string(),
+            free: 0.0,
+            locked: 0.0,
+            total: 0.0,
+            delta: parse_f64("d"),
+            reason: None,
+            timestamp: data.get("E").and_then(|e| e.as_i64()).unwrap_or(0),
+        })
+    }
+
+    /// Parse WS `ACCOUNT_UPDATE` (futures balance + position).
+    pub fn parse_ws_futures_account_update(data: &Value) -> ExchangeResult<Option<crate::core::BalanceUpdateEvent>> {
+        use crate::core::{BalanceUpdateEvent, BalanceChangeReason};
+
+        let account = match data.get("a") {
+            Some(a) => a,
+            None => return Ok(None),
+        };
+
+        let balances = match account.get("B").and_then(|b| b.as_array()) {
+            Some(b) => b,
+            None => return Ok(None),
+        };
+
+        let reason: Option<BalanceChangeReason> = account
+            .get("m")
+            .and_then(|m| m.as_str())
+            .map(|m| match m {
+                "DEPOSIT" => BalanceChangeReason::Deposit,
+                "WITHDRAW" => BalanceChangeReason::Withdraw,
+                "ORDER" | "TRADE" => BalanceChangeReason::Trade,
+                "FUNDING_FEE" => BalanceChangeReason::Funding,
+                "REALIZED_PNL" => BalanceChangeReason::RealizedPnl,
+                "TRANSFER" => BalanceChangeReason::Transfer,
+                "COMMISSION" => BalanceChangeReason::Commission,
+                _ => BalanceChangeReason::Other,
+            });
+
+        let timestamp = data.get("T").and_then(|t| t.as_i64()).unwrap_or(0);
+
+        for balance in balances {
+            let asset = balance.get("a").and_then(|a| a.as_str()).unwrap_or("");
+            if asset.is_empty() {
+                continue;
+            }
+
+            let parse_f64 = |key: &str| -> f64 {
+                balance
+                    .get(key)
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse().ok())
+                    .or_else(|| balance.get(key).and_then(|v| v.as_f64()))
+                    .unwrap_or(0.0)
+            };
+
+            let total = parse_f64("wb");
+            let cross_wallet = parse_f64("cw");
+
+            return Ok(Some(BalanceUpdateEvent {
+                asset: asset.to_string(),
+                free: cross_wallet,
+                locked: (total - cross_wallet).max(0.0),
+                total,
+                delta: None,
+                reason,
+                timestamp,
+            }));
+        }
+
+        Ok(None)
     }
 }
 

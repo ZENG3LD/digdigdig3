@@ -16,7 +16,7 @@
 use std::sync::Arc;
 
 use digdigdig3::connector_manager::{ConnectorFactory, ConnectorPool, WebSocketPool};
-use digdigdig3::core::traits::{CoreConnector, MarketData, MarketDataPublic};
+use digdigdig3::core::traits::{CoreConnector, MarketData, MarketDataPublic, BatchOrders};
 use digdigdig3::core::types::{AccountType, ExchangeId, Symbol};
 
 async fn populate_pool(pool: &ConnectorPool) {
@@ -126,6 +126,12 @@ async fn main() {
         }
     }
     println!("  ws_pool.len() = {}", ws_pool.len());
+
+    println!("\n[trait dispatch via pool: max_batch_place_size on Binance]");
+    if let Some(conn) = pool.get(&ExchangeId::Binance) {
+        let max = BatchOrders::max_batch_place_size(&*conn);
+        println!("  Binance max_batch_place_size = {}", max);
+    }
 
     println!("\n── Done. REST surface via Arc<dyn CoreConnector>, WS via separate pool. ──\n");
 }

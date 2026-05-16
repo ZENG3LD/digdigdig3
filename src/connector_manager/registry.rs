@@ -75,15 +75,15 @@ pub struct Features {
     pub custodial_funds: bool,
     /// Implements SubAccounts trait (sub-account management)
     pub sub_accounts: bool,
-    /// Implements MarginTrading trait (margin borrow/repay)
+    /// Margin borrow/repay support
     pub margin_trading: bool,
-    /// Implements TriggerOrders trait (stop/take-profit conditional orders)
+    /// Stop/take-profit conditional orders
     pub trigger_orders: bool,
-    /// Implements ConvertSwap trait (instant coin conversion)
+    /// Instant coin conversion
     pub convert_swap: bool,
-    /// Implements EarnStaking trait (staking/savings products)
+    /// Staking/savings products
     pub earn_staking: bool,
-    /// Implements CopyTrading trait (copy-trade other users)
+    /// Copy-trade other users
     pub copy_trading: bool,
 }
 

@@ -25,7 +25,7 @@
 //! | `Account` | 3 | Account (balance, account_info, fees) |
 //! | `Positions` | 3 | Futures (positions, funding_rate, modify_position) |
 //!
-//! ## Optional operation traits (not universally implemented)
+//! ## Optional operation traits (part of CoreConnector)
 //!
 //! - `CancelAll` - native cancel-all endpoint
 //! - `AmendOrder` - native amend/modify order
@@ -33,6 +33,8 @@
 //! - `AccountTransfers` - internal account transfers
 //! - `CustodialFunds` - deposits and withdrawals
 //! - `SubAccounts` - sub-account management
+//! - `FundingHistory` - historical funding payments
+//! - `AccountLedger` - full account ledger
 //! - `Authenticated` - credential-aware connectors
 
 mod identity;
@@ -45,6 +47,7 @@ mod positions;
 mod websocket;
 mod auth;
 mod operations;
+mod operations_stubs;
 
 pub use identity::ExchangeIdentity;
 pub use market_data::MarketData;
@@ -61,9 +64,6 @@ pub use auth::{
 pub use operations::{
     CancelAll, AmendOrder, BatchOrders,
     AccountTransfers, CustodialFunds, SubAccounts,
-    MarginTrading, EarnStaking, ConvertSwap, CopyTrading,
-    LiquidityProvider, VaultManager, StakingDelegation, BlockTradeOtc,
-    MarketMakerProtection, TriggerOrders, PredictionMarket,
     FundingHistory, AccountLedger,
 };
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -90,6 +90,14 @@ pub trait CoreConnector:
     + Trading
     + Account
     + Positions
+    + CancelAll
+    + AmendOrder
+    + BatchOrders
+    + AccountTransfers
+    + CustodialFunds
+    + SubAccounts
+    + FundingHistory
+    + AccountLedger
     + Send
     + Sync
     + 'static
@@ -113,6 +121,14 @@ impl<T> CoreConnector for T where
         + Trading
         + Account
         + Positions
+        + CancelAll
+        + AmendOrder
+        + BatchOrders
+        + AccountTransfers
+        + CustodialFunds
+        + SubAccounts
+        + FundingHistory
+        + AccountLedger
         + Send
         + Sync
         + 'static

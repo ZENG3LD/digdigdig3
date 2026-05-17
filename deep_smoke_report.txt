@@ -1,0 +1,89 @@
+=== DEEP SMOKE — digdigdig3 ===
+WS impl total (grep impl WebSocketConnector+WsProtocol): 35
+WS-capable distinct exchanges (via factory + direct): 25
+REST total ExchangeId variants in factory: 49
+Testing 48 exchanges (47+MOEX_direct) in parallel
+
+
+thread 'tokio-rt-worker' (134456) panicked at examples\deep_smoke.rs:333:49:
+end byte index 60 is not a char boundary; it is inside '—' (bytes 59..62) of `Unsupported operation: TiingoWebSocket requires TiingoAuth — construct directly via TiingoWebSocket::new_iex/new_forex/new_crypto`
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'tokio-rt-worker' (62732) panicked at examples\deep_smoke.rs:333:49:
+end byte index 60 is not a char boundary; it is inside '—' (bytes 59..62) of `Unsupported operation: DhanWebSocket requires access token — construct directly with DhanWebSocket::new(token)`
+[KRAKEN WS] Connecting...
+[KRAKEN WS] Connecting to wss://ws.kraken.com/v2
+
+thread 'tokio-rt-worker' (123688) panicked at examples\deep_smoke.rs:333:49:
+end byte index 60 is not a char boundary; it is inside '—' (bytes 59..62) of `Unsupported operation: AlpacaWebSocket requires AlpacaAuth — construct directly with AlpacaWebSocket::new(auth)`
+[KRAKEN WS] Connection successful, response status: 101
+=== PER-EXCHANGE RESULTS ===
+Exchange             | REST                                                                        | WS
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+AlphaVantage         | FAIL Authentication error: AlphaVantage requires API key                    | WS_NA: Unsupported operation: AlphaVantage has no WebSock
+AngelOne             | FAIL Authentication error: AngelOne requires credentials                    | WS_NA: Unsupported operation: AngelOne has no WebSocket i
+Binance              | OK last=78442.4600 vol=8416.89 bid=78442.4600 ask=78442.4700 ts=-1s_ago     | OK cnt=5 DATA_VALID | Ticker sym=BTCUSDT last=78442.4700 bid=78442.4600 ask=78442.4700 ts=177901530...
+BingX                | OK last=78442.4650 vol=0.00 bid=78442.4600 ask=78442.4700 ts=0s_ago ZERO:volume | OK cnt=5 DATA_VALID | Ticker sym=BTC-USDT last=78442.4700 bid=None ask=None ts=1779015304701
+Bitfinex             | OK last=78436.0000 vol=339.37 bid=78424.0000 ask=78436.0000 ts=1779015301s_ago | OK cnt=1 DATA_VALID | Ticker sym= last=78436.0000 bid=78424.0000 ask=78436.0000 ts=1779015290210
+Bitget               | OK last=78440.9300 vol=2204.46 bid=78440.9300 ask=78440.9400 ts=0s_ago      | OK cnt=16 DATA_VALID | Ticker sym=BTCUSDT last=78446.5700 bid=78447.0000 ask=78447.0100 ts=177901530...
+Bitquery             | FAIL Unsupported operation: Bitquery has been extracted to the di           | WS_NA: Unsupported operation: Bitquery has no WebSocket i
+Bitstamp             | OK last=78446.0000 vol=1.44 bid=78437.0000 ask=78440.0000 ts=0s_ago         | SILENT(0 events)
+Bls                  | FAIL Authentication error: BLS is a data feed - use BlsConnector            | WS_NA: Unsupported operation: Bls has no WebSocket implem
+Bybit                | OK last=78445.1000 vol=3609.21 bid=78445.0000 ask=78445.1000 ts=-1s_ago     | OK cnt=13 DATA_VALID | Ticker sym=BTCUSDT last=78445.1000 bid=None ask=None ts=1779015291001
+Coinbase             | OK last=78427.9850 vol=0.00 bid=78419.0200 ask=78436.9500 ts=-1s_ago ZERO:volume | OK cnt=19 DATA_VALID | Ticker sym=BTC-USDT last=78442.4200 bid=None ask=None ts=1779015304625
+Coinglass            | FAIL Authentication error: Coinglass requires API key                       | WS_NA: Unsupported operation: Coinglass has no WebSocket 
+CryptoCom            | OK last=78445.2300 vol=921.39 bid=78439.7600 ask=78439.7700 ts=-1s_ago      | OK cnt=18 DATA_VALID | OpenInterestUpdate { symbol: "BTC_USDT", open_interest: 0.0, open_interest_va...
+CryptoCompare        | OK last=78444.0426 vol=24693.15 bid=None ask=None ts=4s_ago                 | OK cnt=5 DATA_VALID | Ticker sym=BTCUSDT last=78444.0386 bid=None ask=None ts=1779015303000
+DefiLlama            | FAIL Unsupported operation: DefiLlama has moved to dig2feed crate           | WS_NA: Unsupported operation: DefiLlama has no WebSocket 
+Deribit              | FAIL Invalid request: {"jsonrpc":"2.0","error":{"code":-32602,"da           | SILENT(0 events)
+Dukascopy            | FAIL ticker_timeout                                                         | WS_NA: Unsupported operation: Dukascopy has no WebSocket 
+Dydx                 | OK last=78441.0276 vol=25916459.15 bid=None ask=None ts=11s_ago             | SILENT(0 events)
+Finnhub              | FAIL Authentication error: Finnhub requires API key                         | WS_NA: Unsupported operation: FinnhubWebSocket requires c
+Fred                 | FAIL Authentication error: Fred connector has been removed - inte           | WS_NA: Unsupported operation: Fred has no WebSocket imple
+Futu                 | FAIL Authentication error: Futu requires OpenD TCP+Protobuf conne           | WS_NA: Unsupported operation: Futu has no WebSocket imple
+Fyers                | FAIL Authentication error: Fyers requires credentials                       | WS_NA: Unsupported operation: Fyers has no WebSocket impl
+GateIO               | OK last=78450.3000 vol=2231.55 bid=78450.3000 ask=78450.4000 ts=1779015301s_ago | OK cnt=1 DATA_EMPTY | Ticker sym=BTC_USDT last=78450.3000 bid=78450.3000 ask=78450.4000 ts=0
+Gemini               | OK last=78113.3900 vol=0.00 bid=78443.8700 ask=78470.3500 ts=1779015301s_ago ZERO:volume | OK cnt=5 DATA_VALID | OBDelta bids=351 asks=133 top_bid=78443.8700 ts=0
+HTX                  | OK last=78437.4700 vol=1345.85 bid=78437.4700 ask=78437.4800 ts=-1s_ago     | OK cnt=1 DATA_VALID | Ticker sym=BTCUSDT last=78437.4700 bid=None ask=None ts=1779015300006
+HyperLiquid          | FAIL Not supported: get_ticker requires symbol-to-index mapping.            | OK cnt=9 DATA_VALID | Ticker sym=BTC last=78395.5000 bid=None ask=None ts=1779015290515
+Ib                   | FAIL Authentication error: Interactive Brokers requires credentia           | WS_NA: Unsupported operation: IBWebSocket requires a TWS/
+JQuants              | FAIL Authentication error: JQuants requires credentials                     | WS_NA: Unsupported operation: JQuants has no WebSocket im
+Kraken               | OK last=78463.6000 vol=74.09 bid=78463.6000 ask=78463.7000 ts=11s_ago       | OK cnt=1 DATA_VALID | Ticker sym=BTC/USDT last=78463.6000 bid=78463.6000 ask=78463.7000 ts=17790152...
+Krx                  | FAIL Not found: No ticker data available                                    | WS_NA: Unsupported operation: Krx has no WebSocket implem
+KuCoin               | OK last=78438.9000 vol=1277.44 bid=78438.9000 ask=78439.0000 ts=0s_ago      | OK cnt=42 DATA_VALID | Ticker sym= last=78438.9000 bid=78438.9000 ask=78439.0000 ts=1779015303722
+Lighter              | OK last=78390.7000 vol=4246.62 bid=None ask=None ts=11s_ago                 | OK cnt=9 DATA_VALID | Ticker sym=BTC last=78389.2000 bid=None ask=None ts=1779015304816
+MEXC                 | OK last=78438.6200 vol=2154.65 bid=78437.2900 ask=78437.3000 ts=0s_ago      | OK cnt=5 DATA_VALID | Ticker sym=BTCUSDT last=78438.6200 bid=None ask=None ts=1779015305045
+Moex                 | FAIL Parse error: Empty marketdata                                          | SILENT(0 events)
+OKX                  | OK last=78444.4000 vol=3258.97 bid=78444.3000 ask=78444.4000 ts=0s_ago      | OK cnt=28 DATA_VALID | Ticker sym=BTC-USDT last=78449.5000 bid=78449.5000 ask=78449.6000 ts=17790153...
+Oanda                | FAIL Authentication error: Oanda requires credentials                       | WS_NA: Unsupported operation: Oanda has no WebSocket impl
+Polygon              | FAIL Authentication error: Polygon requires API key                         | WS_NA: Unsupported operation: PolygonWebSocket requires c
+Polymarket           | FAIL API error: 404 - HTTP 404 Not Found: {"error":"market not fo           | WS_NA: Unsupported operation: Polymarket ClobWebSocket do
+Tinkoff              | FAIL Authentication error: Tinkoff requires credentials                     | WS_NA: Unsupported operation: Tinkoff has no WebSocket im
+Twelvedata           | FAIL API error: 401 - The 'demo' API key is only used for initial           | WS_NA: Unsupported operation: TwelvedataWebSocket require
+Upbit                | OK last=78499.9900 vol=1.32 bid=None ask=None ts=86s_ago                    | OK cnt=1 DATA_EMPTY | Ticker sym=USDT-BTC last=80329.0000 bid=None ask=None ts=1778572003097
+Upstox               | FAIL Authentication error: Upstox requires credentials                      | WS_NA: Unsupported operation: Upstox has no WebSocket imp
+WhaleAlert           | FAIL Unsupported operation: WhaleAlert has been extracted to the            | WS_NA: Unsupported operation: WhaleAlert has no WebSocket
+YahooFinance         | FAIL API error: 404 - HTTP 404 Not Found - {"chart":{"result":nul           | SILENT(0 events)
+Zerodha              | FAIL Authentication error: Zerodha requires credentials                     | WS_NA: Unsupported operation: Zerodha has no WebSocket im
+
+=== SUMMARY ===
+WS impl total in codebase:            35
+WS tested (via factory + MOEX direct):45
+WS connected:                         23
+WS events flowing:                    18
+WS events with REAL data (non-zero):  16
+WS events EMPTY/DEFAULT fields (BUG): 2
+WS silent (subscribed, 0 events):     5
+
+REST total variants tested:            48
+REST OK with populated fields:         16
+REST OK but zero/default fields:       3
+REST FAIL (auth/network):              26
+
+=== BUG CLASSES ===
+Class 1 — Connection fails:            4 — ["Deribit", "HyperLiquid", "Moex", "YahooFinance"]
+Class 2 — Silent streams (sub ok, 0 events): 5 — ["Bitstamp", "Deribit", "Dydx", "Moex", "YahooFinance"]
+Class 3 — Events flowing but zero/empty data (PARSER BUG): 2 — ["GateIO", "Upbit"]
+REST zero fields: ["BingX(volume)", "Coinbase(volume)", "Gemini(volume)"]
+
+Total runtime: 12.7s

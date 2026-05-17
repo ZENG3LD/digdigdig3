@@ -521,7 +521,7 @@ mod mexc {
             if raw.ends_with(q) && raw.len() > q.len() {
                 let base = &raw[..raw.len() - q.len()];
                 if !base.is_empty() {
-                    return Ok(Symbol::new(base, q));
+                    return Ok(Symbol::new(base, *q));
                 }
             }
         }
@@ -628,7 +628,7 @@ mod bitget {
         for quote in KNOWN_QUOTES {
             if upper.ends_with(quote) && upper.len() > quote.len() {
                 let base = &upper[..upper.len() - quote.len()];
-                return Ok(Symbol::new(base, quote));
+                return Ok(Symbol::new(base, *quote));
             }
         }
         Err(NormalizerError::InvalidFormat {

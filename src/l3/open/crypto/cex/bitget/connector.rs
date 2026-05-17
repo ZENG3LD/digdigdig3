@@ -95,6 +95,26 @@ static BITGET_RATE_CAPS: RateLimitCapabilities = RateLimitCapabilities {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Derive Bitget V2 `productType` from a raw exchange symbol string.
+///
+/// Callers that pass raw symbols (e.g. `"BTCUSDT"`, `"BTCUSD"`, `"BTCUSDC"`)
+/// do not carry a separate quote field. We inspect the raw suffix to pick the
+/// correct productType for the futures REST endpoints.
+fn product_type_from_raw(symbol: &str) -> &'static str {
+    let upper = symbol.to_uppercase();
+    if upper.ends_with("USDC") {
+        "USDC-FUTURES"
+    } else if upper.ends_with("USD") && !upper.ends_with("USDT") {
+        "COIN-FUTURES"
+    } else {
+        "USDT-FUTURES"
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -469,7 +489,7 @@ impl ExchangeIdentity for BitgetConnector {
 impl MarketData for BitgetConnector {
     async fn get_price(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Price> {
         let endpoint = match account_type {
@@ -478,11 +498,11 @@ impl MarketData for BitgetConnector {
         };
 
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("symbol".to_string(), symbol.to_string());
 
-        // Futures requires productType
+        // Futures requires productType — derive from raw symbol suffix
         if matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated) {
-            params.insert("productType".to_string(), get_product_type(&symbol.quote).to_string());
+            params.insert("productType".to_string(), product_type_from_raw(symbol).to_string());
         }
 
         let response = self.get(endpoint, params, account_type).await?;
@@ -491,7 +511,7 @@ impl MarketData for BitgetConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         depth: Option<u16>,
         account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
@@ -501,7 +521,7 @@ impl MarketData for BitgetConnector {
         };
 
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("symbol".to_string(), symbol.to_string());
 
         // Bitget spot uses "type" and "limit", futures uses just "limit"
         match account_type {
@@ -510,7 +530,7 @@ impl MarketData for BitgetConnector {
                 params.insert("limit".to_string(), depth.unwrap_or(100).to_string());
             }
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
-                params.insert("productType".to_string(), get_product_type(&symbol.quote).to_string());
+                params.insert("productType".to_string(), product_type_from_raw(symbol).to_string());
                 let limit = match depth.unwrap_or(100) {
                     0..=5 => 5,
                     6..=15 => 15,
@@ -533,7 +553,7 @@ impl MarketData for BitgetConnector {
 
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         account_type: AccountType,
@@ -545,7 +565,7 @@ impl MarketData for BitgetConnector {
         };
 
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("symbol".to_string(), symbol.to_string());
 
         // V2 API uses `granularity` for both Spot and Futures
         match account_type {
@@ -555,7 +575,7 @@ impl MarketData for BitgetConnector {
                 params.insert("limit".to_string(), limit.unwrap_or(1000).min(1000).to_string());
             }
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
-                params.insert("productType".to_string(), get_product_type(&symbol.quote).to_string());
+                params.insert("productType".to_string(), product_type_from_raw(symbol).to_string());
                 // V2 Futures uses "granularity" with format: "1m", "1H", "1D"
                 params.insert("granularity".to_string(), map_futures_granularity(interval).to_string());
                 params.insert("limit".to_string(), limit.unwrap_or(200).min(1000).to_string());
@@ -578,7 +598,7 @@ impl MarketData for BitgetConnector {
 
     async fn get_ticker(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
         let endpoint = match account_type {
@@ -587,11 +607,11 @@ impl MarketData for BitgetConnector {
         };
 
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("symbol".to_string(), symbol.to_string());
 
         // Futures requires productType
         if matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated) {
-            params.insert("productType".to_string(), get_product_type(&symbol.quote).to_string());
+            params.insert("productType".to_string(), product_type_from_raw(symbol).to_string());
         }
 
         let response = self.get(endpoint, params, account_type).await?;

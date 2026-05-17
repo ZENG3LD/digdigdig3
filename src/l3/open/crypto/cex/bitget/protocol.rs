@@ -86,11 +86,7 @@ impl BitgetProtocol {
         let inst_id = if spec.kind.is_private() {
             "default".to_string()
         } else {
-            format!(
-                "{}{}",
-                spec.symbol.base.to_uppercase(),
-                spec.symbol.quote.to_uppercase()
-            )
+            spec.symbol.to_uppercase()
         };
 
         let frame = json!({
@@ -516,13 +512,12 @@ fn first_item(data: &Value) -> &Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::types::Symbol;
     use crate::core::websocket::StreamSpec;
 
     fn spot_spec(kind: StreamKind) -> StreamSpec {
         StreamSpec {
             kind,
-            symbol: Symbol::new("BTC", "USDT"),
+            symbol: "BTCUSDT".to_string(),
             account_type: AccountType::Spot,
             depth: None,
             speed_ms: None,

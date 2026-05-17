@@ -420,27 +420,139 @@ mod kucoin {
 
 mod kraken {
     use super::*;
-    pub(super) fn to_exchange(sym: &Symbol, _account_type: AccountType) -> Result<String, NormalizerError> {
-        noop_to_exchange(sym)
+
+    fn to_xbt(base: &str) -> &str {
+        if base.eq_ignore_ascii_case("BTC") { "XBT" } else { base }
     }
+
+    fn from_xbt(base: &str) -> &str {
+        if base.eq_ignore_ascii_case("XBT") { "BTC" } else { base }
+    }
+
+    /// Canonical  -> Kraken REST exchange-native raw string.
+    ///
+    /// | AccountType | Format | Example (BTC/USD) |
+    /// |---|---|---|
+    /// | Spot / Margin |  (BTC->XBT, no separator) |  |
+    /// | FuturesCross / FuturesIsolated |  (perpetual inverse prefix) |  |
+    ///
+    /// Note: WS v2 uses  (slash, BTC not XBT) -- WS callers pass that
+    /// string directly; this normalizer produces the REST format only.
+    pub(super) fn to_exchange(sym: &Symbol, account_type: AccountType) -> Result<String, NormalizerError> {
+        let base = to_xbt(sym.base.as_str()).to_uppercase();
+        let quote = sym.quote.to_uppercase();
+        match account_type {
+            AccountType::Spot | AccountType::Margin => Ok(format!("{}{}", base, quote)),
+            AccountType::FuturesCross | AccountType::FuturesIsolated => {
+                Ok(format!("PI_{}{}", base, quote))
+            }
+            other => Err(NormalizerError::UnsupportedAccountType {
+                exchange: ExchangeId::Kraken,
+                account_type: other,
+            }),
+        }
+    }
+
+    /// Kraken exchange-native raw string -> canonical .
+    ///
+    /// Handles:
+    /// -  /  -> futures (strip prefix, parse inner)
+    /// -   -> spot ISO response (strip X + Z prefixes)
+    /// -     -> spot simplified request (plain strip)
+    ///
+    /// XBT is always normalised to BTC in the canonical output.
     pub(super) fn from_exchange(raw: &str, _account_type: AccountType) -> Result<Symbol, NormalizerError> {
-        noop_from_exchange(ExchangeId::Kraken, raw)
+        let inner = if let Some(rest) = raw.strip_prefix("PI_").or_else(|| raw.strip_prefix("PF_")) {
+            rest
+        } else {
+            raw
+        };
+
+        let cleaned = inner
+            .strip_prefix("XX")
+            .or_else(|| inner.strip_prefix('X'))
+            .unwrap_or(inner);
+
+        for (fiat_with_z, fiat_canonical) in [
+            ("ZUSD", "USD"),
+            ("ZEUR", "EUR"),
+            ("ZGBP", "GBP"),
+            ("ZJPY", "JPY"),
+            ("ZCAD", "CAD"),
+        ] {
+            if let Some(base_raw) = cleaned.strip_suffix(fiat_with_z) {
+                if !base_raw.is_empty() {
+                    return Ok(Symbol::new(from_xbt(base_raw), fiat_canonical));
+                }
+            }
+        }
+
+        for (plain_suffix, canonical) in [
+            ("USDT", "USDT"), ("USDC", "USDC"),
+            ("USD", "USD"), ("EUR", "EUR"), ("GBP", "GBP"),
+            ("JPY", "JPY"), ("CAD", "CAD"),
+        ] {
+            if let Some(base_raw) = cleaned.strip_suffix(plain_suffix) {
+                if !base_raw.is_empty() {
+                    return Ok(Symbol::new(from_xbt(base_raw), canonical));
+                }
+            }
+        }
+
+        Err(NormalizerError::InvalidFormat {
+            exchange: ExchangeId::Kraken,
+            raw: raw.to_string(),
+        })
     }
+
+    /// Valid Kraken REST symbol: non-empty, ASCII alphanumeric or `_` (for `PI_` futures prefix).
     pub(super) fn is_valid_for(raw: &str, _account_type: AccountType) -> bool {
-        noop_is_valid_for(raw)
+        !raw.is_empty() && raw.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
     }
 }
 
 mod coinbase {
     use super::*;
-    pub(super) fn to_exchange(sym: &Symbol, _account_type: AccountType) -> Result<String, NormalizerError> {
-        noop_to_exchange(sym)
+
+    /// Coinbase symbol rules:
+    /// - Spot (default): `BASE-QUOTE` uppercase dash-separated.
+    ///   Examples: BTC/USD → `BTC-USD`, ETH/USDT → `ETH-USDT`
+    /// - FuturesCross / FuturesIsolated (perpetuals): `BASE-PERP` (quote ignored).
+    ///   Example: BTC/USD → `BTC-PERP`
+    pub(super) fn to_exchange(sym: &Symbol, account_type: AccountType) -> Result<String, NormalizerError> {
+        let base = sym.base.to_uppercase();
+        let quote = sym.quote.to_uppercase();
+        match account_type {
+            AccountType::FuturesCross | AccountType::FuturesIsolated => {
+                Ok(format!("{}-PERP", base))
+            }
+            _ => Ok(format!("{}-{}", base, quote)),
+        }
     }
+
+    /// Coinbase raw string → canonical Symbol.
+    ///
+    /// Splits on the first `-`: `BTC-USD` → base=BTC, quote=USD.
+    /// `BTC-PERP` → base=BTC, quote=PERP.
     pub(super) fn from_exchange(raw: &str, _account_type: AccountType) -> Result<Symbol, NormalizerError> {
-        noop_from_exchange(ExchangeId::Coinbase, raw)
+        match raw.split_once('-') {
+            Some((base, quote)) if !base.is_empty() && !quote.is_empty() => {
+                Ok(Symbol::new(base, quote))
+            }
+            _ => Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::Coinbase,
+                raw: raw.to_string(),
+            }),
+        }
     }
+
+    /// Valid Coinbase symbol: contains exactly one or more `-` segments with
+    /// non-empty base (first segment) and non-empty remainder.
     pub(super) fn is_valid_for(raw: &str, _account_type: AccountType) -> bool {
-        noop_is_valid_for(raw)
+        match raw.split_once('-') {
+            Some((base, quote)) => !base.is_empty() && !quote.is_empty(),
+            None => false,
+        }
     }
 }
 
@@ -476,14 +588,64 @@ mod gateio {
 
 mod gemini {
     use super::*;
-    pub(super) fn to_exchange(sym: &Symbol, _account_type: AccountType) -> Result<String, NormalizerError> {
-        noop_to_exchange(sym)
+
+    /// Known Gemini quote suffixes, ordered longest-first to avoid partial matches.
+    /// Gemini spot format: `basequote` lowercase, no separator (e.g. `btcusd`).
+    /// Gemini perpetuals: `base + "gusd" + "perp"` (e.g. `btcgusdperp`).
+    const QUOTE_SUFFIXES: &[&str] = &["usdt", "gusd", "usdc", "usd", "btc", "eth"];
+
+    /// Canonical Symbol → Gemini raw string (always lowercase, no separator).
+    ///
+    /// Spot/Margin:               `basequote`       e.g. `btcusd`
+    /// FuturesCross/FuturesIsolated: `basegusdperp` e.g. `btcgusdperp`
+    pub(super) fn to_exchange(sym: &Symbol, account_type: AccountType) -> Result<String, NormalizerError> {
+        let base = sym.base.to_lowercase();
+        let quote = sym.quote.to_lowercase();
+        match account_type {
+            AccountType::FuturesCross | AccountType::FuturesIsolated => {
+                Ok(format!("{}gusdperp", base))
+            }
+            _ => Ok(format!("{}{}", base, quote)),
+        }
     }
+
+    /// Gemini raw string → canonical Symbol.
+    ///
+    /// Perpetuals (`btcgusdperp`) → strip `perp`, strip `gusd` → base=BTC, quote=USD.
+    /// Spot (`btcusd`) → split on known lowercase quote suffix.
     pub(super) fn from_exchange(raw: &str, _account_type: AccountType) -> Result<Symbol, NormalizerError> {
-        noop_from_exchange(ExchangeId::Gemini, raw)
+        let lower = raw.to_lowercase();
+
+        // Perpetual: ends with "perp"
+        if let Some(without_perp) = lower.strip_suffix("perp") {
+            // Strip "gusd" suffix for GUSD-settled perps
+            let base = if let Some(b) = without_perp.strip_suffix("gusd") {
+                b.to_uppercase()
+            } else {
+                without_perp.to_uppercase()
+            };
+            return Ok(Symbol::new(&base, "USD"));
+        }
+
+        // Spot: try known quote suffixes (longest first)
+        for &suffix in QUOTE_SUFFIXES {
+            if lower.ends_with(suffix) && lower.len() > suffix.len() {
+                let base = &lower[..lower.len() - suffix.len()];
+                if !base.is_empty() {
+                    return Ok(Symbol::new(&base.to_uppercase(), &suffix.to_uppercase()));
+                }
+            }
+        }
+
+        Err(NormalizerError::InvalidFormat {
+            exchange: ExchangeId::Gemini,
+            raw: raw.to_string(),
+        })
     }
+
+    /// Valid Gemini symbol: non-empty, all ASCII lowercase alphanumeric.
     pub(super) fn is_valid_for(raw: &str, _account_type: AccountType) -> bool {
-        noop_is_valid_for(raw)
+        !raw.is_empty() && raw.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
     }
 }
 
@@ -645,27 +807,93 @@ mod bitget {
 
 mod bingx {
     use super::*;
+
+    /// BingX uses `BASE-QUOTE` uppercase dash format for both Spot and Swap.
+    ///
+    /// Examples: `BTC-USDT`, `ETH-USDT`, `BTC-USDC`.
     pub(super) fn to_exchange(sym: &Symbol, _account_type: AccountType) -> Result<String, NormalizerError> {
-        noop_to_exchange(sym)
+        if sym.base.is_empty() || sym.quote.is_empty() {
+            return Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::BingX,
+                raw: format!("{}-{}", sym.base, sym.quote),
+            });
+        }
+        Ok(format!("{}-{}", sym.base.to_uppercase(), sym.quote.to_uppercase()))
     }
+
+    /// Parse BingX raw string back to canonical Symbol.
+    ///
+    /// BingX always uses dash separator: `BTC-USDT` → `Symbol{base:"BTC", quote:"USDT"}`.
     pub(super) fn from_exchange(raw: &str, _account_type: AccountType) -> Result<Symbol, NormalizerError> {
-        noop_from_exchange(ExchangeId::BingX, raw)
+        if let Some((base, quote)) = raw.split_once('-') {
+            if base.is_empty() || quote.is_empty() {
+                return Err(NormalizerError::InvalidFormat {
+                    exchange: ExchangeId::BingX,
+                    raw: raw.to_string(),
+                });
+            }
+            return Ok(Symbol::new(base, quote));
+        }
+        Err(NormalizerError::InvalidFormat {
+            exchange: ExchangeId::BingX,
+            raw: raw.to_string(),
+        })
     }
+
+    /// Valid BingX symbol: non-empty, contains exactly one `-` with non-empty parts on both sides.
     pub(super) fn is_valid_for(raw: &str, _account_type: AccountType) -> bool {
-        noop_is_valid_for(raw)
+        if raw.is_empty() {
+            return false;
+        }
+        if let Some((base, quote)) = raw.split_once('-') {
+            !base.is_empty() && !quote.is_empty() && !quote.contains('-')
+        } else {
+            false
+        }
     }
 }
 
 mod crypto_com {
     use super::*;
-    pub(super) fn to_exchange(sym: &Symbol, _account_type: AccountType) -> Result<String, NormalizerError> {
-        noop_to_exchange(sym)
+
+    /// Spot: `BASE_QUOTE` underscore uppercase e.g. `BTC_USDT`.
+    /// FuturesCross/Isolated: `BASEUSD-PERP` e.g. `BTCUSD-PERP`.
+    pub(super) fn to_exchange(sym: &Symbol, account_type: AccountType) -> Result<String, NormalizerError> {
+        let base = sym.base.to_uppercase();
+        let quote = sym.quote.to_uppercase();
+        match account_type {
+            AccountType::FuturesCross | AccountType::FuturesIsolated => Ok(format!("{}{}-PERP", base, quote)),
+            _ => Ok(format!("{}_{}", base, quote)),
+        }
     }
+
+    /// `BTC_USDT` → split on `_`. `BTCUSD-PERP` → strip suffix, split on known quotes.
     pub(super) fn from_exchange(raw: &str, _account_type: AccountType) -> Result<Symbol, NormalizerError> {
-        noop_from_exchange(ExchangeId::CryptoCom, raw)
+        if let Some(stripped) = raw.strip_suffix("-PERP") {
+            for q in &["USDT", "USDC", "USD"] {
+                if stripped.ends_with(q) && stripped.len() > q.len() {
+                    return Ok(Symbol::new(&stripped[..stripped.len() - q.len()], q));
+                }
+            }
+            return Err(NormalizerError::InvalidFormat { exchange: ExchangeId::CryptoCom, raw: raw.to_string() });
+        }
+        raw.split_once('_')
+            .map(|(base, quote)| Symbol::new(base, quote))
+            .ok_or_else(|| NormalizerError::InvalidFormat { exchange: ExchangeId::CryptoCom, raw: raw.to_string() })
     }
+
+    /// Spot: `_` separator, alphanumeric sides. Futures: `-PERP` suffix, alphanumeric prefix.
     pub(super) fn is_valid_for(raw: &str, _account_type: AccountType) -> bool {
-        noop_is_valid_for(raw)
+        if raw.is_empty() { return false; }
+        if raw.ends_with("-PERP") {
+            let prefix = &raw[..raw.len() - 5];
+            return !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_alphanumeric());
+        }
+        raw.split_once('_').map_or(false, |(b, q)|
+            !b.is_empty() && !q.is_empty()
+                && b.chars().all(|c| c.is_ascii_alphanumeric())
+                && q.chars().all(|c| c.is_ascii_alphanumeric())
+        )
     }
 }
 
@@ -697,14 +925,52 @@ mod bitfinex {
 
 mod bitstamp {
     use super::*;
-    pub(super) fn to_exchange(sym: &Symbol, _account_type: AccountType) -> Result<String, NormalizerError> {
-        noop_to_exchange(sym)
+
+    /// Known Bitstamp quote suffixes, longest-first to avoid ambiguity.
+    ///
+    /// Bitstamp pairs USD (not USDT) for BTC: BTC/USD → `btcusd`.
+    /// All lowercase, no separator.
+    const QUOTE_SUFFIXES: &[&str] = &["usdt", "usdc", "eur", "gbp", "pax", "usd", "btc", "eth"];
+
+    /// Canonical Symbol → Bitstamp exchange-native raw string.
+    ///
+    /// Spot (only supported): `basequote` all lowercase, no separator.
+    /// Example: BTC/USD → `btcusd`.
+    pub(super) fn to_exchange(sym: &Symbol, account_type: AccountType) -> Result<String, NormalizerError> {
+        match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                Ok(format!("{}{}", sym.base.to_lowercase(), sym.quote.to_lowercase()))
+            }
+            other => Err(NormalizerError::UnsupportedAccountType {
+                exchange: ExchangeId::Bitstamp,
+                account_type: other,
+            }),
+        }
     }
+
+    /// Bitstamp raw string → canonical Symbol.
+    ///
+    /// No separator — split on known quote suffixes (longest-first).
+    /// Returns `Err(InvalidFormat)` when no known suffix matches.
     pub(super) fn from_exchange(raw: &str, _account_type: AccountType) -> Result<Symbol, NormalizerError> {
-        noop_from_exchange(ExchangeId::Bitstamp, raw)
+        let lower = raw.to_lowercase();
+        for &suffix in QUOTE_SUFFIXES {
+            if lower.ends_with(suffix) && lower.len() > suffix.len() {
+                let base = &lower[..lower.len() - suffix.len()];
+                if !base.is_empty() {
+                    return Ok(Symbol::new(&base.to_uppercase(), &suffix.to_uppercase()));
+                }
+            }
+        }
+        Err(NormalizerError::InvalidFormat {
+            exchange: ExchangeId::Bitstamp,
+            raw: raw.to_string(),
+        })
     }
+
+    /// Valid Bitstamp symbol: non-empty, all ASCII lowercase alphanumeric.
     pub(super) fn is_valid_for(raw: &str, _account_type: AccountType) -> bool {
-        noop_is_valid_for(raw)
+        !raw.is_empty() && raw.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
     }
 }
 
@@ -762,27 +1028,78 @@ mod lighter {
 
 mod polymarket {
     use super::*;
+
+    /// Polymarket has no canonical Symbol ↔ raw conversion.
+    /// Callers always pass the condition ID or market slug as-is.
+    /// `to_exchange` returns `sym.base` lowercased — CLOB API requires lowercase hex.
     pub(super) fn to_exchange(sym: &Symbol, _account_type: AccountType) -> Result<String, NormalizerError> {
-        noop_to_exchange(sym)
+        if sym.base.is_empty() {
+            return Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::Polymarket,
+                raw: sym.base.clone(),
+            });
+        }
+        Ok(sym.base.to_lowercase())
     }
+
+    /// Exchange raw string → canonical Symbol.
+    /// Condition IDs and market slugs map to `base`; `quote` is always empty.
     pub(super) fn from_exchange(raw: &str, _account_type: AccountType) -> Result<Symbol, NormalizerError> {
-        noop_from_exchange(ExchangeId::Polymarket, raw)
+        if raw.is_empty() {
+            return Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::Polymarket,
+                raw: raw.to_string(),
+            });
+        }
+        Ok(Symbol { base: raw.to_string(), quote: String::new(), raw: None })
     }
+
+    /// Valid if non-empty (condition_id `0xabc...` or market slug).
     pub(super) fn is_valid_for(raw: &str, _account_type: AccountType) -> bool {
-        noop_is_valid_for(raw)
+        !raw.is_empty()
     }
 }
 
 mod moex {
     use super::*;
+
+    /// MOEX has no base/quote model — stocks are identified by a ticker (SECID).
+    ///
+    /// The security ID lives in `sym.base`. Quote is ignored because MOEX native
+    /// API never carries a quote suffix in ticker strings.
+    ///
+    /// Examples:
+    /// - `Symbol{base:"SBER", quote:""}` → `"SBER"`
+    /// - `Symbol{base:"SBER", quote:"RUB"}` → `"SBER"` (quote ignored)
     pub(super) fn to_exchange(sym: &Symbol, _account_type: AccountType) -> Result<String, NormalizerError> {
-        noop_to_exchange(sym)
+        let base = sym.base.to_uppercase();
+        if base.is_empty() {
+            return Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::Moex,
+                raw: format!("{}/{}", sym.base, sym.quote),
+            });
+        }
+        Ok(base)
     }
+
+    /// MOEX raw security ID → `Symbol{base: <ticker>, quote: "RUB"}`.
+    ///
+    /// All MOEX equities are RUB-denominated; quote defaults to `"RUB"`.
     pub(super) fn from_exchange(raw: &str, _account_type: AccountType) -> Result<Symbol, NormalizerError> {
-        noop_from_exchange(ExchangeId::Moex, raw)
+        if raw.is_empty() {
+            return Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::Moex,
+                raw: raw.to_string(),
+            });
+        }
+        Ok(Symbol::new(&raw.to_uppercase(), "RUB"))
     }
+
+    /// Valid MOEX security ID: non-empty, ASCII alphanumeric only.
+    ///
+    /// MOEX tickers (`GAZP`, `SBER`, `YNDX`, `IMOEX`) are all-caps ASCII alnum.
     pub(super) fn is_valid_for(raw: &str, _account_type: AccountType) -> bool {
-        noop_is_valid_for(raw)
+        !raw.is_empty() && raw.chars().all(|c| c.is_ascii_alphanumeric())
     }
 }
 
@@ -837,12 +1154,54 @@ mod tests {
 
     #[test]
     fn is_valid_for_nonempty_raw_is_true() {
-        for id in all_exchanges() {
+        // Exchanges with real (non-noop) is_valid_for logic are tested separately
+        // with exchange-native format strings. Generic test only covers noop exchanges.
+        let noop_exchanges: Vec<ExchangeId> = all_exchanges()
+            .into_iter()
+            .filter(|id| !matches!(
+                id,
+                ExchangeId::Gemini
+                | ExchangeId::Binance
+                | ExchangeId::Bybit
+                | ExchangeId::OKX
+                | ExchangeId::KuCoin
+                | ExchangeId::GateIO
+                | ExchangeId::MEXC
+                | ExchangeId::HTX
+                | ExchangeId::Bitget
+            ))
+            .collect();
+        for id in noop_exchanges {
             assert!(
                 SymbolNormalizer::is_valid_for(id, "BTCUSDT", AccountType::Spot),
                 "is_valid_for({id:?}, \"BTCUSDT\") returned false"
             );
         }
+    }
+
+    #[test]
+    fn gemini_normalizer_spot() {
+        let sym = Symbol::new("BTC", "USD");
+        let raw = SymbolNormalizer::to_exchange(ExchangeId::Gemini, &sym, AccountType::Spot).unwrap();
+        assert_eq!(raw, "btcusd");
+
+        let parsed = SymbolNormalizer::from_exchange(ExchangeId::Gemini, "btcusd", AccountType::Spot).unwrap();
+        assert_eq!(parsed.base.to_uppercase(), "BTC");
+        assert_eq!(parsed.quote.to_uppercase(), "USD");
+
+        assert!(SymbolNormalizer::is_valid_for(ExchangeId::Gemini, "btcusd", AccountType::Spot));
+        assert!(!SymbolNormalizer::is_valid_for(ExchangeId::Gemini, "BTCUSDT", AccountType::Spot));
+    }
+
+    #[test]
+    fn gemini_normalizer_perp() {
+        let sym = Symbol::new("BTC", "USD");
+        let raw = SymbolNormalizer::to_exchange(ExchangeId::Gemini, &sym, AccountType::FuturesCross).unwrap();
+        assert_eq!(raw, "btcgusdperp");
+
+        let parsed = SymbolNormalizer::from_exchange(ExchangeId::Gemini, "btcgusdperp", AccountType::FuturesCross).unwrap();
+        assert_eq!(parsed.base.to_uppercase(), "BTC");
+        assert_eq!(parsed.quote.to_uppercase(), "USD");
     }
 
     #[test]

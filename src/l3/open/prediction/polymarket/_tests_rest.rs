@@ -94,10 +94,7 @@ async fn test_get_price_live_market() {
 
     println!("Testing get_price for condition_id: {}", condition_id);
 
-    use crate::core::types::Symbol;
-    let symbol = Symbol::new(&condition_id, "USDC");
-
-    match connector.get_price(symbol, AccountType::Spot).await {
+    match connector.get_price(&condition_id, AccountType::Spot).await {
         Ok(price) => {
             println!("YES probability: {:.1}%", price * 100.0);
             assert!(
@@ -131,11 +128,8 @@ async fn test_get_orderbook_live_market() {
 
     println!("Testing get_orderbook for condition_id: {}", condition_id);
 
-    use crate::core::types::Symbol;
-    let symbol = Symbol::new(&condition_id, "USDC");
-
     match connector
-        .get_orderbook(symbol, Some(10), AccountType::Spot)
+        .get_orderbook(&condition_id, Some(10), AccountType::Spot)
         .await
     {
         Ok(ob) => {

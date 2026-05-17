@@ -25,7 +25,7 @@ use reqwest::Client;
 
 use crate::core::{
     AccountType, ExchangeError, ExchangeId, ExchangeResult, ExchangeType,
-    Kline, OrderBook, Price, Symbol, SymbolInfo, Ticker,
+    Kline, OrderBook, Price, SymbolInfo, Ticker,
 };
 use crate::core::traits::{ExchangeIdentity, MarketData};
 use crate::core::types::MarketDataCapabilities;
@@ -380,17 +380,15 @@ impl PolymarketConnector {
         Ok(token.token_id.clone())
     }
 
-    /// Extract identifier from symbol, lowercased.
+    /// Lowercase a Polymarket identifier (condition_id / token_id).
     ///
-    /// Polymarket identifiers (condition_id, token_id) are hex strings that
-    /// must be lowercase for the CLOB API. `Symbol::new` uppercases `base`,
-    /// so we lowercase the result here regardless of source.
-    fn symbol_id<'a>(&self, symbol: &'a Symbol) -> std::borrow::Cow<'a, str> {
-        let s = symbol.raw().unwrap_or(&symbol.base);
-        if s.chars().any(|c| c.is_ascii_uppercase()) {
-            std::borrow::Cow::Owned(s.to_lowercase())
+    /// CLOB API requires lowercase hex strings. Callers already pass raw market
+    /// identifiers; this ensures ASCII-uppercase hex is normalised.
+    fn lower_id<'a>(&self, symbol: &'a str) -> std::borrow::Cow<'a, str> {
+        if symbol.chars().any(|c| c.is_ascii_uppercase()) {
+            std::borrow::Cow::Owned(symbol.to_lowercase())
         } else {
-            std::borrow::Cow::Borrowed(s)
+            std::borrow::Cow::Borrowed(symbol)
         }
     }
 }
@@ -503,15 +501,15 @@ impl MarketData for PolymarketConnector {
 
     /// Get current YES probability for a market
     ///
-    /// `symbol.base` should be the `condition_id` (0x...).
+    /// `symbol` should be the `condition_id` (0x...).
     /// Returns the YES outcome probability as the "price" (0.0 - 1.0).
     async fn get_price(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Price> {
-        let condition_id = self.symbol_id(&symbol);
-        let condition_id = condition_id.as_ref();
+        let id = self.lower_id(symbol);
+        let condition_id = id.as_ref();
 
         // Get the market to find the primary token ID.
         // Prefers "Yes" outcome; falls back to first token for non-binary markets.
@@ -541,15 +539,15 @@ impl MarketData for PolymarketConnector {
 
     /// Get order book for a market's YES token
     ///
-    /// `symbol.base` should be the `condition_id` (0x...).
+    /// `symbol` should be the `condition_id` (0x...).
     async fn get_orderbook(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        let condition_id = self.symbol_id(&symbol);
-        let condition_id = condition_id.as_ref();
+        let id = self.lower_id(symbol);
+        let condition_id = id.as_ref();
 
         // Get the YES token ID
         let yes_token_id = self.get_yes_token_id(condition_id).await?;
@@ -561,19 +559,19 @@ impl MarketData for PolymarketConnector {
 
     /// Get price history as klines
     ///
-    /// `symbol.base` should be the token_id (not condition_id) for efficiency,
-    /// or condition_id (the connector will look up the YES token_id).
+    /// `symbol` may be the token_id (for efficiency) or the condition_id
+    /// (the connector will look up the YES token_id).
     ///
     /// Intervals: "1m" → 1m, "1h" → 1h, "6h" → 6h, "1d" → 1d, "1w" → 1w
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let input_cow = self.symbol_id(&symbol);
+        let input_cow = self.lower_id(symbol);
         let input = input_cow.as_ref();
 
         // Determine if this looks like a condition_id (0x... 66 chars) or a token_id.
@@ -612,14 +610,14 @@ impl MarketData for PolymarketConnector {
 
     /// Get 24h ticker for a market
     ///
-    /// `symbol.base` should be the `condition_id` (0x...).
+    /// `symbol` should be the `condition_id` (0x...).
     async fn get_ticker(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        let condition_id = self.symbol_id(&symbol);
-        let condition_id = condition_id.as_ref();
+        let id = self.lower_id(symbol);
+        let condition_id = id.as_ref();
         let market = self.get_market(condition_id).await?;
 
         clob_market_to_ticker(&market).ok_or_else(|| {

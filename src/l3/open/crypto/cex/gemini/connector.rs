@@ -363,8 +363,11 @@ impl MarketData for GeminiConnector {
     async fn get_ticker(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<Ticker> {
         let symbol_str = normalize_symbol(symbol);
 
+        // V1 pubticker returns bid/ask/last + volume object (with base and quote volumes).
+        // V2 ticker returns open/high/low/close/bid/ask but NO volume field.
+        // Use V1 so volume_24h is populated.
         let response = self.get(
-            GeminiEndpoint::TickerV2,
+            GeminiEndpoint::Ticker,
             &[("symbol", &symbol_str)],
         ).await?;
 

@@ -495,7 +495,8 @@ impl MarketData for BingxConnector {
         account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
         let endpoint = match account_type {
-            AccountType::Spot | AccountType::Margin => BingxEndpoint::SpotTickerBookTicker,
+            // SpotTicker24hr returns volume; SpotTickerBookTicker is bid/ask only.
+            AccountType::Spot | AccountType::Margin => BingxEndpoint::SpotTicker24hr,
             _ => BingxEndpoint::SwapTicker,
         };
 

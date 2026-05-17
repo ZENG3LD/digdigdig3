@@ -345,11 +345,14 @@ impl CryptoComWebSocket {
             WsEvent::Ticker(data) => {
                 let mut events = Vec::new();
                 if let Ok(ticker) = super::parser::CryptoComParser::parse_ws_ticker(data) {
-                    // For derivative instruments, the ticker payload includes `oi` (open interest).
-                    // Emit OpenInterestUpdate alongside Ticker when the field is present.
+                    // Emit Ticker first — consumers reading first event must see Ticker, not OI.
+                    // For derivative instruments the ticker payload includes `oi` (open interest);
+                    // emit OpenInterestUpdate after Ticker when the field is present and non-zero.
                     let oi = data.get("oi")
                         .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok())
-                            .or_else(|| v.as_f64()));
+                            .or_else(|| v.as_f64()))
+                        .filter(|&v| v != 0.0);
+                    events.push(StreamEvent::Ticker(ticker.clone()));
                     if let Some(open_interest) = oi {
                         events.push(StreamEvent::OpenInterestUpdate {
                             symbol: ticker.symbol.clone(),
@@ -358,7 +361,6 @@ impl CryptoComWebSocket {
                             timestamp: ticker.timestamp,
                         });
                     }
-                    events.push(StreamEvent::Ticker(ticker));
                 }
                 events
             }
@@ -1022,5 +1024,77 @@ fn _build_subscribe_message(id: i64, channels: Vec<String>, nonce: i64) -> serde
         },
         "nonce": nonce
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Regression: Ticker must be the FIRST event emitted from a WsEvent::Ticker.
+    /// Before the fix, OpenInterestUpdate was emitted first for derivative tickers
+    /// that include an `oi` field (open_interest = 0.0 initial), causing consumers
+    /// that read only the first event to see OI instead of Ticker.
+    #[test]
+    fn test_ticker_emitted_before_open_interest() {
+        let data = json!({
+            "i": "BTCUSD-PERP",
+            "b": "50000.00",
+            "k": "50001.00",
+            "a": "50000.50",
+            "h": "51000.00",
+            "l": "49000.00",
+            "v": "1000.5",
+            "vv": "50000000",
+            "c": "0.02",
+            "t": 1234567890000i64,
+            "oi": "42.5"
+        });
+        let event = WsEvent::Ticker(data);
+        let events = CryptoComWebSocket::ws_event_to_stream_events(&event);
+        assert!(events.len() >= 1, "Expected at least one event");
+        assert!(
+            matches!(events[0], StreamEvent::Ticker(_)),
+            "First event must be Ticker, got: {:?}",
+            events[0]
+        );
+    }
+
+    /// Regression: zero OI must NOT emit OpenInterestUpdate (exchange sends oi=0 on connect).
+    #[test]
+    fn test_zero_oi_suppressed() {
+        let data = json!({
+            "i": "BTCUSD-PERP",
+            "b": "50000.00",
+            "k": "50001.00",
+            "a": "50000.50",
+            "v": "100.0",
+            "t": 1234567890000i64,
+            "oi": "0"
+        });
+        let event = WsEvent::Ticker(data);
+        let events = CryptoComWebSocket::ws_event_to_stream_events(&event);
+        let has_oi = events.iter().any(|e| matches!(e, StreamEvent::OpenInterestUpdate { .. }));
+        assert!(!has_oi, "Zero OI must not emit OpenInterestUpdate");
+    }
+
+    /// Regression: non-zero OI emits OpenInterestUpdate AFTER Ticker.
+    #[test]
+    fn test_nonzero_oi_emitted_after_ticker() {
+        let data = json!({
+            "i": "BTCUSD-PERP",
+            "b": "50000.00",
+            "k": "50001.00",
+            "a": "50000.50",
+            "v": "100.0",
+            "t": 1234567890000i64,
+            "oi": "42.5"
+        });
+        let event = WsEvent::Ticker(data);
+        let events = CryptoComWebSocket::ws_event_to_stream_events(&event);
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], StreamEvent::Ticker(_)));
+        assert!(matches!(events[1], StreamEvent::OpenInterestUpdate { .. }));
+    }
 }
 

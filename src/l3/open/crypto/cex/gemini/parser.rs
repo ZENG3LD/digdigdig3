@@ -15,6 +15,7 @@ use crate::core::types::{
     UserTrade,
     OrderbookDelta as OrderbookDeltaData,
 };
+use crate::core::utils::timestamp_millis;
 
 /// Парсер ответов Gemini API
 pub struct GeminiParser;
@@ -488,10 +489,15 @@ impl GeminiParser {
             }
         }
 
+        // Gemini l2_updates has no timestamp field — use receive time.
+        let timestamp = data.get("timestamp")
+            .and_then(|t| t.as_i64())
+            .unwrap_or_else(|| timestamp_millis() as i64);
+
         Ok(StreamEvent::OrderbookDelta(OrderbookDeltaData {
             bids,
             asks,
-            timestamp: 0,
+            timestamp,
             first_update_id: None,
             last_update_id: None,
             prev_update_id: None,
@@ -1007,5 +1013,49 @@ mod tests {
         assert_eq!(balances[0].free, 1.0);
         assert_eq!(balances[0].locked, 0.5);
         assert_eq!(balances[0].total, 1.5);
+    }
+
+    /// Regression: parse_ws_l2_update must use receive-time timestamp when the frame
+    /// has no `timestamp` field. Before the fix, timestamp was hardcoded to 0.
+    #[test]
+    fn test_parse_ws_l2_update_timestamp_fallback() {
+        // Gemini l2_updates frame: no timestamp field (protocol doesn't include it).
+        let data = json!({
+            "type": "l2_updates",
+            "symbol": "BTCUSD",
+            "changes": [
+                ["buy", "77900.00", "0.5"],
+                ["sell", "77910.00", "0.3"]
+            ]
+        });
+
+        let event = GeminiParser::parse_ws_l2_update(&data).unwrap();
+        if let crate::core::types::StreamEvent::OrderbookDelta(delta) = event {
+            // Timestamp must be non-zero (receive-time fallback, not hardcoded 0).
+            assert!(delta.timestamp > 0, "timestamp must be non-zero; got {}", delta.timestamp);
+            assert_eq!(delta.bids.len(), 1);
+            assert_eq!(delta.asks.len(), 1);
+        } else {
+            panic!("Expected OrderbookDelta");
+        }
+    }
+
+    /// When a frame explicitly provides a timestamp, that value must be used (not overridden).
+    #[test]
+    fn test_parse_ws_l2_update_explicit_timestamp() {
+        let ts = 1_700_000_000_000i64;
+        let data = json!({
+            "type": "l2_updates",
+            "symbol": "BTCUSD",
+            "timestamp": ts,
+            "changes": [["buy", "77900.00", "0.5"]]
+        });
+
+        let event = GeminiParser::parse_ws_l2_update(&data).unwrap();
+        if let crate::core::types::StreamEvent::OrderbookDelta(delta) = event {
+            assert_eq!(delta.timestamp, ts);
+        } else {
+            panic!("Expected OrderbookDelta");
+        }
     }
 }

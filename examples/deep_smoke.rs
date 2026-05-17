@@ -17,10 +17,21 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use digdigdig3::connector_manager::{ConnectorFactory, ExchangeHub};
 use digdigdig3::core::traits::MarketData;
 use digdigdig3::core::types::{AccountType, ExchangeId, StreamEvent, SubscriptionRequest, Symbol};
+use digdigdig3::core::utils::SymbolNormalizer;
 use digdigdig3::l2::free::moex::MoexWebSocket;
 use digdigdig3::core::traits::WebSocketConnector;
 use futures_util::StreamExt;
 use tokio::time::{timeout, Duration};
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Truncate a string to at most `max_chars` Unicode characters (never panics on multibyte).
+fn truncate_str(s: &str, max_chars: usize) -> &str {
+    match s.char_indices().nth(max_chars) {
+        Some((idx, _)) => &s[..idx],
+        None => s,
+    }
+}
 
 // ── Thresholds ────────────────────────────────────────────────────────────────
 
@@ -73,8 +84,7 @@ impl RestResult {
                 )
             }
             RestResult::Fail(e) => {
-                let short = if e.len() > 60 { &e[..60] } else { e.as_str() };
-                format!("FAIL {}", short)
+                format!("FAIL {}", truncate_str(e, 60))
             }
         }
     }
@@ -217,8 +227,7 @@ async fn run_ws_test(
         Ok(Ok(())) => {}
         Ok(Err(e)) => {
             let short = e.to_string();
-            let short = if short.len() > 60 { &short[..60] } else { &short };
-            return WsResult::ConnectFail(short.to_string());
+            return WsResult::ConnectFail(truncate_str(&short, 60).to_string());
         }
         Err(_) => return WsResult::ConnectFail("connect_timeout".into()),
     }
@@ -229,8 +238,7 @@ async fn run_ws_test(
         Ok(Ok(())) => {}
         Ok(Err(e)) => {
             let short = e.to_string();
-            let short = if short.len() > 60 { &short[..60] } else { &short };
-            return WsResult::SubscribeFail(short.to_string());
+            return WsResult::SubscribeFail(truncate_str(&short, 60).to_string());
         }
         Err(_) => return WsResult::SubscribeFail("subscribe_timeout".into()),
     }
@@ -276,11 +284,57 @@ async fn run_ws_test(
 
 // ── Per-exchange test ─────────────────────────────────────────────────────────
 
+/// Resolve exchange-native raw symbol and account type for BTC per exchange.
+///
+/// Exchanges that don't trade USDT use USD. Deribit uses FuturesCross to get
+/// BTC-PERPETUAL. HyperLiquid perps use just "BTC".
+/// Returns `(Symbol-with-raw, raw_str_for_REST, effective_account_type)`.
+fn raw_symbol_for(id: ExchangeId) -> (Symbol, String, AccountType) {
+    let btc_usdt = Symbol::new("BTC", "USDT");
+    let btc_usd = Symbol::new("BTC", "USD");
+
+    let make = |sym: Symbol, at: AccountType| -> (Symbol, String, AccountType) {
+        let raw = SymbolNormalizer::to_exchange(id, &sym, at)
+            .unwrap_or_else(|_| sym.to_concat());
+        let sym_with_raw = Symbol::with_raw(&sym.base, &sym.quote, raw.clone());
+        (sym_with_raw, raw, at)
+    };
+
+    match id {
+        // Deribit perp: BTC-PERPETUAL (FuturesCross account type)
+        ExchangeId::Deribit => make(btc_usd, AccountType::FuturesCross),
+        // HyperLiquid perps: just "BTC" (FuturesCross)
+        ExchangeId::HyperLiquid => make(btc_usd, AccountType::FuturesCross),
+        // Upbit: USDT-BTC (quote-base, reversed format)
+        ExchangeId::Upbit => make(btc_usdt, AccountType::Spot),
+        // Bitfinex: tBTCUSDT (t-prefix, no separator for 3-char tokens)
+        ExchangeId::Bitfinex => make(btc_usdt, AccountType::Spot),
+        // Gemini: btcusd (lowercase, no separator, USD not USDT)
+        ExchangeId::Gemini => make(btc_usd, AccountType::Spot),
+        // Bitstamp: btcusd (lowercase)
+        ExchangeId::Bitstamp => make(btc_usd, AccountType::Spot),
+        // Kraken: XBTUSD (BTC→XBT mapping, no separator)
+        ExchangeId::Kraken => make(btc_usd, AccountType::Spot),
+        // Coinbase: BTC-USD
+        ExchangeId::Coinbase => make(btc_usd, AccountType::Spot),
+        // KuCoin: BTC-USDT (dash separator)
+        ExchangeId::KuCoin => make(btc_usdt, AccountType::Spot),
+        // OKX: BTC-USDT (dash separator)
+        ExchangeId::OKX => make(btc_usdt, AccountType::Spot),
+        // Gate.io: BTC_USDT (underscore)
+        ExchangeId::GateIO => make(btc_usdt, AccountType::Spot),
+        // BingX: BTC-USDT (dash)
+        ExchangeId::BingX => make(btc_usdt, AccountType::Spot),
+        // Crypto.com spot: BTC_USDT (underscore)
+        ExchangeId::CryptoCom => make(btc_usdt, AccountType::Spot),
+        // All others: BTCUSDT concat (Binance, Bybit, MEXC, HTX, Bitget, etc.)
+        _ => make(btc_usdt, AccountType::Spot),
+    }
+}
+
 async fn test_exchange(id: ExchangeId) -> Row {
     let hub = ExchangeHub::new();
-    let symbol = Symbol::new("BTC", "USDT");
-    let symbol_str = symbol.to_concat();
-    let account_type = AccountType::Spot;
+    let (ws_symbol, symbol_str, account_type) = raw_symbol_for(id);
     let stale_ms = stale_threshold_ms();
 
     // ── REST ─────────────────────────────────────────────────────────────────
@@ -331,11 +385,10 @@ async fn test_exchange(id: ExchangeId) -> Row {
         Ok(Ok(w)) => Some(w),
         Ok(Err(e)) => {
             let msg = e.to_string();
-            let short = if msg.len() > 60 { &msg[..60] } else { &msg };
             return Row {
                 exchange: id,
                 rest,
-                ws: WsResult::Unsupported(short.to_string()),
+                ws: WsResult::Unsupported(truncate_str(&msg, 60).to_string()),
             };
         }
         Err(_) => {
@@ -348,7 +401,7 @@ async fn test_exchange(id: ExchangeId) -> Row {
     };
 
     let ws_result = if let Some(ws) = ws {
-        run_ws_test(ws, symbol, account_type, stale_ms).await
+        run_ws_test(ws, ws_symbol, account_type, stale_ms).await
     } else {
         WsResult::Unsupported("none".into())
     };

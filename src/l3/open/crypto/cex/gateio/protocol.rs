@@ -371,8 +371,15 @@ fn frame_result(raw: &Value) -> WebSocketResult<&Value> {
 
 fn parse_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
     let result = frame_result(raw)?;
-    let ticker = GateioParser::parse_ws_ticker(result)
+    let mut ticker = GateioParser::parse_ws_ticker(result)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+    // Gate.io ticker result has no embedded timestamp; use frame-level time_ms (ms)
+    // or time (seconds). Fall back to current time so ts is never 0.
+    let frame_ts = raw.get("time_ms")
+        .and_then(|v| v.as_i64())
+        .or_else(|| raw.get("time").and_then(|v| v.as_i64()).map(|s| s * 1000))
+        .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
+    ticker.timestamp = frame_ts;
     Ok(StreamEvent::Ticker(ticker))
 }
 

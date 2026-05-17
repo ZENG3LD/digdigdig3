@@ -49,9 +49,13 @@ use super::parser::LighterParser;
 // RATE LIMIT CAPABILITIES (static — embedded in binary, no allocation)
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// Lighter uses a weight-based rolling-60s window.
+// Standard tier: 60 weight/min (too small for any market-data endpoint).
+// Premium tier: 24 000 weight/min — required for production use.
+// We track against the premium budget; exceeding it triggers a server 429.
 static LIGHTER_POOLS: &[RestLimitPool] = &[RestLimitPool {
     name: "default",
-    max_budget: 60,
+    max_budget: 24_000,
     window_seconds: 60,
     is_weight: true,
     has_server_headers: false,
@@ -151,7 +155,7 @@ impl LighterConnector {
 
     /// Wait for rate limit budget. Non-essential requests are dropped at >= 90% utilization.
     ///
-    /// Returns `true` if acquired, `false` if dropped due to cutoff pressure.
+    /// Returns `true` if acquired, `false` if dropped due to cutoff pressure or impossible weight.
     /// Trading endpoints should pass `essential: true` to always wait through.
     async fn rate_limit_wait(&self, weight: u32, essential: bool) -> bool {
         loop {
@@ -169,11 +173,17 @@ impl LighterConnector {
                 if limiter.try_acquire("default", weight) {
                     return true;
                 }
-                limiter.time_until_ready("default", weight)
+
+                let wait = limiter.time_until_ready("default", weight);
+                // Guard against infinite spin: if the limiter reports zero wait but
+                // try_acquire still fails, the weight exceeds max_budget and can never
+                // be satisfied.  Drop the request rather than busy-loop forever.
+                if wait == Duration::ZERO {
+                    return false;
+                }
+                wait
             };
-            if wait_time > Duration::ZERO {
-                tokio::time::sleep(wait_time).await;
-            }
+            tokio::time::sleep(wait_time).await;
         }
     }
 

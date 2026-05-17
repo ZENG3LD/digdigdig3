@@ -1,0 +1,232 @@
+{
+  "Binance": {
+    "tested_on": "2026-05-17",
+    "harness_version": "deep_smoke v1",
+    "rest": {
+      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
+    },
+    "ws": {
+      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "bid_price", "ask_price", "timestamp"] } }
+    }
+  },
+  "BingX": {
+    "tested_on": "2026-05-17",
+    "harness_version": "deep_smoke v1",
+    "rest": {
+      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
+    },
+    "ws": {
+      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "timestamp"] } }
+    }
+  },
+  "Bitfinex": {
+    "tested_on": "2026-05-17",
+    "harness_version": "deep_smoke v1",
+    "rest": {
+      "get_ticker": { "Failed": { "reason": "API error 500: symbol invalid" } }
+    },
+    "ws": {
+      "Ticker": { "Failed": { "reason": "no events in 5s" } }
+    }
+  },
+  "Bitget": {
+    "tested_on": "2026-05-17",
+    "harness_version": "deep_smoke v1",
+    "rest": {
+      "get_ticker": { "Failed": { "reason": "ticker_timeout" } }
+    },
+    "ws": {
+      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "bid_price", "ask_price", "timestamp"] } }
+    }
+  },
+  "Bitstamp": {
+    "tested_on": "2026-05-17",
+    "harness_version": "deep_smoke v1",
+    "rest": {
+      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
+    },
+    "ws": {
+      "Ticker": { "Failed": { "reason": "no events in 5s" } }
+    }
+  },
+  "Bybit": {
+    "tested_on": "2026-05-17",
+    "harness_version": "deep_smoke v1",
+    "rest": {
+      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
+    },
+    "ws": {
+      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "timestamp"] } }
+    }
+  },
+  "Coinbase": {
+    "tested_on": "2026-05-17",
+    "harness_version": "deep_smoke v1",
+    "rest": {
+      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "timestamp"] } }
+    },
+    "ws": {
+      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "timestamp"] } }
+    }
+  },
+  "CryptoCom": {
+    "tested_on": "2026-05-17",
+    "harness_version": "deep_smoke v1",
+    "rest": {
+      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
+    },
+    "ws": {
+      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "bid_price", "ask_price", "timestamp"] } }
+    }
+  },
+  "CryptoCompare": {
+    "tested_on": "2026-05-17",
+    "harness_version": "deep_smoke v1",
+    "rest": {
+      "get_ticker": { "Failed": { "reason": "Invalid request: cccagg_or_exchange market does not exist" } }
+    },
+    "ws": {
+      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "timestamp"] } }
+    }
+  },
+  "Deribit": {
+    "tested_on": "2026-05-17",
+    "harness_version": "deep_smoke v1",
+    "rest": {
+      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
+    },
+    "ws": {
+      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "bid_price", "ask_price", "timestamp"] } }
+    }
+  },
+  "Dydx": {
+    "tested_on": "2026-05-17",
+    "harness_version": "deep_smoke v1",
+    "rest": {
+      "get_ticker": { "Failed": { "reason": "Market 'BTCUSDT' not found" } }
+    },
+    "ws": {
+      "Ticker": { "Failed": { "reason": "no events in 5s" } }
+    }
+  },
+  "GateIO": {
+    "tested_on": "2026-05-17",
+    "harness_version": "deep_smoke v1",
+    "rest": {
+      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price"] } }
+    },
+    "ws": {
+      "Ticker": { "Failed": { "reason": "no events in 5s" } }
+    }
+  },
+  "Gemini": {
+    "tested_on": "2026-05-17",
+    "harness_version": "deep_smoke v1",
+    "rest": {
+      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
+    },
+    "ws": {
+      "OBDelta": { "Validated": { "fields_populated": ["bids", "asks", "top_bid", "timestamp"] } }
+    }
+  },
+  "HTX": {
+    "tested_on": "2026-05-17",
+    "harness_version": "deep_smoke v1",
+    "rest": {
+      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
+    },
+    "ws": {
+      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "timestamp"] } }
+    }
+  },
+  "HyperLiquid": {
+    "tested_on": "2026-05-17",
+    "harness_version": "deep_smoke v1",
+    "rest": {
+      "get_ticker": { "Failed": { "reason": "get_ticker requires symbol-to-index mapping" } }
+    },
+    "ws": {
+      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "timestamp"] } }
+    }
+  },
+  "Kraken": {
+    "tested_on": "2026-05-17",
+    "harness_version": "deep_smoke v1",
+    "rest": {
+      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
+    },
+    "ws": {
+      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "bid_price", "ask_price", "timestamp"] } }
+    }
+  },
+  "KuCoin": {
+    "tested_on": "2026-05-17",
+    "harness_version": "deep_smoke v1",
+    "rest": {
+      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
+    },
+    "ws": {
+      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "bid_price", "ask_price", "timestamp"] } }
+    }
+  },
+  "Lighter": {
+    "tested_on": "2026-05-17",
+    "harness_version": "deep_smoke v1",
+    "rest": {
+      "get_ticker": { "Failed": { "reason": "Unknown Lighter market for coin 'BTCUSDT'" } }
+    },
+    "ws": {
+      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "timestamp"] } }
+    }
+  },
+  "MEXC": {
+    "tested_on": "2026-05-17",
+    "harness_version": "deep_smoke v1",
+    "rest": {
+      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
+    },
+    "ws": {
+      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "timestamp"] } }
+    }
+  },
+  "Moex": {
+    "tested_on": "2026-05-17",
+    "harness_version": "deep_smoke v1",
+    "rest": {
+      "get_ticker": { "Failed": { "reason": "Parse error: Empty marketdata" } }
+    },
+    "ws": {
+      "Ticker": { "Failed": { "reason": "no events in 5s" } }
+    }
+  },
+  "OKX": {
+    "tested_on": "2026-05-17",
+    "harness_version": "deep_smoke v1",
+    "rest": {
+      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
+    },
+    "ws": {
+      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "bid_price", "ask_price", "timestamp"] } }
+    }
+  },
+  "Upbit": {
+    "tested_on": "2026-05-17",
+    "harness_version": "deep_smoke v1",
+    "rest": {
+      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "timestamp"] } }
+    },
+    "ws": {
+      "Ticker": { "PopulatedButEmpty": { "missing_fields": ["bid_price", "ask_price", "correct_symbol_direction"] } }
+    }
+  },
+  "YahooFinance": {
+    "tested_on": "2026-05-17",
+    "harness_version": "deep_smoke v1",
+    "rest": {
+      "get_ticker": { "Failed": { "reason": "API error 404: chart result null" } }
+    },
+    "ws": {
+      "Ticker": { "Failed": { "reason": "no events in 5s" } }
+    }
+  }
+}

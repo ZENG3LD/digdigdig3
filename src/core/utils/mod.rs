@@ -16,6 +16,7 @@ mod time;
 mod rate_limiter;
 pub mod precision;
 pub mod symbol_normalizer;
+pub mod validation_snapshot;
 #[cfg(feature = "onchain-evm")]
 pub mod crypto_evm;
 

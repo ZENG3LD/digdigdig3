@@ -67,6 +67,8 @@ pub use core::{
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
     RateLimitCapabilities, LimitModel,
     EndpointWeight, RestLimitPool, DecayingLimitConfig, WsLimits,
+    // Empirical validation
+    ValidationStamp, FieldValidation,
 
     // WebSocket types
     ConnectionStatus, StreamType, SubscriptionRequest, StreamEvent,

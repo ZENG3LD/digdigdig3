@@ -1477,6 +1477,11 @@ impl crate::core::traits::HasCapabilities for LighterConnector {
             has_websocket: true, has_ws_klines: false, has_ws_trades: true,
             has_ws_orderbook: true, has_ws_ticker: true,
             has_ws_mark_price: false, has_ws_funding_rate: false,
+            validation: self.validation_status(),
         }
+    }
+
+    fn validation_status(&self) -> Option<&'static crate::core::types::ValidationStamp> {
+        crate::core::utils::validation_snapshot::validation_for(crate::core::types::ExchangeId::Lighter)
     }
 }

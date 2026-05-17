@@ -10,6 +10,7 @@ mod market_data;
 mod trading;
 mod websocket;
 mod responses;
+mod validation;
 
 pub use capabilities::{
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
@@ -42,3 +43,6 @@ pub use responses::{
 // ── Wave 0: WebSocket framework types ────────────────────────────────────────
 // Re-exported so callers can use `digdigdig3::core::types::StreamKind` etc.
 pub use crate::core::websocket::{KlineInterval, StreamKind, StreamSpec, SupportLevel};
+
+// ── Phase γ: Empirical validation types ──────────────────────────────────────
+pub use validation::{ValidationStamp, FieldValidation};

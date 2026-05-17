@@ -112,6 +112,8 @@ pub use types::{
     // Rate limit capabilities
     RateLimitCapabilities, LimitModel,
     EndpointWeight, RestLimitPool, DecayingLimitConfig, WsLimits,
+    // Empirical validation
+    ValidationStamp, FieldValidation,
 };
 
 // Re-exports traits

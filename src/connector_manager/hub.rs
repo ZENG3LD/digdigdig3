@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use crate::connector_manager::{ConnectorFactory, ConnectorPool, WebSocketPool};
 use crate::core::traits::{CoreConnector, WebSocketConnector};
-use crate::core::types::{AccountType, ConnectorCapabilities, ExchangeId, ExchangeResult};
+use crate::core::types::{AccountType, ConnectorCapabilities, ExchangeError, ExchangeId, ExchangeResult};
 
 /// Unified holder of REST and WS connector pools.
 ///
@@ -92,6 +92,35 @@ impl ExchangeHub {
             if let Ok(ws) = ConnectorFactory::create_websocket(id, at, testnet).await {
                 self.ws.insert(id, at, ws);
             }
+        }
+        Ok(())
+    }
+
+    /// Wire REST + WS for all listed account_types, then refuse if the connector
+    /// has no `ValidationStamp` (i.e. it was never smoke-tested with live data).
+    ///
+    /// Use `connect_full` to bypass this guard (e.g. for untested/auth-gated connectors).
+    pub async fn connect_full_validated(
+        &self,
+        id: ExchangeId,
+        account_types: &[AccountType],
+        testnet: bool,
+    ) -> ExchangeResult<()> {
+        self.connect_full(id, account_types, testnet).await?;
+        let conn = self.rest.get(&id).ok_or_else(|| {
+            ExchangeError::NotValidated(format!(
+                "{:?} connected but rest() returned None — internal error",
+                id
+            ))
+        })?;
+        if conn.validation_status().is_none() {
+            // Roll back so the hub isn't left in a half-connected state
+            self.shutdown(id);
+            return Err(ExchangeError::NotValidated(format!(
+                "{:?} has no ValidationStamp — refusing connect_full_validated; \
+                 use connect_full() to bypass",
+                id
+            )));
         }
         Ok(())
     }

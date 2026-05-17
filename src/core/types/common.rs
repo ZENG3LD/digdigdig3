@@ -430,6 +430,9 @@ pub enum ExchangeError {
 
     #[error("Not found: {0}")]
     NotFound(String),
+
+    #[error("Not validated: {0}")]
+    NotValidated(String),
 }
 
 /// Результат Exchange операции

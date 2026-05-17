@@ -347,8 +347,13 @@ impl HasCapabilities for MoexConnector {
             has_orderbook: true,
             has_klines: true,
             has_exchange_info: true,
+            validation: self.validation_status(),
             ..Default::default()
         }
+    }
+
+    fn validation_status(&self) -> Option<&'static crate::core::types::ValidationStamp> {
+        crate::core::utils::validation_snapshot::validation_for(crate::core::types::ExchangeId::Moex)
     }
 }
 
@@ -498,8 +503,13 @@ impl HasCapabilities for YahooFinanceConnector {
             has_klines: true,
             has_recent_trades: false,
             has_exchange_info: true,
+            validation: self.validation_status(),
             ..Default::default()
         }
+    }
+
+    fn validation_status(&self) -> Option<&'static crate::core::types::ValidationStamp> {
+        crate::core::utils::validation_snapshot::validation_for(crate::core::types::ExchangeId::YahooFinance)
     }
 }
 
@@ -515,8 +525,13 @@ impl HasCapabilities for CryptoCompareConnector {
             has_ws_ticker: true,
             has_ws_trades: true,
             has_ws_klines: true,
+            validation: self.validation_status(),
             ..Default::default()
         }
+    }
+
+    fn validation_status(&self) -> Option<&'static crate::core::types::ValidationStamp> {
+        crate::core::utils::validation_snapshot::validation_for(crate::core::types::ExchangeId::CryptoCompare)
     }
 }
 

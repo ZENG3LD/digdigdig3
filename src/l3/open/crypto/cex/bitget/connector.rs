@@ -2877,6 +2877,11 @@ impl crate::core::traits::HasCapabilities for BitgetConnector {
             has_websocket: true, has_ws_klines: true, has_ws_trades: true,
             has_ws_orderbook: true, has_ws_ticker: true,
             has_ws_mark_price: true, has_ws_funding_rate: true,
+            validation: self.validation_status(),
         }
+    }
+
+    fn validation_status(&self) -> Option<&'static crate::core::types::ValidationStamp> {
+        crate::core::utils::validation_snapshot::validation_for(crate::core::types::ExchangeId::Bitget)
     }
 }

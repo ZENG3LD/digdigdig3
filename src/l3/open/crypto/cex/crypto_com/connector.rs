@@ -21,6 +21,7 @@ use crate::core::{
     ExchangeId, ExchangeType, AccountType,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
+    SymbolInput,
     Order, OrderSide, OrderType, Balance, AccountInfo,
     Position, FundingRate,
     OrderRequest, CancelRequest, CancelScope,
@@ -349,9 +350,10 @@ impl ExchangeIdentity for CryptoComConnector {
 impl MarketData for CryptoComConnector {
     async fn get_price(
         &self,
-        symbol: &str,
-        _account_type: AccountType,
+        symbol: SymbolInput<'_>,
+        account_type: AccountType,
     ) -> ExchangeResult<Price> {
+        let symbol = symbol.resolve(ExchangeId::CryptoCom, account_type)?;
         let params = json!({
             "instrument_name": symbol
         });
@@ -362,10 +364,11 @@ impl MarketData for CryptoComConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         depth: Option<u16>,
-        _account_type: AccountType,
+        account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
+        let symbol = symbol.resolve(ExchangeId::CryptoCom, account_type)?;
         let mut params = json!({
             "instrument_name": symbol
         });
@@ -380,12 +383,13 @@ impl MarketData for CryptoComConnector {
 
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
-        _account_type: AccountType,
+        account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::CryptoCom, account_type)?;
         let timeframe = map_kline_interval(interval);
 
         let mut params = json!({
@@ -404,9 +408,10 @@ impl MarketData for CryptoComConnector {
 
     async fn get_ticker(
         &self,
-        symbol: &str,
-        _account_type: AccountType,
+        symbol: SymbolInput<'_>,
+        account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
+        let symbol = symbol.resolve(ExchangeId::CryptoCom, account_type)?;
         let params = json!({
             "instrument_name": symbol
         });

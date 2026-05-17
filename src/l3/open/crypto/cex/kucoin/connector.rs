@@ -25,6 +25,7 @@ use crate::core::{
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
+    SymbolInput,
     Order, OrderSide, OrderType, Balance, AccountInfo,
     Position, FundingRate,
     OrderRequest, CancelRequest, CancelScope,
@@ -812,9 +813,10 @@ fn interval_to_secs(interval: &str) -> u64 {
 impl MarketData for KuCoinConnector {
     async fn get_price(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         account_type: AccountType,
     ) -> ExchangeResult<Price> {
+        let symbol = symbol.resolve(ExchangeId::KuCoin, account_type)?;
         let endpoint = match account_type {
             AccountType::Spot | AccountType::Margin => KuCoinEndpoint::SpotPrice,
             _ => KuCoinEndpoint::FuturesPrice,
@@ -829,10 +831,11 @@ impl MarketData for KuCoinConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _depth: Option<u16>,
         account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
+        let symbol = symbol.resolve(ExchangeId::KuCoin, account_type)?;
         let endpoint = match account_type {
             AccountType::Spot | AccountType::Margin => KuCoinEndpoint::SpotOrderbook,
             _ => KuCoinEndpoint::FuturesOrderbook,
@@ -847,12 +850,13 @@ impl MarketData for KuCoinConnector {
 
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
         account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::KuCoin, account_type)?;
         let endpoint = match account_type {
             AccountType::Spot | AccountType::Margin => KuCoinEndpoint::SpotKlines,
             _ => KuCoinEndpoint::FuturesKlines,
@@ -899,9 +903,10 @@ impl MarketData for KuCoinConnector {
 
     async fn get_ticker(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
+        let symbol = symbol.resolve(ExchangeId::KuCoin, account_type)?;
         let endpoint = match account_type {
             AccountType::Spot | AccountType::Margin => KuCoinEndpoint::SpotTicker,
             _ => KuCoinEndpoint::FuturesTicker,

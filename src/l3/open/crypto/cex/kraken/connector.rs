@@ -21,6 +21,7 @@ use crate::core::{
     ExchangeId, ExchangeType, AccountType,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
+    SymbolInput,
     Order, OrderSide, OrderType, Balance, AccountInfo,
     Position, FundingRate,
     OrderRequest, CancelRequest, CancelScope,
@@ -415,28 +416,30 @@ impl ExchangeIdentity for KrakenConnector {
 impl MarketData for KrakenConnector {
     async fn get_price(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         account_type: AccountType,
     ) -> ExchangeResult<Price> {
+        let symbol = symbol.resolve(ExchangeId::Kraken, account_type)?;
         let mut params = HashMap::new();
         params.insert("pair".to_string(), symbol.to_string());
 
         let response = self.get(KrakenEndpoint::SpotTicker, params, account_type).await?;
 
         // Response may use full ISO format (XXBTZUSD); try raw symbol first, then full format
-        KrakenParser::parse_price(&response, symbol)
+        KrakenParser::parse_price(&response, &symbol)
             .or_else(|_| {
-                let full_format = Self::to_full_format(symbol);
+                let full_format = Self::to_full_format(&symbol);
                 KrakenParser::parse_price(&response, &full_format)
             })
     }
 
     async fn get_orderbook(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         depth: Option<u16>,
         account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
+        let symbol = symbol.resolve(ExchangeId::Kraken, account_type)?;
         let mut params = HashMap::new();
         params.insert("pair".to_string(), symbol.to_string());
         if let Some(d) = depth {
@@ -445,47 +448,49 @@ impl MarketData for KrakenConnector {
 
         let response = self.get(KrakenEndpoint::SpotOrderbook, params, account_type).await?;
 
-        KrakenParser::parse_orderbook(&response, symbol)
+        KrakenParser::parse_orderbook(&response, &symbol)
             .or_else(|_| {
-                let full_format = Self::to_full_format(symbol);
+                let full_format = Self::to_full_format(&symbol);
                 KrakenParser::parse_orderbook(&response, &full_format)
             })
     }
 
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         _limit: Option<u16>,
         account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::Kraken, account_type)?;
         let mut params = HashMap::new();
         params.insert("pair".to_string(), symbol.to_string());
         params.insert("interval".to_string(), map_ohlc_interval(interval).to_string());
 
         let response = self.get(KrakenEndpoint::SpotOHLC, params, account_type).await?;
 
-        KrakenParser::parse_klines(&response, symbol)
+        KrakenParser::parse_klines(&response, &symbol)
             .or_else(|_| {
-                let full_format = Self::to_full_format(symbol);
+                let full_format = Self::to_full_format(&symbol);
                 KrakenParser::parse_klines(&response, &full_format)
             })
     }
 
     async fn get_ticker(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
+        let symbol = symbol.resolve(ExchangeId::Kraken, account_type)?;
         let mut params = HashMap::new();
         params.insert("pair".to_string(), symbol.to_string());
 
         let response = self.get(KrakenEndpoint::SpotTicker, params, account_type).await?;
 
-        KrakenParser::parse_ticker(&response, symbol)
+        KrakenParser::parse_ticker(&response, &symbol)
             .or_else(|_| {
-                let full_format = Self::to_full_format(symbol);
+                let full_format = Self::to_full_format(&symbol);
                 KrakenParser::parse_ticker(&response, &full_format)
             })
     }

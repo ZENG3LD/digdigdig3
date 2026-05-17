@@ -25,6 +25,7 @@ use crate::core::{
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
     Price, Quantity, Kline, Ticker, OrderBook,
+    SymbolInput,
     Order, OrderSide, OrderType, Balance, AccountInfo,
     Position, FundingRate, MarginType,
     OrderRequest, CancelRequest, CancelScope,
@@ -430,20 +431,22 @@ impl ExchangeIdentity for BingxConnector {
 impl MarketData for BingxConnector {
     async fn get_price(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         account_type: AccountType,
     ) -> ExchangeResult<Price> {
+        let symbol = symbol.resolve(ExchangeId::BingX, account_type)?;
         // Use get_ticker and extract the last_price
-        let ticker = self.get_ticker(symbol, account_type).await?;
+        let ticker = self.get_ticker(SymbolInput::Raw(&symbol), account_type).await?;
         Ok(ticker.last_price)
     }
 
     async fn get_orderbook(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         depth: Option<u16>,
         account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
+        let symbol = symbol.resolve(ExchangeId::BingX, account_type)?;
         let endpoint = match account_type {
             AccountType::Spot | AccountType::Margin => BingxEndpoint::SpotDepth,
             _ => BingxEndpoint::SwapDepth,
@@ -462,12 +465,13 @@ impl MarketData for BingxConnector {
 
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
         account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::BingX, account_type)?;
         let endpoint = match account_type {
             AccountType::Spot | AccountType::Margin => BingxEndpoint::SpotKlines,
             _ => BingxEndpoint::SwapKlines,
@@ -491,9 +495,10 @@ impl MarketData for BingxConnector {
 
     async fn get_ticker(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
+        let symbol = symbol.resolve(ExchangeId::BingX, account_type)?;
         let endpoint = match account_type {
             // SpotTicker24hr returns volume; SpotTickerBookTicker is bid/ask only.
             AccountType::Spot | AccountType::Margin => BingxEndpoint::SpotTicker24hr,

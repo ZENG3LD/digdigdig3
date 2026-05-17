@@ -24,6 +24,7 @@ use crate::core::{
     ExchangeId, AccountType,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
+    SymbolInput,
     Order, OrderSide, OrderType, Balance, AccountInfo,
     Position, FundingRate,
     OrderRequest, CancelRequest, CancelScope,
@@ -348,8 +349,9 @@ impl ExchangeIdentity for GeminiConnector {
 
 #[async_trait]
 impl MarketData for GeminiConnector {
-    async fn get_price(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<Price> {
-        let symbol_str = normalize_symbol(symbol);
+    async fn get_price(&self, symbol: SymbolInput<'_>, account_type: AccountType) -> ExchangeResult<Price> {
+        let symbol = symbol.resolve(ExchangeId::Gemini, account_type)?;
+        let symbol_str = normalize_symbol(&symbol);
 
         let response = self.get(
             GeminiEndpoint::Ticker,
@@ -360,8 +362,9 @@ impl MarketData for GeminiConnector {
         Ok(ticker.last_price)
     }
 
-    async fn get_ticker(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<Ticker> {
-        let symbol_str = normalize_symbol(symbol);
+    async fn get_ticker(&self, symbol: SymbolInput<'_>, account_type: AccountType) -> ExchangeResult<Ticker> {
+        let symbol = symbol.resolve(ExchangeId::Gemini, account_type)?;
+        let symbol_str = normalize_symbol(&symbol);
 
         // V1 pubticker returns bid/ask/last + volume object (with base and quote volumes).
         // V2 ticker returns open/high/low/close/bid/ask but NO volume field.
@@ -376,11 +379,12 @@ impl MarketData for GeminiConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _depth: Option<u16>,
-        _account_type: AccountType,
+        account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        let symbol_str = normalize_symbol(symbol);
+        let symbol = symbol.resolve(ExchangeId::Gemini, account_type)?;
+        let symbol_str = normalize_symbol(&symbol);
 
         let response = self.get(
             GeminiEndpoint::OrderBook,
@@ -392,13 +396,14 @@ impl MarketData for GeminiConnector {
 
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         _limit: Option<u16>,
         account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let symbol_str = normalize_symbol(symbol);
+        let symbol = symbol.resolve(ExchangeId::Gemini, account_type)?;
+        let symbol_str = normalize_symbol(&symbol);
         let time_frame = map_kline_interval(interval);
 
         // Use DerivativeCandles endpoint for futures

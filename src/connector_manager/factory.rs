@@ -100,7 +100,7 @@ use crate::l3::gated::stocks::india::dhan::DhanConnector;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 use crate::l1::free::krx::KrxConnector;
-use crate::l2::free::moex::MoexConnector;
+use crate::l2::free::moex::{MoexConnector, MoexWebSocket};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR IMPORTS - FOREX
@@ -820,7 +820,7 @@ impl ConnectorFactory {
     /// For private streams, construct the concrete `*WebSocket` struct directly.
     ///
     /// Exchanges that require credentials for WS construction (Alpaca, Dhan, IB,
-    /// Tiingo, Moex, Polygon) return `Err(ExchangeError::UnsupportedOperation)`.
+    /// Tiingo, Polygon) return `Err(ExchangeError::UnsupportedOperation)`.
     ///
     /// # Arguments
     ///
@@ -1008,10 +1008,8 @@ impl ConnectorFactory {
                 ))
             }
             ExchangeId::Moex => {
-                // MoexWebSocket::new_public() is available — use it
-                Err(ExchangeError::UnsupportedOperation(
-                    "MoexWebSocket requires MoexAuth — construct directly with MoexWebSocket::new_public()".into()
-                ))
+                let ws = MoexWebSocket::new_public();
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
             // ═══════════════════════════════════════════════════════════════════
             // GATED — require credentials, no public WS

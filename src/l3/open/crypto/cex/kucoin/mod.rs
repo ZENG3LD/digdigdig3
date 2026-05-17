@@ -30,6 +30,7 @@ mod endpoints;
 mod auth;
 mod parser;
 mod connector;
+pub mod protocol;
 mod websocket;
 
 pub use endpoints::{KuCoinEndpoint, KuCoinUrls};

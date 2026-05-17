@@ -68,9 +68,13 @@ impl DeribitProtocol {
 
     /// Convert StreamSpec → Deribit channel name.
     ///
+    /// Uses `spec.symbol.raw()` when set (options / dated futures pass the full
+    /// instrument_name through). Falls back to `deribit_instrument(base, quote)`.
     /// Returns `None` for unsupported kinds.
     fn channel_name(spec: &StreamSpec) -> Option<String> {
-        let instrument = deribit_instrument(&spec.symbol.base, &spec.symbol.quote);
+        // spec.symbol is already the exchange-native instrument string
+        // (e.g. "BTC-PERPETUAL", "BTC-30MAY26-50000-C").
+        let instrument = spec.symbol.as_str();
 
         let ch = match &spec.kind {
             StreamKind::Ticker => format!("ticker.{}.100ms", instrument),
@@ -86,21 +90,21 @@ impl DeribitProtocol {
             StreamKind::MarkPrice => format!("mark_price.{}", instrument),
             StreamKind::FundingRate => format!("perpetual.{}.100ms", instrument),
             StreamKind::IndexPrice => {
-                // e.g. deribit_price_index.btc_usd — base in lowercase + _usd
-                let idx = format!("{}_usd", spec.symbol.base.to_lowercase());
+                // deribit_price_index.btc_usd — extract base prefix from instrument
+                // e.g. "BTC-PERPETUAL" -> "btc", "BTC-30MAY26" -> "btc"
+                let base = instrument.split(['-', '_']).next().unwrap_or(instrument);
+                let idx = format!("{}_usd", base.to_lowercase());
                 format!("deribit_price_index.{}", idx)
             }
             StreamKind::OptionGreeks => format!("ticker.{}.100ms", instrument),
             StreamKind::VolatilityIndex => {
-                let idx = format!("{}_usd", spec.symbol.base.to_lowercase());
+                let base = instrument.split(['-', '_']).next().unwrap_or(instrument);
+                let idx = format!("{}_usd", base.to_lowercase());
                 format!("deribit_volatility_index.{}", idx)
             }
             StreamKind::OrderUpdate => "user.orders.any.any.raw".to_string(),
             StreamKind::BalanceUpdate => {
                 // Multiple settlement currencies — comma-joined; caller must fan out.
-                // The subscribe_frame will call subscribe once per channel.
-                // We return only BTC for the primary channel; the multi-currency
-                // fan-out is handled by the connector layer (not protocol).
                 "user.portfolio.BTC,user.portfolio.ETH,user.portfolio.USDC,user.portfolio.USDT,user.portfolio.SOL".to_string()
             }
             StreamKind::PositionUpdate => "user.changes.any.any.raw".to_string(),
@@ -110,7 +114,6 @@ impl DeribitProtocol {
 
         Some(ch)
     }
-
     /// Build subscribe or unsubscribe JSON-RPC 2.0 frame.
     fn build_sub_frame(&self, op: &str, spec: &StreamSpec) -> Result<Message, WebSocketError> {
         let channel_str = Self::channel_name(spec)
@@ -731,13 +734,13 @@ fn parse_block_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::types::{AccountType, Symbol};
+    use crate::core::types::AccountType;
     use crate::core::websocket::StreamSpec;
 
     fn futures_spec(kind: StreamKind) -> StreamSpec {
         StreamSpec {
             kind,
-            symbol: Symbol::new("BTC", "USD"),
+            symbol: "BTC-PERPETUAL".to_string(),
             account_type: AccountType::FuturesCross,
             depth: None,
             speed_ms: None,
@@ -844,5 +847,51 @@ mod tests {
             deribit_instrument("BTC-30MAY26-50000-C", ""),
             "BTC-30MAY26-50000-C"
         );
+    }
+
+    #[test]
+    fn test_subscribe_frame_uses_raw_symbol_for_options() {
+        let proto = DeribitProtocol::new(AccountType::Options, false);
+        let spec = StreamSpec {
+            kind: StreamKind::Ticker,
+            symbol: "BTC-30MAY26-50000-C".to_string(),
+            account_type: AccountType::Options,
+            depth: None,
+            speed_ms: None,
+        };
+        let msg = proto.subscribe_frame(&spec).expect("must succeed");
+        let text = match msg {
+            Message::Text(t) => t,
+            _ => panic!("expected text frame"),
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        let channels = v["params"]["channels"].as_array().expect("channels array");
+        let ch = channels[0].as_str().expect("channel string");
+        assert!(
+            ch.contains("BTC-30MAY26-50000-C"),
+            "channel should embed option instrument name, got: {}",
+            ch
+        );
+    }
+
+    #[test]
+    fn test_subscribe_frame_eth_perp_fallback() {
+        let proto = DeribitProtocol::new(AccountType::FuturesCross, false);
+        let spec = StreamSpec {
+            kind: StreamKind::Trade,
+            symbol: "ETH-PERPETUAL".to_string(),
+            account_type: AccountType::FuturesCross,
+            depth: None,
+            speed_ms: None,
+        };
+        let msg = proto.subscribe_frame(&spec).expect("must succeed");
+        let text = match msg {
+            Message::Text(t) => t,
+            _ => panic!("expected text frame"),
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        let channels = v["params"]["channels"].as_array().expect("channels array");
+        let ch = channels[0].as_str().expect("channel string");
+        assert!(ch.contains("ETH-PERPETUAL"), "expected ETH-PERPETUAL, got: {}", ch);
     }
 }

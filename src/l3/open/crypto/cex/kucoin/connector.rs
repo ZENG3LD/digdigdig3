@@ -812,7 +812,7 @@ fn interval_to_secs(interval: &str) -> u64 {
 impl MarketData for KuCoinConnector {
     async fn get_price(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Price> {
         let endpoint = match account_type {
@@ -821,7 +821,7 @@ impl MarketData for KuCoinConnector {
         };
 
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("symbol".to_string(), symbol.to_string());
 
         let response = self.get(endpoint, params, account_type).await?;
         KuCoinParser::parse_price(&response)
@@ -829,7 +829,7 @@ impl MarketData for KuCoinConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _depth: Option<u16>,
         account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
@@ -839,7 +839,7 @@ impl MarketData for KuCoinConnector {
         };
 
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("symbol".to_string(), symbol.to_string());
 
         let response = self.get(endpoint, params, account_type).await?;
         KuCoinParser::parse_orderbook(&response)
@@ -847,7 +847,7 @@ impl MarketData for KuCoinConnector {
 
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         account_type: AccountType,
@@ -859,7 +859,7 @@ impl MarketData for KuCoinConnector {
         };
 
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("symbol".to_string(), symbol.to_string());
 
         // Spot uses `type` parameter with string values like "1min", "1hour"
         // Futures uses `granularity` parameter with integer minutes like 1, 60
@@ -899,7 +899,7 @@ impl MarketData for KuCoinConnector {
 
     async fn get_ticker(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
         let endpoint = match account_type {
@@ -908,7 +908,7 @@ impl MarketData for KuCoinConnector {
         };
 
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("symbol".to_string(), symbol.to_string());
 
         let response = self.get(endpoint, params, account_type).await?;
         KuCoinParser::parse_ticker(&response)

@@ -100,11 +100,9 @@ impl KuCoinProtocol {
 
     /// Build the full KuCoin topic string for a StreamSpec.
     fn build_topic(spec: &StreamSpec) -> Result<String, WebSocketError> {
-        use crate::l3::open::crypto::cex::kucoin::endpoints::format_symbol;
-
         let at = spec.account_type;
         let is_futures = matches!(at, AccountType::FuturesCross | AccountType::FuturesIsolated);
-        let sym = format_symbol(&spec.symbol.base, &spec.symbol.quote, at);
+        let sym = spec.symbol.as_str();
 
         let topic = match &spec.kind {
             StreamKind::Ticker => {
@@ -398,10 +396,25 @@ fn frame_data(raw: &Value) -> WebSocketResult<&Value> {
         .ok_or_else(|| WebSocketError::Parse("kucoin frame missing 'data' field".into()))
 }
 
+/// Extract symbol from KuCoin topic string (after the ':').
+/// e.g. "/market/ticker:BTC-USDT" → "BTC-USDT"
+/// e.g. "/contractMarket/tickerV2:XBTUSDTM" → "XBTUSDTM"
+fn topic_symbol(raw: &Value) -> String {
+    raw.get("topic")
+        .and_then(|t| t.as_str())
+        .and_then(|t| t.split(':').nth(1))
+        .unwrap_or("")
+        .to_string()
+}
+
 fn parse_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw)?;
-    let ticker = KuCoinParser::parse_ws_ticker(data)
+    let mut ticker = KuCoinParser::parse_ws_ticker(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+    // KuCoin /market/ticker data has no "symbol" field — extract from topic.
+    if ticker.symbol.is_empty() {
+        ticker.symbol = topic_symbol(raw);
+    }
     Ok(StreamEvent::Ticker(ticker))
 }
 
@@ -409,8 +422,11 @@ fn parse_snapshot_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw)?;
     // Snapshot wraps stats one level deeper under "data"
     let inner = data.get("data").unwrap_or(data);
-    let ticker = KuCoinParser::parse_ws_snapshot_ticker(inner)
+    let mut ticker = KuCoinParser::parse_ws_snapshot_ticker(inner)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+    if ticker.symbol.is_empty() {
+        ticker.symbol = topic_symbol(raw);
+    }
     Ok(StreamEvent::Ticker(ticker))
 }
 
@@ -534,7 +550,6 @@ fn parse_position_update(raw: &Value) -> WebSocketResult<StreamEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::types::Symbol;
     use crate::core::websocket::StreamSpec;
 
     fn make_protocol() -> KuCoinProtocol {
@@ -549,7 +564,7 @@ mod tests {
     fn spot_spec(kind: StreamKind) -> StreamSpec {
         StreamSpec {
             kind,
-            symbol: Symbol::new("BTC", "USDT"),
+            symbol: "BTC-USDT".to_string(),
             account_type: AccountType::Spot,
             depth: None,
             speed_ms: None,

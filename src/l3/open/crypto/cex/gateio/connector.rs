@@ -509,7 +509,7 @@ impl ExchangeIdentity for GateioConnector {
 impl MarketData for GateioConnector {
     async fn get_price(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Price> {
         let ticker = self.get_ticker(symbol, account_type).await?;
@@ -518,7 +518,7 @@ impl MarketData for GateioConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _depth: Option<u16>,
         account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
@@ -532,12 +532,7 @@ impl MarketData for GateioConnector {
             AccountType::Spot | AccountType::Margin => "currency_pair",
             _ => "contract",
         };
-        let formatted_symbol = if let Some(raw) = symbol.raw() {
-            raw.to_string()
-        } else {
-            format_symbol(&symbol.base, &symbol.quote, account_type)
-        };
-        params.insert(key.to_string(), formatted_symbol);
+        params.insert(key.to_string(), symbol.to_string());
         params.insert("limit".to_string(), "100".to_string());
 
         let response = self.get(endpoint, params, account_type).await?;
@@ -546,7 +541,7 @@ impl MarketData for GateioConnector {
 
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         account_type: AccountType,
@@ -562,12 +557,7 @@ impl MarketData for GateioConnector {
             AccountType::Spot | AccountType::Margin => "currency_pair",
             _ => "contract",
         };
-        let formatted_symbol = if let Some(raw) = symbol.raw() {
-            raw.to_string()
-        } else {
-            format_symbol(&symbol.base, &symbol.quote, account_type)
-        };
-        params.insert(key.to_string(), formatted_symbol);
+        params.insert(key.to_string(), symbol.to_string());
         params.insert("interval".to_string(), map_kline_interval(interval).to_string());
 
         if let Some(lim) = limit {
@@ -584,7 +574,7 @@ impl MarketData for GateioConnector {
 
     async fn get_ticker(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
         let endpoint = match account_type {
@@ -597,12 +587,7 @@ impl MarketData for GateioConnector {
             AccountType::Spot | AccountType::Margin => "currency_pair",
             _ => "contract",
         };
-        let formatted_symbol = if let Some(raw) = symbol.raw() {
-            raw.to_string()
-        } else {
-            format_symbol(&symbol.base, &symbol.quote, account_type)
-        };
-        params.insert(key.to_string(), formatted_symbol);
+        params.insert(key.to_string(), symbol.to_string());
 
         let response = self.get(endpoint, params, account_type).await?;
         GateioParser::parse_ticker(&response)

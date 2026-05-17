@@ -270,7 +270,7 @@ fn channel_and_payload(
     prefix: &str,
     spec: &StreamSpec,
 ) -> Result<(String, Vec<String>), WebSocketError> {
-    let sym = format_gateio_symbol(&spec.symbol.base, &spec.symbol.quote);
+    let sym = spec.symbol.clone();
 
     let (channel_suffix, payload) = match &spec.kind {
         StreamKind::Ticker => ("tickers", vec![sym]),
@@ -615,13 +615,12 @@ fn parse_contract_stats(raw: &Value) -> WebSocketResult<StreamEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::types::Symbol;
     use crate::core::websocket::StreamSpec;
 
     fn spot_spec(kind: StreamKind) -> StreamSpec {
         StreamSpec {
             kind,
-            symbol: Symbol::new("BTC", "USDT"),
+            symbol: "BTC_USDT".to_string(),
             account_type: AccountType::Spot,
             depth: None,
             speed_ms: None,

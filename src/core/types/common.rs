@@ -433,6 +433,15 @@ pub enum ExchangeError {
 
     #[error("Not validated: {0}")]
     NotValidated(String),
+
+    #[error("Symbol normalization error: {0}")]
+    SymbolNormalization(String),
+}
+
+impl From<crate::core::utils::symbol_normalizer::NormalizerError> for ExchangeError {
+    fn from(e: crate::core::utils::symbol_normalizer::NormalizerError) -> Self {
+        ExchangeError::SymbolNormalization(format!("{:?}", e))
+    }
 }
 
 /// Результат Exchange операции

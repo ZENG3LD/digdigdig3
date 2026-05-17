@@ -30,6 +30,7 @@ use crate::core::{
     MarginType,
     UserTrade, UserTradeFilter,
     PublicTrade,
+    SymbolInput,
 };
 use crate::core::types::{MarkPrice, TradeSide};
 use crate::core::types::{
@@ -1197,9 +1198,10 @@ impl ExchangeIdentity for BinanceConnector {
 impl MarketData for BinanceConnector {
     async fn get_price(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         account_type: AccountType,
     ) -> ExchangeResult<Price> {
+        let symbol = symbol.resolve(ExchangeId::Binance, account_type)?;
         let endpoint = match account_type {
             AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotPrice,
             _ => BinanceEndpoint::FuturesPrice,
@@ -1214,10 +1216,11 @@ impl MarketData for BinanceConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         depth: Option<u16>,
         account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
+        let symbol = symbol.resolve(ExchangeId::Binance, account_type)?;
         let endpoint = match account_type {
             AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotOrderbook,
             _ => BinanceEndpoint::FuturesOrderbook,
@@ -1236,12 +1239,13 @@ impl MarketData for BinanceConnector {
 
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
         account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::Binance, account_type)?;
         let endpoint = match account_type {
             AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotKlines,
             _ => BinanceEndpoint::FuturesKlines,
@@ -1265,9 +1269,10 @@ impl MarketData for BinanceConnector {
 
     async fn get_ticker(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
+        let symbol = symbol.resolve(ExchangeId::Binance, account_type)?;
         let endpoint = match account_type {
             AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotTicker,
             _ => BinanceEndpoint::FuturesTicker,
@@ -2965,11 +2970,12 @@ impl AccountLedger for BinanceConnector {
 impl MarketDataPublic for BinanceConnector {
     async fn get_recent_trades(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         limit: Option<u32>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<PublicTrade>> {
-        let raw = self.get_recent_trades(symbol, limit, account_type).await?;
+        let symbol = symbol.resolve(ExchangeId::Binance, account_type)?;
+        let raw = self.get_recent_trades(&symbol, limit, account_type).await?;
 
         let arr = raw.as_array().ok_or_else(|| {
             ExchangeError::Parse("get_recent_trades: expected array".into())
@@ -3004,36 +3010,36 @@ impl MarketDataPublic for BinanceConnector {
 
     async fn get_liquidation_history(
         &self,
-        symbol: Option<&str>,
+        symbol: Option<SymbolInput<'_>>,
         start_time: Option<i64>,
         end_time: Option<i64>,
         limit: Option<u32>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<Liquidation>> {
-        let _ = account_type;
-        self.get_force_orders(symbol, None, start_time, end_time, limit).await
+        let symbol = symbol.map(|s| s.resolve(ExchangeId::Binance, account_type)).transpose()?;
+        self.get_force_orders(symbol.as_deref(), None, start_time, end_time, limit).await
     }
 
     async fn get_open_interest_history(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         period: &str,
         start_time: Option<i64>,
         end_time: Option<i64>,
         limit: Option<u32>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<OpenInterest>> {
-        let _ = account_type;
-        self.get_open_interest_history(symbol, period, limit, start_time, end_time).await
+        let symbol = symbol.resolve(ExchangeId::Binance, account_type)?;
+        self.get_open_interest_history(&symbol, period, limit, start_time, end_time).await
     }
 
     async fn get_premium_index(
         &self,
-        symbol: Option<&str>,
+        symbol: Option<SymbolInput<'_>>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<MarkPrice>> {
-        let _ = account_type;
-        let data = self.get_premium_index(symbol).await?;
+        let symbol = symbol.map(|s| s.resolve(ExchangeId::Binance, account_type)).transpose()?;
+        let data = self.get_premium_index(symbol.as_deref()).await?;
         Ok(vec![MarkPrice {
             symbol: data.symbol,
             mark_price: data.mark_price,
@@ -3045,27 +3051,27 @@ impl MarketDataPublic for BinanceConnector {
 
     async fn get_long_short_ratio_history(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         period: &str,
         start_time: Option<i64>,
         end_time: Option<i64>,
         limit: Option<u32>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<crate::core::types::LongShortRatio>> {
-        let _ = account_type;
-        self.get_top_long_short_account_ratio(symbol, period, limit, start_time, end_time).await
+        let symbol = symbol.resolve(ExchangeId::Binance, account_type)?;
+        self.get_top_long_short_account_ratio(&symbol, period, limit, start_time, end_time).await
     }
 
     async fn get_funding_rate_history(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         start_time: Option<i64>,
         end_time: Option<i64>,
         limit: Option<u32>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<crate::core::types::FundingRate>> {
-        let _ = account_type;
-        self.get_funding_rate_history(symbol, start_time, end_time, limit).await
+        let symbol = symbol.resolve(ExchangeId::Binance, account_type)?;
+        self.get_funding_rate_history(&symbol, start_time, end_time, limit).await
     }
 }
 

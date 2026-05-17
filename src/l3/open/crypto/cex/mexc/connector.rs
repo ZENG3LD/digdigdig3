@@ -29,6 +29,7 @@ use crate::core::{
     BalanceQuery,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     UserTrade, UserTradeFilter,
+    SymbolInput,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account,
@@ -402,9 +403,10 @@ impl ExchangeIdentity for MexcConnector {
 impl MarketData for MexcConnector {
     async fn get_price(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         account_type: AccountType,
     ) -> ExchangeResult<Price> {
+        let symbol = symbol.resolve(ExchangeId::MEXC, account_type)?;
         match account_type {
             AccountType::Spot | AccountType::Margin => {
                 let mut params = HashMap::new();
@@ -419,7 +421,7 @@ impl MarketData for MexcConnector {
                 Ok(price)
             },
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
-                let ticker = self.get_ticker(symbol, account_type).await?;
+                let ticker = self.get_ticker(SymbolInput::Raw(&symbol), account_type).await?;
                 Ok(ticker.last_price)
             }
             AccountType::Earn | AccountType::Lending | AccountType::Options | AccountType::Convert => {
@@ -432,10 +434,11 @@ impl MarketData for MexcConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         depth: Option<u16>,
         account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
+        let symbol = symbol.resolve(ExchangeId::MEXC, account_type)?;
         match account_type {
             AccountType::Spot | AccountType::Margin => {
                 let mut params = HashMap::new();
@@ -476,12 +479,13 @@ impl MarketData for MexcConnector {
 
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
         account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::MEXC, account_type)?;
         match account_type {
             AccountType::Spot | AccountType::Margin => {
                 let mut params = HashMap::new();
@@ -558,9 +562,10 @@ impl MarketData for MexcConnector {
 
     async fn get_ticker(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
+        let symbol = symbol.resolve(ExchangeId::MEXC, account_type)?;
         match account_type {
             AccountType::Spot | AccountType::Margin => {
                 let mut params = HashMap::new();
@@ -578,7 +583,7 @@ impl MarketData for MexcConnector {
 
                 let ticker_data = if let Some(arr) = data_array.as_array() {
                     arr.iter()
-                        .find(|t| t["symbol"].as_str() == Some(symbol))
+                        .find(|t| t["symbol"].as_str() == Some(&*symbol))
                         .ok_or_else(|| ExchangeError::Parse(format!("Symbol {} not found", symbol)))?
                 } else {
                     data_array

@@ -31,6 +31,7 @@ use crate::core::{
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     UserTrade, UserTradeFilter,
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
+    SymbolInput,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
@@ -472,9 +473,10 @@ impl ExchangeIdentity for HtxConnector {
 impl MarketData for HtxConnector {
     async fn get_price(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         account_type: AccountType,
     ) -> ExchangeResult<Price> {
+        let symbol = symbol.resolve(ExchangeId::HTX, account_type)?;
         let mut params = HashMap::new();
 
         let (endpoint, param_name) = match account_type {
@@ -487,16 +489,17 @@ impl MarketData for HtxConnector {
         params.insert(param_name.to_string(), symbol.to_string());
 
         let response = self.get(endpoint, params).await?;
-        let ticker = HtxParser::parse_ticker(&response, symbol)?;
+        let ticker = HtxParser::parse_ticker(&response, &symbol)?;
         Ok(ticker.last_price)
     }
 
     async fn get_orderbook(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         depth: Option<u16>,
         account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
+        let symbol = symbol.resolve(ExchangeId::HTX, account_type)?;
         let mut params = HashMap::new();
 
         let (endpoint, param_name) = match account_type {
@@ -524,12 +527,13 @@ impl MarketData for HtxConnector {
 
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
         account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::HTX, account_type)?;
         let mut params = HashMap::new();
 
         let (endpoint, param_name) = match account_type {
@@ -552,9 +556,10 @@ impl MarketData for HtxConnector {
 
     async fn get_ticker(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
+        let symbol = symbol.resolve(ExchangeId::HTX, account_type)?;
         let mut params = HashMap::new();
 
         let (endpoint, param_name) = match account_type {
@@ -567,7 +572,7 @@ impl MarketData for HtxConnector {
         params.insert(param_name.to_string(), symbol.to_string());
 
         let response = self.get(endpoint, params).await?;
-        HtxParser::parse_ticker(&response, symbol)
+        HtxParser::parse_ticker(&response, &symbol)
     }
 
     async fn ping(&self) -> ExchangeResult<()> {

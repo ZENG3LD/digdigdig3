@@ -34,6 +34,7 @@ use crate::core::{
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     TimeInForce, UserTrade, UserTradeFilter,
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
+    SymbolInput,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions, AccountLedger,
@@ -489,9 +490,10 @@ impl ExchangeIdentity for BitgetConnector {
 impl MarketData for BitgetConnector {
     async fn get_price(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         account_type: AccountType,
     ) -> ExchangeResult<Price> {
+        let symbol = symbol.resolve(ExchangeId::Bitget, account_type)?;
         let endpoint = match account_type {
             AccountType::Spot | AccountType::Margin => BitgetEndpoint::SpotPrice,
             _ => BitgetEndpoint::FuturesPrice,
@@ -502,7 +504,7 @@ impl MarketData for BitgetConnector {
 
         // Futures requires productType — derive from raw symbol suffix
         if matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated) {
-            params.insert("productType".to_string(), product_type_from_raw(symbol).to_string());
+            params.insert("productType".to_string(), product_type_from_raw(&symbol).to_string());
         }
 
         let response = self.get(endpoint, params, account_type).await?;
@@ -511,10 +513,11 @@ impl MarketData for BitgetConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         depth: Option<u16>,
         account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
+        let symbol = symbol.resolve(ExchangeId::Bitget, account_type)?;
         let endpoint = match account_type {
             AccountType::Spot | AccountType::Margin => BitgetEndpoint::SpotOrderbook,
             _ => BitgetEndpoint::FuturesOrderbook,
@@ -530,7 +533,7 @@ impl MarketData for BitgetConnector {
                 params.insert("limit".to_string(), depth.unwrap_or(100).to_string());
             }
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
-                params.insert("productType".to_string(), product_type_from_raw(symbol).to_string());
+                params.insert("productType".to_string(), product_type_from_raw(&symbol).to_string());
                 let limit = match depth.unwrap_or(100) {
                     0..=5 => 5,
                     6..=15 => 15,
@@ -553,12 +556,13 @@ impl MarketData for BitgetConnector {
 
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
         account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::Bitget, account_type)?;
         let endpoint = match account_type {
             AccountType::Spot | AccountType::Margin => BitgetEndpoint::SpotKlines,
             _ => BitgetEndpoint::FuturesKlines,
@@ -575,7 +579,7 @@ impl MarketData for BitgetConnector {
                 params.insert("limit".to_string(), limit.unwrap_or(1000).min(1000).to_string());
             }
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
-                params.insert("productType".to_string(), product_type_from_raw(symbol).to_string());
+                params.insert("productType".to_string(), product_type_from_raw(&symbol).to_string());
                 // V2 Futures uses "granularity" with format: "1m", "1H", "1D"
                 params.insert("granularity".to_string(), map_futures_granularity(interval).to_string());
                 params.insert("limit".to_string(), limit.unwrap_or(200).min(1000).to_string());
@@ -598,9 +602,10 @@ impl MarketData for BitgetConnector {
 
     async fn get_ticker(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
+        let symbol = symbol.resolve(ExchangeId::Bitget, account_type)?;
         let endpoint = match account_type {
             AccountType::Spot | AccountType::Margin => BitgetEndpoint::SpotTicker,
             _ => BitgetEndpoint::FuturesTicker,
@@ -611,7 +616,7 @@ impl MarketData for BitgetConnector {
 
         // Futures requires productType
         if matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated) {
-            params.insert("productType".to_string(), product_type_from_raw(symbol).to_string());
+            params.insert("productType".to_string(), product_type_from_raw(&symbol).to_string());
         }
 
         let response = self.get(endpoint, params, account_type).await?;

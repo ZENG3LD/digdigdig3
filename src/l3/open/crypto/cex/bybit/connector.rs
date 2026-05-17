@@ -34,6 +34,7 @@ use crate::core::{
     MarginType,
     AmendRequest, CancelAllResponse, OrderResult,
     TransferResponse, DepositAddress, WithdrawResponse, FundsRecord,
+    SymbolInput,
 };
 use crate::core::types::{
     TransferRequest, TransferHistoryFilter,
@@ -792,9 +793,10 @@ impl ExchangeIdentity for BybitConnector {
 impl MarketData for BybitConnector {
     async fn get_price(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         account_type: AccountType,
     ) -> ExchangeResult<Price> {
+        let symbol = symbol.resolve(ExchangeId::Bybit, account_type)?;
         let mut params = HashMap::new();
         params.insert("category".to_string(), account_type_to_category(account_type).to_string());
         params.insert("symbol".to_string(), symbol.to_string());
@@ -806,10 +808,11 @@ impl MarketData for BybitConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         depth: Option<u16>,
         account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
+        let symbol = symbol.resolve(ExchangeId::Bybit, account_type)?;
         let mut params = HashMap::new();
         params.insert("category".to_string(), account_type_to_category(account_type).to_string());
         params.insert("symbol".to_string(), symbol.to_string());
@@ -824,12 +827,13 @@ impl MarketData for BybitConnector {
 
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
         account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::Bybit, account_type)?;
         let mut params = HashMap::new();
         params.insert("category".to_string(), account_type_to_category(account_type).to_string());
         params.insert("symbol".to_string(), symbol.to_string());
@@ -849,9 +853,10 @@ impl MarketData for BybitConnector {
 
     async fn get_ticker(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
+        let symbol = symbol.resolve(ExchangeId::Bybit, account_type)?;
         let mut params = HashMap::new();
         params.insert("category".to_string(), account_type_to_category(account_type).to_string());
         params.insert("symbol".to_string(), symbol.to_string());
@@ -2721,65 +2726,70 @@ impl AccountLedger for BybitConnector {
 impl MarketDataPublic for BybitConnector {
     async fn get_open_interest_history(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         period: &str,
         start_time: Option<i64>,
         end_time: Option<i64>,
         limit: Option<u32>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<OpenInterest>> {
+        let symbol = symbol.resolve(ExchangeId::Bybit, account_type)?;
         let category = account_type_to_category(account_type);
-        self.get_open_interest(category, symbol, period, limit, start_time, end_time).await
+        self.get_open_interest(category, &symbol, period, limit, start_time, end_time).await
     }
 
     async fn get_mark_price_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u32>,
         account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::Bybit, account_type)?;
         let category = account_type_to_category(account_type);
-        self.get_mark_price_kline(category, symbol, interval, limit, None, end_time).await
+        self.get_mark_price_kline(category, &symbol, interval, limit, None, end_time).await
     }
 
     async fn get_index_price_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u32>,
         account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::Bybit, account_type)?;
         let category = account_type_to_category(account_type);
-        self.get_index_price_kline(category, symbol, interval, limit, None, end_time).await
+        self.get_index_price_kline(category, &symbol, interval, limit, None, end_time).await
     }
 
     async fn get_long_short_ratio_history(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         period: &str,
         _start_time: Option<i64>,
         _end_time: Option<i64>,
         limit: Option<u32>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<LongShortRatio>> {
+        let symbol = symbol.resolve(ExchangeId::Bybit, account_type)?;
         // Bybit's get_long_short_ratio does not support start/end time filtering.
         let category = account_type_to_category(account_type);
-        self.get_long_short_ratio(category, symbol, period, limit).await
+        self.get_long_short_ratio(category, &symbol, period, limit).await
     }
 
     async fn get_funding_rate_history(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         start_time: Option<i64>,
         end_time: Option<i64>,
         limit: Option<u32>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<FundingRate>> {
+        let symbol = symbol.resolve(ExchangeId::Bybit, account_type)?;
         let category = account_type_to_category(account_type);
-        self.get_funding_rate_history(category, symbol, start_time, end_time, limit).await
+        self.get_funding_rate_history(category, &symbol, start_time, end_time, limit).await
     }
 }
 

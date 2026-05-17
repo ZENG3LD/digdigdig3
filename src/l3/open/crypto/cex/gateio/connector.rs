@@ -30,6 +30,7 @@ use crate::core::{
     AmendRequest, CancelAllResponse, OrderResult,
     TransferResponse, DepositAddress, WithdrawResponse, FundsRecord,
     UserTrade, UserTradeFilter,
+    SymbolInput,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
@@ -509,19 +510,21 @@ impl ExchangeIdentity for GateioConnector {
 impl MarketData for GateioConnector {
     async fn get_price(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         account_type: AccountType,
     ) -> ExchangeResult<Price> {
-        let ticker = self.get_ticker(symbol, account_type).await?;
+        let symbol = symbol.resolve(ExchangeId::GateIO, account_type)?;
+        let ticker = self.get_ticker(SymbolInput::Raw(&symbol), account_type).await?;
         Ok(ticker.last_price)
     }
 
     async fn get_orderbook(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _depth: Option<u16>,
         account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
+        let symbol = symbol.resolve(ExchangeId::GateIO, account_type)?;
         let endpoint = match account_type {
             AccountType::Spot | AccountType::Margin => GateioEndpoint::SpotOrderbook,
             _ => GateioEndpoint::FuturesOrderbook,
@@ -541,12 +544,13 @@ impl MarketData for GateioConnector {
 
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
         account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::GateIO, account_type)?;
         let endpoint = match account_type {
             AccountType::Spot | AccountType::Margin => GateioEndpoint::SpotKlines,
             _ => GateioEndpoint::FuturesKlines,
@@ -574,9 +578,10 @@ impl MarketData for GateioConnector {
 
     async fn get_ticker(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
+        let symbol = symbol.resolve(ExchangeId::GateIO, account_type)?;
         let endpoint = match account_type {
             AccountType::Spot | AccountType::Margin => GateioEndpoint::SpotTickers,
             _ => GateioEndpoint::FuturesTickers,

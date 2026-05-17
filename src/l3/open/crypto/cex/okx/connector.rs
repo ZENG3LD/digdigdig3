@@ -29,6 +29,7 @@ use crate::core::{
     AmendRequest, CancelAllResponse, OrderResult,
     UserTrade, UserTradeFilter,
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
+    SymbolInput,
 };
 use crate::core::types::{
     TransferRequest, TransferHistoryFilter, TransferResponse,
@@ -736,9 +737,10 @@ impl ExchangeIdentity for OkxConnector {
 impl MarketData for OkxConnector {
     async fn get_price(
         &self,
-        symbol: &str,
-        _account_type: AccountType,
+        symbol: SymbolInput<'_>,
+        account_type: AccountType,
     ) -> ExchangeResult<Price> {
+        let symbol = symbol.resolve(ExchangeId::OKX, account_type)?;
         let mut params = HashMap::new();
         params.insert("instId".to_string(), symbol.to_string());
 
@@ -749,10 +751,11 @@ impl MarketData for OkxConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         depth: Option<u16>,
-        _account_type: AccountType,
+        account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
+        let symbol = symbol.resolve(ExchangeId::OKX, account_type)?;
         let mut params = HashMap::new();
         params.insert("instId".to_string(), symbol.to_string());
 
@@ -766,12 +769,13 @@ impl MarketData for OkxConnector {
 
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
-        _account_type: AccountType,
+        account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::OKX, account_type)?;
         let mut params = HashMap::new();
         params.insert("instId".to_string(), symbol.to_string());
         params.insert("bar".to_string(), map_kline_interval(interval).to_string());
@@ -799,9 +803,10 @@ impl MarketData for OkxConnector {
 
     async fn get_ticker(
         &self,
-        symbol: &str,
-        _account_type: AccountType,
+        symbol: SymbolInput<'_>,
+        account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
+        let symbol = symbol.resolve(ExchangeId::OKX, account_type)?;
         let mut params = HashMap::new();
         params.insert("instId".to_string(), symbol.to_string());
 
@@ -2256,17 +2261,18 @@ impl AccountLedger for OkxConnector {
 impl MarketDataPublic for OkxConnector {
     async fn get_liquidation_history(
         &self,
-        symbol: Option<&str>,
+        symbol: Option<SymbolInput<'_>>,
         _start_time: Option<i64>,
         _end_time: Option<i64>,
         limit: Option<u32>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<crate::core::types::Liquidation>> {
+        let symbol = symbol.map(|s| s.resolve(ExchangeId::OKX, account_type)).transpose()?;
         let inst_type = get_inst_type(account_type);
         // symbol is already the raw OKX inst_id (e.g. "BTC-USDT-SWAP").
         // instFamily for liquidation-orders is the base-quote part: strip trailing "-SWAP" or
         // dated suffix by taking the first two dash-segments.
-        let inst_family: Option<String> = symbol.map(|raw| {
+        let inst_family: Option<String> = symbol.as_deref().map(|raw| {
             let parts: Vec<&str> = raw.split('-').collect();
             if parts.len() >= 2 {
                 format!("{}-{}", parts[0].to_uppercase(), parts[1].to_uppercase())
@@ -2275,21 +2281,22 @@ impl MarketDataPublic for OkxConnector {
             }
         });
         // OKX liquidation-orders endpoint uses cursor pagination (before/after), not time range.
-        self.get_liquidation_orders(inst_type, inst_family.as_deref(), symbol, Some("filled"), None, None, limit).await
+        self.get_liquidation_orders(inst_type, inst_family.as_deref(), symbol.as_deref(), Some("filled"), None, None, limit).await
     }
 
     async fn get_long_short_ratio_history(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         period: &str,
         start_time: Option<i64>,
         end_time: Option<i64>,
         limit: Option<u32>,
-        _account_type: AccountType,
+        account_type: AccountType,
     ) -> ExchangeResult<Vec<LongShortRatio>> {
+        let symbol = symbol.resolve(ExchangeId::OKX, account_type)?;
         // OKX long/short ratio uses base currency (ccy), not inst_id.
         // Extract base from raw symbol: "BTC-USDT" → "BTC", "BTC-USDT-SWAP" → "BTC".
-        let ccy = symbol.split('-').next().unwrap_or(symbol).to_uppercase();
+        let ccy = symbol.split('-').next().unwrap_or(&symbol).to_uppercase();
         let begin_str = start_time.map(|t| t.to_string());
         let end_str = end_time.map(|t| t.to_string());
         self.get_long_short_ratio(
@@ -2303,16 +2310,17 @@ impl MarketDataPublic for OkxConnector {
 
     async fn get_funding_rate_history(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         start_time: Option<i64>,
         end_time: Option<i64>,
         limit: Option<u32>,
-        _account_type: AccountType,
+        account_type: AccountType,
     ) -> ExchangeResult<Vec<FundingRate>> {
+        let symbol = symbol.resolve(ExchangeId::OKX, account_type)?;
         // OKX uses before/after cursors by fundingTime:
         //   after  = only records with fundingTime < after  (upper bound → end_time)
         //   before = only records with fundingTime > before (lower bound → start_time)
-        self.get_funding_rate_history(symbol, end_time, start_time, limit).await
+        self.get_funding_rate_history(&symbol, end_time, start_time, limit).await
     }
 }
 

@@ -85,12 +85,10 @@ impl BybitProtocol {
     }
 
     /// Translate a StreamSpec into the Bybit V5 wire topic string.
+    ///
+    /// `spec.symbol` is already the raw exchange-native string (e.g. "BTCUSDT").
     fn build_topic(spec: &StreamSpec) -> Result<String, WebSocketError> {
-        let sym = format!(
-            "{}{}",
-            spec.symbol.base.to_uppercase(),
-            spec.symbol.quote.to_uppercase()
-        );
+        let sym = spec.symbol.as_str();
 
         let topic = match &spec.kind {
             StreamKind::Ticker | StreamKind::MarkPrice | StreamKind::FundingRate => {
@@ -108,10 +106,13 @@ impl BybitProtocol {
             StreamKind::OrderUpdate => "order".to_string(),
             StreamKind::BalanceUpdate => "wallet".to_string(),
             StreamKind::PositionUpdate => "position".to_string(),
-            StreamKind::InsuranceFund => format!("insurance.{}", spec.symbol.base.to_uppercase()),
+            StreamKind::InsuranceFund => {
+                // sym is the coin ticker (e.g. "BTC") — use it directly.
+                format!("insurance.{}", sym)
+            }
             StreamKind::RiskLimit => {
-                let coin = if spec.symbol.base.is_empty() { "USDT" } else { &spec.symbol.base };
-                format!("adlAlert.{}", coin.to_uppercase())
+                let coin = if sym.is_empty() { "USDT" } else { sym };
+                format!("adlAlert.{}", coin)
             }
             other => return Err(WebSocketError::UnsupportedOperation(
                 format!("bybit: unsupported stream kind {:?}", other),
@@ -746,7 +747,6 @@ fn bybit_parse_ticker_ws(data: &Value) -> crate::core::ExchangeResult<crate::cor
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::types::Symbol;
     use crate::core::websocket::StreamSpec;
 
     fn spot_proto() -> BybitProtocol {
@@ -760,7 +760,7 @@ mod tests {
     fn spot_spec(kind: StreamKind) -> StreamSpec {
         StreamSpec {
             kind,
-            symbol: Symbol::new("BTC", "USDT"),
+            symbol: "BTCUSDT".to_string(),
             account_type: AccountType::Spot,
             depth: None,
             speed_ms: None,
@@ -849,7 +849,7 @@ mod tests {
         let proto = spot_proto();
         let spec = StreamSpec {
             kind: StreamKind::Kline { interval: KlineInterval::new("1h") },
-            symbol: Symbol::new("BTC", "USDT"),
+            symbol: "BTCUSDT".to_string(),
             account_type: AccountType::Spot,
             depth: None,
             speed_ms: None,

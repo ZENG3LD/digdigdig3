@@ -96,6 +96,7 @@ mod endpoints;
 mod auth;
 mod parser;
 mod connector;
+pub mod protocol;
 mod websocket;
 
 pub use endpoints::{DeribitMethod, DeribitUrls, format_symbol, parse_currency, parse_instrument_kind};

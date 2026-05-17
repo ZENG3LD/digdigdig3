@@ -1214,4 +1214,105 @@ mod tests {
         );
         assert!(result.is_err());
     }
+
+    // ─── Bitfinex normalizer tests ───────────────────────────────────────────
+
+    #[test]
+    fn bitfinex_to_exchange_short_pairs() {
+        // 3+3 = no colon
+        let btc_usd = Symbol::new("BTC", "USD");
+        assert_eq!(
+            SymbolNormalizer::to_exchange(ExchangeId::Bitfinex, &btc_usd, AccountType::Spot).unwrap(),
+            "tBTCUSD"
+        );
+        let eth_usd = Symbol::new("ETH", "USD");
+        assert_eq!(
+            SymbolNormalizer::to_exchange(ExchangeId::Bitfinex, &eth_usd, AccountType::Spot).unwrap(),
+            "tETHUSD"
+        );
+        let eth_btc = Symbol::new("ETH", "BTC");
+        assert_eq!(
+            SymbolNormalizer::to_exchange(ExchangeId::Bitfinex, &eth_btc, AccountType::Spot).unwrap(),
+            "tETHBTC"
+        );
+    }
+
+    #[test]
+    fn bitfinex_to_exchange_long_pairs_use_colon() {
+        // quote > 3 chars → colon separator
+        let btc_usdt = Symbol::new("BTC", "USDT");
+        assert_eq!(
+            SymbolNormalizer::to_exchange(ExchangeId::Bitfinex, &btc_usdt, AccountType::Spot).unwrap(),
+            "tBTC:USDT"
+        );
+        let btc_ust = Symbol::new("BTC", "UST");
+        // "UST" is 3 chars but Bitfinex uses colon only for >3; UST stays no-colon
+        assert_eq!(
+            SymbolNormalizer::to_exchange(ExchangeId::Bitfinex, &btc_ust, AccountType::Spot).unwrap(),
+            "tBTCUST"
+        );
+        // 4-char base with 3-char quote
+        let link_usd = Symbol::new("LINK", "USD");
+        assert_eq!(
+            SymbolNormalizer::to_exchange(ExchangeId::Bitfinex, &link_usd, AccountType::Spot).unwrap(),
+            "tLINK:USD"
+        );
+    }
+
+    #[test]
+    fn bitfinex_to_exchange_funding() {
+        let usd = Symbol::new("USD", "");
+        assert_eq!(
+            SymbolNormalizer::to_exchange(ExchangeId::Bitfinex, &usd, AccountType::Lending).unwrap(),
+            "fUSD"
+        );
+        let btc = Symbol::new("BTC", "");
+        assert_eq!(
+            SymbolNormalizer::to_exchange(ExchangeId::Bitfinex, &btc, AccountType::Lending).unwrap(),
+            "fBTC"
+        );
+    }
+
+    #[test]
+    fn bitfinex_from_exchange_no_separator() {
+        let sym = SymbolNormalizer::from_exchange(ExchangeId::Bitfinex, "tBTCUSD", AccountType::Spot).unwrap();
+        assert_eq!(sym.base, "BTC");
+        assert_eq!(sym.quote, "USD");
+
+        let sym2 = SymbolNormalizer::from_exchange(ExchangeId::Bitfinex, "tETHUSD", AccountType::Spot).unwrap();
+        assert_eq!(sym2.base, "ETH");
+        assert_eq!(sym2.quote, "USD");
+    }
+
+    #[test]
+    fn bitfinex_from_exchange_colon_separator() {
+        let sym = SymbolNormalizer::from_exchange(ExchangeId::Bitfinex, "tBTC:USDT", AccountType::Spot).unwrap();
+        assert_eq!(sym.base, "BTC");
+        assert_eq!(sym.quote, "USDT");
+
+        let sym2 = SymbolNormalizer::from_exchange(ExchangeId::Bitfinex, "tBTC:UST", AccountType::Spot).unwrap();
+        assert_eq!(sym2.base, "BTC");
+        assert_eq!(sym2.quote, "UST");
+    }
+
+    #[test]
+    fn bitfinex_from_exchange_funding() {
+        let sym = SymbolNormalizer::from_exchange(ExchangeId::Bitfinex, "fUSD", AccountType::Lending).unwrap();
+        assert_eq!(sym.base, "USD");
+        assert_eq!(sym.quote, "");
+
+        let sym2 = SymbolNormalizer::from_exchange(ExchangeId::Bitfinex, "fBTC", AccountType::Lending).unwrap();
+        assert_eq!(sym2.base, "BTC");
+    }
+
+    #[test]
+    fn bitfinex_is_valid_for() {
+        assert!(SymbolNormalizer::is_valid_for(ExchangeId::Bitfinex, "tBTCUSD", AccountType::Spot));
+        assert!(SymbolNormalizer::is_valid_for(ExchangeId::Bitfinex, "tETHUSD", AccountType::Spot));
+        assert!(SymbolNormalizer::is_valid_for(ExchangeId::Bitfinex, "tBTC:USDT", AccountType::Spot));
+        assert!(SymbolNormalizer::is_valid_for(ExchangeId::Bitfinex, "fUSD", AccountType::Lending));
+        assert!(!SymbolNormalizer::is_valid_for(ExchangeId::Bitfinex, "BTCUSD", AccountType::Spot));
+        assert!(!SymbolNormalizer::is_valid_for(ExchangeId::Bitfinex, "", AccountType::Spot));
+        assert!(!SymbolNormalizer::is_valid_for(ExchangeId::Bitfinex, "tbtcusd", AccountType::Spot));
+    }
 }

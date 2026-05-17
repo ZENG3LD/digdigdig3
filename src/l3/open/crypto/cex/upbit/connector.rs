@@ -45,9 +45,10 @@ use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight, OrderbookCapabilities};
 use crate::core::utils::PrecisionCache;
 
-use super::endpoints::{UpbitUrls, UpbitEndpoint, format_symbol, map_kline_interval};
+use super::endpoints::{UpbitUrls, UpbitEndpoint, map_kline_interval};
 use super::auth::{UpbitAuth, json_to_query_string};
 use super::parser::UpbitParser;
+use crate::core::utils::symbol_normalizer::SymbolNormalizer;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // RATE LIMIT CAPABILITIES
@@ -558,7 +559,8 @@ impl MarketData for UpbitConnector {
         let upbit_symbol = if let Some(raw) = symbol.raw() {
             raw.to_string()
         } else {
-            format_symbol(&symbol.base, &symbol.quote, account_type)
+            SymbolNormalizer::to_exchange(ExchangeId::Upbit, &symbol, account_type)
+                .unwrap_or_else(|_| format!("{}-{}", symbol.quote.to_uppercase(), symbol.base.to_uppercase()))
         };
         let mut params = HashMap::new();
         params.insert("markets".to_string(), upbit_symbol);
@@ -571,7 +573,8 @@ impl MarketData for UpbitConnector {
         let upbit_symbol = if let Some(raw) = symbol.raw() {
             raw.to_string()
         } else {
-            format_symbol(&symbol.base, &symbol.quote, account_type)
+            SymbolNormalizer::to_exchange(ExchangeId::Upbit, &symbol, account_type)
+                .unwrap_or_else(|_| format!("{}-{}", symbol.quote.to_uppercase(), symbol.base.to_uppercase()))
         };
         let mut params = HashMap::new();
         params.insert("markets".to_string(), upbit_symbol);
@@ -595,7 +598,8 @@ impl MarketData for UpbitConnector {
         let upbit_symbol = if let Some(raw) = symbol.raw() {
             raw.to_string()
         } else {
-            format_symbol(&symbol.base, &symbol.quote, account_type)
+            SymbolNormalizer::to_exchange(ExchangeId::Upbit, &symbol, account_type)
+                .unwrap_or_else(|_| format!("{}-{}", symbol.quote.to_uppercase(), symbol.base.to_uppercase()))
         };
         let (endpoint, unit) = map_kline_interval(interval);
 
@@ -621,7 +625,8 @@ impl MarketData for UpbitConnector {
         let upbit_symbol = if let Some(raw) = symbol.raw() {
             raw.to_string()
         } else {
-            format_symbol(&symbol.base, &symbol.quote, account_type)
+            SymbolNormalizer::to_exchange(ExchangeId::Upbit, &symbol, account_type)
+                .unwrap_or_else(|_| format!("{}-{}", symbol.quote.to_uppercase(), symbol.base.to_uppercase()))
         };
         let mut params = HashMap::new();
         params.insert("markets".to_string(), upbit_symbol);
@@ -683,7 +688,8 @@ impl Trading for UpbitConnector {
                 let upbit_symbol = if let Some(raw) = symbol.raw() {
                             raw.to_string()
                         } else {
-                            format_symbol(&symbol.base, &symbol.quote, account_type)
+                            SymbolNormalizer::to_exchange(ExchangeId::Upbit, &symbol, account_type)
+                .unwrap_or_else(|_| format!("{}-{}", symbol.quote.to_uppercase(), symbol.base.to_uppercase()))
                         };
                 
                         // Upbit order types: "price" (market buy with total spend), "market" (market sell)
@@ -716,7 +722,8 @@ impl Trading for UpbitConnector {
                 let upbit_symbol = if let Some(raw) = symbol.raw() {
                             raw.to_string()
                         } else {
-                            format_symbol(&symbol.base, &symbol.quote, account_type)
+                            SymbolNormalizer::to_exchange(ExchangeId::Upbit, &symbol, account_type)
+                .unwrap_or_else(|_| format!("{}-{}", symbol.quote.to_uppercase(), symbol.base.to_uppercase()))
                         };
 
                         let side_str = match side {
@@ -756,7 +763,8 @@ impl Trading for UpbitConnector {
             let upbit_symbol = if let Some(raw) = sym.raw() {
                 raw.to_string()
             } else {
-                format_symbol(&sym.base, &sym.quote, account_type)
+                SymbolNormalizer::to_exchange(ExchangeId::Upbit, &sym, account_type)
+                .unwrap_or_else(|_| format!("{}-{}", sym.quote.to_uppercase(), sym.base.to_uppercase()))
             };
             params.insert("market".to_string(), upbit_symbol);
         }
@@ -778,7 +786,8 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
                 let upbit_symbol = if let Some(raw) = symbol.raw() {
                     raw.to_string()
                 } else {
-                    format_symbol(&symbol.base, &symbol.quote, account_type)
+                    SymbolNormalizer::to_exchange(ExchangeId::Upbit, &symbol, account_type)
+                .unwrap_or_else(|_| format!("{}-{}", symbol.quote.to_uppercase(), symbol.base.to_uppercase()))
                 };
                 let mut params = HashMap::new();
                 params.insert("uuid".to_string(), order_id.to_string());
@@ -802,7 +811,8 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         let upbit_symbol = if let Some(raw) = sym.raw() {
             raw.to_string()
         } else {
-            format_symbol(&sym.base, &sym.quote, account_type)
+            SymbolNormalizer::to_exchange(ExchangeId::Upbit, &sym, account_type)
+                .unwrap_or_else(|_| format!("{}-{}", sym.quote.to_uppercase(), sym.base.to_uppercase()))
         };
         let mut params = HashMap::new();
         params.insert("uuid".to_string(), order_id.to_string());
@@ -825,7 +835,8 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
             let upbit_symbol = if let Some(raw) = sym.raw() {
                 raw.to_string()
             } else {
-                format_symbol(&sym.base, &sym.quote, account_type)
+                SymbolNormalizer::to_exchange(ExchangeId::Upbit, &sym, account_type)
+                .unwrap_or_else(|_| format!("{}-{}", sym.quote.to_uppercase(), sym.base.to_uppercase()))
             };
             params.insert("market".to_string(), upbit_symbol);
         }
@@ -963,7 +974,8 @@ impl CancelAll for UpbitConnector {
                     let upbit_symbol = if let Some(raw) = sym.raw() {
                         raw.to_string()
                     } else {
-                        format_symbol(&sym.base, &sym.quote, account_type)
+                        SymbolNormalizer::to_exchange(ExchangeId::Upbit, &sym, account_type)
+                .unwrap_or_else(|_| format!("{}-{}", sym.quote.to_uppercase(), sym.base.to_uppercase()))
                     };
                     params.insert("market".to_string(), upbit_symbol);
                 }
@@ -972,7 +984,8 @@ impl CancelAll for UpbitConnector {
                 let upbit_symbol = if let Some(raw) = symbol.raw() {
                     raw.to_string()
                 } else {
-                    format_symbol(&symbol.base, &symbol.quote, account_type)
+                    SymbolNormalizer::to_exchange(ExchangeId::Upbit, &symbol, account_type)
+                .unwrap_or_else(|_| format!("{}-{}", symbol.quote.to_uppercase(), symbol.base.to_uppercase()))
                 };
                 params.insert("market".to_string(), upbit_symbol);
             }
@@ -1254,7 +1267,8 @@ impl AmendOrder for UpbitConnector {
         let upbit_symbol = if let Some(raw) = symbol.raw() {
             raw.to_string()
         } else {
-            format_symbol(&symbol.base, &symbol.quote, account_type)
+            SymbolNormalizer::to_exchange(ExchangeId::Upbit, &symbol, account_type)
+                .unwrap_or_else(|_| format!("{}-{}", symbol.quote.to_uppercase(), symbol.base.to_uppercase()))
         };
 
         let mut body = serde_json::json!({

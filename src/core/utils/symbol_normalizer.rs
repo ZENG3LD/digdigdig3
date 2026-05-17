@@ -899,14 +899,55 @@ mod crypto_com {
 
 mod upbit {
     use super::*;
+
+    /// Canonical Symbol → Upbit exchange-native raw string.
+    ///
+    /// **REVERSED format**: Upbit uses `QUOTE-BASE` (not the common `BASE-QUOTE`).
+    ///
+    /// | Canonical | Upbit raw |
+    /// |---|---|
+    /// | BTC/USDT | `USDT-BTC` |
+    /// | BTC/KRW  | `KRW-BTC`  |
+    /// | ETH/KRW  | `KRW-ETH`  |
+    ///
+    /// Upbit only supports Spot; `account_type` is accepted but ignored.
     pub(super) fn to_exchange(sym: &Symbol, _account_type: AccountType) -> Result<String, NormalizerError> {
-        noop_to_exchange(sym)
+        if sym.base.is_empty() || sym.quote.is_empty() {
+            return Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::Upbit,
+                raw: format!("{}/{}", sym.base, sym.quote),
+            });
+        }
+        Ok(format!("{}-{}", sym.quote.to_uppercase(), sym.base.to_uppercase()))
     }
+
+    /// Upbit exchange-native raw string → canonical Symbol.
+    ///
+    /// Upbit format is `QUOTE-BASE`: first segment is quote, second is base.
+    /// `KRW-BTC` → `Symbol { base: "BTC", quote: "KRW" }`.
     pub(super) fn from_exchange(raw: &str, _account_type: AccountType) -> Result<Symbol, NormalizerError> {
-        noop_from_exchange(ExchangeId::Upbit, raw)
+        match raw.split_once('-') {
+            Some((quote, base)) if !quote.is_empty() && !base.is_empty() => {
+                Ok(Symbol::new(base, quote))
+            }
+            _ => Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::Upbit,
+                raw: raw.to_string(),
+            }),
+        }
     }
+
+    /// Valid Upbit symbol: contains `-` separator, both sides non-empty, all uppercase alphanumeric.
     pub(super) fn is_valid_for(raw: &str, _account_type: AccountType) -> bool {
-        noop_is_valid_for(raw)
+        match raw.split_once('-') {
+            Some((quote, base)) => {
+                !quote.is_empty()
+                    && !base.is_empty()
+                    && quote.chars().all(|c| c.is_ascii_alphanumeric())
+                    && base.chars().all(|c| c.is_ascii_alphanumeric())
+            }
+            None => false,
+        }
     }
 }
 
@@ -976,14 +1017,77 @@ mod bitstamp {
 
 mod deribit {
     use super::*;
-    pub(super) fn to_exchange(sym: &Symbol, _account_type: AccountType) -> Result<String, NormalizerError> {
-        noop_to_exchange(sym)
+
+    pub(super) fn to_exchange(sym: &Symbol, account_type: AccountType) -> Result<String, NormalizerError> {
+        if let Some(r) = sym.raw() {
+            return Ok(r.to_string());
+        }
+        let base = sym.base.to_uppercase();
+        let quote = sym.quote.to_uppercase();
+        match account_type {
+            AccountType::Options => Err(NormalizerError::RequiresRawInstrument {
+                msg: "Deribit options require concrete instrument_name like BTC-30MAY26-50000-C                       use Symbol::with_raw(base, quote, instrument)".to_string(),
+            }),
+            AccountType::Spot => Ok(format!("{}-{}", base, quote)),
+            AccountType::FuturesCross | AccountType::FuturesIsolated | AccountType::Margin => {
+                match quote.as_str() {
+                    "" | "USD" | "PERP" => Ok(format!("{}-PERPETUAL", base)),
+                    "USDC" => Ok(format!("{}_USDC-PERPETUAL", base)),
+                    "USDT" => Ok(format!("{}_USDT-PERPETUAL", base)),
+                    other => Ok(format!("{}-{}", base, other)),
+                }
+            }
+            _ => Ok(format!("{}-{}", base, quote)),
+        }
     }
+
     pub(super) fn from_exchange(raw: &str, _account_type: AccountType) -> Result<Symbol, NormalizerError> {
-        noop_from_exchange(ExchangeId::Deribit, raw)
+        if raw.is_empty() {
+            return Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::Deribit,
+                raw: raw.to_string(),
+            });
+        }
+        if let Some(pair) = raw.strip_suffix("-PERPETUAL") {
+            if let Some((base, quote)) = pair.split_once('_') {
+                return Ok(Symbol::with_raw(base, quote, raw.to_string()));
+            }
+            return Ok(Symbol::with_raw(pair, "USD", raw.to_string()));
+        }
+        let parts: Vec<&str> = raw.splitn(4, '-').collect();
+        match parts.len() {
+            4 => Ok(Symbol::with_raw(parts[0], "USD", raw.to_string())),
+            2 => {
+                let second = parts[1];
+                if second.chars().next().map_or(false, |c| c.is_ascii_digit())
+                    || is_month_prefix(second)
+                {
+                    Ok(Symbol::with_raw(parts[0], "USD", raw.to_string()))
+                } else {
+                    Ok(Symbol::new(parts[0], second))
+                }
+            }
+            _ => Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::Deribit,
+                raw: raw.to_string(),
+            }),
+        }
     }
+
     pub(super) fn is_valid_for(raw: &str, _account_type: AccountType) -> bool {
-        noop_is_valid_for(raw)
+        !raw.is_empty()
+            && (raw.contains('-') || raw.contains('_'))
+            && raw.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            && raw.chars().next().map_or(false, |c| c.is_ascii_uppercase())
+    }
+
+    fn is_month_prefix(s: &str) -> bool {
+        const MONTHS: &[&str] = &[
+            "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+            "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
+        ];
+        let upper = s.to_uppercase();
+        MONTHS.iter().any(|m| upper.starts_with(m))
     }
 }
 
@@ -1169,6 +1273,7 @@ mod tests {
                 | ExchangeId::MEXC
                 | ExchangeId::HTX
                 | ExchangeId::Bitget
+                | ExchangeId::Upbit
             ))
             .collect();
         for id in noop_exchanges {
@@ -1202,6 +1307,42 @@ mod tests {
         let parsed = SymbolNormalizer::from_exchange(ExchangeId::Gemini, "btcgusdperp", AccountType::FuturesCross).unwrap();
         assert_eq!(parsed.base.to_uppercase(), "BTC");
         assert_eq!(parsed.quote.to_uppercase(), "USD");
+    }
+
+    #[test]
+    fn upbit_normalizer_reversed_format() {
+        // to_exchange: quote first, then base (REVERSED)
+        let btc_krw = Symbol::new("BTC", "KRW");
+        let raw = SymbolNormalizer::to_exchange(ExchangeId::Upbit, &btc_krw, AccountType::Spot).unwrap();
+        assert_eq!(raw, "KRW-BTC");
+
+        let eth_usdt = Symbol::new("ETH", "USDT");
+        let raw2 = SymbolNormalizer::to_exchange(ExchangeId::Upbit, &eth_usdt, AccountType::Spot).unwrap();
+        assert_eq!(raw2, "USDT-ETH");
+
+        // from_exchange: first segment = quote, second = base
+        let parsed = SymbolNormalizer::from_exchange(ExchangeId::Upbit, "KRW-BTC", AccountType::Spot).unwrap();
+        assert_eq!(parsed.base.to_uppercase(), "BTC");
+        assert_eq!(parsed.quote.to_uppercase(), "KRW");
+
+        let parsed2 = SymbolNormalizer::from_exchange(ExchangeId::Upbit, "USDT-ETH", AccountType::Spot).unwrap();
+        assert_eq!(parsed2.base.to_uppercase(), "ETH");
+        assert_eq!(parsed2.quote.to_uppercase(), "USDT");
+
+        // is_valid_for: requires dash separator
+        assert!(SymbolNormalizer::is_valid_for(ExchangeId::Upbit, "KRW-BTC", AccountType::Spot));
+        assert!(SymbolNormalizer::is_valid_for(ExchangeId::Upbit, "USDT-ETH", AccountType::Spot));
+        assert!(!SymbolNormalizer::is_valid_for(ExchangeId::Upbit, "BTCUSDT", AccountType::Spot));
+        assert!(!SymbolNormalizer::is_valid_for(ExchangeId::Upbit, "", AccountType::Spot));
+    }
+
+    #[test]
+    fn upbit_normalizer_roundtrip() {
+        let sym = Symbol::new("BTC", "KRW");
+        let raw = SymbolNormalizer::to_exchange(ExchangeId::Upbit, &sym, AccountType::Spot).unwrap();
+        let back = SymbolNormalizer::from_exchange(ExchangeId::Upbit, &raw, AccountType::Spot).unwrap();
+        assert_eq!(back.base.to_uppercase(), sym.base.to_uppercase());
+        assert_eq!(back.quote.to_uppercase(), sym.quote.to_uppercase());
     }
 
     #[test]

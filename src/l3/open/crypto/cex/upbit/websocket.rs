@@ -468,10 +468,20 @@ impl WebSocketConnector for UpbitWebSocket {
     async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         self.subscriptions.lock().await.insert(request.clone());
 
-        // Upbit symbol format is QUOTE-BASE (e.g. "USDT-BTC" for the BTC/USDT pair).
-        // Symbol::new("BTC", "USDT") sets base="BTC", quote="USDT".
-        // To build the Upbit market code we place quote first, then base.
-        let upbit_symbol = format!("{}-{}", request.symbol.quote.to_uppercase(), request.symbol.base.to_uppercase());
+        // Caller passes Upbit-native symbol via Symbol::raw() or canonical Symbol.
+        // SymbolNormalizer encodes reversed Upbit format (QUOTE-BASE).
+        use crate::core::utils::symbol_normalizer::SymbolNormalizer;
+        use crate::core::types::ExchangeId;
+        let upbit_symbol = if let Some(raw) = request.symbol.raw() {
+            raw.to_string()
+        } else {
+            SymbolNormalizer::to_exchange(ExchangeId::Upbit, &request.symbol, AccountType::Spot)
+                .unwrap_or_else(|_| format!(
+                    "{}-{}",
+                    request.symbol.quote.to_uppercase(),
+                    request.symbol.base.to_uppercase()
+                ))
+        };
 
         match request.stream_type {
             StreamType::Ticker => {

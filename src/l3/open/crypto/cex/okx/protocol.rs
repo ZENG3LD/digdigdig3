@@ -84,20 +84,28 @@ impl OkxProtocol {
         }
     }
 
-    /// Format instId from spec symbol + account_type.
-    fn inst_id(spec: &StreamSpec) -> String {
-        use super::endpoints::format_symbol;
-        format_symbol(&spec.symbol.base, &spec.symbol.quote, spec.account_type)
-    }
-
     /// Build subscribe/unsubscribe frame for standard channels (channel + instId).
     fn build_instid_frame(op: &str, channel: &str, spec: &StreamSpec) -> Message {
-        let inst_id = Self::inst_id(spec);
+        let inst_id = spec.symbol.as_str();
         let frame = json!({
             "op": op,
             "args": [{ "channel": channel, "instId": inst_id }]
         });
         Message::Text(frame.to_string())
+    }
+
+    /// Extract the OKX instFamily from a raw instrument ID.
+    ///
+    /// `"BTC-USDT"` → `"BTC-USDT"` (unchanged)
+    /// `"BTC-USDT-SWAP"` → `"BTC-USDT"`
+    /// `"BTC-USD-260925"` → `"BTC-USD"`
+    fn okx_inst_family(raw: &str) -> String {
+        let parts: Vec<&str> = raw.split('-').collect();
+        if parts.len() >= 2 {
+            format!("{}-{}", parts[0].to_uppercase(), parts[1].to_uppercase())
+        } else {
+            raw.to_uppercase()
+        }
     }
 
     /// Map StreamKind → OKX channel name string for standard instId-based channels.
@@ -170,19 +178,16 @@ impl WsProtocol for OkxProtocol {
                 return Ok(Message::Text(frame.to_string()));
             }
             StreamKind::BlockTrade => {
-                let inst_id = Self::inst_id(spec);
                 let frame = json!({
                     "op": "subscribe",
-                    "args": [{ "channel": "public-block-trades", "instId": inst_id }]
+                    "args": [{ "channel": "public-block-trades", "instId": spec.symbol.as_str() }]
                 });
                 return Ok(Message::Text(frame.to_string()));
             }
             StreamKind::SettlementEvent => {
-                let inst_family = format!(
-                    "{}-{}",
-                    spec.symbol.base.to_uppercase(),
-                    spec.symbol.quote.to_uppercase()
-                );
+                // spec.symbol is raw e.g. "BTC-USDT" or "BTC-USDT-SWAP";
+                // instFamily for OKX estimated-price is base-quote: "BTC-USDT".
+                let inst_family = Self::okx_inst_family(spec.symbol.as_str());
                 let frame = json!({
                     "op": "subscribe",
                     "args": [{ "channel": "estimated-price", "instType": "FUTURES", "instFamily": inst_family }]
@@ -190,11 +195,7 @@ impl WsProtocol for OkxProtocol {
                 return Ok(Message::Text(frame.to_string()));
             }
             StreamKind::OptionGreeks => {
-                let uly = format!(
-                    "{}-{}",
-                    spec.symbol.base.to_uppercase(),
-                    spec.symbol.quote.to_uppercase()
-                );
+                let uly = Self::okx_inst_family(spec.symbol.as_str());
                 let frame = json!({
                     "op": "subscribe",
                     "args": [{ "channel": "opt-summary", "uly": uly }]
@@ -223,19 +224,14 @@ impl WsProtocol for OkxProtocol {
                 return Ok(Message::Text(frame.to_string()));
             }
             StreamKind::BlockTrade => {
-                let inst_id = Self::inst_id(spec);
                 let frame = json!({
                     "op": "unsubscribe",
-                    "args": [{ "channel": "public-block-trades", "instId": inst_id }]
+                    "args": [{ "channel": "public-block-trades", "instId": spec.symbol.as_str() }]
                 });
                 return Ok(Message::Text(frame.to_string()));
             }
             StreamKind::SettlementEvent => {
-                let inst_family = format!(
-                    "{}-{}",
-                    spec.symbol.base.to_uppercase(),
-                    spec.symbol.quote.to_uppercase()
-                );
+                let inst_family = Self::okx_inst_family(spec.symbol.as_str());
                 let frame = json!({
                     "op": "unsubscribe",
                     "args": [{ "channel": "estimated-price", "instType": "FUTURES", "instFamily": inst_family }]
@@ -243,11 +239,7 @@ impl WsProtocol for OkxProtocol {
                 return Ok(Message::Text(frame.to_string()));
             }
             StreamKind::OptionGreeks => {
-                let uly = format!(
-                    "{}-{}",
-                    spec.symbol.base.to_uppercase(),
-                    spec.symbol.quote.to_uppercase()
-                );
+                let uly = Self::okx_inst_family(spec.symbol.as_str());
                 let frame = json!({
                     "op": "unsubscribe",
                     "args": [{ "channel": "opt-summary", "uly": uly }]
@@ -838,13 +830,12 @@ fn parse_positions(raw: &Value) -> WebSocketResult<StreamEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::types::Symbol;
     use crate::core::websocket::StreamSpec;
 
     fn spot_spec(kind: StreamKind) -> StreamSpec {
         StreamSpec {
             kind,
-            symbol: Symbol::new("BTC", "USDT"),
+            symbol: "BTC-USDT".to_string(),
             account_type: AccountType::Spot,
             depth: None,
             speed_ms: None,

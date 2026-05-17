@@ -736,11 +736,11 @@ impl ExchangeIdentity for OkxConnector {
 impl MarketData for OkxConnector {
     async fn get_price(
         &self,
-        symbol: Symbol,
-        account_type: AccountType,
+        symbol: &str,
+        _account_type: AccountType,
     ) -> ExchangeResult<Price> {
         let mut params = HashMap::new();
-        params.insert("instId".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("instId".to_string(), symbol.to_string());
 
         let response = self.get(OkxEndpoint::Ticker, params).await?;
         let ticker = OkxParser::parse_ticker(&response)?;
@@ -749,12 +749,12 @@ impl MarketData for OkxConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         depth: Option<u16>,
-        account_type: AccountType,
+        _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
         let mut params = HashMap::new();
-        params.insert("instId".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("instId".to_string(), symbol.to_string());
 
         if let Some(d) = depth {
             params.insert("sz".to_string(), d.to_string());
@@ -766,14 +766,14 @@ impl MarketData for OkxConnector {
 
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
-        account_type: AccountType,
+        _account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
         let mut params = HashMap::new();
-        params.insert("instId".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("instId".to_string(), symbol.to_string());
         params.insert("bar".to_string(), map_kline_interval(interval).to_string());
 
         if let Some(l) = limit {
@@ -799,11 +799,11 @@ impl MarketData for OkxConnector {
 
     async fn get_ticker(
         &self,
-        symbol: Symbol,
-        account_type: AccountType,
+        symbol: &str,
+        _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
         let mut params = HashMap::new();
-        params.insert("instId".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("instId".to_string(), symbol.to_string());
 
         let response = self.get(OkxEndpoint::Ticker, params).await?;
         OkxParser::parse_ticker(&response)
@@ -2256,27 +2256,31 @@ impl AccountLedger for OkxConnector {
 impl MarketDataPublic for OkxConnector {
     async fn get_liquidation_history(
         &self,
-        symbol: Option<&Symbol>,
+        symbol: Option<&str>,
         _start_time: Option<i64>,
         _end_time: Option<i64>,
         limit: Option<u32>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<crate::core::types::Liquidation>> {
         let inst_type = get_inst_type(account_type);
-        let inst_id = symbol.map(|s| format_symbol(&s.base, &s.quote, account_type));
-        // OKX /public/liquidation-orders requires instFamily or uly for SWAP/FUTURES/OPTION.
-        // instFamily format: "BTC-USDT" (USDT-margined) or "BTC-USD" (coin-margined).
-        // This connector maps FuturesCross/FuturesIsolated to SWAP (USDT-margined), so use base-quote.
-        let inst_family = symbol.map(|s| {
-            format!("{}-{}", s.base.to_uppercase(), s.quote.to_uppercase())
+        // symbol is already the raw OKX inst_id (e.g. "BTC-USDT-SWAP").
+        // instFamily for liquidation-orders is the base-quote part: strip trailing "-SWAP" or
+        // dated suffix by taking the first two dash-segments.
+        let inst_family: Option<String> = symbol.map(|raw| {
+            let parts: Vec<&str> = raw.split('-').collect();
+            if parts.len() >= 2 {
+                format!("{}-{}", parts[0].to_uppercase(), parts[1].to_uppercase())
+            } else {
+                raw.to_uppercase()
+            }
         });
         // OKX liquidation-orders endpoint uses cursor pagination (before/after), not time range.
-        self.get_liquidation_orders(inst_type, inst_family.as_deref(), inst_id.as_deref(), Some("filled"), None, None, limit).await
+        self.get_liquidation_orders(inst_type, inst_family.as_deref(), symbol, Some("filled"), None, None, limit).await
     }
 
     async fn get_long_short_ratio_history(
         &self,
-        symbol: &Symbol,
+        symbol: &str,
         period: &str,
         start_time: Option<i64>,
         end_time: Option<i64>,
@@ -2284,10 +2288,12 @@ impl MarketDataPublic for OkxConnector {
         _account_type: AccountType,
     ) -> ExchangeResult<Vec<LongShortRatio>> {
         // OKX long/short ratio uses base currency (ccy), not inst_id.
+        // Extract base from raw symbol: "BTC-USDT" → "BTC", "BTC-USDT-SWAP" → "BTC".
+        let ccy = symbol.split('-').next().unwrap_or(symbol).to_uppercase();
         let begin_str = start_time.map(|t| t.to_string());
         let end_str = end_time.map(|t| t.to_string());
         self.get_long_short_ratio(
-            &symbol.base.to_uppercase(),
+            &ccy,
             Some(period),
             begin_str.as_deref(),
             end_str.as_deref(),
@@ -2297,17 +2303,16 @@ impl MarketDataPublic for OkxConnector {
 
     async fn get_funding_rate_history(
         &self,
-        symbol: &Symbol,
+        symbol: &str,
         start_time: Option<i64>,
         end_time: Option<i64>,
         limit: Option<u32>,
-        account_type: AccountType,
+        _account_type: AccountType,
     ) -> ExchangeResult<Vec<FundingRate>> {
-        let inst_id = format_symbol(&symbol.base, &symbol.quote, account_type);
         // OKX uses before/after cursors by fundingTime:
         //   after  = only records with fundingTime < after  (upper bound → end_time)
         //   before = only records with fundingTime > before (lower bound → start_time)
-        self.get_funding_rate_history(&inst_id, end_time, start_time, limit).await
+        self.get_funding_rate_history(symbol, end_time, start_time, limit).await
     }
 }
 

@@ -1,0 +1,44 @@
+{
+  "Binance": {
+    "Spot": {
+      "Trade":  { "min_events_per_minute": 60,  "captured_on": "2026-05-18" },
+      "Ticker": { "min_events_per_minute": 30,  "captured_on": "2026-05-18" }
+    }
+  },
+  "Bybit": {
+    "Spot": {
+      "Trade":  { "min_events_per_minute": 30, "captured_on": "2026-05-18" },
+      "Ticker": { "min_events_per_minute": 20, "captured_on": "2026-05-18" }
+    }
+  },
+  "OKX": {
+    "Spot": {
+      "Trade":  { "min_events_per_minute": 40, "captured_on": "2026-05-18" },
+      "Ticker": { "min_events_per_minute": 20, "captured_on": "2026-05-18" }
+    }
+  },
+  "Bitget": {
+    "Spot": {
+      "Trade":  { "min_events_per_minute": 30, "captured_on": "2026-05-18" },
+      "Ticker": { "min_events_per_minute": 15, "captured_on": "2026-05-18" }
+    }
+  },
+  "KuCoin": {
+    "Spot": {
+      "Trade":  { "min_events_per_minute": 30, "captured_on": "2026-05-18" },
+      "Ticker": { "min_events_per_minute": 15, "captured_on": "2026-05-18" }
+    }
+  },
+  "GateIO": {
+    "Spot": {
+      "Trade":  { "min_events_per_minute": 20, "captured_on": "2026-05-18" },
+      "Ticker": { "min_events_per_minute": 10, "captured_on": "2026-05-18" }
+    }
+  },
+  "MEXC": {
+    "Spot": {
+      "Trade":  { "min_events_per_minute": 20, "captured_on": "2026-05-18" },
+      "Ticker": { "min_events_per_minute": 10, "captured_on": "2026-05-18" }
+    }
+  }
+}

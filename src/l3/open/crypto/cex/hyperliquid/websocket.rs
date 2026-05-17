@@ -59,7 +59,7 @@ impl HyperliquidWebSocket {
     pub async fn subscribe_all_mids(&self) -> WebSocketResult<()> {
         let spec = StreamSpec {
             kind: StreamKind::Ticker,
-            symbol: String::new(),
+            symbol: "".into(),
             account_type: AccountType::FuturesCross,
             depth: None,
             speed_ms: None,

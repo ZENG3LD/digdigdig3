@@ -28,6 +28,7 @@ use crate::core::{
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     UserTrade, UserTradeFilter,
 };
+use crate::core::types::SymbolInput;
 use crate::core::types::SymbolInfo;
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
@@ -441,29 +442,31 @@ impl ExchangeIdentity for BitfinexConnector {
 impl MarketData for BitfinexConnector {
     async fn get_price(
         &self,
-        symbol: &str,
-        _account_type: AccountType,
+        symbol: SymbolInput<'_>,
+        account_type: AccountType,
     ) -> ExchangeResult<Price> {
+        let symbol = symbol.resolve(ExchangeId::Bitfinex, account_type)?;
         let response = self.get(
             BitfinexEndpoint::Ticker,
-            &[("symbol", symbol)],
+            &[("symbol", &*symbol)],
             HashMap::new(),
         ).await?;
 
-        let ticker = BitfinexParser::parse_ticker(&response, symbol)?;
+        let ticker = BitfinexParser::parse_ticker(&response, &symbol)?;
         Ok(ticker.last_price)
     }
 
     async fn get_orderbook(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _depth: Option<u16>,
-        _account_type: AccountType,
+        account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
+        let symbol = symbol.resolve(ExchangeId::Bitfinex, account_type)?;
         // Use P0 precision (highest aggregation) for best performance
         let response = self.get(
             BitfinexEndpoint::Orderbook,
-            &[("symbol", symbol), ("precision", "P0")],
+            &[("symbol", &*symbol), ("precision", "P0")],
             HashMap::new(),
         ).await?;
 
@@ -472,13 +475,14 @@ impl MarketData for BitfinexConnector {
 
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
-        _account_type: AccountType,
+        account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let candle_key = build_candle_key(symbol, interval);
+        let symbol = symbol.resolve(ExchangeId::Bitfinex, account_type)?;
+        let candle_key = build_candle_key(&symbol, interval);
 
         let mut params = HashMap::new();
         if let Some(lim) = limit {
@@ -501,16 +505,17 @@ impl MarketData for BitfinexConnector {
 
     async fn get_ticker(
         &self,
-        symbol: &str,
-        _account_type: AccountType,
+        symbol: SymbolInput<'_>,
+        account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
+        let symbol = symbol.resolve(ExchangeId::Bitfinex, account_type)?;
         let response = self.get(
             BitfinexEndpoint::Ticker,
-            &[("symbol", symbol)],
+            &[("symbol", &*symbol)],
             HashMap::new(),
         ).await?;
 
-        BitfinexParser::parse_ticker(&response, symbol)
+        BitfinexParser::parse_ticker(&response, &symbol)
     }
 
     async fn ping(&self) -> ExchangeResult<()> {

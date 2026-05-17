@@ -28,7 +28,7 @@ use crate::core::{
     Kline, OrderBook, Price, SymbolInfo, Ticker,
 };
 use crate::core::traits::{ExchangeIdentity, MarketData};
-use crate::core::types::MarketDataCapabilities;
+use crate::core::types::{MarketDataCapabilities, SymbolInput};
 use crate::core::types::{ConnectorStats, RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, OrderbookCapabilities};
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 
@@ -505,10 +505,11 @@ impl MarketData for PolymarketConnector {
     /// Returns the YES outcome probability as the "price" (0.0 - 1.0).
     async fn get_price(
         &self,
-        symbol: &str,
-        _account_type: AccountType,
+        symbol: SymbolInput<'_>,
+        account_type: AccountType,
     ) -> ExchangeResult<Price> {
-        let id = self.lower_id(symbol);
+        let symbol = symbol.resolve(ExchangeId::Polymarket, account_type)?;
+        let id = self.lower_id(&symbol);
         let condition_id = id.as_ref();
 
         // Get the market to find the primary token ID.
@@ -542,11 +543,12 @@ impl MarketData for PolymarketConnector {
     /// `symbol` should be the `condition_id` (0x...).
     async fn get_orderbook(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _depth: Option<u16>,
-        _account_type: AccountType,
+        account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        let id = self.lower_id(symbol);
+        let symbol = symbol.resolve(ExchangeId::Polymarket, account_type)?;
+        let id = self.lower_id(&symbol);
         let condition_id = id.as_ref();
 
         // Get the YES token ID
@@ -565,13 +567,14 @@ impl MarketData for PolymarketConnector {
     /// Intervals: "1m" → 1m, "1h" → 1h, "6h" → 6h, "1d" → 1d, "1w" → 1w
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
-        _account_type: AccountType,
+        account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let input_cow = self.lower_id(symbol);
+        let symbol = symbol.resolve(ExchangeId::Polymarket, account_type)?;
+        let input_cow = self.lower_id(&symbol);
         let input = input_cow.as_ref();
 
         // Determine if this looks like a condition_id (0x... 66 chars) or a token_id.
@@ -613,10 +616,11 @@ impl MarketData for PolymarketConnector {
     /// `symbol` should be the `condition_id` (0x...).
     async fn get_ticker(
         &self,
-        symbol: &str,
-        _account_type: AccountType,
+        symbol: SymbolInput<'_>,
+        account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        let id = self.lower_id(symbol);
+        let symbol = symbol.resolve(ExchangeId::Polymarket, account_type)?;
+        let id = self.lower_id(&symbol);
         let condition_id = id.as_ref();
         let market = self.get_market(condition_id).await?;
 

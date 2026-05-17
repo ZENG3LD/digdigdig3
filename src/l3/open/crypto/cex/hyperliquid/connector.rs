@@ -35,6 +35,7 @@ use crate::core::{
     UserTrade, UserTradeFilter,
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
+use crate::core::types::SymbolInput;
 use crate::core::traits::{Trading, Account, Positions, AmendOrder, BatchOrders, CancelAll, AccountTransfers, FundingHistory};
 use crate::core::types::{ConnectorStats, SymbolInfo, AlgoOrderResponse, TransferRequest, TransferHistoryFilter, TransferResponse, FundingPayment, FundingFilter};
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
@@ -570,21 +571,23 @@ impl ExchangeIdentity for HyperliquidConnector {
 impl MarketData for HyperliquidConnector {
     async fn get_price(
         &self,
-        symbol: &str,
-        _account_type: AccountType,
+        symbol: SymbolInput<'_>,
+        account_type: AccountType,
     ) -> ExchangeResult<Price> {
+        let symbol = symbol.resolve(ExchangeId::HyperLiquid, account_type)?;
         let response = self.get_all_mids().await?;
-        HyperliquidParser::parse_price(&response, symbol)
+        HyperliquidParser::parse_price(&response, &symbol)
     }
 
     async fn get_orderbook(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _depth: Option<u16>,
-        _account_type: AccountType,
+        account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
+        let symbol = symbol.resolve(ExchangeId::HyperLiquid, account_type)?;
         let params = serde_json::json!({
-            "coin": symbol,
+            "coin": &*symbol,
             "nSigFigs": null,
             "mantissa": null,
         });
@@ -594,12 +597,13 @@ impl MarketData for HyperliquidConnector {
 
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
-        _account_type: AccountType,
+        account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::HyperLiquid, account_type)?;
         let now = crate::core::timestamp_millis() as i64;
         let end_ms = end_time.unwrap_or(now);
         let interval_ms = interval_to_ms(interval);
@@ -608,7 +612,7 @@ impl MarketData for HyperliquidConnector {
 
         let params = serde_json::json!({
             "req": {
-                "coin": symbol,
+                "coin": &*symbol,
                 "interval": super::endpoints::map_kline_interval(interval),
                 "startTime": start_time,
                 "endTime": end_ms,
@@ -621,7 +625,7 @@ impl MarketData for HyperliquidConnector {
 
     async fn get_ticker(
         &self,
-        _symbol: &str,
+        _symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
         Err(ExchangeError::NotSupported(

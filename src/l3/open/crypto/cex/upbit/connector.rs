@@ -36,6 +36,7 @@ use crate::core::{
     UserTrade, UserTradeFilter,
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
+use crate::core::types::SymbolInput;
 use crate::core::types::{WithdrawRequest, FundsHistoryFilter, FundsRecordType};
 use crate::core::types::StreamEvent;
 use crate::core::timestamp_millis;
@@ -555,7 +556,8 @@ impl ExchangeIdentity for UpbitConnector {
 
 #[async_trait]
 impl MarketData for UpbitConnector {
-    async fn get_price(&self, symbol: &str, account_type: AccountType) -> ExchangeResult<Price> {
+    async fn get_price(&self, symbol: SymbolInput<'_>, account_type: AccountType) -> ExchangeResult<Price> {
+        let symbol = symbol.resolve(ExchangeId::Upbit, account_type)?;
         let mut params = HashMap::new();
         params.insert("markets".to_string(), symbol.to_string());
 
@@ -563,7 +565,8 @@ impl MarketData for UpbitConnector {
         UpbitParser::parse_price(&response)
     }
 
-    async fn get_orderbook(&self, symbol: &str, depth: Option<u16>, account_type: AccountType) -> ExchangeResult<OrderBook> {
+    async fn get_orderbook(&self, symbol: SymbolInput<'_>, depth: Option<u16>, account_type: AccountType) -> ExchangeResult<OrderBook> {
+        let symbol = symbol.resolve(ExchangeId::Upbit, account_type)?;
         let mut params = HashMap::new();
         params.insert("markets".to_string(), symbol.to_string());
         if let Some(n) = depth {
@@ -577,12 +580,13 @@ impl MarketData for UpbitConnector {
 
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
         account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::Upbit, account_type)?;
         let (endpoint, unit) = map_kline_interval(interval);
 
         let mut params = HashMap::new();
@@ -603,7 +607,8 @@ impl MarketData for UpbitConnector {
         UpbitParser::parse_klines(&response)
     }
 
-    async fn get_ticker(&self, symbol: &str, account_type: AccountType) -> ExchangeResult<Ticker> {
+    async fn get_ticker(&self, symbol: SymbolInput<'_>, account_type: AccountType) -> ExchangeResult<Ticker> {
+        let symbol = symbol.resolve(ExchangeId::Upbit, account_type)?;
         let mut params = HashMap::new();
         params.insert("markets".to_string(), symbol.to_string());
 

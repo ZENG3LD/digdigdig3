@@ -32,7 +32,7 @@ use crate::core::{
     CustodialFunds,
     DepositAddress, WithdrawResponse, FundsRecord,
 };
-use crate::core::types::{MarketDataCapabilities, TradingCapabilities, AccountCapabilities};
+use crate::core::types::{MarketDataCapabilities, TradingCapabilities, AccountCapabilities, SymbolInput};
 use crate::core::types::{WithdrawRequest, FundsHistoryFilter};
 use crate::core::types::{ConnectorStats, SymbolInfo, CancelAllResponse, AmendRequest};
 use crate::core::types::{UserTrade, UserTradeFilter};
@@ -461,9 +461,10 @@ impl MarketData for DeribitConnector {
         }
     }
 
-    async fn get_price(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<Price> {
+    async fn get_price(&self, symbol: SymbolInput<'_>, account_type: AccountType) -> ExchangeResult<Price> {
+        let symbol = symbol.resolve(ExchangeId::Deribit, account_type)?;
         let mut params = HashMap::new();
-        params.insert("instrument_name".to_string(), json!(symbol));
+        params.insert("instrument_name".to_string(), json!(&*symbol));
 
         let response = self.rpc_call(DeribitMethod::Ticker, params).await?;
         DeribitParser::parse_price(&response)
@@ -471,12 +472,13 @@ impl MarketData for DeribitConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         depth: Option<u16>,
-        _account_type: AccountType,
+        account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
+        let symbol = symbol.resolve(ExchangeId::Deribit, account_type)?;
         let mut params = HashMap::new();
-        params.insert("instrument_name".to_string(), json!(symbol));
+        params.insert("instrument_name".to_string(), json!(&*symbol));
         if let Some(d) = depth {
             params.insert("depth".to_string(), json!(d));
         }
@@ -487,13 +489,14 @@ impl MarketData for DeribitConnector {
 
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
-        _account_type: AccountType,
+        account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let instrument_name = symbol;
+        let symbol = symbol.resolve(ExchangeId::Deribit, account_type)?;
+        let instrument_name = &*symbol;
 
         let (resolution, interval_ms): (&str, u64) = match interval {
             "1m"  => ("1",   60_000),
@@ -528,9 +531,10 @@ impl MarketData for DeribitConnector {
         DeribitParser::parse_klines(&response, interval_ms)
     }
 
-    async fn get_ticker(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<Ticker> {
+    async fn get_ticker(&self, symbol: SymbolInput<'_>, account_type: AccountType) -> ExchangeResult<Ticker> {
+        let symbol = symbol.resolve(ExchangeId::Deribit, account_type)?;
         let mut params = HashMap::new();
-        params.insert("instrument_name".to_string(), json!(symbol));
+        params.insert("instrument_name".to_string(), json!(&*symbol));
 
         let response = self.rpc_call(DeribitMethod::Ticker, params).await?;
         DeribitParser::parse_ticker(&response)

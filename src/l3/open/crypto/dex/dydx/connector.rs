@@ -39,6 +39,7 @@ use crate::core::types::{
     ConnectorStats, SymbolInfo, FundingPayment, FundingFilter,
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
     RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, OrderbookCapabilities,
+    SymbolInput,
 };
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 
@@ -523,17 +524,20 @@ impl ExchangeIdentity for DydxConnector {
 
 #[async_trait]
 impl MarketData for DydxConnector {
-    async fn get_price(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<Price> {
+    async fn get_price(&self, symbol: SymbolInput<'_>, account_type: AccountType) -> ExchangeResult<Price> {
+        let symbol = symbol.resolve(ExchangeId::Dydx, account_type)?;
         let response = self.get(DydxEndpoint::PerpetualMarkets, HashMap::new()).await?;
-        DydxParser::parse_price(&response, symbol)
+        DydxParser::parse_price(&response, &symbol)
     }
 
-    async fn get_ticker(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<Ticker> {
+    async fn get_ticker(&self, symbol: SymbolInput<'_>, account_type: AccountType) -> ExchangeResult<Ticker> {
+        let symbol = symbol.resolve(ExchangeId::Dydx, account_type)?;
         let response = self.get(DydxEndpoint::PerpetualMarkets, HashMap::new()).await?;
-        DydxParser::parse_ticker(&response, symbol)
+        DydxParser::parse_ticker(&response, &symbol)
     }
 
-    async fn get_orderbook(&self, symbol: &str, _depth: Option<u16>, _account_type: AccountType) -> ExchangeResult<OrderBook> {
+    async fn get_orderbook(&self, symbol: SymbolInput<'_>, _depth: Option<u16>, account_type: AccountType) -> ExchangeResult<OrderBook> {
+        let symbol = symbol.resolve(ExchangeId::Dydx, account_type)?;
         let mut params = HashMap::new();
         params.insert("market".to_string(), symbol.to_string());
 
@@ -543,12 +547,13 @@ impl MarketData for DydxConnector {
 
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
-        _account_type: AccountType,
+        account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::Dydx, account_type)?;
         let resolution = map_kline_interval(interval);
 
         let mut params = HashMap::new();

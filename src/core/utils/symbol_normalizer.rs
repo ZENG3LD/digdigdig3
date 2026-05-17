@@ -953,14 +953,113 @@ mod upbit {
 
 mod bitfinex {
     use super::*;
-    pub(super) fn to_exchange(sym: &Symbol, _account_type: AccountType) -> Result<String, NormalizerError> {
-        noop_to_exchange(sym)
+
+    /// Canonical Symbol → Bitfinex exchange-native string.
+    ///
+    /// Format rules:
+    /// - Trading pairs: `t` prefix, uppercase. When either side > 3 chars,
+    ///   use `:` separator (e.g. `tBTC:USDT`, `tLINK:USD`); otherwise concatenate
+    ///   (e.g. `tBTCUSD`, `tETHBTC`).
+    /// - Funding currencies: `f` prefix, uppercase (e.g. `fUSD`, `fBTC`).
+    ///   Signal funding market via `AccountType::Lending`.
+    pub(super) fn to_exchange(sym: &Symbol, account_type: AccountType) -> Result<String, NormalizerError> {
+        if sym.base.is_empty() {
+            return Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::Bitfinex,
+                raw: format!("{}/{}", sym.base, sym.quote),
+            });
+        }
+
+        // Funding market
+        if account_type == AccountType::Lending {
+            return Ok(format!("f{}", sym.base.to_uppercase()));
+        }
+
+        let base = sym.base.to_uppercase();
+        let quote = sym.quote.to_uppercase();
+
+        // Use `:` separator when either token is longer than 3 chars
+        if base.len() > 3 || quote.len() > 3 {
+            Ok(format!("t{}:{}", base, quote))
+        } else {
+            Ok(format!("t{}{}", base, quote))
+        }
     }
+
+    /// Bitfinex exchange-native string → canonical Symbol.
+    ///
+    /// - `tBTCUSD`   → base=BTC, quote=USD
+    /// - `tBTC:USDT` → base=BTC, quote=USDT  (colon separator for long names)
+    /// - `fUSD`      → base=USD, quote=""     (funding currency)
     pub(super) fn from_exchange(raw: &str, _account_type: AccountType) -> Result<Symbol, NormalizerError> {
-        noop_from_exchange(ExchangeId::Bitfinex, raw)
+        // Funding currency: fXXX
+        if let Some(currency) = raw.strip_prefix('f') {
+            if !currency.is_empty() && currency.chars().all(|c| c.is_ascii_alphanumeric()) {
+                return Ok(Symbol::new(currency, ""));
+            }
+        }
+
+        // Trading pair: tXXX
+        if let Some(pair) = raw.strip_prefix('t') {
+            if pair.is_empty() {
+                return Err(NormalizerError::InvalidFormat {
+                    exchange: ExchangeId::Bitfinex,
+                    raw: raw.to_string(),
+                });
+            }
+
+            // Colon-separated long names: tBTC:USDT, tBTC:UST
+            if let Some((base, quote)) = pair.split_once(':') {
+                if !base.is_empty() && !quote.is_empty() {
+                    return Ok(Symbol::new(base, quote));
+                }
+            }
+
+            // No separator — split on known quote suffixes (longest first to avoid ambiguity)
+            let len = pair.len();
+            const KNOWN_QUOTES: &[&str] = &[
+                "USDT", "USDC", "BUSD", "TUSD", "USDP",
+                "BTC", "ETH", "EUR", "GBP", "USD",
+            ];
+            for &q in KNOWN_QUOTES {
+                if pair.ends_with(q) && len > q.len() {
+                    let base = &pair[..len - q.len()];
+                    if !base.is_empty() {
+                        return Ok(Symbol::new(base, q));
+                    }
+                }
+            }
+
+            // Fallback: 3/3 split for 6-char pairs (e.g. tEOSETH)
+            if len == 6 {
+                return Ok(Symbol::new(&pair[..3], &pair[3..]));
+            }
+
+            return Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::Bitfinex,
+                raw: raw.to_string(),
+            });
+        }
+
+        Err(NormalizerError::InvalidFormat {
+            exchange: ExchangeId::Bitfinex,
+            raw: raw.to_string(),
+        })
     }
+
+    /// Valid Bitfinex symbol: starts with `t` or `f`, rest is uppercase ASCII
+    /// alphanumeric, optionally one `:` for long-name pairs.
     pub(super) fn is_valid_for(raw: &str, _account_type: AccountType) -> bool {
-        noop_is_valid_for(raw)
+        if raw.is_empty() {
+            return false;
+        }
+        let starts_ok = raw.starts_with('t') || raw.starts_with('f');
+        if !starts_ok {
+            return false;
+        }
+        let rest = &raw[1..];
+        !rest.is_empty()
+            && rest.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == ':')
     }
 }
 

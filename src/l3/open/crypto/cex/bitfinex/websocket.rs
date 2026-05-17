@@ -615,11 +615,18 @@ impl BitfinexWebSocket {
                     Some(d) => d,
                     None => return Ok(vec![]),
                 };
-                let symbol = format_symbol(
-                    &subscription.symbol.base,
-                    &subscription.symbol.quote,
-                    account_type,
-                );
+                // Symbol is already Bitfinex-native (e.g. "tBTCUSD") stored in subscription.symbol.base
+                // when the subscribe call passed a raw native symbol. Fall back to format_symbol for
+                // legacy subscriptions that stored base/quote separately.
+                let symbol = if subscription.symbol.raw().is_some() {
+                    subscription.symbol.raw().unwrap_or("").to_string()
+                } else {
+                    format_symbol(
+                        &subscription.symbol.base,
+                        &subscription.symbol.quote,
+                        account_type,
+                    )
+                };
 
                 if Self::is_funding_symbol(&symbol) {
                     // Funding ticker format: [FRR, BID, BID_PERIOD, BID_SIZE, ASK, ASK_PERIOD, ASK_SIZE,
@@ -638,17 +645,29 @@ impl BitfinexWebSocket {
                 // Standard ticker only — Ticker channel does NOT carry mark/OI/funding
                 // for F0 derivative pairs. Those come from the `status` channel with
                 // key `deriv:<symbol>`, handled via StreamType::FundingRate subscription.
-                let ticker = BitfinexParser::parse_ws_ticker(data)
+                // Class C fix: fill symbol field from subscription (parse_ws_ticker returns symbol="")
+                let mut ticker = BitfinexParser::parse_ws_ticker(data)
                     .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+                ticker.symbol = symbol;
                 Ok(vec![StreamEvent::Ticker(ticker)])
             }
             StreamType::Trade => {
                 // Trades: [CHANNEL_ID, "te", [ID, MTS, AMOUNT, PRICE]]
                 // or [CHANNEL_ID, [[ID, MTS, AMOUNT, PRICE], ...]]
+                let trade_symbol = if subscription.symbol.raw().is_some() {
+                    subscription.symbol.raw().unwrap_or("").to_string()
+                } else {
+                    format_symbol(
+                        &subscription.symbol.base,
+                        &subscription.symbol.quote,
+                        account_type,
+                    )
+                };
                 if arr.len() >= 3 && arr[1].as_str() == Some("te") {
                     if let Some(data) = arr[2].as_array() {
-                        let trade = BitfinexParser::parse_ws_trade(data)
+                        let mut trade = BitfinexParser::parse_ws_trade(data)
                             .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+                        trade.symbol = trade_symbol;
                         Ok(vec![StreamEvent::Trade(trade)])
                     } else {
                         Ok(vec![])
@@ -658,8 +677,9 @@ impl BitfinexWebSocket {
                         if first.is_array() {
                             Ok(vec![]) // Skip snapshots
                         } else {
-                            let trade = BitfinexParser::parse_ws_trade(data)
+                            let mut trade = BitfinexParser::parse_ws_trade(data)
                                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+                            trade.symbol = trade_symbol;
                             Ok(vec![StreamEvent::Trade(trade)])
                         }
                     } else {
@@ -973,7 +993,10 @@ impl BitfinexWebSocket {
     /// Returns `(channel, symbol_or_key)` where the second field is sent as `symbol`
     /// for most channels or as `key` for candles and status channels.
     fn build_channel(request: &SubscriptionRequest, account_type: AccountType) -> (String, Option<String>) {
-        let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, account_type);
+        // Use raw native symbol if present (caller already normalised), else format from base/quote.
+        let symbol = request.symbol.raw()
+            .map(|r| r.to_string())
+            .unwrap_or_else(|| format_symbol(&request.symbol.base, &request.symbol.quote, account_type));
 
         match &request.stream_type {
             StreamType::Ticker => ("ticker".to_string(), Some(symbol)),

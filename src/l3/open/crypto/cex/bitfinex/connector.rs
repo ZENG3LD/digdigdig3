@@ -441,33 +441,29 @@ impl ExchangeIdentity for BitfinexConnector {
 impl MarketData for BitfinexConnector {
     async fn get_price(
         &self,
-        symbol: Symbol,
-        account_type: AccountType,
+        symbol: &str,
+        _account_type: AccountType,
     ) -> ExchangeResult<Price> {
-        let formatted_symbol = Self::fmt_symbol(&symbol, account_type);
-
         let response = self.get(
             BitfinexEndpoint::Ticker,
-            &[("symbol", &formatted_symbol)],
+            &[("symbol", symbol)],
             HashMap::new(),
         ).await?;
 
-        let ticker = BitfinexParser::parse_ticker(&response, &formatted_symbol)?;
+        let ticker = BitfinexParser::parse_ticker(&response, symbol)?;
         Ok(ticker.last_price)
     }
 
     async fn get_orderbook(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _depth: Option<u16>,
-        account_type: AccountType,
+        _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        let formatted_symbol = Self::fmt_symbol(&symbol, account_type);
-
         // Use P0 precision (highest aggregation) for best performance
         let response = self.get(
             BitfinexEndpoint::Orderbook,
-            &[("symbol", &formatted_symbol), ("precision", "P0")],
+            &[("symbol", symbol), ("precision", "P0")],
             HashMap::new(),
         ).await?;
 
@@ -476,14 +472,13 @@ impl MarketData for BitfinexConnector {
 
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
-        account_type: AccountType,
+        _account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let formatted_symbol = Self::fmt_symbol(&symbol, account_type);
-        let candle_key = build_candle_key(&formatted_symbol, interval);
+        let candle_key = build_candle_key(symbol, interval);
 
         let mut params = HashMap::new();
         if let Some(lim) = limit {
@@ -506,18 +501,16 @@ impl MarketData for BitfinexConnector {
 
     async fn get_ticker(
         &self,
-        symbol: Symbol,
-        account_type: AccountType,
+        symbol: &str,
+        _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        let formatted_symbol = Self::fmt_symbol(&symbol, account_type);
-
         let response = self.get(
             BitfinexEndpoint::Ticker,
-            &[("symbol", &formatted_symbol)],
+            &[("symbol", symbol)],
             HashMap::new(),
         ).await?;
 
-        BitfinexParser::parse_ticker(&response, &formatted_symbol)
+        BitfinexParser::parse_ticker(&response, symbol)
     }
 
     async fn ping(&self) -> ExchangeResult<()> {

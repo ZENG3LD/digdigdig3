@@ -22,9 +22,15 @@ use super::websocket::BitfinexWebSocket;
 // TEST HELPERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/// Bitfinex-native symbol for BTC/USD.
+/// Stored in `Symbol::raw` so the WS connector treats it as already-formatted.
 fn btc_usd() -> Symbol {
-    // Bitfinex uses tBTCUSD — the 't' prefix is added internally by format_symbol
-    Symbol::new("BTC", "USD")
+    Symbol::with_raw("BTC", "USD", "tBTCUSD".to_string())
+}
+
+/// Bitfinex-native symbol for ETH/USD.
+fn eth_usd() -> Symbol {
+    Symbol::with_raw("ETH", "USD", "tETHUSD".to_string())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

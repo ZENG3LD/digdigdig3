@@ -430,7 +430,7 @@ impl ExchangeIdentity for BingxConnector {
 impl MarketData for BingxConnector {
     async fn get_price(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Price> {
         // Use get_ticker and extract the last_price
@@ -440,7 +440,7 @@ impl MarketData for BingxConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         depth: Option<u16>,
         account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
@@ -450,7 +450,7 @@ impl MarketData for BingxConnector {
         };
 
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("symbol".to_string(), symbol.to_string());
 
         if let Some(d) = depth {
             params.insert("limit".to_string(), d.to_string());
@@ -462,7 +462,7 @@ impl MarketData for BingxConnector {
 
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         account_type: AccountType,
@@ -474,7 +474,7 @@ impl MarketData for BingxConnector {
         };
 
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("symbol".to_string(), symbol.to_string());
         params.insert("interval".to_string(), map_kline_interval(interval).to_string());
 
         if let Some(l) = limit {
@@ -491,7 +491,7 @@ impl MarketData for BingxConnector {
 
     async fn get_ticker(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
         let endpoint = match account_type {
@@ -500,7 +500,7 @@ impl MarketData for BingxConnector {
         };
 
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("symbol".to_string(), symbol.to_string());
 
         let response = self.get(endpoint, params, account_type).await?;
         BingxParser::parse_ticker(&response)
@@ -1243,21 +1243,8 @@ impl Positions for BingxConnector {
             _ => {}
         }
 
-        // BingX swap requires "BTC-USDT" format; callers may pass "BTCUSDT" (raw concat).
-        let formatted_symbol = if symbol.contains('-') {
-            symbol.to_string()
-        } else if let Some(base) = symbol.strip_suffix("USDT") {
-            format!("{}-USDT", base)
-        } else if let Some(base) = symbol.strip_suffix("USDC") {
-            format!("{}-USDC", base)
-        } else if let Some(base) = symbol.strip_suffix("BTC") {
-            format!("{}-BTC", base)
-        } else {
-            symbol.to_string()
-        };
-
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), formatted_symbol);
+        params.insert("symbol".to_string(), symbol.to_string());
 
         let response = self.get(BingxEndpoint::SwapOpenInterest, params, account_type).await?;
         self.check_response(&response)?;
@@ -2166,27 +2153,34 @@ impl crate::core::traits::HasCapabilities for BingxConnector {
 
 #[cfg(test)]
 mod tests {
-    /// Replicate the symbol normalization logic from get_open_interest.
-    fn normalize_bingx_swap_symbol(symbol: &str) -> String {
-        if symbol.contains('-') {
-            symbol.to_string()
-        } else if let Some(base) = symbol.strip_suffix("USDT") {
-            format!("{}-USDT", base)
-        } else if let Some(base) = symbol.strip_suffix("USDC") {
-            format!("{}-USDC", base)
-        } else if let Some(base) = symbol.strip_suffix("BTC") {
-            format!("{}-BTC", base)
-        } else {
-            symbol.to_string()
-        }
+    use crate::core::types::{AccountType, ExchangeId, Symbol};
+    use crate::core::utils::symbol_normalizer::SymbolNormalizer;
+
+    #[test]
+    fn bingx_normalizer_spot_to_exchange() {
+        let sym = Symbol::new("BTC", "USDT");
+        let raw = SymbolNormalizer::to_exchange(ExchangeId::BingX, &sym, AccountType::Spot).unwrap();
+        assert_eq!(raw, "BTC-USDT");
     }
 
     #[test]
-    fn test_bingx_open_interest_symbol_format() {
-        assert_eq!(normalize_bingx_swap_symbol("BTCUSDT"), "BTC-USDT");
-        assert_eq!(normalize_bingx_swap_symbol("ETHUSDT"), "ETH-USDT");
-        assert_eq!(normalize_bingx_swap_symbol("SOLUSDC"), "SOL-USDC");
-        assert_eq!(normalize_bingx_swap_symbol("BTC-USDT"), "BTC-USDT");
-        assert_eq!(normalize_bingx_swap_symbol("ETH-USDT"), "ETH-USDT");
+    fn bingx_normalizer_swap_to_exchange() {
+        let sym = Symbol::new("ETH", "USDT");
+        let raw = SymbolNormalizer::to_exchange(ExchangeId::BingX, &sym, AccountType::FuturesCross).unwrap();
+        assert_eq!(raw, "ETH-USDT");
+    }
+
+    #[test]
+    fn bingx_normalizer_from_exchange() {
+        let sym = SymbolNormalizer::from_exchange(ExchangeId::BingX, "BTC-USDT", AccountType::Spot).unwrap();
+        assert_eq!(sym.base, "BTC");
+        assert_eq!(sym.quote, "USDT");
+    }
+
+    #[test]
+    fn bingx_normalizer_is_valid() {
+        assert!(SymbolNormalizer::is_valid_for(ExchangeId::BingX, "BTC-USDT", AccountType::Spot));
+        assert!(!SymbolNormalizer::is_valid_for(ExchangeId::BingX, "BTCUSDT", AccountType::Spot));
+        assert!(!SymbolNormalizer::is_valid_for(ExchangeId::BingX, "", AccountType::Spot));
     }
 }

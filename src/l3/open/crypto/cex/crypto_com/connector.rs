@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 
 use crate::core::{
     HttpClient, Credentials,
-    ExchangeId, ExchangeType, AccountType, Symbol,
+    ExchangeId, ExchangeType, AccountType,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, Balance, AccountInfo,
@@ -349,14 +349,11 @@ impl ExchangeIdentity for CryptoComConnector {
 impl MarketData for CryptoComConnector {
     async fn get_price(
         &self,
-        symbol: Symbol,
-        account_type: AccountType,
+        symbol: &str,
+        _account_type: AccountType,
     ) -> ExchangeResult<Price> {
-        let instrument_type = account_type_to_instrument(account_type);
-        let instrument_name = format_symbol(&symbol.base, &symbol.quote, instrument_type);
-
         let params = json!({
-            "instrument_name": instrument_name
+            "instrument_name": symbol
         });
 
         let response = self.request(CryptoComEndpoint::GetTickers, params).await?;
@@ -365,15 +362,12 @@ impl MarketData for CryptoComConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         depth: Option<u16>,
-        account_type: AccountType,
+        _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        let instrument_type = account_type_to_instrument(account_type);
-        let instrument_name = format_symbol(&symbol.base, &symbol.quote, instrument_type);
-
         let mut params = json!({
-            "instrument_name": instrument_name
+            "instrument_name": symbol
         });
 
         if let Some(d) = depth {
@@ -386,18 +380,16 @@ impl MarketData for CryptoComConnector {
 
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
-        account_type: AccountType,
+        _account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let instrument_type = account_type_to_instrument(account_type);
-        let instrument_name = format_symbol(&symbol.base, &symbol.quote, instrument_type);
         let timeframe = map_kline_interval(interval);
 
         let mut params = json!({
-            "instrument_name": instrument_name,
+            "instrument_name": symbol,
             "timeframe": timeframe,
             "count": limit.unwrap_or(300).min(300)
         });
@@ -412,14 +404,11 @@ impl MarketData for CryptoComConnector {
 
     async fn get_ticker(
         &self,
-        symbol: Symbol,
-        account_type: AccountType,
+        symbol: &str,
+        _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        let instrument_type = account_type_to_instrument(account_type);
-        let instrument_name = format_symbol(&symbol.base, &symbol.quote, instrument_type);
-
         let params = json!({
-            "instrument_name": instrument_name
+            "instrument_name": symbol
         });
 
         let response = self.request(CryptoComEndpoint::GetTickers, params).await?;

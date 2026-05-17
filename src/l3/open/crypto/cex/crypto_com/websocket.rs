@@ -779,13 +779,18 @@ impl CryptoComWebSocket {
         Ok(())
     }
 
-    /// Build channel name from SubscriptionRequest
+    /// Build channel name from SubscriptionRequest.
+    ///
+    /// Uses the raw exchange-native symbol if present (`Symbol::with_raw`),
+    /// otherwise derives it from base/quote using the exchange's format rules.
     fn build_channel(request: &SubscriptionRequest, account_type: AccountType) -> Vec<String> {
         let instrument_type = match account_type {
             AccountType::FuturesCross | AccountType::FuturesIsolated => InstrumentType::Perpetual,
             _ => InstrumentType::Spot,
         };
-        let symbol_str = fmt_symbol(&request.symbol.base, &request.symbol.quote, instrument_type);
+        let symbol_str = request.symbol.raw()
+            .map(|r| r.to_string())
+            .unwrap_or_else(|| fmt_symbol(&request.symbol.base, &request.symbol.quote, instrument_type));
 
         match &request.stream_type {
             StreamType::Ticker => vec![format!("ticker.{}", symbol_str)],

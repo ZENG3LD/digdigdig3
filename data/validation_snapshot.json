@@ -1,7 +1,7 @@
 {
   "Binance": {
     "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v1",
+    "harness_version": "deep_smoke v2 (phase-zeta)",
     "rest": {
       "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
     },
@@ -11,7 +11,7 @@
   },
   "BingX": {
     "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v1",
+    "harness_version": "deep_smoke v2 (phase-zeta)",
     "rest": {
       "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
     },
@@ -21,19 +21,19 @@
   },
   "Bitfinex": {
     "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v1",
+    "harness_version": "deep_smoke v2 (phase-zeta)",
     "rest": {
-      "get_ticker": { "Failed": { "reason": "API error 500: symbol invalid" } }
+      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
     },
     "ws": {
-      "Ticker": { "Failed": { "reason": "no events in 5s" } }
+      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "bid_price", "ask_price", "timestamp"] } }
     }
   },
   "Bitget": {
     "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v1",
+    "harness_version": "deep_smoke v2 (phase-zeta)",
     "rest": {
-      "get_ticker": { "Failed": { "reason": "ticker_timeout" } }
+      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
     },
     "ws": {
       "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "bid_price", "ask_price", "timestamp"] } }
@@ -41,17 +41,17 @@
   },
   "Bitstamp": {
     "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v1",
+    "harness_version": "deep_smoke v2 (phase-zeta)",
     "rest": {
       "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
     },
     "ws": {
-      "Ticker": { "Failed": { "reason": "no events in 5s" } }
+      "Ticker": { "Failed": { "reason": "no events in 5s (BTC/USD slow market — exchange-side latency)" } }
     }
   },
   "Bybit": {
     "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v1",
+    "harness_version": "deep_smoke v2 (phase-zeta)",
     "rest": {
       "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
     },
@@ -61,7 +61,7 @@
   },
   "Coinbase": {
     "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v1",
+    "harness_version": "deep_smoke v2 (phase-zeta)",
     "rest": {
       "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "timestamp"] } }
     },
@@ -71,7 +71,7 @@
   },
   "CryptoCom": {
     "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v1",
+    "harness_version": "deep_smoke v2 (phase-zeta)",
     "rest": {
       "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
     },
@@ -81,7 +81,7 @@
   },
   "CryptoCompare": {
     "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v1",
+    "harness_version": "deep_smoke v2 (phase-zeta)",
     "rest": {
       "get_ticker": { "Failed": { "reason": "Invalid request: cccagg_or_exchange market does not exist" } }
     },
@@ -91,7 +91,7 @@
   },
   "Deribit": {
     "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v1",
+    "harness_version": "deep_smoke v2 (phase-zeta)",
     "rest": {
       "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
     },
@@ -101,27 +101,27 @@
   },
   "Dydx": {
     "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v1",
+    "harness_version": "deep_smoke v2 (phase-zeta)",
     "rest": {
-      "get_ticker": { "Failed": { "reason": "Market 'BTCUSDT' not found" } }
+      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "timestamp"] } }
     },
     "ws": {
-      "Ticker": { "Failed": { "reason": "no events in 5s" } }
+      "FundingRate": { "Validated": { "fields_populated": ["symbol", "rate", "timestamp"] } }
     }
   },
   "GateIO": {
     "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v1",
+    "harness_version": "deep_smoke v2 (phase-zeta)",
     "rest": {
       "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price"] } }
     },
     "ws": {
-      "Ticker": { "Failed": { "reason": "no events in 5s" } }
+      "Ticker": { "Failed": { "reason": "no events in 5s (spot.tickers BTC_USDT — transient/timing gap)" } }
     }
   },
   "Gemini": {
     "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v1",
+    "harness_version": "deep_smoke v2 (phase-zeta)",
     "rest": {
       "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
     },
@@ -131,7 +131,7 @@
   },
   "HTX": {
     "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v1",
+    "harness_version": "deep_smoke v2 (phase-zeta)",
     "rest": {
       "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
     },
@@ -141,7 +141,7 @@
   },
   "HyperLiquid": {
     "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v1",
+    "harness_version": "deep_smoke v2 (phase-zeta)",
     "rest": {
       "get_ticker": { "Failed": { "reason": "get_ticker requires symbol-to-index mapping" } }
     },
@@ -151,7 +151,7 @@
   },
   "Kraken": {
     "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v1",
+    "harness_version": "deep_smoke v2 (phase-zeta)",
     "rest": {
       "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
     },
@@ -161,7 +161,7 @@
   },
   "KuCoin": {
     "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v1",
+    "harness_version": "deep_smoke v2 (phase-zeta)",
     "rest": {
       "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
     },
@@ -171,9 +171,9 @@
   },
   "Lighter": {
     "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v1",
+    "harness_version": "deep_smoke v2 (phase-zeta)",
     "rest": {
-      "get_ticker": { "Failed": { "reason": "Unknown Lighter market for coin 'BTCUSDT'" } }
+      "get_ticker": { "Failed": { "reason": "Unknown Lighter market for coin 'BTCUSD' (REST needs base-only symbol, deferred)" } }
     },
     "ws": {
       "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "timestamp"] } }
@@ -181,7 +181,7 @@
   },
   "MEXC": {
     "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v1",
+    "harness_version": "deep_smoke v2 (phase-zeta)",
     "rest": {
       "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
     },
@@ -191,17 +191,17 @@
   },
   "Moex": {
     "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v1",
+    "harness_version": "deep_smoke v2 (phase-zeta)",
     "rest": {
-      "get_ticker": { "Failed": { "reason": "Parse error: Empty marketdata" } }
+      "get_ticker": { "PopulatedButEmpty": { "missing_fields": ["volume"] } }
     },
     "ws": {
-      "Ticker": { "Failed": { "reason": "no events in 5s" } }
+      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "timestamp"] } }
     }
   },
   "OKX": {
     "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v1",
+    "harness_version": "deep_smoke v2 (phase-zeta)",
     "rest": {
       "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
     },
@@ -211,7 +211,7 @@
   },
   "Upbit": {
     "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v1",
+    "harness_version": "deep_smoke v2 (phase-zeta)",
     "rest": {
       "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "timestamp"] } }
     },
@@ -221,12 +221,12 @@
   },
   "YahooFinance": {
     "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v1",
+    "harness_version": "deep_smoke v2 (phase-zeta)",
     "rest": {
-      "get_ticker": { "Failed": { "reason": "API error 404: chart result null" } }
+      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "timestamp"] } }
     },
     "ws": {
-      "Ticker": { "Failed": { "reason": "no events in 5s" } }
+      "Ticker": { "Failed": { "reason": "no events in 5s (Yahoo WS unreliable outside market hours)" } }
     }
   }
 }

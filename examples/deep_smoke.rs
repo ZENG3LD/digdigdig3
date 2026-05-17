@@ -307,8 +307,8 @@ fn raw_symbol_for(id: ExchangeId) -> (Symbol, String, AccountType) {
         ExchangeId::HyperLiquid => make(btc_usd, AccountType::FuturesCross),
         // Upbit: USDT-BTC (quote-base, reversed format)
         ExchangeId::Upbit => make(btc_usdt, AccountType::Spot),
-        // Bitfinex: tBTCUSDT (t-prefix, no separator for 3-char tokens)
-        ExchangeId::Bitfinex => make(btc_usdt, AccountType::Spot),
+        // Bitfinex: tBTCUSD (t-prefix, no separator)
+        ExchangeId::Bitfinex => make(btc_usd, AccountType::Spot),
         // Gemini: btcusd (lowercase, no separator, USD not USDT)
         ExchangeId::Gemini => make(btc_usd, AccountType::Spot),
         // Bitstamp: btcusd (lowercase)
@@ -327,6 +327,16 @@ fn raw_symbol_for(id: ExchangeId) -> (Symbol, String, AccountType) {
         ExchangeId::BingX => make(btc_usdt, AccountType::Spot),
         // Crypto.com spot: BTC_USDT (underscore)
         ExchangeId::CryptoCom => make(btc_usdt, AccountType::Spot),
+        // dYdX: BTC-USD (perpetuals, USD-margined, dash separator)
+        ExchangeId::Dydx => make(btc_usd, AccountType::FuturesCross),
+        // YahooFinance: AAPL (stock ticker, not crypto)
+        ExchangeId::YahooFinance => {
+            let aapl = Symbol::new("AAPL", "");
+            let raw = SymbolNormalizer::to_exchange(id, &aapl, AccountType::Spot)
+                .unwrap_or_else(|_| "AAPL".to_string());
+            let sym_with_raw = Symbol::with_raw("AAPL", "", raw.clone());
+            (sym_with_raw, raw, AccountType::Spot)
+        }
         // All others: BTCUSDT concat (Binance, Bybit, MEXC, HTX, Bitget, etc.)
         _ => make(btc_usdt, AccountType::Spot),
     }
@@ -412,11 +422,10 @@ async fn test_exchange(id: ExchangeId) -> Row {
 /// Test MOEX REST + WS directly (factory blocks WS for MOEX, but impl exists)
 async fn test_moex_direct() -> Row {
     let hub = ExchangeHub::new();
-    let symbol_btc = Symbol::new("BTC", "USDT");
-    let symbol_btc_str = symbol_btc.to_concat();
-    // MOEX trades RUB pairs — use SBER (Sberbank) as test symbol for REST
-    let symbol_moex = Symbol::new("USD", "RUB");
-    let symbol_moex_str = symbol_moex.to_concat();
+    // MOEX: use GAZP (Gazprom) as canonical test stock
+    let symbol_moex = Symbol::new("GAZP", "");
+    let symbol_moex_str = SymbolNormalizer::to_exchange(ExchangeId::Moex, &symbol_moex, AccountType::Spot)
+        .unwrap_or_else(|_| "GAZP".to_string());
     let account_type = AccountType::Spot;
     let stale_ms = stale_threshold_ms();
 
@@ -425,24 +434,12 @@ async fn test_moex_direct() -> Row {
         Ok(Ok(())) => {
             match hub.rest(ExchangeId::Moex) {
                 Some(conn) => {
-                    // Try BTC/USDT first, then USD/RUB
                     let ticker_result = timeout(
                         Duration::from_secs(10),
-                        MarketData::get_ticker(&*conn, &symbol_btc_str, account_type),
+                        MarketData::get_ticker(&*conn, &symbol_moex_str, account_type),
                     )
-                    .await;
-
-                    let ticker_result = match ticker_result {
-                        Ok(Ok(t)) => Ok(t),
-                        _ => {
-                            timeout(
-                                Duration::from_secs(10),
-                                MarketData::get_ticker(&*conn, &symbol_moex_str, account_type),
-                            )
-                            .await
-                            .unwrap_or_else(|_| Err(digdigdig3::core::types::ExchangeError::Timeout("timeout".into())))
-                        }
-                    };
+                    .await
+                    .unwrap_or_else(|_| Err(digdigdig3::core::types::ExchangeError::Timeout("timeout".into())));
 
                     match ticker_result {
                         Ok(ticker) => {
@@ -471,8 +468,8 @@ async fn test_moex_direct() -> Row {
     // WS — direct construction since factory blocks it
     let ws_result = {
         let ws = std::sync::Arc::new(MoexWebSocket::new_public()) as std::sync::Arc<dyn WebSocketConnector>;
-        // Use USD/RUB for MOEX WS
-        let moex_symbol = Symbol::new("USD", "RUB");
+        // Use GAZP (Gazprom) — canonical MOEX stock ticker
+        let moex_symbol = Symbol::new("GAZP", "");
         match timeout(
             Duration::from_secs(20),
             run_ws_test(ws, moex_symbol, account_type, stale_ms),

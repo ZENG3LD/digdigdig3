@@ -1230,14 +1230,43 @@ mod hyperliquid {
 
 mod dydx {
     use super::*;
+
+    /// dYdX v4 uses `BASE-USD` format (always USD-margined perpetuals).
+    ///
+    /// Examples:
+    /// - `Symbol{base:"BTC", quote:"USD"}` → `"BTC-USD"`
+    /// - `Symbol{base:"ETH", quote:"USD"}` → `"ETH-USD"`
+    /// Quote is always `"USD"` on dYdX; ignored in favour of the literal suffix.
     pub(super) fn to_exchange(sym: &Symbol, _account_type: AccountType) -> Result<String, NormalizerError> {
-        noop_to_exchange(sym)
+        let base = sym.base.to_uppercase();
+        if base.is_empty() {
+            return Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::Dydx,
+                raw: format!("{}/{}", sym.base, sym.quote),
+            });
+        }
+        // dYdX only has USD-margined markets; always append -USD.
+        Ok(format!("{}-USD", base))
     }
+
+    /// `"BTC-USD"` → `Symbol{base:"BTC", quote:"USD"}`.
     pub(super) fn from_exchange(raw: &str, _account_type: AccountType) -> Result<Symbol, NormalizerError> {
-        noop_from_exchange(ExchangeId::Dydx, raw)
+        if let Some((base, quote)) = raw.split_once('-') {
+            return Ok(Symbol::new(base, quote));
+        }
+        Err(NormalizerError::InvalidFormat {
+            exchange: ExchangeId::Dydx,
+            raw: raw.to_string(),
+        })
     }
+
+    /// Valid if `BASE-USD` format (non-empty base, dash, USD suffix).
     pub(super) fn is_valid_for(raw: &str, _account_type: AccountType) -> bool {
-        noop_is_valid_for(raw)
+        if let Some((base, quote)) = raw.split_once('-') {
+            !base.is_empty() && !quote.is_empty()
+        } else {
+            false
+        }
     }
 }
 
@@ -1694,6 +1723,33 @@ mod tests {
         let sol = Symbol::new("SOL", "USDC");
         let raw_sol = SymbolNormalizer::to_exchange(ExchangeId::HyperLiquid, &sol, AccountType::Spot).unwrap();
         assert_eq!(raw_sol, "SOL");
+    }
+
+    #[test]
+    fn dydx_normalizer_to_exchange() {
+        let btc_usd = Symbol::new("BTC", "USD");
+        let raw = SymbolNormalizer::to_exchange(ExchangeId::Dydx, &btc_usd, AccountType::FuturesCross).unwrap();
+        assert_eq!(raw, "BTC-USD");
+
+        // quote is ignored — always appends -USD
+        let btc_usdt = Symbol::new("BTC", "USDT");
+        let raw2 = SymbolNormalizer::to_exchange(ExchangeId::Dydx, &btc_usdt, AccountType::Spot).unwrap();
+        assert_eq!(raw2, "BTC-USD");
+    }
+
+    #[test]
+    fn dydx_normalizer_from_exchange() {
+        let sym = SymbolNormalizer::from_exchange(ExchangeId::Dydx, "BTC-USD", AccountType::FuturesCross).unwrap();
+        assert_eq!(sym.base, "BTC");
+        assert_eq!(sym.quote, "USD");
+    }
+
+    #[test]
+    fn dydx_normalizer_is_valid_for() {
+        assert!(SymbolNormalizer::is_valid_for(ExchangeId::Dydx, "BTC-USD", AccountType::FuturesCross));
+        assert!(SymbolNormalizer::is_valid_for(ExchangeId::Dydx, "ETH-USD", AccountType::FuturesCross));
+        assert!(!SymbolNormalizer::is_valid_for(ExchangeId::Dydx, "BTCUSDT", AccountType::Spot));
+        assert!(!SymbolNormalizer::is_valid_for(ExchangeId::Dydx, "", AccountType::Spot));
     }
 
     #[test]

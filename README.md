@@ -4,7 +4,7 @@ Multi-exchange connector library — unified async Rust API for 22 production cr
 + stocks/forex/prediction (validated subset). Single `ExchangeHub` async pool exposing
 all connectors with self-declared, empirically-validated capabilities.
 
-**Version:** 0.2.2
+**Version:** 0.2.3
 **Edition:** Rust 2021
 **License:** MIT OR Apache-2.0
 **Repository:** https://github.com/ZENG3LD/digdigdig3
@@ -12,14 +12,24 @@ all connectors with self-declared, empirically-validated capabilities.
 ## Quick start
 
 ```rust
-use digdigdig3::{ExchangeHub, ExchangeId, AccountType, Symbol, SymbolNormalizer};
+use digdigdig3::{ExchangeHub, ExchangeId, AccountType, Symbol, sym};
 
 let hub = ExchangeHub::new();
 hub.connect_full(ExchangeId::Binance, &[AccountType::Spot], false).await?;
-
 let conn = hub.rest(ExchangeId::Binance).unwrap();
-let raw = SymbolNormalizer::to_exchange(ExchangeId::Binance, &Symbol::new("BTC", "USDT"), AccountType::Spot)?;
-let ticker = conn.get_ticker(&raw, AccountType::Spot).await?;
+
+// Three equivalent ways to pass a symbol:
+
+// Raw (zero allocation, exchange-native):
+let ticker = conn.get_ticker("BTCUSDT".into(), AccountType::Spot).await?;
+
+// Canonical (exchange-agnostic):
+let sym = Symbol::new("BTC", "USDT");
+let ticker = conn.get_ticker((&sym).into(), AccountType::Spot).await?;
+
+// Macro:
+let ticker = conn.get_ticker(sym!("BTCUSDT"), AccountType::Spot).await?;
+
 println!("BTC = {}", ticker.last_price);
 ```
 
@@ -39,19 +49,26 @@ println!("BTC = {}", ticker.last_price);
 | `list_connected() -> Vec<ExchangeId>` | Enumerate active connections |
 | `shutdown(id)` | Releases REST + WS |
 
-### Raw symbols inside connectors
+### SymbolInput — raw or canonical, per-call
 
-Connectors take exchange-native strings (`"BTCUSDT"` for Binance, `"BTC-USDT"` for OKX,
-`"BTC_USDT"` for Gate.io, `"tBTCUSD"` for Bitfinex, `"BTC-PERPETUAL"` for Deribit, etc).
-
-Translation is a separate utility:
+Every per-symbol method accepts `SymbolInput<'_>`:
 
 ```rust
-let raw = SymbolNormalizer::to_exchange(id, &canonical, account_type)?;
-let parsed = SymbolNormalizer::from_exchange(id, &raw, account_type)?;
+pub enum SymbolInput<'a> {
+    Raw(&'a str),          // "BTCUSDT" — passed as-is, zero allocation
+    Canonical(&'a Symbol), // Symbol::new("BTC","USDT") — normalized inside the call
+}
 ```
 
-Per-exchange rules in `core::utils::symbol_normalizer` (22 exchanges).
+Both variants land in the same connector code path via `SymbolInput::resolve(exchange, account_type) -> Cow<str>`.
+Raw → `Cow::Borrowed` (no allocation). Canonical → `Cow::Owned` via `SymbolNormalizer::to_exchange`.
+
+Per-call dispatch — caller can mix Raw and Canonical for different exchanges in a loop, no method rename needed.
+
+For long-lived storage (e.g. `StreamSpec.symbol`), use `OwnedSymbolInput` (same Raw/Canonical variants, owned data).
+
+Per-exchange normalization rules in `core::utils::symbol_normalizer` (22 sub-modules).
+Examples: `"BTCUSDT"` (Binance), `"BTC-USDT"` (OKX), `"BTC_USDT"` (Gate.io), `"tBTCUSD"` (Bitfinex), `"BTC-PERPETUAL"` (Deribit).
 
 ### WebSocket: UniversalWsTransport
 

@@ -47,6 +47,40 @@ This separates concerns:
 - **Normalizer** = canonical ↔ raw translation, lives in `core::utils::symbol_normalizer` (22 sub-modules)
 - **Consumer** = chooses whether to feed canonical (via normalizer) or raw
 
+### SymbolInput — raw or canonical, per-call
+
+Every per-symbol connector method takes `SymbolInput<'_>`:
+
+```rust
+pub enum SymbolInput<'a> {
+    Raw(&'a str),            // "tBTCUSD" — used as-is
+    Canonical(&'a Symbol),   // &Symbol::new("BTC","USD") — normalized inside connector
+}
+```
+
+Three call styles, all valid:
+
+```rust
+// 1. Raw, terse — use exchange-native string directly
+conn.get_ticker("tBTCUSD".into(), AccountType::Spot).await?;
+
+// 2. Canonical — exchange-agnostic
+let sym = Symbol::new("BTC", "USD");
+conn.get_ticker((&sym).into(), AccountType::Spot).await?;
+
+// 3. Macro
+conn.get_ticker(sym!("tBTCUSD"), AccountType::Spot).await?;          // Raw
+conn.get_ticker(sym!(&canonical_symbol), AccountType::Spot).await?;  // Canonical
+```
+
+Inside the connector, `SymbolInput::resolve(exchange, account_type) -> Cow<'_, str>` dispatches. Raw → identity (zero allocation). Canonical → SymbolNormalizer.
+
+For long-lived contexts (e.g. `StreamSpec.symbol`), use `OwnedSymbolInput` with same Raw/Canonical variants.
+
+Per-call dispatch (not compile-time): caller can mix Raw and Canonical in a loop over multiple exchanges without picking a different method name.
+
+Per-exchange normalization rules are in `src/core/utils/symbol_normalizer.rs` (22 sub-modules).
+
 ### 3. Capabilities self-declared AND empirically validated
 
 Two-level capability surface:
@@ -210,7 +244,7 @@ cargo run --example exchange_hub_demo --release
 
 ## Gotchas
 
-- Cargo.toml is v0.2.2. README.md matches. Trust CLAUDE.md and code for architecture facts.
+- Cargo.toml is v0.2.2 (v0.2.3 anticipated post-θ.6 bump). README.md matches. Trust CLAUDE.md and code for architecture facts.
 - Windows codepage: prefix Windows-native commands with `chcp.com 65001 > $null 2>&1;` for UTF-8.
 - NEVER chain git commands with `&&`. Separate `git add` / `git commit` calls.
 - digdigdig3 is a git submodule with its own `.git`. `cd digdigdig3` before any git command.

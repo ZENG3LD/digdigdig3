@@ -1,232 +1,620 @@
 {
   "Binance": {
-    "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v2 (phase-zeta)",
+    "tested_on": "2026-05-18",
+    "harness_version": "deep_smoke v3 (phase-theta)",
     "rest": {
-      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
+      "get_ticker": {
+        "Validated": {
+          "fields_populated": [
+            "last_price",
+            "volume",
+            "bid_price",
+            "ask_price",
+            "timestamp"
+          ]
+        }
+      }
     },
     "ws": {
-      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "bid_price", "ask_price", "timestamp"] } }
+      "Ticker": {
+        "Validated": {
+          "fields_populated": [
+            "symbol",
+            "last_price",
+            "bid_price",
+            "ask_price",
+            "timestamp"
+          ]
+        }
+      }
     }
   },
   "BingX": {
-    "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v2 (phase-zeta)",
+    "tested_on": "2026-05-18",
+    "harness_version": "deep_smoke v3 (phase-theta)",
     "rest": {
-      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
+      "get_ticker": {
+        "Validated": {
+          "fields_populated": [
+            "last_price",
+            "volume",
+            "bid_price",
+            "ask_price",
+            "timestamp"
+          ]
+        }
+      }
     },
     "ws": {
-      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "timestamp"] } }
+      "Ticker": {
+        "Validated": {
+          "fields_populated": [
+            "symbol",
+            "last_price",
+            "timestamp"
+          ]
+        }
+      }
     }
   },
   "Bitfinex": {
-    "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v2 (phase-zeta)",
+    "tested_on": "2026-05-18",
+    "harness_version": "deep_smoke v3 (phase-theta)",
     "rest": {
-      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
+      "get_ticker": {
+        "Validated": {
+          "fields_populated": [
+            "last_price",
+            "volume",
+            "bid_price",
+            "ask_price",
+            "timestamp"
+          ]
+        }
+      }
     },
     "ws": {
-      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "bid_price", "ask_price", "timestamp"] } }
+      "Ticker": {
+        "Validated": {
+          "fields_populated": [
+            "symbol",
+            "last_price",
+            "bid_price",
+            "ask_price",
+            "timestamp"
+          ]
+        }
+      }
     }
   },
   "Bitget": {
-    "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v2 (phase-zeta)",
+    "tested_on": "2026-05-18",
+    "harness_version": "deep_smoke v3 (phase-theta)",
     "rest": {
-      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
+      "get_ticker": {
+        "Validated": {
+          "fields_populated": [
+            "last_price",
+            "volume",
+            "bid_price",
+            "ask_price",
+            "timestamp"
+          ]
+        }
+      }
     },
     "ws": {
-      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "bid_price", "ask_price", "timestamp"] } }
+      "Ticker": {
+        "Validated": {
+          "fields_populated": [
+            "symbol",
+            "last_price",
+            "bid_price",
+            "ask_price",
+            "timestamp"
+          ]
+        }
+      }
     }
   },
   "Bitstamp": {
-    "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v2 (phase-zeta)",
+    "tested_on": "2026-05-18",
+    "harness_version": "deep_smoke v3 (phase-theta)",
     "rest": {
-      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
+      "get_ticker": {
+        "Validated": {
+          "fields_populated": [
+            "last_price",
+            "volume",
+            "bid_price",
+            "ask_price",
+            "timestamp"
+          ]
+        }
+      }
     },
     "ws": {
-      "Ticker": { "Failed": { "reason": "no events in 5s (BTC/USD slow market — exchange-side latency)" } }
+      "Ticker": {
+        "Failed": {
+          "reason": "no events in 5s (BTC/USD slow market \u0432\u0402\u201d exchange-side latency)"
+        }
+      }
     }
   },
   "Bybit": {
-    "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v2 (phase-zeta)",
+    "tested_on": "2026-05-18",
+    "harness_version": "deep_smoke v3 (phase-theta)",
     "rest": {
-      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
+      "get_ticker": {
+        "Validated": {
+          "fields_populated": [
+            "last_price",
+            "volume",
+            "bid_price",
+            "ask_price",
+            "timestamp"
+          ]
+        }
+      }
     },
     "ws": {
-      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "timestamp"] } }
+      "Ticker": {
+        "Validated": {
+          "fields_populated": [
+            "symbol",
+            "last_price",
+            "timestamp"
+          ]
+        }
+      }
     }
   },
   "Coinbase": {
-    "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v2 (phase-zeta)",
+    "tested_on": "2026-05-18",
+    "harness_version": "deep_smoke v3 (phase-theta)",
     "rest": {
-      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "timestamp"] } }
+      "get_ticker": {
+        "Validated": {
+          "fields_populated": [
+            "last_price",
+            "volume",
+            "timestamp"
+          ]
+        }
+      }
     },
     "ws": {
-      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "timestamp"] } }
+      "Ticker": {
+        "Validated": {
+          "fields_populated": [
+            "symbol",
+            "last_price",
+            "timestamp"
+          ]
+        }
+      }
     }
   },
   "CryptoCom": {
-    "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v2 (phase-zeta)",
+    "tested_on": "2026-05-18",
+    "harness_version": "deep_smoke v3 (phase-theta)",
     "rest": {
-      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
+      "get_ticker": {
+        "Validated": {
+          "fields_populated": [
+            "last_price",
+            "volume",
+            "bid_price",
+            "ask_price",
+            "timestamp"
+          ]
+        }
+      }
     },
     "ws": {
-      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "bid_price", "ask_price", "timestamp"] } }
+      "Ticker": {
+        "Validated": {
+          "fields_populated": [
+            "symbol",
+            "last_price",
+            "bid_price",
+            "ask_price",
+            "timestamp"
+          ]
+        }
+      }
     }
   },
   "CryptoCompare": {
-    "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v2 (phase-zeta)",
+    "tested_on": "2026-05-18",
+    "harness_version": "deep_smoke v3 (phase-theta)",
     "rest": {
-      "get_ticker": { "Failed": { "reason": "Invalid request: cccagg_or_exchange market does not exist" } }
+      "get_ticker": {
+        "Failed": {
+          "reason": "Invalid request: cccagg_or_exchange market does not exist"
+        }
+      }
     },
     "ws": {
-      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "timestamp"] } }
+      "Ticker": {
+        "Validated": {
+          "fields_populated": [
+            "symbol",
+            "last_price",
+            "timestamp"
+          ]
+        }
+      }
     }
   },
   "Deribit": {
-    "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v2 (phase-zeta)",
+    "tested_on": "2026-05-18",
+    "harness_version": "deep_smoke v3 (phase-theta)",
     "rest": {
-      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
+      "get_ticker": {
+        "Validated": {
+          "fields_populated": [
+            "last_price",
+            "volume",
+            "bid_price",
+            "ask_price",
+            "timestamp"
+          ]
+        }
+      }
     },
     "ws": {
-      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "bid_price", "ask_price", "timestamp"] } }
+      "Ticker": {
+        "Validated": {
+          "fields_populated": [
+            "symbol",
+            "last_price",
+            "bid_price",
+            "ask_price",
+            "timestamp"
+          ]
+        }
+      }
     }
   },
   "Dydx": {
-    "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v2 (phase-zeta)",
+    "tested_on": "2026-05-18",
+    "harness_version": "deep_smoke v3 (phase-theta)",
     "rest": {
-      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "timestamp"] } }
+      "get_ticker": {
+        "Validated": {
+          "fields_populated": [
+            "last_price",
+            "volume",
+            "timestamp"
+          ]
+        }
+      }
     },
     "ws": {
-      "FundingRate": { "Validated": { "fields_populated": ["symbol", "rate", "timestamp"] } }
+      "FundingRate": {
+        "Validated": {
+          "fields_populated": [
+            "symbol",
+            "rate",
+            "timestamp"
+          ]
+        }
+      }
     }
   },
   "GateIO": {
-    "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v2 (phase-zeta)",
+    "tested_on": "2026-05-18",
+    "harness_version": "deep_smoke v3 (phase-theta)",
     "rest": {
-      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price"] } }
+      "get_ticker": {
+        "Validated": {
+          "fields_populated": [
+            "last_price",
+            "volume",
+            "bid_price",
+            "ask_price"
+          ]
+        }
+      }
     },
     "ws": {
-      "Ticker": { "Failed": { "reason": "no events in 5s (spot.tickers BTC_USDT — transient/timing gap)" } }
+      "Ticker": {
+        "Failed": {
+          "reason": "no events in 5s (spot.tickers BTC_USDT \u0432\u0402\u201d transient/timing gap)"
+        }
+      }
     }
   },
   "Gemini": {
-    "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v2 (phase-zeta)",
+    "tested_on": "2026-05-18",
+    "harness_version": "deep_smoke v3 (phase-theta)",
     "rest": {
-      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
+      "get_ticker": {
+        "Validated": {
+          "fields_populated": [
+            "last_price",
+            "volume",
+            "bid_price",
+            "ask_price",
+            "timestamp"
+          ]
+        }
+      }
     },
     "ws": {
-      "OBDelta": { "Validated": { "fields_populated": ["bids", "asks", "top_bid", "timestamp"] } }
+      "OBDelta": {
+        "Validated": {
+          "fields_populated": [
+            "bids",
+            "asks",
+            "top_bid",
+            "timestamp"
+          ]
+        }
+      }
     }
   },
   "HTX": {
-    "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v2 (phase-zeta)",
+    "tested_on": "2026-05-18",
+    "harness_version": "deep_smoke v3 (phase-theta)",
     "rest": {
-      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
+      "get_ticker": {
+        "Validated": {
+          "fields_populated": [
+            "last_price",
+            "volume",
+            "bid_price",
+            "ask_price",
+            "timestamp"
+          ]
+        }
+      }
     },
     "ws": {
-      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "timestamp"] } }
+      "Ticker": {
+        "Validated": {
+          "fields_populated": [
+            "symbol",
+            "last_price",
+            "timestamp"
+          ]
+        }
+      }
     }
   },
   "HyperLiquid": {
-    "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v2 (phase-zeta)",
+    "tested_on": "2026-05-18",
+    "harness_version": "deep_smoke v3 (phase-theta)",
     "rest": {
-      "get_ticker": { "Failed": { "reason": "get_ticker requires symbol-to-index mapping" } }
+      "get_ticker": {
+        "Failed": {
+          "reason": "get_ticker requires symbol-to-index mapping"
+        }
+      }
     },
     "ws": {
-      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "timestamp"] } }
+      "Ticker": {
+        "Validated": {
+          "fields_populated": [
+            "symbol",
+            "last_price",
+            "timestamp"
+          ]
+        }
+      }
     }
   },
   "Kraken": {
-    "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v2 (phase-zeta)",
+    "tested_on": "2026-05-18",
+    "harness_version": "deep_smoke v3 (phase-theta)",
     "rest": {
-      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
+      "get_ticker": {
+        "Validated": {
+          "fields_populated": [
+            "last_price",
+            "volume",
+            "bid_price",
+            "ask_price",
+            "timestamp"
+          ]
+        }
+      }
     },
     "ws": {
-      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "bid_price", "ask_price", "timestamp"] } }
+      "Ticker": {
+        "Validated": {
+          "fields_populated": [
+            "symbol",
+            "last_price",
+            "bid_price",
+            "ask_price",
+            "timestamp"
+          ]
+        }
+      }
     }
   },
   "KuCoin": {
-    "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v2 (phase-zeta)",
+    "tested_on": "2026-05-18",
+    "harness_version": "deep_smoke v3 (phase-theta)",
     "rest": {
-      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
+      "get_ticker": {
+        "Validated": {
+          "fields_populated": [
+            "last_price",
+            "volume",
+            "bid_price",
+            "ask_price",
+            "timestamp"
+          ]
+        }
+      }
     },
     "ws": {
-      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "bid_price", "ask_price", "timestamp"] } }
+      "Ticker": {
+        "Validated": {
+          "fields_populated": [
+            "symbol",
+            "last_price",
+            "bid_price",
+            "ask_price",
+            "timestamp"
+          ]
+        }
+      }
     }
   },
   "Lighter": {
-    "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v2 (phase-zeta)",
+    "tested_on": "2026-05-18",
+    "harness_version": "deep_smoke v3 (phase-theta)",
     "rest": {
-      "get_ticker": { "Failed": { "reason": "Unknown Lighter market for coin 'BTCUSD' (REST needs base-only symbol, deferred)" } }
+      "get_ticker": {
+        "Failed": {
+          "reason": "Unknown Lighter market for coin 'BTCUSD' (REST needs base-only symbol, deferred)"
+        }
+      }
     },
     "ws": {
-      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "timestamp"] } }
+      "Ticker": {
+        "Validated": {
+          "fields_populated": [
+            "symbol",
+            "last_price",
+            "timestamp"
+          ]
+        }
+      }
     }
   },
   "MEXC": {
-    "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v2 (phase-zeta)",
+    "tested_on": "2026-05-18",
+    "harness_version": "deep_smoke v3 (phase-theta)",
     "rest": {
-      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
+      "get_ticker": {
+        "Validated": {
+          "fields_populated": [
+            "last_price",
+            "volume",
+            "bid_price",
+            "ask_price",
+            "timestamp"
+          ]
+        }
+      }
     },
     "ws": {
-      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "timestamp"] } }
+      "Ticker": {
+        "Validated": {
+          "fields_populated": [
+            "symbol",
+            "last_price",
+            "timestamp"
+          ]
+        }
+      }
     }
   },
   "Moex": {
-    "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v2 (phase-zeta)",
+    "tested_on": "2026-05-18",
+    "harness_version": "deep_smoke v3 (phase-theta)",
     "rest": {
-      "get_ticker": { "PopulatedButEmpty": { "missing_fields": ["volume"] } }
+      "get_ticker": {
+        "PopulatedButEmpty": {
+          "missing_fields": [
+            "volume"
+          ]
+        }
+      }
     },
     "ws": {
-      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "timestamp"] } }
+      "Ticker": {
+        "Validated": {
+          "fields_populated": [
+            "symbol",
+            "last_price",
+            "timestamp"
+          ]
+        }
+      }
     }
   },
   "OKX": {
-    "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v2 (phase-zeta)",
+    "tested_on": "2026-05-18",
+    "harness_version": "deep_smoke v3 (phase-theta)",
     "rest": {
-      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "bid_price", "ask_price", "timestamp"] } }
+      "get_ticker": {
+        "Validated": {
+          "fields_populated": [
+            "last_price",
+            "volume",
+            "bid_price",
+            "ask_price",
+            "timestamp"
+          ]
+        }
+      }
     },
     "ws": {
-      "Ticker": { "Validated": { "fields_populated": ["symbol", "last_price", "bid_price", "ask_price", "timestamp"] } }
+      "Ticker": {
+        "Validated": {
+          "fields_populated": [
+            "symbol",
+            "last_price",
+            "bid_price",
+            "ask_price",
+            "timestamp"
+          ]
+        }
+      }
     }
   },
   "Upbit": {
-    "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v2 (phase-zeta)",
+    "tested_on": "2026-05-18",
+    "harness_version": "deep_smoke v3 (phase-theta)",
     "rest": {
-      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "timestamp"] } }
+      "get_ticker": {
+        "Validated": {
+          "fields_populated": [
+            "last_price",
+            "volume",
+            "timestamp"
+          ]
+        }
+      }
     },
     "ws": {
-      "Ticker": { "PopulatedButEmpty": { "missing_fields": ["bid_price", "ask_price", "correct_symbol_direction"] } }
+      "Ticker": {
+        "PopulatedButEmpty": {
+          "missing_fields": [
+            "bid_price",
+            "ask_price",
+            "correct_symbol_direction"
+          ]
+        }
+      }
     }
   },
   "YahooFinance": {
-    "tested_on": "2026-05-17",
-    "harness_version": "deep_smoke v2 (phase-zeta)",
+    "tested_on": "2026-05-18",
+    "harness_version": "deep_smoke v3 (phase-theta)",
     "rest": {
-      "get_ticker": { "Validated": { "fields_populated": ["last_price", "volume", "timestamp"] } }
+      "get_ticker": {
+        "Validated": {
+          "fields_populated": [
+            "last_price",
+            "volume",
+            "timestamp"
+          ]
+        }
+      }
     },
     "ws": {
-      "Ticker": { "Failed": { "reason": "no events in 5s (Yahoo WS unreliable outside market hours)" } }
+      "Ticker": {
+        "Failed": {
+          "reason": "no events in 5s (Yahoo WS unreliable outside market hours)"
+        }
+      }
     }
   }
 }

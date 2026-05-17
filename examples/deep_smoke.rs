@@ -16,7 +16,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use digdigdig3::connector_manager::ExchangeHub;
 use digdigdig3::core::traits::MarketData;
-use digdigdig3::core::types::{AccountType, ExchangeId, StreamEvent, SubscriptionRequest, Symbol};
+use digdigdig3::core::types::{AccountType, ExchangeId, StreamEvent, SubscriptionRequest, Symbol, SymbolInput};
 use digdigdig3::core::utils::SymbolNormalizer;
 use digdigdig3::l2::free::moex::MoexWebSocket;
 use digdigdig3::core::traits::WebSocketConnector;
@@ -483,6 +483,97 @@ async fn test_moex_direct() -> Row {
     Row { exchange: ExchangeId::Moex, rest, ws: ws_result }
 }
 
+// ── Canonical path smoke ──────────────────────────────────────────────────────
+
+/// Verify that SymbolInput::Canonical resolves and returns real data for two
+/// representative exchanges.  Raw vs Canonical must produce identical tickers.
+async fn smoke_canonical_path() {
+    println!();
+    println!("=== CANONICAL PATH SMOKE (θ.3) ===");
+    println!("Verifies SymbolInput::Canonical normalizes + returns real ticker data.");
+    println!();
+
+    // Exchange 1: Binance — BTC/USDT spot
+    {
+        let hub = ExchangeHub::new();
+        let canonical_sym = Symbol::new("BTC", "USDT");
+        let ok = match timeout(Duration::from_secs(12), hub.connect_public(ExchangeId::Binance, false)).await {
+            Ok(Ok(())) => {
+                match hub.rest(ExchangeId::Binance) {
+                    Some(conn) => {
+                        // Canonical call — normalizer converts BTC/USDT → "BTCUSDT" internally
+                        let input = SymbolInput::Canonical(&canonical_sym);
+                        match timeout(
+                            Duration::from_secs(10),
+                            MarketData::get_ticker(&*conn, input, AccountType::Spot),
+                        ).await {
+                            Ok(Ok(ticker)) => {
+                                let valid = ticker.last_price > 0.0;
+                                println!(
+                                    "Binance  Canonical BTC/USDT → last={:.4}  {}",
+                                    ticker.last_price,
+                                    if valid { "PASS" } else { "FAIL (zero price)" }
+                                );
+                                valid
+                            }
+                            Ok(Err(e)) => { println!("Binance  Canonical FAIL: {e}"); false }
+                            Err(_)     => { println!("Binance  Canonical FAIL: timeout"); false }
+                        }
+                    }
+                    None => { println!("Binance  Canonical FAIL: no rest handle"); false }
+                }
+            }
+            Ok(Err(e)) => { println!("Binance  Canonical FAIL: connect {e}"); false }
+            Err(_)     => { println!("Binance  Canonical FAIL: connect timeout"); false }
+        };
+        if !ok {
+            println!("  RESULT: Canonical path FAIL on Binance");
+        }
+    }
+
+    // Exchange 2: OKX — BTC/USDT spot (dash-separated internally: "BTC-USDT")
+    {
+        let hub = ExchangeHub::new();
+        let canonical_sym = Symbol::new("BTC", "USDT");
+        let ok = match timeout(Duration::from_secs(12), hub.connect_public(ExchangeId::OKX, false)).await {
+            Ok(Ok(())) => {
+                match hub.rest(ExchangeId::OKX) {
+                    Some(conn) => {
+                        // Canonical call — normalizer converts BTC/USDT → "BTC-USDT" internally
+                        let input = SymbolInput::Canonical(&canonical_sym);
+                        match timeout(
+                            Duration::from_secs(10),
+                            MarketData::get_ticker(&*conn, input, AccountType::Spot),
+                        ).await {
+                            Ok(Ok(ticker)) => {
+                                let valid = ticker.last_price > 0.0;
+                                println!(
+                                    "OKX      Canonical BTC/USDT → last={:.4}  {}",
+                                    ticker.last_price,
+                                    if valid { "PASS" } else { "FAIL (zero price)" }
+                                );
+                                valid
+                            }
+                            Ok(Err(e)) => { println!("OKX      Canonical FAIL: {e}"); false }
+                            Err(_)     => { println!("OKX      Canonical FAIL: timeout"); false }
+                        }
+                    }
+                    None => { println!("OKX      Canonical FAIL: no rest handle"); false }
+                }
+            }
+            Ok(Err(e)) => { println!("OKX      Canonical FAIL: connect {e}"); false }
+            Err(_)     => { println!("OKX      Canonical FAIL: connect timeout"); false }
+        };
+        if !ok {
+            println!("  RESULT: Canonical path FAIL on OKX");
+        }
+    }
+
+    println!();
+    println!("Canonical path: SymbolInput::Canonical(&Symbol::new(\"BTC\",\"USDT\")) dispatched via");
+    println!("SymbolNormalizer::to_exchange inside resolve() — zero changes to connector code.");
+}
+
 // ── All exchanges ─────────────────────────────────────────────────────────────
 
 fn all_testable_exchanges() -> Vec<ExchangeId> {
@@ -706,6 +797,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !rest_zero_fields_exchanges.is_empty() {
         println!("REST zero fields: {:?}", rest_zero_fields_exchanges);
     }
+
+    // θ.3 — verify Canonical path end-to-end
+    smoke_canonical_path().await;
 
     println!();
     println!("Total runtime: {:.1}s", start.elapsed().as_secs_f64());

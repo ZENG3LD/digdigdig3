@@ -58,6 +58,7 @@ pub use core::{
 
     // Types
     ExchangeId, ExchangeType, AccountType, Symbol,
+    SymbolInput, OwnedSymbolInput,
     ExchangeError, ExchangeResult,
     Price, Quantity, Asset, Timestamp,
     OrderSide, OrderType, OrderStatus, Order, Position, PositionSide, Balance,

@@ -69,6 +69,7 @@ pub mod utils;
 pub mod http;
 pub mod websocket;
 pub mod chain;
+pub mod macros;
 
 #[cfg(feature = "grpc")]
 pub mod grpc;
@@ -77,6 +78,7 @@ pub mod grpc;
 pub use types::{
     // Common
     ExchangeId, ExchangeType, AccountType, Symbol,
+    SymbolInput, OwnedSymbolInput,
     ExchangeError, ExchangeResult,
     // Market data
     Kline, Ticker, OrderBook, PublicTrade, FundingRate,

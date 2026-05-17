@@ -4,8 +4,10 @@
 //! is kept for the public WebSocketConnector trait (backward compat).
 
 use crate::core::types::{
-    AccountType, StreamType, SubscriptionRequest, Symbol, WebSocketError, WebSocketResult,
+    AccountType, ExchangeId, OwnedSymbolInput, StreamType, SubscriptionRequest, Symbol,
+    WebSocketError, WebSocketResult,
 };
+use crate::core::utils::symbol_normalizer::NormalizerError;
 
 use super::stream_kind::{KlineInterval, StreamKind};
 
@@ -13,19 +15,33 @@ use super::stream_kind::{KlineInterval, StreamKind};
 ///
 /// Converted from SubscriptionRequest at subscribe() time.
 ///
-/// `symbol` holds the **raw exchange-native string** (e.g. `"BTCUSDT"` for Binance,
-/// `"BTC-USDT"` for OKX). The canonical [`Symbol`] is available at the public
-/// `SubscriptionRequest` boundary; callers convert before calling `subscribe()`.
+/// `symbol` holds either a raw exchange-native string (e.g. `"BTCUSDT"` for
+/// Binance) or a canonical [`Symbol`] that is resolved to exchange-native via
+/// [`StreamSpec::resolve_symbol`] before building the subscribe frame.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StreamSpec {
     pub kind: StreamKind,
-    /// Raw exchange-native symbol string (e.g. "BTCUSDT", "BTC-USDT", "BTC_USDT").
-    pub symbol: String,
+    /// Symbol input — raw exchange-native or canonical (resolved on use).
+    pub symbol: OwnedSymbolInput,
     pub account_type: AccountType,
     /// Depth hint for orderbook channels. None = exchange default.
     pub depth: Option<u32>,
     /// Speed hint in ms. None = exchange default.
     pub speed_ms: Option<u32>,
+}
+
+impl StreamSpec {
+    /// Resolve `symbol` to an exchange-native owned [`String`].
+    ///
+    /// - `OwnedSymbolInput::Raw(s)` → clones `s`.
+    /// - `OwnedSymbolInput::Canonical(sym)` → normalizes via [`SymbolNormalizer`].
+    pub fn resolve_symbol(
+        &self,
+        exchange: ExchangeId,
+        account_type: AccountType,
+    ) -> Result<String, NormalizerError> {
+        self.symbol.resolve(exchange, account_type)
+    }
 }
 
 impl TryFrom<SubscriptionRequest> for StreamSpec {
@@ -37,11 +53,12 @@ impl TryFrom<SubscriptionRequest> for StreamSpec {
         // Fall back to base+quote concat as a last-resort default; callers that
         // need correct per-exchange format must call SymbolNormalizer::to_exchange
         // before building the SubscriptionRequest.
-        let symbol = req
+        let raw = req
             .symbol
             .raw()
             .map(|r| r.to_string())
             .unwrap_or_else(|| req.symbol.to_concat());
+        let symbol = OwnedSymbolInput::Raw(raw);
         Ok(Self {
             kind,
             symbol,
@@ -55,9 +72,12 @@ impl TryFrom<SubscriptionRequest> for StreamSpec {
 impl From<StreamSpec> for SubscriptionRequest {
     fn from(spec: StreamSpec) -> Self {
         let stream_type = StreamType::from(spec.kind);
-        // Reconstruct a Symbol from the raw string so the public SubscriptionRequest
-        // type remains unchanged. base/quote left empty — raw is the authoritative value.
-        let symbol = Symbol::with_raw("", "", spec.symbol.clone());
+        // Reconstruct a Symbol from the OwnedSymbolInput for the public boundary.
+        // Canonical variant: use base+quote directly. Raw: store as raw field.
+        let symbol = match &spec.symbol {
+            OwnedSymbolInput::Raw(s) => Symbol::with_raw("", "", s.clone()),
+            OwnedSymbolInput::Canonical(sym) => sym.clone(),
+        };
         SubscriptionRequest {
             symbol,
             stream_type,

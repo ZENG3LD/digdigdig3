@@ -11,6 +11,7 @@ mod trading;
 mod websocket;
 mod responses;
 mod validation;
+mod symbol_input;
 
 pub use capabilities::{
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
@@ -46,3 +47,6 @@ pub use crate::core::websocket::{KlineInterval, StreamKind, StreamSpec, SupportL
 
 // ── Phase γ: Empirical validation types ──────────────────────────────────────
 pub use validation::{ValidationStamp, FieldValidation};
+
+// ── Phase θ: Unified symbol input ────────────────────────────────────────────
+pub use symbol_input::{OwnedSymbolInput, SymbolInput};

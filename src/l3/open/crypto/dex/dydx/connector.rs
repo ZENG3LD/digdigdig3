@@ -22,7 +22,7 @@ use serde_json::Value;
 
 use crate::core::{
     HttpClient, Credentials,
-    ExchangeId, ExchangeType, AccountType, Symbol,
+    ExchangeId, ExchangeType, AccountType,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook, Balance, AccountInfo,
     Position, FundingRate,
@@ -42,7 +42,7 @@ use crate::core::types::{
 };
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 
-use super::endpoints::{DydxUrls, DydxEndpoint, format_symbol, map_kline_interval, normalize_symbol};
+use super::endpoints::{DydxUrls, DydxEndpoint, map_kline_interval, normalize_symbol};
 use super::auth::DydxAuth;
 use super::parser::DydxParser;
 
@@ -523,22 +523,19 @@ impl ExchangeIdentity for DydxConnector {
 
 #[async_trait]
 impl MarketData for DydxConnector {
-    async fn get_price(&self, symbol: Symbol, _account_type: AccountType) -> ExchangeResult<Price> {
-        let market = format_symbol(&symbol.base, &symbol.quote, _account_type);
+    async fn get_price(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<Price> {
         let response = self.get(DydxEndpoint::PerpetualMarkets, HashMap::new()).await?;
-        DydxParser::parse_price(&response, &market)
+        DydxParser::parse_price(&response, symbol)
     }
 
-    async fn get_ticker(&self, symbol: Symbol, _account_type: AccountType) -> ExchangeResult<Ticker> {
-        let market = format_symbol(&symbol.base, &symbol.quote, _account_type);
+    async fn get_ticker(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<Ticker> {
         let response = self.get(DydxEndpoint::PerpetualMarkets, HashMap::new()).await?;
-        DydxParser::parse_ticker(&response, &market)
+        DydxParser::parse_ticker(&response, symbol)
     }
 
-    async fn get_orderbook(&self, symbol: Symbol, _depth: Option<u16>, _account_type: AccountType) -> ExchangeResult<OrderBook> {
-        let market = format_symbol(&symbol.base, &symbol.quote, _account_type);
+    async fn get_orderbook(&self, symbol: &str, _depth: Option<u16>, _account_type: AccountType) -> ExchangeResult<OrderBook> {
         let mut params = HashMap::new();
-        params.insert("market".to_string(), market.clone());
+        params.insert("market".to_string(), symbol.to_string());
 
         let response = self.get(DydxEndpoint::Orderbook, params).await?;
         DydxParser::parse_orderbook(&response)
@@ -546,17 +543,16 @@ impl MarketData for DydxConnector {
 
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let market = format_symbol(&symbol.base, &symbol.quote, _account_type);
         let resolution = map_kline_interval(interval);
 
         let mut params = HashMap::new();
-        params.insert("market".to_string(), market.clone());
+        params.insert("market".to_string(), symbol.to_string());
         params.insert("resolution".to_string(), resolution.to_string());
         if let Some(l) = limit {
             params.insert("limit".to_string(), l.min(1000).to_string());

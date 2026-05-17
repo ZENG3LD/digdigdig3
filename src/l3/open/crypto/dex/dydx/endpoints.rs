@@ -184,23 +184,6 @@ impl DydxEndpoint {
 // SYMBOL FORMATTING
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Форматирование символа для dYdX
-///
-/// # dYdX v4 Symbol Format
-/// - All perpetual markets: `{BASE}-USD` (e.g., `BTC-USD`, `ETH-USD`)
-/// - Case-sensitive: Must be uppercase
-/// - Quote asset: Always USDC (shown as USD)
-/// - No spot markets (perpetuals only)
-///
-/// # Examples
-/// - `BTC-USD` (Bitcoin perpetual)
-/// - `ETH-USD` (Ethereum perpetual)
-/// - `SOL-USD` (Solana perpetual)
-pub fn format_symbol(base: &str, _quote: &str, _account_type: AccountType) -> String {
-    // dYdX v4 only has perpetual markets with USD (USDC) quote
-    format!("{}-USD", base.to_uppercase())
-}
-
 /// Маппинг интервала kline для dYdX API
 ///
 /// # dYdX API Format

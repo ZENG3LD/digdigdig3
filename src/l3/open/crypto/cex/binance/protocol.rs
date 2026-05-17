@@ -73,11 +73,9 @@ impl BinanceProtocol {
     ///
     /// Symbol is always lowercase, e.g. "btcusdt".
     fn stream_name(spec: &StreamSpec) -> Result<String, WebSocketError> {
-        let symbol = format!(
-            "{}{}",
-            spec.symbol.base.to_lowercase(),
-            spec.symbol.quote.to_lowercase()
-        );
+        // spec.symbol is now a raw exchange-native string (e.g. "BTCUSDT").
+        // Binance combined-stream format requires it lowercase.
+        let symbol = spec.symbol.to_lowercase();
 
         let name = match &spec.kind {
             StreamKind::Ticker => format!("{}@ticker", symbol),
@@ -106,7 +104,7 @@ impl BinanceProtocol {
             }
 
             StreamKind::MarkPrice => {
-                if spec.symbol.base.is_empty() && spec.symbol.quote.is_empty() {
+                if spec.symbol.is_empty() {
                     "!markPrice@arr@1s".to_string()
                 } else {
                     format!("{}@markPrice", symbol)
@@ -115,7 +113,7 @@ impl BinanceProtocol {
             StreamKind::FundingRate => format!("{}@markPrice", symbol),
 
             StreamKind::Liquidation => {
-                if spec.symbol.base.is_empty() && spec.symbol.quote.is_empty() {
+                if spec.symbol.is_empty() {
                     "!forceOrder@arr".to_string()
                 } else {
                     format!("{}@forceOrder", symbol)
@@ -777,13 +775,12 @@ fn parse_futures_account_update(raw: &Value) -> WebSocketResult<StreamEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::types::Symbol;
     use crate::core::websocket::StreamSpec;
 
     fn spot_spec(kind: StreamKind) -> StreamSpec {
         StreamSpec {
             kind,
-            symbol: Symbol::new("BTC", "USDT"),
+            symbol: "BTCUSDT".to_string(),
             account_type: AccountType::Spot,
             depth: None,
             speed_ms: None,

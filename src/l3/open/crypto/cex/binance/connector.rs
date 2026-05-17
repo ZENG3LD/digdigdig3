@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 
 use crate::core::{
     HttpClient, Credentials,
-    ExchangeId, ExchangeType, AccountType, Symbol,
+    ExchangeId, ExchangeType, AccountType,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, Balance, AccountInfo,
@@ -198,7 +198,7 @@ impl BinanceConnector {
     /// The returned slice is in chronological order (oldest first).
     pub async fn get_klines_paginated(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         total_bars: usize,
         account_type: AccountType,
@@ -210,7 +210,7 @@ impl BinanceConnector {
             _ => BinanceEndpoint::FuturesKlines,
         };
 
-        let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
+        let symbol_str = symbol.to_uppercase();
         let interval_str = map_kline_interval(interval).to_string();
 
         let mut all_klines: Vec<Kline> = Vec::with_capacity(total_bars);
@@ -1197,7 +1197,7 @@ impl ExchangeIdentity for BinanceConnector {
 impl MarketData for BinanceConnector {
     async fn get_price(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Price> {
         let endpoint = match account_type {
@@ -1206,7 +1206,7 @@ impl MarketData for BinanceConnector {
         };
 
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("symbol".to_string(), symbol.to_string());
 
         let response = self.get(endpoint, params, account_type).await?;
         BinanceParser::parse_price(&response)
@@ -1214,7 +1214,7 @@ impl MarketData for BinanceConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         depth: Option<u16>,
         account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
@@ -1224,7 +1224,7 @@ impl MarketData for BinanceConnector {
         };
 
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("symbol".to_string(), symbol.to_string());
 
         if let Some(d) = depth {
             params.insert("limit".to_string(), d.to_string());
@@ -1236,7 +1236,7 @@ impl MarketData for BinanceConnector {
 
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         account_type: AccountType,
@@ -1248,7 +1248,7 @@ impl MarketData for BinanceConnector {
         };
 
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("symbol".to_string(), symbol.to_string());
         params.insert("interval".to_string(), map_kline_interval(interval).to_string());
 
         if let Some(l) = limit {
@@ -1265,7 +1265,7 @@ impl MarketData for BinanceConnector {
 
     async fn get_ticker(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
         let endpoint = match account_type {
@@ -1274,7 +1274,7 @@ impl MarketData for BinanceConnector {
         };
 
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("symbol".to_string(), symbol.to_string());
 
         let response = self.get(endpoint, params, account_type).await?;
         BinanceParser::parse_ticker(&response)
@@ -2965,12 +2965,11 @@ impl AccountLedger for BinanceConnector {
 impl MarketDataPublic for BinanceConnector {
     async fn get_recent_trades(
         &self,
-        symbol: &Symbol,
+        symbol: &str,
         limit: Option<u32>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<PublicTrade>> {
-        let sym_str = format_symbol(&symbol.base, &symbol.quote, account_type);
-        let raw = self.get_recent_trades(&sym_str, limit, account_type).await?;
+        let raw = self.get_recent_trades(symbol, limit, account_type).await?;
 
         let arr = raw.as_array().ok_or_else(|| {
             ExchangeError::Parse("get_recent_trades: expected array".into())
@@ -2993,7 +2992,7 @@ impl MarketDataPublic for BinanceConnector {
                     .and_then(|v| v.as_i64())
                     .map(|id| id.to_string())
                     .unwrap_or_default(),
-                symbol: sym_str.clone(),
+                symbol: symbol.to_string(),
                 price: parse_f64("price"),
                 quantity: parse_f64("qty"),
                 side: if is_buyer_maker { TradeSide::Sell } else { TradeSide::Buy },
@@ -3005,36 +3004,36 @@ impl MarketDataPublic for BinanceConnector {
 
     async fn get_liquidation_history(
         &self,
-        symbol: Option<&Symbol>,
+        symbol: Option<&str>,
         start_time: Option<i64>,
         end_time: Option<i64>,
         limit: Option<u32>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<Liquidation>> {
-        let sym_str = symbol.map(|s| format_symbol(&s.base, &s.quote, account_type));
-        self.get_force_orders(sym_str.as_deref(), None, start_time, end_time, limit).await
+        let _ = account_type;
+        self.get_force_orders(symbol, None, start_time, end_time, limit).await
     }
 
     async fn get_open_interest_history(
         &self,
-        symbol: &Symbol,
+        symbol: &str,
         period: &str,
         start_time: Option<i64>,
         end_time: Option<i64>,
         limit: Option<u32>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<OpenInterest>> {
-        let sym_str = format_symbol(&symbol.base, &symbol.quote, account_type);
-        self.get_open_interest_history(&sym_str, period, limit, start_time, end_time).await
+        let _ = account_type;
+        self.get_open_interest_history(symbol, period, limit, start_time, end_time).await
     }
 
     async fn get_premium_index(
         &self,
-        symbol: Option<&Symbol>,
+        symbol: Option<&str>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<MarkPrice>> {
-        let sym_str = symbol.map(|s| format_symbol(&s.base, &s.quote, account_type));
-        let data = self.get_premium_index(sym_str.as_deref()).await?;
+        let _ = account_type;
+        let data = self.get_premium_index(symbol).await?;
         Ok(vec![MarkPrice {
             symbol: data.symbol,
             mark_price: data.mark_price,
@@ -3046,27 +3045,27 @@ impl MarketDataPublic for BinanceConnector {
 
     async fn get_long_short_ratio_history(
         &self,
-        symbol: &Symbol,
+        symbol: &str,
         period: &str,
         start_time: Option<i64>,
         end_time: Option<i64>,
         limit: Option<u32>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<crate::core::types::LongShortRatio>> {
-        let sym_str = format_symbol(&symbol.base, &symbol.quote, account_type);
-        self.get_top_long_short_account_ratio(&sym_str, period, limit, start_time, end_time).await
+        let _ = account_type;
+        self.get_top_long_short_account_ratio(symbol, period, limit, start_time, end_time).await
     }
 
     async fn get_funding_rate_history(
         &self,
-        symbol: &Symbol,
+        symbol: &str,
         start_time: Option<i64>,
         end_time: Option<i64>,
         limit: Option<u32>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<crate::core::types::FundingRate>> {
-        let sym_str = format_symbol(&symbol.base, &symbol.quote, account_type);
-        self.get_funding_rate_history(&sym_str, start_time, end_time, limit).await
+        let _ = account_type;
+        self.get_funding_rate_history(symbol, start_time, end_time, limit).await
     }
 }
 

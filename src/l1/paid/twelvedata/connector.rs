@@ -202,11 +202,12 @@ impl ExchangeIdentity for TwelvedataConnector {
 impl MarketData for TwelvedataConnector {
     async fn get_price(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Price> {
+        let symbol: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("symbol".to_string(), symbol);
 
         let response = self.get(TwelvedataEndpoint::Price, params).await?;
         TwelvedataParser::parse_price(&response)
@@ -214,7 +215,7 @@ impl MarketData for TwelvedataConnector {
 
     async fn get_orderbook(
         &self,
-        _symbol: &str,
+        _symbol: SymbolInput<'_>,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
@@ -226,14 +227,15 @@ impl MarketData for TwelvedataConnector {
 
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
+        let symbol: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("symbol".to_string(), symbol);
         params.insert("interval".to_string(), map_interval(interval).to_string());
 
         if let Some(outputsize) = limit {
@@ -246,14 +248,15 @@ impl MarketData for TwelvedataConnector {
 
     async fn get_ticker(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
+        let symbol: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("symbol".to_string(), symbol.clone());
 
         let response = self.get(TwelvedataEndpoint::Quote, params).await?;
-        TwelvedataParser::parse_ticker(&response, symbol)
+        TwelvedataParser::parse_ticker(&response, &symbol)
     }
 
     async fn ping(&self) -> ExchangeResult<()> {

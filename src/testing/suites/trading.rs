@@ -11,7 +11,7 @@ use std::time::Instant;
 use crate::core::traits::{ExchangeIdentity, MarketData, Trading};
 use crate::core::types::{
     AccountType, CancelRequest, CancelScope, OrderHistoryFilter, OrderRequest,
-    OrderSide, OrderType, PlaceOrderResponse, Symbol, TimeInForce, UserTradeFilter,
+    OrderSide, OrderType, PlaceOrderResponse, Symbol, SymbolInput, TimeInForce, UserTradeFilter,
 };
 
 use super::{is_auth_error, is_unsupported, TestResult};
@@ -85,7 +85,8 @@ pub async fn test_place_cancel_roundtrip(
     let start = Instant::now();
 
     // ── Step 1: get current price ────────────────────────────────────────────
-    let price = match connector.get_price(&symbol.to_concat(), account_type).await {
+    let raw_sym = symbol.to_concat();
+    let price = match connector.get_price(SymbolInput::Raw(&raw_sym), account_type).await {
         Ok(p) => p,
         Err(err) if is_unsupported(&err) => {
             return TestResult::skip(NAME, exchange, start.elapsed().as_millis() as u64,

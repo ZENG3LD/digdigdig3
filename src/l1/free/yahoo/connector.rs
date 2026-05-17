@@ -204,21 +204,23 @@ impl MarketData for YahooFinanceConnector {
     /// Get current price
     async fn get_price(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Price> {
-        let response = self.get_quote_internal(symbol).await?;
+        let sym_str: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
+        let response = self.get_quote_internal(&sym_str).await?;
         YahooFinanceParser::parse_price(&response)
     }
 
     /// Get ticker (24h stats)
     async fn get_ticker(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        let response = self.get_quote_internal(symbol).await?;
-        YahooFinanceParser::parse_ticker(&response, symbol)
+        let sym_str: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
+        let response = self.get_quote_internal(&sym_str).await?;
+        YahooFinanceParser::parse_ticker(&response, &sym_str)
     }
 
     /// Get orderbook
@@ -226,7 +228,7 @@ impl MarketData for YahooFinanceConnector {
     /// Yahoo Finance does NOT provide orderbook data.
     async fn get_orderbook(
         &self,
-        _symbol: &str,
+        _symbol: SymbolInput<'_>,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
@@ -238,13 +240,14 @@ impl MarketData for YahooFinanceConnector {
     /// Get klines/candles
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let yahoo_symbol = symbol;
+        let sym_str: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
+        let yahoo_symbol = sym_str.as_str();
         let yahoo_interval = map_chart_interval(interval);
 
         let mut params = HashMap::new();

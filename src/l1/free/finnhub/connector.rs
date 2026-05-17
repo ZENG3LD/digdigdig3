@@ -30,7 +30,7 @@ use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
 };
 use crate::core::utils::WeightRateLimiter;
-use crate::core::types::SymbolInfo;
+use crate::core::types::{SymbolInfo, SymbolInput};
 
 use super::endpoints::{FinnhubUrls, FinnhubEndpoint, map_resolution};
 use super::auth::FinnhubAuth;
@@ -277,11 +277,12 @@ impl MarketData for FinnhubConnector {
     /// Get current price
     async fn get_price(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Price> {
+        let symbol: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("symbol".to_string(), symbol);
 
         let response = self.get(
             FinnhubEndpoint::Quote,
@@ -294,12 +295,13 @@ impl MarketData for FinnhubConnector {
     /// Get orderbook (only best bid/ask available on premium tier)
     async fn get_orderbook(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
+        let symbol: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("symbol".to_string(), symbol);
 
         let response = self.get(
             FinnhubEndpoint::BidAsk,
@@ -312,12 +314,13 @@ impl MarketData for FinnhubConnector {
     /// Get klines (OHLC candles)
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
+        let symbol: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let resolution = map_resolution(interval);
 
         // Calculate date range
@@ -359,11 +362,12 @@ impl MarketData for FinnhubConnector {
     /// Get 24h ticker
     async fn get_ticker(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
+        let symbol: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("symbol".to_string(), symbol.clone());
 
         let response = self.get(
             FinnhubEndpoint::Quote,
@@ -371,7 +375,7 @@ impl MarketData for FinnhubConnector {
         ).await?;
 
         let mut ticker = FinnhubParser::parse_ticker(&response)?;
-        ticker.symbol = symbol.to_string();
+        ticker.symbol = symbol;
         Ok(ticker)
     }
 

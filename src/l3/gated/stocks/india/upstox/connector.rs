@@ -34,7 +34,7 @@ use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
     AmendOrder, BatchOrders, CancelAll,
 };
-use crate::core::types::SymbolInfo;
+use crate::core::types::{SymbolInfo, SymbolInput};
 
 use super::endpoints::{UpstoxUrls, UpstoxEndpoint, format_symbol, map_kline_interval};
 use super::auth::UpstoxAuth;
@@ -387,10 +387,10 @@ impl ExchangeIdentity for UpstoxConnector {
 impl MarketData for UpstoxConnector {
     async fn get_price(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Price> {
-        let instrument_key = symbol.to_string();
+        let instrument_key: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let mut params = HashMap::new();
         params.insert("instrument_key".to_string(), instrument_key.clone());
 
@@ -400,11 +400,11 @@ impl MarketData for UpstoxConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        let instrument_key = symbol.to_string();
+        let instrument_key: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let mut params = HashMap::new();
         params.insert("instrument_key".to_string(), instrument_key.clone());
 
@@ -414,13 +414,13 @@ impl MarketData for UpstoxConnector {
 
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let instrument_key = symbol.to_string();
+        let instrument_key: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let (unit, interval_str) = map_kline_interval(interval)?;
 
         // Build path with parameters (V3 format)
@@ -445,10 +445,10 @@ impl MarketData for UpstoxConnector {
 
     async fn get_ticker(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        let instrument_key = symbol.to_string();
+        let instrument_key: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let mut params = HashMap::new();
         params.insert("instrument_key".to_string(), instrument_key.clone());
 
@@ -465,7 +465,7 @@ impl MarketData for UpstoxConnector {
         } else {
             // For public-only connector, try to get price of a known instrument
             self.get_price(
-                "NSE_EQ|INE669E01016",
+                SymbolInput::Raw("NSE_EQ|INE669E01016"),
                 AccountType::Spot
             ).await?;
             Ok(())

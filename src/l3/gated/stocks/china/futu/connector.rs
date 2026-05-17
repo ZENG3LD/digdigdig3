@@ -193,10 +193,10 @@ impl ExchangeIdentity for FutuConnector {
 impl MarketData for FutuConnector {
     async fn get_price(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Price> {
-        let code = symbol.to_string();
+        let code: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let request = json!({
             "securityList": [{"market": 1, "code": code}]
         });
@@ -207,25 +207,25 @@ impl MarketData for FutuConnector {
 
     async fn get_ticker(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        let code = symbol.to_string();
+        let code: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let request = json!({
-            "securityList": [{"market": 1, "code": code}]
+            "securityList": [{"market": 1, "code": code.clone()}]
         });
         let response = self.proto_call(proto_id::QOT_GET_SECURITY_SNAPSHOT, request).await?;
         let s2c = FutuParser::check_response(&response)?;
-        FutuParser::parse_ticker(s2c, symbol)
+        FutuParser::parse_ticker(s2c, &code)
     }
 
     async fn get_orderbook(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        let code = symbol.to_string();
+        let code: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let request = json!({
             "security": {"market": 1, "code": code},
             "num": depth.unwrap_or(10),
@@ -237,13 +237,13 @@ impl MarketData for FutuConnector {
 
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let code = symbol.to_string();
+        let code: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         // Map common interval strings to Futu KLType enum
         // 1=K_1M, 2=K_5M, 3=K_15M, 4=K_30M, 5=K_60M, 6=K_DAY, 7=K_WEEK, 8=K_MON
         let kl_type = match interval {

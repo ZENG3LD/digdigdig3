@@ -20,7 +20,7 @@ use digdigdig3::core::types::{AccountType, ExchangeId, Symbol};
 async fn smoke_ticker(conn: std::sync::Arc<dyn CoreConnector>, symbol: Symbol) {
     let id = conn.exchange_id();
     let sym_str = symbol.to_concat();
-    match MarketData::get_ticker(&*conn, &sym_str, AccountType::Spot).await {
+    match MarketData::get_ticker(&*conn, sym_str.as_str().into(), AccountType::Spot).await {
         Ok(t) => println!(
             "  OK  {:?} get_ticker({:?}) -> last={} bid={:?} ask={:?}",
             id, symbol, t.last_price, t.bid_price, t.ask_price
@@ -35,7 +35,7 @@ async fn smoke_funding(conn: std::sync::Arc<dyn CoreConnector>, symbol: Symbol) 
     let sym_str = symbol.raw.as_deref().unwrap_or(&sym_concat);
     let result = MarketDataPublic::get_funding_rate_history(
         &*conn,
-        sym_str,
+        sym_str.into(),
         None,
         None,
         Some(3),

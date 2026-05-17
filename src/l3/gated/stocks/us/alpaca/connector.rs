@@ -540,10 +540,10 @@ impl ExchangeIdentity for AlpacaConnector {
 impl MarketData for AlpacaConnector {
     async fn get_price(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Price> {
-        let symbol_str = symbol.to_string();
+        let symbol_str: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
 
         // Use snapshot endpoint to get latest price
         let mut params = HashMap::new();
@@ -577,12 +577,12 @@ impl MarketData for AlpacaConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
         // Orderbook only available for crypto
-        let symbol_str = symbol.to_string();
+        let symbol_str: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
 
         // Check if this is a crypto symbol (has "/" in it)
         if !symbol_str.contains('/') {
@@ -601,13 +601,13 @@ impl MarketData for AlpacaConnector {
 
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let symbol_str = symbol.to_string();
+        let symbol_str: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
 
         // Map interval to Alpaca format
         // Supported: 1Min, 5Min, 15Min, 30Min, 1Hour, 4Hour, 1Day, 1Week
@@ -648,10 +648,10 @@ impl MarketData for AlpacaConnector {
 
     async fn get_ticker(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        let symbol_str = symbol.to_string();
+        let symbol_str: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
 
         // Use snapshot endpoint
         let mut params = HashMap::new();

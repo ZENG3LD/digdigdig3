@@ -27,7 +27,7 @@ async fn get_klines_does_not_block_runtime() {
 
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        connector.get_klines(&symbol_str, "1h", Some(10), AccountType::FuturesCross, None),
+        connector.get_klines(symbol_str.as_str().into(), "1h", Some(10), AccountType::FuturesCross, None),
     )
     .await;
 

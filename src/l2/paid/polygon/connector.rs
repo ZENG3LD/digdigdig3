@@ -30,7 +30,7 @@ use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
 };
 use crate::core::utils::WeightRateLimiter;
-use crate::core::types::SymbolInfo;
+use crate::core::types::{SymbolInfo, SymbolInput};
 
 use super::endpoints::{PolygonUrls, PolygonEndpoint, map_timespan, extract_multiplier};
 use super::auth::PolygonAuth;
@@ -344,10 +344,11 @@ impl MarketData for PolygonConnector {
     /// Get current price
     async fn get_price(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Price> {
-        let path_params = vec![("ticker", symbol.to_string())]
+        let symbol: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
+        let path_params = vec![("ticker", symbol)]
             .into_iter()
             .collect();
 
@@ -376,11 +377,12 @@ impl MarketData for PolygonConnector {
     /// Get orderbook (only best bid/ask available)
     async fn get_orderbook(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        let path_params = vec![("ticker", symbol.to_string())]
+        let symbol: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
+        let path_params = vec![("ticker", symbol)]
             .into_iter()
             .collect();
 
@@ -396,12 +398,13 @@ impl MarketData for PolygonConnector {
     /// Get klines (OHLC aggregates)
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
+        let symbol: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let timespan = map_timespan(interval);
         let multiplier = extract_multiplier(interval);
 
@@ -410,7 +413,7 @@ impl MarketData for PolygonConnector {
         let from = to - chrono::Duration::days(30);
 
         let path_params = vec![
-            ("ticker", symbol.to_string()),
+            ("ticker", symbol),
             ("multiplier", multiplier.to_string()),
             ("timespan", timespan.to_string()),
             ("from", from.format("%Y-%m-%d").to_string()),
@@ -441,10 +444,11 @@ impl MarketData for PolygonConnector {
     /// Get 24h ticker
     async fn get_ticker(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        let path_params = vec![("ticker", symbol.to_string())]
+        let symbol: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
+        let path_params = vec![("ticker", symbol)]
             .into_iter()
             .collect();
 

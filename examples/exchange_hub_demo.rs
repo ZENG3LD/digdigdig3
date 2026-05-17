@@ -51,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let btc_str = btc.to_concat();
     for id in hub.ids() {
         if let Some(rest) = hub.rest(id) {
-            match MarketData::get_ticker(&*rest, &btc_str, AccountType::Spot).await {
+            match MarketData::get_ticker(&*rest, btc_str.as_str().into(), AccountType::Spot).await {
                 Ok(t) => println!("  {:?} ticker.last = {}", id, t.last_price),
                 Err(e) => println!("  {:?} ticker err: {}", id, e),
             }
@@ -78,7 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let sym_str = sym.raw.as_deref().unwrap_or(&sym_concat);
             match MarketDataPublic::get_funding_rate_history(
                 &*rest,
-                sym_str,
+                sym_str.into(),
                 None,
                 None,
                 Some(3),

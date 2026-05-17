@@ -354,7 +354,7 @@ async fn test_exchange(id: ExchangeId) -> Row {
                 Some(conn) => {
                     match timeout(
                         Duration::from_secs(10),
-                        MarketData::get_ticker(&*conn, &symbol_str, account_type),
+                        MarketData::get_ticker(&*conn, symbol_str.as_str().into(), account_type),
                     )
                     .await
                     {
@@ -435,7 +435,7 @@ async fn test_moex_direct() -> Row {
                 Some(conn) => {
                     let ticker_result = timeout(
                         Duration::from_secs(10),
-                        MarketData::get_ticker(&*conn, &symbol_moex_str, account_type),
+                        MarketData::get_ticker(&*conn, symbol_moex_str.as_str().into(), account_type),
                     )
                     .await
                     .unwrap_or_else(|_| Err(digdigdig3::core::types::ExchangeError::Timeout("timeout".into())));

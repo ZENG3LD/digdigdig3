@@ -30,7 +30,7 @@ use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
 };
 use crate::core::utils::WeightRateLimiter;
-use crate::core::types::SymbolInfo;
+use crate::core::types::{SymbolInfo, SymbolInput};
 
 use super::endpoints::{
     TiingoUrls, TiingoEndpoint,
@@ -168,15 +168,16 @@ impl MarketData for TiingoConnector {
     /// Get current price (uses IEX endpoint for stocks)
     async fn get_price(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Price> {
+        let sym_str: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let mut params = HashMap::new();
         params.insert("columns".to_string(), "close".to_string());
 
         let response = self.get(
             TiingoEndpoint::IexPrices,
-            Some(symbol),
+            Some(&sym_str),
             params,
         ).await?;
 
@@ -191,7 +192,7 @@ impl MarketData for TiingoConnector {
     /// Get orderbook (NOT SUPPORTED - data provider doesn't offer orderbook)
     async fn get_orderbook(
         &self,
-        _symbol: &str,
+        _symbol: SymbolInput<'_>,
         _limit: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
@@ -203,12 +204,13 @@ impl MarketData for TiingoConnector {
     /// Get klines/candles
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
+        let sym_str: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let resample_freq = map_interval(interval);
 
         let mut params = HashMap::new();
@@ -216,7 +218,7 @@ impl MarketData for TiingoConnector {
 
         let response = self.get(
             TiingoEndpoint::IexPrices,
-            Some(symbol),
+            Some(&sym_str),
             params,
         ).await?;
 
@@ -234,12 +236,13 @@ impl MarketData for TiingoConnector {
     /// Get 24h ticker
     async fn get_ticker(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
+        let sym_str: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let response = self.get(
             TiingoEndpoint::IexPrices,
-            Some(symbol),
+            Some(&sym_str),
             HashMap::new(),
         ).await?;
 
@@ -256,7 +259,7 @@ impl MarketData for TiingoConnector {
         let volume: f64 = klines.iter().map(|k| k.volume).sum();
 
         Ok(Ticker {
-            symbol: symbol.to_string(),
+            symbol: sym_str,
             last_price: latest.close,
             bid_price: None,
             ask_price: None,

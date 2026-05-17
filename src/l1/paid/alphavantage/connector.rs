@@ -122,9 +122,10 @@ impl MarketData for AlphaVantageConnector {
     /// Get current exchange rate for forex pair
     async fn get_price(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<f64> {
+        let symbol: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let (from, to) = symbol.split_once('-')
             .or_else(|| symbol.split_once('/'))
             .or_else(|| symbol.split_once('_'))
@@ -147,7 +148,7 @@ impl MarketData for AlphaVantageConnector {
     /// AlphaVantage doesn't provide 24h ticker statistics for forex pairs.
     async fn get_ticker(
         &self,
-        _symbol: &str,
+        _symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
         Err(ExchangeError::UnsupportedOperation(
@@ -161,7 +162,7 @@ impl MarketData for AlphaVantageConnector {
     /// AlphaVantage is a data provider, not an exchange - no orderbook.
     async fn get_orderbook(
         &self,
-        _symbol: &str,
+        _symbol: SymbolInput<'_>,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
@@ -176,12 +177,13 @@ impl MarketData for AlphaVantageConnector {
     /// Intraday intervals (1m, 5m, 15m, 30m, 60m) require premium tier.
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
+        let symbol: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let (from, to) = symbol.split_once('-')
             .or_else(|| symbol.split_once('/'))
             .or_else(|| symbol.split_once('_'))

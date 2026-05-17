@@ -174,7 +174,7 @@ impl<P: WsProtocol> UniversalWsTransport<P> {
         self.cmd_tx
             .send(TransportCmd::Subscribe(StreamSpec {
                 kind: StreamKind::Ticker, // sentinel — driver ignores this on connect signal
-                symbol: String::new(),
+                symbol: crate::core::types::OwnedSymbolInput::Raw(String::new()),
                 account_type: self.account_type,
                 depth: None,
                 speed_ms: None,

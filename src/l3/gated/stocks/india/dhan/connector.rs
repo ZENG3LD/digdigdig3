@@ -36,7 +36,7 @@ use crate::core::{
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions, AmendOrder,
 };
-use crate::core::types::SymbolInfo;
+use crate::core::types::{SymbolInfo, SymbolInput};
 use crate::core::utils::SimpleRateLimiter;
 
 use super::endpoints::{DhanUrls, DhanEndpoint, DhanExchangeSegment, map_interval, map_product_type};
@@ -322,8 +322,9 @@ impl ExchangeIdentity for DhanConnector {
 
 #[async_trait]
 impl MarketData for DhanConnector {
-    async fn get_price(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<Price> {
-        let security_id = self.get_security_id(symbol);
+    async fn get_price(&self, symbol: SymbolInput<'_>, _account_type: AccountType) -> ExchangeResult<Price> {
+        let sym_str: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
+        let security_id = self.get_security_id(&sym_str);
         let segment = self.get_exchange_segment(_account_type);
 
         let body = json!({
@@ -336,11 +337,12 @@ impl MarketData for DhanConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        let security_id = self.get_security_id(symbol);
+        let sym_str: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
+        let security_id = self.get_security_id(&sym_str);
         let segment = self.get_exchange_segment(_account_type);
 
         let body = json!({
@@ -353,13 +355,14 @@ impl MarketData for DhanConnector {
 
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let security_id = self.get_security_id(symbol);
+        let sym_str: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
+        let security_id = self.get_security_id(&sym_str);
         let segment = self.get_exchange_segment(_account_type);
 
         // Calculate date range (default to last 90 days for intraday)
@@ -386,8 +389,9 @@ impl MarketData for DhanConnector {
         Ok(klines)
     }
 
-    async fn get_ticker(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<Ticker> {
-        let security_id = self.get_security_id(symbol);
+    async fn get_ticker(&self, symbol: SymbolInput<'_>, _account_type: AccountType) -> ExchangeResult<Ticker> {
+        let sym_str: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
+        let security_id = self.get_security_id(&sym_str);
         let segment = self.get_exchange_segment(_account_type);
 
         let body = json!({

@@ -34,7 +34,7 @@ use crate::core::{
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions, AmendOrder,
 };
-use crate::core::types::SymbolInfo;
+use crate::core::types::{SymbolInfo, SymbolInput};
 use crate::core::utils::SimpleRateLimiter;
 use crate::core::timestamp_millis;
 
@@ -450,11 +450,12 @@ impl ExchangeIdentity for AngelOneConnector {
 impl MarketData for AngelOneConnector {
     async fn get_price(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Price> {
         // Angel One requires symboltoken and exchange for quote API
         // For now, use LTP mode with simplified approach
+        let symbol: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let body = json!({
             "mode": "LTP",
             "exchangeTokens": {
@@ -468,11 +469,12 @@ impl MarketData for AngelOneConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
         // Get FULL quote for order book data
+        let symbol: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let body = json!({
             "mode": "FULL",
             "exchangeTokens": {
@@ -486,7 +488,7 @@ impl MarketData for AngelOneConnector {
 
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
@@ -494,6 +496,7 @@ impl MarketData for AngelOneConnector {
     ) -> ExchangeResult<Vec<Kline>> {
         // Angel One historical data requires symboltoken
         // For simplification, using basic parameters
+        let symbol: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let to_date = chrono::Utc::now();
         let from_date = to_date - chrono::Duration::days(30);
 
@@ -518,19 +521,20 @@ impl MarketData for AngelOneConnector {
 
     async fn get_ticker(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
         // Get FULL quote for ticker data
+        let symbol: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let body = json!({
             "mode": "FULL",
             "exchangeTokens": {
-                "NSE": [symbol]
+                "NSE": [symbol.clone()]
             }
         });
 
         let response = self.post(AngelOneEndpoint::Quote, body).await?;
-        AngelOneParser::parse_ticker(&response, symbol)
+        AngelOneParser::parse_ticker(&response, &symbol)
     }
 
     async fn ping(&self) -> ExchangeResult<()> {

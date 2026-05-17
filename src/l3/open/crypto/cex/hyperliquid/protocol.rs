@@ -762,7 +762,7 @@ mod tests {
     fn futures_spec(kind: StreamKind) -> StreamSpec {
         StreamSpec {
             kind,
-            symbol: "BTC".to_string(),
+            symbol: crate::core::types::OwnedSymbolInput::Raw("BTC".to_string()),
             account_type: AccountType::FuturesCross,
             depth: None,
             speed_ms: None,

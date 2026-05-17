@@ -740,7 +740,7 @@ mod tests {
     fn futures_spec(kind: StreamKind) -> StreamSpec {
         StreamSpec {
             kind,
-            symbol: "BTC-PERPETUAL".to_string(),
+            symbol: crate::core::types::OwnedSymbolInput::Raw("BTC-PERPETUAL".to_string()),
             account_type: AccountType::FuturesCross,
             depth: None,
             speed_ms: None,
@@ -854,7 +854,7 @@ mod tests {
         let proto = DeribitProtocol::new(AccountType::Options, false);
         let spec = StreamSpec {
             kind: StreamKind::Ticker,
-            symbol: "BTC-30MAY26-50000-C".to_string(),
+            symbol: crate::core::types::OwnedSymbolInput::Raw("BTC-30MAY26-50000-C".to_string()),
             account_type: AccountType::Options,
             depth: None,
             speed_ms: None,
@@ -879,7 +879,7 @@ mod tests {
         let proto = DeribitProtocol::new(AccountType::FuturesCross, false);
         let spec = StreamSpec {
             kind: StreamKind::Trade,
-            symbol: "ETH-PERPETUAL".to_string(),
+            symbol: crate::core::types::OwnedSymbolInput::Raw("ETH-PERPETUAL".to_string()),
             account_type: AccountType::FuturesCross,
             depth: None,
             speed_ms: None,

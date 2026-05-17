@@ -107,7 +107,7 @@ async fn test_exchange(id: ExchangeId) -> Row {
                 Some(conn) => {
                     match timeout(
                         Duration::from_secs(10),
-                        MarketData::get_ticker(&*conn, &symbol_str, AccountType::Spot),
+                        MarketData::get_ticker(&*conn, symbol_str.as_str().into(), AccountType::Spot),
                     )
                     .await
                     {

@@ -21,7 +21,7 @@ use crate::core::{
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions, AmendOrder,
 };
-use crate::core::types::SymbolInfo;
+use crate::core::types::{SymbolInfo, SymbolInput};
 use crate::core::utils::precision::PrecisionCache;
 
 use super::endpoints::{ZerodhaEndpoints, ZerodhaEndpoint, format_symbol};
@@ -258,8 +258,8 @@ impl ExchangeIdentity for ZerodhaConnector {
 
 #[async_trait]
 impl MarketData for ZerodhaConnector {
-    async fn get_price(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<Price> {
-        let symbol_key = symbol.to_string();
+    async fn get_price(&self, symbol: SymbolInput<'_>, _account_type: AccountType) -> ExchangeResult<Price> {
+        let symbol_key: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
 
         let mut params = HashMap::new();
         params.insert("i".to_string(), symbol_key.clone());
@@ -268,8 +268,8 @@ impl MarketData for ZerodhaConnector {
         ZerodhaParser::parse_ltp(&response, &symbol_key)
     }
 
-    async fn get_ticker(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<Ticker> {
-        let symbol_key = symbol.to_string();
+    async fn get_ticker(&self, symbol: SymbolInput<'_>, _account_type: AccountType) -> ExchangeResult<Ticker> {
+        let symbol_key: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
 
         let mut params = HashMap::new();
         params.insert("i".to_string(), symbol_key.clone());
@@ -280,11 +280,11 @@ impl MarketData for ZerodhaConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        let symbol_key = symbol.to_string();
+        let symbol_key: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
 
         let mut params = HashMap::new();
         params.insert("i".to_string(), symbol_key.clone());
@@ -295,7 +295,7 @@ impl MarketData for ZerodhaConnector {
 
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         _limit: Option<u16>,
         _account_type: AccountType,

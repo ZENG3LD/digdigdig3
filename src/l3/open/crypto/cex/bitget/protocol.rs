@@ -517,7 +517,7 @@ mod tests {
     fn spot_spec(kind: StreamKind) -> StreamSpec {
         StreamSpec {
             kind,
-            symbol: "BTCUSDT".to_string(),
+            symbol: crate::core::types::OwnedSymbolInput::Raw("BTCUSDT".to_string()),
             account_type: AccountType::Spot,
             depth: None,
             speed_ms: None,

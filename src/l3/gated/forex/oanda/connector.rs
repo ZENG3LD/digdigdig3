@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 
 use crate::core::{
     HttpClient, Credentials,
-    ExchangeId, ExchangeType, AccountType, Symbol,
+    ExchangeId, ExchangeType, AccountType, Symbol, SymbolInput,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, Balance, AccountInfo,
@@ -277,11 +277,11 @@ impl ExchangeIdentity for OandaConnector {
 impl MarketData for OandaConnector {
     async fn get_price(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Price> {
         let account_id = self.require_account_id()?;
-        let instrument = symbol.to_string();
+        let instrument: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
 
         let endpoint = OandaEndpoint::GetPricing(account_id.to_string());
 
@@ -294,12 +294,12 @@ impl MarketData for OandaConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
         let account_id = self.require_account_id()?;
-        let instrument = symbol.to_string();
+        let instrument: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
 
         let endpoint = OandaEndpoint::GetPricing(account_id.to_string());
 
@@ -312,13 +312,13 @@ impl MarketData for OandaConnector {
 
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let instrument = symbol.to_string();
+        let instrument: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let endpoint = OandaEndpoint::GetCandles(instrument.clone());
 
         let mut params = HashMap::new();
@@ -332,11 +332,11 @@ impl MarketData for OandaConnector {
 
     async fn get_ticker(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
         let account_id = self.require_account_id()?;
-        let instrument = symbol.to_string();
+        let instrument: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
 
         let endpoint = OandaEndpoint::GetPricing(account_id.to_string());
 

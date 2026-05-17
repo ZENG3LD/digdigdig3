@@ -10,7 +10,7 @@ use tokio::sync::RwLock;
 
 use crate::core::types::{
     AccountType, ExchangeError, ExchangeId, ExchangeResult, Kline, OrderBook, Price,
-    Ticker,
+    Ticker, SymbolInput,
 };
 use crate::core::traits::{ExchangeIdentity, MarketData};
 
@@ -404,8 +404,9 @@ impl ExchangeIdentity for IBConnector {
 
 #[async_trait]
 impl MarketData for IBConnector {
-    async fn get_price(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<Price> {
-        let conid = self.resolve_symbol(symbol).await?;
+    async fn get_price(&self, symbol: SymbolInput<'_>, _account_type: AccountType) -> ExchangeResult<Price> {
+        let sym_str: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
+        let conid = self.resolve_symbol(&sym_str).await?;
 
         // Request market data snapshot with field 31 (last price)
         let snapshot = self.get_market_data_snapshot(conid, &["31"]).await?;
@@ -415,7 +416,7 @@ impl MarketData for IBConnector {
 
     async fn get_orderbook(
         &self,
-        _symbol: &str,
+        _symbol: SymbolInput<'_>,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
@@ -427,13 +428,14 @@ impl MarketData for IBConnector {
 
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let conid = self.resolve_symbol(symbol).await?;
+        let sym_str: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
+        let conid = self.resolve_symbol(&sym_str).await?;
 
         // Map interval to IB format
         // interval could be "1m", "5m", "1h", "1d", etc.
@@ -446,16 +448,17 @@ impl MarketData for IBConnector {
 
     async fn get_ticker(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        let conid = self.resolve_symbol(symbol).await?;
+        let sym_str: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
+        let conid = self.resolve_symbol(&sym_str).await?;
 
         // Request comprehensive market data fields
         let fields = &["31", "84", "86", "70", "71", "87", "7219"];
         let snapshot = self.get_market_data_snapshot(conid, fields).await?;
 
-        IBParser::parse_ticker(&snapshot, symbol)
+        IBParser::parse_ticker(&snapshot, &sym_str)
     }
 
     async fn ping(&self) -> ExchangeResult<()> {

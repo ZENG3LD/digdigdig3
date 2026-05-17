@@ -227,7 +227,7 @@ impl MarketData for KrxConnector {
     /// Get current price
     ///
     /// Note: KRX data is delayed by 1 business day
-    async fn get_price(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<Price> {
+    async fn get_price(&self, symbol: SymbolInput<'_>, _account_type: AccountType) -> ExchangeResult<Price> {
         // Get latest OHLCV to extract current price
         let klines = self.get_klines(symbol, "1d", Some(1), AccountType::Spot, None).await?;
 
@@ -239,13 +239,14 @@ impl MarketData for KrxConnector {
     }
 
     /// Get ticker (24h stats)
-    async fn get_ticker(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<Ticker> {
+    async fn get_ticker(&self, symbol: SymbolInput<'_>, _account_type: AccountType) -> ExchangeResult<Ticker> {
         // Get latest OHLCV to construct ticker
-        let klines = self.get_klines(symbol, "1d", Some(1), AccountType::Spot, None).await?;
+        let sym_str: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
+        let klines = self.get_klines(SymbolInput::Raw(&sym_str), "1d", Some(1), AccountType::Spot, None).await?;
 
         if let Some(latest) = klines.first() {
             Ok(Ticker {
-                symbol: symbol.to_string(),
+                symbol: sym_str.clone(),
                 last_price: latest.close,
                 bid_price: None,
                 ask_price: None,
@@ -267,7 +268,7 @@ impl MarketData for KrxConnector {
     /// KRX does not provide orderbook data through public API
     async fn get_orderbook(
         &self,
-        _symbol: &str,
+        _symbol: SymbolInput<'_>,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
@@ -282,12 +283,15 @@ impl MarketData for KrxConnector {
     /// For date ranges, we must loop over each date.
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
+        let sym_str: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
+        let symbol = sym_str.as_str();
+
         // KRX only provides daily data
         if interval != "1d" && interval != "1day" {
             return Err(ExchangeError::InvalidRequest(

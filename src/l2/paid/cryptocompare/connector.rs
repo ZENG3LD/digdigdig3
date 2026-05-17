@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use crate::core::types::{
     Symbol, AccountType, Price, Ticker, Kline, OrderBook, FundingRate,
     ExchangeId, ExchangeError, ExchangeResult,
-    Order, Balance, AccountInfo, Position, SymbolInfo,
+    Order, Balance, AccountInfo, Position, SymbolInfo, SymbolInput,
     OrderRequest, CancelRequest, OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     BalanceQuery, PositionQuery, PositionModification,
 };
@@ -114,9 +114,10 @@ impl MarketData for CryptoCompareConnector {
     /// Get current price
     async fn get_price(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Price> {
+        let symbol: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let (fsym, tsym) = symbol.split_once('-')
             .or_else(|| symbol.split_once('/'))
             .or_else(|| symbol.split_once('_'))
@@ -134,9 +135,10 @@ impl MarketData for CryptoCompareConnector {
     /// Get ticker (24h stats)
     async fn get_ticker(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
+        let symbol: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let (fsym, tsym) = symbol.split_once('-')
             .or_else(|| symbol.split_once('/'))
             .or_else(|| symbol.split_once('_'))
@@ -157,7 +159,7 @@ impl MarketData for CryptoCompareConnector {
     /// Not available via REST API.
     async fn get_orderbook(
         &self,
-        _symbol: &str,
+        _symbol: SymbolInput<'_>,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
@@ -169,12 +171,13 @@ impl MarketData for CryptoCompareConnector {
     /// Get klines/candles
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
+        let symbol: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let (fsym, tsym) = symbol.split_once('-')
             .or_else(|| symbol.split_once('/'))
             .or_else(|| symbol.split_once('_'))

@@ -160,11 +160,12 @@ impl MarketData for JQuantsConnector {
     /// Get current price (using latest daily quote close price)
     async fn get_price(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Price> {
+        let symbol: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let mut params = HashMap::new();
-        params.insert("code".to_string(), symbol.to_string());
+        params.insert("code".to_string(), symbol);
 
         let response = self.get(JQuantsEndpoint::DailyQuotes, params).await?;
         JQuantsParser::parse_current_price(&response)
@@ -173,7 +174,7 @@ impl MarketData for JQuantsConnector {
     /// Get orderbook - NOT AVAILABLE (data provider only)
     async fn get_orderbook(
         &self,
-        _symbol: &str,
+        _symbol: SymbolInput<'_>,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
@@ -185,16 +186,17 @@ impl MarketData for JQuantsConnector {
     /// Get klines/candles (historical daily OHLC)
     async fn get_klines(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _interval: &str, // JQuants only has daily data on free tier
         limit: Option<u16>,
         _account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
         use chrono::{DateTime, Duration, NaiveDate, Utc};
+        let symbol: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
 
         let mut params = HashMap::new();
-        params.insert("code".to_string(), symbol.to_string());
+        params.insert("code".to_string(), symbol);
 
         // Determine the end date: use end_time if provided, otherwise today
         let end_date: NaiveDate = if let Some(end_ms) = end_time {
@@ -234,14 +236,15 @@ impl MarketData for JQuantsConnector {
     /// Get ticker (24h stats from latest daily quote)
     async fn get_ticker(
         &self,
-        symbol: &str,
+        symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
+        let symbol: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let mut params = HashMap::new();
-        params.insert("code".to_string(), symbol.to_string());
+        params.insert("code".to_string(), symbol.clone());
 
         let response = self.get(JQuantsEndpoint::DailyQuotes, params).await?;
-        JQuantsParser::parse_ticker(&response, symbol)
+        JQuantsParser::parse_ticker(&response, &symbol)
     }
 
     /// Ping - check connectivity

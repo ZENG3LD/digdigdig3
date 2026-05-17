@@ -23,7 +23,8 @@ async fn test_futu_returns_unsupported() {
     let symbol = Symbol::new("AAPL", "USD");
 
     // All methods should return UnsupportedOperation
-    let result = connector.get_price(&symbol.to_concat(), AccountType::Spot).await;
+    let sym_str = symbol.to_concat();
+    let result = connector.get_price(sym_str.as_str().into(), AccountType::Spot).await;
     assert!(result.is_err());
 
     match result {

@@ -32,7 +32,7 @@ use crate::core::websocket::{
     WsProtocol,
 };
 
-use super::endpoints::{MexcUrls, MexcWsChannels, format_symbol};
+use super::endpoints::{MexcUrls, MexcWsChannels};
 use super::parser::MexcParser;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -73,15 +73,15 @@ impl MexcProtocol {
 
     /// Build SUBSCRIPTION frame for spot (params array).
     fn spot_subscribe_frame(spec: &StreamSpec, op: &str) -> Result<Message, WebSocketError> {
-        let sym = format_symbol(&spec.symbol, spec.account_type);
+        let sym = spec.symbol.as_str();
         let params = match &spec.kind {
-            StreamKind::Ticker => vec![MexcWsChannels::mini_ticker(&sym)],
-            StreamKind::Trade | StreamKind::AggTrade => vec![MexcWsChannels::aggre_deals(&sym)],
+            StreamKind::Ticker => vec![MexcWsChannels::mini_ticker(sym)],
+            StreamKind::Trade | StreamKind::AggTrade => vec![MexcWsChannels::aggre_deals(sym)],
             StreamKind::Orderbook | StreamKind::OrderbookDelta => {
-                vec![MexcWsChannels::aggre_depth(&sym)]
+                vec![MexcWsChannels::aggre_depth(sym)]
             }
             StreamKind::Kline { interval } => {
-                vec![MexcWsChannels::kline(&sym, &mexc_spot_kline_interval(interval))]
+                vec![MexcWsChannels::kline(sym, &mexc_spot_kline_interval(interval))]
             }
             other => {
                 return Err(WebSocketError::UnsupportedOperation(format!(
@@ -103,7 +103,7 @@ impl MexcProtocol {
 
     /// Build subscribe/unsubscribe frame for futures (method per channel).
     fn futures_subscribe_frame(spec: &StreamSpec, op: &str) -> Result<Message, WebSocketError> {
-        let sym = format_symbol(&spec.symbol, spec.account_type);
+        let sym = spec.symbol.as_str();
         let method_prefix = if op == "subscribe" { "sub" } else { "unsub" };
 
         let (method, param) = match &spec.kind {
@@ -753,12 +753,11 @@ fn pb_string(data: &[u8], target_field: u32) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::types::Symbol;
 
     fn spot_spec(kind: StreamKind) -> StreamSpec {
         StreamSpec {
             kind,
-            symbol: Symbol::new("BTC", "USDT"),
+            symbol: "BTCUSDT".to_string(),
             account_type: AccountType::Spot,
             depth: None,
             speed_ms: None,
@@ -768,7 +767,7 @@ mod tests {
     fn futures_spec(kind: StreamKind) -> StreamSpec {
         StreamSpec {
             kind,
-            symbol: Symbol::new("BTC", "USDT"),
+            symbol: "BTC_USDT".to_string(),
             account_type: AccountType::FuturesCross,
             depth: None,
             speed_ms: None,

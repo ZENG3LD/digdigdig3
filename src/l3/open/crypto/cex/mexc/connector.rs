@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 
 use crate::core::{
     HttpClient, Credentials,
-    ExchangeId, ExchangeType, AccountType, Symbol,
+    ExchangeId, ExchangeType, AccountType,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, Balance, AccountInfo,
@@ -44,7 +44,7 @@ use crate::core::types::{
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, OrderbookCapabilities, WsBookChannel};
 
-use super::endpoints::{MexcUrls, MexcEndpoint, format_symbol, map_kline_interval};
+use super::endpoints::{MexcUrls, MexcEndpoint, map_kline_interval};
 use super::auth::MexcAuth;
 use super::parser::MexcParser;
 
@@ -310,11 +310,11 @@ impl MexcConnector {
     /// Cancel all orders for a symbol
     pub async fn cancel_all_orders(
         &self,
-        symbol: &Symbol,
-        account_type: AccountType,
+        symbol: &str,
+        _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(symbol, account_type));
+        params.insert("symbol".to_string(), symbol.to_string());
 
         let response = self.delete(MexcEndpoint::CancelAllOrders, params).await?;
 
@@ -402,13 +402,13 @@ impl ExchangeIdentity for MexcConnector {
 impl MarketData for MexcConnector {
     async fn get_price(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Price> {
         match account_type {
             AccountType::Spot | AccountType::Margin => {
                 let mut params = HashMap::new();
-                params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
+                params.insert("symbol".to_string(), symbol.to_string());
 
                 let response = self.get(MexcEndpoint::TickerPrice, params).await?;
 
@@ -432,14 +432,14 @@ impl MarketData for MexcConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         depth: Option<u16>,
         account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
         match account_type {
             AccountType::Spot | AccountType::Margin => {
                 let mut params = HashMap::new();
-                params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
+                params.insert("symbol".to_string(), symbol.to_string());
 
                 if let Some(d) = depth {
                     params.insert("limit".to_string(), d.to_string());
@@ -450,8 +450,7 @@ impl MarketData for MexcConnector {
             },
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
                 let base_url = MexcUrls::futures_base_url();
-                let formatted_symbol = format_symbol(&symbol, account_type);
-                let path = format!("/api/v1/contract/depth/{}", formatted_symbol);
+                let path = format!("/api/v1/contract/depth/{}", symbol);
                 let url = format!("{}{}", base_url, path);
 
                 if !self.rate_limit_wait(1, false).await {
@@ -477,7 +476,7 @@ impl MarketData for MexcConnector {
 
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         account_type: AccountType,
@@ -486,7 +485,7 @@ impl MarketData for MexcConnector {
         match account_type {
             AccountType::Spot | AccountType::Margin => {
                 let mut params = HashMap::new();
-                params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
+                params.insert("symbol".to_string(), symbol.to_string());
                 params.insert("interval".to_string(), map_kline_interval(interval).to_string());
 
                 if let Some(l) = limit {
@@ -506,8 +505,7 @@ impl MarketData for MexcConnector {
             },
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
                 let base_url = MexcUrls::futures_base_url();
-                let formatted_symbol = format_symbol(&symbol, account_type);
-                let path = format!("/api/v1/contract/kline/{}", formatted_symbol);
+                let path = format!("/api/v1/contract/kline/{}", symbol);
 
                 let futures_interval = match interval {
                     "1m" => "Min1",
@@ -560,13 +558,13 @@ impl MarketData for MexcConnector {
 
     async fn get_ticker(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
         match account_type {
             AccountType::Spot | AccountType::Margin => {
                 let mut params = HashMap::new();
-                params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
+                params.insert("symbol".to_string(), symbol.to_string());
 
                 let response = self.get(MexcEndpoint::Ticker24hr, params).await?;
                 MexcParser::parse_ticker(&response)
@@ -574,16 +572,14 @@ impl MarketData for MexcConnector {
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
                 let response = self.get(MexcEndpoint::FuturesTicker, HashMap::new()).await?;
 
-                let formatted_symbol = format_symbol(&symbol, account_type);
-
                 let data_array = response.get("data")
                     .or_else(|| response.as_array().map(|_| &response))
                     .ok_or_else(|| ExchangeError::Parse("Invalid futures ticker response".into()))?;
 
                 let ticker_data = if let Some(arr) = data_array.as_array() {
                     arr.iter()
-                        .find(|t| t["symbol"].as_str() == Some(&formatted_symbol))
-                        .ok_or_else(|| ExchangeError::Parse(format!("Symbol {} not found", formatted_symbol)))?
+                        .find(|t| t["symbol"].as_str() == Some(symbol))
+                        .ok_or_else(|| ExchangeError::Parse(format!("Symbol {} not found", symbol)))?
                 } else {
                     data_array
                 };
@@ -669,12 +665,14 @@ impl MarketData for MexcConnector {
 #[async_trait]
 impl Trading for MexcConnector {
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
-        let symbol = req.symbol.clone();
+        let symbol = &req.symbol;
         let side = req.side;
         let quantity = req.quantity;
-        let account_type = req.account_type;
+        let _account_type = req.account_type;
         let client_order_id = format!("cc_{}", crate::core::timestamp_millis());
-        let symbol_str = format_symbol(&symbol, account_type);
+        let symbol_str = symbol.raw()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("{}{}", symbol.base.to_uppercase(), symbol.quote.to_uppercase()));
         let qty_str = self.precision.qty(&symbol_str, quantity);
 
         let side_str = match side {
@@ -873,12 +871,13 @@ impl Trading for MexcConnector {
         match req.scope {
             CancelScope::Single { ref order_id } => {
                 let symbol = req.symbol.as_ref()
-                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel".into()))?
-                    .clone();
-                let account_type = req.account_type;
+                    .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for cancel".into()))?;
+                let symbol_str = symbol.raw()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| format!("{}{}", symbol.base.to_uppercase(), symbol.quote.to_uppercase()));
 
                 let mut params = HashMap::new();
-                params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
+                params.insert("symbol".to_string(), symbol_str);
                 params.insert("orderId".to_string(), order_id.to_string());
 
                 let response = self.delete(MexcEndpoint::CancelOrder, params).await?;
@@ -894,14 +893,17 @@ impl Trading for MexcConnector {
     async fn get_order_history(
         &self,
         filter: OrderHistoryFilter,
-        account_type: AccountType,
+        _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
         // MEXC: GET /api/v3/allOrders — requires symbol
         let symbol = filter.symbol
             .ok_or_else(|| ExchangeError::InvalidRequest("Symbol required for order history on MEXC".to_string()))?;
+        let symbol_str = symbol.raw()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("{}{}", symbol.base.to_uppercase(), symbol.quote.to_uppercase()));
 
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
+        params.insert("symbol".to_string(), symbol_str);
 
         if let Some(start) = filter.start_time {
             params.insert("startTime".to_string(), start.to_string());
@@ -921,17 +923,10 @@ impl Trading for MexcConnector {
         &self,
         symbol: &str,
         order_id: &str,
-        account_type: AccountType,
+        _account_type: AccountType,
     ) -> ExchangeResult<Order> {
-        let symbol_parts: Vec<&str> = symbol.split('/').collect();
-        let symbol = if symbol_parts.len() == 2 {
-            crate::core::Symbol::new(symbol_parts[0], symbol_parts[1])
-        } else {
-            crate::core::Symbol { base: symbol.to_string(), quote: String::new(), raw: Some(symbol.to_string()) }
-        };
-
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol, account_type));
+        params.insert("symbol".to_string(), symbol.to_string());
         params.insert("orderId".to_string(), order_id.to_string());
 
         let response = self.get(MexcEndpoint::QueryOrder, params).await?;
@@ -941,21 +936,12 @@ impl Trading for MexcConnector {
     async fn get_open_orders(
         &self,
         symbol: Option<&str>,
-        account_type: AccountType,
+        _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        let symbol: Option<crate::core::Symbol> = symbol.map(|s| {
-            let parts: Vec<&str> = s.split('/').collect();
-            if parts.len() == 2 {
-                crate::core::Symbol::new(parts[0], parts[1])
-            } else {
-                crate::core::Symbol { base: s.to_string(), quote: String::new(), raw: Some(s.to_string()) }
-            }
-        });
-
         let mut params = HashMap::new();
 
         if let Some(s) = symbol {
-            params.insert("symbol".to_string(), format_symbol(&s, account_type));
+            params.insert("symbol".to_string(), s.to_string());
         }
 
         let response = self.get(MexcEndpoint::OpenOrders, params).await?;
@@ -973,18 +959,8 @@ impl Trading for MexcConnector {
                 "Symbol required for get_user_trades on MEXC".to_string()
             ))?;
 
-        // Parse raw symbol string into Symbol struct for format_symbol
-        let sym = {
-            let parts: Vec<&str> = symbol_str.splitn(2, '/').collect();
-            if parts.len() == 2 {
-                crate::core::Symbol::new(parts[0], parts[1])
-            } else {
-                crate::core::Symbol { base: symbol_str.clone(), quote: String::new(), raw: Some(symbol_str.clone()) }
-            }
-        };
-
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&sym, crate::core::AccountType::Spot));
+        params.insert("symbol".to_string(), symbol_str);
 
         if let Some(oid) = filter.order_id {
             params.insert("orderId".to_string(), oid);
@@ -1111,14 +1087,7 @@ impl Account for MexcConnector {
         let mut params = HashMap::new();
 
         if let Some(sym) = symbol {
-            let symbol_parts: Vec<&str> = sym.split('/').collect();
-            let mexc_symbol = if symbol_parts.len() == 2 {
-                let s = crate::core::Symbol::new(symbol_parts[0], symbol_parts[1]);
-                format_symbol(&s, AccountType::Spot)
-            } else {
-                sym.to_uppercase().replace('/', "")
-            };
-            params.insert("symbol".to_string(), mexc_symbol);
+            params.insert("symbol".to_string(), sym.to_uppercase().replace('/', ""));
         }
 
         let response = self.get(MexcEndpoint::TradeFee, params).await?;
@@ -1216,14 +1185,16 @@ impl CancelAll for MexcConnector {
     async fn cancel_all_orders(
         &self,
         scope: CancelScope,
-        account_type: AccountType,
+        _account_type: AccountType,
     ) -> ExchangeResult<CancelAllResponse> {
         match scope {
             CancelScope::All { symbol: Some(sym) } | CancelScope::BySymbol { symbol: sym } => {
                 // MEXC requires symbol for cancel all
-                let formatted_symbol = format_symbol(&sym, account_type);
+                let sym_str = sym.raw()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| format!("{}{}", sym.base.to_uppercase(), sym.quote.to_uppercase()));
                 let mut params = HashMap::new();
-                params.insert("symbol".to_string(), formatted_symbol);
+                params.insert("symbol".to_string(), sym_str);
 
                 let response = self.delete(MexcEndpoint::CancelAllOrders, params).await?;
 
@@ -1267,7 +1238,9 @@ impl BatchOrders for MexcConnector {
         // MEXC: POST /api/v3/batchOrders — max 20 orders
         // Build batch order array
         let batch_orders: Vec<Value> = orders.iter().map(|req| {
-            let o_sym = format_symbol(&req.symbol, req.account_type);
+            let o_sym = req.symbol.raw()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("{}{}", req.symbol.base.to_uppercase(), req.symbol.quote.to_uppercase()));
             let side_str = match req.side {
                 OrderSide::Buy => "BUY",
                 OrderSide::Sell => "SELL",

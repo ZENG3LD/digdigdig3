@@ -304,7 +304,6 @@ pub fn format_symbol(base: &str, quote: &str, account_type: AccountType) -> Stri
 /// - `XXBTZUSD` → (base: "XBT", quote: "USD")
 /// - `XETHZUSD` → (base: "ETH", quote: "USD")
 /// - `PI_XBTUSD` → (base: "XBT", quote: "USD")
-#[allow(dead_code)]
 pub fn parse_response_symbol(symbol: &str) -> Option<(String, String)> {
     // Futures format: PI_XBTUSD
     if symbol.starts_with("PI_") || symbol.starts_with("PF_") {

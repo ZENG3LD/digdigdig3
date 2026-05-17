@@ -870,7 +870,7 @@ mod crypto_com {
     /// `BTC_USDT` → split on `_`. `BTCUSD-PERP` → strip suffix, split on known quotes.
     pub(super) fn from_exchange(raw: &str, _account_type: AccountType) -> Result<Symbol, NormalizerError> {
         if let Some(stripped) = raw.strip_suffix("-PERP") {
-            for q in &["USDT", "USDC", "USD"] {
+            for &q in &["USDT", "USDC", "USD"] {
                 if stripped.ends_with(q) && stripped.len() > q.len() {
                     return Ok(Symbol::new(&stripped[..stripped.len() - q.len()], q));
                 }

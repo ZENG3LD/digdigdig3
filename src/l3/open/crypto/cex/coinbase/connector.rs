@@ -64,7 +64,7 @@ use serde_json::{json, Value};
 
 use crate::core::{
     HttpClient, Credentials,
-    ExchangeId, ExchangeType, AccountType, Symbol,
+    ExchangeId, ExchangeType, AccountType,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType,Balance, AccountInfo,
@@ -454,10 +454,10 @@ impl ExchangeIdentity for CoinbaseConnector {
 impl MarketData for CoinbaseConnector {
     async fn get_price(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Price> {
-        let product_id = format_symbol(&symbol, account_type);
+        let product_id = symbol.to_string();
 
         if self.auth.is_some() {
             // Authenticated: use BestBidAsk endpoint (private)
@@ -486,10 +486,10 @@ impl MarketData for CoinbaseConnector {
 
     async fn get_ticker(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        let product_id = format_symbol(&symbol, account_type);
+        let product_id = symbol.to_string();
 
         if self.auth.is_some() {
             // Authenticated: use BestBidAsk endpoint (private)
@@ -530,7 +530,7 @@ impl MarketData for CoinbaseConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         depth: Option<u16>,
         account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
@@ -543,7 +543,7 @@ impl MarketData for CoinbaseConnector {
         }
 
         let mut params = HashMap::new();
-        params.insert("product_id".to_string(), format_symbol(&symbol, account_type));
+        params.insert("product_id".to_string(), symbol.to_string());
 
         if let Some(d) = depth {
             params.insert("limit".to_string(), d.to_string());
@@ -555,7 +555,7 @@ impl MarketData for CoinbaseConnector {
 
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         account_type: AccountType,
@@ -567,7 +567,7 @@ impl MarketData for CoinbaseConnector {
             ));
         }
 
-        let product_id = format_symbol(&symbol, account_type);
+        let product_id = symbol.to_string();
         let granularity = map_kline_interval(interval);
 
         let endpoint = CoinbaseEndpoint::Candles;
@@ -1089,24 +1089,13 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
     async fn get_open_orders(
         &self,
         symbol: Option<&str>,
-        account_type: AccountType,
+        _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        // Convert Option<&str> to Option<Symbol>
-        let symbol_str = symbol;
-        let symbol: Option<crate::core::Symbol> = symbol_str.map(|s| {
-            let parts: Vec<&str> = s.split('/').collect();
-            if parts.len() == 2 {
-                crate::core::Symbol::new(parts[0], parts[1])
-            } else {
-                crate::core::Symbol { base: s.to_string(), quote: String::new(), raw: Some(s.to_string()) }
-            }
-        });
-
         let mut params = HashMap::new();
         params.insert("order_status".to_string(), "OPEN".to_string());
 
         if let Some(s) = symbol {
-            params.insert("product_id".to_string(), format_symbol(&s, account_type));
+            params.insert("product_id".to_string(), s.to_string());
         }
 
         let query: Vec<String> = params.iter()

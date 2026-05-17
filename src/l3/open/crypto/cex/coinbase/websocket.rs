@@ -32,7 +32,7 @@ use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities,
 use crate::core::traits::WebSocketConnector;
 
 use super::auth::CoinbaseAuth;
-use super::endpoints::{CoinbaseUrls, format_symbol};
+use super::endpoints::CoinbaseUrls;
 use super::parser::CoinbaseParser;
 
 type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
@@ -364,14 +364,13 @@ impl WebSocketConnector for CoinbaseWebSocket {
         let writer = writer_guard.as_mut()
             .ok_or_else(|| WebSocketError::ConnectionError("Not connected".to_string()))?;
 
-        // Determine account type from the request
-        let account_type = if request.symbol.quote == "PERP" || request.symbol.base.ends_with("-PERP") {
-            AccountType::FuturesCross
-        } else {
-            AccountType::Spot
-        };
-
-        let product_id = format_symbol(&request.symbol, account_type);
+        // Use the raw exchange-native symbol string (e.g. "BTC-USD", "BTC-PERP").
+        // SubscriptionRequest.symbol carries the raw value set by the caller.
+        let product_id = request
+            .symbol
+            .raw()
+            .map(|r| r.to_string())
+            .unwrap_or_else(|| request.symbol.to_concat());
 
         let channel = match request.stream_type {
             StreamType::Ticker => "ticker",

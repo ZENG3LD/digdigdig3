@@ -50,12 +50,12 @@ use tokio_tungstenite::{connect_async, tungstenite::{Message, client::IntoClient
 
 use crate::core::types::{
     AccountType, ConnectionStatus, OrderbookCapabilities, StreamEvent, StreamType,
-    SubscriptionRequest, Symbol, Ticker, WebSocketError, WebSocketResult,
+    SubscriptionRequest, Ticker, WebSocketError, WebSocketResult,
 };
 use crate::core::traits::WebSocketConnector;
 
 use super::auth::MoexAuth;
-use super::endpoints::{MoexEndpoints, format_symbol};
+use super::endpoints::MoexEndpoints;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // STOMP FRAME TYPES
@@ -195,9 +195,11 @@ fn build_disconnect_frame() -> String {
 /// - `destination`: Stream name (e.g., `MXSE.securities`, `MXSE.orderbooks`)
 /// - `selector`: SQL-like filter (e.g., `TICKER="MXSE.TQBR.SBER"`)
 ///
+/// `security_id` is the raw MOEX security identifier (e.g. `"SBER"`, `"GAZP"`).
+///
 /// Returns: (destination, selector)
-fn subscription_to_destination(symbol: &Symbol, stream_type: &StreamType) -> (&'static str, String) {
-    let ticker = format_symbol(symbol);
+fn subscription_to_destination(security_id: &str, stream_type: &StreamType) -> (&'static str, String) {
+    let ticker = security_id.to_uppercase();
     // MOEX ticker format: MXSE.{BOARD}.{SECID}
     let moex_ticker = format!("MXSE.TQBR.{}", ticker);
 
@@ -223,7 +225,7 @@ fn subscription_to_destination(symbol: &Symbol, stream_type: &StreamType) -> (&'
 
 /// Generate a subscription ID from destination
 fn subscription_id(request: &SubscriptionRequest) -> String {
-    let ticker = format_symbol(&request.symbol);
+    let ticker = request.symbol.base.to_uppercase();
     let stream_name = match &request.stream_type {
         StreamType::Ticker => "ticker",
         StreamType::Trade => "trade",
@@ -843,7 +845,7 @@ impl MoexWebSocket {
             let subs = subscriptions.read().await;
             for sub in subs.iter() {
                 let sub_id = subscription_id(sub);
-                let (destination, selector) = subscription_to_destination(&sub.symbol, &sub.stream_type);
+                let (destination, selector) = subscription_to_destination(&sub.symbol.base, &sub.stream_type);
                 let frame = build_subscribe_frame(&sub_id, destination, &selector);
                 if let Err(e) = write.send(Message::Text(frame)).await {
                     if debug {
@@ -942,7 +944,7 @@ impl MoexWebSocket {
                     match cmd {
                         Some(WsCommand::Subscribe(req)) => {
                             let sub_id = subscription_id(&req);
-                            let (destination, selector) = subscription_to_destination(&req.symbol, &req.stream_type);
+                            let (destination, selector) = subscription_to_destination(&req.symbol.base, &req.stream_type);
                             let frame = build_subscribe_frame(&sub_id, destination, &selector);
 
                             if debug {
@@ -1209,6 +1211,7 @@ impl WebSocketConnector for MoexWebSocket {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::types::Symbol;
 
     #[test]
     fn test_stomp_frame_parse_connected() {

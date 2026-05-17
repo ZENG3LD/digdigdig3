@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use crate::core::types::{
     AccountType, Balance, ExchangeError, ExchangeId, ExchangeResult, Kline, Order, OrderBook,
-    Position, Price, Symbol, Ticker, AccountInfo, FundingRate, SymbolInfo,
+    Position, Price, Ticker, AccountInfo, FundingRate, SymbolInfo,
     OrderRequest, CancelRequest, OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     BalanceQuery, PositionQuery, PositionModification,
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
@@ -16,7 +16,7 @@ use crate::core::types::{
 };
 use crate::core::traits::{ExchangeIdentity, MarketData, Trading, Account, Positions};
 
-use super::endpoints::{MoexEndpoint, MoexEndpoints, format_symbol, map_interval, default_stock_params};
+use super::endpoints::{MoexEndpoint, MoexEndpoints, map_interval, default_stock_params};
 use super::auth::MoexAuth;
 use super::parser::MoexParser;
 
@@ -155,11 +155,11 @@ impl MarketData for MoexConnector {
     /// Get current price
     async fn get_price(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Price> {
         let (engine, market, board) = default_stock_params();
-        let security = format_symbol(&symbol);
+        let security = symbol.to_uppercase();
 
         let path_params = &[
             ("engine", engine),
@@ -181,12 +181,12 @@ impl MarketData for MoexConnector {
     /// Note: Requires paid subscription for real-time orderbook data
     async fn get_orderbook(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
         let (engine, market, _board) = default_stock_params();
-        let security = format_symbol(&symbol);
+        let security = symbol.to_uppercase();
 
         let path_params = &[
             ("engine", engine),
@@ -205,14 +205,14 @@ impl MarketData for MoexConnector {
     /// Get klines/candles
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
         let (engine, market, board) = default_stock_params();
-        let security = format_symbol(&symbol);
+        let security = symbol.to_uppercase();
         let moex_interval = map_interval(interval);
 
         let path_params = &[
@@ -247,11 +247,11 @@ impl MarketData for MoexConnector {
     /// Get 24h ticker
     async fn get_ticker(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
         let (engine, market, board) = default_stock_params();
-        let security = format_symbol(&symbol);
+        let security = symbol.to_uppercase();
 
         let path_params = &[
             ("engine", engine),

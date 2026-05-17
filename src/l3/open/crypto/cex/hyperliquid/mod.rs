@@ -42,6 +42,7 @@ mod auth;
 mod parser;
 mod connector;
 mod websocket;
+pub mod protocol;
 #[cfg(feature = "onchain-evm")]
 pub mod eip712;
 

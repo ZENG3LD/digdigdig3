@@ -45,7 +45,6 @@ use super::protocol::MexcProtocol;
 /// MEXC WebSocket connector backed by UniversalWsTransport.
 pub struct MexcWebSocket {
     inner: UniversalWsTransport<MexcProtocol>,
-    account_type: AccountType,
 }
 
 impl MexcWebSocket {
@@ -59,7 +58,7 @@ impl MexcWebSocket {
     ) -> ExchangeResult<Self> {
         let protocol = MexcProtocol::new(account_type);
         let inner = UniversalWsTransport::new(protocol, account_type, false, credentials);
-        Ok(Self { inner, account_type })
+        Ok(Self { inner })
     }
 
     /// Convenience constructor — public spot connection (backward compat).

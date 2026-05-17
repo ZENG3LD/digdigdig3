@@ -23,9 +23,9 @@ use super::websocket::LighterWebSocket;
 // TEST HELPERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-fn btc_usdc() -> Symbol {
-    // Lighter perpetual BTC market — quote is USDC
-    Symbol::new("BTC", "USDC")
+fn btc_coin() -> Symbol {
+    // Lighter coin name format: base="BTC", numeric market ID 1
+    Symbol::new("BTC", "")
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -82,7 +82,7 @@ async fn test_subscribe_orderbook() {
             assert_eq!(ws.connection_status(), ConnectionStatus::Connected);
 
             // Subscribe via WebSocketConnector trait — maps BTC → market_id=1 → channel order_book/1
-            let sub = SubscriptionRequest::new(btc_usdc(), StreamType::Orderbook);
+            let sub = SubscriptionRequest::new(btc_coin(), StreamType::Orderbook);
             let result = ws.subscribe(sub).await;
 
             if result.is_err() {
@@ -180,7 +180,7 @@ async fn test_subscribe_trades() {
     match connect_result {
         Ok(Ok(())) => {
             // Subscribe via WebSocketConnector trait — maps BTC → market_id=1 → channel trade/1
-            let sub = SubscriptionRequest::new(btc_usdc(), StreamType::Trade);
+            let sub = SubscriptionRequest::new(btc_coin(), StreamType::Trade);
             let result = ws.subscribe(sub).await;
 
             if result.is_err() {

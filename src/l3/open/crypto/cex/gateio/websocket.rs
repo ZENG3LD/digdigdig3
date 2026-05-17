@@ -1,928 +1,159 @@
-//! # Gate.io WebSocket Implementation
+//! GateioWebSocket — thin wrapper around UniversalWsTransport<GateIoProtocol>.
 //!
-//! WebSocket connector for Gate.io V4 API.
+//! Replaces the bespoke connect/ping/reconnect loop. The framework owns all
+//! connection lifecycle, ping scheduling (20 s Gate.io JSON ping frame),
+//! subscription replay on reconnect, and frame dispatch.
 //!
-//! ## Features
-//! - Public and private channels
-//! - Ping/pong heartbeat (every 20 seconds)
-//! - Subscription management
-//! - Message parsing to StreamEvent
-//!
-//! ## Architecture
-//!
-//! The WebSocket stream is split into independent read and write halves on connect.
-//! The write half is stored behind a mutex for shared access by `subscribe`,
-//! `unsubscribe`, and the ping task.  The read half is owned exclusively by the
-//! message loop task — no mutex contention on reads, which eliminates the
-//! "closed connection" deadlock that occurred when both the reader and the ping
-//! task held the same mutex simultaneously.
+//! Gate.io uses per-product-line WS endpoints selected by account type:
+//!   Spot → wss://api.gateio.ws/ws/v4/
+//!   Futures USDT → wss://fx-ws.gateio.ws/v4/ws/usdt
 //!
 //! ## Usage
 //!
 //! ```ignore
-//! let mut ws = GateioWebSocket::new(Some(credentials), false, AccountType::Spot).await?;
+//! let ws = GateioWebSocket::new(None, false, AccountType::Spot).await?;
 //! ws.connect(AccountType::Spot).await?;
-//! ws.subscribe_ticker(Symbol::new("BTC", "USDT")).await?;
-//!
+//! ws.subscribe(SubscriptionRequest::ticker(Symbol::new("BTC", "USDT"))).await?;
 //! let stream = ws.event_stream();
-//! while let Some(event) = stream.next().await {
-//!     match event {
-//!         Ok(StreamEvent::Ticker(ticker)) => println!("{:?}", ticker),
-//!         _ => {}
-//!     }
-//! }
 //! ```
 
-use std::collections::HashSet;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex as StdMutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures_util::{Stream, StreamExt, SinkExt, stream::{SplitSink, SplitStream}};
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use tokio::sync::{broadcast, Mutex};
-use tokio::time::sleep;
-use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream, MaybeTlsStream};
+use futures_util::Stream;
+use tokio::sync::Mutex as TokioMutex;
 
-use crate::core::{
-    Credentials, AccountType, ExchangeResult,
-    ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
-    timestamp_seconds,
+use crate::core::traits::{Credentials, WebSocketConnector};
+use crate::core::types::{
+    AccountType, ConnectionStatus, ExchangeResult,
+    OrderbookCapabilities, StreamEvent, SubscriptionRequest, WebSocketResult,
+    WsBookChannel,
 };
-use crate::core::types::{WebSocketResult, WebSocketError, OrderBookLevel, OrderbookCapabilities, WsBookChannel};
-use crate::core::traits::WebSocketConnector;
-use crate::core::utils::WeightRateLimiter;
+use crate::core::websocket::UniversalWsTransport;
+use crate::core::websocket::StreamSpec;
 
-use super::auth::GateioAuth;
-use super::endpoints::{GateioUrls, format_symbol};
-use super::parser::GateioParser;
+use super::protocol::GateIoProtocol;
 
-// Global rate limiter for WebSocket connections (100 subscriptions per second)
-// Shared across all Gate.io WebSocket instances to respect global rate limits
-static WS_RATE_LIMITER: OnceLock<Arc<StdMutex<WeightRateLimiter>>> = OnceLock::new();
+// ─────────────────────────────────────────────────────────────────────────────
+// GateioWebSocket
+// ─────────────────────────────────────────────────────────────────────────────
 
-fn get_ws_rate_limiter() -> &'static Arc<StdMutex<WeightRateLimiter>> {
-    WS_RATE_LIMITER.get_or_init(|| {
-        Arc::new(StdMutex::new(
-            WeightRateLimiter::new(100, Duration::from_secs(1))
-        ))
-    })
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// TYPE ALIASES
-// ═══════════════════════════════════════════════════════════════════════════════
-
-type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
-/// Write half — used by subscribe, unsubscribe, and ping task
-type WsSink = SplitSink<WsStream, Message>;
-/// Read half — owned exclusively by the message loop task
-type WsReader = SplitStream<WsStream>;
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// WEBSOCKET MESSAGES
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/// Outgoing message (subscribe/unsubscribe/ping)
-#[derive(Debug, Clone, Serialize)]
-struct OutgoingMessage {
-    time: i64,
-    channel: String,
-    event: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    payload: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    auth: Option<AuthData>,
-}
-
-/// Authentication data for private channels
-#[derive(Debug, Clone, Serialize)]
-struct AuthData {
-    method: String,
-    #[serde(rename = "KEY")]
-    key: String,
-    #[serde(rename = "SIGN")]
-    sign: String,
-}
-
-/// Incoming message from Gate.io
-#[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
-struct IncomingMessage {
-    time: Option<i64>,
-    time_ms: Option<i64>,
-    channel: Option<String>,
-    event: Option<String>,
-    result: Option<Value>,
-    error: Option<ErrorData>,
-}
-
-/// Error data in response
-#[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
-struct ErrorData {
-    code: Option<i32>,
-    message: Option<String>,
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// GATE.IO WEBSOCKET CONNECTOR
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/// Gate.io WebSocket connector
+/// Gate.io WebSocket connector backed by UniversalWsTransport.
+///
+/// Construct via `GateioWebSocket::new(credentials, testnet, account_type)`.
 pub struct GateioWebSocket {
-    /// Authentication (None for public channels only)
-    auth: Option<GateioAuth>,
-    /// Testnet mode
-    _testnet: bool,
-    /// Current account type (set via connect, read by subscribe/unsubscribe)
-    account_type: Arc<Mutex<AccountType>>,
-    /// Connection status
-    status: Arc<Mutex<ConnectionStatus>>,
-    /// Active subscriptions
-    subscriptions: Arc<Mutex<HashSet<SubscriptionRequest>>>,
-    /// Event broadcast sender — std::sync::Mutex so event_stream() can subscribe
-    /// without contending with the async message loop.
-    event_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
-    /// WebSocket write half — shared by subscribe, unsubscribe, and ping task.
-    /// The read half is owned exclusively by the message loop task (no mutex needed).
-    ws_writer: Arc<Mutex<Option<WsSink>>>,
-    /// Ping interval (20 seconds for Gate.io)
-    ping_interval: Duration,
-    /// Last ping time
-    last_ping: Arc<Mutex<Instant>>,
-    /// URLs
-    urls: GateioUrls,
-    /// Most recent ping round-trip time in milliseconds (0 until first pong)
-    ws_ping_rtt_ms: Arc<Mutex<u64>>,
+    inner: UniversalWsTransport<GateIoProtocol>,
+    _account_type: AccountType,
 }
 
 impl GateioWebSocket {
-    /// Create new Gate.io WebSocket connector
+    /// Create a new connector. Does NOT connect yet — call `connect()`.
+    ///
+    /// `credentials` — `None` for public streams (ticker, trade, orderbook, klines).
+    /// `testnet`     — `true` to use testnet endpoints.
+    /// `account_type`— determines product line (Spot / Futures).
     pub async fn new(
         credentials: Option<Credentials>,
         testnet: bool,
         account_type: AccountType,
     ) -> ExchangeResult<Self> {
-        let auth = if let Some(creds) = credentials {
-            Some(GateioAuth::new(&creds)?)
-        } else {
-            None
-        };
-
-        let urls = if testnet {
-            GateioUrls::TESTNET
-        } else {
-            GateioUrls::MAINNET
-        };
-
-        Ok(Self {
-            auth,
-            _testnet: testnet,
-            account_type: Arc::new(Mutex::new(account_type)),
-            status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
-            subscriptions: Arc::new(Mutex::new(HashSet::new())),
-            event_tx: Arc::new(StdMutex::new(None)),
-            ws_writer: Arc::new(Mutex::new(None)),
-            ping_interval: Duration::from_secs(20), // Gate.io requires ping every 10-30 seconds
-            last_ping: Arc::new(Mutex::new(Instant::now())),
-            urls,
-            ws_ping_rtt_ms: Arc::new(Mutex::new(0)),
-        })
-    }
-
-    /// Send a text message over the write half.
-    ///
-    /// Only locks `ws_writer` — no contention with the message loop task
-    /// which owns the read half exclusively.
-    async fn send_text(&self, text: String) -> WebSocketResult<()> {
-        let mut writer_guard = self.ws_writer.lock().await;
-        let writer = writer_guard.as_mut()
-            .ok_or_else(|| WebSocketError::ConnectionError("Not connected".to_string()))?;
-        writer.send(Message::Text(text)).await
-            .map_err(|e| WebSocketError::ConnectionError(e.to_string()))
-    }
-
-    /// Start message read loop.
-    ///
-    /// Takes ownership of `reader` (the `SplitStream` half) — no mutex is needed.
-    /// The loop exits when the WebSocket connection closes or errors.
-    fn start_message_loop(
-        mut reader: WsReader,
-        event_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
-        status: Arc<Mutex<ConnectionStatus>>,
-        account_type: AccountType,
-        last_ping: Arc<Mutex<Instant>>,
-        ws_ping_rtt_ms: Arc<Mutex<u64>>,
-    ) {
-        tokio::spawn(async move {
-            while let Some(msg) = reader.next().await {
-                match msg {
-                    Ok(Message::Text(text)) => {
-                        // Detect pong before passing to handle_message — record RTT here
-                        // (handle_message is sync and cannot await the tokio Mutex).
-                        if text.contains(".pong") {
-                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
-                                if parsed.get("channel")
-                                    .and_then(|c| c.as_str())
-                                    .map(|c| c.ends_with(".pong"))
-                                    .unwrap_or(false)
-                                {
-                                    let rtt = last_ping.lock().await.elapsed().as_millis() as u64;
-                                    *ws_ping_rtt_ms.lock().await = rtt;
-                                    // Still let handle_message consume it so it returns Ok(())
-                                }
-                            }
-                        }
-                        if let Err(e) = Self::handle_message(&text, &event_tx, account_type) {
-                            let tx_guard = event_tx.lock().unwrap();
-                            if let Some(ref tx) = *tx_guard {
-                                let _ = tx.send(Err(e));
-                            }
-                        }
-                    }
-                    Ok(Message::Close(_)) => {
-                        *status.lock().await = ConnectionStatus::Disconnected;
-                        break;
-                    }
-                    Err(e) => {
-                        let tx_guard = event_tx.lock().unwrap();
-                        if let Some(ref tx) = *tx_guard {
-                            let _ = tx.send(Err(WebSocketError::ConnectionError(e.to_string())));
-                        }
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            // Drop the broadcast sender so all BroadcastStream receivers get None
-            // from .next(). Without this, a clean close leaves the sender alive
-            // and the bridge hangs forever instead of reconnecting.
-            let _ = event_tx.lock().unwrap().take();
-            // Stream exhausted — connection closed
-            *status.lock().await = ConnectionStatus::Disconnected;
-        });
-    }
-
-    /// Handle incoming WebSocket message
-    fn handle_message(
-        text: &str,
-        event_tx: &Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
-        _account_type: AccountType,
-    ) -> WebSocketResult<()> {
-        let msg: IncomingMessage = serde_json::from_str(text)
-            .map_err(|e| WebSocketError::Parse(format!("Failed to parse message: {}", e)))?;
-
-        // Handle pong response
-        if let Some(channel) = &msg.channel {
-            if channel.ends_with(".pong") {
-                // Pong response - ignore
-                return Ok(());
-            }
-        }
-
-        // Handle subscription confirmation
-        if msg.event.as_deref() == Some("subscribe") {
-            if let Some(error) = msg.error {
-                return Err(WebSocketError::ProtocolError(
-                    error.message.unwrap_or_else(|| "Subscription failed".to_string())
-                ));
-            }
-            // Subscription successful
-            return Ok(());
-        }
-
-        // Handle data messages
-        if msg.event.as_deref() == Some("update") {
-            if let (Some(channel), Some(result)) = (&msg.channel, &msg.result) {
-                if let Some(event) = Self::parse_data_message(channel, result)? {
-                    let tx_guard = event_tx.lock().unwrap();
-                    if let Some(ref tx) = *tx_guard {
-                        let _ = tx.send(Ok(event));
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Parse data message to StreamEvent
-    fn parse_data_message(
-        channel: &str,
-        data: &Value,
-    ) -> WebSocketResult<Option<StreamEvent>> {
-        // Gate.io channels: spot.tickers, spot.trades, spot.order_book, spot.candlesticks
-        // futures.tickers, futures.trades, futures.order_book_update
-        // Private: spot.orders, spot.balances, futures.orders, futures.positions
-
-        if channel.contains(".tickers") {
-            // Ticker update
-            let ticker = GateioParser::parse_ws_ticker(data)
-                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(StreamEvent::Ticker(ticker)))
-        } else if channel.contains(".trades") {
-            // Trade update
-            let trade = GateioParser::parse_ws_trade(data)
-                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(StreamEvent::Trade(trade)))
-        } else if channel.contains(".order_book") {
-            // Orderbook update (snapshot)
-            let orderbook = Self::parse_orderbook_ws(data)
-                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(StreamEvent::OrderbookSnapshot(orderbook)))
-        } else if channel.contains(".candlesticks") {
-            // Kline or mark price kline — determined by the "n" field (symbol name).
-            // Gate.io uses "mark_BTC_USDT" prefix for mark price candles.
-            let symbol_name = data.get("n").and_then(|v| v.as_str()).unwrap_or("");
-            let kline = Self::parse_kline_ws(data)
-                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            if symbol_name.starts_with("mark_") {
-                // Emit as MarkPriceKline with the clean symbol (strip "mark_" prefix).
-                let clean_symbol = symbol_name.strip_prefix("mark_").unwrap_or(symbol_name).to_string();
-                Ok(Some(StreamEvent::MarkPriceKline {
-                    symbol: clean_symbol,
-                    interval: String::new(), // interval not in push data
-                    kline,
-                }))
-            } else if symbol_name.starts_with("premium_index_") {
-                // Premium index klines use "premium_index_CONTRACT" prefix on futures.candlesticks.
-                // Emit as PremiumIndex — closest match is IndexPriceKline.
-                let clean_symbol = symbol_name.strip_prefix("premium_index_").unwrap_or(symbol_name).to_string();
-                Ok(Some(StreamEvent::IndexPriceKline {
-                    symbol: clean_symbol,
-                    interval: String::new(),
-                    kline,
-                }))
-            } else {
-                Ok(Some(StreamEvent::Kline(kline)))
-            }
-        } else if channel.contains(".orders") {
-            // Order update
-            let event = GateioParser::parse_ws_order_update(data)
-                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(StreamEvent::OrderUpdate(event)))
-        } else if channel.contains(".balances") {
-            // Balance update
-            let event = GateioParser::parse_ws_balance_update(data)
-                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(StreamEvent::BalanceUpdate(event)))
-        } else if channel.contains(".positions") {
-            // Position update
-            let event = GateioParser::parse_ws_position_update(data)
-                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(StreamEvent::PositionUpdate(event)))
-        } else if channel.contains(".liquidates") {
-            // Futures liquidation channel: futures.liquidates
-            // Gate.io data format: { { contract, size, price, is_short, ts } }
-            let event = Self::parse_liquidation_ws(data)
-                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(event))
-        } else if channel.contains(".premium_index") {
-            // Kept for backwards compatibility — Gate.io removed this channel.
-            // Premium index klines now come via futures.candlesticks with "premium_index_" prefix.
-            let event = Self::parse_premium_index_ws(data)
-                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(event))
-        } else if channel.contains(".auto_deleverages") {
-            // Futures auto-deleverage (ADL) channel: futures.auto_deleverages
-            // An ADL is a forced position close at index price during a cascade.
-            // It is NOT a normal user liquidation but the net effect is the same:
-            // a position is closed at an involuntary price.
-            // Emitted as StreamEvent::Liquidation with a comment below noting ADL semantics.
-            //
-            // Data per event: entry_price, fill_price, position_size, trade_size,
-            // time, user, order_id, contract.
-            let event = Self::parse_auto_deleverage_ws(data)
-                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(event))
-        } else {
-            // Unknown channel - ignore
-            Ok(None)
-        }
-    }
-
-    /// Parse Gate.io `futures.premium_index` push.
-    ///
-    /// The premium index is the difference between the mark price and the spot index price,
-    /// expressed as a fraction. Gate.io pushes this as a kline-like array:
-    /// `[timestamp_sec, volume, close, high, low, open]` where the price fields are
-    /// the premium rate (e.g. 0.001143 = 0.1143%).
-    ///
-    /// Emitted as `StreamEvent::FundingRate` with `rate = close` (current premium).
-    fn parse_premium_index_ws(data: &Value) -> ExchangeResult<StreamEvent> {
-        let parse_f64 = |v: &Value| -> Option<f64> {
-            v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
-        };
-        // data may be a kline array [ts, vol, close, high, low, open]
-        // or an object {t, v, c, h, l, o, n}
-        let (symbol, rate, timestamp) = if let Some(arr) = data.as_array() {
-            let ts = arr.first().and_then(|v| v.as_i64()).unwrap_or(0) * 1000;
-            let rate = arr.get(2).and_then(|v| parse_f64(v)).unwrap_or(0.0);
-            ("".to_string(), rate, ts)
-        } else {
-            let symbol = data.get("n").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let rate = data.get("c").and_then(|v| parse_f64(v))
-                .or_else(|| data.get("close").and_then(|v| parse_f64(v)))
-                .unwrap_or(0.0);
-            let ts = data.get("t").and_then(|v| v.as_i64())
-                .map(|s| s * 1000)
-                .unwrap_or(0);
-            (symbol, rate, ts)
-        };
-        Ok(StreamEvent::FundingRate {
-            symbol,
-            rate,
-            next_funding_time: None,
-            timestamp,
-        })
-    }
-
-    /// Parse Gate.io liquidation push.
-    ///
-    /// Gate.io futures liquidation: channel `futures.liquidates`
-    /// data is an object or array of `{ contract, size, left, price, is_short, ts }`
-    fn parse_liquidation_ws(data: &Value) -> ExchangeResult<StreamEvent> {
-        use crate::core::types::TradeSide;
-        let parse_f64 = |v: &Value| -> Option<f64> {
-            v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
-        };
-        // data may be wrapped in an array
-        let item = if let Some(arr) = data.as_array() {
-            arr.first().cloned().unwrap_or(serde_json::Value::Null)
-        } else {
-            data.clone()
-        };
-        let symbol = item.get("contract").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let price = item.get("price").and_then(|v| parse_f64(v)).unwrap_or(0.0);
-        let quantity = item.get("size")
-            .and_then(|v| parse_f64(v))
-            .map(|v| v.abs())
-            .unwrap_or(0.0);
-        // is_short=true → short position was liquidated (forced buy to close)
-        let side = item.get("is_short").and_then(|v| v.as_bool())
-            .map(|is_short| if is_short { TradeSide::Buy } else { TradeSide::Sell })
-            .unwrap_or(TradeSide::Sell);
-        let timestamp = item.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
-        Ok(StreamEvent::Liquidation { symbol, side, price, quantity, value: None, timestamp })
-    }
-
-    /// Parse Gate.io `futures.auto_deleverages` push.
-    ///
-    /// Auto-deleverage (ADL): the exchange forcibly closes a profitable counterparty
-    /// position to cover an insolvent liquidated position during a cascade. This is
-    /// distinct from a normal liquidation (`futures.liquidates`) but the outcome is
-    /// an involuntary forced close, so we emit `StreamEvent::Liquidation`.
-    ///
-    /// Gate.io ADL fields: `entry_price`, `fill_price`, `position_size`,
-    /// `trade_size`, `time`, `user`, `order_id`, `contract`.
-    ///
-    /// Side is inferred from `position_size` sign (positive = long, negative = short).
-    fn parse_auto_deleverage_ws(data: &Value) -> ExchangeResult<StreamEvent> {
-        use crate::core::types::TradeSide;
-        let parse_f64 = |v: &Value| -> Option<f64> {
-            v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
-        };
-        // data may be wrapped in an array
-        let item = if let Some(arr) = data.as_array() {
-            arr.first().cloned().unwrap_or(serde_json::Value::Null)
-        } else {
-            data.clone()
-        };
-        let symbol = item.get("contract").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        // fill_price is the actual execution price; fall back to entry_price
-        let price = item.get("fill_price")
-            .and_then(|v| parse_f64(v))
-            .or_else(|| item.get("entry_price").and_then(|v| parse_f64(v)))
-            .unwrap_or(0.0);
-        // trade_size = how much was closed; fall back to position_size magnitude
-        let quantity = item.get("trade_size")
-            .and_then(|v| parse_f64(v))
-            .map(|v| v.abs())
-            .or_else(|| item.get("position_size").and_then(|v| parse_f64(v)).map(|v| v.abs()))
-            .unwrap_or(0.0);
-        // position_size sign: positive = long was deleveraged, negative = short was deleveraged
-        let position_size = item.get("position_size").and_then(|v| parse_f64(v)).unwrap_or(0.0);
-        // Auto-deleverage: exchange closes the deleveraged position.
-        // positive position_size → long position closed → forced sell → TradeSide::Sell
-        // negative position_size → short position closed → forced buy  → TradeSide::Buy
-        let side = if position_size >= 0.0 { TradeSide::Sell } else { TradeSide::Buy };
-        let timestamp = item.get("time").and_then(|v| v.as_i64()).unwrap_or(0);
-        // Note: this is an auto-deleverage (ADL), not a user liquidation.
-        // The affected party is a profitable counterparty, not an insolvent account.
-        Ok(StreamEvent::Liquidation {
-            symbol,
-            side,
-            price,
-            quantity,
-            value: None,
-            timestamp,
-        })
-    }
-
-    /// Start ping task.
-    ///
-    /// Uses only `ws_writer` — no contention with the message loop task
-    /// which owns the read half exclusively.
-    ///
-    /// The task exits naturally when the writer send fails (connection closed).
-    fn start_ping_task(
-        ws_writer: Arc<Mutex<Option<WsSink>>>,
-        ping_interval: Duration,
-        last_ping: Arc<Mutex<Instant>>,
-        account_type: AccountType,
-    ) {
-        tokio::spawn(async move {
-            loop {
-                sleep(Duration::from_millis(1000)).await;
-
-                let last = *last_ping.lock().await;
-
-                if last.elapsed() >= ping_interval {
-                    // Determine ping channel based on account type
-                    let ping_channel = match account_type {
-                        AccountType::Spot | AccountType::Margin => "spot.ping",
-                        AccountType::FuturesCross | AccountType::FuturesIsolated => "futures.ping",
-                        AccountType::Earn | AccountType::Lending | AccountType::Options | AccountType::Convert => "spot.ping",
-                    };
-
-                    let ping = json!({
-                        "time": timestamp_seconds() as i64,
-                        "channel": ping_channel
-                    });
-
-                    let msg_json = serde_json::to_string(&ping)
-                        .expect("JSON serialization should never fail for valid struct");
-
-                    let mut writer_guard = ws_writer.lock().await;
-                    if let Some(ref mut writer) = *writer_guard {
-                        if writer.send(Message::Text(msg_json)).await.is_ok() {
-                            *last_ping.lock().await = Instant::now();
-                        } else {
-                            // Connection closed — exit ping task
-                            break;
-                        }
-                    } else {
-                        break;
-                    }
-                }
-            }
-        });
-    }
-
-    /// Build channel string for subscription
-    fn build_channel(request: &SubscriptionRequest, account_type: AccountType) -> String {
-        let prefix = match account_type {
-            AccountType::Spot | AccountType::Margin => "spot",
-            AccountType::FuturesCross | AccountType::FuturesIsolated => "futures",
-            AccountType::Earn | AccountType::Lending | AccountType::Options | AccountType::Convert => "spot",
-        };
-
-        match &request.stream_type {
-            StreamType::Ticker => format!("{}.tickers", prefix),
-            StreamType::Trade => format!("{}.trades", prefix),
-            StreamType::Orderbook | StreamType::OrderbookDelta => format!("{}.order_book", prefix),
-            StreamType::Kline { .. } | StreamType::MarkPriceKline { .. } => format!("{}.candlesticks", prefix),
-            StreamType::MarkPrice => format!("{}.tickers", prefix), // Gate.io includes mark price in ticker
-            StreamType::FundingRate => format!("{}.tickers", prefix), // Gate.io includes funding rate in ticker
-            // Gate.io uses futures.candlesticks with "premium_index_CONTRACT" prefix
-            // for premium index klines (no separate futures.premium_index channel).
-            StreamType::PremiumIndexKline { .. } => format!("{}.candlesticks", prefix),
-            StreamType::Liquidation => format!("{}.liquidates", prefix), // futures.liquidates
-            StreamType::OrderUpdate => format!("{}.orders", prefix),
-            StreamType::BalanceUpdate => format!("{}.balances", prefix),
-            StreamType::PositionUpdate => format!("{}.positions", prefix),
-            _ => String::new(),
-        }
-    }
-
-    /// Build payload for subscription
-    fn build_payload(request: &SubscriptionRequest, account_type: AccountType) -> Vec<String> {
-        let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, account_type);
-
-        match &request.stream_type {
-            StreamType::Ticker => vec![symbol],
-            StreamType::Trade => vec![symbol],
-            StreamType::Orderbook | StreamType::OrderbookDelta => {
-                let depth = request.depth.unwrap_or(20).to_string();
-                let speed = request.update_speed_ms.map(|ms| format!("{}ms", ms)).unwrap_or_else(|| "1000ms".to_string());
-                vec![symbol, depth, speed]
-            }
-            StreamType::Kline { interval } => vec![interval.to_string(), symbol],
-            // Gate.io mark price candles use "mark_CONTRACT" as contract name in payload
-            // e.g. ["1m", "mark_BTC_USDT"] on channel futures.candlesticks
-            StreamType::MarkPriceKline { interval } => vec![interval.to_string(), format!("mark_{}", symbol)],
-            StreamType::MarkPrice => vec![symbol],
-            StreamType::FundingRate => vec![symbol],
-            // Gate.io PremiumIndexKline: "premium_index_CONTRACT" prefix on futures.candlesticks
-            // returns "unknown currency pair" and "futures.premium_index" channel was removed.
-            // Both verified by live probe (2026-05-15). There is no working WS channel for this.
-            // Payload uses the plain symbol so the server at least parses the message (it will
-            // still reject it with an error, which is cleaner than a bad-currency-pair error).
-            StreamType::PremiumIndexKline { interval } => vec![interval.to_string(), symbol],
-            StreamType::Liquidation => vec![symbol],
-            StreamType::OrderUpdate => vec![symbol],
-            StreamType::BalanceUpdate => vec![],
-            StreamType::PositionUpdate => vec![symbol],
-            _ => vec![],
-        }
-    }
-
-    /// Check if stream type requires private channel
-    fn is_private(stream_type: &StreamType) -> bool {
-        matches!(
-            stream_type,
-            StreamType::OrderUpdate | StreamType::BalanceUpdate | StreamType::PositionUpdate
-        )
-    }
-
-    /// Wait for WebSocket rate limit if needed
-    async fn ws_rate_limit_wait(weight: u32) {
-        loop {
-            // Scope the lock to ensure it's dropped before await
-            let wait_time = {
-                let limiter = get_ws_rate_limiter();
-                let mut guard = limiter.lock().expect("Mutex poisoned");
-                if guard.try_acquire(weight) {
-                    return; // Successfully acquired, exit early
-                }
-                guard.time_until_ready(weight)
-            }; // Lock is dropped here
-
-            if wait_time > Duration::ZERO {
-                sleep(wait_time).await;
-            }
-        }
-    }
-
-    /// Generate authentication signature for WebSocket subscription
-    fn generate_auth_signature(
-        auth: &GateioAuth,
-        channel: &str,
-        event: &str,
-        timestamp: i64,
-    ) -> ExchangeResult<(String, String)> {
-        // Gate.io WebSocket auth signature format:
-        // "channel={channel}&event={event}&time={timestamp}"
-        let sign_str = format!("channel={}&event={}&time={}", channel, event, timestamp);
-
-        let signature = auth.sign_ws(&sign_str)?;
-        let api_key = auth.api_key().to_string();
-
-        Ok((api_key, signature))
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // PARSING HELPERS
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    fn parse_orderbook_ws(data: &Value) -> ExchangeResult<crate::core::OrderBook> {
-        // Parse orderbook from WebSocket data
-        // Gate.io format: { t, lastUpdateId, s, bids: [[price, size]], asks: [[price, size]] }
-
-        let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
-            data.get(key)
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|level| {
-                            let pair = level.as_array()?;
-                            if pair.len() < 2 { return None; }
-                            let price = pair[0].as_str()?.parse::<f64>().ok()?;
-                            let size = pair[1].as_str()?.parse::<f64>().ok()?;
-                            Some(OrderBookLevel::new(price, size))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
-
-        Ok(crate::core::OrderBook {
-            timestamp: data.get("t")
-                .and_then(|t| t.as_i64())
-                .unwrap_or(0),
-            bids: parse_levels("bids"),
-            asks: parse_levels("asks"),
-            sequence: data.get("lastUpdateId")
-                .and_then(|s| s.as_i64())
-                .map(|n| n.to_string()),
-            last_update_id: None,
-            first_update_id: None,
-            prev_update_id: None,
-            event_time: None,
-            transaction_time: None,
-            checksum: None,
-        })
-    }
-
-    fn parse_kline_ws(data: &Value) -> ExchangeResult<crate::core::Kline> {
-        // Gate.io WebSocket kline format:
-        // { t: "timestamp", v: "volume", c: "close", h: "high", l: "low", o: "open", n: "symbol", a: "quote_volume" }
-
-        let open_time = data.get("t")
-            .and_then(|t| t.as_str())
-            .and_then(|s| s.parse::<i64>().ok())
-            .unwrap_or(0) * 1000; // seconds to ms
-
-        let parse_f64 = |key: &str| -> f64 {
-            data.get(key)
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok())
-                .unwrap_or(0.0)
-        };
-
-        Ok(crate::core::Kline {
-            open_time,
-            open: parse_f64("o"),
-            high: parse_f64("h"),
-            low: parse_f64("l"),
-            close: parse_f64("c"),
-            volume: parse_f64("v"),
-            quote_volume: Some(parse_f64("a")),
-            close_time: None,
-            trades: None,
-        })
+        let protocol = GateIoProtocol::new(account_type, testnet);
+        let inner = UniversalWsTransport::new(protocol, account_type, testnet, credentials);
+        Ok(Self { inner, _account_type: account_type })
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// WEBSOCKET CONNECTOR TRAIT IMPLEMENTATION
-// ═══════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
+// WebSocketConnector impl — delegates to inner transport
+// ─────────────────────────────────────────────────────────────────────────────
 
 #[async_trait]
 impl WebSocketConnector for GateioWebSocket {
-    async fn connect(&self, account_type: AccountType) -> WebSocketResult<()> {
-        *self.status.lock().await = ConnectionStatus::Connecting;
-        *self.account_type.lock().await = account_type;
-
-        // Connect WebSocket
-        let ws_url = self.urls.ws_url(account_type);
-        let (ws_stream, _) = connect_async(ws_url).await
-            .map_err(|e| WebSocketError::ConnectionError(format!("WebSocket connection failed: {}", e)))?;
-
-        // Split into independent read and write halves.
-        // The write half goes behind a mutex for shared use by subscribe/ping.
-        // The read half is passed directly to the message loop — no mutex needed.
-        let (write, read) = ws_stream.split();
-        *self.ws_writer.lock().await = Some(write);
-
-        // Create event broadcast channel
-        let (tx, _) = broadcast::channel(1000);
-        *self.event_tx.lock().unwrap() = Some(tx);
-
-        // Start message loop — reader is moved in, never shared via mutex.
-        Self::start_message_loop(
-            read,
-            self.event_tx.clone(),
-            self.status.clone(),
-            account_type,
-            self.last_ping.clone(),
-            self.ws_ping_rtt_ms.clone(),
-        );
-
-        // Start ping task — uses ws_writer only.
-        // Exits naturally when the connection drops.
-        Self::start_ping_task(
-            self.ws_writer.clone(),
-            self.ping_interval,
-            self.last_ping.clone(),
-            account_type,
-        );
-
-        *self.status.lock().await = ConnectionStatus::Connected;
-
-        Ok(())
+    async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
+        // account_type is bound at construction; ignore param for backward compat
+        self.inner.connect().await
     }
 
     async fn disconnect(&self) -> WebSocketResult<()> {
-        // Close the write half. The message loop task owns the read half and will
-        // detect the close / stream termination naturally and exit on its own.
-        // The ping task will fail on its next send attempt and also exit.
-        if let Some(mut writer) = self.ws_writer.lock().await.take() {
-            let _ = writer.close().await;
-        }
-
-        *self.status.lock().await = ConnectionStatus::Disconnected;
-        self.subscriptions.lock().await.clear();
-        Ok(())
+        self.inner.disconnect().await
     }
 
     fn connection_status(&self) -> ConnectionStatus {
-        // Use try_lock to avoid blocking
-        match self.status.try_lock() {
-            Ok(status) => *status,
-            Err(_) => ConnectionStatus::Disconnected,
-        }
+        self.inner.connection_status()
     }
 
     async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
-        // Wait for rate limit (weight 1 for subscriptions)
-        Self::ws_rate_limit_wait(1).await;
-
-        let account_type = *self.account_type.lock().await;
-        let channel = Self::build_channel(&request, account_type);
-        let payload = Self::build_payload(&request, account_type);
-        let timestamp = timestamp_seconds() as i64;
-
-        // Build message
-        let mut msg = OutgoingMessage {
-            time: timestamp,
-            channel: channel.clone(),
-            event: "subscribe".to_string(),
-            payload: if payload.is_empty() { None } else { Some(payload) },
-            auth: None,
-        };
-
-        // Add authentication for private channels
-        if Self::is_private(&request.stream_type) {
-            let auth = self.auth.as_ref()
-                .ok_or_else(|| WebSocketError::ConnectionError("Authentication required for private channels".to_string()))?;
-
-            let (api_key, signature) = Self::generate_auth_signature(auth, &channel, "subscribe", timestamp)
-                .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
-
-            msg.auth = Some(AuthData {
-                method: "api_key".to_string(),
-                key: api_key,
-                sign: signature,
-            });
-        }
-
-        let msg_json = serde_json::to_string(&msg)
-            .map_err(|e| WebSocketError::ProtocolError(e.to_string()))?;
-
-        // Send through write half — no contention with message loop read half
-        self.send_text(msg_json).await?;
-
-        self.subscriptions.lock().await.insert(request);
-
-        Ok(())
+        let spec = StreamSpec::try_from(request)?;
+        self.inner.subscribe(spec).await
     }
 
     async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
-        // Wait for rate limit (weight 1 for unsubscriptions)
-        Self::ws_rate_limit_wait(1).await;
-
-        let account_type = *self.account_type.lock().await;
-        let channel = Self::build_channel(&request, account_type);
-        let payload = Self::build_payload(&request, account_type);
-
-        let msg = OutgoingMessage {
-            time: timestamp_seconds() as i64,
-            channel,
-            event: "unsubscribe".to_string(),
-            payload: if payload.is_empty() { None } else { Some(payload) },
-            auth: None,
-        };
-
-        let msg_json = serde_json::to_string(&msg)
-            .map_err(|e| WebSocketError::ProtocolError(e.to_string()))?;
-
-        // Send through write half — no contention with message loop read half
-        self.send_text(msg_json).await?;
-
-        self.subscriptions.lock().await.remove(&request);
-
-        Ok(())
+        let spec = StreamSpec::try_from(request)?;
+        self.inner.unsubscribe(spec).await
     }
 
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        // std::sync::Mutex::lock() is instant here — no async contention.
-        let tx_guard = self.event_tx.lock().unwrap();
-
-        if let Some(ref tx) = *tx_guard {
-            let rx = tx.subscribe();
-            Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).map(|r| {
-                r.map_err(|e| WebSocketError::ConnectionError(format!("Broadcast error: {}", e)))
-                    .and_then(|x| x)
-            }))
-        } else {
-            Box::pin(futures_util::stream::empty())
-        }
+        Box::pin(self.inner.event_stream())
     }
 
     fn active_subscriptions(&self) -> Vec<SubscriptionRequest> {
-        // Use try_lock to avoid blocking
-        match self.subscriptions.try_lock() {
-            Ok(subs) => subs.iter().cloned().collect(),
-            Err(_) => Vec::new(),
-        }
+        self.inner
+            .active_subscriptions()
+            .into_iter()
+            .map(SubscriptionRequest::from)
+            .collect()
     }
 
-    fn ping_rtt_handle(&self) -> Option<Arc<Mutex<u64>>> {
-        Some(self.ws_ping_rtt_ms.clone())
+    fn ping_rtt_handle(&self) -> Option<Arc<TokioMutex<u64>>> {
+        // Framework does not expose per-pong RTT yet
+        None
     }
 
     fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
         static GATEIO_CHANNELS: &[WsBookChannel] = &[
-            WsBookChannel { name: "spot.book_ticker",       depth: Some(1),   is_snapshot: true,  update_speed_ms: Some(10),  requires_auth_tier: false },
-            WsBookChannel { name: "spot.order_book_update", depth: Some(100), is_snapshot: false, update_speed_ms: Some(100), requires_auth_tier: false },
-            WsBookChannel { name: "spot.order_book_update", depth: Some(20),  is_snapshot: false, update_speed_ms: Some(20),  requires_auth_tier: false },
-            WsBookChannel { name: "spot.order_book",        depth: Some(100), is_snapshot: true,  update_speed_ms: Some(100), requires_auth_tier: false },
-            WsBookChannel { name: "spot.obu",               depth: Some(400), is_snapshot: false, update_speed_ms: Some(100), requires_auth_tier: false },
-            WsBookChannel { name: "spot.obu",               depth: Some(50),  is_snapshot: false, update_speed_ms: Some(20),  requires_auth_tier: false },
+            WsBookChannel {
+                name: "spot.book_ticker",
+                depth: Some(1),
+                is_snapshot: true,
+                update_speed_ms: Some(10),
+                requires_auth_tier: false,
+            },
+            WsBookChannel {
+                name: "spot.order_book_update",
+                depth: Some(100),
+                is_snapshot: false,
+                update_speed_ms: Some(100),
+                requires_auth_tier: false,
+            },
+            WsBookChannel {
+                name: "spot.order_book_update",
+                depth: Some(20),
+                is_snapshot: false,
+                update_speed_ms: Some(20),
+                requires_auth_tier: false,
+            },
+            WsBookChannel {
+                name: "spot.order_book",
+                depth: Some(100),
+                is_snapshot: true,
+                update_speed_ms: Some(100),
+                requires_auth_tier: false,
+            },
+            WsBookChannel {
+                name: "spot.obu",
+                depth: Some(400),
+                is_snapshot: false,
+                update_speed_ms: Some(100),
+                requires_auth_tier: false,
+            },
+            WsBookChannel {
+                name: "spot.obu",
+                depth: Some(50),
+                is_snapshot: false,
+                update_speed_ms: Some(20),
+                requires_auth_tier: false,
+            },
         ];
         OrderbookCapabilities {
             ws_depths: &[5, 10, 20, 50, 100, 400],

@@ -8,7 +8,8 @@
 //! - `auth` - Request signing (HMAC-SHA512)
 //! - `parser` - JSON response parsing
 //! - `connector` - GateioConnector + trait implementations
-//! - `websocket` - WebSocket connection
+//! - `websocket` - WebSocket connection (UniversalWsTransport-based)
+//! - `protocol` - WsProtocol shim (GateIoProtocol)
 //!
 //! ## Usage
 //!
@@ -27,6 +28,7 @@ mod auth;
 mod parser;
 mod connector;
 mod websocket;
+pub mod protocol;
 
 pub use endpoints::{GateioEndpoint, GateioUrls};
 pub use auth::GateioAuth;

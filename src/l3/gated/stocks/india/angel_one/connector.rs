@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 
 use crate::core::{
     HttpClient,
-    ExchangeId, ExchangeType, AccountType, Symbol,
+    ExchangeId, ExchangeType, AccountType,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, Balance, AccountInfo,
@@ -450,7 +450,7 @@ impl ExchangeIdentity for AngelOneConnector {
 impl MarketData for AngelOneConnector {
     async fn get_price(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Price> {
         // Angel One requires symboltoken and exchange for quote API
@@ -458,7 +458,7 @@ impl MarketData for AngelOneConnector {
         let body = json!({
             "mode": "LTP",
             "exchangeTokens": {
-                "NSE": [format_symbol(&symbol)]
+                "NSE": [symbol]
             }
         });
 
@@ -468,7 +468,7 @@ impl MarketData for AngelOneConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
@@ -476,7 +476,7 @@ impl MarketData for AngelOneConnector {
         let body = json!({
             "mode": "FULL",
             "exchangeTokens": {
-                "NSE": [format_symbol(&symbol)]
+                "NSE": [symbol]
             }
         });
 
@@ -486,7 +486,7 @@ impl MarketData for AngelOneConnector {
 
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
@@ -499,7 +499,7 @@ impl MarketData for AngelOneConnector {
 
         let body = json!({
             "exchange": "NSE",
-            "symboltoken": format_symbol(&symbol),
+            "symboltoken": symbol,
             "interval": map_interval(interval),
             "fromdate": from_date.format("%Y-%m-%d %H:%M").to_string(),
             "todate": to_date.format("%Y-%m-%d %H:%M").to_string()
@@ -518,19 +518,19 @@ impl MarketData for AngelOneConnector {
 
     async fn get_ticker(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
         // Get FULL quote for ticker data
         let body = json!({
             "mode": "FULL",
             "exchangeTokens": {
-                "NSE": [format_symbol(&symbol)]
+                "NSE": [symbol]
             }
         });
 
         let response = self.post(AngelOneEndpoint::Quote, body).await?;
-        AngelOneParser::parse_ticker(&response, &symbol.to_string())
+        AngelOneParser::parse_ticker(&response, symbol)
     }
 
     async fn ping(&self) -> ExchangeResult<()> {

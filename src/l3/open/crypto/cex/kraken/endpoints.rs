@@ -298,47 +298,6 @@ pub fn format_symbol(base: &str, quote: &str, account_type: AccountType) -> Stri
     }
 }
 
-/// Parse response symbol to extract base and quote
-///
-/// Kraken responses use full ISO format with prefixes:
-/// - `XXBTZUSD` → (base: "XBT", quote: "USD")
-/// - `XETHZUSD` → (base: "ETH", quote: "USD")
-/// - `PI_XBTUSD` → (base: "XBT", quote: "USD")
-pub fn parse_response_symbol(symbol: &str) -> Option<(String, String)> {
-    // Futures format: PI_XBTUSD
-    if symbol.starts_with("PI_") || symbol.starts_with("PF_") {
-        let parts = symbol.split('_').nth(1)?;
-        // Simple split: assume 3-letter base
-        if parts.len() >= 6 {
-            let base = &parts[0..3];
-            let quote = &parts[3..];
-            return Some((base.to_string(), quote.to_string()));
-        }
-    }
-
-    // Spot format: XXBTZUSD, XETHZUSD
-    // Strip X prefix from crypto, Z prefix from fiat
-    let clean = symbol
-        .strip_prefix("XX")
-        .or_else(|| symbol.strip_prefix("X"))
-        .unwrap_or(symbol);
-
-    // Common pairs
-    for fiat in &["ZUSD", "ZEUR", "ZGBP", "ZJPY", "ZCAD"] {
-        if let Some(base) = clean.strip_suffix(fiat) {
-            return Some((base.to_string(), fiat.strip_prefix("Z").expect("Fiat codes start with Z").to_string()));
-        }
-    }
-
-    // Crypto pairs (e.g., XETHXXBT)
-    if clean.len() >= 6 {
-        let base = &clean[0..3];
-        let quote = &clean[3..];
-        return Some((base.to_string(), quote.to_string()));
-    }
-
-    None
-}
 
 /// Map kline interval to Kraken OHLC interval
 ///
@@ -378,22 +337,6 @@ mod tests {
         assert_eq!(
             format_symbol("ETH", "USD", AccountType::FuturesCross),
             "PI_ETHUSD"
-        );
-    }
-
-    #[test]
-    fn test_parse_response_symbol() {
-        assert_eq!(
-            parse_response_symbol("XXBTZUSD"),
-            Some(("XBT".to_string(), "USD".to_string()))
-        );
-        assert_eq!(
-            parse_response_symbol("XETHZUSD"),
-            Some(("ETH".to_string(), "USD".to_string()))
-        );
-        assert_eq!(
-            parse_response_symbol("PI_XBTUSD"),
-            Some(("XBT".to_string(), "USD".to_string()))
         );
     }
 

@@ -93,6 +93,7 @@ struct Row {
 async fn test_exchange(id: ExchangeId) -> Row {
     let hub = ExchangeHub::new();
     let symbol = Symbol::new("BTC", "USDT");
+    let symbol_str = symbol.to_concat();
 
     // ── REST: connect + ticker ───────────────────────────────────────────────
     let rest_status = match timeout(
@@ -106,7 +107,7 @@ async fn test_exchange(id: ExchangeId) -> Row {
                 Some(conn) => {
                     match timeout(
                         Duration::from_secs(10),
-                        MarketData::get_ticker(&*conn, symbol.clone(), AccountType::Spot),
+                        MarketData::get_ticker(&*conn, &symbol_str, AccountType::Spot),
                     )
                     .await
                     {

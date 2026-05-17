@@ -64,7 +64,7 @@ pub async fn test_amend_order(
     let start = Instant::now();
 
     // ── Step 1: current price ────────────────────────────────────────────────
-    let price = match connector.get_price(symbol.clone(), account_type).await {
+    let price = match connector.get_price(&symbol.to_concat(), account_type).await {
         Ok(p) => p,
         Err(err) if is_unsupported(&err) => {
             return TestResult::skip(NAME, exchange, start.elapsed().as_millis() as u64,
@@ -193,7 +193,7 @@ pub async fn test_cancel_all(
     let start = Instant::now();
 
     // ── Step 1: current price ────────────────────────────────────────────────
-    let price = match connector.get_price(symbol.clone(), account_type).await {
+    let price = match connector.get_price(&symbol.to_concat(), account_type).await {
         Ok(p) => p,
         Err(err) if is_unsupported(&err) => {
             return TestResult::skip(NAME, exchange, start.elapsed().as_millis() as u64,
@@ -306,7 +306,7 @@ pub async fn test_batch_orders(
     let start = Instant::now();
 
     // ── Step 1: current price ────────────────────────────────────────────────
-    let price = match connector.get_price(symbol.clone(), account_type).await {
+    let price = match connector.get_price(&symbol.to_concat(), account_type).await {
         Ok(p) => p,
         Err(err) if is_unsupported(&err) => {
             return TestResult::skip(NAME, exchange, start.elapsed().as_millis() as u64,

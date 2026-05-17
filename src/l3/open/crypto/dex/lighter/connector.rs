@@ -23,7 +23,7 @@ use serde_json::Value;
 
 use crate::core::{
     HttpClient, Credentials,
-    ExchangeId, AccountType, Symbol,
+    ExchangeId, AccountType,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
     Order, Balance, AccountInfo,
@@ -360,8 +360,8 @@ impl ExchangeIdentity for LighterConnector {
 
 #[async_trait]
 impl MarketData for LighterConnector {
-    async fn get_price(&self, symbol: Symbol, _account_type: AccountType) -> ExchangeResult<Price> {
-        let market_id = self.resolve_market_id(&symbol.base)?;
+    async fn get_price(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<Price> {
+        let market_id = self.resolve_market_id(symbol)?;
 
         let mut params = HashMap::new();
         params.insert("market_id".to_string(), market_id.to_string());
@@ -370,8 +370,8 @@ impl MarketData for LighterConnector {
         LighterParser::parse_price(&response)
     }
 
-    async fn get_ticker(&self, symbol: Symbol, _account_type: AccountType) -> ExchangeResult<Ticker> {
-        let market_id = self.resolve_market_id(&symbol.base)?;
+    async fn get_ticker(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<Ticker> {
+        let market_id = self.resolve_market_id(symbol)?;
 
         let mut params = HashMap::new();
         params.insert("market_id".to_string(), market_id.to_string());
@@ -380,8 +380,8 @@ impl MarketData for LighterConnector {
         LighterParser::parse_ticker(&response)
     }
 
-    async fn get_orderbook(&self, symbol: Symbol, depth: Option<u16>, _account_type: AccountType) -> ExchangeResult<OrderBook> {
-        let market_id = self.resolve_market_id(&symbol.base)?;
+    async fn get_orderbook(&self, symbol: &str, depth: Option<u16>, _account_type: AccountType) -> ExchangeResult<OrderBook> {
+        let market_id = self.resolve_market_id(symbol)?;
 
         // limit is required by the API (range 1–250); use requested depth or default 50
         let limit = depth.unwrap_or(50).min(250).max(1);
@@ -396,13 +396,13 @@ impl MarketData for LighterConnector {
 
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let market_id = self.resolve_market_id(&symbol.base)?;
+        let market_id = self.resolve_market_id(symbol)?;
 
         let bars = limit.unwrap_or(500).min(500) as u64;
 
@@ -561,7 +561,7 @@ impl Trading for LighterConnector {
     async fn get_open_orders(
         &self,
         symbol: Option<&str>,
-        account_type: AccountType,
+        _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
         let account_index = self._auth.as_ref()
             .and_then(|a| a.account_index())
@@ -588,7 +588,7 @@ impl Trading for LighterConnector {
     async fn get_order_history(
         &self,
         filter: OrderHistoryFilter,
-        account_type: AccountType,
+        _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
         let account_index = self._auth.as_ref()
             .and_then(|a| a.account_index())
@@ -631,7 +631,7 @@ impl Trading for LighterConnector {
     async fn get_user_trades(
         &self,
         filter: UserTradeFilter,
-        account_type: AccountType,
+        _account_type: AccountType,
     ) -> ExchangeResult<Vec<UserTrade>> {
         let account_index = self._auth.as_ref()
             .and_then(|a| a.account_index())
@@ -1423,11 +1423,11 @@ impl LighterConnector {
 impl MarketDataPublic for LighterConnector {
     async fn get_recent_trades(
         &self,
-        symbol: &Symbol,
+        symbol: &str,
         limit: Option<u32>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<PublicTrade>> {
-        self.get_recent_trades(&symbol.base, account_type, limit).await
+        self.get_recent_trades(symbol, account_type, limit).await
     }
 }
 

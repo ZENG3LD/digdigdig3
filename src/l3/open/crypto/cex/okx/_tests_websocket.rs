@@ -24,7 +24,7 @@ use super::websocket::OkxWebSocket;
 fn btc_usdt() -> Symbol {
     // OKX native format: "BTC-USDT". Raw string is passed via Symbol::with_raw so
     // TryFrom<SubscriptionRequest> for StreamSpec picks it up correctly.
-    Symbol::with_raw("BTC", "USDT", "BTC-USDT")
+    Symbol::with_raw("BTC", "USDT", "BTC-USDT".to_string())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

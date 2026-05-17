@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 
 use crate::core::{
     HttpClient, Credentials,
-    ExchangeId, ExchangeType, AccountType, Symbol,
+    ExchangeId, ExchangeType, AccountType,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, OrderStatus, Balance, AccountInfo,
@@ -387,10 +387,10 @@ impl ExchangeIdentity for UpstoxConnector {
 impl MarketData for UpstoxConnector {
     async fn get_price(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Price> {
-        let instrument_key = format_symbol(&symbol);
+        let instrument_key = symbol.to_string();
         let mut params = HashMap::new();
         params.insert("instrument_key".to_string(), instrument_key.clone());
 
@@ -400,11 +400,11 @@ impl MarketData for UpstoxConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        let instrument_key = format_symbol(&symbol);
+        let instrument_key = symbol.to_string();
         let mut params = HashMap::new();
         params.insert("instrument_key".to_string(), instrument_key.clone());
 
@@ -414,13 +414,13 @@ impl MarketData for UpstoxConnector {
 
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let instrument_key = format_symbol(&symbol);
+        let instrument_key = symbol.to_string();
         let (unit, interval_str) = map_kline_interval(interval)?;
 
         // Build path with parameters (V3 format)
@@ -445,10 +445,10 @@ impl MarketData for UpstoxConnector {
 
     async fn get_ticker(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        let instrument_key = format_symbol(&symbol);
+        let instrument_key = symbol.to_string();
         let mut params = HashMap::new();
         params.insert("instrument_key".to_string(), instrument_key.clone());
 
@@ -465,7 +465,7 @@ impl MarketData for UpstoxConnector {
         } else {
             // For public-only connector, try to get price of a known instrument
             self.get_price(
-                Symbol::new("INE669E01016", "NSE_EQ"),
+                "NSE_EQ|INE669E01016",
                 AccountType::Spot
             ).await?;
             Ok(())

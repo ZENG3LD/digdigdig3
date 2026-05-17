@@ -34,7 +34,7 @@ use crate::core::types::SymbolInfo;
 
 use super::endpoints::{
     TiingoUrls, TiingoEndpoint,
-    format_stock_symbol, format_crypto_symbol, format_forex_symbol,
+    format_crypto_symbol, format_forex_symbol,
     map_interval,
 };
 use super::auth::TiingoAuth;
@@ -168,18 +168,15 @@ impl MarketData for TiingoConnector {
     /// Get current price (uses IEX endpoint for stocks)
     async fn get_price(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Price> {
-        // Use stock symbol format for IEX prices
-        let ticker_symbol = format_stock_symbol(&symbol.base);
-
         let mut params = HashMap::new();
         params.insert("columns".to_string(), "close".to_string());
 
         let response = self.get(
             TiingoEndpoint::IexPrices,
-            Some(&ticker_symbol),
+            Some(symbol),
             params,
         ).await?;
 
@@ -194,7 +191,7 @@ impl MarketData for TiingoConnector {
     /// Get orderbook (NOT SUPPORTED - data provider doesn't offer orderbook)
     async fn get_orderbook(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         _limit: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
@@ -206,27 +203,20 @@ impl MarketData for TiingoConnector {
     /// Get klines/candles
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        // Use IEX intraday endpoint for stocks
-        let ticker_symbol = format_stock_symbol(&symbol.base);
         let resample_freq = map_interval(interval);
 
         let mut params = HashMap::new();
         params.insert("resampleFreq".to_string(), resample_freq.to_string());
 
-        if let Some(_lim) = limit {
-            // Tiingo doesn't have a limit parameter, but we can filter after fetching
-            // For now, we'll fetch recent data and limit client-side
-        }
-
         let response = self.get(
             TiingoEndpoint::IexPrices,
-            Some(&ticker_symbol),
+            Some(symbol),
             params,
         ).await?;
 
@@ -244,18 +234,12 @@ impl MarketData for TiingoConnector {
     /// Get 24h ticker
     async fn get_ticker(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        // Use crypto top-of-book for ticker-like data
-        // Note: For stocks, Tiingo doesn't have a direct "ticker" endpoint
-        // We'll use IEX prices to construct a basic ticker
-
-        let ticker_symbol = format_stock_symbol(&symbol.base);
-
         let response = self.get(
             TiingoEndpoint::IexPrices,
-            Some(&ticker_symbol),
+            Some(symbol),
             HashMap::new(),
         ).await?;
 
@@ -272,7 +256,7 @@ impl MarketData for TiingoConnector {
         let volume: f64 = klines.iter().map(|k| k.volume).sum();
 
         Ok(Ticker {
-            symbol: symbol.base.clone(),
+            symbol: symbol.to_string(),
             last_price: latest.close,
             bid_price: None,
             ask_price: None,

@@ -187,24 +187,6 @@ impl PolygonEndpoint {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SYMBOL FORMATTING
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/// Format symbol for Polygon API
-///
-/// # Stock Symbol Format
-/// - US stocks: Just the ticker symbol (e.g., "AAPL", "MSFT")
-/// - No base/quote separation like crypto exchanges
-///
-/// # Examples
-/// - Apple: "AAPL"
-/// - Microsoft: "MSFT"
-/// - Tesla: "TSLA"
-pub fn format_symbol(symbol: &str) -> String {
-    // Polygon uses simple ticker symbols
-    symbol.to_uppercase()
-}
 
 /// Map interval to Polygon timespan
 ///

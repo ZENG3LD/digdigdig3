@@ -178,24 +178,6 @@ impl MoexEndpoint {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SYMBOL FORMATTING
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/// Format symbol for MOEX ISS API
-///
-/// MOEX uses ticker symbols without quote currency for stocks.
-/// Examples:
-/// - Stocks: "SBER", "GAZP", "LKOH"
-/// - Indices: "IMOEX", "RTSI"
-/// - Futures: Contract codes like "SiZ5" (Silver, December 2025)
-///
-/// The Symbol type from core contains base and quote, but MOEX typically
-/// only needs the base (ticker) for stocks.
-pub fn format_symbol(symbol: &Symbol) -> String {
-    // For Russian stocks, just use the base (ticker)
-    symbol.base.to_uppercase()
-}
 
 /// Parse symbol from MOEX format back to domain Symbol
 ///

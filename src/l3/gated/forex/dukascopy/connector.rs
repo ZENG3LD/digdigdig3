@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use chrono::{Datelike, Timelike};
 
 use crate::core::{
-    ExchangeId, ExchangeType, AccountType, Symbol,
+    ExchangeId, ExchangeType, AccountType,
     ExchangeError, ExchangeResult,
     Kline, Ticker, OrderBook, FundingRate,
     Order, Balance, AccountInfo, Position,
@@ -17,7 +17,7 @@ use crate::core::{
 };
 use crate::core::traits::{ExchangeIdentity, MarketData, Trading, Account, Positions};
 
-use super::endpoints::{DukascopyUrls, build_tick_data_url, format_symbol, get_point_value};
+use super::endpoints::{DukascopyUrls, build_tick_data_url, get_point_value};
 use super::auth::DukascopyAuth;
 use super::parser::{DukascopyParser, DukascopyTick};
 
@@ -215,10 +215,10 @@ impl MarketData for DukascopyConnector {
     /// For true real-time prices, use JForex SDK or FIX API.
     async fn get_price(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<f64> {
-        let symbol_str = format_symbol(&symbol);
+        let symbol_str = symbol.to_string();
 
         // Try to find the most recent hour with data (backtrack up to 72 hours for weekends)
         let now = chrono::Utc::now();
@@ -248,10 +248,10 @@ impl MarketData for DukascopyConnector {
     /// Note: This requires downloading 24 hours of data, which may be slow.
     async fn get_ticker(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        let symbol_str = format_symbol(&symbol);
+        let symbol_str = symbol.to_string();
 
         // Try to find the most recent hour with data (backtrack up to 72 hours for weekends)
         let now = chrono::Utc::now();
@@ -281,7 +281,7 @@ impl MarketData for DukascopyConnector {
     /// Get orderbook (NOT SUPPORTED - tick data only)
     async fn get_orderbook(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
@@ -293,13 +293,13 @@ impl MarketData for DukascopyConnector {
     /// Get klines (constructed from tick data)
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let symbol_str = format_symbol(&symbol);
+        let symbol_str = symbol.to_string();
         let interval_ms = DukascopyParser::parse_interval_to_ms(interval)?;
 
         // Calculate time range based on limit

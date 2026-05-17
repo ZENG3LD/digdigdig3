@@ -204,23 +204,21 @@ impl MarketData for YahooFinanceConnector {
     /// Get current price
     async fn get_price(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Price> {
-        let yahoo_symbol = format_symbol(&symbol.base, &symbol.quote);
-        let response = self.get_quote_internal(&yahoo_symbol).await?;
+        let response = self.get_quote_internal(symbol).await?;
         YahooFinanceParser::parse_price(&response)
     }
 
     /// Get ticker (24h stats)
     async fn get_ticker(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        let yahoo_symbol = format_symbol(&symbol.base, &symbol.quote);
-        let response = self.get_quote_internal(&yahoo_symbol).await?;
-        YahooFinanceParser::parse_ticker(&response, &yahoo_symbol)
+        let response = self.get_quote_internal(symbol).await?;
+        YahooFinanceParser::parse_ticker(&response, symbol)
     }
 
     /// Get orderbook
@@ -228,7 +226,7 @@ impl MarketData for YahooFinanceConnector {
     /// Yahoo Finance does NOT provide orderbook data.
     async fn get_orderbook(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
@@ -240,13 +238,13 @@ impl MarketData for YahooFinanceConnector {
     /// Get klines/candles
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let yahoo_symbol = format_symbol(&symbol.base, &symbol.quote);
+        let yahoo_symbol = symbol;
         let yahoo_interval = map_chart_interval(interval);
 
         let mut params = HashMap::new();
@@ -274,7 +272,7 @@ impl MarketData for YahooFinanceConnector {
         let response = self
             .get(
                 YahooFinanceEndpoint::Chart,
-                Some(&yahoo_symbol),
+                Some(yahoo_symbol),
                 params,
             )
             .await?;

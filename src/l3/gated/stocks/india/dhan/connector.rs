@@ -23,7 +23,7 @@ use reqwest;
 
 use crate::core::{
     HttpClient, Credentials,
-    ExchangeId, AccountType, Symbol,
+    ExchangeId, AccountType,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, OrderStatus, Balance, AccountInfo,
@@ -254,10 +254,10 @@ impl DhanConnector {
     // ═══════════════════════════════════════════════════════════════════════════
 
     /// Get security ID from symbol (assumes symbol is already the security ID)
-    fn get_security_id(&self, symbol: &Symbol) -> String {
+    fn get_security_id(&self, symbol: &str) -> String {
         // In production, you'd look this up from instrument CSV
         // For now, assume symbol contains the security ID
-        symbol.base.clone()
+        symbol.to_string()
     }
 
     /// Get exchange segment from account type
@@ -322,8 +322,8 @@ impl ExchangeIdentity for DhanConnector {
 
 #[async_trait]
 impl MarketData for DhanConnector {
-    async fn get_price(&self, symbol: Symbol, _account_type: AccountType) -> ExchangeResult<Price> {
-        let security_id = self.get_security_id(&symbol);
+    async fn get_price(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<Price> {
+        let security_id = self.get_security_id(symbol);
         let segment = self.get_exchange_segment(_account_type);
 
         let body = json!({
@@ -336,11 +336,11 @@ impl MarketData for DhanConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        let security_id = self.get_security_id(&symbol);
+        let security_id = self.get_security_id(symbol);
         let segment = self.get_exchange_segment(_account_type);
 
         let body = json!({
@@ -353,13 +353,13 @@ impl MarketData for DhanConnector {
 
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let security_id = self.get_security_id(&symbol);
+        let security_id = self.get_security_id(symbol);
         let segment = self.get_exchange_segment(_account_type);
 
         // Calculate date range (default to last 90 days for intraday)
@@ -386,8 +386,8 @@ impl MarketData for DhanConnector {
         Ok(klines)
     }
 
-    async fn get_ticker(&self, symbol: Symbol, _account_type: AccountType) -> ExchangeResult<Ticker> {
-        let security_id = self.get_security_id(&symbol);
+    async fn get_ticker(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<Ticker> {
+        let security_id = self.get_security_id(symbol);
         let segment = self.get_exchange_segment(_account_type);
 
         let body = json!({
@@ -481,7 +481,7 @@ impl Trading for DhanConnector {
             OrderSide::Sell => "SELL",
         };
 
-        let security_id = self.get_security_id(&symbol);
+        let security_id = self.get_security_id(&symbol.base);
         let segment = self.get_exchange_segment(account_type);
         let product_type = map_product_type(account_type);
         let client_id = {

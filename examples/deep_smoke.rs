@@ -279,6 +279,7 @@ async fn run_ws_test(
 async fn test_exchange(id: ExchangeId) -> Row {
     let hub = ExchangeHub::new();
     let symbol = Symbol::new("BTC", "USDT");
+    let symbol_str = symbol.to_concat();
     let account_type = AccountType::Spot;
     let stale_ms = stale_threshold_ms();
 
@@ -289,7 +290,7 @@ async fn test_exchange(id: ExchangeId) -> Row {
                 Some(conn) => {
                     match timeout(
                         Duration::from_secs(10),
-                        MarketData::get_ticker(&*conn, symbol.clone(), account_type),
+                        MarketData::get_ticker(&*conn, &symbol_str, account_type),
                     )
                     .await
                     {
@@ -359,8 +360,10 @@ async fn test_exchange(id: ExchangeId) -> Row {
 async fn test_moex_direct() -> Row {
     let hub = ExchangeHub::new();
     let symbol_btc = Symbol::new("BTC", "USDT");
+    let symbol_btc_str = symbol_btc.to_concat();
     // MOEX trades RUB pairs — use SBER (Sberbank) as test symbol for REST
     let symbol_moex = Symbol::new("USD", "RUB");
+    let symbol_moex_str = symbol_moex.to_concat();
     let account_type = AccountType::Spot;
     let stale_ms = stale_threshold_ms();
 
@@ -372,7 +375,7 @@ async fn test_moex_direct() -> Row {
                     // Try BTC/USDT first, then USD/RUB
                     let ticker_result = timeout(
                         Duration::from_secs(10),
-                        MarketData::get_ticker(&*conn, symbol_btc.clone(), account_type),
+                        MarketData::get_ticker(&*conn, &symbol_btc_str, account_type),
                     )
                     .await;
 
@@ -381,7 +384,7 @@ async fn test_moex_direct() -> Row {
                         _ => {
                             timeout(
                                 Duration::from_secs(10),
-                                MarketData::get_ticker(&*conn, symbol_moex.clone(), account_type),
+                                MarketData::get_ticker(&*conn, &symbol_moex_str, account_type),
                             )
                             .await
                             .unwrap_or_else(|_| Err(digdigdig3::core::types::ExchangeError::Timeout("timeout".into())))

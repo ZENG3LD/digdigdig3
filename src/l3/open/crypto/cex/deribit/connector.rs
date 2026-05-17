@@ -461,11 +461,9 @@ impl MarketData for DeribitConnector {
         }
     }
 
-    async fn get_price(&self, symbol: Symbol, account_type: AccountType) -> ExchangeResult<Price> {
-        let instrument_name = Self::instrument_from_symbol(&symbol, account_type)?;
-
+    async fn get_price(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<Price> {
         let mut params = HashMap::new();
-        params.insert("instrument_name".to_string(), json!(instrument_name));
+        params.insert("instrument_name".to_string(), json!(symbol));
 
         let response = self.rpc_call(DeribitMethod::Ticker, params).await?;
         DeribitParser::parse_price(&response)
@@ -473,14 +471,12 @@ impl MarketData for DeribitConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         depth: Option<u16>,
-        account_type: AccountType,
+        _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        let instrument_name = Self::instrument_from_symbol(&symbol, account_type)?;
-
         let mut params = HashMap::new();
-        params.insert("instrument_name".to_string(), json!(instrument_name));
+        params.insert("instrument_name".to_string(), json!(symbol));
         if let Some(d) = depth {
             params.insert("depth".to_string(), json!(d));
         }
@@ -491,13 +487,13 @@ impl MarketData for DeribitConnector {
 
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
-        account_type: AccountType,
+        _account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let instrument_name = Self::instrument_from_symbol(&symbol, account_type)?;
+        let instrument_name = symbol;
 
         let (resolution, interval_ms): (&str, u64) = match interval {
             "1m"  => ("1",   60_000),
@@ -532,11 +528,9 @@ impl MarketData for DeribitConnector {
         DeribitParser::parse_klines(&response, interval_ms)
     }
 
-    async fn get_ticker(&self, symbol: Symbol, account_type: AccountType) -> ExchangeResult<Ticker> {
-        let instrument_name = Self::instrument_from_symbol(&symbol, account_type)?;
-
+    async fn get_ticker(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<Ticker> {
         let mut params = HashMap::new();
-        params.insert("instrument_name".to_string(), json!(instrument_name));
+        params.insert("instrument_name".to_string(), json!(symbol));
 
         let response = self.rpc_call(DeribitMethod::Ticker, params).await?;
         DeribitParser::parse_ticker(&response)

@@ -53,7 +53,7 @@ use std::sync::Arc;
 
 use crate::connector_manager::ConnectorPool;
 use crate::core::types::{
-    AccountType, ExchangeError, ExchangeId, ExchangeResult, Kline, OrderBook, Price, Symbol,
+    AccountType, ExchangeError, ExchangeId, ExchangeResult, Kline, OrderBook, Price,
     Ticker,
 };
 
@@ -161,7 +161,7 @@ impl ConnectorAggregator {
     pub async fn get_price(
         &self,
         id: ExchangeId,
-        symbol: Symbol,
+        symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Price> {
         let connector = self
@@ -196,7 +196,7 @@ impl ConnectorAggregator {
     pub async fn get_ticker(
         &self,
         id: ExchangeId,
-        symbol: Symbol,
+        symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
         let connector = self
@@ -233,7 +233,7 @@ impl ConnectorAggregator {
     pub async fn get_orderbook(
         &self,
         id: ExchangeId,
-        symbol: Symbol,
+        symbol: &str,
         account_type: AccountType,
         depth: Option<u16>,
     ) -> ExchangeResult<OrderBook> {
@@ -273,7 +273,7 @@ impl ConnectorAggregator {
     pub async fn get_klines(
         &self,
         id: ExchangeId,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         account_type: AccountType,
         limit: Option<u16>,
@@ -320,7 +320,7 @@ impl ConnectorAggregator {
     pub async fn get_prices_multi(
         &self,
         ids: &[ExchangeId],
-        symbol: Symbol,
+        symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<std::collections::HashMap<ExchangeId, Price>> {
         use futures_util::future::join_all;
@@ -338,12 +338,13 @@ impl ConnectorAggregator {
         }
 
         // Query all exchanges concurrently
+        let sym = symbol.to_string();
         let futures = connectors.into_iter().map(|(id, connector)| {
-            let sym = symbol.clone();
+            let sym = sym.clone();
             let acc_type = account_type;
             async move {
                 connector
-                    .get_price(sym, acc_type)
+                    .get_price(&sym, acc_type)
                     .await
                     .ok()
                     .map(|price| (id, price))
@@ -394,7 +395,7 @@ impl ConnectorAggregator {
     pub async fn get_best_bid_ask(
         &self,
         ids: &[ExchangeId],
-        symbol: Symbol,
+        symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<BestBidAsk> {
         use futures_util::future::join_all;
@@ -412,12 +413,13 @@ impl ConnectorAggregator {
         }
 
         // Query all orderbooks concurrently
+        let sym = symbol.to_string();
         let futures = connectors.into_iter().map(|(id, connector)| {
-            let sym = symbol.clone();
+            let sym = sym.clone();
             let acc_type = account_type;
             async move {
                 connector
-                    .get_orderbook(sym, Some(1), acc_type)
+                    .get_orderbook(&sym, Some(1), acc_type)
                     .await
                     .ok()
                     .map(|ob| (id, ob))
@@ -697,7 +699,7 @@ mod tests {
         let result = aggregator
             .get_price(
                 ExchangeId::Binance,
-                Symbol::new("BTC", "USDT"),
+                "BTCUSDT",
                 AccountType::Spot,
             )
             .await;
@@ -714,7 +716,7 @@ mod tests {
         let result = aggregator
             .get_ticker(
                 ExchangeId::Binance,
-                Symbol::new("BTC", "USDT"),
+                "BTCUSDT",
                 AccountType::Spot,
             )
             .await;
@@ -730,7 +732,7 @@ mod tests {
         let result = aggregator
             .get_orderbook(
                 ExchangeId::Binance,
-                Symbol::new("BTC", "USDT"),
+                "BTCUSDT",
                 AccountType::Spot,
                 Some(20),
             )
@@ -747,7 +749,7 @@ mod tests {
         let result = aggregator
             .get_klines(
                 ExchangeId::Binance,
-                Symbol::new("BTC", "USDT"),
+                "BTCUSDT",
                 "1h",
                 AccountType::Spot,
                 Some(100),
@@ -770,7 +772,7 @@ mod tests {
         let result = aggregator
             .get_prices_multi(
                 &[ExchangeId::Binance, ExchangeId::KuCoin],
-                Symbol::new("BTC", "USDT"),
+                "BTCUSDT",
                 AccountType::Spot,
             )
             .await;
@@ -785,7 +787,7 @@ mod tests {
         let aggregator = ConnectorAggregator::new(pool);
 
         let result = aggregator
-            .get_prices_multi(&[], Symbol::new("BTC", "USDT"), AccountType::Spot)
+            .get_prices_multi(&[], "BTCUSDT", AccountType::Spot)
             .await;
 
         assert!(result.is_err());
@@ -799,7 +801,7 @@ mod tests {
         let result = aggregator
             .get_best_bid_ask(
                 &[ExchangeId::Binance],
-                Symbol::new("BTC", "USDT"),
+                "BTCUSDT",
                 AccountType::Spot,
             )
             .await;

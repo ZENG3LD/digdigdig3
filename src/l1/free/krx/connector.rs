@@ -180,7 +180,7 @@ impl KrxConnector {
     /// The new API only supports single-date queries.
     async fn get_daily_data(
         &self,
-        _symbol: &Symbol,
+        _symbol: &str,
         date: &str,
         market: MarketId,
     ) -> ExchangeResult<serde_json::Value> {
@@ -227,7 +227,7 @@ impl MarketData for KrxConnector {
     /// Get current price
     ///
     /// Note: KRX data is delayed by 1 business day
-    async fn get_price(&self, symbol: Symbol, _account_type: AccountType) -> ExchangeResult<Price> {
+    async fn get_price(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<Price> {
         // Get latest OHLCV to extract current price
         let klines = self.get_klines(symbol, "1d", Some(1), AccountType::Spot, None).await?;
 
@@ -239,13 +239,13 @@ impl MarketData for KrxConnector {
     }
 
     /// Get ticker (24h stats)
-    async fn get_ticker(&self, symbol: Symbol, _account_type: AccountType) -> ExchangeResult<Ticker> {
+    async fn get_ticker(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<Ticker> {
         // Get latest OHLCV to construct ticker
-        let klines = self.get_klines(symbol.clone(), "1d", Some(1), AccountType::Spot, None).await?;
+        let klines = self.get_klines(symbol, "1d", Some(1), AccountType::Spot, None).await?;
 
         if let Some(latest) = klines.first() {
             Ok(Ticker {
-                symbol: symbol.base.clone(),
+                symbol: symbol.to_string(),
                 last_price: latest.close,
                 bid_price: None,
                 ask_price: None,
@@ -267,7 +267,7 @@ impl MarketData for KrxConnector {
     /// KRX does not provide orderbook data through public API
     async fn get_orderbook(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
@@ -282,7 +282,7 @@ impl MarketData for KrxConnector {
     /// For date ranges, we must loop over each date.
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
@@ -319,17 +319,17 @@ impl MarketData for KrxConnector {
         //   6, 7, 8, 9  → KOSPI
         // This is a best-effort heuristic; exact classification requires
         // querying the KRX base info endpoint.
-        let market = detect_market(&symbol.base);
+        let market = detect_market(symbol);
 
         // Fetch all dates and collect klines
         // Note: In production, you may want to add rate limiting and concurrency control
         let mut all_klines = Vec::new();
 
         for date in dates {
-            match self.get_daily_data(&symbol, &date, market).await {
+            match self.get_daily_data(symbol, &date, market).await {
                 Ok(response) => {
                     // Parse klines from response for this specific date and symbol
-                    match KrxParser::parse_klines(&response, &symbol.base) {
+                    match KrxParser::parse_klines(&response, symbol) {
                         Ok(mut klines) => all_klines.append(&mut klines),
                         Err(_) => continue, // Skip dates with no data
                     }

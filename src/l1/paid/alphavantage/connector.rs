@@ -122,10 +122,14 @@ impl MarketData for AlphaVantageConnector {
     /// Get current exchange rate for forex pair
     async fn get_price(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<f64> {
-        let (from, to) = format_fx_symbol(&symbol);
+        let (from, to) = symbol.split_once('-')
+            .or_else(|| symbol.split_once('/'))
+            .or_else(|| symbol.split_once('_'))
+            .map(|(b, q)| (b.to_uppercase(), q.to_uppercase()))
+            .unwrap_or_else(|| (symbol.to_uppercase(), "USD".to_string()));
 
         let mut params = HashMap::new();
         params.insert("from_currency".to_string(), from);
@@ -143,7 +147,7 @@ impl MarketData for AlphaVantageConnector {
     /// AlphaVantage doesn't provide 24h ticker statistics for forex pairs.
     async fn get_ticker(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
         Err(ExchangeError::UnsupportedOperation(
@@ -157,7 +161,7 @@ impl MarketData for AlphaVantageConnector {
     /// AlphaVantage is a data provider, not an exchange - no orderbook.
     async fn get_orderbook(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
@@ -172,13 +176,17 @@ impl MarketData for AlphaVantageConnector {
     /// Intraday intervals (1m, 5m, 15m, 30m, 60m) require premium tier.
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let (from, to) = format_fx_symbol(&symbol);
+        let (from, to) = symbol.split_once('-')
+            .or_else(|| symbol.split_once('/'))
+            .or_else(|| symbol.split_once('_'))
+            .map(|(b, q)| (b.to_uppercase(), q.to_uppercase()))
+            .unwrap_or_else(|| (symbol.to_uppercase(), "USD".to_string()));
 
         let mut params = HashMap::new();
         params.insert("from_symbol".to_string(), from);

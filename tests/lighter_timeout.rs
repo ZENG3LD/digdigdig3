@@ -23,10 +23,11 @@ async fn get_klines_does_not_block_runtime() {
         .expect("LighterConnector::public should construct without error");
 
     let symbol = Symbol::new("ETH", "USDC");
+    let symbol_str = symbol.to_concat();
 
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        connector.get_klines(symbol, "1h", Some(10), AccountType::FuturesCross, None),
+        connector.get_klines(&symbol_str, "1h", Some(10), AccountType::FuturesCross, None),
     )
     .await;
 

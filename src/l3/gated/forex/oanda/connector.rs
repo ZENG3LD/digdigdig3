@@ -277,11 +277,11 @@ impl ExchangeIdentity for OandaConnector {
 impl MarketData for OandaConnector {
     async fn get_price(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Price> {
         let account_id = self.require_account_id()?;
-        let instrument = format_symbol(&symbol.base, &symbol.quote);
+        let instrument = symbol.to_string();
 
         let endpoint = OandaEndpoint::GetPricing(account_id.to_string());
 
@@ -294,12 +294,12 @@ impl MarketData for OandaConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
         let account_id = self.require_account_id()?;
-        let instrument = format_symbol(&symbol.base, &symbol.quote);
+        let instrument = symbol.to_string();
 
         let endpoint = OandaEndpoint::GetPricing(account_id.to_string());
 
@@ -312,13 +312,13 @@ impl MarketData for OandaConnector {
 
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let instrument = format_symbol(&symbol.base, &symbol.quote);
+        let instrument = symbol.to_string();
         let endpoint = OandaEndpoint::GetCandles(instrument.clone());
 
         let mut params = HashMap::new();
@@ -332,11 +332,11 @@ impl MarketData for OandaConnector {
 
     async fn get_ticker(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
         let account_id = self.require_account_id()?;
-        let instrument = format_symbol(&symbol.base, &symbol.quote);
+        let instrument = symbol.to_string();
 
         let endpoint = OandaEndpoint::GetPricing(account_id.to_string());
 

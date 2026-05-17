@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 
 use crate::core::{
     HttpClient, Credentials,
-    ExchangeId, AccountType, Symbol,
+    ExchangeId, AccountType,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, Balance, AccountInfo,
@@ -555,29 +555,17 @@ impl ExchangeIdentity for UpbitConnector {
 
 #[async_trait]
 impl MarketData for UpbitConnector {
-    async fn get_price(&self, symbol: Symbol, account_type: AccountType) -> ExchangeResult<Price> {
-        let upbit_symbol = if let Some(raw) = symbol.raw() {
-            raw.to_string()
-        } else {
-            SymbolNormalizer::to_exchange(ExchangeId::Upbit, &symbol, account_type)
-                .unwrap_or_else(|_| format!("{}-{}", symbol.quote.to_uppercase(), symbol.base.to_uppercase()))
-        };
+    async fn get_price(&self, symbol: &str, account_type: AccountType) -> ExchangeResult<Price> {
         let mut params = HashMap::new();
-        params.insert("markets".to_string(), upbit_symbol);
+        params.insert("markets".to_string(), symbol.to_string());
 
         let response = self.get(UpbitEndpoint::Tickers, params, account_type).await?;
         UpbitParser::parse_price(&response)
     }
 
-    async fn get_orderbook(&self, symbol: Symbol, depth: Option<u16>, account_type: AccountType) -> ExchangeResult<OrderBook> {
-        let upbit_symbol = if let Some(raw) = symbol.raw() {
-            raw.to_string()
-        } else {
-            SymbolNormalizer::to_exchange(ExchangeId::Upbit, &symbol, account_type)
-                .unwrap_or_else(|_| format!("{}-{}", symbol.quote.to_uppercase(), symbol.base.to_uppercase()))
-        };
+    async fn get_orderbook(&self, symbol: &str, depth: Option<u16>, account_type: AccountType) -> ExchangeResult<OrderBook> {
         let mut params = HashMap::new();
-        params.insert("markets".to_string(), upbit_symbol);
+        params.insert("markets".to_string(), symbol.to_string());
         if let Some(n) = depth {
             let count = n.clamp(1, 30);
             params.insert("count".to_string(), count.to_string());
@@ -589,22 +577,16 @@ impl MarketData for UpbitConnector {
 
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let upbit_symbol = if let Some(raw) = symbol.raw() {
-            raw.to_string()
-        } else {
-            SymbolNormalizer::to_exchange(ExchangeId::Upbit, &symbol, account_type)
-                .unwrap_or_else(|_| format!("{}-{}", symbol.quote.to_uppercase(), symbol.base.to_uppercase()))
-        };
         let (endpoint, unit) = map_kline_interval(interval);
 
         let mut params = HashMap::new();
-        params.insert("market".to_string(), upbit_symbol);
+        params.insert("market".to_string(), symbol.to_string());
         if let Some(u) = unit {
             params.insert("unit".to_string(), u.to_string());
         }
@@ -621,15 +603,9 @@ impl MarketData for UpbitConnector {
         UpbitParser::parse_klines(&response)
     }
 
-    async fn get_ticker(&self, symbol: Symbol, account_type: AccountType) -> ExchangeResult<Ticker> {
-        let upbit_symbol = if let Some(raw) = symbol.raw() {
-            raw.to_string()
-        } else {
-            SymbolNormalizer::to_exchange(ExchangeId::Upbit, &symbol, account_type)
-                .unwrap_or_else(|_| format!("{}-{}", symbol.quote.to_uppercase(), symbol.base.to_uppercase()))
-        };
+    async fn get_ticker(&self, symbol: &str, account_type: AccountType) -> ExchangeResult<Ticker> {
         let mut params = HashMap::new();
-        params.insert("markets".to_string(), upbit_symbol);
+        params.insert("markets".to_string(), symbol.to_string());
 
         let response = self.get(UpbitEndpoint::Tickers, params, account_type).await?;
         UpbitParser::parse_ticker(&response)

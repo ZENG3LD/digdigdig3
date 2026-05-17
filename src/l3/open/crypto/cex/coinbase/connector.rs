@@ -455,7 +455,7 @@ impl MarketData for CoinbaseConnector {
     async fn get_price(
         &self,
         symbol: &str,
-        account_type: AccountType,
+        _account_type: AccountType,
     ) -> ExchangeResult<Price> {
         let product_id = symbol.to_string();
 
@@ -487,7 +487,7 @@ impl MarketData for CoinbaseConnector {
     async fn get_ticker(
         &self,
         symbol: &str,
-        account_type: AccountType,
+        _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
         let product_id = symbol.to_string();
 

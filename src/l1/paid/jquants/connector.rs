@@ -160,12 +160,11 @@ impl MarketData for JQuantsConnector {
     /// Get current price (using latest daily quote close price)
     async fn get_price(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Price> {
-        let code = format_symbol(&symbol);
         let mut params = HashMap::new();
-        params.insert("code".to_string(), code);
+        params.insert("code".to_string(), symbol.to_string());
 
         let response = self.get(JQuantsEndpoint::DailyQuotes, params).await?;
         JQuantsParser::parse_current_price(&response)
@@ -174,7 +173,7 @@ impl MarketData for JQuantsConnector {
     /// Get orderbook - NOT AVAILABLE (data provider only)
     async fn get_orderbook(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
@@ -186,7 +185,7 @@ impl MarketData for JQuantsConnector {
     /// Get klines/candles (historical daily OHLC)
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _interval: &str, // JQuants only has daily data on free tier
         limit: Option<u16>,
         _account_type: AccountType,
@@ -194,9 +193,8 @@ impl MarketData for JQuantsConnector {
     ) -> ExchangeResult<Vec<Kline>> {
         use chrono::{DateTime, Duration, NaiveDate, Utc};
 
-        let code = format_symbol(&symbol);
         let mut params = HashMap::new();
-        params.insert("code".to_string(), code);
+        params.insert("code".to_string(), symbol.to_string());
 
         // Determine the end date: use end_time if provided, otherwise today
         let end_date: NaiveDate = if let Some(end_ms) = end_time {
@@ -236,15 +234,14 @@ impl MarketData for JQuantsConnector {
     /// Get ticker (24h stats from latest daily quote)
     async fn get_ticker(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        let code = format_symbol(&symbol);
         let mut params = HashMap::new();
-        params.insert("code".to_string(), code.clone());
+        params.insert("code".to_string(), symbol.to_string());
 
         let response = self.get(JQuantsEndpoint::DailyQuotes, params).await?;
-        JQuantsParser::parse_ticker(&response, &code)
+        JQuantsParser::parse_ticker(&response, symbol)
     }
 
     /// Ping - check connectivity

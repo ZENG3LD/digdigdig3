@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 
 use crate::core::{
     HttpClient, Credentials,
-    ExchangeId, ExchangeType, AccountType, Symbol,
+    ExchangeId, ExchangeType, AccountType,
     ExchangeError, ExchangeResult,
     Price, Quantity, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, Balance, AccountInfo,

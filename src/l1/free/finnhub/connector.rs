@@ -18,7 +18,7 @@ use serde_json::Value;
 
 use crate::core::{
     HttpClient, Credentials,
-    ExchangeId, ExchangeType, AccountType, Symbol,
+    ExchangeId, ExchangeType, AccountType,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
     Order, Balance, AccountInfo, Position, FundingRate,
@@ -32,7 +32,7 @@ use crate::core::traits::{
 use crate::core::utils::WeightRateLimiter;
 use crate::core::types::SymbolInfo;
 
-use super::endpoints::{FinnhubUrls, FinnhubEndpoint, format_symbol, map_resolution};
+use super::endpoints::{FinnhubUrls, FinnhubEndpoint, map_resolution};
 use super::auth::FinnhubAuth;
 use super::parser::FinnhubParser;
 
@@ -277,14 +277,11 @@ impl MarketData for FinnhubConnector {
     /// Get current price
     async fn get_price(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Price> {
-        // Use only base symbol (ticker) for stocks
-        let ticker_symbol = format_symbol(&symbol.base);
-
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), ticker_symbol);
+        params.insert("symbol".to_string(), symbol.to_string());
 
         let response = self.get(
             FinnhubEndpoint::Quote,
@@ -297,15 +294,12 @@ impl MarketData for FinnhubConnector {
     /// Get orderbook (only best bid/ask available on premium tier)
     async fn get_orderbook(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        // Use only base symbol (ticker) for stocks
-        let ticker_symbol = format_symbol(&symbol.base);
-
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), ticker_symbol);
+        params.insert("symbol".to_string(), symbol.to_string());
 
         let response = self.get(
             FinnhubEndpoint::BidAsk,
@@ -318,14 +312,12 @@ impl MarketData for FinnhubConnector {
     /// Get klines (OHLC candles)
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        // Use only base symbol (ticker) for stocks
-        let ticker_symbol = format_symbol(&symbol.base);
         let resolution = map_resolution(interval);
 
         // Calculate date range
@@ -351,7 +343,7 @@ impl MarketData for FinnhubConnector {
         };
 
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), ticker_symbol);
+        params.insert("symbol".to_string(), symbol.to_string());
         params.insert("resolution".to_string(), resolution.to_string());
         params.insert("from".to_string(), from.to_string());
         params.insert("to".to_string(), to.to_string());
@@ -367,14 +359,11 @@ impl MarketData for FinnhubConnector {
     /// Get 24h ticker
     async fn get_ticker(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        // Use only base symbol (ticker) for stocks
-        let ticker_symbol = format_symbol(&symbol.base);
-
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), ticker_symbol.clone());
+        params.insert("symbol".to_string(), symbol.to_string());
 
         let response = self.get(
             FinnhubEndpoint::Quote,
@@ -382,7 +371,7 @@ impl MarketData for FinnhubConnector {
         ).await?;
 
         let mut ticker = FinnhubParser::parse_ticker(&response)?;
-        ticker.symbol = ticker_symbol;
+        ticker.symbol = symbol.to_string();
         Ok(ticker)
     }
 

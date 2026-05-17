@@ -3,24 +3,8 @@
 //! Tests for the `MarketData` trait: ping, price, ticker, orderbook, klines.
 
 use crate::core::traits::MarketData;
-use crate::core::types::{AccountType, Symbol};
+use crate::core::types::AccountType;
 use super::{TestResult, assert_kline_sane, assert_orderbook_sane, assert_price_sane, assert_ticker_sane, is_unsupported};
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// HELPERS
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/// Parse a `&str` symbol into a `Symbol`.
-///
-/// Tries `/`, `-`, `_` separators. Falls back to storing the whole string as
-/// `raw` so connectors that use `symbol.raw()` still work.
-fn parse_symbol(s: &str) -> Symbol {
-    if let Some(sym) = Symbol::parse(s) {
-        return sym;
-    }
-    // Unknown format — store raw string; connectors use symbol.raw() to get it.
-    Symbol::with_raw("", "", s.to_string())
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ENTRY POINT
@@ -81,7 +65,7 @@ async fn test_get_price(
     let test_name = "test_get_price";
     let duration = || start.elapsed().as_millis() as u64;
 
-    match connector.get_price(parse_symbol(symbol), account_type).await {
+    match connector.get_price(symbol, account_type).await {
         Ok(price) => match assert_price_sane(price, "get_price") {
             Ok(()) => TestResult::pass(test_name, exchange, duration()),
             Err(reason) => TestResult::fail(test_name, exchange, duration(), reason),
@@ -104,7 +88,7 @@ async fn test_get_ticker(
     let test_name = "test_get_ticker";
     let duration = || start.elapsed().as_millis() as u64;
 
-    match connector.get_ticker(parse_symbol(symbol), account_type).await {
+    match connector.get_ticker(symbol, account_type).await {
         Ok(ticker) => {
             // Assert via shared helper which covers: symbol non-empty, last_price > 0,
             // volume_24h >= 0, bid > 0 if present, ask > 0 if present.
@@ -145,7 +129,7 @@ async fn test_get_orderbook(
     let duration = || start.elapsed().as_millis() as u64;
 
     match connector
-        .get_orderbook(parse_symbol(symbol), Some(10), account_type)
+        .get_orderbook(symbol, Some(10), account_type)
         .await
     {
         Ok(ob) => {
@@ -183,7 +167,7 @@ async fn test_get_klines(
     let duration = || start.elapsed().as_millis() as u64;
 
     match connector
-        .get_klines(parse_symbol(symbol), "1h", Some(10), account_type, None)
+        .get_klines(symbol, "1h", Some(10), account_type, None)
         .await
     {
         Ok(klines) => {

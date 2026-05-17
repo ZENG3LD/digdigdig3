@@ -28,11 +28,6 @@ fn btc_usd() -> Symbol {
     Symbol::with_raw("BTC", "USD", "tBTCUSD".to_string())
 }
 
-/// Bitfinex-native symbol for ETH/USD.
-fn eth_usd() -> Symbol {
-    Symbol::with_raw("ETH", "USD", "tETHUSD".to_string())
-}
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // CAPABILITIES TEST
 // ═══════════════════════════════════════════════════════════════════════════════

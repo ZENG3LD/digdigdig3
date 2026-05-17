@@ -18,7 +18,7 @@ use serde_json::Value;
 
 use crate::core::{
     HttpClient, Credentials,
-    ExchangeId, ExchangeType, AccountType, Symbol,
+    ExchangeId, ExchangeType, AccountType,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
     Order, Balance, AccountInfo, Position, FundingRate,
@@ -32,7 +32,7 @@ use crate::core::traits::{
 use crate::core::utils::WeightRateLimiter;
 use crate::core::types::SymbolInfo;
 
-use super::endpoints::{PolygonUrls, PolygonEndpoint, format_symbol, map_timespan, extract_multiplier};
+use super::endpoints::{PolygonUrls, PolygonEndpoint, map_timespan, extract_multiplier};
 use super::auth::PolygonAuth;
 use super::parser::PolygonParser;
 
@@ -344,13 +344,10 @@ impl MarketData for PolygonConnector {
     /// Get current price
     async fn get_price(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Price> {
-        // Use only base symbol (ticker) for stocks
-        let ticker_symbol = format_symbol(&symbol.base);
-
-        let path_params = vec![("ticker", ticker_symbol)]
+        let path_params = vec![("ticker", symbol.to_string())]
             .into_iter()
             .collect();
 
@@ -379,14 +376,11 @@ impl MarketData for PolygonConnector {
     /// Get orderbook (only best bid/ask available)
     async fn get_orderbook(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        // Use only base symbol (ticker) for stocks
-        let ticker_symbol = format_symbol(&symbol.base);
-
-        let path_params = vec![("ticker", ticker_symbol)]
+        let path_params = vec![("ticker", symbol.to_string())]
             .into_iter()
             .collect();
 
@@ -402,14 +396,12 @@ impl MarketData for PolygonConnector {
     /// Get klines (OHLC aggregates)
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        // Use only base symbol (ticker) for stocks
-        let ticker_symbol = format_symbol(&symbol.base);
         let timespan = map_timespan(interval);
         let multiplier = extract_multiplier(interval);
 
@@ -418,7 +410,7 @@ impl MarketData for PolygonConnector {
         let from = to - chrono::Duration::days(30);
 
         let path_params = vec![
-            ("ticker", ticker_symbol),
+            ("ticker", symbol.to_string()),
             ("multiplier", multiplier.to_string()),
             ("timespan", timespan.to_string()),
             ("from", from.format("%Y-%m-%d").to_string()),
@@ -449,13 +441,10 @@ impl MarketData for PolygonConnector {
     /// Get 24h ticker
     async fn get_ticker(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        // Use only base symbol (ticker) for stocks
-        let ticker_symbol = format_symbol(&symbol.base);
-
-        let path_params = vec![("ticker", ticker_symbol)]
+        let path_params = vec![("ticker", symbol.to_string())]
             .into_iter()
             .collect();
 

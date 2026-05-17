@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::core::types::{
-    AccountType, ExchangeError, ExchangeId, ExchangeResult, Kline, OrderBook, Price, Symbol,
+    AccountType, ExchangeError, ExchangeId, ExchangeResult, Kline, OrderBook, Price,
     Ticker,
 };
 use crate::core::traits::{ExchangeIdentity, MarketData};
@@ -163,8 +163,8 @@ impl IBConnector {
     }
 
     /// Resolve symbol to conid (with caching)
-    async fn resolve_symbol(&self, symbol: &Symbol) -> ExchangeResult<i64> {
-        let symbol_key = symbol.to_concat();
+    async fn resolve_symbol(&self, symbol: &str) -> ExchangeResult<i64> {
+        let symbol_key = symbol.to_string();
 
         // Check cache first
         {
@@ -175,7 +175,7 @@ impl IBConnector {
         }
 
         // Search for contract
-        let contracts = self.search_contract(&symbol.base, "STK").await?;
+        let contracts = self.search_contract(symbol, "STK").await?;
 
         if contracts.is_empty() {
             return Err(ExchangeError::NotFound(format!(
@@ -404,8 +404,8 @@ impl ExchangeIdentity for IBConnector {
 
 #[async_trait]
 impl MarketData for IBConnector {
-    async fn get_price(&self, symbol: Symbol, _account_type: AccountType) -> ExchangeResult<Price> {
-        let conid = self.resolve_symbol(&symbol).await?;
+    async fn get_price(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<Price> {
+        let conid = self.resolve_symbol(symbol).await?;
 
         // Request market data snapshot with field 31 (last price)
         let snapshot = self.get_market_data_snapshot(conid, &["31"]).await?;
@@ -415,7 +415,7 @@ impl MarketData for IBConnector {
 
     async fn get_orderbook(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
@@ -427,13 +427,13 @@ impl MarketData for IBConnector {
 
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let conid = self.resolve_symbol(&symbol).await?;
+        let conid = self.resolve_symbol(symbol).await?;
 
         // Map interval to IB format
         // interval could be "1m", "5m", "1h", "1d", etc.
@@ -446,16 +446,16 @@ impl MarketData for IBConnector {
 
     async fn get_ticker(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        let conid = self.resolve_symbol(&symbol).await?;
+        let conid = self.resolve_symbol(symbol).await?;
 
         // Request comprehensive market data fields
         let fields = &["31", "84", "86", "70", "71", "87", "7219"];
         let snapshot = self.get_market_data_snapshot(conid, fields).await?;
 
-        IBParser::parse_ticker(&snapshot, &symbol.to_concat())
+        IBParser::parse_ticker(&snapshot, symbol)
     }
 
     async fn ping(&self) -> ExchangeResult<()> {

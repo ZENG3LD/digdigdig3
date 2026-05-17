@@ -48,9 +48,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── 3. REST: tickers via &dyn MarketData (vtable dispatch) ─────────
     println!("\n[3. REST: get_ticker via Arc<dyn CoreConnector>]");
     let btc = Symbol::new("BTC", "USDT");
+    let btc_str = btc.to_concat();
     for id in hub.ids() {
         if let Some(rest) = hub.rest(id) {
-            match MarketData::get_ticker(&*rest, btc.clone(), AccountType::Spot).await {
+            match MarketData::get_ticker(&*rest, &btc_str, AccountType::Spot).await {
                 Ok(t) => println!("  {:?} ticker.last = {}", id, t.last_price),
                 Err(e) => println!("  {:?} ticker err: {}", id, e),
             }
@@ -73,9 +74,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
     for (id, sym) in funding_symbols {
         if let Some(rest) = hub.rest(id) {
+            let sym_concat = sym.to_concat();
+            let sym_str = sym.raw.as_deref().unwrap_or(&sym_concat);
             match MarketDataPublic::get_funding_rate_history(
                 &*rest,
-                &sym,
+                sym_str,
                 None,
                 None,
                 Some(3),

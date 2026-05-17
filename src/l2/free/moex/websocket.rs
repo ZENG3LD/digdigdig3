@@ -1287,15 +1287,15 @@ mod tests {
     fn test_subscription_to_destination() {
         let symbol = Symbol::new("SBER", "RUB");
 
-        let (dest, selector) = subscription_to_destination(&symbol, &StreamType::Ticker);
+        let (dest, selector) = subscription_to_destination(&symbol.base, &StreamType::Ticker);
         assert_eq!(dest, "MXSE.securities");
         assert_eq!(selector, "TICKER=\"MXSE.TQBR.SBER\"");
 
-        let (dest, selector) = subscription_to_destination(&symbol, &StreamType::Trade);
+        let (dest, selector) = subscription_to_destination(&symbol.base, &StreamType::Trade);
         assert_eq!(dest, "MXSE.securities");
         assert_eq!(selector, "TICKER=\"MXSE.TQBR.SBER\"");
 
-        let (dest, selector) = subscription_to_destination(&symbol, &StreamType::Orderbook);
+        let (dest, selector) = subscription_to_destination(&symbol.base, &StreamType::Orderbook);
         assert_eq!(dest, "MXSE.orderbooks");
         assert_eq!(selector, "TICKER=\"MXSE.TQBR.SBER\"");
     }

@@ -215,27 +215,6 @@ impl UpbitEndpoint {
 // SYMBOL FORMATTING
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Форматирование символа для Upbit
-///
-/// # Upbit Symbol Format
-/// **CRITICAL**: Upbit uses **REVERSED** format: `{QUOTE}-{BASE}`
-/// - Most exchanges: `BTC-USDT` or `BTCUSDT` (BASE-QUOTE)
-/// - **Upbit**: `USDT-BTC` (QUOTE-BASE)
-///
-/// # Examples
-/// - Bitcoin in Singapore Dollar: `SGD-BTC` (not `BTC-SGD`)
-/// - Ethereum in Korean Won: `KRW-ETH` (not `ETH-KRW`)
-/// - Ripple in Thai Baht: `THB-XRP` (not `XRP-THB`)
-///
-/// # Reading the format
-/// `SGD-BTC` means: "Price of 1 BTC in SGD"
-/// - Quote currency (SGD): what you pay
-/// - Base currency (BTC): what you get
-pub fn format_symbol(base: &str, quote: &str, _account_type: AccountType) -> String {
-    // Upbit only supports Spot, no Futures
-    // Format: QUOTE-BASE (reversed from standard)
-    format!("{}-{}", quote.to_uppercase(), base.to_uppercase())
-}
 
 /// Парсинг Upbit символа в base и quote
 ///
@@ -297,15 +276,7 @@ pub fn map_kline_interval(interval: &str) -> (UpbitEndpoint, Option<u32>) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_format_symbol() {
-        // Upbit uses QUOTE-BASE format (reversed)
-        assert_eq!(format_symbol("BTC", "SGD", AccountType::Spot), "SGD-BTC");
-        assert_eq!(format_symbol("ETH", "USDT", AccountType::Spot), "USDT-ETH");
-        assert_eq!(format_symbol("xrp", "krw", AccountType::Spot), "KRW-XRP");
-    }
-
-    #[test]
+#[test]
     fn test_parse_symbol() {
         let (base, quote) = parse_symbol("SGD-BTC").unwrap();
         assert_eq!(base, "BTC");

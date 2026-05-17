@@ -202,11 +202,11 @@ impl ExchangeIdentity for TwelvedataConnector {
 impl MarketData for TwelvedataConnector {
     async fn get_price(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Price> {
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol));
+        params.insert("symbol".to_string(), symbol.to_string());
 
         let response = self.get(TwelvedataEndpoint::Price, params).await?;
         TwelvedataParser::parse_price(&response)
@@ -214,7 +214,7 @@ impl MarketData for TwelvedataConnector {
 
     async fn get_orderbook(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
@@ -226,14 +226,14 @@ impl MarketData for TwelvedataConnector {
 
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol));
+        params.insert("symbol".to_string(), symbol.to_string());
         params.insert("interval".to_string(), map_interval(interval).to_string());
 
         if let Some(outputsize) = limit {
@@ -246,21 +246,20 @@ impl MarketData for TwelvedataConnector {
 
     async fn get_ticker(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol));
+        params.insert("symbol".to_string(), symbol.to_string());
 
         let response = self.get(TwelvedataEndpoint::Quote, params).await?;
-        TwelvedataParser::parse_ticker(&response, &symbol.to_string())
+        TwelvedataParser::parse_ticker(&response, symbol)
     }
 
     async fn ping(&self) -> ExchangeResult<()> {
         // Test connection with a simple price request for a known symbol
-        let symbol = Symbol::new("AAPL", "USD");
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), format_symbol(&symbol));
+        params.insert("symbol".to_string(), "AAPL".to_string());
 
         self.get(TwelvedataEndpoint::Price, params).await?;
         Ok(())

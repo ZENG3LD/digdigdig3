@@ -114,10 +114,14 @@ impl MarketData for CryptoCompareConnector {
     /// Get current price
     async fn get_price(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Price> {
-        let (fsym, tsym) = format_symbol(&symbol);
+        let (fsym, tsym) = symbol.split_once('-')
+            .or_else(|| symbol.split_once('/'))
+            .or_else(|| symbol.split_once('_'))
+            .map(|(b, q)| (b.to_uppercase(), q.to_uppercase()))
+            .unwrap_or_else(|| (symbol.to_uppercase(), "USD".to_string()));
 
         let mut params = HashMap::new();
         params.insert("fsym".to_string(), fsym);
@@ -130,10 +134,14 @@ impl MarketData for CryptoCompareConnector {
     /// Get ticker (24h stats)
     async fn get_ticker(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        let (fsym, tsym) = format_symbol(&symbol);
+        let (fsym, tsym) = symbol.split_once('-')
+            .or_else(|| symbol.split_once('/'))
+            .or_else(|| symbol.split_once('_'))
+            .map(|(b, q)| (b.to_uppercase(), q.to_uppercase()))
+            .unwrap_or_else(|| (symbol.to_uppercase(), "USD".to_string()));
 
         let mut params = HashMap::new();
         params.insert("fsyms".to_string(), fsym.clone());
@@ -149,7 +157,7 @@ impl MarketData for CryptoCompareConnector {
     /// Not available via REST API.
     async fn get_orderbook(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
@@ -161,13 +169,17 @@ impl MarketData for CryptoCompareConnector {
     /// Get klines/candles
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let (fsym, tsym) = format_symbol(&symbol);
+        let (fsym, tsym) = symbol.split_once('-')
+            .or_else(|| symbol.split_once('/'))
+            .or_else(|| symbol.split_once('_'))
+            .map(|(b, q)| (b.to_uppercase(), q.to_uppercase()))
+            .unwrap_or_else(|| (symbol.to_uppercase(), "USD".to_string()));
         let (endpoint, aggregate) = map_interval_aggregate(interval);
 
         let mut params = HashMap::new();

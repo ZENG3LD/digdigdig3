@@ -312,10 +312,10 @@ impl MarketData for TinkoffConnector {
     /// Get current price using GetLastPrices
     async fn get_price(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
-    ) -> ExchangeResult<f64> {
-        let ticker = format_ticker(&symbol);
+    ) -> ExchangeResult<Price> {
+        let ticker = symbol.to_string();
         let figi = self.get_figi_by_ticker(&ticker).await?;
 
         let body = serde_json::json!({
@@ -332,10 +332,10 @@ impl MarketData for TinkoffConnector {
     /// We use order book data to construct a basic ticker.
     async fn get_ticker(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        let ticker = format_ticker(&symbol);
+        let ticker = symbol.to_string();
         let figi = self.get_figi_by_ticker(&ticker).await?;
 
         let body = serde_json::json!({
@@ -350,11 +350,11 @@ impl MarketData for TinkoffConnector {
     /// Get orderbook using GetOrderBook
     async fn get_orderbook(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        let ticker = format_ticker(&symbol);
+        let ticker = symbol.to_string();
         let figi = self.get_figi_by_ticker(&ticker).await?;
 
         // Tinkoff supports depths: 1, 10, 20, 30, 40, 50
@@ -379,13 +379,13 @@ impl MarketData for TinkoffConnector {
     /// Get klines/candles using GetCandles
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let ticker = format_ticker(&symbol);
+        let ticker = symbol.to_string();
         let figi = self.get_figi_by_ticker(&ticker).await?;
 
         let limit_value = limit.unwrap_or(100).min(2500); // Max 2500 candles

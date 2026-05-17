@@ -94,18 +94,6 @@ impl JQuantsEndpoint {
     }
 }
 
-/// Format symbol for JQuants API
-///
-/// JQuants expects stock codes (4 or 5 digits), not base-quote pairs.
-/// For Japanese stocks, we use the base as the stock code.
-///
-/// Examples:
-/// - Symbol { base: "7203", quote: "JPY" } → "7203" (Toyota)
-/// - Symbol { base: "6758", quote: "JPY" } → "6758" (Sony)
-pub fn format_symbol(symbol: &Symbol) -> String {
-    // For Japanese stocks, the "base" is the stock code
-    symbol.base.clone()
-}
 
 /// Parse symbol from API format back to domain Symbol
 ///
@@ -122,17 +110,7 @@ pub fn _parse_symbol(code: &str) -> Symbol {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_format_symbol() {
-        let symbol = Symbol {
-            base: "7203".to_string(),
-            quote: "JPY".to_string(),
-            raw: None,
-        };
-        assert_eq!(format_symbol(&symbol), "7203");
-    }
-
-    #[test]
+#[test]
     fn test_parse_symbol() {
         let symbol = _parse_symbol("6758");
         assert_eq!(symbol.base, "6758");

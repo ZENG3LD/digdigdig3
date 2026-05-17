@@ -3,7 +3,6 @@
 //! AlphaVantage uses a function-based API where all requests go to the same base URL
 //! with different `function` parameter values.
 
-use crate::core::types::Symbol;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // BASE URLs
@@ -101,24 +100,6 @@ impl AlphaVantageFunction {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SYMBOL FORMATTING
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/// Format forex symbol for AlphaVantage API
-///
-/// AlphaVantage uses separate `from_symbol` and `to_symbol` parameters for forex.
-///
-/// # Examples
-/// ```ignore
-/// let symbol = Symbol::new("EUR", "USD");
-/// let (from, to) = format_fx_symbol(&symbol);
-/// assert_eq!(from, "EUR");
-/// assert_eq!(to, "USD");
-/// ```
-pub fn format_fx_symbol(symbol: &Symbol) -> (String, String) {
-    (symbol.base.to_uppercase(), symbol.quote.to_uppercase())
-}
 
 /// Map interval string to AlphaVantage interval format
 ///

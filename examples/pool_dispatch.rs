@@ -33,7 +33,8 @@ async fn populate_pool(pool: &ConnectorPool) {
 
 async fn smoke_ticker(conn: Arc<dyn CoreConnector>, symbol: Symbol) {
     let id = conn.exchange_id();
-    match MarketData::get_ticker(&*conn, symbol.clone(), AccountType::Spot).await {
+    let sym_str = symbol.to_concat();
+    match MarketData::get_ticker(&*conn, &sym_str, AccountType::Spot).await {
         Ok(t) => println!(
             "  OK  {:?} get_ticker({:?}) -> last={} bid={:?} ask={:?}",
             id, symbol, t.last_price, t.bid_price, t.ask_price
@@ -44,9 +45,11 @@ async fn smoke_ticker(conn: Arc<dyn CoreConnector>, symbol: Symbol) {
 
 async fn smoke_funding(conn: Arc<dyn CoreConnector>, symbol: Symbol) {
     let id = conn.exchange_id();
+    let sym_concat = symbol.to_concat();
+    let sym_str = symbol.raw.as_deref().unwrap_or(&sym_concat);
     let result = MarketDataPublic::get_funding_rate_history(
         &*conn,
-        &symbol,
+        sym_str,
         None,
         None,
         Some(3),

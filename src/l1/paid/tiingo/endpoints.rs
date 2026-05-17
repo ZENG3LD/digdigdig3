@@ -139,19 +139,6 @@ impl TiingoEndpoint {
 // SYMBOL FORMATTING
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Format symbol for Tiingo API (stock symbols)
-///
-/// # Stock Symbol Format
-/// - US stocks: Just the ticker symbol (e.g., "AAPL", "MSFT")
-/// - No base/quote separation for stocks
-///
-/// # Examples
-/// - Apple: "AAPL"
-/// - Microsoft: "MSFT"
-/// - Tesla: "TSLA"
-pub fn format_stock_symbol(symbol: &str) -> String {
-    symbol.to_uppercase()
-}
 
 /// Format symbol for crypto pairs
 ///
@@ -211,13 +198,7 @@ pub fn map_interval(interval: &str) -> &'static str {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_format_stock_symbol() {
-        assert_eq!(format_stock_symbol("aapl"), "AAPL");
-        assert_eq!(format_stock_symbol("MSFT"), "MSFT");
-    }
-
-    #[test]
+#[test]
     fn test_format_crypto_symbol() {
         let btc = Symbol::new("BTC", "USD");
         assert_eq!(format_crypto_symbol(&btc), "btcusd");

@@ -13,7 +13,7 @@ use reqwest;
 use crate::core::{
     timestamp_seconds, timestamp_millis, AccountInfo, AccountType, Balance, ExchangeError,
     ExchangeId, ExchangeResult, ExchangeType, FundingRate, HttpClient, Kline, Order, OrderBook,
-    OrderSide, OrderType, OrderStatus, TimeInForce, Position, Price, Symbol, Ticker,
+    OrderSide, OrderType, OrderStatus, TimeInForce, Position, Price, Ticker,
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
@@ -237,8 +237,8 @@ impl ExchangeIdentity for FyersConnector {
 
 #[async_trait]
 impl MarketData for FyersConnector {
-    async fn get_price(&self, symbol: Symbol, account_type: AccountType) -> ExchangeResult<Price> {
-        let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
+    async fn get_price(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<Price> {
+        let symbol_str = symbol.to_string();
 
         let mut params = HashMap::new();
         params.insert("symbols".to_string(), symbol_str.clone());
@@ -249,11 +249,11 @@ impl MarketData for FyersConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _depth: Option<u16>,
-        account_type: AccountType,
+        _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
+        let symbol_str = symbol.to_string();
 
         let mut params = HashMap::new();
         params.insert("symbol".to_string(), symbol_str.clone());
@@ -265,13 +265,13 @@ impl MarketData for FyersConnector {
 
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
-        account_type: AccountType,
+        _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
+        let symbol_str = symbol.to_string();
         let resolution = map_kline_interval(interval);
 
         // Calculate time range (default: last 100 candles)
@@ -303,10 +303,10 @@ impl MarketData for FyersConnector {
 
     async fn get_ticker(
         &self,
-        symbol: Symbol,
-        account_type: AccountType,
+        symbol: &str,
+        _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        let symbol_str = format_symbol(&symbol.base, &symbol.quote, account_type);
+        let symbol_str = symbol.to_string();
 
         let mut params = HashMap::new();
         params.insert("symbols".to_string(), symbol_str.clone());

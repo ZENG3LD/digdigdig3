@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 
 use crate::core::types::{
-    AccountType, ExchangeResult, Kline, MarketDataCapabilities, OrderBook, Price, Symbol,
+    AccountType, ExchangeResult, Kline, MarketDataCapabilities, OrderBook, Price,
     SymbolInfo, Ticker,
 };
 
@@ -30,14 +30,14 @@ pub trait MarketData: ExchangeIdentity {
     /// Получить текущую цену символа
     async fn get_price(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Price>;
 
     /// Получить книгу ордеров
     async fn get_orderbook(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         depth: Option<u16>,
         account_type: AccountType,
     ) -> ExchangeResult<OrderBook>;
@@ -51,7 +51,7 @@ pub trait MarketData: ExchangeIdentity {
     /// a leading underscore (`_end_time`) and ignore it.
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         account_type: AccountType,
@@ -61,7 +61,7 @@ pub trait MarketData: ExchangeIdentity {
     /// Получить 24h тикер
     async fn get_ticker(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Ticker>;
 

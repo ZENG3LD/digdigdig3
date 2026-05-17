@@ -122,23 +122,35 @@ pub trait WebSocketExt: WebSocketConnector {
     // ═══════════════════════════════════════════════════════════════════════════
 
     /// Подписаться на тикер
-    async fn subscribe_ticker(&self, symbol: Symbol) -> WebSocketResult<()> {
-        self.subscribe(SubscriptionRequest::ticker(symbol)).await
+    ///
+    /// `symbol` — raw exchange-native string (e.g. `"BTCUSDT"`, `"BTC-USDT"`).
+    async fn subscribe_ticker(&self, symbol: String) -> WebSocketResult<()> {
+        let sym = Symbol::with_raw("", "", symbol);
+        self.subscribe(SubscriptionRequest::ticker(sym)).await
     }
 
     /// Подписаться на сделки
-    async fn subscribe_trades(&self, symbol: Symbol) -> WebSocketResult<()> {
-        self.subscribe(SubscriptionRequest::trade(symbol)).await
+    ///
+    /// `symbol` — raw exchange-native string.
+    async fn subscribe_trades(&self, symbol: String) -> WebSocketResult<()> {
+        let sym = Symbol::with_raw("", "", symbol);
+        self.subscribe(SubscriptionRequest::trade(sym)).await
     }
 
     /// Подписаться на стакан
-    async fn subscribe_orderbook(&self, symbol: Symbol) -> WebSocketResult<()> {
-        self.subscribe(SubscriptionRequest::orderbook(symbol)).await
+    ///
+    /// `symbol` — raw exchange-native string.
+    async fn subscribe_orderbook(&self, symbol: String) -> WebSocketResult<()> {
+        let sym = Symbol::with_raw("", "", symbol);
+        self.subscribe(SubscriptionRequest::orderbook(sym)).await
     }
 
     /// Подписаться на свечи
-    async fn subscribe_klines(&self, symbol: Symbol, interval: &str) -> WebSocketResult<()> {
-        self.subscribe(SubscriptionRequest::kline(symbol, interval)).await
+    ///
+    /// `symbol` — raw exchange-native string.
+    async fn subscribe_klines(&self, symbol: String, interval: &str) -> WebSocketResult<()> {
+        let sym = Symbol::with_raw("", "", symbol);
+        self.subscribe(SubscriptionRequest::kline(sym, interval)).await
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -148,7 +160,7 @@ pub trait WebSocketExt: WebSocketConnector {
     /// Подписаться на обновления ордеров (private)
     async fn subscribe_orders(&self) -> WebSocketResult<()> {
         self.subscribe(SubscriptionRequest::new(
-            Symbol::empty(),
+            Symbol::with_raw("", "", String::new()),
             StreamType::OrderUpdate,
         ))
         .await
@@ -157,7 +169,7 @@ pub trait WebSocketExt: WebSocketConnector {
     /// Подписаться на обновления баланса (private)
     async fn subscribe_balance(&self) -> WebSocketResult<()> {
         self.subscribe(SubscriptionRequest::new(
-            Symbol::empty(),
+            Symbol::with_raw("", "", String::new()),
             StreamType::BalanceUpdate,
         ))
         .await
@@ -166,7 +178,7 @@ pub trait WebSocketExt: WebSocketConnector {
     /// Подписаться на обновления позиций (private, futures)
     async fn subscribe_positions(&self) -> WebSocketResult<()> {
         self.subscribe(SubscriptionRequest::new(
-            Symbol::empty(),
+            Symbol::with_raw("", "", String::new()),
             StreamType::PositionUpdate,
         ))
         .await

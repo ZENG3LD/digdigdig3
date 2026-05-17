@@ -12,10 +12,15 @@ use super::stream_kind::{KlineInterval, StreamKind};
 /// Internal subscription specification used by UniversalWsTransport.
 ///
 /// Converted from SubscriptionRequest at subscribe() time.
+///
+/// `symbol` holds the **raw exchange-native string** (e.g. `"BTCUSDT"` for Binance,
+/// `"BTC-USDT"` for OKX). The canonical [`Symbol`] is available at the public
+/// `SubscriptionRequest` boundary; callers convert before calling `subscribe()`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StreamSpec {
     pub kind: StreamKind,
-    pub symbol: Symbol,
+    /// Raw exchange-native symbol string (e.g. "BTCUSDT", "BTC-USDT", "BTC_USDT").
+    pub symbol: String,
     pub account_type: AccountType,
     /// Depth hint for orderbook channels. None = exchange default.
     pub depth: Option<u32>,
@@ -28,9 +33,18 @@ impl TryFrom<SubscriptionRequest> for StreamSpec {
 
     fn try_from(req: SubscriptionRequest) -> WebSocketResult<Self> {
         let kind = StreamKind::try_from(req.stream_type)?;
+        // Prefer the explicit raw string if the caller set it via Symbol::with_raw.
+        // Fall back to base+quote concat as a last-resort default; callers that
+        // need correct per-exchange format must call SymbolNormalizer::to_exchange
+        // before building the SubscriptionRequest.
+        let symbol = req
+            .symbol
+            .raw()
+            .map(|r| r.to_string())
+            .unwrap_or_else(|| req.symbol.to_concat());
         Ok(Self {
             kind,
-            symbol: req.symbol,
+            symbol,
             account_type: req.account_type,
             depth: req.depth,
             speed_ms: req.update_speed_ms,
@@ -41,8 +55,11 @@ impl TryFrom<SubscriptionRequest> for StreamSpec {
 impl From<StreamSpec> for SubscriptionRequest {
     fn from(spec: StreamSpec) -> Self {
         let stream_type = StreamType::from(spec.kind);
+        // Reconstruct a Symbol from the raw string so the public SubscriptionRequest
+        // type remains unchanged. base/quote left empty — raw is the authoritative value.
+        let symbol = Symbol::with_raw("", "", spec.symbol.clone());
         SubscriptionRequest {
-            symbol: spec.symbol,
+            symbol,
             stream_type,
             account_type: spec.account_type,
             depth: spec.depth,

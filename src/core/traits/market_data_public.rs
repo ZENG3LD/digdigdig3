@@ -8,7 +8,7 @@ use async_trait::async_trait;
 
 use crate::core::types::{
     AccountType, ExchangeError, ExchangeResult, FundingRate, Kline,
-    Liquidation, LongShortRatio, MarkPrice, OpenInterest, PublicTrade, Symbol,
+    Liquidation, LongShortRatio, MarkPrice, OpenInterest, PublicTrade,
 };
 
 /// Extended public market data — derivatives analytics, liquidations, OI, funding history.
@@ -20,7 +20,7 @@ pub trait MarketDataPublic: Send + Sync {
     /// Recent public trades for a symbol.
     async fn get_recent_trades(
         &self,
-        symbol: &Symbol,
+        symbol: &str,
         limit: Option<u32>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<PublicTrade>> {
@@ -33,7 +33,7 @@ pub trait MarketDataPublic: Send + Sync {
     /// Historical liquidation events, optionally filtered by symbol and time range.
     async fn get_liquidation_history(
         &self,
-        symbol: Option<&Symbol>,
+        symbol: Option<&str>,
         start_time: Option<i64>,
         end_time: Option<i64>,
         limit: Option<u32>,
@@ -48,7 +48,7 @@ pub trait MarketDataPublic: Send + Sync {
     /// Historical open interest snapshots.
     async fn get_open_interest_history(
         &self,
-        symbol: &Symbol,
+        symbol: &str,
         period: &str,
         start_time: Option<i64>,
         end_time: Option<i64>,
@@ -66,7 +66,7 @@ pub trait MarketDataPublic: Send + Sync {
     /// `symbol` is `None` to retrieve data for all symbols.
     async fn get_premium_index(
         &self,
-        symbol: Option<&Symbol>,
+        symbol: Option<&str>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<MarkPrice>> {
         let _ = (symbol, account_type);
@@ -78,7 +78,7 @@ pub trait MarketDataPublic: Send + Sync {
     /// Historical long/short ratio snapshots.
     async fn get_long_short_ratio_history(
         &self,
-        symbol: &Symbol,
+        symbol: &str,
         period: &str,
         start_time: Option<i64>,
         end_time: Option<i64>,
@@ -94,7 +94,7 @@ pub trait MarketDataPublic: Send + Sync {
     /// Mark price klines (OHLCV based on mark price).
     async fn get_mark_price_klines(
         &self,
-        symbol: &Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u32>,
         account_type: AccountType,
@@ -109,7 +109,7 @@ pub trait MarketDataPublic: Send + Sync {
     /// Index price klines (OHLCV based on index/spot price).
     async fn get_index_price_klines(
         &self,
-        symbol: &Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u32>,
         account_type: AccountType,
@@ -124,7 +124,7 @@ pub trait MarketDataPublic: Send + Sync {
     /// Historical funding rate payments.
     async fn get_funding_rate_history(
         &self,
-        symbol: &Symbol,
+        symbol: &str,
         start_time: Option<i64>,
         end_time: Option<i64>,
         limit: Option<u32>,

@@ -8,12 +8,14 @@
 //! - `time` - Timestamps
 //! - `rate_limiter` - Rate limiting utilities
 //! - `precision` - Safe f64 → string conversion for prices and quantities
+//! - `symbol_normalizer` - Canonical Symbol ↔ exchange-native raw string translation
 
 mod crypto;
 mod encoding;
 mod time;
 mod rate_limiter;
 pub mod precision;
+pub mod symbol_normalizer;
 #[cfg(feature = "onchain-evm")]
 pub mod crypto_evm;
 
@@ -25,3 +27,4 @@ pub use rate_limiter::{
     RuntimeLimiter, RateLimitPressure, RateLimitMonitor,
 };
 pub use precision::{safe_price, safe_qty, format_price, format_qty, PrecisionCache, PrecisionInfo};
+pub use symbol_normalizer::{NormalizerError, SymbolNormalizer};

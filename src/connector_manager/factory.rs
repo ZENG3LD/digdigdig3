@@ -909,7 +909,7 @@ impl ConnectorFactory {
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
             ExchangeId::MEXC => {
-                let ws = MexcWebSocket::new(None).await?;
+                let ws = MexcWebSocket::new(None, crate::core::types::AccountType::Spot).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
             // ═══════════════════════════════════════════════════════════════════

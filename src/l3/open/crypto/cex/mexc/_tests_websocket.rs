@@ -9,7 +9,6 @@
 //!
 //! NOTE: All tests connect to real MEXC endpoints and require network access.
 //! MEXC WebSocket uses Protobuf encoding for market data.
-//! Orderbook subscription returns errors for the new endpoint — this is tested explicitly.
 
 use std::time::Duration;
 use tokio::time::timeout;
@@ -27,6 +26,16 @@ fn btc_usdt() -> Symbol {
     Symbol::new("BTC", "USDT")
 }
 
+async fn spot_ws() -> Option<MexcWebSocket> {
+    match MexcWebSocket::new(None, AccountType::Spot).await {
+        Ok(w) => Some(w),
+        Err(e) => {
+            println!("Failed to create WebSocket: {:?}", e);
+            None
+        }
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // CAPABILITIES TEST
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -34,12 +43,9 @@ fn btc_usdt() -> Symbol {
 #[tokio::test]
 #[ignore]
 async fn test_orderbook_capabilities() {
-    let ws = match MexcWebSocket::new(None).await {
-        Ok(w) => w,
-        Err(e) => {
-            println!("Failed to create WebSocket: {:?}", e);
-            return;
-        }
+    let ws = match spot_ws().await {
+        Some(w) => w,
+        None => return,
     };
 
     let caps = ws.orderbook_capabilities(AccountType::Spot);
@@ -53,18 +59,12 @@ async fn test_orderbook_capabilities() {
 // SUBSCRIPTION TESTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// MEXC orderbook: the Protobuf-based endpoint may return errors for orderbook
-/// subscriptions depending on channel format. This test verifies the subscription
-/// attempt succeeds or fails gracefully — NOT that orderbook data is received.
 #[tokio::test]
 #[ignore]
 async fn test_subscribe_orderbook() {
-    let ws = match MexcWebSocket::new(None).await {
-        Ok(w) => w,
-        Err(e) => {
-            println!("Failed to create WebSocket: {:?}", e);
-            return;
-        }
+    let ws = match spot_ws().await {
+        Some(w) => w,
+        None => return,
     };
 
     let connect_result = timeout(Duration::from_secs(10), ws.connect(AccountType::Spot)).await;
@@ -86,25 +86,20 @@ async fn test_subscribe_orderbook() {
                     match event {
                         Ok(Some(Ok(ev))) => {
                             println!("Received event: {:?}", ev);
-                            println!("MEXC orderbook subscription produced data");
                         }
                         Ok(Some(Err(e))) => {
-                            // Expected: MEXC may return errors for orderbook on new endpoint
                             println!("Received error event (expected for MEXC orderbook): {:?}", e);
-                            println!("Skipping gracefully — MEXC orderbook error is known");
                         }
                         Ok(None) => {
-                            println!("Stream ended (MEXC may not support this channel)");
+                            println!("Stream ended");
                         }
                         Err(_) => {
-                            println!("Timeout — MEXC orderbook may not push data (expected)");
+                            println!("Timeout — MEXC orderbook may not push data");
                         }
                     }
                 }
                 Err(e) => {
-                    // Also acceptable: subscription itself returns an error
                     println!("Subscribe failed (expected for MEXC orderbook): {:?}", e);
-                    println!("Skipping gracefully — MEXC orderbook subscription error is known");
                 }
             }
 
@@ -118,12 +113,9 @@ async fn test_subscribe_orderbook() {
 #[tokio::test]
 #[ignore]
 async fn test_subscribe_trades() {
-    let ws = match MexcWebSocket::new(None).await {
-        Ok(w) => w,
-        Err(e) => {
-            println!("Failed to create WebSocket: {:?}", e);
-            return;
-        }
+    let ws = match spot_ws().await {
+        Some(w) => w,
+        None => return,
     };
 
     let connect_result = timeout(Duration::from_secs(10), ws.connect(AccountType::Spot)).await;
@@ -147,7 +139,7 @@ async fn test_subscribe_trades() {
             if let Ok(Some(Ok(ev))) = event {
                 println!("Received trade event: {:?}", ev);
             } else {
-                println!("No trade event received within timeout (MEXC Protobuf may need decoding)");
+                println!("No trade event received within timeout");
             }
 
             let _ = ws.disconnect().await;

@@ -32,6 +32,7 @@ mod auth;
 mod parser;
 mod connector;
 mod websocket;
+pub mod protocol;
 
 pub use endpoints::*;
 pub use auth::*;

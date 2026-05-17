@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 
 use crate::core::{
     HttpClient, Credentials,
-    ExchangeId, AccountType, Symbol,
+    ExchangeId, AccountType,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, Balance, AccountInfo,
@@ -348,8 +348,8 @@ impl ExchangeIdentity for GeminiConnector {
 
 #[async_trait]
 impl MarketData for GeminiConnector {
-    async fn get_price(&self, symbol: Symbol, account_type: AccountType) -> ExchangeResult<Price> {
-        let symbol_str = normalize_symbol(&format_symbol(&symbol.base, &symbol.quote, account_type));
+    async fn get_price(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<Price> {
+        let symbol_str = normalize_symbol(symbol);
 
         let response = self.get(
             GeminiEndpoint::Ticker,
@@ -360,8 +360,8 @@ impl MarketData for GeminiConnector {
         Ok(ticker.last_price)
     }
 
-    async fn get_ticker(&self, symbol: Symbol, account_type: AccountType) -> ExchangeResult<Ticker> {
-        let symbol_str = normalize_symbol(&format_symbol(&symbol.base, &symbol.quote, account_type));
+    async fn get_ticker(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<Ticker> {
+        let symbol_str = normalize_symbol(symbol);
 
         let response = self.get(
             GeminiEndpoint::TickerV2,
@@ -373,11 +373,11 @@ impl MarketData for GeminiConnector {
 
     async fn get_orderbook(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _depth: Option<u16>,
-        account_type: AccountType,
+        _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        let symbol_str = normalize_symbol(&format_symbol(&symbol.base, &symbol.quote, account_type));
+        let symbol_str = normalize_symbol(symbol);
 
         let response = self.get(
             GeminiEndpoint::OrderBook,
@@ -389,13 +389,13 @@ impl MarketData for GeminiConnector {
 
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         _limit: Option<u16>,
         account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let symbol_str = normalize_symbol(&format_symbol(&symbol.base, &symbol.quote, account_type));
+        let symbol_str = normalize_symbol(symbol);
         let time_frame = map_kline_interval(interval);
 
         // Use DerivativeCandles endpoint for futures

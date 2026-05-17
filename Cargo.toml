@@ -111,3 +111,10 @@ cosmrs = { version = "0.22", optional = true, default-features = false, features
 
 # Decimal arithmetic (f64 → Decimal conversion for safe price/qty rounding)
 rust_decimal = "1"
+
+# TOML config parsing (for dig3-catcher)
+toml = "0.8"
+
+[[bin]]
+name = "dig3-catcher"
+path = "src/bin/dig3_catcher.rs"

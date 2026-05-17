@@ -1,0 +1,33 @@
+# dig3-catcher sample config
+# Copy to catcher.toml and edit as needed.
+# Streams: Trade, Ticker, Orderbook, OrderbookDelta, MarkPrice, FundingRate, Liquidation, OpenInterest, AggTrade
+
+[[target]]
+exchange = "Binance"
+account = "Spot"
+symbol = "BTCUSDT"
+streams = ["Trade", "Ticker", "Orderbook"]
+
+[[target]]
+exchange = "Bybit"
+account = "Spot"
+symbol = "BTCUSDT"
+streams = ["Trade", "Ticker"]
+
+[[target]]
+exchange = "OKX"
+account = "Spot"
+symbol = "BTC-USDT"
+streams = ["Trade", "Ticker"]
+
+[[target]]
+exchange = "KuCoin"
+account = "Spot"
+symbol = "BTC-USDT"
+streams = ["Trade", "Ticker"]
+
+[[target]]
+exchange = "Bitget"
+account = "Spot"
+symbol = "BTCUSDT"
+streams = ["Trade", "Ticker"]

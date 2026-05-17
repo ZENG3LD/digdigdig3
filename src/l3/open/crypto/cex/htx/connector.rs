@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 
 use crate::core::{
     HttpClient, Credentials,
-    ExchangeId, ExchangeType, AccountType, Symbol,
+    ExchangeId, ExchangeType, AccountType,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, Balance, AccountInfo,
@@ -45,7 +45,7 @@ use crate::core::types::{
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, OrderbookCapabilities, WsBookChannel};
 
-use super::endpoints::{HtxUrls, HtxEndpoint, format_symbol, map_kline_interval};
+use super::endpoints::{HtxUrls, HtxEndpoint, map_kline_interval};
 use super::auth::HtxAuth;
 use super::parser::HtxParser;
 
@@ -346,15 +346,17 @@ impl HtxConnector {
         HtxParser::parse_exchange_info(&response, account_type)
     }
 
-    /// Cancel all orders (struct method — also available via CancelAll trait)
-    pub async fn cancel_all_orders(&self, symbol: Option<Symbol>) -> ExchangeResult<Vec<String>> {
+    /// Cancel all orders (struct method — also available via CancelAll trait).
+    ///
+    /// `symbol` is the raw exchange-native string (e.g. `"btcusdt"`).
+    pub async fn cancel_all_orders(&self, symbol: Option<&str>) -> ExchangeResult<Vec<String>> {
         let account_id = self.get_account_id().await?;
 
         let mut params = HashMap::new();
         params.insert("account-id".to_string(), account_id.to_string());
 
         if let Some(s) = symbol {
-            params.insert("symbol".to_string(), format_symbol(&s, AccountType::Spot));
+            params.insert("symbol".to_string(), s.to_string());
         }
 
         // Get all open orders first
@@ -470,12 +472,11 @@ impl ExchangeIdentity for HtxConnector {
 impl MarketData for HtxConnector {
     async fn get_price(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Price> {
         let mut params = HashMap::new();
 
-        // Route to correct endpoint based on account type
         let (endpoint, param_name) = match account_type {
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
                 (HtxEndpoint::FuturesTicker, "contract_code")
@@ -483,22 +484,21 @@ impl MarketData for HtxConnector {
             _ => (HtxEndpoint::Ticker, "symbol"),
         };
 
-        params.insert(param_name.to_string(), format_symbol(&symbol, account_type));
+        params.insert(param_name.to_string(), symbol.to_string());
 
         let response = self.get(endpoint, params).await?;
-        let ticker = HtxParser::parse_ticker(&response, &symbol.to_string())?;
+        let ticker = HtxParser::parse_ticker(&response, symbol)?;
         Ok(ticker.last_price)
     }
 
     async fn get_orderbook(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         depth: Option<u16>,
         account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
         let mut params = HashMap::new();
 
-        // Route to correct endpoint based on account type
         let (endpoint, param_name) = match account_type {
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
                 (HtxEndpoint::FuturesOrderbook, "contract_code")
@@ -506,11 +506,10 @@ impl MarketData for HtxConnector {
             _ => (HtxEndpoint::Orderbook, "symbol"),
         };
 
-        params.insert(param_name.to_string(), format_symbol(&symbol, account_type));
-        params.insert("type".to_string(), "step0".to_string()); // step0 = best precision
+        params.insert(param_name.to_string(), symbol.to_string());
+        params.insert("type".to_string(), "step0".to_string());
 
         if let Some(d) = depth {
-            // HTX supports depth 5, 10, 20
             let depth_str = match d {
                 1..=5 => "5",
                 6..=10 => "10",
@@ -525,7 +524,7 @@ impl MarketData for HtxConnector {
 
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         account_type: AccountType,
@@ -533,7 +532,6 @@ impl MarketData for HtxConnector {
     ) -> ExchangeResult<Vec<Kline>> {
         let mut params = HashMap::new();
 
-        // Route to correct endpoint based on account type
         let (endpoint, param_name) = match account_type {
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
                 (HtxEndpoint::FuturesKlines, "contract_code")
@@ -541,7 +539,7 @@ impl MarketData for HtxConnector {
             _ => (HtxEndpoint::Klines, "symbol"),
         };
 
-        params.insert(param_name.to_string(), format_symbol(&symbol, account_type));
+        params.insert(param_name.to_string(), symbol.to_string());
         params.insert("period".to_string(), map_kline_interval(interval).to_string());
 
         if let Some(l) = limit {
@@ -554,12 +552,11 @@ impl MarketData for HtxConnector {
 
     async fn get_ticker(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
         let mut params = HashMap::new();
 
-        // Route to correct endpoint based on account type
         let (endpoint, param_name) = match account_type {
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
                 (HtxEndpoint::FuturesTicker, "contract_code")
@@ -567,10 +564,10 @@ impl MarketData for HtxConnector {
             _ => (HtxEndpoint::Ticker, "symbol"),
         };
 
-        params.insert(param_name.to_string(), format_symbol(&symbol, account_type));
+        params.insert(param_name.to_string(), symbol.to_string());
 
         let response = self.get(endpoint, params).await?;
-        HtxParser::parse_ticker(&response, &symbol.to_string())
+        HtxParser::parse_ticker(&response, symbol)
     }
 
     async fn ping(&self) -> ExchangeResult<()> {
@@ -671,10 +668,15 @@ impl Trading for HtxConnector {
         let symbol = req.symbol.clone();
         let side = req.side;
         let quantity = req.quantity;
-        let account_type = req.account_type;
+        let _account_type = req.account_type;
         let account_id = self.get_account_id().await?;
         let client_order_id = format!("cc_{}", crate::core::timestamp_millis());
-        let htx_symbol = format_symbol(&symbol, account_type);
+        // Caller must pass raw exchange-native symbol in OrderRequest.symbol.raw(),
+        // falling back to lowercase-concat as a best-effort spot format.
+        let htx_symbol = symbol
+            .raw()
+            .map(|r| r.to_string())
+            .unwrap_or_else(|| format!("{}{}", symbol.base.to_lowercase(), symbol.quote.to_lowercase()));
         let qty_str = self.precision.qty(&htx_symbol, quantity);
 
         // Helper to map side to HTX order type prefix
@@ -1019,13 +1021,15 @@ impl Trading for HtxConnector {
     async fn get_order_history(
         &self,
         filter: OrderHistoryFilter,
-        account_type: AccountType,
+        _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
         let mut params = HashMap::new();
 
         if let Some(sym) = &filter.symbol {
-            // sym is already a Symbol struct
-            params.insert("symbol".to_string(), format_symbol(sym, account_type));
+            let raw = sym.raw()
+                .map(|r| r.to_string())
+                .unwrap_or_else(|| format!("{}{}", sym.base.to_lowercase(), sym.quote.to_lowercase()));
+            params.insert("symbol".to_string(), raw);
         }
 
         // HTX requires states filter
@@ -1081,24 +1085,15 @@ impl Trading for HtxConnector {
     async fn get_open_orders(
         &self,
         symbol: Option<&str>,
-        account_type: AccountType,
+        _account_type: AccountType,
     ) -> ExchangeResult<Vec<Order>> {
-        let symbol: Option<crate::core::Symbol> = symbol.map(|s| {
-            let parts: Vec<&str> = s.split('/').collect();
-            if parts.len() == 2 {
-                crate::core::Symbol::new(parts[0], parts[1])
-            } else {
-                crate::core::Symbol { base: s.to_string(), quote: String::new(), raw: Some(s.to_string()) }
-            }
-        });
-
         let account_id = self.get_account_id().await?;
 
         let mut params = HashMap::new();
         params.insert("account-id".to_string(), account_id.to_string());
 
         if let Some(s) = symbol {
-            params.insert("symbol".to_string(), format_symbol(&s, account_type));
+            params.insert("symbol".to_string(), s.to_string());
         }
 
         let response = self.get(HtxEndpoint::OpenOrders, params).await?;
@@ -1119,24 +1114,13 @@ impl Trading for HtxConnector {
     async fn get_user_trades(
         &self,
         filter: UserTradeFilter,
-        account_type: AccountType,
+        _account_type: AccountType,
     ) -> ExchangeResult<Vec<UserTrade>> {
         let mut params = HashMap::new();
 
         if let Some(sym) = &filter.symbol {
-            // Accept "BTC/USDT" or raw "btcusdt"
-            let htx_symbol = if sym.contains('/') {
-                let parts: Vec<&str> = sym.split('/').collect();
-                if parts.len() == 2 {
-                    let s = Symbol::new(parts[0], parts[1]);
-                    format_symbol(&s, account_type)
-                } else {
-                    sym.to_lowercase()
-                }
-            } else {
-                sym.to_lowercase()
-            };
-            params.insert("symbol".to_string(), htx_symbol);
+            // Caller passes raw exchange-native string (e.g. "btcusdt").
+            params.insert("symbol".to_string(), sym.clone());
         }
 
         if let Some(lim) = filter.limit {
@@ -1262,14 +1246,8 @@ impl Account for HtxConnector {
         let mut params = HashMap::new();
 
         if let Some(sym) = symbol {
-            let symbol_parts: Vec<&str> = sym.split('/').collect();
-            let htx_symbol = if symbol_parts.len() == 2 {
-                let s = crate::core::Symbol::new(symbol_parts[0], symbol_parts[1]);
-                format_symbol(&s, AccountType::Spot)
-            } else {
-                sym.to_lowercase().replace('/', "")
-            };
-            params.insert("symbols".to_string(), htx_symbol);
+            // Caller passes raw exchange-native string (e.g. "btcusdt").
+            params.insert("symbols".to_string(), sym.to_string());
         }
 
         let response = self.get(HtxEndpoint::TransactFee, params).await?;
@@ -1372,7 +1350,7 @@ impl CancelAll for HtxConnector {
     async fn cancel_all_orders(
         &self,
         scope: CancelScope,
-        account_type: AccountType,
+        _account_type: AccountType,
     ) -> ExchangeResult<CancelAllResponse> {
         let account_id = self.get_account_id().await?;
 
@@ -1407,8 +1385,11 @@ impl CancelAll for HtxConnector {
             }
 
             CancelScope::All { symbol: Some(sym) } | CancelScope::BySymbol { symbol: sym } => {
-                // Cancel all open orders for a specific symbol
-                let htx_symbol = format_symbol(&sym, account_type);
+                // Cancel all open orders for a specific symbol.
+                // Use raw field if set; otherwise fall back to lowercase concat (spot format).
+                let htx_symbol = sym.raw()
+                    .map(|r| r.to_string())
+                    .unwrap_or_else(|| format!("{}{}", sym.base.to_lowercase(), sym.quote.to_lowercase()));
                 let body = json!({
                     "account-id": account_id.to_string(),
                     "symbol": htx_symbol,

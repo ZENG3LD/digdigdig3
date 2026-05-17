@@ -73,11 +73,10 @@ impl HtxProtocol {
 
     /// Build the HTX topic string for a given StreamSpec.
     fn topic_for(spec: &StreamSpec) -> Result<String, WebSocketError> {
-        let sym = format!(
-            "{}{}",
-            spec.symbol.base.to_lowercase(),
-            spec.symbol.quote.to_lowercase()
-        );
+        // symbol is already the raw exchange-native string (e.g. "btcusdt" for spot,
+        // "BTC-USDT" for futures). HTX topics use lowercase for spot and mixed-case
+        // for futures — normalizer guarantees the correct casing.
+        let sym = spec.symbol.as_str();
         match &spec.kind {
             StreamKind::Ticker => Ok(format!("market.{sym}.detail")),
             StreamKind::Trade => Ok(format!("market.{sym}.trade.detail")),
@@ -644,13 +643,12 @@ fn parse_liquidation(raw: &Value) -> WebSocketResult<StreamEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::types::Symbol;
     use crate::core::websocket::StreamSpec;
 
     fn spot_spec(kind: StreamKind) -> StreamSpec {
         StreamSpec {
             kind,
-            symbol: Symbol::new("BTC", "USDT"),
+            symbol: "btcusdt".to_string(),
             account_type: AccountType::Spot,
             depth: None,
             speed_ms: None,

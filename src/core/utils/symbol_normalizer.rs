@@ -1093,14 +1093,39 @@ mod deribit {
 
 mod hyperliquid {
     use super::*;
+
+    /// Canonical Symbol -> HyperLiquid coin name.
+    ///
+    /// HyperLiquid perps use the base coin name only -- no quote, no separator.
+    /// BTC/USD -> "BTC", ETH/USD -> "ETH", SOL/USD -> "SOL".
+    /// Quote is implicit (perpetuals settled in USDC).
     pub(super) fn to_exchange(sym: &Symbol, _account_type: AccountType) -> Result<String, NormalizerError> {
-        noop_to_exchange(sym)
+        if sym.base.is_empty() {
+            return Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::HyperLiquid,
+                raw: sym.base.clone(),
+            });
+        }
+        Ok(sym.base.to_uppercase())
     }
+
+    /// HyperLiquid coin name -> canonical Symbol.
+    ///
+    /// "BTC" -> Symbol { base: "BTC", quote: "USD" }.
+    /// Quote is always "USD" -- HL perps are USD-settled (USDC).
     pub(super) fn from_exchange(raw: &str, _account_type: AccountType) -> Result<Symbol, NormalizerError> {
-        noop_from_exchange(ExchangeId::HyperLiquid, raw)
+        if raw.is_empty() {
+            return Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::HyperLiquid,
+                raw: raw.to_string(),
+            });
+        }
+        Ok(Symbol::new(&raw.to_uppercase(), "USD"))
     }
+
+    /// Valid HyperLiquid symbol: non-empty, ASCII alphanumeric, no separator.
     pub(super) fn is_valid_for(raw: &str, _account_type: AccountType) -> bool {
-        noop_is_valid_for(raw)
+        !raw.is_empty() && raw.chars().all(|c| c.is_ascii_alphanumeric())
     }
 }
 
@@ -1557,4 +1582,42 @@ mod tests {
         assert!(!SymbolNormalizer::is_valid_for(ExchangeId::Deribit, "", AccountType::Spot));
         assert!(!SymbolNormalizer::is_valid_for(ExchangeId::Deribit, "btc-perpetual", AccountType::FuturesCross));
     }
+    #[test]
+    fn hyperliquid_normalizer_to_exchange() {
+        let sym = Symbol::new("BTC", "USD");
+        let raw = SymbolNormalizer::to_exchange(ExchangeId::HyperLiquid, &sym, AccountType::FuturesCross).unwrap();
+        assert_eq!(raw, "BTC");
+
+        let eth = Symbol::new("eth", "USD");
+        let raw_eth = SymbolNormalizer::to_exchange(ExchangeId::HyperLiquid, &eth, AccountType::FuturesCross).unwrap();
+        assert_eq!(raw_eth, "ETH");
+
+        let sol = Symbol::new("SOL", "USDC");
+        let raw_sol = SymbolNormalizer::to_exchange(ExchangeId::HyperLiquid, &sol, AccountType::Spot).unwrap();
+        assert_eq!(raw_sol, "SOL");
+    }
+
+    #[test]
+    fn hyperliquid_normalizer_from_exchange() {
+        let parsed = SymbolNormalizer::from_exchange(ExchangeId::HyperLiquid, "BTC", AccountType::FuturesCross).unwrap();
+        assert_eq!(parsed.base, "BTC");
+        assert_eq!(parsed.quote, "USD");
+
+        let parsed_eth = SymbolNormalizer::from_exchange(ExchangeId::HyperLiquid, "eth", AccountType::FuturesCross).unwrap();
+        assert_eq!(parsed_eth.base, "ETH");
+        assert_eq!(parsed_eth.quote, "USD");
+
+        assert!(SymbolNormalizer::from_exchange(ExchangeId::HyperLiquid, "", AccountType::FuturesCross).is_err());
+    }
+
+    #[test]
+    fn hyperliquid_normalizer_is_valid_for() {
+        assert!(SymbolNormalizer::is_valid_for(ExchangeId::HyperLiquid, "BTC", AccountType::FuturesCross));
+        assert!(SymbolNormalizer::is_valid_for(ExchangeId::HyperLiquid, "ETH", AccountType::FuturesCross));
+        assert!(SymbolNormalizer::is_valid_for(ExchangeId::HyperLiquid, "SOL", AccountType::FuturesCross));
+        assert!(!SymbolNormalizer::is_valid_for(ExchangeId::HyperLiquid, "", AccountType::FuturesCross));
+        assert!(!SymbolNormalizer::is_valid_for(ExchangeId::HyperLiquid, "BTC-USD", AccountType::FuturesCross));
+        assert!(!SymbolNormalizer::is_valid_for(ExchangeId::HyperLiquid, "BTC/USD", AccountType::FuturesCross));
+    }
+
 }

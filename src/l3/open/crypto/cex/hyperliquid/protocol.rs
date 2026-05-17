@@ -52,7 +52,7 @@ impl HyperliquidProtocol {
 
     /// Build subscribe/unsubscribe JSON frame.
     fn build_frame(method: &str, spec: &StreamSpec) -> Result<Message, WebSocketError> {
-        let coin = &spec.symbol.base;
+        let coin = spec.symbol.as_str();
         let subscription = match &spec.kind {
             // Empty coin → allMids (global mid-price snapshot)
             StreamKind::Ticker if coin.is_empty() => json!({ "type": "allMids", "dex": "" }),
@@ -757,13 +757,12 @@ fn parse_f64_field(obj: &Value, key: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::types::Symbol;
     use crate::core::websocket::StreamSpec;
 
     fn futures_spec(kind: StreamKind) -> StreamSpec {
         StreamSpec {
             kind,
-            symbol: Symbol::new("BTC", "USD"),
+            symbol: "BTC".to_string(),
             account_type: AccountType::FuturesCross,
             depth: None,
             speed_ms: None,

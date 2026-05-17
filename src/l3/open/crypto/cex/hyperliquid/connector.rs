@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use crate::core::{
     HttpClient, Credentials, ExchangeResult, ExchangeError,
-    ExchangeId, ExchangeType, AccountType, Symbol,
+    ExchangeId, ExchangeType, AccountType,
     Price, Ticker, OrderBook, Kline,
     ExchangeIdentity, MarketData,
     Order, OrderRequest, CancelRequest, CancelScope,
@@ -570,21 +570,21 @@ impl ExchangeIdentity for HyperliquidConnector {
 impl MarketData for HyperliquidConnector {
     async fn get_price(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Price> {
         let response = self.get_all_mids().await?;
-        HyperliquidParser::parse_price(&response, &symbol.base)
+        HyperliquidParser::parse_price(&response, symbol)
     }
 
     async fn get_orderbook(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
         let params = serde_json::json!({
-            "coin": &symbol.base,
+            "coin": symbol,
             "nSigFigs": null,
             "mantissa": null,
         });
@@ -594,7 +594,7 @@ impl MarketData for HyperliquidConnector {
 
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
         _account_type: AccountType,
@@ -608,7 +608,7 @@ impl MarketData for HyperliquidConnector {
 
         let params = serde_json::json!({
             "req": {
-                "coin": &symbol.base,
+                "coin": symbol,
                 "interval": super::endpoints::map_kline_interval(interval),
                 "startTime": start_time,
                 "endTime": end_ms,
@@ -621,7 +621,7 @@ impl MarketData for HyperliquidConnector {
 
     async fn get_ticker(
         &self,
-        _symbol: Symbol,
+        _symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
         Err(ExchangeError::NotSupported(

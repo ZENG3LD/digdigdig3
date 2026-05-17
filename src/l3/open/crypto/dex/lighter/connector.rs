@@ -41,7 +41,7 @@ use crate::core::types::{ConnectorStats, SymbolInfo, MarketDataCapabilities, Tra
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, OrderbookCapabilities};
 
-use super::endpoints::{LighterUrls, LighterEndpoint, map_kline_interval, format_symbol, symbol_to_market_id};
+use super::endpoints::{LighterUrls, LighterEndpoint, map_kline_interval, symbol_to_market_id};
 use super::auth::LighterAuth;
 use super::parser::LighterParser;
 
@@ -277,17 +277,16 @@ impl LighterConnector {
     // MARKET ID CONVERSION
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// Get market_id for symbol using static mapping.
+    /// Get market_id for a coin name using static mapping.
     ///
+    /// Accepts the coin name directly (`"BTC"`, `"ETH"`).
     /// Uses the shared `symbol_to_market_id` mapping from endpoints.rs.
     /// The `OrderBookDetails` REST endpoint is geo-blocked by CloudFront,
     /// so we rely on a static lookup instead.
-    async fn get_market_id(&self, symbol: &str, _account_type: AccountType) -> ExchangeResult<u16> {
-        // Extract base asset: "BTC" -> "BTC", "BTC/USDC" -> "BTC", "ETH/USDC" -> "ETH"
-        let base = symbol.split('/').next().unwrap_or(symbol);
-        symbol_to_market_id(base).ok_or_else(|| {
+    fn resolve_market_id(&self, coin: &str) -> ExchangeResult<u16> {
+        symbol_to_market_id(coin).ok_or_else(|| {
             ExchangeError::InvalidRequest(format!(
-                "Unknown Lighter market for symbol '{}' (base: '{}')", symbol, base
+                "Unknown Lighter market for coin '{}'", coin
             ))
         })
     }
@@ -361,13 +360,8 @@ impl ExchangeIdentity for LighterConnector {
 
 #[async_trait]
 impl MarketData for LighterConnector {
-    async fn get_price(&self, symbol: Symbol, account_type: AccountType) -> ExchangeResult<Price> {
-        let formatted_symbol = if let Some(raw) = symbol.raw() {
-            raw.to_string()
-        } else {
-            format_symbol(&symbol.base, &symbol.quote, account_type)
-        };
-        let market_id = self.get_market_id(&formatted_symbol, account_type).await?;
+    async fn get_price(&self, symbol: Symbol, _account_type: AccountType) -> ExchangeResult<Price> {
+        let market_id = self.resolve_market_id(&symbol.base)?;
 
         let mut params = HashMap::new();
         params.insert("market_id".to_string(), market_id.to_string());
@@ -376,13 +370,8 @@ impl MarketData for LighterConnector {
         LighterParser::parse_price(&response)
     }
 
-    async fn get_ticker(&self, symbol: Symbol, account_type: AccountType) -> ExchangeResult<Ticker> {
-        let formatted_symbol = if let Some(raw) = symbol.raw() {
-            raw.to_string()
-        } else {
-            format_symbol(&symbol.base, &symbol.quote, account_type)
-        };
-        let market_id = self.get_market_id(&formatted_symbol, account_type).await?;
+    async fn get_ticker(&self, symbol: Symbol, _account_type: AccountType) -> ExchangeResult<Ticker> {
+        let market_id = self.resolve_market_id(&symbol.base)?;
 
         let mut params = HashMap::new();
         params.insert("market_id".to_string(), market_id.to_string());
@@ -391,13 +380,8 @@ impl MarketData for LighterConnector {
         LighterParser::parse_ticker(&response)
     }
 
-    async fn get_orderbook(&self, symbol: Symbol, depth: Option<u16>, account_type: AccountType) -> ExchangeResult<OrderBook> {
-        let formatted_symbol = if let Some(raw) = symbol.raw() {
-            raw.to_string()
-        } else {
-            format_symbol(&symbol.base, &symbol.quote, account_type)
-        };
-        let market_id = self.get_market_id(&formatted_symbol, account_type).await?;
+    async fn get_orderbook(&self, symbol: Symbol, depth: Option<u16>, _account_type: AccountType) -> ExchangeResult<OrderBook> {
+        let market_id = self.resolve_market_id(&symbol.base)?;
 
         // limit is required by the API (range 1–250); use requested depth or default 50
         let limit = depth.unwrap_or(50).min(250).max(1);
@@ -415,15 +399,10 @@ impl MarketData for LighterConnector {
         symbol: Symbol,
         interval: &str,
         limit: Option<u16>,
-        account_type: AccountType,
+        _account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let formatted_symbol = if let Some(raw) = symbol.raw() {
-            raw.to_string()
-        } else {
-            format_symbol(&symbol.base, &symbol.quote, account_type)
-        };
-        let market_id = self.get_market_id(&formatted_symbol, account_type).await?;
+        let market_id = self.resolve_market_id(&symbol.base)?;
 
         let bars = limit.unwrap_or(500).min(500) as u64;
 
@@ -593,9 +572,9 @@ impl Trading for LighterConnector {
         let mut params = HashMap::new();
         params.insert("account_index".to_string(), account_index.to_string());
 
-        // Optional market filter
+        // Optional market filter — sym is a coin name ("BTC", "ETH")
         if let Some(sym) = symbol {
-            if let Ok(market_id) = self.get_market_id(sym, account_type).await {
+            if let Ok(market_id) = self.resolve_market_id(sym) {
                 params.insert("market_id".to_string(), market_id.to_string());
             }
         }
@@ -624,10 +603,9 @@ impl Trading for LighterConnector {
             params.insert("limit".to_string(), limit.min(100).to_string());
         }
 
-        // Resolve market_id from symbol filter
+        // Resolve market_id from symbol filter — use base coin name directly
         if let Some(sym) = &filter.symbol {
-            let symbol_str = sym.base.as_str();
-            if let Ok(market_id) = self.get_market_id(symbol_str, account_type).await {
+            if let Ok(market_id) = self.resolve_market_id(&sym.base) {
                 params.insert("market_id".to_string(), market_id.to_string());
             }
         }
@@ -675,9 +653,9 @@ impl Trading for LighterConnector {
             params.insert("end_time".to_string(), end.to_string());
         }
 
-        // Resolve market filter from symbol
+        // Resolve market filter from symbol — sym is a coin name ("BTC", "ETH")
         if let Some(sym) = &filter.symbol {
-            if let Ok(market_id) = self.get_market_id(sym.as_str(), account_type).await {
+            if let Ok(market_id) = self.resolve_market_id(sym.as_str()) {
                 params.insert("market_id".to_string(), market_id.to_string());
             }
         }
@@ -790,8 +768,9 @@ impl Account for LighterConnector {
         let mut params = HashMap::new();
 
         // If a symbol is given, resolve it to a market_id for a targeted request.
+        // sym is expected to be a coin name ("BTC", "ETH").
         if let Some(sym) = symbol {
-            if let Ok(market_id) = self.get_market_id(sym, AccountType::FuturesCross).await {
+            if let Ok(market_id) = self.resolve_market_id(sym) {
                 params.insert("market_id".to_string(), market_id.to_string());
             }
         }
@@ -876,32 +855,17 @@ impl Positions for LighterConnector {
         symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
-        // Parse symbol string into Symbol struct
-        let symbol_str = symbol;
-        let symbol = {
-            let parts: Vec<&str> = symbol_str.split('/').collect();
-            if parts.len() == 2 {
-                crate::core::Symbol::new(parts[0], parts[1])
-            } else {
-                crate::core::Symbol { base: symbol_str.to_string(), quote: String::new(), raw: Some(symbol_str.to_string()) }
-            }
-        };
-
-        let formatted_symbol = if let Some(raw) = symbol.raw() {
-            raw.to_string()
-        } else {
-            format_symbol(&symbol.base, &symbol.quote, AccountType::FuturesCross)
-        };
-        let market_id = self.get_market_id(&formatted_symbol, AccountType::FuturesCross).await?;
+        // symbol is coin name ("BTC") — tolerate "BTC/USDC" by extracting base
+        let coin = symbol.split('/').next().unwrap_or(symbol);
+        let market_id = self.resolve_market_id(coin)?;
 
         let mut params = HashMap::new();
         params.insert("market_id".to_string(), market_id.to_string());
 
         let response = self.get(LighterEndpoint::Fundings, params, 300).await?;
         let mut funding = LighterParser::parse_funding_rate(&response)?;
-        funding.symbol = symbol.to_string();
+        funding.symbol = coin.to_uppercase();
         Ok(funding)
-    
     }
 
     async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
@@ -955,14 +919,16 @@ impl LighterConnector {
 }
 
 impl LighterConnector {
-    /// Get recent trades for a market
+    /// Get recent trades for a market.
+    ///
+    /// `symbol` is a coin name (`"BTC"`, `"ETH"`).
     pub async fn get_recent_trades(
         &self,
         symbol: &str,
-        account_type: AccountType,
+        _account_type: AccountType,
         limit: Option<u32>,
     ) -> ExchangeResult<Vec<PublicTrade>> {
-        let market_id = self.get_market_id(symbol, account_type).await?;
+        let market_id = self.resolve_market_id(symbol)?;
 
         let mut params = HashMap::new();
         params.insert("market_id".to_string(), market_id.to_string());
@@ -1156,9 +1122,9 @@ impl LighterConnector {
                  Example: Credentials::new(\"\", \"<private_key_hex>\").with_passphrase(r#\"{\"account_index\": 1, \"api_key_index\": 0}\"#)".to_string()
             ))?;
 
-        // Resolve market_id (i16) from the order symbol
-        let symbol_str = format_symbol(&req.symbol.base, &req.symbol.quote, req.account_type);
-        let market_id_u16 = self.get_market_id(&symbol_str, req.account_type).await?;
+        // Resolve market_id (i16) from the order symbol — use base coin name directly
+        let symbol_str = req.symbol.base.to_uppercase();
+        let market_id_u16 = self.resolve_market_id(&symbol_str)?;
         let market_index = market_id_u16 as i16;
 
         // Fetch next nonce
@@ -1341,10 +1307,9 @@ impl LighterConnector {
             ))
         })?;
 
-        // Resolve market_id from optional symbol hint
+        // Resolve market_id from optional symbol hint — use base coin name directly
         let market_id_u16 = if let Some(sym) = &req.symbol {
-            let sym_str = format_symbol(&sym.base, &sym.quote, req.account_type);
-            self.get_market_id(&sym_str, req.account_type).await?
+            self.resolve_market_id(&sym.base)?
         } else {
             return Err(ExchangeError::InvalidRequest(
                 "Lighter cancel_order requires a symbol hint to determine market_id. \
@@ -1390,7 +1355,7 @@ impl LighterConnector {
 
         let symbol_str = req.symbol
             .as_ref()
-            .map(|s| format_symbol(&s.base, &s.quote, req.account_type))
+            .map(|s| s.base.to_uppercase())
             .unwrap_or_default();
 
         Ok(crate::core::Order {
@@ -1462,8 +1427,7 @@ impl MarketDataPublic for LighterConnector {
         limit: Option<u32>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<PublicTrade>> {
-        let sym_str = format_symbol(&symbol.base, &symbol.quote, account_type);
-        self.get_recent_trades(&sym_str, account_type, limit).await
+        self.get_recent_trades(&symbol.base, account_type, limit).await
     }
 }
 

@@ -1274,6 +1274,17 @@ mod tests {
                 | ExchangeId::HTX
                 | ExchangeId::Bitget
                 | ExchangeId::Upbit
+                | ExchangeId::Deribit
+                | ExchangeId::Bitfinex
+                | ExchangeId::BingX
+                | ExchangeId::CryptoCom
+                | ExchangeId::Bitstamp
+                | ExchangeId::Coinbase
+                | ExchangeId::Dydx
+                | ExchangeId::HyperLiquid
+                | ExchangeId::Lighter
+                | ExchangeId::Moex
+                | ExchangeId::Polymarket
             ))
             .collect();
         for id in noop_exchanges {
@@ -1455,5 +1466,95 @@ mod tests {
         assert!(!SymbolNormalizer::is_valid_for(ExchangeId::Bitfinex, "BTCUSD", AccountType::Spot));
         assert!(!SymbolNormalizer::is_valid_for(ExchangeId::Bitfinex, "", AccountType::Spot));
         assert!(!SymbolNormalizer::is_valid_for(ExchangeId::Bitfinex, "tbtcusd", AccountType::Spot));
+    }
+
+    #[test]
+    fn deribit_to_exchange_coin_perp() {
+        let sym = Symbol::new("BTC", "USD");
+        let r = SymbolNormalizer::to_exchange(ExchangeId::Deribit, &sym, AccountType::FuturesCross).unwrap();
+        assert_eq!(r, "BTC-PERPETUAL");
+        let eth = Symbol::new("ETH", "");
+        let r2 = SymbolNormalizer::to_exchange(ExchangeId::Deribit, &eth, AccountType::FuturesCross).unwrap();
+        assert_eq!(r2, "ETH-PERPETUAL");
+    }
+
+    #[test]
+    fn deribit_to_exchange_usdc_perp() {
+        let sol = Symbol::new("SOL", "USDC");
+        let r = SymbolNormalizer::to_exchange(ExchangeId::Deribit, &sol, AccountType::FuturesCross).unwrap();
+        assert_eq!(r, "SOL_USDC-PERPETUAL");
+    }
+
+    #[test]
+    fn deribit_to_exchange_spot() {
+        let sym = Symbol::new("BTC", "USDC");
+        let r = SymbolNormalizer::to_exchange(ExchangeId::Deribit, &sym, AccountType::Spot).unwrap();
+        assert_eq!(r, "BTC-USDC");
+    }
+
+    #[test]
+    fn deribit_options_without_raw_returns_err() {
+        let sym = Symbol::new("BTC", "USD");
+        let result = SymbolNormalizer::to_exchange(ExchangeId::Deribit, &sym, AccountType::Options);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            NormalizerError::RequiresRawInstrument { msg } => {
+                assert!(msg.contains("instrument_name"), "got: {}", msg);
+            }
+            other => panic!("expected RequiresRawInstrument, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn deribit_options_with_raw_passthrough() {
+        let sym = Symbol::with_raw("BTC", "USD", "BTC-30MAY26-50000-C".to_string());
+        let r = SymbolNormalizer::to_exchange(ExchangeId::Deribit, &sym, AccountType::Options).unwrap();
+        assert_eq!(r, "BTC-30MAY26-50000-C");
+    }
+
+    #[test]
+    fn deribit_from_exchange_perps() {
+        let btc = SymbolNormalizer::from_exchange(ExchangeId::Deribit, "BTC-PERPETUAL", AccountType::FuturesCross).unwrap();
+        assert_eq!(btc.base, "BTC");
+        assert_eq!(btc.quote, "USD");
+        assert_eq!(btc.raw().unwrap(), "BTC-PERPETUAL");
+
+        let sol = SymbolNormalizer::from_exchange(ExchangeId::Deribit, "SOL_USDC-PERPETUAL", AccountType::FuturesCross).unwrap();
+        assert_eq!(sol.base, "SOL");
+        assert_eq!(sol.quote, "USDC");
+        assert_eq!(sol.raw().unwrap(), "SOL_USDC-PERPETUAL");
+    }
+
+    #[test]
+    fn deribit_from_exchange_option() {
+        let sym = SymbolNormalizer::from_exchange(ExchangeId::Deribit, "BTC-30MAY26-50000-C", AccountType::Options).unwrap();
+        assert_eq!(sym.base, "BTC");
+        assert_eq!(sym.quote, "USD");
+        assert_eq!(sym.raw().unwrap(), "BTC-30MAY26-50000-C");
+    }
+
+    #[test]
+    fn deribit_from_exchange_dated_future() {
+        let sym = SymbolNormalizer::from_exchange(ExchangeId::Deribit, "BTC-30MAY26", AccountType::FuturesCross).unwrap();
+        assert_eq!(sym.base, "BTC");
+        assert_eq!(sym.quote, "USD");
+        assert_eq!(sym.raw().unwrap(), "BTC-30MAY26");
+    }
+
+    #[test]
+    fn deribit_from_exchange_spot() {
+        let sym = SymbolNormalizer::from_exchange(ExchangeId::Deribit, "BTC-USDC", AccountType::Spot).unwrap();
+        assert_eq!(sym.base, "BTC");
+        assert_eq!(sym.quote, "USDC");
+    }
+
+    #[test]
+    fn deribit_is_valid_for() {
+        assert!(SymbolNormalizer::is_valid_for(ExchangeId::Deribit, "BTC-PERPETUAL", AccountType::FuturesCross));
+        assert!(SymbolNormalizer::is_valid_for(ExchangeId::Deribit, "SOL_USDC-PERPETUAL", AccountType::FuturesCross));
+        assert!(SymbolNormalizer::is_valid_for(ExchangeId::Deribit, "BTC-30MAY26-50000-C", AccountType::Options));
+        assert!(!SymbolNormalizer::is_valid_for(ExchangeId::Deribit, "BTCUSDT", AccountType::Spot));
+        assert!(!SymbolNormalizer::is_valid_for(ExchangeId::Deribit, "", AccountType::Spot));
+        assert!(!SymbolNormalizer::is_valid_for(ExchangeId::Deribit, "btc-perpetual", AccountType::FuturesCross));
     }
 }

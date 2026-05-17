@@ -4,7 +4,7 @@ Multi-exchange connector library — unified async Rust API for 22 production cr
 + stocks/forex/prediction (validated subset). Single `ExchangeHub` async pool exposing
 all connectors with self-declared, empirically-validated capabilities.
 
-**Version:** 0.2.1
+**Version:** 0.2.2
 **Edition:** Rust 2021
 **License:** MIT OR Apache-2.0
 **Repository:** https://github.com/ZENG3LD/digdigdig3

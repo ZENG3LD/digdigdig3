@@ -14,3 +14,8 @@ ralph-test/
 # Internal research docs (keep locally, not in repo)
 docs/research/
 ROADMAP.md
+
+# deep_smoke + smoke harness output files
+deep_smoke_*.txt
+smoke_*.txt
+*.log

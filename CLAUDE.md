@@ -35,16 +35,16 @@ Multi-exchange connector library — single `ExchangeHub` async pool exposing al
 
 **Connectors accept and emit exchange-native symbol strings.** Binance gets `"BTCUSDT"`, OKX gets `"BTC-USDT"`, Gate.io gets `"BTC_USDT"`. No internal "canonical Symbol{base, quote}" massaging.
 
-Symbol translation is a **separate utility** (`src/core/utils/symbol_normalizer.rs` — to be built). Callers that want one canonical Symbol → per-exchange raw use the normalizer explicitly:
+Symbol translation is a **separate utility** (`src/core/utils/symbol_normalizer.rs`). 22 in-scope exchanges each have a per-exchange sub-module with `to_exchange` + `from_exchange` rules. Callers that want canonical → raw use the normalizer explicitly:
 ```rust
-let raw = SymbolNormalizer::for_exchange(ExchangeId::Binance, &Symbol::new("BTC", "USDT"));
+let raw = SymbolNormalizer::to_exchange(ExchangeId::Binance, &Symbol::new("BTC", "USDT"), AccountType::Spot)?;
 // raw == "BTCUSDT"
-conn.get_ticker(&raw).await?;
+conn.get_ticker(&raw, AccountType::Spot).await?;
 ```
 
 This separates concerns:
 - **Connector** = wire protocol shim, knows only its exchange's native format
-- **Normalizer** = canonical ↔ raw translation, lives outside connectors
+- **Normalizer** = canonical ↔ raw translation, lives in `core::utils::symbol_normalizer` (22 sub-modules)
 - **Consumer** = chooses whether to feed canonical (via normalizer) or raw
 
 ### 3. Capabilities self-declared AND empirically validated
@@ -53,7 +53,7 @@ Two-level capability surface:
 
 - **Declared** — `HasCapabilities::capabilities() -> ConnectorCapabilities` (71 flags) declared per-connector at impl time.
 - **Derived** — `CapabilityProvider::supports(StreamKind, AccountType) -> SupportLevel` automatically derived from `WsProtocol::topic_registry()` (cannot drift from reality).
-- **Empirical** (TBD) — `validation_status: Option<ValidationStamp>` populated by smoke-validation harness, asserting "this method has been observed to return real data on date X". Required before consumers trust `capabilities()`.
+- **Empirical** — `HasCapabilities::validation_status() -> Option<ValidationStamp>` exposes per-method/stream validation from the `deep_smoke` harness. Embedded snapshot at `data/validation_snapshot.json` (22 entries). `hub.connect_full_validated(...)` rejects exchanges without a valid stamp — use for production flows that require confirmed data quality.
 
 ### 4. WebSocket: UniversalWsTransport, no bespoke loops
 
@@ -112,8 +112,10 @@ Must run in parallel: `tokio::spawn` per exchange + `join_all`, never sequential
 ```
 cd digdigdig3
 cargo build --example deep_smoke --release
-target\release\examples\deep_smoke.exe 2>&1 | tee deep_smoke_report.txt
+target\release\examples\deep_smoke.exe 2>&1 | tee deep_smoke_post_zeta.txt
 ```
+
+Outputs: `deep_smoke_post_zeta.txt` (human report) + regenerated `data/validation_snapshot.json` (22-entry JSON consumed by `ValidationStamp` at build time via `include_str!`).
 
 Validation gate: a connector is considered "validated" only when Layer 3 reports REST+WS green with non-default data. The connector's `capabilities()` should ONLY claim what Layer 3 confirms.
 
@@ -125,6 +127,8 @@ Validation gate: a connector is considered "validated" only when Layer 3 reports
 - Trading + Account + Positions traits per exchange (gated by API keys)
 - Capability discovery + empirical validation
 - `ExchangeHub` as single consumer-facing API
+- **Validated subset**: 22 connectors (L3-open CEX 18 + DEX 2 + Pred 1 + MOEX 1). Functional validation complete — see `data/validation_snapshot.json`.
+- **L1/L2-paid + L3-gated** (21 exchanges): compile-validated only; functional validation deferred until API keys available.
 
 ### Out of scope (deferred to other crates / future)
 - On-chain monitoring → `dig2chain`
@@ -133,13 +137,13 @@ Validation gate: a connector is considered "validated" only when Layer 3 reports
 - Symbol normalization INSIDE connectors (use external `SymbolNormalizer` utility)
 - Legacy `base_websocket.rs` and old bespoke WS loops — replaced by `UniversalWsTransport`
 
-### Currently broken / known gaps (priority order)
-1. **Class C parser bugs** (8 connectors emitting StreamEvents with default/zero fields): GateIO ts=0, Upbit symbol reversed + stale ts, Bitfinex/KuCoin symbol="", BingX/Coinbase/Gemini REST volume=0, CryptoCom wrong stream variant
-2. **MOEX factory bug** — `create_websocket(Moex)` returns UnsupportedOperation despite working `MoexWebSocket::new_public()` existing
-3. **5 silent streams** (Bitstamp, Deribit, Dydx, MOEX, YahooFinance) — symbol format gaps
-4. **HTX server-pong reply** — known limitation (commit e214995), framework reconnect compensates
-5. **README.md stale** (refs deleted traits + old architecture)
-6. **L1/L2/L3-gated connectors untested** (43 total, only 14 CEX production-tested)
+### Known gaps (post-Phase-η state)
+
+- **HyperLiquid** `get_ticker` needs asset_index → coin mapping — deferred; REST connect OK, ticker blocked on index resolution.
+- **Upbit** — WS events flow but timestamp is stale (exchange sends local millis without UTC adjustment in some streams).
+- **HTX** — server-pong reply hook not in framework; auto-reconnect compensates (commit e214995).
+- **MOEX** — FAST WS may need RU ISP routing for events; REST connect OK, WS event rate unreliable outside RU.
+- **L1/L2-paid + L3-gated connectors** (21 exchanges) — compile-validated only; functional validation deferred until API keys available.
 
 ## Per-module conventions
 
@@ -206,7 +210,7 @@ cargo run --example exchange_hub_demo --release
 
 ## Gotchas
 
-- README.md at root is **stale** (v0.1.20, references deleted traits MarginTrading/EarnStaking/etc and old `base_websocket.rs`). Cargo.toml is v0.2.0. Do not trust README for architecture facts; trust CLAUDE.md and code.
+- Cargo.toml is v0.2.2. README.md matches. Trust CLAUDE.md and code for architecture facts.
 - Windows codepage: prefix Windows-native commands with `chcp.com 65001 > $null 2>&1;` for UTF-8.
 - NEVER chain git commands with `&&`. Separate `git add` / `git commit` calls.
 - digdigdig3 is a git submodule with its own `.git`. `cd digdigdig3` before any git command.

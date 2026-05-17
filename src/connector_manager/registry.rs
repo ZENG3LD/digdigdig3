@@ -4,7 +4,6 @@
 //!
 //! Provides O(1) lookup by ExchangeId and filtering by category/type.
 
-use std::collections::HashMap;
 use crate::core::types::{
     ExchangeId, ExchangeType,
     RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, DecayingLimitConfig,
@@ -2059,72 +2058,56 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
 // CONNECTOR REGISTRY
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Registry for connector metadata with O(1) lookup
-pub struct ConnectorRegistry {
-    /// HashMap for fast lookup by ExchangeId
-    lookup: HashMap<ExchangeId, &'static ConnectorMetadata>,
-}
+/// Registry for connector metadata.
+pub(crate) struct ConnectorRegistry;
 
 impl ConnectorRegistry {
-    /// Create a new registry from static metadata
-    pub fn new() -> Self {
-        let lookup = CONNECTOR_METADATA_ARRAY
-            .iter()
-            .map(|meta| (meta.id, meta))
-            .collect();
-        Self { lookup }
+    /// Create a new registry.
+    pub(crate) fn new() -> Self {
+        Self
     }
 
-    /// Get metadata by ExchangeId
-    pub fn get(&self, id: &ExchangeId) -> Option<&'static ConnectorMetadata> {
-        self.lookup.get(id).copied()
+    /// List all connector metadata.
+    pub(crate) fn list_all(&self) -> Vec<&'static ConnectorMetadata> {
+        CONNECTOR_METADATA_ARRAY.iter().collect()
+    }
+}
+
+#[cfg(test)]
+impl ConnectorRegistry {
+    /// Get metadata by ExchangeId (linear scan — 47 entries, negligible).
+    pub(crate) fn get(&self, id: &ExchangeId) -> Option<&'static ConnectorMetadata> {
+        CONNECTOR_METADATA_ARRAY.iter().find(|m| m.id == *id)
     }
 
-    /// Iterate over all metadata entries
-    pub fn iter(&self) -> impl Iterator<Item = &'static ConnectorMetadata> {
+    /// Iterate over all metadata entries (test only).
+    fn iter(&self) -> impl Iterator<Item = &'static ConnectorMetadata> {
         CONNECTOR_METADATA_ARRAY.iter()
     }
 
-    /// List all connector metadata
-    pub fn list_all(&self) -> Vec<&'static ConnectorMetadata> {
-        CONNECTOR_METADATA_ARRAY.iter().collect()
-    }
-
-    /// List connectors by category
-    pub fn list_by_category(&self, category: ConnectorCategory) -> Vec<&'static ConnectorMetadata> {
-        CONNECTOR_METADATA_ARRAY
-            .iter()
-            .filter(|m| m.category == category)
-            .collect()
-    }
-
-    /// List connectors by exchange type
-    pub fn list_by_type(&self, exchange_type: ExchangeType) -> Vec<&'static ConnectorMetadata> {
-        CONNECTOR_METADATA_ARRAY
-            .iter()
-            .filter(|m| m.exchange_type == exchange_type)
-            .collect()
-    }
-
-    /// List connectors that support trading
-    pub fn list_with_trading(&self) -> Vec<&'static ConnectorMetadata> {
-        CONNECTOR_METADATA_ARRAY
-            .iter()
-            .filter(|m| m.supported_features.trading)
-            .collect()
-    }
-
-    /// List connectors that support WebSocket
-    pub fn list_with_websocket(&self) -> Vec<&'static ConnectorMetadata> {
-        CONNECTOR_METADATA_ARRAY
-            .iter()
-            .filter(|m| m.supported_features.websocket)
-            .collect()
-    }
-
-    /// Get total count of connectors
-    pub fn count(&self) -> usize {
+    /// Get total count of connectors (test only).
+    fn count(&self) -> usize {
         CONNECTOR_METADATA_ARRAY.len()
+    }
+
+    /// List connectors by category (test only).
+    fn list_by_category(&self, category: ConnectorCategory) -> Vec<&'static ConnectorMetadata> {
+        CONNECTOR_METADATA_ARRAY.iter().filter(|m| m.category == category).collect()
+    }
+
+    /// List connectors by exchange type (test only).
+    fn list_by_type(&self, exchange_type: ExchangeType) -> Vec<&'static ConnectorMetadata> {
+        CONNECTOR_METADATA_ARRAY.iter().filter(|m| m.exchange_type == exchange_type).collect()
+    }
+
+    /// List connectors that support trading (test only).
+    fn list_with_trading(&self) -> Vec<&'static ConnectorMetadata> {
+        CONNECTOR_METADATA_ARRAY.iter().filter(|m| m.supported_features.trading).collect()
+    }
+
+    /// List connectors that support WebSocket (test only).
+    fn list_with_websocket(&self) -> Vec<&'static ConnectorMetadata> {
+        CONNECTOR_METADATA_ARRAY.iter().filter(|m| m.supported_features.websocket).collect()
     }
 }
 

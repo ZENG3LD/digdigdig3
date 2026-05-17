@@ -6,13 +6,30 @@ Multi-exchange connector library — single `ExchangeHub` async pool exposing al
 
 ### 1. Hub-first API surface
 
-Consumers go through `ExchangeHub` (`src/connector_manager/hub.rs`). One entry point:
+`ExchangeHub` is the **sole public entry point** for all multi-connector operations. All pool/factory internals are `pub(crate)` — external code cannot bypass the hub.
+
+#### PUBLIC types (`digdigdig3::connector_manager::*`)
+- `ExchangeHub` — single entry for all operations
+- `AuthType`, `ConnectorCategory`, `ConnectorMetadata`, `Features` — read-only registry metadata
+- All types in `core::types::*` and traits in `core::traits::*`
+- `core::websocket::{StreamSpec, StreamKind, KlineInterval, SupportLevel}` — stream construction
+- `core::utils::SymbolNormalizer`, `core::utils::validation_snapshot::validation_for`
+
+#### INTERNAL (`pub(crate)`)
+- `ConnectorPool`, `WebSocketPool` — pool internals accessed only through hub
+- `ConnectorFactory` — connector construction, only called from hub
+- `ConnectorRegistry` — static metadata accessor, only used for test harness
+
+#### Hub API
 - `hub.connect_full(id, &[AccountType], testnet)` — wires REST + WS
+- `hub.connect_public(id, testnet)` — REST only
+- `hub.connect_websocket(id, account_type, testnet)` — WS only
 - `hub.rest(id) -> Option<Arc<dyn CoreConnector>>` — typed dispatch
 - `hub.ws(id, account_type) -> Option<Arc<dyn WebSocketConnector>>` — WS dispatch
 - `hub.shutdown(id)` — releases REST + WS
-
-Do NOT bypass the hub to reach pools directly. Internal `rest: ConnectorPool` and `ws: WebSocketPool` are implementation detail.
+- `hub.list_connected() -> Vec<ExchangeId>` — all REST-connected exchanges
+- `hub.is_connected(id) -> bool` — check REST connectivity
+- `hub.capabilities(id) -> Option<ConnectorCapabilities>` — capability query
 
 ### 2. Raw exchange symbols inside connectors
 

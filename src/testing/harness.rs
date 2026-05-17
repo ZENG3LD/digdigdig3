@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::core::types::{ExchangeId, ExchangeResult};
 use crate::core::traits::{Credentials, CoreConnector};
-use crate::connector_manager::{ConnectorFactory, ConnectorRegistry, Features};
+use crate::connector_manager::{ConnectorFactory, ConnectorRegistry};
 
 use super::env_loader;
 
@@ -165,11 +165,6 @@ impl TestHarness {
         }
     }
 
-    /// Get registry feature flags for an exchange, if the exchange is registered.
-    pub fn features(id: ExchangeId) -> Option<Features> {
-        let registry = ConnectorRegistry::new();
-        registry.get(&id).map(|m| m.supported_features)
-    }
 }
 
 impl Default for TestHarness {
@@ -185,6 +180,15 @@ impl Default for TestHarness {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connector_manager::Features;
+
+    impl TestHarness {
+        /// Get registry feature flags for an exchange, if the exchange is registered.
+        fn features(id: ExchangeId) -> Option<Features> {
+            let registry = ConnectorRegistry::new();
+            registry.get(&id).map(|m| m.supported_features)
+        }
+    }
 
     #[test]
     fn test_harness_new() {

@@ -134,25 +134,26 @@ async fn test_exchange(id: ExchangeId) -> Row {
 
     // ── WS: connect + subscribe + collect 5s ────────────────────────────────
     let (ws_connect, ws_events) = 'ws: {
-        // Try to get a WS connector from factory
+        // Wire WS through hub
         let ws_result = timeout(
             Duration::from_secs(8),
-            digdigdig3::connector_manager::ConnectorFactory::create_websocket(
-                id,
-                AccountType::Spot,
-                false,
-            ),
+            hub.connect_websocket(id, AccountType::Spot, false),
         )
         .await;
 
-        let ws = match ws_result {
-            Ok(Ok(w)) => w,
+        match ws_result {
+            Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 let msg = e.to_string();
                 let short = if msg.len() > 50 { &msg[..50] } else { &msg };
                 break 'ws (format!("Unsupported: {}", short), "n/a".to_string());
             }
             Err(_) => break 'ws ("create_timeout".to_string(), "n/a".to_string()),
+        }
+
+        let ws = match hub.ws(id, AccountType::Spot) {
+            Some(w) => w,
+            None => break 'ws ("ws_none_after_connect".to_string(), "n/a".to_string()),
         };
 
         // Connect

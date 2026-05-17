@@ -142,10 +142,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         hub.len_ws()
     );
 
-    // ── 9. Escape hatch: raw pool access ───────────────────────────────
-    println!("\n[9. escape hatch: raw pool access]");
-    let rest_pool = hub.rest_pool();
-    println!("  rest_pool.ids() = {:?}", rest_pool.ids());
+    // ── 9. Hub conveniences ────────────────────────────────────────────
+    println!("\n[9. hub conveniences: list_connected + is_connected]");
+    println!("  list_connected() = {:?}", hub.list_connected());
+    println!("  is_connected(Binance) = {}", hub.is_connected(ExchangeId::Binance));
+    println!("  is_connected(KuCoin)  = {}", hub.is_connected(ExchangeId::KuCoin));
 
     println!("\n── Done. One hub, all surfaces. ──");
     Ok(())

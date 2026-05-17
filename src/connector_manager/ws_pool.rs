@@ -26,13 +26,13 @@ use crate::core::types::{AccountType, ExchangeId};
 /// }
 /// ```
 #[derive(Clone)]
-pub struct WebSocketPool {
+pub(crate) struct WebSocketPool {
     sockets: Arc<DashMap<(ExchangeId, AccountType), Arc<dyn WebSocketConnector>>>,
 }
 
 impl WebSocketPool {
     /// Create a new empty pool.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             sockets: Arc::new(DashMap::new()),
         }
@@ -42,7 +42,7 @@ impl WebSocketPool {
     ///
     /// If an entry already exists for `(id, account_type)`, it is replaced and
     /// the previous value is returned.
-    pub fn insert(
+    pub(crate) fn insert(
         &self,
         id: ExchangeId,
         account_type: AccountType,
@@ -52,7 +52,7 @@ impl WebSocketPool {
     }
 
     /// Get a WebSocket connector by `(exchange, account_type)` (lock-free read).
-    pub fn get(
+    pub(crate) fn get(
         &self,
         id: ExchangeId,
         account_type: AccountType,
@@ -61,7 +61,7 @@ impl WebSocketPool {
     }
 
     /// Remove a WebSocket connector from the pool.
-    pub fn remove(
+    pub(crate) fn remove(
         &self,
         id: ExchangeId,
         account_type: AccountType,
@@ -69,23 +69,18 @@ impl WebSocketPool {
         self.sockets.remove(&(id, account_type)).map(|(_, v)| v)
     }
 
-    /// Check whether the pool contains an entry for `(exchange, account_type)`.
-    pub fn contains(&self, id: ExchangeId, account_type: AccountType) -> bool {
-        self.sockets.contains_key(&(id, account_type))
-    }
-
     /// Number of entries in the pool.
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.sockets.len()
     }
 
     /// Returns `true` if the pool contains no entries.
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.sockets.is_empty()
     }
 
     /// Remove all entries from the pool.
-    pub fn clear(&self) {
+    pub(crate) fn clear(&self) {
         self.sockets.clear();
     }
 }

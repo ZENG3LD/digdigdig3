@@ -182,7 +182,7 @@ use crate::l2::paid::cryptocompare::CryptoCompareWebSocket;
 ///     credentials
 /// ).await?;
 /// ```
-pub struct ConnectorFactory;
+pub(crate) struct ConnectorFactory;
 
 impl ConnectorFactory {
     /// Create a public (no auth) connector for any exchange
@@ -209,7 +209,7 @@ impl ConnectorFactory {
     /// let connector = ConnectorFactory::create_public(ExchangeId::Binance, false).await?;
     /// let price = connector.get_price(symbol, AccountType::Spot).await?;
     /// ```
-    pub async fn create_public(id: ExchangeId, testnet: bool) -> ExchangeResult<Arc<dyn CoreConnector>> {
+    pub(crate) async fn create_public(id: ExchangeId, testnet: bool) -> ExchangeResult<Arc<dyn CoreConnector>> {
         match id {
             // ═══════════════════════════════════════════════════════════════════════
             // CEX - Pattern A: ::public(testnet: bool)
@@ -492,7 +492,7 @@ impl ConnectorFactory {
     ///
     /// let balance = connector.get_balance(crate::core::types::BalanceQuery { asset: None, account_type: AccountType::Spot }).await?;
     /// ```
-    pub async fn create_authenticated(
+    pub(crate) async fn create_authenticated(
         id: ExchangeId,
         credentials: Credentials,
     ) -> ExchangeResult<Arc<dyn CoreConnector>> {
@@ -839,7 +839,7 @@ impl ConnectorFactory {
     /// ).await?;
     /// ws.connect(AccountType::Spot).await?;
     /// ```
-    pub async fn create_websocket(
+    pub(crate) async fn create_websocket(
         id: ExchangeId,
         account_type: AccountType,
         testnet: bool,

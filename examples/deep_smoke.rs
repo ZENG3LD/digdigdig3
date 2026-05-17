@@ -14,7 +14,7 @@
 
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use digdigdig3::connector_manager::{ConnectorFactory, ExchangeHub};
+use digdigdig3::connector_manager::ExchangeHub;
 use digdigdig3::core::traits::MarketData;
 use digdigdig3::core::types::{AccountType, ExchangeId, StreamEvent, SubscriptionRequest, Symbol};
 use digdigdig3::core::utils::SymbolNormalizer;
@@ -386,13 +386,18 @@ async fn test_exchange(id: ExchangeId) -> Row {
     };
 
     // ── WS ────────────────────────────────────────────────────────────────────
-    let ws = match timeout(
+    let ws_result = match timeout(
         Duration::from_secs(8),
-        ConnectorFactory::create_websocket(id, account_type, false),
+        hub.connect_websocket(id, account_type, false),
     )
     .await
     {
-        Ok(Ok(w)) => Some(w),
+        Ok(Ok(())) => {
+            match hub.ws(id, account_type) {
+                Some(ws) => run_ws_test(ws, ws_symbol, account_type, stale_ms).await,
+                None => WsResult::Unsupported("ws_none_after_connect".into()),
+            }
+        }
         Ok(Err(e)) => {
             let msg = e.to_string();
             return Row {
@@ -408,12 +413,6 @@ async fn test_exchange(id: ExchangeId) -> Row {
                 ws: WsResult::Unsupported("create_ws_timeout".into()),
             };
         }
-    };
-
-    let ws_result = if let Some(ws) = ws {
-        run_ws_test(ws, ws_symbol, account_type, stale_ms).await
-    } else {
-        WsResult::Unsupported("none".into())
     };
 
     Row { exchange: id, rest, ws: ws_result }

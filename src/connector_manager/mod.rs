@@ -42,13 +42,15 @@ mod config;
 mod factory;
 mod hub;
 
-pub use registry::{
-    AuthType, ConnectorCategory, ConnectorMetadata, ConnectorRegistry, Features,
-};
-pub use pool::{ConnectorPool, ConnectorPoolBuilder};
-pub use ws_pool::WebSocketPool;
-pub use aggregator::{BestBidAsk, ConnectorAggregator, ConnectorAggregatorBuilder};
-pub use config::{ConnectorConfig, ConnectorConfigManager, ExchangeCredentials};
-pub use factory::ConnectorFactory;
 pub use hub::ExchangeHub;
 pub use crate::core::traits::CoreConnector;
+
+// Registry metadata types — public for consumers who want to inspect connector capabilities.
+// ExchangeHub is the sole entry point for operations; these are read-only metadata.
+pub use registry::{AuthType, ConnectorCategory, ConnectorMetadata, Features};
+
+// Internal re-exports — available within the crate only
+pub(crate) use registry::ConnectorRegistry;
+pub(crate) use pool::ConnectorPool;
+pub(crate) use ws_pool::WebSocketPool;
+pub(crate) use factory::ConnectorFactory;

@@ -1,10 +1,10 @@
-//! # pool_dispatch — Trait-object pool smoke test
+//! # pool_dispatch — Hub-based trait-object dispatch smoke test
 //!
-//! Constructs a `ConnectorPool`, populates it with several exchanges via
-//! `ConnectorFactory`, then calls trait methods through `Arc<dyn CoreConnector>`
-//! to prove the post-Stage-4 architecture works end-to-end:
+//! Constructs an `ExchangeHub`, populates it via `hub.connect_full()`, then
+//! calls trait methods through `Arc<dyn CoreConnector>` to prove the
+//! architecture works end-to-end:
 //!
-//! - Pool returns ONE type (`Arc<dyn CoreConnector>`)
+//! - Hub returns ONE type (`Arc<dyn CoreConnector>`) via `hub.rest()`
 //! - All `CoreConnector` super-trait methods reachable via vtable
 //! - No manual enum matching, no per-connector pool re-assembly
 //!
@@ -13,25 +13,11 @@
 //!
 //! No API keys required — all calls hit public endpoints.
 
-use std::sync::Arc;
-
-use digdigdig3::connector_manager::{ConnectorFactory, ConnectorPool, WebSocketPool};
-use digdigdig3::core::traits::{CoreConnector, HasCapabilities, MarketData, MarketDataPublic, BatchOrders};
+use digdigdig3::connector_manager::ExchangeHub;
+use digdigdig3::core::traits::{CoreConnector, MarketData, MarketDataPublic, BatchOrders};
 use digdigdig3::core::types::{AccountType, ExchangeId, Symbol};
 
-async fn populate_pool(pool: &ConnectorPool) {
-    for id in [ExchangeId::Binance, ExchangeId::Bybit, ExchangeId::OKX] {
-        match ConnectorFactory::create_public(id, false).await {
-            Ok(conn) => {
-                pool.insert(id, conn);
-                println!("  + {:?} inserted", id);
-            }
-            Err(e) => println!("  ! {:?} failed: {}", id, e),
-        }
-    }
-}
-
-async fn smoke_ticker(conn: Arc<dyn CoreConnector>, symbol: Symbol) {
+async fn smoke_ticker(conn: std::sync::Arc<dyn CoreConnector>, symbol: Symbol) {
     let id = conn.exchange_id();
     let sym_str = symbol.to_concat();
     match MarketData::get_ticker(&*conn, &sym_str, AccountType::Spot).await {
@@ -43,7 +29,7 @@ async fn smoke_ticker(conn: Arc<dyn CoreConnector>, symbol: Symbol) {
     }
 }
 
-async fn smoke_funding(conn: Arc<dyn CoreConnector>, symbol: Symbol) {
+async fn smoke_funding(conn: std::sync::Arc<dyn CoreConnector>, symbol: Symbol) {
     let id = conn.exchange_id();
     let sym_concat = symbol.to_concat();
     let sym_str = symbol.raw.as_deref().unwrap_or(&sym_concat);
@@ -72,17 +58,22 @@ async fn smoke_funding(conn: Arc<dyn CoreConnector>, symbol: Symbol) {
 
 #[tokio::main]
 async fn main() {
-    println!("── ConnectorPool dispatch smoke ───────────────────────────");
+    println!("── Hub dispatch smoke ─────────────────────────────────────");
 
-    let pool = ConnectorPool::new();
-    println!("\n[populate]");
-    populate_pool(&pool).await;
-    println!("\n  pool.len() = {}", pool.len());
+    let hub = ExchangeHub::new();
+    println!("\n[connect_full — REST + WS]");
+    for id in [ExchangeId::Binance, ExchangeId::Bybit, ExchangeId::OKX] {
+        match hub.connect_full(id, &[AccountType::Spot], false).await {
+            Ok(()) => println!("  + {:?} connected", id),
+            Err(e) => println!("  ! {:?} failed: {}", id, e),
+        }
+    }
+    println!("\n  hub: rest={}, ws={}", hub.len_rest(), hub.len_ws());
 
     println!("\n[dispatch: get_ticker via &dyn MarketData]");
     let btc_usdt = Symbol::new("BTC", "USDT");
     for id in [ExchangeId::Binance, ExchangeId::Bybit, ExchangeId::OKX] {
-        if let Some(conn) = pool.get(&id) {
+        if let Some(conn) = hub.rest(id) {
             smoke_ticker(conn, btc_usdt.clone()).await;
         }
     }
@@ -99,13 +90,13 @@ async fn main() {
         (ExchangeId::Bybit, btc_perp.clone()),
         (ExchangeId::OKX, btc_swap),
     ] {
-        if let Some(conn) = pool.get(&id) {
+        if let Some(conn) = hub.rest(id) {
             smoke_funding(conn, sym).await;
         }
     }
 
     println!("\n[as_any downcast: exchange-specific Binance method]");
-    if let Some(conn) = pool.get(&ExchangeId::Binance) {
+    if let Some(conn) = hub.rest(ExchangeId::Binance) {
         use digdigdig3::l3::open::crypto::cex::binance::BinanceConnector;
         if let Some(binance) = conn.as_any().downcast_ref::<BinanceConnector>() {
             match binance.get_basis_history("BTCUSDT", "PERPETUAL", "5m", Some(3), None, None).await {
@@ -117,29 +108,25 @@ async fn main() {
         }
     }
 
-    println!("\n[WebSocketPool dispatch]");
-    let ws_pool = WebSocketPool::new();
+    println!("\n[WebSocket dispatch via hub.ws()]");
     for id in [ExchangeId::Binance, ExchangeId::Bybit, ExchangeId::OKX] {
-        match ConnectorFactory::create_websocket(id, AccountType::Spot, false).await {
-            Ok(ws) => {
-                ws_pool.insert(id, AccountType::Spot, ws.clone());
-                println!("  + {:?} ws inserted, status={:?}", id, ws.connection_status());
-            }
-            Err(e) => println!("  ! {:?} ws factory failed: {}", id, e),
+        if let Some(ws) = hub.ws(id, AccountType::Spot) {
+            println!("  + {:?} ws status={:?}", id, ws.connection_status());
+        } else {
+            println!("  ! {:?} ws: no entry", id);
         }
     }
-    println!("  ws_pool.len() = {}", ws_pool.len());
+    println!("  hub ws entries = {}", hub.len_ws());
 
-    println!("\n[trait dispatch via pool: max_batch_place_size on Binance]");
-    if let Some(conn) = pool.get(&ExchangeId::Binance) {
+    println!("\n[trait dispatch: max_batch_place_size on Binance]");
+    if let Some(conn) = hub.rest(ExchangeId::Binance) {
         let max = BatchOrders::max_batch_place_size(&*conn);
         println!("  Binance max_batch_place_size = {}", max);
     }
 
-    println!("\n[capability discovery via pool]");
-    for id in [ExchangeId::Binance, ExchangeId::Bybit, ExchangeId::OKX] {
-        if let Some(conn) = pool.get(&id) {
-            let caps = HasCapabilities::capabilities(&*conn);
+    println!("\n[capability discovery via hub.capabilities()]");
+    for id in hub.list_connected() {
+        if let Some(caps) = hub.capabilities(id) {
             println!(
                 "  {:?}: batch_place={} (max={}), funding_history={}, transfers={}, ws={}",
                 id, caps.has_batch_place, caps.max_batch_place_size,
@@ -148,5 +135,9 @@ async fn main() {
         }
     }
 
-    println!("\n── Done. REST surface via Arc<dyn CoreConnector>, WS via separate pool. ──\n");
+    println!("\n[is_connected check]");
+    println!("  Binance connected: {}", hub.is_connected(ExchangeId::Binance));
+    println!("  KuCoin connected:  {}", hub.is_connected(ExchangeId::KuCoin));
+
+    println!("\n── Done. REST surface via Arc<dyn CoreConnector>, WS via hub. ──\n");
 }

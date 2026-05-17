@@ -181,15 +181,13 @@ impl ExchangeHub {
         self.ws.clear();
     }
 
-    // ── Underlying pool accessors (escape hatch) ─────────────────────────
-
-    /// Direct access to the REST pool.
-    pub fn rest_pool(&self) -> &ConnectorPool {
-        &self.rest
+    /// Returns `true` if the exchange has a REST entry in the hub.
+    pub fn is_connected(&self, id: ExchangeId) -> bool {
+        self.rest.contains(&id)
     }
 
-    /// Direct access to the WS pool.
-    pub fn ws_pool(&self) -> &WebSocketPool {
-        &self.ws
+    /// List exchange IDs with REST entries (alias of `ids()`).
+    pub fn list_connected(&self) -> Vec<ExchangeId> {
+        self.rest.ids()
     }
 }

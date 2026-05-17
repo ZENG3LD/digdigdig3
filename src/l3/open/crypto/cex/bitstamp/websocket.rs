@@ -40,7 +40,7 @@ use tokio::sync::{mpsc, broadcast, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream, MaybeTlsStream};
 
 use crate::core::{
-    AccountType, Symbol,
+    AccountType,
     ExchangeError, ExchangeResult,
     ConnectionStatus, StreamEvent, SubscriptionRequest,
 };
@@ -152,23 +152,26 @@ impl BitstampWebSocket {
     /// `StreamEvent::Ticker` events with the latest price. The channel name
     /// is tracked in `ticker_channels` so the message handler knows to emit
     /// a Ticker (with last_price) rather than a raw Trade event.
-    pub async fn subscribe_ticker(&self, symbol: Symbol) -> ExchangeResult<()> {
-        let pair = format_symbol(&symbol, AccountType::Spot);
+    ///
+    /// `pair` must be the exchange-native raw string (e.g. `"btcusd"`).
+    pub async fn subscribe_ticker(&self, pair: &str) -> ExchangeResult<()> {
         let channel = format!("live_trades_{}", pair);
         self.ticker_channels.lock().await.insert(channel.clone());
         self.subscribe_channel(&channel).await
     }
 
-    /// Subscribe to live trades
-    pub async fn subscribe_trades(&self, symbol: Symbol) -> ExchangeResult<()> {
-        let pair = format_symbol(&symbol, AccountType::Spot);
+    /// Subscribe to live trades.
+    ///
+    /// `pair` must be the exchange-native raw string (e.g. `"btcusd"`).
+    pub async fn subscribe_trades(&self, pair: &str) -> ExchangeResult<()> {
         let channel = format!("live_trades_{}", pair);
         self.subscribe_channel(&channel).await
     }
 
-    /// Subscribe to order book snapshots
-    pub async fn subscribe_orderbook(&self, symbol: Symbol) -> ExchangeResult<()> {
-        let pair = format_symbol(&symbol, AccountType::Spot);
+    /// Subscribe to order book snapshots.
+    ///
+    /// `pair` must be the exchange-native raw string (e.g. `"btcusd"`).
+    pub async fn subscribe_orderbook(&self, pair: &str) -> ExchangeResult<()> {
         let channel = format!("order_book_{}", pair);
         self.subscribe_channel(&channel).await
     }
@@ -182,8 +185,9 @@ impl BitstampWebSocket {
     /// Events arrive as `OrderbookDelta` with a single bid or ask level per frame:
     /// - `"order_created"` / `"order_changed"` — level with non-zero quantity
     /// - `"order_deleted"` — level with zero quantity (remove signal)
-    pub async fn subscribe_live_orders(&self, symbol: Symbol) -> ExchangeResult<()> {
-        let pair = format_symbol(&symbol, AccountType::Spot);
+    ///
+    /// `pair` must be the exchange-native raw string (e.g. `"btcusd"`).
+    pub async fn subscribe_live_orders(&self, pair: &str) -> ExchangeResult<()> {
         let channel = format!("live_orders_{}", pair);
         self.subscribe_channel(&channel).await
     }
@@ -195,19 +199,8 @@ impl BitstampWebSocket {
     /// Bitstamp sends a full L3 book snapshot on subscribe and pushes incremental
     /// updates when individual orders are created, changed, or deleted.
     ///
-    /// Response shape (verified via REST group=2 which mirrors WS L3 layout):
-    /// ```json
-    /// { "data": {
-    ///     "timestamp": "1643643584",
-    ///     "microtimestamp": "1643643584684047",
-    ///     "bids": [["81400", "0.001", "2006867446149120"], ...],
-    ///     "asks": [["81401", "0.061", "2006867500843010"], ...]
-    /// }, "channel": "detail_order_book_btcusd", "event": "data" }
-    /// ```
-    ///
-    /// Each entry `[price, amount, order_id]` emits `StreamEvent::OrderbookL3`.
-    pub async fn subscribe_detail_order_book(&self, symbol: Symbol) -> ExchangeResult<()> {
-        let pair = format_symbol(&symbol, AccountType::Spot);
+    /// `pair` must be the exchange-native raw string (e.g. `"btcusd"`).
+    pub async fn subscribe_detail_order_book(&self, pair: &str) -> ExchangeResult<()> {
         let channel = format!("detail_order_book_{}", pair);
         self.subscribe_channel(&channel).await
     }
@@ -641,32 +634,40 @@ impl WebSocketConnector for BitstampWebSocket {
     }
 
     async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
+        // Extract exchange-native pair string from the subscription symbol.
+        // Callers that already hold a raw string (e.g. "btcusd") should pass it via
+        // Symbol::with_raw. Callers that pass Symbol::new("BTC","USD") get the pair
+        // via format_symbol which produces the Bitstamp lowercase-concat format.
+        let pair = request.symbol
+            .raw()
+            .map(|r| r.to_string())
+            .unwrap_or_else(|| format_symbol(&request.symbol, AccountType::Spot));
+
         let result = match request.stream_type {
             crate::core::types::StreamType::Ticker => {
-                // Ticker -> diff_order_book (high frequency, reliable)
-                self.subscribe_ticker(request.symbol.clone()).await
+                // Ticker -> live_trades (high frequency, reliable)
+                self.subscribe_ticker(&pair).await
                     .map_err(|e| WebSocketError::Subscription(format!("{:?}", e)))
             }
             crate::core::types::StreamType::Trade => {
                 // Trade -> live_trades (per-trade events)
-                self.subscribe_trades(request.symbol.clone()).await
+                self.subscribe_trades(&pair).await
                     .map_err(|e| WebSocketError::Subscription(format!("{:?}", e)))
             }
             crate::core::types::StreamType::Orderbook => {
                 // Orderbook -> order_book (full snapshots)
-                self.subscribe_orderbook(request.symbol.clone()).await
+                self.subscribe_orderbook(&pair).await
                     .map_err(|e| WebSocketError::Subscription(format!("{:?}", e)))
             }
             crate::core::types::StreamType::OrderbookDelta => {
                 // OrderbookDelta -> diff_order_book (incremental updates)
-                let pair = format_symbol(&request.symbol, AccountType::Spot);
                 let channel = format!("diff_order_book_{}", pair);
                 self.subscribe_channel(&channel).await
                     .map_err(|e| WebSocketError::Subscription(format!("{:?}", e)))
             }
             crate::core::types::StreamType::OrderbookL3 => {
                 // L3 full orderbook with order IDs via detail_order_book channel
-                self.subscribe_detail_order_book(request.symbol.clone()).await
+                self.subscribe_detail_order_book(&pair).await
                     .map_err(|e| WebSocketError::Subscription(format!("{:?}", e)))
             }
             _ => Err(WebSocketError::Subscription("Unsupported subscription type".to_string())),

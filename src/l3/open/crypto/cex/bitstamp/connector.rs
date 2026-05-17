@@ -20,7 +20,7 @@ use serde_json::Value;
 
 use crate::core::{
     HttpClient, Credentials,
-    ExchangeId, ExchangeType, AccountType, Symbol,
+    ExchangeId, ExchangeType, AccountType,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, Balance, AccountInfo,
@@ -443,36 +443,32 @@ impl ExchangeIdentity for BitstampConnector {
 impl MarketData for BitstampConnector {
     async fn get_price(
         &self,
-        symbol: Symbol,
-        account_type: AccountType,
+        symbol: &str,
+        _account_type: AccountType,
     ) -> ExchangeResult<Price> {
-        let pair = format_symbol(&symbol, account_type);
-        let response = self.get(BitstampEndpoint::Ticker, Some(&pair), HashMap::new()).await?;
+        let response = self.get(BitstampEndpoint::Ticker, Some(symbol), HashMap::new()).await?;
         let ticker = BitstampParser::parse_ticker(&response)?;
         Ok(ticker.last_price)
     }
 
     async fn get_orderbook(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         _depth: Option<u16>,
-        account_type: AccountType,
+        _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        let pair = format_symbol(&symbol, account_type);
-        let response = self.get(BitstampEndpoint::Orderbook, Some(&pair), HashMap::new()).await?;
+        let response = self.get(BitstampEndpoint::Orderbook, Some(symbol), HashMap::new()).await?;
         BitstampParser::parse_orderbook(&response)
     }
 
     async fn get_klines(
         &self,
-        symbol: Symbol,
+        symbol: &str,
         interval: &str,
         limit: Option<u16>,
-        account_type: AccountType,
+        _account_type: AccountType,
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let pair = format_symbol(&symbol, account_type);
-
         let mut params = HashMap::new();
         params.insert("step".to_string(), map_kline_interval(interval).to_string());
 
@@ -484,17 +480,16 @@ impl MarketData for BitstampConnector {
             params.insert("end".to_string(), (et / 1000).to_string());
         }
 
-        let response = self.get(BitstampEndpoint::Ohlc, Some(&pair), params).await?;
+        let response = self.get(BitstampEndpoint::Ohlc, Some(symbol), params).await?;
         BitstampParser::parse_klines(&response)
     }
 
     async fn get_ticker(
         &self,
-        symbol: Symbol,
-        account_type: AccountType,
+        symbol: &str,
+        _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        let pair = format_symbol(&symbol, account_type);
-        let response = self.get(BitstampEndpoint::Ticker, Some(&pair), HashMap::new()).await?;
+        let response = self.get(BitstampEndpoint::Ticker, Some(symbol), HashMap::new()).await?;
         BitstampParser::parse_ticker(&response)
     }
 

@@ -22,7 +22,7 @@ use tokio::time::interval;
 use tracing::{error, info, warn};
 
 use digdigdig3::connector_manager::ExchangeHub;
-use digdigdig3::core::storage::{EventLog, EventRecord};
+use digdigdig3::core::storage::{StorageConfig, StorageManager, StreamKey};
 use digdigdig3::core::types::{
     AccountType, ExchangeId, StreamType, SubscriptionRequest, Symbol,
 };
@@ -165,9 +165,15 @@ impl CatcherState {
 // ── Config ────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, Default)]
-struct StorageConfig {
+struct StorageCatcherConfig {
     enabled: bool,
     root: Option<String>,
+    #[serde(default = "default_retention_days")]
+    retention_days: u32,
+}
+
+fn default_retention_days() -> u32 {
+    30
 }
 
 #[derive(Debug, Deserialize)]
@@ -175,7 +181,7 @@ struct Config {
     #[serde(rename = "target")]
     targets: Vec<TargetConfig>,
     #[serde(default)]
-    storage: StorageConfig,
+    storage: StorageCatcherConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -219,7 +225,7 @@ fn default_config() -> Config {
             streams: vec!["Trade".into(), "Ticker".into()],
         },
     ];
-    Config { targets, storage: StorageConfig::default() }
+    Config { targets, storage: StorageCatcherConfig::default() }
 }
 
 fn parse_exchange(s: &str) -> Option<ExchangeId> {
@@ -509,7 +515,7 @@ async fn run_subscriber_loop(
     stream: StreamType,
     symbol: String,
     stats: Arc<RwLock<JobStats>>,
-    event_log: Option<Arc<EventLog>>,
+    storage: Option<Arc<StorageManager>>,
 ) {
     let kind_str = stream_kind_str(&stream);
 
@@ -573,16 +579,18 @@ async fn run_subscriber_loop(
                 Some(Ok(event)) => {
                     stats.write().await.record_event();
 
-                    // Persist to EventLog if enabled — failure is non-fatal
-                    if let Some(log) = &event_log {
+                    // Persist via StorageManager if enabled — failure is non-fatal
+                    if let Some(mgr) = &storage {
                         let ts_ms = chrono::Utc::now().timestamp_millis();
                         match serde_json::to_vec(&event) {
                             Ok(payload) => {
-                                let record = EventRecord {
-                                    ts_ms,
-                                    payload: &payload,
+                                let key = StreamKey {
+                                    exchange: exchange.as_str().to_string(),
+                                    account: account_str(account).to_string(),
+                                    symbol: symbol.clone(),
+                                    stream_kind: kind_str.clone(),
                                 };
-                                if let Err(e) = log.append(&symbol, &kind_str, &record) {
+                                if let Err(e) = mgr.append(&key, ts_ms, &payload).await {
                                     warn!(
                                         exchange = exchange.as_str(),
                                         symbol = %symbol,
@@ -660,17 +668,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let event_log: Option<Arc<EventLog>> = match storage_root {
-        Some(ref root) => match EventLog::new(root) {
-            Ok(log) => {
-                eprintln!("[catcher] storage enabled: {root}");
-                Some(Arc::new(log))
+    let retention_days = config.storage.retention_days;
+
+    let storage: Option<Arc<StorageManager>> = match storage_root {
+        Some(ref root) => {
+            let cfg = StorageConfig {
+                root: root.into(),
+                default_retention_days: retention_days,
+                ..StorageConfig::default()
+            };
+            match StorageManager::new(cfg) {
+                Ok(mgr) => {
+                    eprintln!("[catcher] storage enabled: {root} (retention={retention_days}d)");
+                    Some(Arc::new(mgr))
+                }
+                Err(e) => {
+                    eprintln!("[catcher] storage init failed ({root}): {e} — continuing without storage");
+                    None
+                }
             }
-            Err(e) => {
-                eprintln!("[catcher] storage init failed ({root}): {e} — continuing without storage");
-                None
-            }
-        },
+        }
         None => None,
     };
 
@@ -723,9 +740,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let hub = hub.clone();
             let symbol = target.symbol.clone();
-            let log_clone = event_log.clone();
+            let storage_clone = storage.clone();
             let handle = tokio::spawn(async move {
-                run_subscriber_loop(hub, exchange, account, stream, symbol, job_stats, log_clone).await;
+                run_subscriber_loop(hub, exchange, account, stream, symbol, job_stats, storage_clone).await;
             });
             handles.push(handle);
         }
@@ -746,6 +763,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             loop {
                 tick.tick().await;
                 print_report(&state).await;
+            }
+        });
+    }
+
+    // Periodic flush task — every 60 s, ensures BufWriters are flushed.
+    if let Some(mgr) = storage.clone() {
+        tokio::spawn(async move {
+            let mut tick = interval(Duration::from_secs(60));
+            loop {
+                tick.tick().await;
+                if let Err(e) = mgr.flush_all().await {
+                    warn!("storage flush error: {e}");
+                }
+            }
+        });
+    }
+
+    // Daily retention sweep — every 24 h, deletes files older than retention_days.
+    if let Some(mgr) = storage.clone() {
+        tokio::spawn(async move {
+            let mut tick = interval(Duration::from_secs(86_400));
+            // Skip first immediate tick.
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                match mgr.cleanup(chrono::Utc::now()) {
+                    Ok(n) if n > 0 => info!("retention sweep deleted {n} files"),
+                    Ok(_) => {}
+                    Err(e) => warn!("retention sweep error: {e}"),
+                }
             }
         });
     }

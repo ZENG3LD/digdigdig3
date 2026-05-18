@@ -260,14 +260,24 @@ mod tests {
 
     #[test]
     fn test_from_i64_negative() {
-        // Negative i64 values are reinterpreted as u64 bit patterns
+        // Lighter's Go SDK: `g.FromInt64(v)` reinterprets the i64 bit pattern
+        // as u64 (NOT a mathematical mod-p of the signed integer). That means:
+        //
+        //   from_i64(-1)
+        //     -1 as u64                  = 0xFFFFFFFFFFFFFFFF
+        //     0xFFFFFFFFFFFFFFFF mod p   = 0xFFFFFFFE      (= 2^32 - 2)
+        //
+        // Mathematical (-1) mod p would be `p - 1 = 0xFFFFFFFE00000000` — a
+        // completely different field element. We MUST match the Go behaviour
+        // bit-for-bit so that transaction hashes line up with the network.
         let v = from_i64(-1i64);
-        // -1 as u64 = 0xFFFFFFFFFFFFFFFF — but this exceeds p, so it wraps
-        // Actually from_canonical_u64 uses from_u64_reduce which handles this correctly
-        // The Montgomery multiplication will reduce mod p
         let canonical = v.to_u64();
-        // -1 mod p = p - 1
-        assert_eq!(canonical, GFp::MOD - 1, "from_i64(-1) = p - 1");
+        let expected = (-1i64 as u64) % GFp::MOD;
+        assert_eq!(
+            canonical, expected,
+            "from_i64(-1) must reinterpret bit pattern, not mathematical -1 mod p"
+        );
+        assert_eq!(canonical, 0xFFFF_FFFE, "matches Lighter Go SDK output");
     }
 
     #[test]

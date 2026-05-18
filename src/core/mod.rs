@@ -70,7 +70,10 @@ pub mod http;
 pub mod websocket;
 pub mod chain;
 pub mod macros;
+pub mod normalization;
 pub mod storage;
+pub mod orderbook;
+pub mod rest_cache;
 
 #[cfg(feature = "grpc")]
 pub mod grpc;
@@ -150,3 +153,15 @@ pub use http::GraphQlClient;
 
 // Re-exports chain types
 pub use chain::{ChainFamily, ChainProvider, TxStatus};
+
+// Re-exports orderbook tracker
+pub use orderbook::{OrderBookTracker, OrderBookError};
+
+// Re-exports normalization
+pub use normalization::{
+    Canonicalize, CanonicalEvent,
+    CanonicalTrade, CanonicalTicker,
+    CanonicalOrderbook, CanonicalOrderbookDelta, CanonicalKline,
+    CanonicalLevel,
+    normalize_ts_to_ms,
+};

@@ -46,6 +46,8 @@ pub mod connector_manager;
 pub mod testing;
 
 pub use core::storage::{EventLog, EventLogIter, EventRecord};
+pub use core::orderbook::{OrderBookTracker, OrderBookError};
+pub use core::rest_cache::RestCache;
 
 // Re-exports для удобства
 pub use core::{
@@ -96,4 +98,11 @@ pub use core::{
 
     // Transport
     HttpClient,
+
+    // Normalization (Phase λ.A)
+    Canonicalize, CanonicalEvent,
+    CanonicalTrade, CanonicalTicker,
+    CanonicalOrderbook, CanonicalOrderbookDelta, CanonicalKline,
+    CanonicalLevel,
+    normalize_ts_to_ms,
 };

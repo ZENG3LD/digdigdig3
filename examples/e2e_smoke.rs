@@ -337,12 +337,13 @@ fn raw_symbol_for(id: ExchangeId) -> (Symbol, String, AccountType) {
         ExchangeId::CryptoCom => make(btc_usdt, AccountType::Spot),
         // dYdX: BTC-USD (perpetuals, USD-margined, dash separator)
         ExchangeId::Dydx => make(btc_usd, AccountType::FuturesCross),
-        // YahooFinance: AAPL (stock ticker, not crypto)
+        // YahooFinance: BTC-USD (24/7 crypto — proves WS path works even when
+        // NYSE is closed; AAPL goes silent off-hours which masked real bugs).
         ExchangeId::YahooFinance => {
-            let aapl = Symbol::new("AAPL", "");
-            let raw = SymbolNormalizer::to_exchange(id, &aapl, AccountType::Spot)
-                .unwrap_or_else(|_| "AAPL".to_string());
-            let sym_with_raw = Symbol::with_raw("AAPL", "", raw.clone());
+            let btc = Symbol::new("BTC", "USD");
+            let raw = SymbolNormalizer::to_exchange(id, &btc, AccountType::Spot)
+                .unwrap_or_else(|_| "BTC-USD".to_string());
+            let sym_with_raw = Symbol::with_raw("BTC", "USD", raw.clone());
             (sym_with_raw, raw, AccountType::Spot)
         }
         // All others: BTCUSDT concat (Binance, Bybit, MEXC, HTX, Bitget, etc.)

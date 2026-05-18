@@ -1,40 +1,185 @@
-//! # e2e_smoke — content-inspecting parallel async E2E of all dig3 exchanges.
+//! # e2e_smoke — full-coverage parallel E2E harness for all dig3 exchanges.
 //!
-//! (Renamed from `deep_smoke` — this is the project's E2E live-API harness.)
+//! Covers EVERY declared method per exchange:
+//!   REST: ping, get_price, get_ticker, get_orderbook, get_klines, get_recent_trades,
+//!         get_exchange_info, + futures: get_funding_rate, get_open_interest,
+//!         get_mark_price, get_long_short_ratio, get_liquidation_history, get_premium_index
+//!   WS:   Ticker, Trade, Orderbook, Kline, + futures: MarkPrice, FundingRate,
+//!         Liquidation, OpenInterest, AggTrade
+//!   Trading (if credentials in ENV): get_balance, get_account_info, get_open_orders,
+//!         get_user_trades, get_positions
 //!
-//! For every WS event received: decodes the StreamEvent and reports actual field values.
-//! For every REST ticker: reports last_price, volume, bid, ask, timestamp — flags zero/default.
-//!
-//! WS impl total in codebase: 35 (25 distinct exchange connectors).
-//! Covers EVERY exchange findable via ConnectorFactory + MOEX WS directly.
+//! CLI flags (parsed manually — no extra crates):
+//!   --exchange <id>     filter to one exchange
+//!   --market            run only market-data section (default)
+//!   --trading           run only trading/account section (needs ENV creds)
+//!   --all               run both market + trading
+//!   --json-out <path>   write JSON report to file
 //!
 //! Run:
 //!     cargo run --example e2e_smoke --release 2>&1 | tee e2e_smoke_report.txt
 //!
-//! No API keys required — public endpoints only.
+//! No API keys required for market-data. Trading section auto-skips when no creds.
 
+use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use digdigdig3::connector_manager::ExchangeHub;
-use digdigdig3::core::traits::MarketData;
-use digdigdig3::core::types::{AccountType, ExchangeId, StreamEvent, SubscriptionRequest, Symbol, SymbolInput};
+use digdigdig3::core::traits::{Credentials, MarketData, WebSocketConnector};
+use digdigdig3::core::types::{
+    AccountType, BalanceQuery, ExchangeId, PositionQuery,
+    StreamEvent, StreamType, SubscriptionRequest, Symbol, SymbolInput,
+    UserTradeFilter,
+};
 use digdigdig3::core::utils::SymbolNormalizer;
 use digdigdig3::l2::free::moex::MoexWebSocket;
-use digdigdig3::core::traits::WebSocketConnector;
+use digdigdig3::testing::harness::TestHarness;
 use futures_util::StreamExt;
 use tokio::time::{timeout, Duration};
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// mod cli
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// Truncate a string to at most `max_chars` Unicode characters (never panics on multibyte).
-fn truncate_str(s: &str, max_chars: usize) -> &str {
-    match s.char_indices().nth(max_chars) {
-        Some((idx, _)) => &s[..idx],
-        None => s,
+mod cli {
+    #[derive(Debug, Clone)]
+    pub struct Args {
+        pub exchange_filter: Option<String>,
+        pub run_market: bool,
+        pub run_trading: bool,
+        pub json_out: Option<String>,
+    }
+
+    impl Args {
+        pub fn parse() -> Self {
+            let argv: Vec<String> = std::env::args().collect();
+            let mut filter = None;
+            let mut market = false;
+            let mut trading = false;
+            let mut all = false;
+            let mut json_out = None;
+            let mut i = 1usize;
+            while i < argv.len() {
+                match argv[i].as_str() {
+                    "--exchange" => {
+                        i += 1;
+                        if i < argv.len() { filter = Some(argv[i].clone()); }
+                    }
+                    "--market" => { market = true; }
+                    "--trading" => { trading = true; }
+                    "--all" => { all = true; }
+                    "--json-out" => {
+                        i += 1;
+                        if i < argv.len() { json_out = Some(argv[i].clone()); }
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+            if all { market = true; trading = true; }
+            // default: market only
+            if !market && !trading { market = true; }
+            Self { exchange_filter: filter, run_market: market, run_trading: trading, json_out }
+        }
     }
 }
 
-// ── Thresholds ────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// mod result_types
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod result_types {
+    use serde::Serialize;
+
+    /// Result of a single REST or WS method call.
+    #[derive(Debug, Clone, Serialize)]
+    #[serde(tag = "status", content = "detail")]
+    pub enum MethodResult {
+        Ok(String),
+        Empty,
+        Err(String),
+        Timeout,
+        Unsupported(String),
+        Skipped,
+    }
+
+    impl MethodResult {
+        pub fn cell(&self) -> &'static str {
+            match self {
+                MethodResult::Ok(_) => "OK  ",
+                MethodResult::Empty => "EMPT",
+                MethodResult::Err(_) => "ERR ",
+                MethodResult::Timeout => "TIME",
+                MethodResult::Unsupported(_) => "-- ",
+                MethodResult::Skipped => "SKIP",
+            }
+        }
+        pub fn is_ok(&self) -> bool { matches!(self, MethodResult::Ok(_)) }
+        pub fn is_issue(&self) -> bool { matches!(self, MethodResult::Err(_) | MethodResult::Empty | MethodResult::Timeout) }
+        pub fn detail(&self) -> Option<&str> {
+            match self {
+                MethodResult::Ok(s) | MethodResult::Err(s) | MethodResult::Unsupported(s) => Some(s.as_str()),
+                _ => None,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Serialize)]
+    pub struct MarketRow {
+        pub exchange: String,
+        // REST
+        pub ping: MethodResult,
+        pub price: MethodResult,
+        pub ticker: MethodResult,
+        pub orderbook: MethodResult,
+        pub klines: MethodResult,
+        pub trades: MethodResult,
+        pub exch_info: MethodResult,
+        // Futures REST
+        pub funding: MethodResult,
+        pub open_interest: MethodResult,
+        pub mark_price: MethodResult,
+        pub long_short: MethodResult,
+        pub liquidations: MethodResult,
+        pub premium_index: MethodResult,
+        // WS
+        pub ws_ticker: MethodResult,
+        pub ws_trade: MethodResult,
+        pub ws_orderbook: MethodResult,
+        pub ws_kline: MethodResult,
+        pub ws_mark_price: MethodResult,
+        pub ws_funding: MethodResult,
+        pub ws_liquidation: MethodResult,
+        pub ws_oi: MethodResult,
+        pub ws_agg_trade: MethodResult,
+        // issues collected for ISSUES block
+        pub issues: Vec<String>,
+    }
+
+    #[derive(Debug, Clone, Serialize)]
+    pub struct TradingRow {
+        pub exchange: String,
+        pub balance: MethodResult,
+        pub account_info: MethodResult,
+        pub open_orders: MethodResult,
+        pub user_trades: MethodResult,
+        pub positions: MethodResult,
+        pub fees: MethodResult,
+        pub issues: Vec<String>,
+    }
+
+    #[derive(Debug, Clone, Serialize)]
+    pub struct ExchangeReport {
+        pub market: Option<MarketRow>,
+        pub trading: Option<TradingRow>,
+    }
+}
+
+use result_types::{ExchangeReport, MarketRow, MethodResult, TradingRow};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Timestamp helpers (shared)
+// ─────────────────────────────────────────────────────────────────────────────
 
 fn now_ms() -> i64 {
     SystemTime::now()
@@ -43,363 +188,253 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Timestamps older than this (in ms) are considered stale.
-/// 5 minutes — tighter than the old 1h gate, which let
-/// `ts in seconds` (e.g. 1779134034) silently pass as "1h ago" when it
-/// was actually ~20 days ago.
 fn stale_threshold_ms() -> i64 { now_ms() - 5 * 60_000 }
 
-/// Detect timestamps that look like UNIX **seconds** instead of ms.
-/// A real ms timestamp for 2026 is ~1.78e12; a seconds-stamp is ~1.78e9.
-/// Anything 4+ orders of magnitude below `now_ms` is almost certainly
-/// a parser bug — silently treating it as "stale" hides the regression.
 fn timestamp_unit_bug(ts: i64) -> bool {
     let now = now_ms();
-    if ts <= 0 || now <= 0 { return false; }
-    // ms timestamps for any recent date are within 1e10 of now (years).
-    // Anything below ts < now/1000 (off by ~1000×) is a seconds-vs-ms bug.
-    ts > 0 && ts < now / 100   // generous: 100× below = definitely wrong unit
+    ts > 0 && ts < now / 100
 }
 
-/// Detect timestamps in the FUTURE by more than 1 minute — almost always
-/// a timezone bug (e.g. MOEX returning Moscow local time as UTC ms).
 fn timestamp_future_bug(ts: i64) -> bool { ts > now_ms() + 60_000 }
 
-// ── Result types ──────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone)]
-enum RestResult {
-    Ok {
-        last_price: f64,
-        volume: f64,
-        bid: Option<f64>,
-        ask: Option<f64>,
-        timestamp: i64,
-        zero_fields: Vec<&'static str>,
-    },
-    Fail(String),
-}
-
-impl RestResult {
-    fn short(&self) -> String {
-        match self {
-            RestResult::Ok { last_price, volume, bid, ask, timestamp, zero_fields } => {
-                let bid_s = bid.map(|v| format!("{:.4}", v)).unwrap_or_else(|| "None".into());
-                let ask_s = ask.map(|v| format!("{:.4}", v)).unwrap_or_else(|| "None".into());
-                let ts_str = if *timestamp == 0 {
-                    "MISSING".to_string()
-                } else {
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map(|d| d.as_millis() as i64)
-                        .unwrap_or(0);
-                    format!("{}s_ago", (now - timestamp) / 1000)
-                };
-                let zero_flag = if zero_fields.is_empty() {
-                    String::new()
-                } else {
-                    format!(" ZERO:{}", zero_fields.join(","))
-                };
-                format!(
-                    "OK last={:.4} vol={:.2} bid={} ask={} ts={}{}",
-                    last_price, volume, bid_s, ask_s, ts_str, zero_flag
-                )
-            }
-            RestResult::Fail(e) => {
-                format!("FAIL {}", truncate_str(e, 60))
-            }
-        }
-    }
-
-    fn is_ok(&self) -> bool {
-        matches!(self, RestResult::Ok { .. })
-    }
-
-    fn has_zero_fields(&self) -> bool {
-        matches!(self, RestResult::Ok { zero_fields, .. } if !zero_fields.is_empty())
+fn truncate(s: &str, n: usize) -> String {
+    match s.char_indices().nth(n) {
+        Some((i, _)) => format!("{}…", &s[..i]),
+        None => s.to_string(),
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExpectedKind { Ticker, Trade, Orderbook, Kline }
+// ─────────────────────────────────────────────────────────────────────────────
+// mod market — WS event inspector (reused from original e2e_smoke)
+// ─────────────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
-enum WsResult {
-    Unsupported(String),
-    ConnectFail(String),
-    SubscribeFail(String),
-    Silent,
-    Events {
-        count: u32,
-        first_event: String,
-        data_valid: bool,
-        /// List of content issues observed across received events (deduped).
-        issues: Vec<String>,
-    },
-}
+mod market {
+    use super::*;
 
-impl WsResult {
-    fn connect_ok(&self) -> bool {
-        matches!(self, WsResult::Silent | WsResult::Events { .. } | WsResult::SubscribeFail(_))
-    }
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ExpectedKind { Ticker, Trade, Orderbook, Kline, MarkPrice, FundingRate, Liquidation, OpenInterest, AggTrade }
 
-    fn has_events(&self) -> bool {
-        matches!(self, WsResult::Events { count, .. } if *count > 0)
-    }
+    /// Returns (description, valid, issues).
+    pub fn inspect_event(event: &StreamEvent, stale_ms: i64, expected_kind: ExpectedKind) -> (String, bool, Vec<String>) {
+        let mut issues: Vec<String> = Vec::new();
 
-    fn data_valid(&self) -> bool {
-        matches!(self, WsResult::Events { data_valid: true, issues, .. } if issues.is_empty())
-    }
-
-    fn data_empty(&self) -> bool {
-        matches!(self, WsResult::Events { data_valid: false, .. })
-    }
-
-    fn issues(&self) -> &[String] {
-        match self {
-            WsResult::Events { issues, .. } => issues,
-            _ => &[],
-        }
-    }
-}
-
-#[derive(Debug)]
-struct Row {
-    exchange: ExchangeId,
-    rest: RestResult,
-    ws: WsResult,
-}
-
-// ── Event content inspector ───────────────────────────────────────────────────
-
-/// Inspect a single live event.
-///
-/// Returns `(short_description, valid, issues)` where `issues` lists
-/// every content problem we detected on this single event. Empty list
-/// means the event is well-formed for its declared StreamKind.
-fn inspect_event(event: &StreamEvent, stale_ms: i64, expected_kind: ExpectedKind) -> (String, bool, Vec<String>) {
-    let mut issues: Vec<String> = Vec::new();
-
-    let (s, valid) = match event {
-        StreamEvent::Ticker(t) => {
-            if expected_kind != ExpectedKind::Ticker {
-                issues.push(format!("WRONG_TYPE: got Ticker, expected {:?}", expected_kind));
-            }
-            if t.last_price <= 0.0 { issues.push("last_price<=0".into()); }
-            if timestamp_unit_bug(t.timestamp) {
-                issues.push(format!("ts_unit_bug(seconds_not_ms): {}", t.timestamp));
-            } else if timestamp_future_bug(t.timestamp) {
-                issues.push(format!("ts_future_bug(timezone?): {}", t.timestamp));
-            } else if t.timestamp <= stale_ms {
-                issues.push(format!("ts_stale: {} ({}min ago)", t.timestamp, (now_ms() - t.timestamp) / 60_000));
-            }
-            // bid==ask is legitimate for thin off-hours markets (MOEX after
-            // session close), so it doesn't get flagged as an issue. bid>ask
-            // and "both None" are real parser bugs.
-            match (t.bid_price, t.ask_price) {
-                (Some(b), Some(a)) if b > a => issues.push(format!("bid>ask: {} > {}", b, a)),
-                (None, None) => issues.push("bid/ask both None".into()),
-                _ => {}
-            }
-            let valid = t.last_price > 0.0
-                && !timestamp_unit_bug(t.timestamp)
-                && !timestamp_future_bug(t.timestamp)
-                && t.timestamp > stale_ms;
-            let s = format!(
-                "Ticker sym={} last={:.4} bid={} ask={} ts={}",
-                t.symbol,
-                t.last_price,
-                t.bid_price.map(|v| format!("{:.4}", v)).unwrap_or_else(|| "None".into()),
-                t.ask_price.map(|v| format!("{:.4}", v)).unwrap_or_else(|| "None".into()),
-                t.timestamp,
-            );
-            (s, valid)
-        }
-        StreamEvent::Trade(t) => {
-            if expected_kind != ExpectedKind::Trade {
-                issues.push(format!("WRONG_TYPE: got Trade, expected {:?}", expected_kind));
-            }
-            let valid = t.price > 0.0 && t.quantity > 0.0;
-            if !valid { issues.push("price<=0 or qty<=0".into()); }
-            let s = format!(
-                "Trade sym={} px={:.4} qty={:.6} ts={}",
-                t.symbol, t.price, t.quantity, t.timestamp
-            );
-            (s, valid)
-        }
-        StreamEvent::OrderbookSnapshot(ob) => {
-            let valid = !ob.bids.is_empty()
-                && !ob.asks.is_empty()
-                && ob.bids.first().map(|l| l.price > 0.0).unwrap_or(false);
-            if !valid { issues.push("orderbook empty/zero".into()); }
-            let top_bid = ob.bids.first().map(|l| l.price).unwrap_or(0.0);
-            let top_ask = ob.asks.first().map(|l| l.price).unwrap_or(0.0);
-            let s = format!(
-                "OBSnapshot bids={} asks={} top_bid={:.4} top_ask={:.4}",
-                ob.bids.len(), ob.asks.len(), top_bid, top_ask
-            );
-            (s, valid)
-        }
-        StreamEvent::OrderbookDelta(od) => {
-            let has_data = !od.bids.is_empty() || !od.asks.is_empty();
-            if !has_data { issues.push("orderbook delta empty".into()); }
-            let top_bid = od.bids.first().map(|l| l.price).unwrap_or(0.0);
-            let s = format!(
-                "OBDelta bids={} asks={} top_bid={:.4} ts={}",
-                od.bids.len(), od.asks.len(), top_bid, od.timestamp
-            );
-            (s, has_data)
-        }
-        StreamEvent::Kline(k) => {
-            let valid = k.close > 0.0 && k.open > 0.0 && k.open_time > 0;
-            if !valid { issues.push("kline o/c<=0 or no open_time".into()); }
-            let s = format!(
-                "Kline o={:.4} h={:.4} l={:.4} c={:.4} vol={:.2} ts={}",
-                k.open, k.high, k.low, k.close, k.volume, k.open_time
-            );
-            (s, valid)
-        }
-        StreamEvent::MarkPrice { symbol, mark_price, timestamp, .. } => {
-            let valid = *mark_price > 0.0 && *timestamp > stale_ms;
-            if !valid { issues.push("mark_price<=0 or stale".into()); }
-            let s = format!("MarkPrice sym={} px={:.4} ts={}", symbol, mark_price, timestamp);
-            (s, valid)
-        }
-        StreamEvent::FundingRate { symbol, rate, timestamp, .. } => {
-            // We subscribed to Ticker on this exchange; getting FundingRate
-            // back means the dispatcher is routing the wrong topic into the
-            // ticker stream. Flag it loudly.
-            if expected_kind == ExpectedKind::Ticker {
-                issues.push("WRONG_TYPE: got FundingRate while subscribed to Ticker".into());
-            }
-            let s = format!("FundingRate sym={} rate={:.6} ts={}", symbol, rate, timestamp);
-            (s, *timestamp > 0)
-        }
-        StreamEvent::AggTrade { symbol, price, quantity, timestamp, .. } => {
-            let valid = *price > 0.0 && *quantity > 0.0;
-            if !valid { issues.push("aggtrade px/qty<=0".into()); }
-            let s = format!(
-                "AggTrade sym={} px={:.4} qty={:.6} ts={}",
-                symbol, price, quantity, timestamp
-            );
-            (s, valid)
-        }
-        other => {
-            let s = format!("{:?}", other);
-            let short = if s.len() > 80 { format!("{}...", &s[..77]) } else { s };
-            (short, true)
-        }
-    };
-
-    (s, valid, issues)
-}
-
-// ── WS test helper ────────────────────────────────────────────────────────────
-
-async fn run_ws_test(
-    ws: std::sync::Arc<dyn WebSocketConnector>,
-    symbol: Symbol,
-    account_type: AccountType,
-    stale_ms: i64,
-) -> WsResult {
-    // Connect
-    match timeout(Duration::from_secs(8), ws.connect(account_type)).await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            let short = e.to_string();
-            return WsResult::ConnectFail(truncate_str(&short, 60).to_string());
-        }
-        Err(_) => return WsResult::ConnectFail("connect_timeout".into()),
-    }
-
-    // Subscribe
-    let sub = SubscriptionRequest::ticker_for(symbol, account_type);
-    match timeout(Duration::from_secs(5), ws.subscribe(sub)).await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            let short = e.to_string();
-            return WsResult::SubscribeFail(truncate_str(&short, 60).to_string());
-        }
-        Err(_) => return WsResult::SubscribeFail("subscribe_timeout".into()),
-    }
-
-    // Collect events 5s and inspect every one — issues accumulate so a
-    // parser bug that only manifests on later frames (e.g. WRONG_TYPE
-    // routing) is still caught.
-    //
-    // WRONG_TYPE issues are buffered separately: if we received at least one
-    // event of the expected kind, sibling events (e.g. Gemini emits
-    // Ticker+Delta+Trade from one l2_updates frame) are NOT bugs — they're
-    // intentional multi-emit. Only flag WRONG_TYPE when the expected kind
-    // never showed up at all.
-    let mut stream = ws.event_stream();
-    let mut event_count = 0u32;
-    let mut first_event: Option<String> = None;
-    let mut data_valid = false;
-    let mut all_issues: Vec<String> = Vec::new();
-    let mut wrong_type_issues: Vec<String> = Vec::new();
-    let mut saw_expected_kind = false;
-    let collect_start = Instant::now();
-    let collect_budget = Duration::from_secs(5);
-
-    loop {
-        let remaining = collect_budget.saturating_sub(collect_start.elapsed());
-        if remaining.is_zero() {
-            break;
-        }
-        match timeout(remaining, stream.next()).await {
-            Ok(Some(Ok(event))) => {
-                event_count += 1;
-                if matches!(event, StreamEvent::Ticker(_)) {
-                    saw_expected_kind = true;
+        let (s, valid) = match event {
+            StreamEvent::Ticker(t) => {
+                if expected_kind != ExpectedKind::Ticker {
+                    issues.push(format!("WRONG_TYPE: got Ticker, expected {:?}", expected_kind));
                 }
-                let (desc, valid, issues) = inspect_event(&event, stale_ms, ExpectedKind::Ticker);
-                if first_event.is_none() {
-                    data_valid = valid;
-                    first_event = Some(desc);
+                if t.last_price <= 0.0 { issues.push("last_price<=0".into()); }
+                if timestamp_unit_bug(t.timestamp) {
+                    issues.push(format!("ts_unit_bug(seconds): {}", t.timestamp));
+                } else if timestamp_future_bug(t.timestamp) {
+                    issues.push(format!("ts_future_bug: {}", t.timestamp));
+                } else if t.timestamp <= stale_ms {
+                    issues.push(format!("ts_stale: {}min ago", (now_ms() - t.timestamp) / 60_000));
                 }
-                for issue in issues {
-                    if issue.starts_with("WRONG_TYPE") {
-                        if !wrong_type_issues.contains(&issue) {
-                            wrong_type_issues.push(issue);
+                match (t.bid_price, t.ask_price) {
+                    (Some(b), Some(a)) if b > a => issues.push(format!("bid>ask: {:.4}>{:.4}", b, a)),
+                    (None, None) => issues.push("bid/ask both None".into()),
+                    _ => {}
+                }
+                let valid = t.last_price > 0.0
+                    && !timestamp_unit_bug(t.timestamp)
+                    && !timestamp_future_bug(t.timestamp)
+                    && t.timestamp > stale_ms;
+                (format!("Ticker sym={} last={:.4} bid={} ask={} ts={}",
+                    t.symbol, t.last_price,
+                    t.bid_price.map(|v| format!("{:.4}", v)).unwrap_or_else(|| "None".into()),
+                    t.ask_price.map(|v| format!("{:.4}", v)).unwrap_or_else(|| "None".into()),
+                    t.timestamp), valid)
+            }
+            StreamEvent::Trade(t) => {
+                if expected_kind != ExpectedKind::Trade {
+                    issues.push(format!("WRONG_TYPE: got Trade, expected {:?}", expected_kind));
+                }
+                let valid = t.price > 0.0 && t.quantity > 0.0;
+                if !valid { issues.push("price<=0 or qty<=0".into()); }
+                (format!("Trade sym={} px={:.4} qty={:.6} ts={}", t.symbol, t.price, t.quantity, t.timestamp), valid)
+            }
+            StreamEvent::OrderbookSnapshot(ob) => {
+                let valid = !ob.bids.is_empty() && !ob.asks.is_empty()
+                    && ob.bids.first().map(|l| l.price > 0.0).unwrap_or(false);
+                if !valid { issues.push("orderbook empty/zero".into()); }
+                let top_bid = ob.bids.first().map(|l| l.price).unwrap_or(0.0);
+                let top_ask = ob.asks.first().map(|l| l.price).unwrap_or(0.0);
+                (format!("OBSnapshot bids={} asks={} top_bid={:.4} top_ask={:.4}",
+                    ob.bids.len(), ob.asks.len(), top_bid, top_ask), valid)
+            }
+            StreamEvent::OrderbookDelta(od) => {
+                let has_data = !od.bids.is_empty() || !od.asks.is_empty();
+                if !has_data { issues.push("orderbook delta empty".into()); }
+                let top_bid = od.bids.first().map(|l| l.price).unwrap_or(0.0);
+                (format!("OBDelta bids={} asks={} top_bid={:.4} ts={}",
+                    od.bids.len(), od.asks.len(), top_bid, od.timestamp), has_data)
+            }
+            StreamEvent::Kline(k) => {
+                let valid = k.close > 0.0 && k.open > 0.0 && k.open_time > 0;
+                if !valid { issues.push("kline o/c<=0 or no open_time".into()); }
+                (format!("Kline o={:.4} h={:.4} l={:.4} c={:.4} vol={:.2} ts={}",
+                    k.open, k.high, k.low, k.close, k.volume, k.open_time), valid)
+            }
+            StreamEvent::MarkPrice { symbol, mark_price, timestamp, .. } => {
+                if expected_kind != ExpectedKind::MarkPrice {
+                    issues.push(format!("WRONG_TYPE: got MarkPrice, expected {:?}", expected_kind));
+                }
+                let valid = *mark_price > 0.0 && *timestamp > stale_ms;
+                if !valid { issues.push("mark_price<=0 or stale".into()); }
+                (format!("MarkPrice sym={} px={:.4} ts={}", symbol, mark_price, timestamp), valid)
+            }
+            StreamEvent::FundingRate { symbol, rate, timestamp, .. } => {
+                if expected_kind == ExpectedKind::Ticker {
+                    issues.push("WRONG_TYPE: got FundingRate while subscribed to Ticker".into());
+                }
+                (format!("FundingRate sym={} rate={:.6} ts={}", symbol, rate, timestamp), *timestamp > 0)
+            }
+            StreamEvent::Liquidation { symbol, price, quantity, timestamp, .. } => {
+                let valid = *price > 0.0 && *quantity > 0.0;
+                if !valid { issues.push("liquidation px/qty<=0".into()); }
+                (format!("Liquidation sym={} px={:.4} qty={:.6} ts={}", symbol, price, quantity, timestamp), valid)
+            }
+            StreamEvent::OpenInterestUpdate { symbol, open_interest, timestamp, .. } => {
+                let valid = *open_interest > 0.0;
+                if !valid { issues.push("open_interest<=0".into()); }
+                (format!("OI sym={} oi={:.2} ts={}", symbol, open_interest, timestamp), valid)
+            }
+            StreamEvent::AggTrade { symbol, price, quantity, timestamp, .. } => {
+                let valid = *price > 0.0 && *quantity > 0.0;
+                if !valid { issues.push("aggtrade px/qty<=0".into()); }
+                (format!("AggTrade sym={} px={:.4} qty={:.6} ts={}", symbol, price, quantity, timestamp), valid)
+            }
+            other => {
+                let s = format!("{:?}", other);
+                let short = truncate(&s, 80);
+                (short, true)
+            }
+        };
+        (s, valid, issues)
+    }
+
+    /// Collect events from a single WS subscription (5s window).
+    pub async fn collect_ws_stream(
+        ws: Arc<dyn WebSocketConnector>,
+        sub: SubscriptionRequest,
+        expected_kind: ExpectedKind,
+        stale_ms: i64,
+    ) -> MethodResult {
+        let account_type = sub.account_type;
+        match timeout(Duration::from_secs(8), ws.connect(account_type)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return MethodResult::Err(truncate(&e.to_string(), 60)),
+            Err(_) => return MethodResult::Err("connect_timeout".into()),
+        }
+        match timeout(Duration::from_secs(5), ws.subscribe(sub)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                let msg = e.to_string();
+                if msg.contains("UnsupportedOperation") || msg.contains("not support") {
+                    return MethodResult::Unsupported(truncate(&msg, 60));
+                }
+                return MethodResult::Err(format!("sub_fail: {}", truncate(&msg, 60)));
+            }
+            Err(_) => return MethodResult::Err("subscribe_timeout".into()),
+        }
+
+        let mut stream = ws.event_stream();
+        let mut event_count = 0u32;
+        let mut first_desc: Option<String> = None;
+        let mut all_issues: Vec<String> = Vec::new();
+        let mut wrong_type: Vec<String> = Vec::new();
+        let mut saw_expected = false;
+        let collect_start = Instant::now();
+        let budget = Duration::from_secs(5);
+
+        loop {
+            let remaining = budget.saturating_sub(collect_start.elapsed());
+            if remaining.is_zero() { break; }
+            match timeout(remaining, stream.next()).await {
+                Ok(Some(Ok(event))) => {
+                    event_count += 1;
+                    let is_expected = matches!((&event, expected_kind),
+                        (StreamEvent::Ticker(_), ExpectedKind::Ticker) |
+                        (StreamEvent::Trade(_), ExpectedKind::Trade) |
+                        (StreamEvent::OrderbookSnapshot(_) | StreamEvent::OrderbookDelta(_), ExpectedKind::Orderbook) |
+                        (StreamEvent::Kline(_), ExpectedKind::Kline) |
+                        (StreamEvent::MarkPrice { .. }, ExpectedKind::MarkPrice) |
+                        (StreamEvent::FundingRate { .. }, ExpectedKind::FundingRate) |
+                        (StreamEvent::Liquidation { .. }, ExpectedKind::Liquidation) |
+                        (StreamEvent::OpenInterestUpdate { .. }, ExpectedKind::OpenInterest) |
+                        (StreamEvent::AggTrade { .. }, ExpectedKind::AggTrade)
+                    );
+                    if is_expected { saw_expected = true; }
+                    let (desc, _valid, issues) = inspect_event(&event, stale_ms, expected_kind);
+                    if first_desc.is_none() { first_desc = Some(desc); }
+                    for iss in issues {
+                        if iss.starts_with("WRONG_TYPE") {
+                            if !wrong_type.contains(&iss) { wrong_type.push(iss); }
+                        } else if !all_issues.contains(&iss) {
+                            all_issues.push(iss);
                         }
-                    } else if !all_issues.contains(&issue) {
-                        all_issues.push(issue);
                     }
                 }
+                Ok(Some(Err(_))) | Ok(None) | Err(_) => break,
             }
-            Ok(Some(Err(_))) => break,
-            Ok(None) => break,
-            Err(_) => break,
+        }
+
+        if !saw_expected { all_issues.extend(wrong_type); }
+
+        if event_count == 0 {
+            MethodResult::Err("silent_0_events".into())
+        } else {
+            let desc = first_desc.unwrap_or_else(|| "?".into());
+            if all_issues.is_empty() {
+                MethodResult::Ok(format!("cnt={} {}", event_count, truncate(&desc, 80)))
+            } else {
+                MethodResult::Err(format!("cnt={} ISSUES[{}] {}", event_count, all_issues.join(";"), truncate(&desc, 60)))
+            }
         }
     }
 
-    // Promote WRONG_TYPE to a real issue only if we never saw the kind we
-    // subscribed to. With Ticker-multi-emit (Gemini, Bybit-LT), Trade or
-    // FundingRate frames are routinely interleaved and that's by design.
-    if !saw_expected_kind {
-        all_issues.extend(wrong_type_issues);
-    }
-
-    if event_count == 0 {
-        WsResult::Silent
-    } else {
-        WsResult::Events {
-            count: event_count,
-            first_event: first_event.unwrap_or_else(|| "unknown".into()),
-            data_valid,
-            issues: all_issues,
+    /// Run a single WS subscription through the hub (creates its own WS connection).
+    pub async fn run_ws_sub(
+        exchange: ExchangeId,
+        account_type: AccountType,
+        stream_type: StreamType,
+        symbol: Symbol,
+        expected_kind: ExpectedKind,
+        stale_ms: i64,
+    ) -> MethodResult {
+        let hub = ExchangeHub::new();
+        match timeout(Duration::from_secs(8), hub.connect_websocket(exchange, account_type, false)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                let msg = e.to_string();
+                if msg.contains("UnsupportedOperation") || msg.contains("not support") {
+                    return MethodResult::Unsupported(truncate(&msg, 60));
+                }
+                return MethodResult::Err(format!("connect_fail: {}", truncate(&msg, 60)));
+            }
+            Err(_) => return MethodResult::Err("ws_connect_timeout".into()),
+        }
+        match hub.ws(exchange, account_type) {
+            Some(ws) => {
+                let sub = SubscriptionRequest {
+                    symbol,
+                    stream_type,
+                    account_type,
+                    depth: None,
+                    update_speed_ms: None,
+                };
+                collect_ws_stream(ws, sub, expected_kind, stale_ms).await
+            }
+            None => MethodResult::Err("ws_none_after_connect".into()),
         }
     }
 }
 
-// ── Per-exchange test ─────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Symbol resolution (per-exchange BTC mapping)
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// Resolve exchange-native raw symbol and account type for BTC per exchange.
-///
-/// Exchanges that don't trade USDT use USD. Deribit uses FuturesCross to get
-/// BTC-PERPETUAL. HyperLiquid perps use just "BTC".
-/// Returns `(Symbol-with-raw, raw_str_for_REST, effective_account_type)`.
 fn raw_symbol_for(id: ExchangeId) -> (Symbol, String, AccountType) {
     let btc_usdt = Symbol::new("BTC", "USDT");
     let btc_usd = Symbol::new("BTC", "USD");
@@ -412,12 +447,8 @@ fn raw_symbol_for(id: ExchangeId) -> (Symbol, String, AccountType) {
     };
 
     match id {
-        // Deribit perp: BTC-PERPETUAL (FuturesCross account type)
         ExchangeId::Deribit => make(btc_usd, AccountType::FuturesCross),
-        // HyperLiquid perps: just "BTC" (FuturesCross)
         ExchangeId::HyperLiquid => make(btc_usd, AccountType::FuturesCross),
-        // Upbit: KRW-BTC (quote-base reversed). KRW pairs are the most liquid
-        // on Upbit; USDT pairs are thinly traded and produce stale tickers.
         ExchangeId::Upbit => {
             let btc_krw = Symbol::new("BTC", "KRW");
             let raw = SymbolNormalizer::to_exchange(id, &btc_krw, AccountType::Spot)
@@ -425,574 +456,1122 @@ fn raw_symbol_for(id: ExchangeId) -> (Symbol, String, AccountType) {
             let sym_with_raw = Symbol::with_raw("BTC", "KRW", raw.clone());
             (sym_with_raw, raw, AccountType::Spot)
         }
-        // Bitfinex: tBTCUSD (t-prefix, no separator)
         ExchangeId::Bitfinex => make(btc_usd, AccountType::Spot),
-        // Gemini: btcusd (lowercase, no separator, USD not USDT)
         ExchangeId::Gemini => make(btc_usd, AccountType::Spot),
-        // Bitstamp: btcusd (lowercase)
         ExchangeId::Bitstamp => make(btc_usd, AccountType::Spot),
-        // Kraken: XBTUSD (BTC→XBT mapping, no separator)
         ExchangeId::Kraken => make(btc_usd, AccountType::Spot),
-        // Coinbase: BTC-USD
         ExchangeId::Coinbase => make(btc_usd, AccountType::Spot),
-        // KuCoin: BTC-USDT (dash separator)
         ExchangeId::KuCoin => make(btc_usdt, AccountType::Spot),
-        // OKX: BTC-USDT (dash separator)
         ExchangeId::OKX => make(btc_usdt, AccountType::Spot),
-        // Gate.io: BTC_USDT (underscore)
         ExchangeId::GateIO => make(btc_usdt, AccountType::Spot),
-        // BingX: BTC-USDT (dash)
         ExchangeId::BingX => make(btc_usdt, AccountType::Spot),
-        // Crypto.com spot: BTC_USDT (underscore)
         ExchangeId::CryptoCom => make(btc_usdt, AccountType::Spot),
-        // dYdX: BTC-USD (perpetuals, USD-margined, dash separator)
         ExchangeId::Dydx => make(btc_usd, AccountType::FuturesCross),
-        // YahooFinance: BTC-USD (24/7 crypto — proves WS path works even when
-        // NYSE is closed; AAPL goes silent off-hours which masked real bugs).
         ExchangeId::YahooFinance => {
             let btc = Symbol::new("BTC", "USD");
             let raw = SymbolNormalizer::to_exchange(id, &btc, AccountType::Spot)
                 .unwrap_or_else(|_| "BTC-USD".to_string());
-            let sym_with_raw = Symbol::with_raw("BTC", "USD", raw.clone());
-            (sym_with_raw, raw, AccountType::Spot)
+            (Symbol::with_raw("BTC", "USD", raw.clone()), raw, AccountType::Spot)
         }
-        // Polymarket: no BTC/USDT concept. "DISCOVER" triggers discover_active_token_id
-        // inside the connector (Gamma API → highest-volume active market → clobTokenIds[0]).
         ExchangeId::Polymarket => {
             let sym = Symbol::with_raw("DISCOVER", "USDC", "DISCOVER".to_string());
             (sym, "DISCOVER".to_string(), AccountType::Spot)
         }
-        // All others: BTCUSDT concat (Binance, Bybit, MEXC, HTX, Bitget, etc.)
         _ => make(btc_usdt, AccountType::Spot),
     }
 }
 
-async fn test_exchange(id: ExchangeId) -> Row {
-    let hub = ExchangeHub::new();
-    let (ws_symbol, symbol_str, account_type) = raw_symbol_for(id);
+/// Is this exchange account_type futures-capable (perps/perpetuals)?
+fn is_futures(id: ExchangeId, at: AccountType) -> bool {
+    matches!(at, AccountType::FuturesCross | AccountType::FuturesIsolated)
+        || matches!(id, ExchangeId::Binance | ExchangeId::Bybit | ExchangeId::OKX
+            | ExchangeId::KuCoin | ExchangeId::GateIO | ExchangeId::MEXC
+            | ExchangeId::HTX | ExchangeId::Bitget | ExchangeId::BingX
+            | ExchangeId::CryptoCom | ExchangeId::Deribit | ExchangeId::HyperLiquid
+            | ExchangeId::Lighter | ExchangeId::Dydx | ExchangeId::Coinglass)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// mod market::test_market
+// ─────────────────────────────────────────────────────────────────────────────
+
+async fn test_market(id: ExchangeId) -> MarketRow {
+    let (sym, raw_str, account_type) = raw_symbol_for(id);
     let stale_ms = stale_threshold_ms();
+    let futures_capable = is_futures(id, account_type);
 
-    // ── REST ─────────────────────────────────────────────────────────────────
-    let rest = match timeout(Duration::from_secs(10), hub.connect_public(id, false)).await {
-        Ok(Ok(())) => {
-            match hub.rest(id) {
-                Some(conn) => {
-                    match timeout(
-                        Duration::from_secs(10),
-                        MarketData::get_ticker(&*conn, symbol_str.as_str().into(), account_type),
-                    )
-                    .await
-                    {
-                        Ok(Ok(ticker)) => {
-                            let mut zero_fields: Vec<&'static str> = Vec::new();
-                            if ticker.last_price == 0.0 { zero_fields.push("last_price"); }
-                            if ticker.volume_24h.unwrap_or(0.0) == 0.0 { zero_fields.push("volume"); }
-                            if ticker.timestamp == 0 {
-                                zero_fields.push("ts_missing(parser_default_0)");
-                            } else if timestamp_unit_bug(ticker.timestamp) {
-                                zero_fields.push("ts_unit_bug(seconds_not_ms)");
-                            } else if timestamp_future_bug(ticker.timestamp) {
-                                zero_fields.push("ts_future_bug(timezone?)");
-                            } else if ticker.timestamp <= now_ms() - 24 * 60 * 60_000 {
-                                zero_fields.push("ts_stale>24h");
-                            }
-                            if let (Some(b), Some(a)) = (ticker.bid_price, ticker.ask_price) {
-                                if b > a { zero_fields.push("bid>ask"); }
-                                // bid==ask is legitimate for thin off-hours
-                                // sessions (MOEX after close) — not flagged.
-                            }
-                            RestResult::Ok {
-                                last_price: ticker.last_price,
-                                volume: ticker.volume_24h.unwrap_or(0.0),
-                                bid: ticker.bid_price,
-                                ask: ticker.ask_price,
-                                timestamp: ticker.timestamp,
-                                zero_fields,
-                            }
-                        }
-                        Ok(Err(e)) => {
-                            let s = e.to_string();
-                            RestResult::Fail(s)
-                        }
-                        Err(_) => RestResult::Fail("ticker_timeout".into()),
-                    }
-                }
-                None => RestResult::Fail("no_rest_handle".into()),
-            }
-        }
-        Ok(Err(e)) => RestResult::Fail(e.to_string()),
-        Err(_) => RestResult::Fail("connect_timeout".into()),
-    };
-
-    // ── WS ────────────────────────────────────────────────────────────────────
-    let ws_result = match timeout(
-        Duration::from_secs(8),
-        hub.connect_websocket(id, account_type, false),
-    )
-    .await
-    {
-        Ok(Ok(())) => {
-            match hub.ws(id, account_type) {
-                Some(ws) => run_ws_test(ws, ws_symbol, account_type, stale_ms).await,
-                None => WsResult::Unsupported("ws_none_after_connect".into()),
-            }
-        }
+    // ── Connect REST ─────────────────────────────────────────────────────────
+    let hub = ExchangeHub::new();
+    let connected = match timeout(Duration::from_secs(12), hub.connect_public(id, false)).await {
+        Ok(Ok(())) => true,
         Ok(Err(e)) => {
-            let msg = e.to_string();
-            return Row {
-                exchange: id,
-                rest,
-                ws: WsResult::Unsupported(truncate_str(&msg, 60).to_string()),
+            let err_msg = truncate(&e.to_string(), 70);
+            return MarketRow {
+                exchange: format!("{:?}", id),
+                ping: MethodResult::Err(format!("connect_fail: {}", err_msg)),
+                price: MethodResult::Skipped,
+                ticker: MethodResult::Skipped,
+                orderbook: MethodResult::Skipped,
+                klines: MethodResult::Skipped,
+                trades: MethodResult::Skipped,
+                exch_info: MethodResult::Skipped,
+                funding: MethodResult::Skipped,
+                open_interest: MethodResult::Skipped,
+                mark_price: MethodResult::Skipped,
+                long_short: MethodResult::Skipped,
+                liquidations: MethodResult::Skipped,
+                premium_index: MethodResult::Skipped,
+                ws_ticker: MethodResult::Skipped,
+                ws_trade: MethodResult::Skipped,
+                ws_orderbook: MethodResult::Skipped,
+                ws_kline: MethodResult::Skipped,
+                ws_mark_price: MethodResult::Skipped,
+                ws_funding: MethodResult::Skipped,
+                ws_liquidation: MethodResult::Skipped,
+                ws_oi: MethodResult::Skipped,
+                ws_agg_trade: MethodResult::Skipped,
+                issues: vec![format!("connect_fail: {}", err_msg)],
             };
         }
         Err(_) => {
-            return Row {
-                exchange: id,
-                rest,
-                ws: WsResult::Unsupported("create_ws_timeout".into()),
+            return MarketRow {
+                exchange: format!("{:?}", id),
+                ping: MethodResult::Err("connect_timeout".into()),
+                price: MethodResult::Skipped, ticker: MethodResult::Skipped,
+                orderbook: MethodResult::Skipped, klines: MethodResult::Skipped,
+                trades: MethodResult::Skipped, exch_info: MethodResult::Skipped,
+                funding: MethodResult::Skipped, open_interest: MethodResult::Skipped,
+                mark_price: MethodResult::Skipped, long_short: MethodResult::Skipped,
+                liquidations: MethodResult::Skipped, premium_index: MethodResult::Skipped,
+                ws_ticker: MethodResult::Skipped, ws_trade: MethodResult::Skipped,
+                ws_orderbook: MethodResult::Skipped, ws_kline: MethodResult::Skipped,
+                ws_mark_price: MethodResult::Skipped, ws_funding: MethodResult::Skipped,
+                ws_liquidation: MethodResult::Skipped, ws_oi: MethodResult::Skipped,
+                ws_agg_trade: MethodResult::Skipped,
+                issues: vec!["connect_timeout".into()],
+            };
+        }
+    };
+    let _ = connected;
+
+    let conn = match hub.rest(id) {
+        Some(c) => c,
+        None => {
+            return MarketRow {
+                exchange: format!("{:?}", id),
+                ping: MethodResult::Err("no_rest_handle".into()),
+                price: MethodResult::Skipped, ticker: MethodResult::Skipped,
+                orderbook: MethodResult::Skipped, klines: MethodResult::Skipped,
+                trades: MethodResult::Skipped, exch_info: MethodResult::Skipped,
+                funding: MethodResult::Skipped, open_interest: MethodResult::Skipped,
+                mark_price: MethodResult::Skipped, long_short: MethodResult::Skipped,
+                liquidations: MethodResult::Skipped, premium_index: MethodResult::Skipped,
+                ws_ticker: MethodResult::Skipped, ws_trade: MethodResult::Skipped,
+                ws_orderbook: MethodResult::Skipped, ws_kline: MethodResult::Skipped,
+                ws_mark_price: MethodResult::Skipped, ws_funding: MethodResult::Skipped,
+                ws_liquidation: MethodResult::Skipped, ws_oi: MethodResult::Skipped,
+                ws_agg_trade: MethodResult::Skipped,
+                issues: vec!["no_rest_handle".into()],
             };
         }
     };
 
-    Row { exchange: id, rest, ws: ws_result }
+    let caps = hub.capabilities(id).unwrap_or_default();
+    let sym_input_str = raw_str.clone();
+
+    // ── Helper macros for REST calls ─────────────────────────────────────────
+
+    // ping
+    let ping = {
+        let conn = conn.clone();
+        match timeout(Duration::from_secs(10), conn.ping()).await {
+            Ok(Ok(())) => MethodResult::Ok("pong".into()),
+            Ok(Err(e)) => {
+                let msg = e.to_string();
+                if msg.contains("UnsupportedOperation") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                else { MethodResult::Err(truncate(&msg, 60)) }
+            }
+            Err(_) => MethodResult::Timeout,
+        }
+    };
+
+    // price
+    let price = if !caps.has_ticker {
+        MethodResult::Skipped
+    } else {
+        let conn = conn.clone();
+        let sym_str = sym_input_str.clone();
+        match timeout(Duration::from_secs(10),
+            conn.get_price(sym_str.as_str().into(), account_type)).await {
+            Ok(Ok(p)) if p > 0.0 => MethodResult::Ok(format!("price={:.4}", p)),
+            Ok(Ok(_)) => MethodResult::Empty,
+            Ok(Err(e)) => {
+                let msg = e.to_string();
+                if msg.contains("UnsupportedOperation") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                else { MethodResult::Err(truncate(&msg, 60)) }
+            }
+            Err(_) => MethodResult::Timeout,
+        }
+    };
+
+    // ticker
+    let ticker = if !caps.has_ticker {
+        MethodResult::Skipped
+    } else {
+        let conn = conn.clone();
+        let sym_str = sym_input_str.clone();
+        match timeout(Duration::from_secs(10),
+            MarketData::get_ticker(&*conn, sym_str.as_str().into(), account_type)).await {
+            Ok(Ok(t)) => {
+                let mut issues: Vec<String> = Vec::new();
+                if t.last_price <= 0.0 { issues.push("last=0".into()); }
+                if timestamp_unit_bug(t.timestamp) { issues.push(format!("ts_unit_bug:{}", t.timestamp)); }
+                else if timestamp_future_bug(t.timestamp) { issues.push(format!("ts_future_bug:{}", t.timestamp)); }
+                else if t.timestamp == 0 { issues.push("ts_missing".into()); }
+                match (t.bid_price, t.ask_price) {
+                    (Some(b), Some(a)) if b > a => issues.push(format!("bid>ask")),
+                    (None, None) => issues.push("bid/ask None".into()),
+                    _ => {}
+                }
+                let desc = format!("last={:.4} bid={} ask={} ts={}",
+                    t.last_price,
+                    t.bid_price.map(|v| format!("{:.4}", v)).unwrap_or_else(|| "None".into()),
+                    t.ask_price.map(|v| format!("{:.4}", v)).unwrap_or_else(|| "None".into()),
+                    if t.timestamp == 0 { "MISSING".to_string() } else { format!("{}s_ago", (now_ms() - t.timestamp) / 1000) });
+                if issues.is_empty() && t.last_price > 0.0 {
+                    MethodResult::Ok(desc)
+                } else if t.last_price > 0.0 {
+                    MethodResult::Err(format!("{} ISSUES:{}", desc, issues.join(",")))
+                } else {
+                    MethodResult::Empty
+                }
+            }
+            Ok(Err(e)) => {
+                let msg = e.to_string();
+                if msg.contains("UnsupportedOperation") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                else { MethodResult::Err(truncate(&msg, 60)) }
+            }
+            Err(_) => MethodResult::Timeout,
+        }
+    };
+
+    // orderbook
+    let orderbook = if !caps.has_orderbook {
+        MethodResult::Skipped
+    } else {
+        let conn = conn.clone();
+        let sym_str = sym_input_str.clone();
+        match timeout(Duration::from_secs(10),
+            conn.get_orderbook(sym_str.as_str().into(), Some(10), account_type)).await {
+            Ok(Ok(ob)) => {
+                if ob.bids.is_empty() || ob.asks.is_empty() {
+                    MethodResult::Empty
+                } else {
+                    let top_bid = ob.bids.first().map(|l| l.price).unwrap_or(0.0);
+                    let top_ask = ob.asks.first().map(|l| l.price).unwrap_or(0.0);
+                    if top_bid >= top_ask && top_ask > 0.0 {
+                        MethodResult::Err(format!("bid={:.4}>=ask={:.4}", top_bid, top_ask))
+                    } else {
+                        MethodResult::Ok(format!("bids={} asks={} top_bid={:.4} top_ask={:.4}",
+                            ob.bids.len(), ob.asks.len(), top_bid, top_ask))
+                    }
+                }
+            }
+            Ok(Err(e)) => {
+                let msg = e.to_string();
+                if msg.contains("UnsupportedOperation") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                else { MethodResult::Err(truncate(&msg, 60)) }
+            }
+            Err(_) => MethodResult::Timeout,
+        }
+    };
+
+    // klines
+    let klines = if !caps.has_klines {
+        MethodResult::Skipped
+    } else {
+        let conn = conn.clone();
+        let sym_str = sym_input_str.clone();
+        match timeout(Duration::from_secs(12),
+            conn.get_klines(sym_str.as_str().into(), "1m", Some(5), account_type, None)).await {
+            Ok(Ok(ks)) if ks.is_empty() => MethodResult::Empty,
+            Ok(Ok(ks)) => {
+                let last = ks.last().unwrap();
+                if last.close <= 0.0 {
+                    MethodResult::Err(format!("close={}", last.close))
+                } else {
+                    MethodResult::Ok(format!("len={} last_close={:.4}", ks.len(), last.close))
+                }
+            }
+            Ok(Err(e)) => {
+                let msg = e.to_string();
+                if msg.contains("UnsupportedOperation") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                else { MethodResult::Err(truncate(&msg, 60)) }
+            }
+            Err(_) => MethodResult::Timeout,
+        }
+    };
+
+    // recent trades
+    let trades = if !caps.has_recent_trades {
+        MethodResult::Skipped
+    } else {
+        let conn = conn.clone();
+        let sym_str = sym_input_str.clone();
+        match timeout(Duration::from_secs(10),
+            conn.get_recent_trades(sym_str.as_str().into(), Some(10), account_type)).await {
+            Ok(Ok(ts)) if ts.is_empty() => MethodResult::Empty,
+            Ok(Ok(ts)) => {
+                let first = ts.first().unwrap();
+                if first.price <= 0.0 {
+                    MethodResult::Err(format!("price={}", first.price))
+                } else {
+                    MethodResult::Ok(format!("len={} first_px={:.4}", ts.len(), first.price))
+                }
+            }
+            Ok(Err(e)) => {
+                let msg = e.to_string();
+                if msg.contains("UnsupportedOperation") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                else { MethodResult::Err(truncate(&msg, 60)) }
+            }
+            Err(_) => MethodResult::Timeout,
+        }
+    };
+
+    // exchange_info
+    let exch_info = if !caps.has_exchange_info {
+        MethodResult::Skipped
+    } else {
+        let conn = conn.clone();
+        match timeout(Duration::from_secs(15),
+            conn.get_exchange_info(account_type)).await {
+            Ok(Ok(infos)) if infos.is_empty() => MethodResult::Empty,
+            Ok(Ok(infos)) => MethodResult::Ok(format!("symbols={}", infos.len())),
+            Ok(Err(e)) => {
+                let msg = e.to_string();
+                if msg.contains("UnsupportedOperation") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                else { MethodResult::Err(truncate(&msg, 60)) }
+            }
+            Err(_) => MethodResult::Timeout,
+        }
+    };
+
+    // ── Futures-only REST ─────────────────────────────────────────────────────
+
+    let fut_sym = raw_str.clone();
+    let futures_at = if matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated) {
+        account_type
+    } else {
+        AccountType::FuturesCross
+    };
+
+    // funding_rate
+    let funding = if !futures_capable || !caps.has_funding_payments {
+        MethodResult::Skipped
+    } else {
+        let conn = conn.clone();
+        let s = fut_sym.clone();
+        match timeout(Duration::from_secs(10),
+            conn.get_funding_rate(&s, futures_at)).await {
+            Ok(Ok(fr)) => MethodResult::Ok(format!("rate={:.6} next={:?}", fr.rate, fr.next_funding_time)),
+            Ok(Err(e)) => {
+                let msg = e.to_string();
+                if msg.contains("UnsupportedOperation") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                else { MethodResult::Err(truncate(&msg, 60)) }
+            }
+            Err(_) => MethodResult::Timeout,
+        }
+    };
+
+    // open_interest
+    let open_interest = if !futures_capable {
+        MethodResult::Skipped
+    } else {
+        let conn = conn.clone();
+        let s = fut_sym.clone();
+        match timeout(Duration::from_secs(10),
+            conn.get_open_interest(&s, futures_at)).await {
+            Ok(Ok(oi)) if oi.open_interest <= 0.0 => MethodResult::Empty,
+            Ok(Ok(oi)) => MethodResult::Ok(format!("oi={:.2}", oi.open_interest)),
+            Ok(Err(e)) => {
+                let msg = e.to_string();
+                if msg.contains("UnsupportedOperation") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                else { MethodResult::Err(truncate(&msg, 60)) }
+            }
+            Err(_) => MethodResult::Timeout,
+        }
+    };
+
+    // mark_price
+    let mark_price = if !futures_capable || !caps.has_mark_price {
+        MethodResult::Skipped
+    } else {
+        let conn = conn.clone();
+        let s = fut_sym.clone();
+        match timeout(Duration::from_secs(10),
+            conn.get_mark_price(&s)).await {
+            Ok(Ok(mp)) if mp.mark_price <= 0.0 => MethodResult::Empty,
+            Ok(Ok(mp)) => MethodResult::Ok(format!("mark={:.4}", mp.mark_price)),
+            Ok(Err(e)) => {
+                let msg = e.to_string();
+                if msg.contains("UnsupportedOperation") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                else { MethodResult::Err(truncate(&msg, 60)) }
+            }
+            Err(_) => MethodResult::Timeout,
+        }
+    };
+
+    // long_short_ratio
+    let long_short = if !futures_capable || !caps.has_long_short_ratio {
+        MethodResult::Skipped
+    } else {
+        let conn = conn.clone();
+        let s = fut_sym.clone();
+        match timeout(Duration::from_secs(10),
+            conn.get_long_short_ratio(&s, futures_at)).await {
+            Ok(Ok(ls)) => MethodResult::Ok(format!("long={:.4} short={:.4}", ls.long_ratio, ls.short_ratio)),
+            Ok(Err(e)) => {
+                let msg = e.to_string();
+                if msg.contains("UnsupportedOperation") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                else { MethodResult::Err(truncate(&msg, 60)) }
+            }
+            Err(_) => MethodResult::Timeout,
+        }
+    };
+
+    // liquidations (history)
+    let liquidations = if !futures_capable || !caps.has_liquidation_history {
+        MethodResult::Skipped
+    } else {
+        let conn = conn.clone();
+        let sym_str = sym_input_str.clone();
+        match timeout(Duration::from_secs(10),
+            conn.get_liquidation_history(
+                Some(SymbolInput::Raw(&sym_str)),
+                None, None, Some(5), futures_at)).await {
+            Ok(Ok(ls)) if ls.is_empty() => MethodResult::Empty,
+            Ok(Ok(ls)) => MethodResult::Ok(format!("len={}", ls.len())),
+            Ok(Err(e)) => {
+                let msg = e.to_string();
+                if msg.contains("UnsupportedOperation") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                else { MethodResult::Err(truncate(&msg, 60)) }
+            }
+            Err(_) => MethodResult::Timeout,
+        }
+    };
+
+    // premium_index (mark+index price)
+    let premium_index = if !futures_capable || !caps.has_premium_index {
+        MethodResult::Skipped
+    } else {
+        let conn = conn.clone();
+        let sym_str = sym_input_str.clone();
+        match timeout(Duration::from_secs(10),
+            conn.get_premium_index(Some(SymbolInput::Raw(&sym_str)), futures_at)).await {
+            Ok(Ok(ps)) if ps.is_empty() => MethodResult::Empty,
+            Ok(Ok(ps)) => MethodResult::Ok(format!("len={} mark={:.4}", ps.len(),
+                ps.first().map(|p| p.mark_price).unwrap_or(0.0))),
+            Ok(Err(e)) => {
+                let msg = e.to_string();
+                if msg.contains("UnsupportedOperation") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                else { MethodResult::Err(truncate(&msg, 60)) }
+            }
+            Err(_) => MethodResult::Timeout,
+        }
+    };
+
+    // ── WS subscriptions ──────────────────────────────────────────────────────
+    // Each WS sub creates its own hub+WS connection to avoid sharing state.
+
+    let sym_ws = sym.clone();
+    let sym_ws2 = sym.clone();
+    let sym_ws3 = sym.clone();
+    let sym_ws4 = sym.clone();
+    let sym_ws5 = sym.clone();
+    let sym_ws6 = sym.clone();
+    let sym_ws7 = sym.clone();
+    let sym_ws8 = sym.clone();
+    let sym_ws9 = sym.clone();
+
+    let ws_ticker_fut = async {
+        if !caps.has_ws_ticker { return MethodResult::Skipped; }
+        market::run_ws_sub(id, account_type, StreamType::Ticker, sym_ws, market::ExpectedKind::Ticker, stale_ms).await
+    };
+    let ws_trade_fut = async {
+        if !caps.has_ws_trades { return MethodResult::Skipped; }
+        market::run_ws_sub(id, account_type, StreamType::Trade, sym_ws2, market::ExpectedKind::Trade, stale_ms).await
+    };
+    let ws_ob_fut = async {
+        if !caps.has_ws_orderbook { return MethodResult::Skipped; }
+        market::run_ws_sub(id, account_type, StreamType::Orderbook, sym_ws3, market::ExpectedKind::Orderbook, stale_ms).await
+    };
+    let ws_kline_fut = async {
+        if !caps.has_ws_klines { return MethodResult::Skipped; }
+        market::run_ws_sub(id, account_type, StreamType::Kline { interval: "1m".into() }, sym_ws4, market::ExpectedKind::Kline, stale_ms).await
+    };
+    let ws_mark_fut = async {
+        if !futures_capable || !caps.has_ws_mark_price { return MethodResult::Skipped; }
+        market::run_ws_sub(id, futures_at, StreamType::MarkPrice, sym_ws5, market::ExpectedKind::MarkPrice, stale_ms).await
+    };
+    let ws_funding_fut = async {
+        if !futures_capable || !caps.has_ws_funding_rate { return MethodResult::Skipped; }
+        market::run_ws_sub(id, futures_at, StreamType::FundingRate, sym_ws6, market::ExpectedKind::FundingRate, stale_ms).await
+    };
+    let ws_liq_fut = async {
+        if !futures_capable { return MethodResult::Skipped; }
+        market::run_ws_sub(id, futures_at, StreamType::Liquidation, sym_ws7, market::ExpectedKind::Liquidation, stale_ms).await
+    };
+    let ws_oi_fut = async {
+        if !futures_capable { return MethodResult::Skipped; }
+        market::run_ws_sub(id, futures_at, StreamType::OpenInterest, sym_ws8, market::ExpectedKind::OpenInterest, stale_ms).await
+    };
+    let ws_agg_fut = async {
+        if !futures_capable { return MethodResult::Skipped; }
+        market::run_ws_sub(id, futures_at, StreamType::AggTrade, sym_ws9, market::ExpectedKind::AggTrade, stale_ms).await
+    };
+
+    let (ws_ticker, ws_trade, ws_orderbook, ws_kline, ws_mark_price, ws_funding, ws_liquidation, ws_oi, ws_agg_trade) =
+        tokio::join!(
+            ws_ticker_fut, ws_trade_fut, ws_ob_fut, ws_kline_fut,
+            ws_mark_fut, ws_funding_fut, ws_liq_fut, ws_oi_fut, ws_agg_fut
+        );
+
+    // ── Collect issues ────────────────────────────────────────────────────────
+    let mut issues: Vec<String> = Vec::new();
+    let method_cells = [
+        ("ping", &ping), ("price", &price), ("ticker", &ticker),
+        ("orderbook", &orderbook), ("klines", &klines), ("trades", &trades),
+        ("exch_info", &exch_info), ("funding", &funding), ("OI", &open_interest),
+        ("mark_px", &mark_price), ("ls_ratio", &long_short), ("liquidations", &liquidations),
+        ("premium_idx", &premium_index),
+        ("WS_ticker", &ws_ticker), ("WS_trade", &ws_trade), ("WS_ob", &ws_orderbook),
+        ("WS_kline", &ws_kline), ("WS_mark", &ws_mark_price), ("WS_funding", &ws_funding),
+        ("WS_liq", &ws_liquidation), ("WS_oi", &ws_oi), ("WS_agg", &ws_agg_trade),
+    ];
+    for (name, result) in &method_cells {
+        if result.is_issue() {
+            if let Some(d) = result.detail() {
+                issues.push(format!("{}: {}", name, d));
+            } else {
+                issues.push(format!("{}: {:?}", name, result));
+            }
+        }
+    }
+
+    MarketRow {
+        exchange: format!("{:?}", id),
+        ping, price, ticker, orderbook, klines, trades, exch_info,
+        funding, open_interest, mark_price, long_short, liquidations, premium_index,
+        ws_ticker, ws_trade, ws_orderbook: ws_orderbook, ws_kline, ws_mark_price, ws_funding,
+        ws_liquidation, ws_oi, ws_agg_trade,
+        issues,
+    }
 }
 
-/// Test MOEX REST + WS directly (factory blocks WS for MOEX, but impl exists)
-async fn test_moex_direct() -> Row {
+// ─────────────────────────────────────────────────────────────────────────────
+// mod trading
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod trading {
+    use super::*;
+
+    /// ENV var names for each exchange's credentials.
+    pub fn load_credentials(id: ExchangeId) -> Option<Credentials> {
+        let (key_env, secret_env, pass_env): (&str, &str, Option<&str>) = match id {
+            ExchangeId::Binance  => ("BINANCE_API_KEY", "BINANCE_API_SECRET", None),
+            ExchangeId::Bybit    => ("BYBIT_API_KEY", "BYBIT_API_SECRET", None),
+            ExchangeId::OKX      => ("OKX_API_KEY", "OKX_API_SECRET", Some("OKX_PASSPHRASE")),
+            ExchangeId::KuCoin   => ("KUCOIN_API_KEY", "KUCOIN_API_SECRET", Some("KUCOIN_PASSPHRASE")),
+            ExchangeId::GateIO   => ("GATEIO_API_KEY", "GATEIO_API_SECRET", None),
+            ExchangeId::MEXC     => ("MEXC_API_KEY", "MEXC_API_SECRET", None),
+            ExchangeId::HTX      => ("HTX_API_KEY", "HTX_API_SECRET", None),
+            ExchangeId::Bitget   => ("BITGET_API_KEY", "BITGET_API_SECRET", Some("BITGET_PASSPHRASE")),
+            ExchangeId::BingX    => ("BINGX_API_KEY", "BINGX_API_SECRET", None),
+            ExchangeId::CryptoCom => ("CRYPTOCOM_API_KEY", "CRYPTOCOM_API_SECRET", None),
+            ExchangeId::Bitfinex => ("BITFINEX_API_KEY", "BITFINEX_API_SECRET", None),
+            ExchangeId::Gemini   => ("GEMINI_API_KEY", "GEMINI_API_SECRET", None),
+            ExchangeId::Bitstamp => ("BITSTAMP_API_KEY", "BITSTAMP_API_SECRET", None),
+            ExchangeId::Kraken   => ("KRAKEN_API_KEY", "KRAKEN_API_SECRET", None),
+            ExchangeId::Coinbase => ("COINBASE_API_KEY", "COINBASE_API_SECRET", None),
+            ExchangeId::Deribit  => ("DERIBIT_API_KEY", "DERIBIT_API_SECRET", None),
+            ExchangeId::HyperLiquid => ("HYPERLIQUID_API_KEY", "HYPERLIQUID_API_SECRET", None),
+            ExchangeId::Dydx     => ("DYDX_API_KEY", "DYDX_API_SECRET", None),
+            ExchangeId::Upbit    => ("UPBIT_API_KEY", "UPBIT_API_SECRET", None),
+            _ => return None,
+        };
+
+        let api_key = std::env::var(key_env).ok()?;
+        let api_secret = std::env::var(secret_env).ok()?;
+        let passphrase = pass_env.and_then(|e| std::env::var(e).ok());
+
+        if api_key.is_empty() || api_secret.is_empty() { return None; }
+
+        Some(Credentials { api_key, api_secret, passphrase, testnet: false })
+    }
+}
+
+async fn test_trading(id: ExchangeId) -> TradingRow {
+    let harness = TestHarness::new();
+    let conn = match harness.create_authenticated(id).await {
+        None => {
+            // Also check direct ENV vars as fallback
+            match trading::load_credentials(id) {
+                None => {
+                    return TradingRow {
+                        exchange: format!("{:?}", id),
+                        balance: MethodResult::Skipped,
+                        account_info: MethodResult::Skipped,
+                        open_orders: MethodResult::Skipped,
+                        user_trades: MethodResult::Skipped,
+                        positions: MethodResult::Skipped,
+                        fees: MethodResult::Skipped,
+                        issues: vec!["no_credentials_in_env".into()],
+                    };
+                }
+                Some(_) => {
+                    // Has ENV creds but TestHarness didn't pick them up (.env file missing)
+                    return TradingRow {
+                        exchange: format!("{:?}", id),
+                        balance: MethodResult::Skipped,
+                        account_info: MethodResult::Skipped,
+                        open_orders: MethodResult::Skipped,
+                        user_trades: MethodResult::Skipped,
+                        positions: MethodResult::Skipped,
+                        fees: MethodResult::Skipped,
+                        issues: vec!["creds_in_env_but_not_dotenv".into()],
+                    };
+                }
+            }
+        }
+        Some(Err(e)) => {
+            let msg = truncate(&e.to_string(), 70);
+            return TradingRow {
+                exchange: format!("{:?}", id),
+                balance: MethodResult::Err(format!("auth_connect_fail: {}", msg)),
+                account_info: MethodResult::Skipped,
+                open_orders: MethodResult::Skipped,
+                user_trades: MethodResult::Skipped,
+                positions: MethodResult::Skipped,
+                fees: MethodResult::Skipped,
+                issues: vec![format!("auth_fail: {}", msg)],
+            };
+        }
+        Some(Ok(c)) => c,
+    };
+
+    let (_, raw_str, account_type) = raw_symbol_for(id);
+    let futures_at = if matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated) {
+        account_type
+    } else {
+        AccountType::FuturesCross
+    };
+
+    // balance
+    let balance = {
+        let conn = conn.clone();
+        match timeout(Duration::from_secs(10),
+            conn.get_balance(BalanceQuery { asset: None, account_type })).await {
+            Ok(Ok(bs)) => MethodResult::Ok(format!("assets={}", bs.len())),
+            Ok(Err(e)) => {
+                let msg = e.to_string();
+                if msg.contains("UnsupportedOperation") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                else { MethodResult::Err(truncate(&msg, 60)) }
+            }
+            Err(_) => MethodResult::Timeout,
+        }
+    };
+
+    // account_info
+    let account_info = {
+        let conn = conn.clone();
+        match timeout(Duration::from_secs(10),
+            conn.get_account_info(account_type)).await {
+            Ok(Ok(_)) => MethodResult::Ok("ok".into()),
+            Ok(Err(e)) => {
+                let msg = e.to_string();
+                if msg.contains("UnsupportedOperation") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                else { MethodResult::Err(truncate(&msg, 60)) }
+            }
+            Err(_) => MethodResult::Timeout,
+        }
+    };
+
+    // open_orders
+    let open_orders = {
+        let conn = conn.clone();
+        let s = raw_str.clone();
+        match timeout(Duration::from_secs(10),
+            conn.get_open_orders(Some(&s), account_type)).await {
+            Ok(Ok(os)) => MethodResult::Ok(format!("count={}", os.len())),
+            Ok(Err(e)) => {
+                let msg = e.to_string();
+                if msg.contains("UnsupportedOperation") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                else { MethodResult::Err(truncate(&msg, 60)) }
+            }
+            Err(_) => MethodResult::Timeout,
+        }
+    };
+
+    // user_trades
+    let user_trades = {
+        let conn = conn.clone();
+        let s = raw_str.clone();
+        match timeout(Duration::from_secs(10),
+            conn.get_user_trades(
+                UserTradeFilter { symbol: Some(s), order_id: None, start_time: None, end_time: None, limit: Some(5) },
+                account_type)).await {
+            Ok(Ok(ts)) => MethodResult::Ok(format!("count={}", ts.len())),
+            Ok(Err(e)) => {
+                let msg = e.to_string();
+                if msg.contains("UnsupportedOperation") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                else { MethodResult::Err(truncate(&msg, 60)) }
+            }
+            Err(_) => MethodResult::Timeout,
+        }
+    };
+
+    // positions (futures)
+    let positions = if !is_futures(id, account_type) {
+        MethodResult::Skipped
+    } else {
+        let conn = conn.clone();
+        match timeout(Duration::from_secs(10),
+            conn.get_positions(PositionQuery { symbol: None, account_type: futures_at })).await {
+            Ok(Ok(ps)) => MethodResult::Ok(format!("count={}", ps.len())),
+            Ok(Err(e)) => {
+                let msg = e.to_string();
+                if msg.contains("UnsupportedOperation") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                else { MethodResult::Err(truncate(&msg, 60)) }
+            }
+            Err(_) => MethodResult::Timeout,
+        }
+    };
+
+    // fees
+    let fees = {
+        let conn = conn.clone();
+        let s = raw_str.clone();
+        match timeout(Duration::from_secs(10), conn.get_fees(Some(&s))).await {
+            Ok(Ok(f)) => MethodResult::Ok(format!("maker={:.6} taker={:.6}", f.maker_rate, f.taker_rate)),
+            Ok(Err(e)) => {
+                let msg = e.to_string();
+                if msg.contains("UnsupportedOperation") { MethodResult::Unsupported(truncate(&msg, 50)) }
+                else { MethodResult::Err(truncate(&msg, 60)) }
+            }
+            Err(_) => MethodResult::Timeout,
+        }
+    };
+
+    let mut issues: Vec<String> = Vec::new();
+    for (name, result) in [
+        ("balance", &balance), ("account_info", &account_info),
+        ("open_orders", &open_orders), ("user_trades", &user_trades),
+        ("positions", &positions), ("fees", &fees),
+    ] {
+        if result.is_issue() {
+            if let Some(d) = result.detail() {
+                issues.push(format!("{}: {}", name, d));
+            } else {
+                issues.push(format!("{}: {:?}", name, result));
+            }
+        }
+    }
+
+    TradingRow {
+        exchange: format!("{:?}", id),
+        balance, account_info, open_orders, user_trades, positions, fees,
+        issues,
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MOEX direct test (factory blocks WS, but impl exists)
+// ─────────────────────────────────────────────────────────────────────────────
+
+async fn test_moex_market() -> MarketRow {
     let hub = ExchangeHub::new();
-    // MOEX: use GAZP (Gazprom) as canonical test stock
     let symbol_moex = Symbol::new("GAZP", "");
     let symbol_moex_str = SymbolNormalizer::to_exchange(ExchangeId::Moex, &symbol_moex, AccountType::Spot)
         .unwrap_or_else(|_| "GAZP".to_string());
-    let account_type = AccountType::Spot;
     let stale_ms = stale_threshold_ms();
+    let account_type = AccountType::Spot;
 
-    // REST
-    let rest = match timeout(Duration::from_secs(10), hub.connect_public(ExchangeId::Moex, false)).await {
-        Ok(Ok(())) => {
-            match hub.rest(ExchangeId::Moex) {
-                Some(conn) => {
-                    let ticker_result = timeout(
-                        Duration::from_secs(10),
-                        MarketData::get_ticker(&*conn, symbol_moex_str.as_str().into(), account_type),
-                    )
-                    .await
-                    .unwrap_or_else(|_| Err(digdigdig3::core::types::ExchangeError::Timeout("timeout".into())));
-
-                    match ticker_result {
-                        Ok(ticker) => {
-                            let mut zero_fields: Vec<&'static str> = Vec::new();
-                            if ticker.last_price == 0.0 { zero_fields.push("last_price"); }
-                            if ticker.volume_24h.unwrap_or(0.0) == 0.0 { zero_fields.push("volume"); }
-                            if timestamp_unit_bug(ticker.timestamp) {
-                                zero_fields.push("ts_unit_bug(seconds_not_ms)");
-                            } else if timestamp_future_bug(ticker.timestamp) {
-                                zero_fields.push("ts_future_bug(timezone?)");
-                            }
-                            if let (Some(b), Some(a)) = (ticker.bid_price, ticker.ask_price) {
-                                if b > a { zero_fields.push("bid>ask"); }
-                                // bid==ask is legitimate for thin off-hours
-                                // sessions (MOEX after close) — not flagged.
-                            }
-                            RestResult::Ok {
-                                last_price: ticker.last_price,
-                                volume: ticker.volume_24h.unwrap_or(0.0),
-                                bid: ticker.bid_price,
-                                ask: ticker.ask_price,
-                                timestamp: ticker.timestamp,
-                                zero_fields,
-                            }
-                        }
-                        Err(e) => RestResult::Fail(e.to_string()),
-                    }
-                }
-                None => RestResult::Fail("no_rest_handle".into()),
-            }
-        }
-        Ok(Err(e)) => RestResult::Fail(e.to_string()),
-        Err(_) => RestResult::Fail("connect_timeout".into()),
+    let connected = match timeout(Duration::from_secs(10), hub.connect_public(ExchangeId::Moex, false)).await {
+        Ok(Ok(())) => true,
+        _ => false,
     };
 
-    // WS — direct construction since factory blocks it
-    let ws_result = {
-        let ws = std::sync::Arc::new(MoexWebSocket::new_public()) as std::sync::Arc<dyn WebSocketConnector>;
-        // Use GAZP (Gazprom) — canonical MOEX stock ticker
-        let moex_symbol = Symbol::new("GAZP", "");
-        match timeout(
-            Duration::from_secs(20),
-            run_ws_test(ws, moex_symbol, account_type, stale_ms),
-        )
-        .await
-        {
+    let (ping, price, ticker, orderbook, klines, trades, exch_info) = if !connected {
+        (MethodResult::Err("connect_fail".into()), MethodResult::Skipped, MethodResult::Skipped,
+         MethodResult::Skipped, MethodResult::Skipped, MethodResult::Skipped, MethodResult::Skipped)
+    } else {
+        let conn = match hub.rest(ExchangeId::Moex) {
+            Some(c) => c,
+            None => {
+                return MarketRow {
+                    exchange: "Moex".into(),
+                    ping: MethodResult::Err("no_rest_handle".into()),
+                    price: MethodResult::Skipped, ticker: MethodResult::Skipped,
+                    orderbook: MethodResult::Skipped, klines: MethodResult::Skipped,
+                    trades: MethodResult::Skipped, exch_info: MethodResult::Skipped,
+                    funding: MethodResult::Skipped, open_interest: MethodResult::Skipped,
+                    mark_price: MethodResult::Skipped, long_short: MethodResult::Skipped,
+                    liquidations: MethodResult::Skipped, premium_index: MethodResult::Skipped,
+                    ws_ticker: MethodResult::Skipped, ws_trade: MethodResult::Skipped,
+                    ws_orderbook: MethodResult::Skipped, ws_kline: MethodResult::Skipped,
+                    ws_mark_price: MethodResult::Skipped, ws_funding: MethodResult::Skipped,
+                    ws_liquidation: MethodResult::Skipped, ws_oi: MethodResult::Skipped,
+                    ws_agg_trade: MethodResult::Skipped,
+                    issues: vec!["no_rest_handle".into()],
+                };
+            }
+        };
+        let sym_str = symbol_moex_str.clone();
+        let ping = match timeout(Duration::from_secs(8), conn.ping()).await {
+            Ok(Ok(())) => MethodResult::Ok("pong".into()),
+            Ok(Err(e)) => MethodResult::Err(truncate(&e.to_string(), 60)),
+            Err(_) => MethodResult::Timeout,
+        };
+        let ticker = match timeout(Duration::from_secs(10),
+            MarketData::get_ticker(&*conn, sym_str.as_str().into(), account_type)).await {
+            Ok(Ok(t)) => {
+                let mut issues = Vec::new();
+                if t.last_price <= 0.0 { issues.push("last=0"); }
+                if timestamp_unit_bug(t.timestamp) { issues.push("ts_unit_bug"); }
+                if issues.is_empty() { MethodResult::Ok(format!("last={:.4}", t.last_price)) }
+                else { MethodResult::Err(format!("last={:.4} ISSUES:{}", t.last_price, issues.join(","))) }
+            }
+            Ok(Err(e)) => MethodResult::Err(truncate(&e.to_string(), 60)),
+            Err(_) => MethodResult::Timeout,
+        };
+        (ping, MethodResult::Skipped, ticker, MethodResult::Skipped, MethodResult::Skipped, MethodResult::Skipped, MethodResult::Skipped)
+    };
+
+    // MOEX WS — direct construction
+    let ws_ticker = {
+        let ws = Arc::new(MoexWebSocket::new_public()) as Arc<dyn WebSocketConnector>;
+        let moex_sym = Symbol::new("GAZP", "");
+        let sub = SubscriptionRequest::ticker_for(moex_sym, AccountType::Spot);
+        match timeout(Duration::from_secs(20),
+            market::collect_ws_stream(ws, sub, market::ExpectedKind::Ticker, stale_ms)).await {
             Ok(r) => r,
-            Err(_) => WsResult::ConnectFail("overall_timeout_20s".into()),
+            Err(_) => MethodResult::Err("overall_timeout_20s".into()),
         }
     };
 
-    Row { exchange: ExchangeId::Moex, rest, ws: ws_result }
-}
-
-// ── Canonical path smoke ──────────────────────────────────────────────────────
-
-/// Verify that SymbolInput::Canonical resolves and returns real data for two
-/// representative exchanges.  Raw vs Canonical must produce identical tickers.
-async fn smoke_canonical_path() {
-    println!();
-    println!("=== CANONICAL PATH SMOKE (θ.3) ===");
-    println!("Verifies SymbolInput::Canonical normalizes + returns real ticker data.");
-    println!();
-
-    // Exchange 1: Binance — BTC/USDT spot
-    {
-        let hub = ExchangeHub::new();
-        let canonical_sym = Symbol::new("BTC", "USDT");
-        let ok = match timeout(Duration::from_secs(12), hub.connect_public(ExchangeId::Binance, false)).await {
-            Ok(Ok(())) => {
-                match hub.rest(ExchangeId::Binance) {
-                    Some(conn) => {
-                        // Canonical call — normalizer converts BTC/USDT → "BTCUSDT" internally
-                        let input = SymbolInput::Canonical(&canonical_sym);
-                        match timeout(
-                            Duration::from_secs(10),
-                            MarketData::get_ticker(&*conn, input, AccountType::Spot),
-                        ).await {
-                            Ok(Ok(ticker)) => {
-                                let valid = ticker.last_price > 0.0;
-                                println!(
-                                    "Binance  Canonical BTC/USDT → last={:.4}  {}",
-                                    ticker.last_price,
-                                    if valid { "PASS" } else { "FAIL (zero price)" }
-                                );
-                                valid
-                            }
-                            Ok(Err(e)) => { println!("Binance  Canonical FAIL: {e}"); false }
-                            Err(_)     => { println!("Binance  Canonical FAIL: timeout"); false }
-                        }
-                    }
-                    None => { println!("Binance  Canonical FAIL: no rest handle"); false }
-                }
-            }
-            Ok(Err(e)) => { println!("Binance  Canonical FAIL: connect {e}"); false }
-            Err(_)     => { println!("Binance  Canonical FAIL: connect timeout"); false }
-        };
-        if !ok {
-            println!("  RESULT: Canonical path FAIL on Binance");
+    let mut issues: Vec<String> = Vec::new();
+    for (name, result) in [("ping", &ping), ("ticker", &ticker), ("WS_ticker", &ws_ticker)] {
+        if result.is_issue() {
+            if let Some(d) = result.detail() { issues.push(format!("{}: {}", name, d)); }
         }
     }
 
-    // Exchange 2: OKX — BTC/USDT spot (dash-separated internally: "BTC-USDT")
-    {
-        let hub = ExchangeHub::new();
-        let canonical_sym = Symbol::new("BTC", "USDT");
-        let ok = match timeout(Duration::from_secs(12), hub.connect_public(ExchangeId::OKX, false)).await {
-            Ok(Ok(())) => {
-                match hub.rest(ExchangeId::OKX) {
-                    Some(conn) => {
-                        // Canonical call — normalizer converts BTC/USDT → "BTC-USDT" internally
-                        let input = SymbolInput::Canonical(&canonical_sym);
-                        match timeout(
-                            Duration::from_secs(10),
-                            MarketData::get_ticker(&*conn, input, AccountType::Spot),
-                        ).await {
-                            Ok(Ok(ticker)) => {
-                                let valid = ticker.last_price > 0.0;
-                                println!(
-                                    "OKX      Canonical BTC/USDT → last={:.4}  {}",
-                                    ticker.last_price,
-                                    if valid { "PASS" } else { "FAIL (zero price)" }
-                                );
-                                valid
-                            }
-                            Ok(Err(e)) => { println!("OKX      Canonical FAIL: {e}"); false }
-                            Err(_)     => { println!("OKX      Canonical FAIL: timeout"); false }
-                        }
-                    }
-                    None => { println!("OKX      Canonical FAIL: no rest handle"); false }
-                }
-            }
-            Ok(Err(e)) => { println!("OKX      Canonical FAIL: connect {e}"); false }
-            Err(_)     => { println!("OKX      Canonical FAIL: connect timeout"); false }
-        };
-        if !ok {
-            println!("  RESULT: Canonical path FAIL on OKX");
+    MarketRow {
+        exchange: "Moex".into(),
+        ping, price, ticker, orderbook, klines, trades, exch_info,
+        funding: MethodResult::Skipped, open_interest: MethodResult::Skipped,
+        mark_price: MethodResult::Skipped, long_short: MethodResult::Skipped,
+        liquidations: MethodResult::Skipped, premium_index: MethodResult::Skipped,
+        ws_ticker, ws_trade: MethodResult::Skipped, ws_orderbook: MethodResult::Skipped,
+        ws_kline: MethodResult::Skipped, ws_mark_price: MethodResult::Skipped,
+        ws_funding: MethodResult::Skipped, ws_liquidation: MethodResult::Skipped,
+        ws_oi: MethodResult::Skipped, ws_agg_trade: MethodResult::Skipped,
+        issues,
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// mod report — pretty print
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod report {
+    use super::*;
+
+    pub fn print_market_matrix(rows: &[MarketRow]) {
+        println!();
+        println!("=== MARKET COVERAGE MATRIX ===");
+        println!("{:<18} | REST                                                          | WS", "");
+        println!("{:<18} | ping pric tick ob   klin trad exch fund OI   mark ls   liq  px | tick trad ob   klin mark fund liq  OI   agg", "Exchange");
+        println!("{}", "-".repeat(170));
+        for row in rows {
+            let rest_cells = [
+                row.ping.cell(), row.price.cell(), row.ticker.cell(), row.orderbook.cell(),
+                row.klines.cell(), row.trades.cell(), row.exch_info.cell(),
+                row.funding.cell(), row.open_interest.cell(), row.mark_price.cell(),
+                row.long_short.cell(), row.liquidations.cell(), row.premium_index.cell(),
+            ];
+            let ws_cells = [
+                row.ws_ticker.cell(), row.ws_trade.cell(), row.ws_orderbook.cell(),
+                row.ws_kline.cell(), row.ws_mark_price.cell(), row.ws_funding.cell(),
+                row.ws_liquidation.cell(), row.ws_oi.cell(), row.ws_agg_trade.cell(),
+            ];
+            let rest_str = rest_cells.join(" ");
+            let ws_str = ws_cells.join(" ");
+            println!("{:<18} | {} | {}", row.exchange, rest_str, ws_str);
         }
     }
 
-    println!();
-    println!("Canonical path: SymbolInput::Canonical(&Symbol::new(\"BTC\",\"USDT\")) dispatched via");
-    println!("SymbolNormalizer::to_exchange inside resolve() — zero changes to connector code.");
+    pub fn print_trading_matrix(rows: &[TradingRow]) {
+        println!();
+        println!("=== TRADING COVERAGE MATRIX ===");
+        println!("{:<18} | balance  acc_info open_ord usr_trd  positions fees", "Exchange");
+        println!("{}", "-".repeat(80));
+        for row in rows {
+            let cells = [
+                row.balance.cell(), row.account_info.cell(), row.open_orders.cell(),
+                row.user_trades.cell(), row.positions.cell(), row.fees.cell(),
+            ];
+            println!("{:<18} | {}", row.exchange, cells.join("  "));
+        }
+    }
+
+    pub fn print_summaries(market_rows: &[MarketRow], trading_rows: &[TradingRow]) {
+        // TRUSTED
+        let trusted: Vec<&str> = market_rows.iter()
+            .filter(|r| {
+                r.ping.is_ok() && r.ticker.is_ok() && r.orderbook.is_ok() && r.klines.is_ok()
+                && r.ws_ticker.is_ok()
+                && r.issues.is_empty()
+            })
+            .map(|r| r.exchange.as_str())
+            .collect();
+        println!();
+        println!("=== TRUSTED (ping+ticker+ob+klines OK, WS_ticker OK, no issues) ===");
+        println!("Count: {}", trusted.len());
+        for ex in &trusted { println!("  + {}", ex); }
+
+        // PARTIAL
+        let partial: Vec<&MarketRow> = market_rows.iter()
+            .filter(|r| !r.issues.is_empty() && (r.ping.is_ok() || r.ticker.is_ok()))
+            .collect();
+        println!();
+        println!("=== PARTIAL (some methods fail) ===");
+        for row in &partial {
+            println!("  {} | {}", row.exchange, row.issues.first().map(|s| s.as_str()).unwrap_or(""));
+        }
+
+        // ISSUES BY EXCHANGE
+        let has_issues: Vec<&MarketRow> = market_rows.iter().filter(|r| !r.issues.is_empty()).collect();
+        println!();
+        println!("=== ISSUES BY EXCHANGE ===");
+        for row in &has_issues {
+            for iss in &row.issues {
+                println!("  {:18} | {}", row.exchange, iss);
+            }
+        }
+
+        // Trading
+        if !trading_rows.is_empty() {
+            let trading_issues: Vec<&TradingRow> = trading_rows.iter().filter(|r| !r.issues.is_empty()).collect();
+            if !trading_issues.is_empty() {
+                println!();
+                println!("=== TRADING ISSUES ===");
+                for row in &trading_issues {
+                    for iss in &row.issues {
+                        println!("  {:18} | {}", row.exchange, iss);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn write_json(path: &str, reports: &[(ExchangeId, ExchangeReport)]) {
+        let json = serde_json::json!({
+            "timestamp": now_ms(),
+            "exchanges": reports.iter().map(|(id, r)| {
+                serde_json::json!({
+                    "exchange": format!("{:?}", id),
+                    "report": r,
+                })
+            }).collect::<Vec<_>>(),
+        });
+        match std::fs::write(path, serde_json::to_string_pretty(&json).unwrap_or_default()) {
+            Ok(()) => println!("JSON report written to {}", path),
+            Err(e) => println!("Failed to write JSON: {}", e),
+        }
+    }
 }
 
-// ── All exchanges ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// All testable exchanges
+// ─────────────────────────────────────────────────────────────────────────────
 
 fn all_testable_exchanges() -> Vec<ExchangeId> {
     vec![
-        // CEX — full public REST + WS via factory
-        ExchangeId::Binance,
-        ExchangeId::Bybit,
-        ExchangeId::OKX,
-        ExchangeId::KuCoin,
-        ExchangeId::Kraken,
-        ExchangeId::GateIO,
-        ExchangeId::Bitfinex,
-        ExchangeId::MEXC,
-        ExchangeId::HTX,
-        ExchangeId::BingX,
-        ExchangeId::CryptoCom,
-        ExchangeId::Upbit,
-        ExchangeId::Deribit,
-        ExchangeId::HyperLiquid,
-        ExchangeId::Bitget,
-        ExchangeId::Bitstamp,
-        ExchangeId::Coinbase,
-        ExchangeId::Gemini,
-        // DEX
-        ExchangeId::Dydx,
-        ExchangeId::Lighter,
-        // Data feeds with public access
-        ExchangeId::YahooFinance,
-        ExchangeId::CryptoCompare,
-        ExchangeId::Twelvedata,
-        // Polymarket: prediction-market CLOB. Dynamic discovery via Gamma API.
-        ExchangeId::Polymarket,
-        ExchangeId::Dukascopy,
-        ExchangeId::Alpaca,
+        ExchangeId::Binance, ExchangeId::Bybit, ExchangeId::OKX, ExchangeId::KuCoin,
+        ExchangeId::Kraken, ExchangeId::GateIO, ExchangeId::Bitfinex, ExchangeId::MEXC,
+        ExchangeId::HTX, ExchangeId::BingX, ExchangeId::CryptoCom, ExchangeId::Upbit,
+        ExchangeId::Deribit, ExchangeId::HyperLiquid, ExchangeId::Bitget,
+        ExchangeId::Bitstamp, ExchangeId::Coinbase, ExchangeId::Gemini,
+        ExchangeId::Dydx, ExchangeId::Lighter,
+        ExchangeId::YahooFinance, ExchangeId::CryptoCompare, ExchangeId::Twelvedata,
+        ExchangeId::Polymarket, ExchangeId::Dukascopy, ExchangeId::Alpaca,
         ExchangeId::Krx,
-        // Auth-required — shows diagnostic FAIL
-        ExchangeId::Polygon,
-        ExchangeId::Finnhub,
-        ExchangeId::Tiingo,
-        ExchangeId::AlphaVantage,
-        ExchangeId::AngelOne,
-        ExchangeId::Zerodha,
-        ExchangeId::Upstox,
-        ExchangeId::Dhan,
-        ExchangeId::Fyers,
-        ExchangeId::Oanda,
-        ExchangeId::JQuants,
-        ExchangeId::Tinkoff,
-        ExchangeId::Ib,
-        ExchangeId::Futu,
-        // Coinglass — still in factory, kept for now (creds-gated).
-        ExchangeId::Coinglass,
-        // (Polymarket already listed above — discovery step added)
-        // Extracted to dig2feed (DefiLlama, WhaleAlert, Bitquery) and removed
-        // (Fred, Bls). Their ExchangeId variants linger in the enum because
-        // ~300 sites reference them; they cannot be smoke-tested from this
-        // crate and the factory returns `UnsupportedOperation`. Skipping
-        // here keeps the e2e_smoke report focused on real connectors.
-        //
-        // ExchangeId::DefiLlama,  // moved to dig2feed
-        // ExchangeId::WhaleAlert, // moved to dig2feed
-        // ExchangeId::Fred,       // removed
-        // ExchangeId::Bitquery,   // moved to dig2feed
-        // ExchangeId::Bls,        // removed
+        ExchangeId::Polygon, ExchangeId::Finnhub, ExchangeId::Tiingo,
+        ExchangeId::AlphaVantage, ExchangeId::AngelOne, ExchangeId::Zerodha,
+        ExchangeId::Upstox, ExchangeId::Dhan, ExchangeId::Fyers,
+        ExchangeId::Oanda, ExchangeId::JQuants, ExchangeId::Tinkoff,
+        ExchangeId::Ib, ExchangeId::Futu, ExchangeId::Coinglass,
     ]
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// main
+// ─────────────────────────────────────────────────────────────────────────────
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = cli::Args::parse();
     let start = Instant::now();
 
-    let exchanges = all_testable_exchanges();
-    let total = exchanges.len() + 1; // +1 for MOEX direct
+    let mut exchanges = all_testable_exchanges();
 
-    println!("=== DEEP SMOKE — digdigdig3 ===");
-    println!("WS impl total (grep impl WebSocketConnector+WsProtocol): 35");
-    println!("WS-capable distinct exchanges (via factory + direct): 25");
-    println!("REST total ExchangeId variants in factory: 49");
-    println!("Testing {} exchanges ({}+MOEX_direct) in parallel", total, exchanges.len());
+    // Apply exchange filter
+    if let Some(ref filter) = args.exchange_filter {
+        let filter_lc = filter.to_lowercase();
+        exchanges.retain(|id| format!("{:?}", id).to_lowercase().contains(&filter_lc));
+        if exchanges.is_empty() {
+            eprintln!("No exchange matched filter '{}'", filter);
+            return Ok(());
+        }
+    }
+
+    println!("=== e2e_smoke — digdigdig3 ===");
+    println!("Exchanges: {} | market={} trading={}", exchanges.len(), args.run_market, args.run_trading);
+    if let Some(ref f) = args.exchange_filter { println!("Filter: {}", f); }
     println!();
 
-    // Spawn all factory-based tests
-    let mut handles: Vec<_> = exchanges
-        .iter()
-        .copied()
-        .map(|id| {
-            tokio::spawn(async move {
-                timeout(Duration::from_secs(25), test_exchange(id))
+    let mut all_reports: Vec<(ExchangeId, ExchangeReport)> = Vec::new();
+    let mut market_rows: Vec<MarketRow> = Vec::new();
+    let mut trading_rows: Vec<TradingRow> = Vec::new();
+
+    // ── Market parallel ───────────────────────────────────────────────────────
+    if args.run_market {
+        // Add MOEX direct
+        let include_moex = args.exchange_filter.as_deref()
+            .map(|f| "moex".contains(&f.to_lowercase()))
+            .unwrap_or(true);
+
+        let mut market_handles: Vec<tokio::task::JoinHandle<MarketRow>> = exchanges
+            .iter()
+            .copied()
+            .map(|id| {
+                tokio::spawn(async move {
+                    timeout(Duration::from_secs(60), test_market(id))
+                        .await
+                        .unwrap_or_else(|_| MarketRow {
+                            exchange: format!("{:?}", id),
+                            ping: MethodResult::Err("HARD_TIMEOUT_60s".into()),
+                            price: MethodResult::Skipped, ticker: MethodResult::Skipped,
+                            orderbook: MethodResult::Skipped, klines: MethodResult::Skipped,
+                            trades: MethodResult::Skipped, exch_info: MethodResult::Skipped,
+                            funding: MethodResult::Skipped, open_interest: MethodResult::Skipped,
+                            mark_price: MethodResult::Skipped, long_short: MethodResult::Skipped,
+                            liquidations: MethodResult::Skipped, premium_index: MethodResult::Skipped,
+                            ws_ticker: MethodResult::Skipped, ws_trade: MethodResult::Skipped,
+                            ws_orderbook: MethodResult::Skipped, ws_kline: MethodResult::Skipped,
+                            ws_mark_price: MethodResult::Skipped, ws_funding: MethodResult::Skipped,
+                            ws_liquidation: MethodResult::Skipped, ws_oi: MethodResult::Skipped,
+                            ws_agg_trade: MethodResult::Skipped,
+                            issues: vec!["HARD_TIMEOUT_60s".into()],
+                        })
+                })
+            })
+            .collect();
+
+        if include_moex {
+            market_handles.push(tokio::spawn(async move {
+                timeout(Duration::from_secs(35), test_moex_market())
                     .await
-                    .unwrap_or_else(|_| Row {
-                        exchange: id,
-                        rest: RestResult::Fail("TIMEOUT_25s".into()),
-                        ws: WsResult::Unsupported("TIMEOUT_25s".into()),
+                    .unwrap_or_else(|_| MarketRow {
+                        exchange: "Moex".into(),
+                        ping: MethodResult::Err("HARD_TIMEOUT_35s".into()),
+                        price: MethodResult::Skipped, ticker: MethodResult::Skipped,
+                        orderbook: MethodResult::Skipped, klines: MethodResult::Skipped,
+                        trades: MethodResult::Skipped, exch_info: MethodResult::Skipped,
+                        funding: MethodResult::Skipped, open_interest: MethodResult::Skipped,
+                        mark_price: MethodResult::Skipped, long_short: MethodResult::Skipped,
+                        liquidations: MethodResult::Skipped, premium_index: MethodResult::Skipped,
+                        ws_ticker: MethodResult::Skipped, ws_trade: MethodResult::Skipped,
+                        ws_orderbook: MethodResult::Skipped, ws_kline: MethodResult::Skipped,
+                        ws_mark_price: MethodResult::Skipped, ws_funding: MethodResult::Skipped,
+                        ws_liquidation: MethodResult::Skipped, ws_oi: MethodResult::Skipped,
+                        ws_agg_trade: MethodResult::Skipped,
+                        issues: vec!["HARD_TIMEOUT_35s".into()],
                     })
-            })
-        })
-        .collect();
+            }));
+        }
 
-    // Spawn MOEX direct (needs slightly more time for its WS)
-    let moex_handle = tokio::spawn(async move {
-        timeout(Duration::from_secs(30), test_moex_direct())
-            .await
-            .unwrap_or_else(|_| Row {
-                exchange: ExchangeId::Moex,
-                rest: RestResult::Fail("TIMEOUT_30s".into()),
-                ws: WsResult::Unsupported("TIMEOUT_30s".into()),
-            })
-    });
-    handles.push(moex_handle);
+        let results = futures_util::future::join_all(market_handles).await;
+        market_rows = results.into_iter().filter_map(|r| r.ok()).collect();
+        market_rows.sort_by_key(|r| r.exchange.clone());
 
-    let results = futures_util::future::join_all(handles).await;
-
-    let mut rows: Vec<Row> = results.into_iter().filter_map(|r| r.ok()).collect();
-    rows.sort_by(|a, b| format!("{:?}", a.exchange).cmp(&format!("{:?}", b.exchange)));
-
-    // ── Per-row output ────────────────────────────────────────────────────────
-    println!("=== PER-EXCHANGE RESULTS ===");
-    println!("{:<20} | {:<75} | {}", "Exchange", "REST", "WS");
-    println!("{}", "-".repeat(200));
-
-    for row in &rows {
-        let ws_str = match &row.ws {
-            WsResult::Unsupported(msg) => format!("WS_NA: {}", &msg[..msg.len().min(50)]),
-            WsResult::ConnectFail(msg) => format!("CONN_FAIL: {}", &msg[..msg.len().min(50)]),
-            WsResult::SubscribeFail(msg) => format!("SUB_FAIL: {}", &msg[..msg.len().min(50)]),
-            WsResult::Silent => "SILENT(0 events)".to_string(),
-            WsResult::Events { count, first_event, data_valid, issues } => {
-                let fe = if first_event.len() > 80 {
-                    format!("{}...", &first_event[..77])
-                } else {
-                    first_event.clone()
-                };
-                // DATA_VALID only if event_valid AND no per-event issues.
-                let strictly_valid = *data_valid && issues.is_empty();
-                let valid_tag = if strictly_valid { "DATA_VALID" } else { "DATA_EMPTY" };
-                let issues_tag = if issues.is_empty() {
-                    String::new()
-                } else {
-                    format!(" ISSUES[{}]", issues.join("; "))
-                };
-                format!("OK cnt={} {}{} | {}", count, valid_tag, issues_tag, fe)
+        // Print detailed per-method issues for rows with problems
+        println!("=== PER-EXCHANGE DETAILS (issues only) ===");
+        for row in &market_rows {
+            if !row.issues.is_empty() {
+                println!("{:18} | ISSUES: {}", row.exchange, row.issues.join(" | "));
             }
-        };
+        }
 
-        println!(
-            "{:<20} | {:<75} | {}",
-            format!("{:?}", row.exchange),
-            row.rest.short(),
-            ws_str
-        );
+        report::print_market_matrix(&market_rows);
+
+        // Populate all_reports
+        for row in &market_rows {
+            let id = exchanges.iter().find(|&&id| format!("{:?}", id) == row.exchange)
+                .copied()
+                .unwrap_or(ExchangeId::Moex);
+            all_reports.push((id, ExchangeReport { market: Some(row.clone()), trading: None }));
+        }
     }
 
-    // ── Summary ───────────────────────────────────────────────────────────────
-    let _rest_ok_count = rows.iter().filter(|r| r.rest.is_ok()).count();
-    let rest_ok_populated = rows
-        .iter()
-        .filter(|r| r.rest.is_ok() && !r.rest.has_zero_fields())
-        .count();
-    let rest_ok_zero = rows
-        .iter()
-        .filter(|r| r.rest.is_ok() && r.rest.has_zero_fields())
-        .count();
-    let rest_fail = rows.iter().filter(|r| !r.rest.is_ok()).count();
+    // ── Trading parallel ──────────────────────────────────────────────────────
+    if args.run_trading {
+        let trading_handles: Vec<tokio::task::JoinHandle<TradingRow>> = exchanges
+            .iter()
+            .copied()
+            .map(|id| {
+                tokio::spawn(async move {
+                    timeout(Duration::from_secs(30), test_trading(id))
+                        .await
+                        .unwrap_or_else(|_| TradingRow {
+                            exchange: format!("{:?}", id),
+                            balance: MethodResult::Err("HARD_TIMEOUT_30s".into()),
+                            account_info: MethodResult::Skipped, open_orders: MethodResult::Skipped,
+                            user_trades: MethodResult::Skipped, positions: MethodResult::Skipped,
+                            fees: MethodResult::Skipped,
+                            issues: vec!["HARD_TIMEOUT_30s".into()],
+                        })
+                })
+            })
+            .collect();
 
-    let ws_total_impls = 35usize;
-    let ws_via_factory = rows.iter().filter(|r| r.ws.connect_ok()).count();
-    let ws_flowing = rows.iter().filter(|r| r.ws.has_events()).count();
-    let ws_valid = rows.iter().filter(|r| r.ws.data_valid()).count();
-    let ws_empty_data = rows.iter().filter(|r| r.ws.data_empty()).count();
+        let results = futures_util::future::join_all(trading_handles).await;
+        trading_rows = results.into_iter().filter_map(|r| r.ok()).collect();
+        trading_rows.sort_by_key(|r| r.exchange.clone());
 
-    let ws_silent: Vec<_> = rows
-        .iter()
-        .filter(|r| matches!(r.ws, WsResult::Silent))
-        .map(|r| format!("{:?}", r.exchange))
-        .collect();
+        report::print_trading_matrix(&trading_rows);
 
-    let ws_empty_data_exchanges: Vec<_> = rows
-        .iter()
-        .filter(|r| r.ws.data_empty())
-        .map(|r| format!("{:?}", r.exchange))
-        .collect();
-
-    let rest_zero_fields_exchanges: Vec<_> = rows
-        .iter()
-        .filter(|r| r.rest.has_zero_fields())
-        .map(|r| {
-            if let RestResult::Ok { zero_fields, .. } = &r.rest {
-                format!("{:?}({})", r.exchange, zero_fields.join(","))
-            } else {
-                format!("{:?}", r.exchange)
+        // Merge into all_reports
+        for tr in &trading_rows {
+            let id = exchanges.iter().find(|&&id| format!("{:?}", id) == tr.exchange).copied();
+            if let Some(id) = id {
+                if let Some(entry) = all_reports.iter_mut().find(|(eid, _)| *eid == id) {
+                    entry.1.trading = Some(tr.clone());
+                } else {
+                    all_reports.push((id, ExchangeReport { market: None, trading: Some(tr.clone()) }));
+                }
             }
-        })
-        .collect();
-
-    // Class 1: Connection fails
-    let class1_conn_fail: Vec<_> = rows
-        .iter()
-        .filter(|r| {
-            !r.rest.is_ok()
-                && !matches!(r.ws, WsResult::Unsupported(_))
-                || matches!(r.ws, WsResult::ConnectFail(_))
-        })
-        .map(|r| format!("{:?}", r.exchange))
-        .collect();
-
-    // Class 2: Subscribed but silent
-    let class2_silent: Vec<_> = rows
-        .iter()
-        .filter(|r| matches!(r.ws, WsResult::Silent))
-        .map(|r| format!("{:?}", r.exchange))
-        .collect();
-
-    // Class 3: Events flowing but data is zero/empty
-    let class3_empty_data: Vec<_> = ws_empty_data_exchanges.clone();
-
-    println!();
-    println!("=== SUMMARY ===");
-    println!("WS impl total in codebase:            {}", ws_total_impls);
-    println!("WS tested (via factory + MOEX direct):{}", rows.len());
-    println!("WS connected:                         {}", ws_via_factory);
-    println!("WS events flowing:                    {}", ws_flowing);
-    println!("WS events with REAL data (non-zero):  {}", ws_valid);
-    println!("WS events EMPTY/DEFAULT fields (BUG): {}", ws_empty_data);
-    println!("WS silent (subscribed, 0 events):     {}", ws_silent.len());
-    println!();
-    println!("REST total variants tested:            {}", total);
-    println!("REST OK with populated fields:         {}", rest_ok_populated);
-    println!("REST OK but zero/default fields:       {}", rest_ok_zero);
-    println!("REST FAIL (auth/network):              {}", rest_fail);
-    println!();
-    println!("=== BUG CLASSES ===");
-    println!("Class 1 — Connection fails:            {} — {:?}", class1_conn_fail.len(), class1_conn_fail);
-    println!("Class 2 — Silent streams (sub ok, 0 events): {} — {:?}", class2_silent.len(), class2_silent);
-    println!("Class 3 — Events flowing but zero/empty data (PARSER BUG): {} — {:?}", class3_empty_data.len(), class3_empty_data);
-    if !rest_zero_fields_exchanges.is_empty() {
-        println!("REST issues: {:?}", rest_zero_fields_exchanges);
+        }
     }
 
-    // Class 4 — WS frames flow but per-event content issues (wrong type,
-    // bid==ask, ts in seconds, bid>ask). These are connectors that LOOK OK
-    // ("OK cnt=N DATA_VALID") but quietly emit malformed events.
-    let ws_with_issues: Vec<String> = rows.iter().filter_map(|r| {
-        let issues = r.ws.issues();
-        if issues.is_empty() { None }
-        else { Some(format!("{:?}({})", r.exchange, issues.join(","))) }
-    }).collect();
-    if !ws_with_issues.is_empty() {
-        println!("Class 4 — WS event content issues: {} — {:?}", ws_with_issues.len(), ws_with_issues);
-    } else {
-        println!("Class 4 — WS event content issues: 0");
-    }
+    // ── Summaries ─────────────────────────────────────────────────────────────
+    report::print_summaries(&market_rows, &trading_rows);
 
-    // Trusted set: REST populated AND WS DATA_VALID AND zero issues anywhere.
-    let trusted: Vec<String> = rows.iter().filter(|r| {
-        r.rest.is_ok()
-            && !r.rest.has_zero_fields()
-            && r.ws.data_valid()
-            && r.ws.issues().is_empty()
-    }).map(|r| format!("{:?}", r.exchange)).collect();
-    println!();
-    println!("=== TRUSTED (REST+WS both fully valid, no issues) ===");
-    println!("Count: {}", trusted.len());
-    if !trusted.is_empty() {
-        for ex in &trusted { println!("  ✓ {}", ex); }
+    // ── JSON output ───────────────────────────────────────────────────────────
+    if let Some(ref path) = args.json_out {
+        report::write_json(path, &all_reports);
     }
-
-    // θ.3 — verify Canonical path end-to-end
-    smoke_canonical_path().await;
 
     println!();
     println!("Total runtime: {:.1}s", start.elapsed().as_secs_f64());

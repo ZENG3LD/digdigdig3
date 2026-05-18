@@ -78,6 +78,7 @@ impl SymbolNormalizer {
             ExchangeId::Lighter     => lighter::to_exchange(sym, account_type),
             ExchangeId::Polymarket  => polymarket::to_exchange(sym, account_type),
             ExchangeId::Moex        => moex::to_exchange(sym, account_type),
+            ExchangeId::CryptoCompare => cryptocompare::to_exchange(sym, account_type),
             other => Err(NormalizerError::UnknownExchange(other)),
         }
     }
@@ -114,6 +115,7 @@ impl SymbolNormalizer {
             ExchangeId::Lighter     => lighter::from_exchange(raw, account_type),
             ExchangeId::Polymarket  => polymarket::from_exchange(raw, account_type),
             ExchangeId::Moex        => moex::from_exchange(raw, account_type),
+            ExchangeId::CryptoCompare => cryptocompare::from_exchange(raw, account_type),
             other => Err(NormalizerError::UnknownExchange(other)),
         }
     }
@@ -146,44 +148,14 @@ impl SymbolNormalizer {
             ExchangeId::Lighter     => lighter::is_valid_for(raw, account_type),
             ExchangeId::Polymarket  => polymarket::is_valid_for(raw, account_type),
             ExchangeId::Moex        => moex::is_valid_for(raw, account_type),
+            ExchangeId::CryptoCompare => cryptocompare::is_valid_for(raw, account_type),
             _ => false,
         }
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Helper: no-op default — returns base+quote concat as placeholder.
-// α.2 batches replace each sub-module body with real logic.
-// ─────────────────────────────────────────────────────────────────────────────
-
-fn noop_to_exchange(sym: &Symbol) -> Result<String, NormalizerError> {
-    Ok(format!("{}{}", sym.base, sym.quote))
-}
-
-fn noop_from_exchange(
-    id: ExchangeId,
-    raw: &str,
-) -> Result<Symbol, NormalizerError> {
-    // Best-effort parse from common separators; fall back to base=raw, quote="".
-    if let Some((base, quote)) = raw.split_once('-') {
-        return Ok(Symbol::new(base, quote));
-    }
-    if let Some((base, quote)) = raw.split_once('_') {
-        return Ok(Symbol::new(base, quote));
-    }
-    if let Some((base, quote)) = raw.split_once('/') {
-        return Ok(Symbol::new(base, quote));
-    }
-    Err(NormalizerError::InvalidFormat {
-        exchange: id,
-        raw: raw.to_string(),
-    })
-}
-
-fn noop_is_valid_for(raw: &str) -> bool {
-    !raw.is_empty()
-}
-
+// (α.2 noop_* helpers removed — every sub-module now has real conversion logic.)
 // ─────────────────────────────────────────────────────────────────────────────
 // Per-exchange sub-modules (22 total, all no-op stubs in α.1)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1272,14 +1244,31 @@ mod dydx {
 
 mod lighter {
     use super::*;
+
+    /// Lighter perpetuals trade by **base coin only** (`BTC`, `ETH`, …) — the
+    /// quote leg is implicit (USD-margined). Passing `"BTCUSDT"` to a Lighter
+    /// endpoint yields `Unknown Lighter market for coin 'BTCUSDT'`. The
+    /// normalizer therefore returns `sym.base` uppercased.
     pub(super) fn to_exchange(sym: &Symbol, _account_type: AccountType) -> Result<String, NormalizerError> {
-        noop_to_exchange(sym)
+        if sym.base.is_empty() {
+            return Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::Lighter,
+                raw: sym.base.clone(),
+            });
+        }
+        Ok(sym.base.to_uppercase())
     }
     pub(super) fn from_exchange(raw: &str, _account_type: AccountType) -> Result<Symbol, NormalizerError> {
-        noop_from_exchange(ExchangeId::Lighter, raw)
+        if raw.is_empty() {
+            return Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::Lighter,
+                raw: raw.to_string(),
+            });
+        }
+        Ok(Symbol::new(raw, ""))
     }
     pub(super) fn is_valid_for(raw: &str, _account_type: AccountType) -> bool {
-        noop_is_valid_for(raw)
+        !raw.is_empty()
     }
 }
 
@@ -1360,6 +1349,39 @@ mod moex {
     }
 }
 
+mod cryptocompare {
+    use super::*;
+
+    /// CryptoCompare REST splits on `-` to extract (fsym, tsym):
+    ///   `/data/price?fsym=BTC&tsyms=USDT`
+    ///   `/data/pricemultifull?fsyms=BTC&tsyms=USDT`
+    /// The connector expects an already-dashed `"BTC-USDT"` string; the normalizer
+    /// builds it from canonical `Symbol{base, quote}`.
+    pub(super) fn to_exchange(sym: &Symbol, _account_type: AccountType) -> Result<String, NormalizerError> {
+        let base = sym.base.to_uppercase();
+        let quote = sym.quote.to_uppercase();
+        if base.is_empty() || quote.is_empty() {
+            return Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::CryptoCompare,
+                raw: format!("{}/{}", sym.base, sym.quote),
+            });
+        }
+        Ok(format!("{}-{}", base, quote))
+    }
+    pub(super) fn from_exchange(raw: &str, _account_type: AccountType) -> Result<Symbol, NormalizerError> {
+        match raw.split_once('-') {
+            Some((b, q)) if !b.is_empty() && !q.is_empty() => Ok(Symbol::new(b, q)),
+            _ => Err(NormalizerError::InvalidFormat {
+                exchange: ExchangeId::CryptoCompare,
+                raw: raw.to_string(),
+            }),
+        }
+    }
+    pub(super) fn is_valid_for(raw: &str, _account_type: AccountType) -> bool {
+        raw.split_once('-').map_or(false, |(b, q)| !b.is_empty() && !q.is_empty())
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Unit tests — verifies dispatch works for all 22 arms (no-op defaults)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1409,44 +1431,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn is_valid_for_nonempty_raw_is_true() {
-        // Exchanges with real (non-noop) is_valid_for logic are tested separately
-        // with exchange-native format strings. Generic test only covers noop exchanges.
-        let noop_exchanges: Vec<ExchangeId> = all_exchanges()
-            .into_iter()
-            .filter(|id| !matches!(
-                id,
-                ExchangeId::Gemini
-                | ExchangeId::Binance
-                | ExchangeId::Bybit
-                | ExchangeId::OKX
-                | ExchangeId::KuCoin
-                | ExchangeId::GateIO
-                | ExchangeId::MEXC
-                | ExchangeId::HTX
-                | ExchangeId::Bitget
-                | ExchangeId::Upbit
-                | ExchangeId::Deribit
-                | ExchangeId::Bitfinex
-                | ExchangeId::BingX
-                | ExchangeId::CryptoCom
-                | ExchangeId::Bitstamp
-                | ExchangeId::Coinbase
-                | ExchangeId::Dydx
-                | ExchangeId::HyperLiquid
-                | ExchangeId::Lighter
-                | ExchangeId::Moex
-                | ExchangeId::Polymarket
-            ))
-            .collect();
-        for id in noop_exchanges {
-            assert!(
-                SymbolNormalizer::is_valid_for(id, "BTCUSDT", AccountType::Spot),
-                "is_valid_for({id:?}, \"BTCUSDT\") returned false"
-            );
-        }
-    }
+    // Removed `is_valid_for_nonempty_raw_is_true` — it filtered out every
+    // exchange that had real normalizer logic and ended up iterating an empty
+    // set (vacuously passing). Per-exchange is_valid_for behaviour is covered
+    // by the dedicated tests below (gemini_normalizer_spot, etc.).
 
     #[test]
     fn gemini_normalizer_spot() {

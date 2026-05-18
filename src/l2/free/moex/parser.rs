@@ -158,9 +158,13 @@ impl MoexParser {
         let low_24h = Self::get_value(row, columns, "LOW")
             .and_then(Self::parse_f64);
 
+        // MOEX returns VOLUME as either an integer (shares for stocks) or a
+        // floating-point value (futures contracts). Prefer parse_f64 — it
+        // already handles both Number variants — and treat a missing field
+        // as None, not zero. Outside trading hours MOEX may legitimately
+        // report VOLUME=0; that propagates as Some(0.0), which is correct.
         let volume_24h = Self::get_value(row, columns, "VOLUME")
-            .and_then(|v| v.as_i64())
-            .map(|v| v as f64);
+            .and_then(Self::parse_f64);
 
         let value = Self::get_value(row, columns, "VALUE")
             .and_then(Self::parse_f64);

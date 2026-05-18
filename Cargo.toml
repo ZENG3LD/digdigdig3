@@ -23,6 +23,7 @@ onchain-starknet = ["dep:starknet-crypto"]
 # Backward-compat alias — onchain-ethereum is now onchain-evm
 onchain-ethereum = ["onchain-evm"]
 grpc = ["dep:tonic", "dep:prost"]
+server = ["grpc"]
 k256-signing = ["dep:k256", "dep:sha3"]
 # Legacy alias — starknet feature now maps to onchain-starknet
 starknet = ["onchain-starknet"]
@@ -89,7 +90,7 @@ bs58 = "0.5"
 # Uses tokio-tungstenite with native-tls (already available via reqwest)
 # No additional dependencies needed
 
-tracing-subscriber = "0.3.22"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 
 # TOTP (for Angel One 2FA)
 totp-rs = "5.6"
@@ -122,3 +123,12 @@ path = "src/bin/dig3_catcher.rs"
 [[bin]]
 name = "dig3-cure"
 path = "src/bin/dig3_cure.rs"
+
+[[bin]]
+name = "dig3-server"
+path = "src/bin/dig3_server.rs"
+required-features = ["server"]
+
+[build-dependencies]
+tonic-build = "0.12"
+protoc-bin-vendored = "3"

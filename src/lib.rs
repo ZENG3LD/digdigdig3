@@ -45,6 +45,9 @@ pub mod l3;
 pub mod connector_manager;
 pub mod testing;
 
+#[cfg(feature = "server")]
+pub mod server;
+
 pub use core::storage::{EventLog, EventLogIter, EventRecord, StorageManager, StorageConfig, StreamKey};
 pub use core::replay::{ReplayHub, ReplayConfig, ReplayRate};
 pub use core::orderbook::{OrderBookTracker, OrderBookError};

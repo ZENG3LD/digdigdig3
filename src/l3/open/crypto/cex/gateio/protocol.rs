@@ -347,11 +347,11 @@ fn build_registry(category: GateIoCategory) -> TopicRegistry {
         | GateIoCategory::FuturesBtc
         | GateIoCategory::DeliveryUsdt => {
             b = b
-                .register(StreamKind::MarkPrice,      AccountType::Spot, format!("{}.mark_price", prefix), parse_mark_price)
-                .register(StreamKind::FundingRate,     AccountType::Spot, format!("{}.funding_rate", prefix), parse_funding_rate)
-                .register(StreamKind::Liquidation,     AccountType::Spot, format!("{}.liquidates", prefix), parse_liquidation)
-                .register(StreamKind::PositionUpdate,  AccountType::Spot, format!("{}.positions", prefix), parse_position_update)
-                .register(StreamKind::OpenInterest,    AccountType::Spot, format!("{}.contract_stats", prefix), parse_contract_stats);
+                .register(StreamKind::MarkPrice,      AccountType::FuturesCross, format!("{}.mark_price", prefix), parse_mark_price)
+                .register(StreamKind::FundingRate,     AccountType::FuturesCross, format!("{}.funding_rate", prefix), parse_funding_rate)
+                .register(StreamKind::Liquidation,     AccountType::FuturesCross, format!("{}.liquidates", prefix), parse_liquidation)
+                .register(StreamKind::PositionUpdate,  AccountType::FuturesCross, format!("{}.positions", prefix), parse_position_update)
+                .register(StreamKind::OpenInterest,    AccountType::FuturesCross, format!("{}.contract_stats", prefix), parse_contract_stats);
         }
         GateIoCategory::Spot | GateIoCategory::Options => {}
     }

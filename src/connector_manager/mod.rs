@@ -41,9 +41,18 @@ mod aggregator;
 mod config;
 mod factory;
 mod hub;
+mod feed;
 
 pub use hub::ExchangeHub;
 pub use crate::core::traits::CoreConnector;
+
+// High-level feed API — fan-out of WebSocketConnector::event_stream over
+// per-subscription broadcast channels. Exchanges still live in the hub;
+// the feed only wraps subscribe/event-loop boilerplate.
+pub use feed::{
+    FeedBuilder, FeedEvent, FeedHandle, MarketFeed, OrderbookTrackerOpt,
+    PersistenceOption, ReconnectPolicy,
+};
 
 // Registry metadata types — public for consumers who want to inspect connector capabilities.
 // ExchangeHub is the sole entry point for operations; these are read-only metadata.

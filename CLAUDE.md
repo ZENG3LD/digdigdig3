@@ -133,25 +133,57 @@ cargo test --lib --all-features
 
 ### Layer 3: Live e2e_smoke (validation gate)
 
-`examples/e2e_smoke.rs` — parallel async harness covering EVERY exchange. Per-target row:
-- REST: connect + `get_ticker(BTC/USDT)` + assert real fields (last_price > 0, volume > 0, recent timestamp)
-- WS: subscribe to ticker, collect 5s window, **inspect first event content** (not just count)
-- Three bug classes detected:
-  - **A**: connection fails (auth/network/symbol unknown)
-  - **B**: subscribed but silent (registry/format gap)
-  - **C**: events flowing BUT typed struct has zero/default fields (parser bug)
+`examples/e2e_smoke.rs` — parallel async coverage **matrix**: per exchange, 13 REST methods × 9 WS streams. Each cell tagged `OK / EMPT / ERR / TIME / -- / SKIP`. Full matrix on 43 exchanges runs in ~25s.
 
-Must run in parallel: `tokio::spawn` per exchange + `join_all`, never sequential. One hang must not stall the harness. Each task capped at 25s.
+CLI:
+```
+cargo run --example e2e_smoke --release --              # market only, all exchanges
+cargo run --example e2e_smoke --release -- --exchange Binance
+cargo run --example e2e_smoke --release -- --trading    # private paths, reads ENV creds
+cargo run --example e2e_smoke --release -- --all
+cargo run --example e2e_smoke --release -- --json-out report.json
+```
+
+REST methods tested: ping, price, ticker, orderbook, klines, recent_trades, exchange_info, funding_rate, open_interest, mark_price, long_short_ratio, liquidations, premium_index.
+
+WS streams tested: Ticker, Trade, Orderbook, Kline, MarkPrice, FundingRate, Liquidation, OpenInterest, AggTrade.
+
+Five bug classes detected by the strict inspector:
+- **Class 1**: REST connect fails (auth/network/symbol unknown)
+- **Class 2**: subscribed but silent (registry/format gap)
+- **Class 3**: events flowing BUT typed struct has zero/default fields (parser bug)
+- **Class 4**: WS event content issues — timestamp in seconds-not-ms / future-tz / bid==ask / bid>ask / WRONG_TYPE routing
+- **TRUSTED**: REST+WS both populated AND zero Class-1..4 issues
+
+Inspector flags timestamp_unit_bug (ts < now/100 → seconds-not-ms), timestamp_future_bug (ts > now+60s → timezone bug), ts_missing (== 0).
+
+Must run in parallel: `tokio::spawn` per exchange + `join_all`, never sequential. One hang must not stall the harness. Each exchange task capped at 60s.
 
 ```
 cd digdigdig3
 cargo build --example e2e_smoke --release
-target\release\examples\e2e_smoke.exe 2>&1 | tee e2e_smoke_post_zeta.txt
+target\release\examples\e2e_smoke.exe > e2e_report.txt 2>&1
 ```
 
-Outputs: `e2e_smoke_post_zeta.txt` (human report) + regenerated `data/validation_snapshot.json` (22-entry JSON consumed by `ValidationStamp` at build time via `include_str!`).
+Outputs: human report (stdout) + regenerated `data/validation_snapshot.json`.
 
-Validation gate: a connector is considered "validated" only when Layer 3 reports REST+WS green with non-default data. The connector's `capabilities()` should ONLY claim what Layer 3 confirms.
+Validation gate: a connector is **TRUSTED** only when the matrix reports every declared capability OK with no Class-1..4 issues. The connector's `capabilities()` should ONLY claim what the matrix confirms.
+
+### Unsupported convention — `UnsupportedOperation` vs `NotSupported`
+
+Strict naming so future audits know what to research and what to leave alone:
+
+| Variant | Meaning | When to use |
+|---|---|---|
+| `ExchangeError::UnsupportedOperation(reason)` | **TODO_Implement** — exchange supports the endpoint, we have not written the code | placeholder during scaffolding; tracked as a real regression by e2e_smoke |
+| `ExchangeError::NotSupported(reason)` | **Wire-not-present** — the exchange itself does not expose this method publicly | document the alternative (WS-only feed, history-only, auth-tier-required); never resolves to TODO |
+| `WebSocketError::NotSupported(reason)` | Same, for WS subscribe paths. The blanket `subscribe` in `transport.rs` eagerly returns this from `subscribe_frame()` before queueing, so callers see the error immediately (not after a 5s silent timeout) | apply when the channel does not exist in the exchange's WS spec |
+
+Reasons MUST cite the alternative (e.g. `"NotSupported: Binance does not expose realtime WS open interest — use REST GET /fapi/v1/openInterest with polling"`). This shows up unmodified in the e2e matrix and saves a future agent the round-trip to the docs.
+
+### deep_smoke / e2e_smoke history
+
+The harness was renamed from `deep_smoke` to `e2e_smoke` (commit 4866465) — it is end-to-end against live exchange APIs, not a smoke layer. Old artefact paths (`deep_smoke_*.txt`) are still excluded in `Cargo.toml` for legacy reasons.
 
 ## Scope of development
 
@@ -171,13 +203,32 @@ Validation gate: a connector is considered "validated" only when Layer 3 reports
 - Symbol normalization INSIDE connectors (use external `SymbolNormalizer` utility)
 - Legacy `base_websocket.rs` and old bespoke WS loops — replaced by `UniversalWsTransport`
 
-### Known gaps (post-Phase-η state)
+### Known gaps (post-coverage-sweep state, May 2026)
 
-- **HyperLiquid** `get_ticker` needs asset_index → coin mapping — deferred; REST connect OK, ticker blocked on index resolution.
-- **Upbit** — WS events flow but timestamp is stale (exchange sends local millis without UTC adjustment in some streams).
-- **HTX** — server-pong reply hook not in framework; auto-reconnect compensates (commit e214995).
-- **MOEX** — FAST WS may need RU ISP routing for events; REST connect OK, WS event rate unreliable outside RU.
-- **L1/L2-paid + L3-gated connectors** (21 exchanges) — compile-validated only; functional validation deferred until API keys available.
+After the research-driven coverage sweep (commit `ecb0ed5`) every L3-open exchange has ~10-11 of 13 REST methods OK. Remaining work is **WS-side**:
+
+- **WS futures streams subscribed via Spot account_type fail** — e2e_smoke currently passes `AccountType::Spot` to `hub.connect_websocket()` for all streams. `MarkPrice / FundingRate / Liquidation / OpenInterest / AggTrade` live on **separate WS endpoints** (e.g. `wss://fstream.binance.com/ws` for Binance, `/v5/public/linear` for Bybit). Need to route futures streams through `AccountType::FuturesCross` so the hub picks the futures endpoint. This is the next-up task — see `docs/testing-plan.md`.
+- **WS Orderbook ERR on several CEX** — Binance/HTX/MEXC/Bitget. The subscribe channel is correct, but the parser drops the snapshot because the symbol is not in the payload (it's encoded in the channel name). Need to track `channel → symbol` in subscription context inside `UniversalWsTransport`.
+- **Bybit WS Ticker bid/ask = None** — `tickers.{sym}` payload carries `bid1Price`/`ask1Price`; parser extracts them via `parse_ws_ticker` but they're not propagating to the `StreamEvent::Ticker`. Likely a field-name mismatch after the WS rewrite.
+- **dYdX WS `Trade`/`Orderbook` ERR** — `subscribe_frame` returns OK but dispatch maps `v4_orderbook` content to `OrderbookDelta` with empty arrays. Needs the order-book snapshot/delta merge logic that the Indexer WS guide describes.
+- **MOEX WS** — `bid/ask both None` on the FAST/CEDR stream when running outside RU IP space. REST connect OK; WS event rate unreliable from non-RU networks.
+- **L1/L2-paid + L3-gated connectors** (21 exchanges) — return `Auth` error without credentials. e2e_smoke `--trading` reads ENV (`{EXCHANGE}_API_KEY` / `{EXCHANGE}_API_SECRET` etc.). Functional validation runs only when ENV is populated.
+
+### Closed gaps (historical, do not re-investigate)
+
+- HyperLiquid `get_ticker` — universe loader added (`OnceCell<HashMap<String, usize>>` in `HyperliquidConnector`), `metaAndAssetCtxs` flat ctx array parser.
+- Upbit ticker timestamp — parser falls back to `trade_timestamp → now()` (commit 02f2d15).
+- MOEX REST timezone — `SYSTIME` parsed as Moscow local via `FixedOffset::east(3*3600)`.
+- Bitfinex / GateIO / HyperLiquid REST `timestamp = 0` — parsers stamp `now_ms()` when wire format has no timestamp field.
+- Yahoo REST `regularMarketTime` — multiplied ×1000 (was treated as ms but is seconds).
+- CryptoCompare bitmask parser — idx starts at 5 (after FLAGS), reads BID/OFFER bits properly.
+- Gemini synthetic Ticker — `parse_ws_l2_ticker` builds Ticker from `changes` top-of-book + `trades[-1].price`.
+- Lighter `last_updated_at` — divided by 1000 (µs → ms).
+- HyperLiquid Ticker WS — switched from `activeAssetCtx` to `bbo` channel; activeAssetCtx entry removed from registry.
+- BingX, MEXC bookTicker channel migrations.
+- KRX — switched from broken Open API stub to live Data Marketplace scrape (`data.krx.co.kr/comm/bldAttendant/getJsonData.cmd` with browser User-Agent).
+- Dukascopy — `get_ticker`/`get_price` honestly return `NotSupported` (no public live-quote REST endpoint).
+- All 12 `UnsupportedOperation` regressions from the 0.2.x refactor — implemented (mark_price ×9, open_interest ×11, recent_trades ×7, long_short_ratio ×3).
 
 ## Per-module conventions
 

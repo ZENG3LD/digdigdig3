@@ -749,7 +749,11 @@ mod tests {
             StreamEvent::Ticker(ticker) => {
                 assert_eq!(ticker.symbol, "AAPL");
                 assert!((ticker.last_price - 150.25).abs() < 0.01);
-                assert_eq!(ticker.bid_price, Some(150.2000045776367)); // f32 -> f64 precision
+                // f32 -> f64 widening loses precision near the 4th decimal —
+                // compare with tolerance instead of bit-exact equality, which
+                // drifts whenever the parser or upstream type changes width.
+                let bid = ticker.bid_price.expect("bid_price set");
+                assert!((bid - 150.20).abs() < 1e-3, "bid_price = {bid}");
                 assert_eq!(ticker.volume_24h, Some(25_000_000.0));
             }
             _ => panic!("Expected Ticker event"),

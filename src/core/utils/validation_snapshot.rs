@@ -71,7 +71,14 @@ mod tests {
     fn binance_is_validated() {
         let map = load();
         let stamp = map.get(&ExchangeId::Binance).expect("Binance missing from snapshot");
-        assert_eq!(stamp.harness_version, "deep_smoke v1");
+        // harness_version drifts each time deep_smoke regenerates the snapshot
+        // (deep_smoke v1 → v2 → v3 → phase-theta → …). Don't pin it; just assert
+        // it's populated and starts with the expected family.
+        assert!(
+            stamp.harness_version.starts_with("deep_smoke"),
+            "unexpected harness_version: {:?}",
+            stamp.harness_version
+        );
         assert!(stamp.rest.contains_key("get_ticker"));
         let ticker = &stamp.rest["get_ticker"];
         assert!(ticker.is_validated(), "Binance get_ticker should be Validated");

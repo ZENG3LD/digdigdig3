@@ -995,8 +995,10 @@ mod tests {
             assert_eq!(ticker.low_24h, Some(77500.0));
             assert_eq!(ticker.volume_24h, Some(1500.5));
             assert_eq!(ticker.quote_volume_24h, Some(118074300.0));
-            // price_change = 78716.20 - 78000.0 = 716.20
-            assert_eq!(ticker.price_change_24h, Some(716.20));
+            // price_change = 78716.20 - 78000.0 ≈ 716.20 (f64 subtraction
+            // emits 716.1999999999971; compare with ε, not bit-exact).
+            let delta = ticker.price_change_24h.expect("price_change_24h set");
+            assert!((delta - 716.20).abs() < 1e-6, "price_change = {delta}");
             assert!(ticker.bid_price.is_none()); // Not available in streamer format
             assert!(ticker.ask_price.is_none()); // Not available in streamer format
             assert_eq!(ticker.timestamp, 1769917542000); // Converted to ms

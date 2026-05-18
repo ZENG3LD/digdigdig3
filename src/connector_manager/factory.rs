@@ -1100,15 +1100,17 @@ mod tests {
         }
     }
 
-    /// Test that all 47 exchanges can be instantiated (either public or with auth)
+    /// Test that every registered exchange can be instantiated (either public or with auth).
+    /// Count comes from CONNECTOR_METADATA_ARRAY — no hardcoded target.
     #[tokio::test]
-    async fn test_factory_coverage_all_51_exchanges() {
+    async fn test_factory_coverage_all_registered_exchanges() {
         let registry = ConnectorRegistry::default();
         let all_metas = registry.list_all();
+        let total = all_metas.len();
 
-        assert_eq!(all_metas.len(), 47, "Registry should have 47 connectors");
+        assert!(total >= 30, "registry shrunk below 30 — accidental wipe?");
 
-        println!("\n=== Testing Factory Coverage for 47 Exchanges ===\n");
+        println!("\n=== Testing Factory Coverage for {} Exchanges ===\n", total);
 
         let mut public_success = 0;
         let mut public_requires_auth = 0;
@@ -1156,12 +1158,13 @@ mod tests {
         println!("Public connectors created: {}", public_success);
         println!("Require authentication: {}", public_requires_auth);
         println!("Auth connectors attempted: {}", auth_attempted);
-        println!("Total coverage: {}/47", public_success + public_requires_auth);
+        println!("Total coverage: {}/{}", public_success + public_requires_auth, total);
 
         assert_eq!(
             public_success + public_requires_auth,
-            47,
-            "Factory should handle all 47 exchanges"
+            total,
+            "Factory should handle all {} registered exchanges",
+            total
         );
     }
 

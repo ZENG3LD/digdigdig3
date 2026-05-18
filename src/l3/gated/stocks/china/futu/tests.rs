@@ -36,32 +36,11 @@ async fn test_futu_returns_unsupported() {
     }
 }
 
-#[test]
-fn test_futu_documentation_exists() {
-    // Verify research documentation is present
-    let research_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("src/l3/stocks/china/futu/research");
-
-    assert!(research_path.exists(), "Research directory should exist");
-
-    // Check for key research files
-    let key_files = vec![
-        "ARCHITECTURE_ANALYSIS.md",
-        "INTEGRATION_OPTIONS.md",
-        "RECOMMENDATIONS.md",
-    ];
-
-    for file in key_files {
-        let file_path = research_path.join(file);
-        assert!(
-            file_path.exists(),
-            "Research file {} should exist",
-            file
-        );
-    }
-
-    println!("All research documentation present");
-}
+// Removed `test_futu_documentation_exists` — it asserted on
+// `src/l3/stocks/china/futu/research/`, which (a) is the wrong path (real
+// path is `src/l3/gated/stocks/china/futu/research/`) and (b) is in
+// `.gitignore` per the add-crate baseline rule. Documentation presence is
+// not something the test runner should police.
 
 #[test]
 fn test_futu_stub_message() {

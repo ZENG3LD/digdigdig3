@@ -36,15 +36,34 @@ fn truncate_str(s: &str, max_chars: usize) -> &str {
 
 // ── Thresholds ────────────────────────────────────────────────────────────────
 
-/// Timestamps older than this (in ms) are considered stale
-fn stale_threshold_ms() -> i64 {
-    let now_ms = SystemTime::now()
+fn now_ms() -> i64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
-    // 1 hour ago
-    now_ms - 3_600_000
+        .unwrap_or(0)
 }
+
+/// Timestamps older than this (in ms) are considered stale.
+/// 5 minutes — tighter than the old 1h gate, which let
+/// `ts in seconds` (e.g. 1779134034) silently pass as "1h ago" when it
+/// was actually ~20 days ago.
+fn stale_threshold_ms() -> i64 { now_ms() - 5 * 60_000 }
+
+/// Detect timestamps that look like UNIX **seconds** instead of ms.
+/// A real ms timestamp for 2026 is ~1.78e12; a seconds-stamp is ~1.78e9.
+/// Anything 4+ orders of magnitude below `now_ms` is almost certainly
+/// a parser bug — silently treating it as "stale" hides the regression.
+fn timestamp_unit_bug(ts: i64) -> bool {
+    let now = now_ms();
+    if ts <= 0 || now <= 0 { return false; }
+    // ms timestamps for any recent date are within 1e10 of now (years).
+    // Anything below ts < now/1000 (off by ~1000×) is a seconds-vs-ms bug.
+    ts > 0 && ts < now / 100   // generous: 100× below = definitely wrong unit
+}
+
+/// Detect timestamps in the FUTURE by more than 1 minute — almost always
+/// a timezone bug (e.g. MOEX returning Moscow local time as UTC ms).
+fn timestamp_future_bug(ts: i64) -> bool { ts > now_ms() + 60_000 }
 
 // ── Result types ──────────────────────────────────────────────────────────────
 
@@ -67,12 +86,14 @@ impl RestResult {
             RestResult::Ok { last_price, volume, bid, ask, timestamp, zero_fields } => {
                 let bid_s = bid.map(|v| format!("{:.4}", v)).unwrap_or_else(|| "None".into());
                 let ask_s = ask.map(|v| format!("{:.4}", v)).unwrap_or_else(|| "None".into());
-                let ts_age = {
-                    let now_ms = SystemTime::now()
+                let ts_str = if *timestamp == 0 {
+                    "MISSING".to_string()
+                } else {
+                    let now = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .map(|d| d.as_millis() as i64)
                         .unwrap_or(0);
-                    (now_ms - timestamp) / 1000
+                    format!("{}s_ago", (now - timestamp) / 1000)
                 };
                 let zero_flag = if zero_fields.is_empty() {
                     String::new()
@@ -80,8 +101,8 @@ impl RestResult {
                     format!(" ZERO:{}", zero_fields.join(","))
                 };
                 format!(
-                    "OK last={:.4} vol={:.2} bid={} ask={} ts={}s_ago{}",
-                    last_price, volume, bid_s, ask_s, ts_age, zero_flag
+                    "OK last={:.4} vol={:.2} bid={} ask={} ts={}{}",
+                    last_price, volume, bid_s, ask_s, ts_str, zero_flag
                 )
             }
             RestResult::Fail(e) => {
@@ -99,6 +120,9 @@ impl RestResult {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExpectedKind { Ticker, Trade, Orderbook, Kline }
+
 #[derive(Debug, Clone)]
 enum WsResult {
     Unsupported(String),
@@ -109,6 +133,8 @@ enum WsResult {
         count: u32,
         first_event: String,
         data_valid: bool,
+        /// List of content issues observed across received events (deduped).
+        issues: Vec<String>,
     },
 }
 
@@ -122,11 +148,18 @@ impl WsResult {
     }
 
     fn data_valid(&self) -> bool {
-        matches!(self, WsResult::Events { data_valid: true, .. })
+        matches!(self, WsResult::Events { data_valid: true, issues, .. } if issues.is_empty())
     }
 
     fn data_empty(&self) -> bool {
         matches!(self, WsResult::Events { data_valid: false, .. })
+    }
+
+    fn issues(&self) -> &[String] {
+        match self {
+            WsResult::Events { issues, .. } => issues,
+            _ => &[],
+        }
     }
 }
 
@@ -139,10 +172,37 @@ struct Row {
 
 // ── Event content inspector ───────────────────────────────────────────────────
 
-fn inspect_event(event: &StreamEvent, stale_ms: i64) -> (String, bool) {
-    match event {
+/// Inspect a single live event.
+///
+/// Returns `(short_description, valid, issues)` where `issues` lists
+/// every content problem we detected on this single event. Empty list
+/// means the event is well-formed for its declared StreamKind.
+fn inspect_event(event: &StreamEvent, stale_ms: i64, expected_kind: ExpectedKind) -> (String, bool, Vec<String>) {
+    let mut issues: Vec<String> = Vec::new();
+
+    let (s, valid) = match event {
         StreamEvent::Ticker(t) => {
-            let valid = t.last_price > 0.0 && t.timestamp > stale_ms;
+            if expected_kind != ExpectedKind::Ticker {
+                issues.push(format!("WRONG_TYPE: got Ticker, expected {:?}", expected_kind));
+            }
+            if t.last_price <= 0.0 { issues.push("last_price<=0".into()); }
+            if timestamp_unit_bug(t.timestamp) {
+                issues.push(format!("ts_unit_bug(seconds_not_ms): {}", t.timestamp));
+            } else if timestamp_future_bug(t.timestamp) {
+                issues.push(format!("ts_future_bug(timezone?): {}", t.timestamp));
+            } else if t.timestamp <= stale_ms {
+                issues.push(format!("ts_stale: {} ({}min ago)", t.timestamp, (now_ms() - t.timestamp) / 60_000));
+            }
+            match (t.bid_price, t.ask_price) {
+                (Some(b), Some(a)) if b > a => issues.push(format!("bid>ask: {} > {}", b, a)),
+                (Some(b), Some(a)) if (a - b).abs() < f64::EPSILON => issues.push(format!("bid==ask: {}", b)),
+                (None, None) => issues.push("bid/ask both None".into()),
+                _ => {}
+            }
+            let valid = t.last_price > 0.0
+                && !timestamp_unit_bug(t.timestamp)
+                && !timestamp_future_bug(t.timestamp)
+                && t.timestamp > stale_ms;
             let s = format!(
                 "Ticker sym={} last={:.4} bid={} ask={} ts={}",
                 t.symbol,
@@ -154,7 +214,11 @@ fn inspect_event(event: &StreamEvent, stale_ms: i64) -> (String, bool) {
             (s, valid)
         }
         StreamEvent::Trade(t) => {
+            if expected_kind != ExpectedKind::Trade {
+                issues.push(format!("WRONG_TYPE: got Trade, expected {:?}", expected_kind));
+            }
             let valid = t.price > 0.0 && t.quantity > 0.0;
+            if !valid { issues.push("price<=0 or qty<=0".into()); }
             let s = format!(
                 "Trade sym={} px={:.4} qty={:.6} ts={}",
                 t.symbol, t.price, t.quantity, t.timestamp
@@ -165,6 +229,7 @@ fn inspect_event(event: &StreamEvent, stale_ms: i64) -> (String, bool) {
             let valid = !ob.bids.is_empty()
                 && !ob.asks.is_empty()
                 && ob.bids.first().map(|l| l.price > 0.0).unwrap_or(false);
+            if !valid { issues.push("orderbook empty/zero".into()); }
             let top_bid = ob.bids.first().map(|l| l.price).unwrap_or(0.0);
             let top_ask = ob.asks.first().map(|l| l.price).unwrap_or(0.0);
             let s = format!(
@@ -175,6 +240,7 @@ fn inspect_event(event: &StreamEvent, stale_ms: i64) -> (String, bool) {
         }
         StreamEvent::OrderbookDelta(od) => {
             let has_data = !od.bids.is_empty() || !od.asks.is_empty();
+            if !has_data { issues.push("orderbook delta empty".into()); }
             let top_bid = od.bids.first().map(|l| l.price).unwrap_or(0.0);
             let s = format!(
                 "OBDelta bids={} asks={} top_bid={:.4} ts={}",
@@ -184,6 +250,7 @@ fn inspect_event(event: &StreamEvent, stale_ms: i64) -> (String, bool) {
         }
         StreamEvent::Kline(k) => {
             let valid = k.close > 0.0 && k.open > 0.0 && k.open_time > 0;
+            if !valid { issues.push("kline o/c<=0 or no open_time".into()); }
             let s = format!(
                 "Kline o={:.4} h={:.4} l={:.4} c={:.4} vol={:.2} ts={}",
                 k.open, k.high, k.low, k.close, k.volume, k.open_time
@@ -192,15 +259,23 @@ fn inspect_event(event: &StreamEvent, stale_ms: i64) -> (String, bool) {
         }
         StreamEvent::MarkPrice { symbol, mark_price, timestamp, .. } => {
             let valid = *mark_price > 0.0 && *timestamp > stale_ms;
+            if !valid { issues.push("mark_price<=0 or stale".into()); }
             let s = format!("MarkPrice sym={} px={:.4} ts={}", symbol, mark_price, timestamp);
             (s, valid)
         }
         StreamEvent::FundingRate { symbol, rate, timestamp, .. } => {
+            // We subscribed to Ticker on this exchange; getting FundingRate
+            // back means the dispatcher is routing the wrong topic into the
+            // ticker stream. Flag it loudly.
+            if expected_kind == ExpectedKind::Ticker {
+                issues.push("WRONG_TYPE: got FundingRate while subscribed to Ticker".into());
+            }
             let s = format!("FundingRate sym={} rate={:.6} ts={}", symbol, rate, timestamp);
             (s, *timestamp > 0)
         }
         StreamEvent::AggTrade { symbol, price, quantity, timestamp, .. } => {
             let valid = *price > 0.0 && *quantity > 0.0;
+            if !valid { issues.push("aggtrade px/qty<=0".into()); }
             let s = format!(
                 "AggTrade sym={} px={:.4} qty={:.6} ts={}",
                 symbol, price, quantity, timestamp
@@ -212,7 +287,9 @@ fn inspect_event(event: &StreamEvent, stale_ms: i64) -> (String, bool) {
             let short = if s.len() > 80 { format!("{}...", &s[..77]) } else { s };
             (short, true)
         }
-    }
+    };
+
+    (s, valid, issues)
 }
 
 // ── WS test helper ────────────────────────────────────────────────────────────
@@ -244,11 +321,14 @@ async fn run_ws_test(
         Err(_) => return WsResult::SubscribeFail("subscribe_timeout".into()),
     }
 
-    // Collect events 5s
+    // Collect events 5s and inspect every one — issues accumulate so a
+    // parser bug that only manifests on later frames (e.g. WRONG_TYPE
+    // routing) is still caught.
     let mut stream = ws.event_stream();
     let mut event_count = 0u32;
     let mut first_event: Option<String> = None;
     let mut data_valid = false;
+    let mut all_issues: Vec<String> = Vec::new();
     let collect_start = Instant::now();
     let collect_budget = Duration::from_secs(5);
 
@@ -260,10 +340,15 @@ async fn run_ws_test(
         match timeout(remaining, stream.next()).await {
             Ok(Some(Ok(event))) => {
                 event_count += 1;
+                let (desc, valid, issues) = inspect_event(&event, stale_ms, ExpectedKind::Ticker);
                 if first_event.is_none() {
-                    let (desc, valid) = inspect_event(&event, stale_ms);
                     data_valid = valid;
                     first_event = Some(desc);
+                }
+                for issue in issues {
+                    if !all_issues.contains(&issue) {
+                        all_issues.push(issue);
+                    }
                 }
             }
             Ok(Some(Err(_))) => break,
@@ -279,6 +364,7 @@ async fn run_ws_test(
             count: event_count,
             first_event: first_event.unwrap_or_else(|| "unknown".into()),
             data_valid,
+            issues: all_issues,
         }
     }
 }
@@ -368,9 +454,22 @@ async fn test_exchange(id: ExchangeId) -> Row {
                     .await
                     {
                         Ok(Ok(ticker)) => {
-                            let mut zero_fields = Vec::new();
+                            let mut zero_fields: Vec<&'static str> = Vec::new();
                             if ticker.last_price == 0.0 { zero_fields.push("last_price"); }
                             if ticker.volume_24h.unwrap_or(0.0) == 0.0 { zero_fields.push("volume"); }
+                            if ticker.timestamp == 0 {
+                                zero_fields.push("ts_missing(parser_default_0)");
+                            } else if timestamp_unit_bug(ticker.timestamp) {
+                                zero_fields.push("ts_unit_bug(seconds_not_ms)");
+                            } else if timestamp_future_bug(ticker.timestamp) {
+                                zero_fields.push("ts_future_bug(timezone?)");
+                            } else if ticker.timestamp <= now_ms() - 24 * 60 * 60_000 {
+                                zero_fields.push("ts_stale>24h");
+                            }
+                            if let (Some(b), Some(a)) = (ticker.bid_price, ticker.ask_price) {
+                                if b > a { zero_fields.push("bid>ask"); }
+                                else if (a - b).abs() < f64::EPSILON { zero_fields.push("bid==ask"); }
+                            }
                             RestResult::Ok {
                                 last_price: ticker.last_price,
                                 volume: ticker.volume_24h.unwrap_or(0.0),
@@ -451,9 +550,18 @@ async fn test_moex_direct() -> Row {
 
                     match ticker_result {
                         Ok(ticker) => {
-                            let mut zero_fields = Vec::new();
+                            let mut zero_fields: Vec<&'static str> = Vec::new();
                             if ticker.last_price == 0.0 { zero_fields.push("last_price"); }
                             if ticker.volume_24h.unwrap_or(0.0) == 0.0 { zero_fields.push("volume"); }
+                            if timestamp_unit_bug(ticker.timestamp) {
+                                zero_fields.push("ts_unit_bug(seconds_not_ms)");
+                            } else if timestamp_future_bug(ticker.timestamp) {
+                                zero_fields.push("ts_future_bug(timezone?)");
+                            }
+                            if let (Some(b), Some(a)) = (ticker.bid_price, ticker.ask_price) {
+                                if b > a { zero_fields.push("bid>ask"); }
+                                else if (a - b).abs() < f64::EPSILON { zero_fields.push("bid==ask"); }
+                            }
                             RestResult::Ok {
                                 last_price: ticker.last_price,
                                 volume: ticker.volume_24h.unwrap_or(0.0),
@@ -716,14 +824,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             WsResult::ConnectFail(msg) => format!("CONN_FAIL: {}", &msg[..msg.len().min(50)]),
             WsResult::SubscribeFail(msg) => format!("SUB_FAIL: {}", &msg[..msg.len().min(50)]),
             WsResult::Silent => "SILENT(0 events)".to_string(),
-            WsResult::Events { count, first_event, data_valid } => {
+            WsResult::Events { count, first_event, data_valid, issues } => {
                 let fe = if first_event.len() > 80 {
                     format!("{}...", &first_event[..77])
                 } else {
                     first_event.clone()
                 };
-                let valid_tag = if *data_valid { "DATA_VALID" } else { "DATA_EMPTY" };
-                format!("OK cnt={} {} | {}", count, valid_tag, fe)
+                // DATA_VALID only if event_valid AND no per-event issues.
+                let strictly_valid = *data_valid && issues.is_empty();
+                let valid_tag = if strictly_valid { "DATA_VALID" } else { "DATA_EMPTY" };
+                let issues_tag = if issues.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ISSUES[{}]", issues.join("; "))
+                };
+                format!("OK cnt={} {}{} | {}", count, valid_tag, issues_tag, fe)
             }
         };
 
@@ -818,7 +933,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Class 2 — Silent streams (sub ok, 0 events): {} — {:?}", class2_silent.len(), class2_silent);
     println!("Class 3 — Events flowing but zero/empty data (PARSER BUG): {} — {:?}", class3_empty_data.len(), class3_empty_data);
     if !rest_zero_fields_exchanges.is_empty() {
-        println!("REST zero fields: {:?}", rest_zero_fields_exchanges);
+        println!("REST issues: {:?}", rest_zero_fields_exchanges);
+    }
+
+    // Class 4 — WS frames flow but per-event content issues (wrong type,
+    // bid==ask, ts in seconds, bid>ask). These are connectors that LOOK OK
+    // ("OK cnt=N DATA_VALID") but quietly emit malformed events.
+    let ws_with_issues: Vec<String> = rows.iter().filter_map(|r| {
+        let issues = r.ws.issues();
+        if issues.is_empty() { None }
+        else { Some(format!("{:?}({})", r.exchange, issues.join(","))) }
+    }).collect();
+    if !ws_with_issues.is_empty() {
+        println!("Class 4 — WS event content issues: {} — {:?}", ws_with_issues.len(), ws_with_issues);
+    } else {
+        println!("Class 4 — WS event content issues: 0");
+    }
+
+    // Trusted set: REST populated AND WS DATA_VALID AND zero issues anywhere.
+    let trusted: Vec<String> = rows.iter().filter(|r| {
+        r.rest.is_ok()
+            && !r.rest.has_zero_fields()
+            && r.ws.data_valid()
+            && r.ws.issues().is_empty()
+    }).map(|r| format!("{:?}", r.exchange)).collect();
+    println!();
+    println!("=== TRUSTED (REST+WS both fully valid, no issues) ===");
+    println!("Count: {}", trusted.len());
+    if !trusted.is_empty() {
+        for ex in &trusted { println!("  ✓ {}", ex); }
     }
 
     // θ.3 — verify Canonical path end-to-end

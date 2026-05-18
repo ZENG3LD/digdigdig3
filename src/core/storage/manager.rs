@@ -106,7 +106,9 @@ impl StorageManager {
 
     /// Read records in `[from_ms, to_ms]` (inclusive) for `key`.
     ///
-    /// Spans multiple daily files automatically.
+    /// Spans multiple daily files automatically. Accepts any `i64` (including
+    /// `i64::MAX` sentinel for "read to end") — values outside the
+    /// representable date range are clamped to `[0, MAX_SAFE_MS]`.
     pub async fn read_range(
         &self,
         key: &StreamKey,
@@ -118,22 +120,34 @@ impl StorageManager {
             return Ok(vec![]);
         }
 
+        let from_ms = from_ms.max(0);
+        let to_ms = to_ms.clamp(0, MAX_SAFE_MS);
+        if from_ms > to_ms {
+            return Ok(vec![]);
+        }
+
         let from_day = ms_to_date(from_ms)
             .ok_or_else(|| std::io::Error::other("bad from_ms timestamp"))?;
         let to_day = ms_to_date(to_ms)
             .ok_or_else(|| std::io::Error::other("bad to_ms timestamp"))?;
 
-        let mut out = Vec::new();
-        let mut day = from_day;
-        while day <= to_day {
-            let file = dir.join(format!("{}.bin", day.format("%Y-%m-%d")));
-            if file.exists() {
-                let records = read_file_range(&file, from_ms, to_ms)?;
-                out.extend(records);
+        let mut files: Vec<(NaiveDate, PathBuf)> = Vec::new();
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+            if path.extension().and_then(|s| s.to_str()) != Some("bin") { continue }
+            let Ok(date) = NaiveDate::parse_from_str(stem, "%Y-%m-%d") else { continue };
+            if date >= from_day && date <= to_day {
+                files.push((date, path));
             }
-            day = day
-                .succ_opt()
-                .ok_or_else(|| std::io::Error::other("date overflow"))?;
+        }
+        files.sort_by_key(|(d, _)| *d);
+
+        let mut out = Vec::new();
+        for (_, file) in files {
+            let records = read_file_range(&file, from_ms, to_ms)?;
+            out.extend(records);
         }
         Ok(out)
     }
@@ -179,8 +193,96 @@ impl StorageManager {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+/// Largest UTC millisecond timestamp that `chrono` can convert back to a
+/// `NaiveDate` — corresponds to `9999-12-31T23:59:59.999Z`. Anything above
+/// this overflows `ms_to_date`.
+pub const MAX_SAFE_MS: i64 = 253_402_300_799_999;
+
 fn ms_to_date(ts_ms: i64) -> Option<NaiveDate> {
     Utc.timestamp_millis_opt(ts_ms)
         .single()
         .map(|dt| dt.date_naive())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TmpDir(PathBuf);
+    impl TmpDir {
+        fn new(tag: &str) -> Self {
+            let p = std::env::temp_dir().join(format!(
+                "dig3-mgr-test-{}-{}",
+                tag,
+                Utc::now().timestamp_nanos_opt().unwrap_or(0)
+            ));
+            std::fs::create_dir_all(&p).unwrap();
+            Self(p)
+        }
+        fn path(&self) -> &std::path::Path { &self.0 }
+    }
+    impl Drop for TmpDir {
+        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+    }
+
+    fn make_key() -> StreamKey {
+        StreamKey {
+            exchange: "binance".into(),
+            account: "spot".into(),
+            symbol: "BTCUSDT".into(),
+            stream_kind: "trade".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_range_clamps_i64_max_sentinel() {
+        let tmp = TmpDir::new("max");
+        let mgr = StorageManager::new(StorageConfig {
+            root: tmp.path().to_path_buf(),
+            ..Default::default()
+        }).unwrap();
+        let key = make_key();
+
+        let now = Utc::now().timestamp_millis();
+        mgr.append(&key, now, b"a").await.unwrap();
+        mgr.append(&key, now + 1, b"b").await.unwrap();
+        mgr.flush_all().await.unwrap();
+
+        // i64::MAX must NOT hang or error — must clamp + return all records.
+        let out = mgr.read_range(&key, 0, i64::MAX).await.unwrap();
+        assert_eq!(out.len(), 2, "expected 2 records back, got {}", out.len());
+        assert_eq!(out[0].1, b"a");
+        assert_eq!(out[1].1, b"b");
+    }
+
+    #[tokio::test]
+    async fn read_range_negative_from_is_clamped() {
+        let tmp = TmpDir::new("neg");
+        let mgr = StorageManager::new(StorageConfig {
+            root: tmp.path().to_path_buf(),
+            ..Default::default()
+        }).unwrap();
+        let key = make_key();
+        let now = Utc::now().timestamp_millis();
+        mgr.append(&key, now, b"r").await.unwrap();
+        mgr.flush_all().await.unwrap();
+
+        let out = mgr.read_range(&key, i64::MIN, i64::MAX).await.unwrap();
+        assert_eq!(out.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn read_range_missing_dir_returns_empty() {
+        let tmp = TmpDir::new("ghost");
+        let mgr = StorageManager::new(StorageConfig {
+            root: tmp.path().to_path_buf(),
+            ..Default::default()
+        }).unwrap();
+        let key = StreamKey {
+            exchange: "ghost".into(), account: "x".into(),
+            symbol: "x".into(), stream_kind: "x".into(),
+        };
+        let out = mgr.read_range(&key, 0, i64::MAX).await.unwrap();
+        assert!(out.is_empty());
+    }
 }

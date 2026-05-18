@@ -497,8 +497,8 @@ impl CoinbaseParser {
         Ok(Ticker {
             symbol: symbol.to_string(),
             last_price,
-            bid_price: None,
-            ask_price: None,
+            bid_price: None, // Coinbase WS ticker channel does not carry top-of-book quotes — use level2 channel for bid/ask
+            ask_price: None, // Coinbase WS ticker channel does not carry top-of-book quotes — use level2 channel for bid/ask
             high_24h,
             low_24h,
             volume_24h,

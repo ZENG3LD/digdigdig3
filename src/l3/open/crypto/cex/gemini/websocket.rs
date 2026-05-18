@@ -430,12 +430,25 @@ impl GeminiWebSocket {
                 Ok(vec![])
             }
             (WebSocketType::MarketData, Some("l2_updates")) => {
-                // l2_updates carry both book changes (always present) and an
-                // optional trades array (non-empty only when executions happened).
-                // Emit an OrderbookDelta for the book changes, and additionally a
-                // Trade event for each trade entry.  Consumers subscribed to either
-                // channel therefore receive the data they care about.
+                // l2_updates carries book changes (always) and an optional
+                // trades array (only when executions occurred). Gemini has no
+                // dedicated ticker stream, so to honour Ticker subscriptions
+                // we fan out THREE event flavours from one frame:
+                //   - synthetic Ticker (top-of-book + last trade)
+                //   - OrderbookDelta  (the raw book changes)
+                //   - Trade           (per trade entry, when present)
                 let mut events: Vec<StreamEvent> = Vec::new();
+
+                let symbol = value.get("symbol")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                // Synthetic Ticker first — listeners subscribed to Ticker get
+                // a meaningful first event (not a Trade or Delta).
+                if let Some(ticker_ev) = GeminiParser::parse_ws_l2_ticker(&value, &symbol) {
+                    events.push(ticker_ev);
+                }
 
                 // Book changes — emit OrderbookDelta when changes array is present.
                 let has_changes = value.get("changes")
@@ -443,9 +456,8 @@ impl GeminiWebSocket {
                     .map(|a| !a.is_empty())
                     .unwrap_or(false);
                 if has_changes {
-                    match GeminiParser::parse_ws_l2_update(&value) {
-                        Ok(ev) => events.push(ev),
-                        Err(_) => {} // best-effort; skip malformed change
+                    if let Ok(ev) = GeminiParser::parse_ws_l2_update(&value) {
+                        events.push(ev);
                     }
                 }
 
@@ -455,9 +467,8 @@ impl GeminiWebSocket {
                     .map(|a| !a.is_empty())
                     .unwrap_or(false);
                 if has_trades {
-                    match GeminiParser::parse_ws_l2_trade(&value) {
-                        Ok(ev) => events.push(ev),
-                        Err(_) => {}
+                    if let Ok(ev) = GeminiParser::parse_ws_l2_trade(&value) {
+                        events.push(ev);
                     }
                 }
 

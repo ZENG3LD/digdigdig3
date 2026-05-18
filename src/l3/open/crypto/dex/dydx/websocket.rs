@@ -637,17 +637,33 @@ impl DydxWebSocket {
 
                         // Resolve the active ticker symbol for v4_markets filtering.
                         // Most messages are not v4_markets, so this is a fast read.
-                        let ticker_sym: String = {
+                        let (ticker_sym, wants_funding, wants_mark): (String, bool, bool) = {
                             let subs = subscriptions.lock().await;
-                            subs.iter()
-                                .find(|req| req.stream_type == StreamType::Ticker)
-                                .map(|req| super::endpoints::normalize_symbol(&req.symbol.to_string()))
-                                .unwrap_or_default()
+                            let mut sym = String::new();
+                            let mut funding = false;
+                            let mut mark = false;
+                            for req in subs.iter() {
+                                match req.stream_type {
+                                    StreamType::Ticker => {
+                                        sym = super::endpoints::normalize_symbol(&req.symbol.to_string());
+                                    }
+                                    StreamType::FundingRate => funding = true,
+                                    StreamType::MarkPrice => mark = true,
+                                    _ => {}
+                                }
+                            }
+                            (sym, funding, mark)
                         };
 
-                        // Multi-emit for v4_markets: Ticker + FundingRate + IndexPrice.
-                        if !ticker_sym.is_empty() && text.contains("v4_markets") {
-                            let extra = Self::parse_v4_markets_extra(&text, &ticker_sym);
+                        // Multi-emit for v4_markets: ONLY when caller actually
+                        // subscribed to FundingRate or MarkPrice. dYdX pushes
+                        // `nextFundingRate` + `oraclePrice` on every v4_markets
+                        // frame; if the consumer only asked for Ticker, those
+                        // extra events look like wrong-topic routing (the
+                        // FundingRate frame arrives before/instead of Ticker
+                        // in some windows). Emit them only when requested.
+                        if !ticker_sym.is_empty() && text.contains("v4_markets") && (wants_funding || wants_mark) {
+                            let extra = Self::parse_v4_markets_extra(&text, &ticker_sym, wants_funding, wants_mark);
                             if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
                                 for event in extra {
                                     let _ = tx.send(Ok(event));
@@ -716,7 +732,12 @@ impl DydxWebSocket {
     /// `v4_markets` pushes `nextFundingRate` and `oraclePrice` per market.
     /// The Ticker is already emitted by `handle_message`; this method emits
     /// the additional derivative events so consumers get the full picture.
-    fn parse_v4_markets_extra(text: &str, target_symbol: &str) -> Vec<StreamEvent> {
+    fn parse_v4_markets_extra(
+        text: &str,
+        target_symbol: &str,
+        emit_funding: bool,
+        emit_mark: bool,
+    ) -> Vec<StreamEvent> {
         let data: serde_json::Value = match serde_json::from_str(text) {
             Ok(v) => v,
             Err(_) => return vec![],
@@ -746,23 +767,25 @@ impl DydxWebSocket {
         let now = crate::core::utils::timestamp_millis() as i64;
         let mut events = Vec::with_capacity(2);
 
-        // FundingRate
-        if let Some(rate) = get_f64_str("nextFundingRate") {
-            events.push(StreamEvent::FundingRate {
-                symbol: target_symbol.to_string(),
-                rate,
-                next_funding_time: None,
-                timestamp: now,
-            });
+        if emit_funding {
+            if let Some(rate) = get_f64_str("nextFundingRate") {
+                events.push(StreamEvent::FundingRate {
+                    symbol: target_symbol.to_string(),
+                    rate,
+                    next_funding_time: None,
+                    timestamp: now,
+                });
+            }
         }
 
-        // IndexPrice (oraclePrice)
-        if let Some(idx_px) = get_f64_str("oraclePrice") {
-            events.push(StreamEvent::IndexPrice {
-                symbol: target_symbol.to_string(),
-                price: idx_px,
-                timestamp: now,
-            });
+        if emit_mark {
+            if let Some(idx_px) = get_f64_str("oraclePrice") {
+                events.push(StreamEvent::IndexPrice {
+                    symbol: target_symbol.to_string(),
+                    price: idx_px,
+                    timestamp: now,
+                });
+            }
         }
 
         events

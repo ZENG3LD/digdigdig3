@@ -27,7 +27,7 @@
 //! }
 //! ```
 
-use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
+use chrono::{FixedOffset, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use serde_json::Value;
 use crate::core::types::{Kline, Ticker, OrderBook, OrderBookLevel};
 
@@ -88,18 +88,27 @@ impl MoexParser {
 
     /// Parse timestamp from MOEX datetime string
     ///
-    /// MOEX formats:
+    /// MOEX formats (always Moscow local time = UTC+3, no TZ suffix):
     /// - DateTime: "2026-01-26 19:00:01"
-    /// - Date only: "2026-01-26" (interpreted as midnight UTC)
+    /// - Date only: "2026-01-26" (interpreted as midnight MSK)
+    ///
+    /// Returns Unix ms in UTC. Earlier versions treated the naive string as
+    /// UTC, producing timestamps 3 hours in the future (the strict e2e_smoke
+    /// inspector flagged this as `ts_future_bug(timezone?)`).
     fn parse_timestamp(datetime_str: &str) -> Option<i64> {
+        let msk = FixedOffset::east_opt(3 * 3600)?;
+
         // Try full datetime first: "YYYY-MM-DD HH:MM:SS"
         if let Ok(ndt) = NaiveDateTime::parse_from_str(datetime_str, "%Y-%m-%d %H:%M:%S") {
-            return Some(Utc.from_utc_datetime(&ndt).timestamp_millis());
+            // Interpret naive as Moscow local, then convert to UTC ms.
+            let local = msk.from_local_datetime(&ndt).single()?;
+            return Some(local.with_timezone(&Utc).timestamp_millis());
         }
-        // Fall back to date only: "YYYY-MM-DD" → midnight UTC
+        // Fall back to date only: "YYYY-MM-DD" → midnight MSK
         if let Ok(nd) = NaiveDate::parse_from_str(datetime_str, "%Y-%m-%d") {
             let ndt = nd.and_hms_opt(0, 0, 0)?;
-            return Some(Utc.from_utc_datetime(&ndt).timestamp_millis());
+            let local = msk.from_local_datetime(&ndt).single()?;
+            return Some(local.with_timezone(&Utc).timestamp_millis());
         }
         None
     }

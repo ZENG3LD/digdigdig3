@@ -506,6 +506,64 @@ impl GeminiParser {
         }))
     }
 
+    /// Build a synthetic Ticker from an l2_updates frame. Gemini has no
+    /// dedicated ticker stream — consumers that subscribe to Ticker via the
+    /// trait still expect Ticker events, so we synthesise one from:
+    ///   - top-of-book bid/ask (extracted from `changes`)
+    ///   - last_price       (from `trades[-1].price` when present)
+    ///
+    /// Returns `None` when neither best bid/ask nor a trade is available, so
+    /// `parse_message` can skip emitting an empty Ticker.
+    pub fn parse_ws_l2_ticker(data: &Value, symbol: &str) -> Option<StreamEvent> {
+        let changes = data.get("changes").and_then(|c| c.as_array());
+
+        let mut best_bid: Option<f64> = None;
+        let mut best_ask: Option<f64> = None;
+        if let Some(changes) = changes {
+            for change in changes {
+                let arr = match change.as_array() {
+                    Some(a) if a.len() >= 3 => a,
+                    _ => continue,
+                };
+                let side = arr[0].as_str().unwrap_or("");
+                let price = Self::parse_f64(&arr[1]).unwrap_or(0.0);
+                if price <= 0.0 { continue; }
+                match side {
+                    "buy"  => best_bid = Some(best_bid.map_or(price, |b| b.max(price))),
+                    "sell" => best_ask = Some(best_ask.map_or(price, |a| a.min(price))),
+                    _ => {}
+                }
+            }
+        }
+
+        let last_price = data
+            .get("trades")
+            .and_then(|t| t.as_array())
+            .and_then(|arr| arr.last())
+            .and_then(|t| t.get("price"))
+            .and_then(Self::parse_f64)
+            .or(best_bid);
+
+        let lp = last_price?;
+        let timestamp = data.get("timestamp")
+            .and_then(|t| t.as_i64())
+            .unwrap_or_else(|| timestamp_millis() as i64);
+
+        Some(StreamEvent::Ticker(Ticker {
+            symbol: symbol.to_string(),
+            last_price: lp,
+            bid_price: best_bid,
+            ask_price: best_ask,
+            high_24h: None,
+            low_24h: None,
+            volume_24h: None,
+            quote_volume_24h: None,
+            price_change_24h: None,
+            price_change_percent_24h: None,
+            timestamp,
+        }))
+    }
+
     /// Extract the most recent trade from a WebSocket L2 update message.
     ///
     /// Gemini `l2_updates` messages carry an optional `trades` array with executed

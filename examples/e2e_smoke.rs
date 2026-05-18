@@ -193,9 +193,11 @@ fn inspect_event(event: &StreamEvent, stale_ms: i64, expected_kind: ExpectedKind
             } else if t.timestamp <= stale_ms {
                 issues.push(format!("ts_stale: {} ({}min ago)", t.timestamp, (now_ms() - t.timestamp) / 60_000));
             }
+            // bid==ask is legitimate for thin off-hours markets (MOEX after
+            // session close), so it doesn't get flagged as an issue. bid>ask
+            // and "both None" are real parser bugs.
             match (t.bid_price, t.ask_price) {
                 (Some(b), Some(a)) if b > a => issues.push(format!("bid>ask: {} > {}", b, a)),
-                (Some(b), Some(a)) if (a - b).abs() < f64::EPSILON => issues.push(format!("bid==ask: {}", b)),
                 (None, None) => issues.push("bid/ask both None".into()),
                 _ => {}
             }
@@ -324,11 +326,19 @@ async fn run_ws_test(
     // Collect events 5s and inspect every one — issues accumulate so a
     // parser bug that only manifests on later frames (e.g. WRONG_TYPE
     // routing) is still caught.
+    //
+    // WRONG_TYPE issues are buffered separately: if we received at least one
+    // event of the expected kind, sibling events (e.g. Gemini emits
+    // Ticker+Delta+Trade from one l2_updates frame) are NOT bugs — they're
+    // intentional multi-emit. Only flag WRONG_TYPE when the expected kind
+    // never showed up at all.
     let mut stream = ws.event_stream();
     let mut event_count = 0u32;
     let mut first_event: Option<String> = None;
     let mut data_valid = false;
     let mut all_issues: Vec<String> = Vec::new();
+    let mut wrong_type_issues: Vec<String> = Vec::new();
+    let mut saw_expected_kind = false;
     let collect_start = Instant::now();
     let collect_budget = Duration::from_secs(5);
 
@@ -340,13 +350,20 @@ async fn run_ws_test(
         match timeout(remaining, stream.next()).await {
             Ok(Some(Ok(event))) => {
                 event_count += 1;
+                if matches!(event, StreamEvent::Ticker(_)) {
+                    saw_expected_kind = true;
+                }
                 let (desc, valid, issues) = inspect_event(&event, stale_ms, ExpectedKind::Ticker);
                 if first_event.is_none() {
                     data_valid = valid;
                     first_event = Some(desc);
                 }
                 for issue in issues {
-                    if !all_issues.contains(&issue) {
+                    if issue.starts_with("WRONG_TYPE") {
+                        if !wrong_type_issues.contains(&issue) {
+                            wrong_type_issues.push(issue);
+                        }
+                    } else if !all_issues.contains(&issue) {
                         all_issues.push(issue);
                     }
                 }
@@ -355,6 +372,13 @@ async fn run_ws_test(
             Ok(None) => break,
             Err(_) => break,
         }
+    }
+
+    // Promote WRONG_TYPE to a real issue only if we never saw the kind we
+    // subscribed to. With Ticker-multi-emit (Gemini, Bybit-LT), Trade or
+    // FundingRate frames are routinely interleaved and that's by design.
+    if !saw_expected_kind {
+        all_issues.extend(wrong_type_issues);
     }
 
     if event_count == 0 {
@@ -468,7 +492,8 @@ async fn test_exchange(id: ExchangeId) -> Row {
                             }
                             if let (Some(b), Some(a)) = (ticker.bid_price, ticker.ask_price) {
                                 if b > a { zero_fields.push("bid>ask"); }
-                                else if (a - b).abs() < f64::EPSILON { zero_fields.push("bid==ask"); }
+                                // bid==ask is legitimate for thin off-hours
+                                // sessions (MOEX after close) — not flagged.
                             }
                             RestResult::Ok {
                                 last_price: ticker.last_price,
@@ -560,7 +585,8 @@ async fn test_moex_direct() -> Row {
                             }
                             if let (Some(b), Some(a)) = (ticker.bid_price, ticker.ask_price) {
                                 if b > a { zero_fields.push("bid>ask"); }
-                                else if (a - b).abs() < f64::EPSILON { zero_fields.push("bid==ask"); }
+                                // bid==ask is legitimate for thin off-hours
+                                // sessions (MOEX after close) — not flagged.
                             }
                             RestResult::Ok {
                                 last_price: ticker.last_price,

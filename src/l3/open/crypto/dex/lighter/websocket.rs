@@ -760,8 +760,8 @@ impl LighterWebSocket {
         Some(StreamEvent::Ticker(Ticker {
             symbol: symbol_name.to_string(),
             last_price,
-            bid_price: None,
-            ask_price: None,
+            bid_price: None, // Lighter market_stats WS channel does not carry top-of-book quotes — use ticker channel for bid/ask
+            ask_price: None, // Lighter market_stats WS channel does not carry top-of-book quotes — use ticker channel for bid/ask
             high_24h,
             low_24h,
             volume_24h,

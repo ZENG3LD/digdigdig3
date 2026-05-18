@@ -519,8 +519,8 @@ impl MarketData for CoinbaseConnector {
             Ok(Ticker {
                 symbol: product_id,
                 last_price,
-                bid_price: None,
-                ask_price: None,
+                bid_price: None, // Public /products/{id} endpoint does not carry bid/ask — use BestBidAsk endpoint with auth
+                ask_price: None, // Public /products/{id} endpoint does not carry bid/ask — use BestBidAsk endpoint with auth
                 high_24h: None,
                 low_24h: None,
                 volume_24h,

@@ -10,6 +10,7 @@
 //! - Position: `[SYMBOL, STATUS, AMOUNT, BASE_PRICE, ...]` (18 fields)
 
 use serde_json::Value;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::core::types::{
     ExchangeError, ExchangeResult, AccountType,
@@ -17,6 +18,14 @@ use crate::core::types::{
     OrderSide, OrderType, OrderStatus, PositionSide, SymbolInfo, UserTrade,
     OrderbookDelta as OrderbookDeltaData,
 };
+
+#[inline]
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
 
 /// Parser for Bitfinex API v2 responses
 pub struct BitfinexParser;
@@ -111,7 +120,11 @@ impl BitfinexParser {
             quote_volume_24h: None,
             price_change_24h: Self::get_f64(arr, 4),                // [4] DAILY_CHANGE
             price_change_percent_24h: Self::get_f64(arr, 5).map(|r| r * 100.0), // [5] DAILY_CHANGE_RELATIVE
-            timestamp: 0, // Bitfinex ticker doesn't include timestamp
+            // Bitfinex REST ticker carries no timestamp field. Stamp the
+            // response with the local receive time so downstream consumers
+            // can age it. Better than emitting 0 (which gets misread as
+            // "1970-01-01" everywhere).
+            timestamp: now_ms(),
         })
     }
 
@@ -147,7 +160,7 @@ impl BitfinexParser {
         }
 
         Ok(OrderBook {
-            timestamp: 0, // Bitfinex orderbook doesn't include timestamp
+            timestamp: now_ms(), // Bitfinex orderbook carries no ts — stamp on receive.
             bids,
             asks,
             sequence: None,

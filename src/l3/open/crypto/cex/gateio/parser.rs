@@ -10,6 +10,15 @@
 //! 4. **Timestamps**: Seconds for most, milliseconds for orderbook
 
 use serde_json::Value;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[inline]
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
 
 use crate::core::types::{
     ExchangeError, ExchangeResult, AccountType,
@@ -117,7 +126,8 @@ impl GateioParser {
                 .or_else(|| Self::get_f64(data, "volume_24h_quote")),
             price_change_24h: None,
             price_change_percent_24h: Self::get_f64(data, "change_percentage"),
-            timestamp: 0, // Gate.io doesn't include timestamp in ticker
+            // Gate.io REST ticker carries no timestamp — stamp on receive.
+            timestamp: now_ms(),
         })
     }
 

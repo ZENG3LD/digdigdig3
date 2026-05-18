@@ -486,8 +486,8 @@ impl BingxParser {
         Ok(Ticker {
             symbol,
             last_price,
-            bid_price: None, // Not in ticker stream
-            ask_price: None, // Not in ticker stream
+            bid_price: None, // BingX @ticker stream does not carry top-of-book quotes — subscribe to @bookTicker for bid/ask
+            ask_price: None, // BingX @ticker stream does not carry top-of-book quotes — subscribe to @bookTicker for bid/ask
             high_24h: Self::get_f64(data, "h"),
             low_24h: Self::get_f64(data, "l"),
             volume_24h: Self::get_f64(data, "v"),

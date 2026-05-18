@@ -609,7 +609,8 @@ fn parse_ticker_lt(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     Ok(StreamEvent::Ticker(crate::core::Ticker {
         symbol, last_price,
-        bid_price: None, ask_price: None,
+        bid_price: None, // Bybit tickers_lt (leveraged token NAV) channel does not carry top-of-book quotes
+        ask_price: None, // Bybit tickers_lt (leveraged token NAV) channel does not carry top-of-book quotes
         high_24h: None, low_24h: None,
         volume_24h: None, quote_volume_24h: None,
         price_change_24h: None, price_change_percent_24h: None,

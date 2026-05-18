@@ -26,6 +26,15 @@
 //! ```
 
 use serde_json::Value;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[inline]
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
 
 use crate::core::types::{
     ExchangeError, ExchangeResult, AccountType,
@@ -238,15 +247,16 @@ impl HyperliquidParser {
         Ok(Ticker {
             symbol: String::new(), // Will be filled by connector using metadata
             last_price: mark_px,
-            bid_price: None, // Not in metaAndAssetCtxs
-            ask_price: None,
+            bid_price: None, // Hyperliquid metaAndAssetCtxs does not carry top-of-book quotes — use l2Book channel for bid/ask
+            ask_price: None, // Hyperliquid metaAndAssetCtxs does not carry top-of-book quotes — use l2Book channel for bid/ask
             high_24h: None,
             low_24h: None,
             volume_24h: Self::get_f64(ctx, "dayNtlVlm"),
             quote_volume_24h: None,
             price_change_24h,
             price_change_percent_24h,
-            timestamp: 0, // Not provided in response
+            // HL metaAndAssetCtxs has no per-asset timestamp — stamp on receive.
+            timestamp: now_ms(),
         })
     }
 

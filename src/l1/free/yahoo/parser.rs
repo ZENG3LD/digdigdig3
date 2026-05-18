@@ -64,8 +64,11 @@ impl YahooFinanceParser {
             price_change_24h: Self::get_f64(meta, "regularMarketChange"),
             price_change_percent_24h: Self::get_f64(meta, "regularMarketChangePercent")
                 .map(|p| p * 100.0), // Convert to percentage
+            // Yahoo `regularMarketTime` is Unix **seconds**; project-wide
+            // `Ticker.timestamp` is **milliseconds**. Multiply on the way in.
             timestamp: Self::get_i64(meta, "regularMarketTime")
-                .unwrap_or_else(|| chrono::Utc::now().timestamp()),
+                .map(|s| s * 1_000)
+                .unwrap_or_else(|| chrono::Utc::now().timestamp_millis()),
         })
     }
 
@@ -122,10 +125,13 @@ impl YahooFinanceParser {
         let len = timestamps.len();
 
         for i in 0..len {
-            let timestamp = timestamps
+            // Yahoo /chart endpoint returns timestamps in **seconds**. Convert
+            // to ms — `Kline.open_time` is ms project-wide.
+            let timestamp_s = timestamps
                 .get(i)
                 .and_then(|v| v.as_i64())
                 .ok_or_else(|| ExchangeError::Parse(format!("Invalid timestamp at {}", i)))?;
+            let timestamp = timestamp_s.saturating_mul(1_000);
 
             klines.push(Kline {
                 open_time: timestamp,

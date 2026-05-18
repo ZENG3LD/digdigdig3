@@ -258,7 +258,10 @@ impl UpbitWebSocket {
         // Try to parse as JSON
         let value: Value = match serde_json::from_str(text) {
             Ok(v) => v,
-            Err(_) => return None,
+            Err(e) => {
+                tracing::debug!(target: "upbit::ws", "non-JSON frame ({} bytes): {}", text.len(), e);
+                return None;
+            }
         };
 
         // Check for status message (server ping response)
@@ -268,10 +271,18 @@ impl UpbitWebSocket {
             }
         }
 
-        // Parse based on message type
-        let msg_type = value.get("type")
+        // Parse based on message type. Upbit DEFAULT format uses `"type"`,
+        // SIMPLE format uses `"ty"`. We subscribe with DEFAULT.
+        let msg_type = match value.get("type")
             .or_else(|| value.get("ty"))
-            .and_then(|t| t.as_str())?;
+            .and_then(|t| t.as_str())
+        {
+            Some(t) => t,
+            None => {
+                tracing::debug!(target: "upbit::ws", "frame without type/ty: {}", &text[..text.len().min(200)]);
+                return None;
+            }
+        };
 
         match msg_type {
             "ticker" => {
@@ -343,13 +354,22 @@ impl UpbitWebSocket {
                         }
                     },
                     Ok(Message::Binary(data)) => {
-                        // Upbit sends data as binary (compressed JSON)
-                        // Try to decompress and parse
-                        if let Ok(text) = String::from_utf8(data) {
-                            if let Some(event) = ws_clone.handle_message(&text).await {
-                                if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
-                                    let _ = tx.send(Ok(event));
+                        // Upbit sends `format: DEFAULT` payloads as Binary
+                        // frames, but the bytes are plain UTF-8 JSON (no
+                        // compression). Decode as UTF-8 and parse the same
+                        // way as a Text frame.
+                        match String::from_utf8(data) {
+                            Ok(text) => {
+                                if let Some(event) = ws_clone.handle_message(&text).await {
+                                    if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                                        let _ = tx.send(Ok(event));
+                                    }
+                                } else {
+                                    tracing::debug!(target: "upbit::ws", "binary frame parsed as text but produced no event: {}", &text[..text.len().min(120)]);
                                 }
+                            }
+                            Err(e) => {
+                                tracing::warn!(target: "upbit::ws", "binary frame not utf-8: {}", e);
                             }
                         }
                     },

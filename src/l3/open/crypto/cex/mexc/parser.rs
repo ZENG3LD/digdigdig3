@@ -715,8 +715,8 @@ impl MexcParser {
                     return Ok(Ticker {
                         symbol: symbol.to_string(),
                         last_price,
-                        bid_price: None,
-                        ask_price: None,
+                        bid_price: None, // MEXC publicdeals (trade) stream does not carry top-of-book quotes — subscribe to publicbookticker for bid/ask
+                        ask_price: None, // MEXC publicdeals (trade) stream does not carry top-of-book quotes — subscribe to publicbookticker for bid/ask
                         high_24h: None,
                         low_24h: None,
                         volume_24h: None,
@@ -991,8 +991,8 @@ impl MexcParser {
         Ok(Ticker {
             symbol: sym,
             last_price,
-            bid_price: None,
-            ask_price: None,
+            bid_price: None, // MEXC PublicMiniTickerV3Api wire format does not carry top-of-book quotes — use PublicBookTickerV3Api (field 306)
+            ask_price: None, // MEXC PublicMiniTickerV3Api wire format does not carry top-of-book quotes — use PublicBookTickerV3Api (field 306)
             high_24h,
             low_24h,
             volume_24h,
@@ -1027,8 +1027,8 @@ impl MexcParser {
         Ok(Ticker {
             symbol: symbol.to_string(),
             last_price,
-            bid_price: None,
-            ask_price: None,
+            bid_price: None, // MEXC PublicAggreDealsV3Api wire format does not carry top-of-book quotes — use PublicBookTickerV3Api (field 306)
+            ask_price: None, // MEXC PublicAggreDealsV3Api wire format does not carry top-of-book quotes — use PublicBookTickerV3Api (field 306)
             high_24h: None,
             low_24h: None,
             volume_24h: None,

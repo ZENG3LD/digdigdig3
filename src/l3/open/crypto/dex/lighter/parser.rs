@@ -126,8 +126,8 @@ impl LighterParser {
         Ok(Ticker {
             symbol: symbol.to_string(),
             last_price,
-            bid_price: None,
-            ask_price: None,
+            bid_price: None, // Lighter orderBookDetails REST response does not carry top-of-book quotes — use orderBookOrders or ticker WS channel
+            ask_price: None, // Lighter orderBookDetails REST response does not carry top-of-book quotes — use orderBookOrders or ticker WS channel
             high_24h: Self::get_f64(data, "daily_price_high"),
             low_24h: Self::get_f64(data, "daily_price_low"),
             volume_24h: Self::get_f64(data, "daily_base_token_volume"),

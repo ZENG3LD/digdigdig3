@@ -1,6 +1,6 @@
 //! # ValidationStamp
 //!
-//! Empirical validation evidence for a connector — populated by the `deep_smoke` harness.
+//! Empirical validation evidence for a connector — populated by the `e2e_smoke` harness.
 //! Replaces "declared" capabilities with observed truth: "this method returned real data on date X".
 
 use serde::{Deserialize, Serialize};
@@ -31,7 +31,7 @@ impl FieldValidation {
     }
 }
 
-/// Empirical validation stamp for one connector, emitted by the `deep_smoke` harness.
+/// Empirical validation stamp for one connector, emitted by the `e2e_smoke` harness.
 ///
 /// Attached to a connector via `HasCapabilities::validation_status()`.
 /// Consumers can call `hub.connect_full_validated(id, ...)` to refuse connectors
@@ -40,7 +40,7 @@ impl FieldValidation {
 pub struct ValidationStamp {
     /// ISO date (YYYY-MM-DD) when last validated against live exchange data.
     pub tested_on: String,
-    /// Harness identifier (e.g. "deep_smoke v1").
+    /// Harness identifier (e.g. "e2e_smoke v1").
     pub harness_version: String,
     /// REST validation results, keyed by method name (e.g. "get_ticker").
     pub rest: BTreeMap<String, FieldValidation>,

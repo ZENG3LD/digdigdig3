@@ -1,6 +1,7 @@
-//! # deep_smoke — content-inspecting parallel async validation of all dig3 exchanges.
+//! # e2e_smoke — content-inspecting parallel async E2E of all dig3 exchanges.
 //!
-//! Augments full_smoke with typed struct field inspection.
+//! (Renamed from `deep_smoke` — this is the project's E2E live-API harness.)
+//!
 //! For every WS event received: decodes the StreamEvent and reports actual field values.
 //! For every REST ticker: reports last_price, volume, bid, ask, timestamp — flags zero/default.
 //!
@@ -8,7 +9,7 @@
 //! Covers EVERY exchange findable via ConnectorFactory + MOEX WS directly.
 //!
 //! Run:
-//!     cargo run --example deep_smoke --release 2>&1 | tee deep_smoke_report.txt
+//!     cargo run --example e2e_smoke --release 2>&1 | tee e2e_smoke_report.txt
 //!
 //! No API keys required — public endpoints only.
 

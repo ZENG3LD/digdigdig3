@@ -84,7 +84,7 @@ Each exchange implements thin `WsProtocol` (~6 methods, ~400-900 LOC) vs the old
 ### Capabilities = empirical truth
 
 `HasCapabilities::validation_status() -> Option<ValidationStamp>` exposes per-method/stream
-validation from the `deep_smoke` harness, embedded as `data/validation_snapshot.json`.
+validation from the `e2e_smoke` harness, embedded as `data/validation_snapshot.json`.
 
 ```rust
 let stamp = hub.capabilities(ExchangeId::Binance).and_then(|c| c.validation);
@@ -96,7 +96,7 @@ match stamp.as_ref().and_then(|s| s.rest.get("get_ticker")) {
 }
 ```
 
-## Validated coverage (deep_smoke 2026-05-17)
+## Validated coverage (e2e_smoke 2026-05-17)
 
 22 in-scope exchanges (no API keys needed for public data):
 
@@ -128,17 +128,17 @@ until API keys available.
 - `docs/plans/phase-alpha-symbol-decoupling.md` — Symbol decoupling design
 - `docs/plans/smoke_v8_findings_spec.md` — original consumer feedback spec
 - `examples/exchange_hub_demo.rs` — minimal hub usage
-- `examples/deep_smoke.rs` — full validation harness
+- `examples/e2e_smoke.rs` — full validation harness
 - `examples/full_smoke.rs` — parallel 48-exchange smoke
 
 ## Validation harness
 
 ```bash
-cargo build --example deep_smoke --release
-./target/release/examples/deep_smoke.exe   # Windows: deep_smoke.exe
+cargo build --example e2e_smoke --release
+./target/release/examples/e2e_smoke.exe   # Windows: e2e_smoke.exe
 ```
 
-Generates `deep_smoke_post_zeta.txt` and a regenerated `data/validation_snapshot.json`.
+Generates `e2e_smoke_post_zeta.txt` and a regenerated `data/validation_snapshot.json`.
 
 ## Feature flags
 
@@ -163,7 +163,7 @@ Generates `deep_smoke_post_zeta.txt` and a regenerated `data/validation_snapshot
 |---|---|---|
 | Compile gate | 0 errors, 0 warnings | `RUSTFLAGS="-D warnings" cargo check --all-targets --all-features` |
 | Unit tests | Fixture-based parser tests | `cargo test --lib --all-features` |
-| Live validation | Real API + content inspection | `./target/release/examples/deep_smoke.exe` |
+| Live validation | Real API + content inspection | `./target/release/examples/e2e_smoke.exe` |
 
 ## Known limitations
 

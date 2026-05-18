@@ -878,7 +878,7 @@ pub struct ConnectorCapabilities {
     pub has_ws_funding_rate: bool,
 
     // ── Empirical validation (Phase γ) ────────────────────────────────────────
-    /// Empirical validation stamp from last `deep_smoke` harness run.
+    /// Empirical validation stamp from last `e2e_smoke` harness run.
     /// `None` = never validated against live exchange data.
     pub validation: Option<&'static crate::core::types::validation::ValidationStamp>,
 }

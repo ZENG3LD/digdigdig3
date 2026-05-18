@@ -15,7 +15,7 @@ pub trait HasCapabilities: Send + Sync {
     /// Return a declarative map of what this connector supports.
     fn capabilities(&self) -> ConnectorCapabilities;
 
-    /// Empirical validation results from the last `deep_smoke` harness run.
+    /// Empirical validation results from the last `e2e_smoke` harness run.
     ///
     /// `None` = connector was never smoke-tested with live exchange data.
     /// Connectors override this with a 1-liner delegating to `validation_snapshot::validation_for`.

@@ -1,7 +1,7 @@
 [package]
 name = "digdigdig3"
 version = "0.2.3"
-exclude = ["**/research/**", "contributing/**", "docs/", "deep_smoke_*.txt", "smoke_*.txt", "*.log"]
+exclude = ["**/research/**", "contributing/**", "docs/", "e2e_smoke_*.txt", "deep_smoke_*.txt", "smoke_*.txt", "*.log"]
 edition = "2021"
 description = "Unified async Rust API for 44 exchange connectors — crypto, stocks, forex. REST + WebSocket."
 license = "MIT OR Apache-2.0"

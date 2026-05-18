@@ -87,7 +87,7 @@ Two-level capability surface:
 
 - **Declared** — `HasCapabilities::capabilities() -> ConnectorCapabilities` (71 flags) declared per-connector at impl time.
 - **Derived** — `CapabilityProvider::supports(StreamKind, AccountType) -> SupportLevel` automatically derived from `WsProtocol::topic_registry()` (cannot drift from reality).
-- **Empirical** — `HasCapabilities::validation_status() -> Option<ValidationStamp>` exposes per-method/stream validation from the `deep_smoke` harness. Embedded snapshot at `data/validation_snapshot.json` (22 entries). `hub.connect_full_validated(...)` rejects exchanges without a valid stamp — use for production flows that require confirmed data quality.
+- **Empirical** — `HasCapabilities::validation_status() -> Option<ValidationStamp>` exposes per-method/stream validation from the `e2e_smoke` harness. Embedded snapshot at `data/validation_snapshot.json` (22 entries). `hub.connect_full_validated(...)` rejects exchanges without a valid stamp — use for production flows that require confirmed data quality.
 
 ### 4. WebSocket: UniversalWsTransport, no bespoke loops
 
@@ -131,9 +131,9 @@ Each `*/parser.rs` has fixture-based tests (captured exchange payloads → asser
 cargo test --lib --all-features
 ```
 
-### Layer 3: Live deep_smoke (validation gate)
+### Layer 3: Live e2e_smoke (validation gate)
 
-`examples/deep_smoke.rs` — parallel async harness covering EVERY exchange. Per-target row:
+`examples/e2e_smoke.rs` — parallel async harness covering EVERY exchange. Per-target row:
 - REST: connect + `get_ticker(BTC/USDT)` + assert real fields (last_price > 0, volume > 0, recent timestamp)
 - WS: subscribe to ticker, collect 5s window, **inspect first event content** (not just count)
 - Three bug classes detected:
@@ -145,11 +145,11 @@ Must run in parallel: `tokio::spawn` per exchange + `join_all`, never sequential
 
 ```
 cd digdigdig3
-cargo build --example deep_smoke --release
-target\release\examples\deep_smoke.exe 2>&1 | tee deep_smoke_post_zeta.txt
+cargo build --example e2e_smoke --release
+target\release\examples\e2e_smoke.exe 2>&1 | tee e2e_smoke_post_zeta.txt
 ```
 
-Outputs: `deep_smoke_post_zeta.txt` (human report) + regenerated `data/validation_snapshot.json` (22-entry JSON consumed by `ValidationStamp` at build time via `include_str!`).
+Outputs: `e2e_smoke_post_zeta.txt` (human report) + regenerated `data/validation_snapshot.json` (22-entry JSON consumed by `ValidationStamp` at build time via `include_str!`).
 
 Validation gate: a connector is considered "validated" only when Layer 3 reports REST+WS green with non-default data. The connector's `capabilities()` should ONLY claim what Layer 3 confirms.
 
@@ -225,8 +225,8 @@ cargo check --all-targets --all-features
 cargo test --lib --all-features
 
 # Full validation smoke (live API, parallel async, ~10s for 48 exchanges)
-cargo build --example deep_smoke --release
-target\release\examples\deep_smoke.exe
+cargo build --example e2e_smoke --release
+target\release\examples\e2e_smoke.exe
 
 # Quick hub demo (3 exchanges)
 cargo run --example exchange_hub_demo --release
@@ -239,7 +239,7 @@ cargo run --example exchange_hub_demo --release
 - Trait composition: `src/core/traits/mod.rs`
 - Capability struct: `src/core/types/capabilities.rs`
 - Reference WS migration: `src/l3/open/crypto/cex/bitget/{protocol.rs, websocket.rs}`
-- Validation harness: `examples/deep_smoke.rs` + `examples/exchange_hub_demo.rs`
+- Validation harness: `examples/e2e_smoke.rs` + `examples/exchange_hub_demo.rs`
 - Plans: `docs/plans/wave0-foundation.md`, `docs/plans/smoke_v8_findings_spec.md`, `docs/plans/ws-rest-inventory.md`
 
 ## Gotchas

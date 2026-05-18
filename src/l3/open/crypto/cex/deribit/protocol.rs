@@ -109,6 +109,9 @@ impl DeribitProtocol {
             }
             StreamKind::PositionUpdate => "user.changes.any.any.raw".to_string(),
             StreamKind::BlockTrade => "block_trade_confirmations".to_string(),
+            // Liquidation: Deribit removed the public WS liquidation feed in October 2023.
+            // No public replacement exists — historical data only via REST.
+            StreamKind::Liquidation => return None,
             _ => return None,
         };
 
@@ -116,6 +119,13 @@ impl DeribitProtocol {
     }
     /// Build subscribe or unsubscribe JSON-RPC 2.0 frame.
     fn build_sub_frame(&self, op: &str, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+        // Special-case streams that the exchange has explicitly removed or never exposed publicly.
+        if matches!(spec.kind, StreamKind::Liquidation) {
+            return Err(WebSocketError::NotSupported(
+                "Deribit removed the public liquidation WS feed in October 2023 — \
+                 historical data only via REST /api/v2/public/get_liquidations".to_string(),
+            ));
+        }
         let channel_str = Self::channel_name(spec)
             .ok_or_else(|| WebSocketError::UnsupportedOperation(
                 format!("deribit: unsupported stream kind {:?}", spec.kind),

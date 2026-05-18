@@ -119,7 +119,16 @@ impl KuCoinProtocol {
                     format!("/market/match:{}", sym)
                 }
             }
-            StreamKind::Orderbook | StreamKind::OrderbookDelta => {
+            StreamKind::Orderbook => {
+                // Snapshot channel: server sends 5-level snapshot on every update.
+                if is_futures {
+                    format!("/contractMarket/level2Depth5:{}", sym)
+                } else {
+                    format!("/spotMarket/level2Depth5:{}", sym)
+                }
+            }
+            StreamKind::OrderbookDelta => {
+                // Full delta channel: requires client-side sequence tracking.
                 if is_futures {
                     format!("/contractMarket/level2:{}", sym)
                 } else {
@@ -152,7 +161,18 @@ impl KuCoinProtocol {
                 }
             }
             StreamKind::PositionUpdate => "/contract/positionAll".to_string(),
-            StreamKind::Liquidation => format!("/contractMarket/liquidationOrders:{}", sym),
+            StreamKind::Liquidation => {
+                return Err(WebSocketError::NotSupported(
+                    "KuCoin /contractMarket/liquidationOrders requires authentication — \
+                     not available as a public WS feed".to_string(),
+                ));
+            }
+            StreamKind::OpenInterest => {
+                return Err(WebSocketError::NotSupported(
+                    "KuCoin does not expose a realtime WS open interest feed — \
+                     use REST GET /api/v1/contracts/statistics".to_string(),
+                ));
+            }
             other => {
                 return Err(WebSocketError::UnsupportedOperation(format!(
                     "kucoin: unsupported stream kind {:?}",
@@ -290,7 +310,7 @@ fn build_registry(account_type: AccountType) -> TopicRegistry {
             .register(StreamKind::MarkPrice,      account_type, "/contract/instrument:*",            parse_mark_price)
             .register(StreamKind::IndexPrice,     account_type, "/contractMarket/indexPrice:*",      parse_index_price)
             .register(StreamKind::FundingRate,    account_type, "/contract/instrument:*",            parse_funding_rate)
-            .register(StreamKind::Liquidation,    account_type, "/contractMarket/liquidationOrders:*", parse_liquidation)
+            // Liquidation: requires auth — NotSupported as public feed. Registry entry removed.
             .register(StreamKind::OrderUpdate,    account_type, "/contractMarket/tradeOrders",       parse_order_update)
             .register(StreamKind::BalanceUpdate,  account_type, "/contractAccount/wallet",           parse_balance_update)
             .register(StreamKind::PositionUpdate, account_type, "/contract/positionAll",             parse_position_update);
@@ -480,48 +500,6 @@ fn parse_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent> {
         .map_err(|e| WebSocketError::Parse(e.to_string()))
 }
 
-fn parse_liquidation(raw: &Value) -> WebSocketResult<StreamEvent> {
-    use crate::core::types::TradeSide;
-
-    let data = frame_data(raw)?;
-    let parse_f64 = |v: &Value| -> Option<f64> {
-        v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
-    };
-
-    let symbol = data
-        .get("symbol")
-        .and_then(|v| v.as_str())
-        .or_else(|| {
-            raw.get("topic")
-                .and_then(|t| t.as_str())
-                .and_then(|t| t.split(':').nth(1))
-        })
-        .unwrap_or("")
-        .to_string();
-
-    let price = data.get("price").and_then(parse_f64).unwrap_or(0.0);
-    let quantity = data
-        .get("size")
-        .or_else(|| data.get("amount"))
-        .and_then(parse_f64)
-        .unwrap_or(0.0);
-    let side = data
-        .get("side")
-        .and_then(|v| v.as_str())
-        .map(|s| match s.to_lowercase().as_str() {
-            "buy" => TradeSide::Buy,
-            _ => TradeSide::Sell,
-        })
-        .unwrap_or(TradeSide::Sell);
-    let timestamp = data
-        .get("ts")
-        .and_then(parse_f64)
-        .map(|ms| ms as i64)
-        .unwrap_or(0);
-
-    Ok(StreamEvent::Liquidation { symbol, side, price, quantity, value: None, timestamp })
-}
-
 fn parse_order_update(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw)?;
     let event = KuCoinParser::parse_ws_order_update(data)
@@ -672,7 +650,8 @@ mod tests {
         let reg = proto.topic_registry(AccountType::FuturesCross);
         assert!(reg.supports(&StreamKind::Ticker, AccountType::FuturesCross));
         assert!(reg.supports(&StreamKind::Trade, AccountType::FuturesCross));
-        assert!(reg.supports(&StreamKind::Liquidation, AccountType::FuturesCross));
+        // Liquidation removed from public feed (requires auth) — no longer in registry.
+        assert!(!reg.supports(&StreamKind::Liquidation, AccountType::FuturesCross));
     }
 
     #[test]

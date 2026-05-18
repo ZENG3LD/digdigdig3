@@ -87,8 +87,13 @@ impl HtxProtocol {
             }
             StreamKind::FundingRate => Ok(format!("public.{sym}.funding_rate")),
             StreamKind::Liquidation => Ok(format!("public.{sym}.liquidation_orders")),
-            StreamKind::MarkPrice => Err(WebSocketError::UnsupportedOperation(
-                "HTX: no direct WS mark price channel — use REST mark_price_kline".into(),
+            StreamKind::MarkPrice => Err(WebSocketError::NotSupported(
+                "HTX does not have a direct WS mark price channel — \
+                 use kline market.{sym}.mark_price.1min or REST mark_price endpoint".to_string(),
+            )),
+            StreamKind::OpenInterest => Err(WebSocketError::NotSupported(
+                "HTX does not expose a realtime WS open interest feed — \
+                 use REST GET /linear-swap-ex/market/open_interest".to_string(),
             )),
             StreamKind::IndexPriceKline { .. } => Err(WebSocketError::UnsupportedOperation(
                 "HTX: IndexPriceKline not available via WebSocket — use REST".into(),

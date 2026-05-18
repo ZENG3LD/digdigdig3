@@ -78,7 +78,9 @@ impl MexcProtocol {
             StreamKind::Ticker => vec![MexcWsChannels::book_ticker(sym)],
             StreamKind::Trade | StreamKind::AggTrade => vec![MexcWsChannels::aggre_deals(sym)],
             StreamKind::Orderbook | StreamKind::OrderbookDelta => {
-                vec![MexcWsChannels::aggre_depth(sym)]
+                // Use limit-depth snapshot channel (5 levels) — reliable on MEXC spot.
+                // aggre_depth uses delta encoding that requires seq tracking not yet implemented.
+                vec![MexcWsChannels::limit_depth(sym, 5)]
             }
             StreamKind::Kline { interval } => {
                 vec![MexcWsChannels::kline(sym, &mexc_spot_kline_interval(interval))]
@@ -181,6 +183,13 @@ impl WsProtocol for MexcProtocol {
     }
 
     fn subscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+        // Liquidation: MEXC does not expose a public WS liquidation feed.
+        if matches!(spec.kind, StreamKind::Liquidation) {
+            return Err(WebSocketError::NotSupported(
+                "MEXC does not expose a public WS liquidation feed — \
+                 no REST alternative available publicly".to_string(),
+            ));
+        }
         if Self::is_futures(spec.account_type) {
             Self::futures_subscribe_frame(spec, "subscribe")
         } else {
@@ -316,9 +325,9 @@ fn build_spot_registry() -> TopicRegistry {
         // Aggre deals (trades): spot@public.aggre.deals.v3.api.pb@100ms@<sym>
         .register(StreamKind::Trade, at, "spot@public.aggre.deals.v3.api.pb@*", parse_spot_pb)
         .register(StreamKind::AggTrade, at, "spot@public.aggre.deals.v3.api.pb@*", parse_spot_pb)
-        // Aggre depth (orderbook delta): spot@public.aggre.depth.v3.api.pb@100ms@<sym>
-        .register(StreamKind::OrderbookDelta, at, "spot@public.aggre.depth.v3.api.pb@*", parse_spot_pb)
-        .register(StreamKind::Orderbook, at, "spot@public.aggre.depth.v3.api.pb@*", parse_spot_pb)
+        // Limit depth (orderbook snapshot): spot@public.limit.depth.v3.api.pb@<sym>@<levels>
+        .register(StreamKind::OrderbookDelta, at, "spot@public.limit.depth.v3.api.pb@*", parse_spot_pb)
+        .register(StreamKind::Orderbook, at, "spot@public.limit.depth.v3.api.pb@*", parse_spot_pb)
         // Book ticker uses the Ticker kind (best bid/ask updates)
         .register(StreamKind::Ticker, at, "spot@public.bookTicker.v3.api.pb@*", parse_spot_pb);
 
@@ -647,25 +656,27 @@ fn parse_futures_fair_price(raw: &Value) -> WebSocketResult<StreamEvent> {
 // Kline interval mapping
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Spot kline intervals (wire names as registered in TopicRegistry patterns
-/// and used in channel URLs).
+/// Spot kline intervals — internal names (used as KlineInterval keys).
+/// Wire format (Min1, Min5, …) is produced by `mexc_spot_kline_interval`.
 const MEXC_SPOT_KLINE_INTERVALS: &[&str] = &[
-    "1m", "5m", "15m", "30m", "60m", "4h", "8h", "1d", "1w", "1M",
+    "1m", "5m", "15m", "30m", "1h", "4h", "8h", "1d", "1w", "1M",
 ];
 
-/// Map internal KlineInterval → MEXC spot wire format.
+/// Map internal KlineInterval → MEXC spot wire format (Min1, Min5, etc.).
+///
+/// MEXC spot WS channel format: `spot@public.kline.v3.api.pb@BTCUSDT@Min1`
 fn mexc_spot_kline_interval(interval: &KlineInterval) -> String {
     match interval.as_str() {
-        "1m"  => "1m",
-        "5m"  => "5m",
-        "15m" => "15m",
-        "30m" => "30m",
-        "1h"  => "60m",
-        "4h"  => "4h",
-        "8h"  => "8h",
-        "1d"  => "1d",
-        "1w"  => "1w",
-        "1M"  => "1M",
+        "1m"  => "Min1",
+        "5m"  => "Min5",
+        "15m" => "Min15",
+        "30m" => "Min30",
+        "1h"  => "Min60",
+        "4h"  => "Hour4",
+        "8h"  => "Hour8",
+        "1d"  => "Day1",
+        "1w"  => "Week1",
+        "1M"  => "Month1",
         other => other,
     }
     .to_string()

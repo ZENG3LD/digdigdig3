@@ -83,7 +83,9 @@ use crate::core::types::{
 use crate::core::types::SymbolInfo;
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions, CancelAll, CustodialFunds,
+    MarketDataPublic,
 };
+use crate::core::types::{PublicTrade, TradeSide};
 use crate::core::types::{CancelAllResponse, OrderResult};
 use crate::core::types::ConnectorStats;
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
@@ -1613,6 +1615,61 @@ fn interval_to_secs(interval: &str) -> u64 {
         "1d" => 86400,
         "1w" => 604800,
         _ => 3600,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MARKET DATA PUBLIC
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl MarketDataPublic for CoinbaseConnector {
+    /// Recent public trades for a symbol.
+    ///
+    /// `GET /api/v3/brokerage/products/{product_id}/ticker?limit=N`
+    /// Response: `{trades:[{trade_id,product_id,price,size,time,side}]}`
+    /// side: "BUY"/"SELL". time: ISO8601.
+    async fn get_recent_trades(
+        &self,
+        symbol: SymbolInput<'_>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<PublicTrade>> {
+        let product_id = symbol.resolve(ExchangeId::Coinbase, account_type)?;
+        let mut params = HashMap::new();
+        params.insert("limit".to_string(), limit.unwrap_or(100).to_string());
+        // Build URL: /products/{product_id}/ticker
+        let path = format!("/products/{}/ticker", product_id);
+        let url = format!("{}{}?{}", CoinbaseUrls::market_url(), path,
+            params.iter().map(|(k, v)| format!("{}={}", k, v)).collect::<Vec<_>>().join("&"));
+        let (raw, _) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
+        let trades_arr = raw.get("trades")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("get_recent_trades: expected trades array".into()))?;
+        let symbol_str = product_id.to_string();
+        let mut result = Vec::with_capacity(trades_arr.len());
+        for item in trades_arr {
+            let parse_f64 = |key: &str| -> f64 {
+                item.get(key)
+                    .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64()))
+                    .unwrap_or(0.0)
+            };
+            let side_str = item.get("side").and_then(|v| v.as_str()).unwrap_or("BUY");
+            let side = if side_str.eq_ignore_ascii_case("SELL") { TradeSide::Sell } else { TradeSide::Buy };
+            let time_str = item.get("time").and_then(|v| v.as_str()).unwrap_or("");
+            let timestamp = chrono::DateTime::parse_from_rfc3339(time_str)
+                .map(|dt| dt.timestamp_millis())
+                .unwrap_or(0);
+            result.push(PublicTrade {
+                id: item.get("trade_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                symbol: symbol_str.clone(),
+                price: parse_f64("price"),
+                quantity: parse_f64("size"),
+                side,
+                timestamp,
+            });
+        }
+        Ok(result)
     }
 }
 

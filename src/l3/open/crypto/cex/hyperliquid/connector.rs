@@ -1444,6 +1444,43 @@ impl Positions for HyperliquidConnector {
             )),
         }
     }
+
+    async fn get_open_interest(
+        &self,
+        symbol: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<crate::core::types::OpenInterest> {
+        let coin = symbol.split('/').next().unwrap_or(symbol).to_uppercase();
+        let asset_index = self.symbol_to_asset_index(&coin).await? as usize;
+
+        let raw = self.info_request(InfoType::MetaAndAssetCtxs, serde_json::json!({})).await?;
+
+        let arr = raw.as_array()
+            .ok_or_else(|| ExchangeError::Parse("HL OI: expected top-level array".to_string()))?;
+
+        if arr.len() < 2 {
+            return Err(ExchangeError::Parse("HL OI: response array too short".to_string()));
+        }
+
+        let ctxs = arr[1].as_array()
+            .ok_or_else(|| ExchangeError::Parse("HL OI: ctxs not array".to_string()))?;
+
+        let ctx = ctxs.get(asset_index)
+            .ok_or_else(|| ExchangeError::Parse(format!("HL OI: no ctx at index {}", asset_index)))?;
+
+        let oi = ctx.get("openInterest")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .or_else(|| ctx.get("openInterest").and_then(|v| v.as_f64()))
+            .unwrap_or(0.0);
+
+        Ok(crate::core::types::OpenInterest {
+            symbol: coin,
+            open_interest: oi,
+            open_interest_value: None,
+            timestamp: crate::core::timestamp_millis() as i64,
+        })
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

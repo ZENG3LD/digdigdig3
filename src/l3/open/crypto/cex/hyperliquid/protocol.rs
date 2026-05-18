@@ -18,7 +18,7 @@ use url::Url;
 
 use crate::core::traits::Credentials;
 use crate::core::types::{
-    AccountType, StreamEvent, TradeSide, WebSocketError, WebSocketResult,
+    AccountType, StreamEvent, WebSocketError, WebSocketResult,
 };
 use crate::core::websocket::{
     KlineInterval, StreamKind, StreamSpec, TopicKey, TopicRegistry, WsProtocol,
@@ -74,7 +74,12 @@ impl HyperliquidProtocol {
             StreamKind::FundingRate => json!({ "type": "activeAssetCtx", "coin": coin }),
             StreamKind::OpenInterest => json!({ "type": "activeAssetCtx", "coin": coin }),
             StreamKind::IndexPrice => json!({ "type": "activeAssetCtx", "coin": coin }),
-            StreamKind::Liquidation => json!({ "type": "liquidations" }),
+            StreamKind::Liquidation => {
+                return Err(WebSocketError::NotSupported(
+                    "HyperLiquid liquidations WS feed is user-specific (requires wallet address) — \
+                     not available as a public anonymous stream".to_string(),
+                ));
+            }
             StreamKind::BalanceUpdate => json!({ "type": "clearinghouseState", "user": coin }),
             StreamKind::PositionUpdate => json!({ "type": "clearinghouseState", "user": coin }),
             StreamKind::OrderUpdate => json!({ "type": "orderUpdates", "user": coin }),
@@ -173,7 +178,8 @@ fn build_registry() -> TopicRegistry {
         .register(StreamKind::MarkPrice, at, "activeAssetCtx", parse_mark_price_from_ctx)
         .register(StreamKind::OpenInterest, at, "activeAssetCtx", parse_open_interest_from_ctx)
         .register(StreamKind::IndexPrice, at, "activeAssetCtx", parse_index_price_from_ctx)
-        .register(StreamKind::Liquidation, at, "liquidations", parse_liquidation)
+        // Liquidation: user-specific (requires wallet address) — not a public feed.
+        // Removed from registry; subscribe_frame returns NotSupported.
         // Notifications (public)
         .register(StreamKind::MarketWarning, at, "notifications", parse_notification)
         // BBO (best bid/offer) → emits Ticker with bid_price + ask_price
@@ -407,48 +413,6 @@ fn parse_candle(raw: &Value) -> WebSocketResult<StreamEvent> {
         .next()
         .map(StreamEvent::Kline)
         .ok_or_else(|| WebSocketError::Parse("candle: no kline parsed".into()))
-}
-
-fn parse_liquidation(raw: &Value) -> WebSocketResult<StreamEvent> {
-    let data = frame_data(raw)?;
-
-    let symbol = data
-        .get("coin")
-        .and_then(|c| c.as_str())
-        .ok_or_else(|| WebSocketError::Parse("liquidation: missing 'coin'".into()))?
-        .to_string();
-
-    let side_str = data
-        .get("side")
-        .and_then(|s| s.as_str())
-        .unwrap_or("A");
-
-    let price = parse_f64_field(data, "px")
-        .ok_or_else(|| WebSocketError::Parse("liquidation: missing 'px'".into()))?;
-
-    let quantity = parse_f64_field(data, "sz").unwrap_or(0.0);
-
-    let timestamp = data
-        .get("time")
-        .or_else(|| data.get("ts"))
-        .and_then(|t| t.as_i64())
-        .unwrap_or(0);
-
-    // "B"/"Buy" = buy-side forced order → short liquidated
-    // "A"/"Sell" = sell-side forced order → long liquidated
-    let side = match side_str {
-        "B" | "Buy" => TradeSide::Sell,
-        _ => TradeSide::Buy,
-    };
-
-    Ok(StreamEvent::Liquidation {
-        symbol,
-        side,
-        price,
-        quantity,
-        value: Some(price * quantity),
-        timestamp,
-    })
 }
 
 fn parse_clearinghouse(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -739,7 +703,8 @@ mod tests {
         assert!(reg.supports(&StreamKind::Orderbook, AccountType::FuturesCross));
         assert!(reg.supports(&StreamKind::Ticker, AccountType::FuturesCross));
         assert!(reg.supports(&StreamKind::FundingRate, AccountType::FuturesCross));
-        assert!(reg.supports(&StreamKind::Liquidation, AccountType::FuturesCross));
+        // Liquidation is user-specific (requires wallet) — removed from public registry.
+        assert!(!reg.supports(&StreamKind::Liquidation, AccountType::FuturesCross));
     }
 
     #[test]

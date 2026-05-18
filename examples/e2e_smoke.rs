@@ -331,7 +331,9 @@ mod market {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 let msg = e.to_string();
-                if msg.contains("UnsupportedOperation") || msg.contains("not support") {
+                if msg.contains("UnsupportedOperation") || msg.contains("not support")
+                    || msg.contains("Not supported")
+                {
                     return MethodResult::Unsupported(truncate(&msg, 60));
                 }
                 return MethodResult::Err(format!("sub_fail: {}", truncate(&msg, 60)));
@@ -408,7 +410,9 @@ mod market {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 let msg = e.to_string();
-                if msg.contains("UnsupportedOperation") || msg.contains("not support") {
+                if msg.contains("UnsupportedOperation") || msg.contains("not support")
+                    || msg.contains("Not supported")
+                {
                     return MethodResult::Unsupported(truncate(&msg, 60));
                 }
                 return MethodResult::Err(format!("connect_fail: {}", truncate(&msg, 60)));

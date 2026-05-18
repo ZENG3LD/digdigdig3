@@ -486,7 +486,7 @@ impl BingxWebSocket {
             let trade = BingxParser::parse_ws_trade(data)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
             Ok(Some(StreamEvent::Trade(trade)))
-        } else if data_type.ends_with("@depth") || data_type.ends_with("@depth20") {
+        } else if data_type.ends_with("@depth5") || data_type.ends_with("@depth") || data_type.ends_with("@depth20") {
             // Orderbook stream
             let event = BingxParser::parse_ws_orderbook(data)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
@@ -616,7 +616,7 @@ impl BingxWebSocket {
             }
             StreamType::Orderbook | StreamType::OrderbookDelta => {
                 let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, _account_type);
-                format!("{}@depth", symbol)
+                format!("{}@depth5", symbol)
             }
             StreamType::Kline { interval } => {
                 let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, _account_type);

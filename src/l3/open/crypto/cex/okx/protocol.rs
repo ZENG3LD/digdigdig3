@@ -114,7 +114,7 @@ impl OkxProtocol {
         let name = match kind {
             StreamKind::Ticker => "tickers".to_string(),
             StreamKind::Trade => "trades".to_string(),
-            StreamKind::Orderbook => "books".to_string(),
+            StreamKind::Orderbook => "books5".to_string(),
             StreamKind::OrderbookDelta => "books-l2-tbt".to_string(),
             StreamKind::MarkPrice => "mark-price".to_string(),
             StreamKind::FundingRate => "funding-rate".to_string(),

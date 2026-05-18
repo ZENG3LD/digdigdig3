@@ -48,7 +48,7 @@ use crate::core::types::{
     LedgerEntry, LedgerFilter,
 };
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
-use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight, OrderbookCapabilities, WsBookChannel, ChecksumInfo, ChecksumAlgorithm};
+use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight, OrderbookCapabilities, WsBookChannel, ChecksumInfo, ChecksumAlgorithm, OpenInterest, MarkPrice};
 
 use super::endpoints::{
     BitgetUrls, BitgetEndpoint, format_symbol, map_kline_interval,
@@ -1599,6 +1599,98 @@ impl Positions for BitgetConnector {
 
         let response = self.get(BitgetEndpoint::FundingRate, params, account_type).await?;
         BitgetParser::parse_funding_rate(&response)
+    }
+
+    async fn get_open_interest(
+        &self,
+        symbol: &str,
+        account_type: AccountType,
+    ) -> ExchangeResult<OpenInterest> {
+        let parts: Vec<&str> = symbol.split('/').collect();
+        let (raw_symbol, product_type) = if parts.len() == 2 {
+            let sym = crate::core::Symbol::new(parts[0], parts[1]);
+            let formatted = format_symbol(&sym.base, &sym.quote, account_type);
+            let pt = get_product_type(&sym.quote);
+            (formatted, pt.to_string())
+        } else {
+            (symbol.to_uppercase(), "USDT-FUTURES".to_string())
+        };
+
+        let response = self.get_futures_open_interest(&raw_symbol, &product_type).await?;
+
+        let data = response.get("data")
+            .ok_or_else(|| ExchangeError::Parse("Bitget OI: missing data".to_string()))?;
+
+        let oi = data.get("openInterest")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .or_else(|| data.get("openInterest").and_then(|v| v.as_f64()))
+            .unwrap_or(0.0);
+
+        let ts = data.get("ts")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<i64>().ok())
+            .or_else(|| data.get("ts").and_then(|v| v.as_i64()))
+            .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
+
+        Ok(OpenInterest {
+            symbol: raw_symbol,
+            open_interest: oi,
+            open_interest_value: None,
+            timestamp: ts,
+        })
+    }
+
+    async fn get_mark_price(
+        &self,
+        symbol: &str,
+    ) -> ExchangeResult<MarkPrice> {
+        // GET /api/v2/mix/market/symbol-price?productType=usdt-futures&symbol=BTCUSDT
+        // Response: {code, msg, data: [{symbol, markPrice, indexPrice, ...}]}
+        let parts: Vec<&str> = symbol.split('/').collect();
+        let (raw_symbol, product_type) = if parts.len() == 2 {
+            (
+                format_symbol(parts[0], parts[1], AccountType::FuturesCross),
+                get_product_type(parts[1]).to_string(),
+            )
+        } else {
+            (symbol.to_string(), "USDT-FUTURES".to_string())
+        };
+
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), raw_symbol.clone());
+        params.insert("productType".to_string(), product_type);
+
+        let response = self
+            .get(BitgetEndpoint::FuturesSymbolPrice, params, AccountType::FuturesCross)
+            .await?;
+
+        let arr = response
+            .get("data")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing data array".to_string()))?;
+
+        let data = arr
+            .first()
+            .ok_or_else(|| ExchangeError::Parse("Empty data array".to_string()))?;
+
+        let mark_price = data
+            .get("markPrice")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .or_else(|| data.get("markPrice").and_then(|v| v.as_f64()))
+            .ok_or_else(|| ExchangeError::Parse("Missing markPrice".to_string()))?;
+
+        Ok(MarkPrice {
+            symbol: raw_symbol,
+            mark_price,
+            index_price: data
+                .get("indexPrice")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok()),
+            funding_rate: None,
+            timestamp: crate::core::timestamp_millis() as i64,
+        })
     }
 
     async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {

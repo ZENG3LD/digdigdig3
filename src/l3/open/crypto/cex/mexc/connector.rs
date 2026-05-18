@@ -1914,6 +1914,42 @@ impl crate::core::traits::Positions for MexcConnector {
             "MEXC position modification not implemented in v5".into(),
         ))
     }
+
+    async fn get_open_interest(
+        &self,
+        symbol: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<crate::core::types::OpenInterest> {
+        let raw_symbol = if symbol.contains('/') {
+            let parts: Vec<&str> = symbol.split('/').collect();
+            format!(
+                "{}_{}",
+                parts[0].to_uppercase(),
+                parts.get(1).copied().unwrap_or("USDT").to_uppercase()
+            )
+        } else {
+            symbol.to_uppercase().replace('-', "_")
+        };
+        let response = self.get_open_interest(&raw_symbol).await?;
+        let data = response
+            .get("data")
+            .ok_or_else(|| ExchangeError::Parse("MEXC OI: missing data".to_string()))?;
+        let oi = data
+            .get("openInterest")
+            .and_then(|v| v.as_f64())
+            .or_else(|| {
+                data.get("openInterest")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<f64>().ok())
+            })
+            .unwrap_or(0.0);
+        Ok(crate::core::types::OpenInterest {
+            symbol: raw_symbol,
+            open_interest: oi,
+            open_interest_value: None,
+            timestamp: crate::core::timestamp_millis() as i64,
+        })
+    }
 }
 
 impl crate::core::traits::HasCapabilities for MexcConnector {

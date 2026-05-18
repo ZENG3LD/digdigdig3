@@ -36,10 +36,12 @@ use crate::core::{
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
 use crate::core::traits::AccountLedger;
+use crate::core::traits::MarketDataPublic;
 use crate::core::types::SymbolInfo;
 use crate::core::types::ConnectorStats;
 use crate::core::types::{WithdrawRequest, FundsHistoryFilter, FundsRecordType, LedgerEntry, LedgerFilter};
 use crate::core::types::{UserTrade, UserTradeFilter};
+use crate::core::types::{PublicTrade, TradeSide};
 use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, OrderbookCapabilities, WsBookChannel};
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 use crate::core::utils::PrecisionCache;
@@ -1174,6 +1176,64 @@ impl crate::core::traits::Positions for BitstampConnector {
         Err(ExchangeError::UnsupportedOperation(
             "Bitstamp is spot-only: no position modification".into(),
         ))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MARKET DATA PUBLIC
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl MarketDataPublic for BitstampConnector {
+    /// Recent public trades for a symbol.
+    ///
+    /// `GET /api/v2/transactions/{pair}/`
+    /// Response: `[{tid, date, price, amount, type}]`
+    /// type: 0=buy, 1=sell. date: unix seconds.
+    async fn get_recent_trades(
+        &self,
+        symbol: SymbolInput<'_>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<PublicTrade>> {
+        let pair = symbol.resolve(ExchangeId::Bitstamp, account_type)?;
+        let mut params = HashMap::new();
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        let raw = self.get(BitstampEndpoint::Transactions, Some(&pair), params).await?;
+        let arr = raw.as_array().ok_or_else(|| {
+            ExchangeError::Parse("get_recent_trades: expected array".into())
+        })?;
+        let symbol_str = pair.to_string();
+        let mut result = Vec::with_capacity(arr.len());
+        for item in arr {
+            let parse_f64 = |key: &str| -> f64 {
+                item.get(key)
+                    .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64()))
+                    .unwrap_or(0.0)
+            };
+            let trade_type = item.get("type")
+                .and_then(|v| v.as_str().and_then(|s| s.parse::<u8>().ok())
+                    .or_else(|| v.as_u64().map(|n| n as u8)))
+                .unwrap_or(0);
+            let side = if trade_type == 1 { TradeSide::Sell } else { TradeSide::Buy };
+            let ts_secs = item.get("date")
+                .and_then(|v| v.as_str().and_then(|s| s.parse::<i64>().ok()).or_else(|| v.as_i64()))
+                .unwrap_or(0);
+            result.push(PublicTrade {
+                id: item.get("tid")
+                    .and_then(|v| v.as_i64())
+                    .map(|id| id.to_string())
+                    .unwrap_or_default(),
+                symbol: symbol_str.clone(),
+                price: parse_f64("price"),
+                quantity: parse_f64("amount"),
+                side,
+                timestamp: ts_secs * 1000,
+            });
+        }
+        Ok(result)
     }
 }
 

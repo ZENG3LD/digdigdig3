@@ -477,6 +477,11 @@ pub enum WebSocketError {
     #[error("Unsupported operation: {0}")]
     UnsupportedOperation(String),
 
+    /// The exchange genuinely does not expose this WS feed publicly.
+    /// Includes a human-readable explanation and REST alternative if available.
+    #[error("Not supported: {0}")]
+    NotSupported(String),
+
     #[error("Timeout")]
     Timeout,
 }

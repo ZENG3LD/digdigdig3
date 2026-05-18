@@ -40,7 +40,7 @@ use crate::core::types::{
     TransferRequest, TransferHistoryFilter,
     WithdrawRequest, FundsHistoryFilter, FundsRecordType,
     SubAccountOperation, SubAccountResult,
-    OpenInterest, LongShortRatio,
+    OpenInterest, LongShortRatio, MarkPrice,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
@@ -1997,7 +1997,97 @@ impl Positions for BybitConnector {
 
         let response = self.get(BybitEndpoint::FundingRate, params).await?;
         BybitParser::parse_funding_rate(&response)
-    
+
+    }
+
+    async fn get_mark_price(
+        &self,
+        symbol: &str,
+    ) -> ExchangeResult<MarkPrice> {
+        // GET /v5/market/tickers?category=linear&symbol=BTCUSDT
+        // Response: {result: {list: [{symbol, markPrice, indexPrice, fundingRate, ...}]}}
+        let mut params = HashMap::new();
+        params.insert("category".to_string(), "linear".to_string());
+        params.insert("symbol".to_string(), symbol.to_string());
+
+        let response = self.get(BybitEndpoint::Ticker, params).await?;
+
+        let result = response
+            .get("result")
+            .ok_or_else(|| ExchangeError::Parse("Missing result".to_string()))?;
+        let list = result
+            .get("list")
+            .and_then(|l| l.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing result.list".to_string()))?;
+        let data = list
+            .first()
+            .ok_or_else(|| ExchangeError::Parse("Empty result.list".to_string()))?;
+
+        let mark_price = data
+            .get("markPrice")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .ok_or_else(|| ExchangeError::Parse("Missing markPrice".to_string()))?;
+
+        Ok(MarkPrice {
+            symbol: symbol.to_string(),
+            mark_price,
+            index_price: data
+                .get("indexPrice")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok()),
+            funding_rate: data
+                .get("fundingRate")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok()),
+            timestamp: crate::core::timestamp_millis() as i64,
+        })
+    }
+
+    async fn get_open_interest(
+        &self,
+        symbol: &str,
+        account_type: AccountType,
+    ) -> ExchangeResult<OpenInterest> {
+        let parts: Vec<&str> = symbol.split('/').collect();
+        let raw_symbol = if parts.len() == 2 {
+            let sym = crate::core::Symbol::new(parts[0], parts[1]);
+            format_symbol(&sym, account_type)
+        } else {
+            symbol.to_uppercase()
+        };
+
+        let mut params = HashMap::new();
+        params.insert("category".to_string(), account_type_to_category(account_type).to_string());
+        params.insert("symbol".to_string(), raw_symbol.clone());
+
+        let response = self.get(BybitEndpoint::Ticker, params).await?;
+
+        let list = response
+            .get("result")
+            .and_then(|r| r.get("list"))
+            .and_then(|l| l.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Bybit OI: missing result.list".to_string()))?;
+
+        let item = list.first()
+            .ok_or_else(|| ExchangeError::Parse("Bybit OI: empty list".to_string()))?;
+
+        let oi = item.get("openInterest")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .or_else(|| item.get("openInterest").and_then(|v| v.as_f64()))
+            .unwrap_or(0.0);
+
+        let ts = item.get("time")
+            .and_then(|v| v.as_i64())
+            .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
+
+        Ok(OpenInterest {
+            symbol: raw_symbol,
+            open_interest: oi,
+            open_interest_value: None,
+            timestamp: ts,
+        })
     }
 
     async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
@@ -2163,6 +2253,20 @@ impl Positions for BybitConnector {
                 "This position modification is not supported by Bybit".to_string()
             )),
         }
+    }
+
+    async fn get_long_short_ratio(
+        &self,
+        symbol: &str,
+        account_type: AccountType,
+    ) -> ExchangeResult<crate::core::types::LongShortRatio> {
+        let category = account_type_to_category(account_type);
+        let vec = self.get_long_short_ratio(category, symbol, "5min", Some(1)).await?;
+        vec.into_iter().next().ok_or_else(|| {
+            crate::core::types::ExchangeError::NotFound(
+                format!("No long/short ratio data for {symbol}"),
+            )
+        })
     }
 }
 

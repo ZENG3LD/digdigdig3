@@ -27,7 +27,8 @@ use crate::core::{
     AccountType, ExchangeError, ExchangeId, ExchangeResult, ExchangeType,
     Kline, OrderBook, Price, SymbolInfo, Ticker,
 };
-use crate::core::traits::{ExchangeIdentity, MarketData};
+use crate::core::traits::{ExchangeIdentity, MarketData, MarketDataPublic};
+use crate::core::types::{PublicTrade, TradeSide};
 use crate::core::types::{MarketDataCapabilities, SymbolInput};
 use crate::core::types::{ConnectorStats, RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, OrderbookCapabilities};
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
@@ -904,5 +905,62 @@ impl crate::core::traits::Positions for PolymarketConnector {
         Err(ExchangeError::UnsupportedOperation(
             "Polymarket has no position modification".into(),
         ))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MARKET DATA PUBLIC
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl MarketDataPublic for PolymarketConnector {
+    /// Recent public trades for a market.
+    ///
+    /// `GET https://data-api.polymarket.com/trades?market={conditionId}&limit=N`
+    /// Response: `[{asset,conditionId,side,price,size,timestamp}]`
+    /// side: "BUY"/"SELL". timestamp: unix seconds.
+    async fn get_recent_trades(
+        &self,
+        symbol: SymbolInput<'_>,
+        limit: Option<u32>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<PublicTrade>> {
+        let condition_id = match symbol {
+            SymbolInput::Raw(s) => s.to_string(),
+            SymbolInput::Canonical(c) => c.base.clone(),
+        };
+        let limit_str = limit.unwrap_or(100).to_string();
+        let url = format!("{}/trades?market={}&limit={}",
+            self.endpoints.data_base, condition_id, limit_str);
+        let raw = self.get_url(&url).await?;
+        let arr = raw.as_array().ok_or_else(|| {
+            ExchangeError::Parse("get_recent_trades: expected array".into())
+        })?;
+        let mut result = Vec::with_capacity(arr.len());
+        for item in arr {
+            let parse_f64 = |key: &str| -> f64 {
+                item.get(key)
+                    .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64()))
+                    .unwrap_or(0.0)
+            };
+            let side_str = item.get("side").and_then(|v| v.as_str()).unwrap_or("BUY");
+            let side = if side_str.eq_ignore_ascii_case("SELL") { TradeSide::Sell } else { TradeSide::Buy };
+            let ts_secs = item.get("timestamp")
+                .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+                .unwrap_or(0);
+            let id = item.get("id").and_then(|v| v.as_str())
+                .or_else(|| item.get("transactionHash").and_then(|v| v.as_str()))
+                .unwrap_or("")
+                .to_string();
+            result.push(PublicTrade {
+                id,
+                symbol: condition_id.clone(),
+                price: parse_f64("price"),
+                quantity: parse_f64("size"),
+                side,
+                timestamp: ts_secs * 1000,
+            });
+        }
+        Ok(result)
     }
 }

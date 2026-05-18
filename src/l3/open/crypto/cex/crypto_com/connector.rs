@@ -37,6 +37,7 @@ use crate::core::{
 use crate::core::types::{
     DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord, FundsHistoryFilter, FundsRecordType,
     SubAccountOperation, SubAccountResult, SubAccount,
+    OpenInterest,
 };
 use crate::core::types::{SymbolInfo, OrderResult};
 use crate::core::types::ConnectorStats;
@@ -1310,6 +1311,47 @@ impl Positions for CryptoComConnector {
 
         let response = self.request(CryptoComEndpoint::GetValuations, params).await?;
         CryptoComParser::parse_funding_rate(&response)
+    }
+
+    async fn get_open_interest(
+        &self,
+        symbol: &str,
+        account_type: AccountType,
+    ) -> ExchangeResult<OpenInterest> {
+        let parts: Vec<&str> = symbol.split('/').collect();
+        let instrument_name = if parts.len() == 2 {
+            let instrument_type = account_type_to_instrument(account_type);
+            format_symbol(parts[0], parts[1], instrument_type)
+        } else {
+            symbol.to_uppercase()
+        };
+
+        let params = json!({ "instrument_name": instrument_name });
+        let response = self.request(CryptoComEndpoint::GetTickers, params).await?;
+
+        let data = response
+            .get("result")
+            .and_then(|r| r.get("data"))
+            .and_then(|d| d.as_array())
+            .and_then(|a| a.first())
+            .ok_or_else(|| ExchangeError::Parse("CryptoCom OI: missing result.data[0]".to_string()))?;
+
+        let oi = data.get("oi")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .or_else(|| data.get("oi").and_then(|v| v.as_f64()))
+            .unwrap_or(0.0);
+
+        let ts = data.get("t")
+            .and_then(|v| v.as_i64())
+            .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
+
+        Ok(OpenInterest {
+            symbol: instrument_name,
+            open_interest: oi,
+            open_interest_value: None,
+            timestamp: ts,
+        })
     }
 
     async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {

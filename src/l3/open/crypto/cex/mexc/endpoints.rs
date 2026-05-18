@@ -324,6 +324,12 @@ impl MexcWsChannels {
         format!("spot@public.aggre.depth.v3.api.pb@100ms@{}", symbol)
     }
 
+    /// Limit depth (orderbook snapshot) for a symbol (protobuf).
+    /// Example: `spot@public.limit.depth.v3.api.pb@BTCUSDT@5`
+    pub fn limit_depth(symbol: &str, levels: u32) -> String {
+        format!("spot@public.limit.depth.v3.api.pb@{}@{}", symbol, levels)
+    }
+
     /// Kline/candlestick for a symbol (protobuf).
     /// Example: `spot@public.kline.v3.api.pb@BTCUSDT@1m`
     pub fn kline(symbol: &str, interval: &str) -> String {

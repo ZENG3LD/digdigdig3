@@ -33,13 +33,14 @@ use crate::core::{
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
-    FundingHistory,
+    FundingHistory, MarketDataPublic,
 };
+use crate::core::types::{PublicTrade, TradeSide};
 use crate::core::types::{
     ConnectorStats, SymbolInfo, FundingPayment, FundingFilter,
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
     RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, OrderbookCapabilities,
-    SymbolInput,
+    SymbolInput, OpenInterest,
 };
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 
@@ -850,6 +851,47 @@ impl Positions for DydxConnector {
         // Override symbol with the normalized market ticker
         funding.symbol = market;
         Ok(funding)
+    }
+
+    async fn get_open_interest(
+        &self,
+        symbol: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<OpenInterest> {
+        // Normalize: "BTC" or "BTC/USD" → "BTC-USD"
+        let market = if symbol.contains('-') {
+            symbol.to_uppercase()
+        } else if symbol.contains('/') {
+            let parts: Vec<&str> = symbol.split('/').collect();
+            format!("{}-{}", parts[0].to_uppercase(), parts.get(1).copied().unwrap_or("USD").to_uppercase())
+        } else {
+            format!("{}-USD", symbol.to_uppercase())
+        };
+
+        let mut params = HashMap::new();
+        params.insert("ticker".to_string(), market.clone());
+
+        let response = self.get(DydxEndpoint::PerpetualMarkets, params).await?;
+
+        let markets = response.get("markets")
+            .and_then(|m| m.as_object())
+            .ok_or_else(|| ExchangeError::Parse("dYdX OI: missing markets".to_string()))?;
+
+        let data = markets.get(&market)
+            .ok_or_else(|| ExchangeError::Parse(format!("dYdX OI: market {} not found", market)))?;
+
+        let oi = data.get("openInterest")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .or_else(|| data.get("openInterest").and_then(|v| v.as_f64()))
+            .unwrap_or(0.0);
+
+        Ok(OpenInterest {
+            symbol: market,
+            open_interest: oi,
+            open_interest_value: None,
+            timestamp: crate::core::timestamp_millis() as i64,
+        })
     }
 
     async fn modify_position(&self, _req: PositionModification) -> ExchangeResult<()> {
@@ -2125,6 +2167,63 @@ fn map_tif_to_dydx_i32(tif: &crate::core::TimeInForce) -> i32 {
         crate::core::TimeInForce::Ioc => OrderTimeInForce::Ioc as i32,
         crate::core::TimeInForce::Fok => OrderTimeInForce::FillOrKill as i32,
         crate::core::TimeInForce::PostOnly => OrderTimeInForce::PostOnly as i32,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MARKET DATA PUBLIC
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl MarketDataPublic for DydxConnector {
+    /// Recent public trades for a perpetual market.
+    ///
+    /// `GET /v4/trades/perpetualMarket/{market}?limit=N`
+    /// Response: `{trades:[{price,size,side,createdAt,createdAtHeight}]}`
+    /// side: "BUY"/"SELL". createdAt: ISO8601.
+    async fn get_recent_trades(
+        &self,
+        symbol: SymbolInput<'_>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<PublicTrade>> {
+        let market = symbol.resolve(ExchangeId::Dydx, account_type)?;
+        let mut params = HashMap::new();
+        params.insert("market".to_string(), market.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        let raw = self.get(DydxEndpoint::Trades, params).await?;
+        let trades = raw.get("trades")
+            .and_then(|t| t.as_array())
+            .ok_or_else(|| ExchangeError::Parse("get_recent_trades: expected trades array".into()))?;
+        let symbol_str = market.to_string();
+        let mut result = Vec::with_capacity(trades.len());
+        for item in trades {
+            let parse_f64 = |key: &str| -> f64 {
+                item.get(key)
+                    .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64()))
+                    .unwrap_or(0.0)
+            };
+            let side_str = item.get("side").and_then(|v| v.as_str()).unwrap_or("BUY");
+            let side = if side_str.eq_ignore_ascii_case("SELL") { TradeSide::Sell } else { TradeSide::Buy };
+            let time_str = item.get("createdAt").and_then(|v| v.as_str()).unwrap_or("");
+            let timestamp = {
+                use chrono::DateTime;
+                DateTime::parse_from_rfc3339(time_str)
+                    .map(|dt| dt.timestamp_millis())
+                    .unwrap_or(0)
+            };
+            result.push(PublicTrade {
+                id: item.get("createdAtHeight").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                symbol: symbol_str.clone(),
+                price: parse_f64("price"),
+                quantity: parse_f64("size"),
+                side,
+                timestamp,
+            });
+        }
+        Ok(result)
     }
 }
 

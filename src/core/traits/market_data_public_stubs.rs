@@ -6,25 +6,19 @@
 
 use super::MarketDataPublic;
 
-// CEX — Binance, Bybit, OKX, Lighter have real impls in their connector.rs files
+// CEX — Binance, Bybit, OKX, Lighter, Bitstamp, Coinbase, Deribit, Gemini, Upbit have real impls in their connector.rs files
 use crate::l3::open::crypto::cex::kucoin::KuCoinConnector;
 use crate::l3::open::crypto::cex::kraken::KrakenConnector;
-use crate::l3::open::crypto::cex::coinbase::CoinbaseConnector;
 use crate::l3::open::crypto::cex::gateio::GateioConnector;
 use crate::l3::open::crypto::cex::bitfinex::BitfinexConnector;
-use crate::l3::open::crypto::cex::bitstamp::BitstampConnector;
-use crate::l3::open::crypto::cex::gemini::GeminiConnector;
 use crate::l3::open::crypto::cex::mexc::MexcConnector;
 use crate::l3::open::crypto::cex::htx::HtxConnector;
 use crate::l3::open::crypto::cex::bitget::BitgetConnector;
 use crate::l3::open::crypto::cex::bingx::BingxConnector;
 use crate::l3::open::crypto::cex::crypto_com::CryptoComConnector;
-use crate::l3::open::crypto::cex::upbit::UpbitConnector;
-use crate::l3::open::crypto::cex::deribit::DeribitConnector;
 use crate::l3::open::crypto::cex::hyperliquid::HyperliquidConnector;
 
-// DEX — Lighter has real impl in its connector.rs
-use crate::l3::open::crypto::dex::dydx::DydxConnector;
+// DEX — Lighter, dYdX have real impls in their connector.rs files
 
 // Stocks US
 use crate::l2::paid::polygon::PolygonConnector;
@@ -51,8 +45,7 @@ use crate::l3::gated::forex::oanda::OandaConnector;
 use crate::l3::gated::forex::dukascopy::DukascopyConnector;
 use crate::l1::paid::alphavantage::AlphaVantageConnector;
 
-// Prediction
-use crate::l3::open::prediction::polymarket::PolymarketConnector;
+// Prediction — PolymarketConnector has real impl in connector.rs
 
 // Brokers
 use crate::l3::gated::multi::ib::IBConnector;
@@ -67,25 +60,25 @@ use crate::l2::paid::cryptocompare::CryptoCompareConnector;
 
 impl MarketDataPublic for KuCoinConnector {}
 impl MarketDataPublic for KrakenConnector {}
-impl MarketDataPublic for CoinbaseConnector {}
+// CoinbaseConnector — real impl in connector.rs
 impl MarketDataPublic for GateioConnector {}
 impl MarketDataPublic for BitfinexConnector {}
-impl MarketDataPublic for BitstampConnector {}
-impl MarketDataPublic for GeminiConnector {}
+// BitstampConnector — real impl in connector.rs
+// GeminiConnector — real impl in connector.rs
 impl MarketDataPublic for MexcConnector {}
 impl MarketDataPublic for HtxConnector {}
 impl MarketDataPublic for BitgetConnector {}
 impl MarketDataPublic for BingxConnector {}
 impl MarketDataPublic for CryptoComConnector {}
-impl MarketDataPublic for UpbitConnector {}
-impl MarketDataPublic for DeribitConnector {}
+// UpbitConnector — real impl in connector.rs
+// DeribitConnector — real impl in connector.rs
 impl MarketDataPublic for HyperliquidConnector {}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DEX stubs
 // ═══════════════════════════════════════════════════════════════════════════════
 
-impl MarketDataPublic for DydxConnector {}
+// DydxConnector — real impl in connector.rs
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Stocks US stubs
@@ -128,7 +121,7 @@ impl MarketDataPublic for AlphaVantageConnector {}
 // Prediction stubs
 // ═══════════════════════════════════════════════════════════════════════════════
 
-impl MarketDataPublic for PolymarketConnector {}
+// PolymarketConnector — real impl in connector.rs
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Brokers stubs
@@ -141,4 +134,17 @@ impl MarketDataPublic for IBConnector {}
 // ═══════════════════════════════════════════════════════════════════════════════
 
 impl MarketDataPublic for YahooFinanceConnector {}
-impl MarketDataPublic for CryptoCompareConnector {}
+
+#[async_trait::async_trait]
+impl MarketDataPublic for CryptoCompareConnector {
+    async fn get_recent_trades(
+        &self,
+        _symbol: crate::core::types::SymbolInput<'_>,
+        _limit: Option<u32>,
+        _account_type: crate::core::types::AccountType,
+    ) -> crate::core::types::ExchangeResult<Vec<crate::core::types::PublicTrade>> {
+        Err(crate::core::types::ExchangeError::NotSupported(
+            "CryptoCompare WS-only for raw trades; no public REST endpoint — use REST OHLCV /data/v2/histominute for aggregated data".into(),
+        ))
+    }
+}

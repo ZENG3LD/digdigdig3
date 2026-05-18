@@ -40,7 +40,7 @@ use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
 };
 use crate::core::{CancelAll, AmendOrder, BatchOrders, AccountTransfers, CustodialFunds, SubAccounts};
-use crate::core::types::{ConnectorStats, CancelAllResponse, OrderResult};
+use crate::core::types::{ConnectorStats, CancelAllResponse, OrderResult, MarkPrice};
 use crate::core::types::{
     TransferRequest, TransferHistoryFilter, TransferResponse,
     DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord, FundsHistoryFilter, FundsRecordType,
@@ -1154,6 +1154,44 @@ impl Positions for BingxConnector {
             symbol: symbol_str.to_string(),
             rate,
             next_funding_time: next_time,
+            timestamp: crate::core::timestamp_millis() as i64,
+        })
+    }
+
+    async fn get_mark_price(
+        &self,
+        symbol: &str,
+    ) -> ExchangeResult<MarkPrice> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+
+        let response = self
+            .get(BingxEndpoint::SwapPremiumIndex, params, AccountType::FuturesCross)
+            .await?;
+
+        // Response: {code, msg, data: {symbol, markPrice, indexPrice, fundingRate, nextFundingTime}}
+        let data = response
+            .get("data")
+            .ok_or_else(|| ExchangeError::Parse("Missing data".to_string()))?;
+
+        let mark_price = data
+            .get("markPrice")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .or_else(|| data.get("markPrice").and_then(|v| v.as_f64()))
+            .ok_or_else(|| ExchangeError::Parse("Missing markPrice".to_string()))?;
+
+        Ok(MarkPrice {
+            symbol: symbol.to_string(),
+            mark_price,
+            index_price: data
+                .get("indexPrice")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok()),
+            funding_rate: data
+                .get("fundingRate")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok()),
             timestamp: crate::core::timestamp_millis() as i64,
         })
     }

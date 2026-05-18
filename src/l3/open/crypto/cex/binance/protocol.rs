@@ -123,6 +123,13 @@ impl BinanceProtocol {
             StreamKind::CompositeIndex => format!("{}@compositeIndex", symbol),
             StreamKind::IndexPrice => format!("{}@indexPrice@1s", symbol),
 
+            StreamKind::OpenInterest => {
+                return Err(WebSocketError::NotSupported(
+                    "Binance does not expose a realtime WS open interest feed — \
+                     use REST GET /fapi/v1/openInterest with polling".to_string(),
+                ));
+            }
+
             // Private streams — no wire name needed (listenKey URL handles routing).
             StreamKind::OrderUpdate | StreamKind::BalanceUpdate | StreamKind::PositionUpdate => {
                 return Err(WebSocketError::UnsupportedOperation(

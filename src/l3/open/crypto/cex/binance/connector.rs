@@ -2220,6 +2220,52 @@ impl Positions for BinanceConnector {
         BinanceParser::parse_funding_rate(&response)
     }
 
+    async fn get_mark_price(
+        &self,
+        symbol: &str,
+    ) -> ExchangeResult<MarkPrice> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+
+        let response = self
+            .get(
+                BinanceEndpoint::FuturesPremiumIndex,
+                params,
+                AccountType::FuturesCross,
+            )
+            .await?;
+
+        // Response: {symbol, markPrice, indexPrice, lastFundingRate, nextFundingTime, time, ...}
+        let data = if let Some(arr) = response.as_array() {
+            arr.first()
+                .ok_or_else(|| ExchangeError::Parse("Empty premiumIndex array".to_string()))?
+                .clone()
+        } else {
+            response
+        };
+
+        let mark_price = data
+            .get("markPrice")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .or_else(|| data.get("markPrice").and_then(|v| v.as_f64()))
+            .ok_or_else(|| ExchangeError::Parse("Missing markPrice".to_string()))?;
+
+        Ok(MarkPrice {
+            symbol: symbol.to_string(),
+            mark_price,
+            index_price: data
+                .get("indexPrice")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok()),
+            funding_rate: data
+                .get("lastFundingRate")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok()),
+            timestamp: data.get("time").and_then(|t| t.as_i64()).unwrap_or(0),
+        })
+    }
+
     async fn get_open_interest(
         &self,
         symbol: &str,
@@ -2383,6 +2429,21 @@ impl Positions for BinanceConnector {
                 "This position modification is not supported by Binance".to_string()
             )),
         }
+    }
+
+    async fn get_long_short_ratio(
+        &self,
+        symbol: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<crate::core::types::LongShortRatio> {
+        let vec = self
+            .get_global_long_short_account_ratio(symbol, "5m", Some(1), None, None)
+            .await?;
+        vec.into_iter().next().ok_or_else(|| {
+            crate::core::types::ExchangeError::NotFound(
+                format!("No long/short ratio data for {symbol}"),
+            )
+        })
     }
 }
 

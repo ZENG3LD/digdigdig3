@@ -42,6 +42,7 @@ use crate::core::types::{
     TransferRequest, TransferHistoryFilter, TransferResponse,
     DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord, FundsHistoryFilter, FundsRecordType,
     SubAccountOperation, SubAccountResult, SubAccount,
+    OpenInterest, MarkPrice,
 };
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, OrderbookCapabilities, WsBookChannel};
@@ -1334,6 +1335,42 @@ impl Positions for HtxConnector {
         Err(ExchangeError::NotSupported("Funding rate not available for spot trading".to_string()))
     }
 
+    async fn get_mark_price(
+        &self,
+        symbol: &str,
+    ) -> ExchangeResult<MarkPrice> {
+        // GET /linear-swap-ex/market/history/mark_price_kline?contract_code=BTC-USDT&period=1min&size=1
+        // Response: {status, data: [{id, open, close, high, low, vol, ...}]}
+        // Use close price of latest kline as mark price
+        let response = self.get_mark_price_kline(symbol, "1min", Some(1)).await?;
+
+        let data = response
+            .get("data")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing data array".to_string()))?;
+
+        let kline = data
+            .first()
+            .ok_or_else(|| ExchangeError::Parse("Empty data array".to_string()))?;
+
+        let mark_price = kline
+            .get("close")
+            .and_then(|v| v.as_f64())
+            .ok_or_else(|| ExchangeError::Parse("Missing close in mark price kline".to_string()))?;
+
+        Ok(MarkPrice {
+            symbol: symbol.to_string(),
+            mark_price,
+            index_price: None,
+            funding_rate: None,
+            timestamp: kline
+                .get("id")
+                .and_then(|v| v.as_i64())
+                .map(|t| t * 1000)
+                .unwrap_or_else(|| crate::core::timestamp_millis() as i64),
+        })
+    }
+
     async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
         match req {
             PositionModification::SetLeverage { .. } => {
@@ -1343,6 +1380,42 @@ impl Positions for HtxConnector {
                 "Position modification not supported on HTX spot".to_string()
             )),
         }
+    }
+
+    async fn get_open_interest(
+        &self,
+        symbol: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<OpenInterest> {
+        let contract_code = if symbol.contains('/') {
+            let parts: Vec<&str> = symbol.split('/').collect();
+            format!("{}-{}", parts[0].to_uppercase(), parts.get(1).copied().unwrap_or("USDT").to_uppercase())
+        } else {
+            symbol.to_uppercase()
+        };
+
+        let response = self.get_open_interest(Some(&contract_code)).await?;
+
+        let data = response.get("data")
+            .and_then(|d| d.as_array())
+            .and_then(|a| a.first())
+            .ok_or_else(|| ExchangeError::Parse("HTX OI: missing data[0]".to_string()))?;
+
+        let oi = data.get("open_interest")
+            .and_then(|v| v.as_f64())
+            .or_else(|| data.get("volume").and_then(|v| v.as_f64()))
+            .unwrap_or(0.0);
+
+        let ts = data.get("timestamp")
+            .and_then(|v| v.as_i64())
+            .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
+
+        Ok(OpenInterest {
+            symbol: contract_code,
+            open_interest: oi,
+            open_interest_value: None,
+            timestamp: ts,
+        })
     }
 }
 

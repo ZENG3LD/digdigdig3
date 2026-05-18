@@ -36,6 +36,8 @@ use crate::core::{
     UserTrade, UserTradeFilter,
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
+use crate::core::traits::MarketDataPublic;
+use crate::core::types::{PublicTrade, TradeSide};
 use crate::core::types::SymbolInput;
 use crate::core::types::{WithdrawRequest, FundsHistoryFilter, FundsRecordType};
 use crate::core::types::StreamEvent;
@@ -1391,6 +1393,65 @@ impl crate::core::traits::Positions for UpbitConnector {
         Err(crate::core::types::ExchangeError::UnsupportedOperation(
             "Upbit is spot-only: no position modification".into(),
         ))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MARKET DATA PUBLIC
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl MarketDataPublic for UpbitConnector {
+    /// Recent public trades for a symbol.
+    ///
+    /// `GET /v1/trades/ticks?market={symbol}&count=N`
+    /// Response: `[{trade_date_utc,trade_time_utc,trade_price,trade_volume,ask_bid,...}]`
+    /// ask_bid: "ASK"=Sell, "BID"=Buy. Timestamps: "YYYY-MM-DD" + " " + "HH:MM:SS" UTC.
+    async fn get_recent_trades(
+        &self,
+        symbol: SymbolInput<'_>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<PublicTrade>> {
+        let sym = symbol.resolve(ExchangeId::Upbit, account_type)?;
+        let mut params = HashMap::new();
+        params.insert("market".to_string(), sym.to_string());
+        if let Some(l) = limit {
+            params.insert("count".to_string(), l.to_string());
+        }
+        let raw = self.get(UpbitEndpoint::RecentTrades, params, account_type).await?;
+        let arr = raw.as_array().ok_or_else(|| {
+            ExchangeError::Parse("get_recent_trades: expected array".into())
+        })?;
+        let symbol_str = sym.to_string();
+        let mut result = Vec::with_capacity(arr.len());
+        for item in arr {
+            let parse_f64 = |key: &str| -> f64 {
+                item.get(key).and_then(|v| v.as_f64()).unwrap_or(0.0)
+            };
+            let ask_bid = item.get("ask_bid").and_then(|v| v.as_str()).unwrap_or("BID");
+            let side = if ask_bid.eq_ignore_ascii_case("ASK") { TradeSide::Sell } else { TradeSide::Buy };
+            let date_str = item.get("trade_date_utc").and_then(|v| v.as_str()).unwrap_or("1970-01-01");
+            let time_str = item.get("trade_time_utc").and_then(|v| v.as_str()).unwrap_or("00:00:00");
+            let dt_str = format!("{} {}", date_str, time_str);
+            let timestamp = {
+                use chrono::{NaiveDateTime, TimeZone, Utc};
+                NaiveDateTime::parse_from_str(&dt_str, "%Y-%m-%d %H:%M:%S")
+                    .ok()
+                    .map(|ndt| Utc.from_utc_datetime(&ndt).timestamp_millis())
+                    .unwrap_or(0)
+            };
+            let seq = item.get("sequential_id").and_then(|v| v.as_i64()).map(|id| id.to_string()).unwrap_or_default();
+            result.push(PublicTrade {
+                id: seq,
+                symbol: symbol_str.clone(),
+                price: parse_f64("trade_price"),
+                quantity: parse_f64("trade_volume"),
+                side,
+                timestamp,
+            });
+        }
+        Ok(result)
     }
 }
 

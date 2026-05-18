@@ -323,6 +323,14 @@ impl<P: WsProtocol> crate::core::traits::WebSocketConnector for UniversalWsTrans
 
     async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let spec = StreamSpec::try_from(request)?;
+        // Eagerly check whether the exchange supports this stream kind.
+        // subscribe_frame returning NotSupported means the exchange genuinely
+        // does not expose this feed publicly — propagate immediately so callers
+        // get a clean error instead of silent_0_events after a timeout.
+        match self.protocol.subscribe_frame(&spec) {
+            Err(e @ WebSocketError::NotSupported(_)) => return Err(e),
+            _ => {}
+        }
         UniversalWsTransport::subscribe(self, spec).await
     }
 

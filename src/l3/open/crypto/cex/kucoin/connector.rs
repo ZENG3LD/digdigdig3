@@ -47,6 +47,7 @@ use crate::core::types::{
     FundsHistoryFilter, FundsRecordType, SubAccountOperation, SubAccountResult,
     SubAccount, ConnectorStats,
     FundingPayment, FundingFilter, LedgerEntry, LedgerFilter,
+    OpenInterest, MarkPrice,
 };
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, OrderbookCapabilities, WsBookChannel};
@@ -1716,7 +1717,43 @@ impl Positions for KuCoinConnector {
         self.check_response(&response)?;
 
         KuCoinParser::parse_funding_rate(&response)
-    
+
+    }
+
+    async fn get_mark_price(
+        &self,
+        symbol: &str,
+    ) -> ExchangeResult<MarkPrice> {
+        // GET /api/v1/mark-price/{symbol}/current (futures domain, no auth)
+        // Response: {code, data: {symbol, granularity, timePoint, value, indexPrice}}
+        let base_url = self.urls.rest_url(AccountType::FuturesCross);
+        let path = KuCoinEndpoint::FuturesMarkPrice
+            .path()
+            .replace("{symbol}", symbol);
+        let url = format!("{}{}", base_url, path);
+
+        let response = self.http.get(&url, &HashMap::new()).await?;
+        self.check_response(&response)?;
+
+        let data = response
+            .get("data")
+            .ok_or_else(|| ExchangeError::Parse("Missing data".to_string()))?;
+
+        let mark_price = data
+            .get("value")
+            .and_then(|v| v.as_f64())
+            .ok_or_else(|| ExchangeError::Parse("Missing value (mark price)".to_string()))?;
+
+        Ok(MarkPrice {
+            symbol: symbol.to_string(),
+            mark_price,
+            index_price: data.get("indexPrice").and_then(|v| v.as_f64()),
+            funding_rate: None,
+            timestamp: data
+                .get("timePoint")
+                .and_then(|t| t.as_i64())
+                .unwrap_or_else(|| crate::core::timestamp_millis() as i64),
+        })
     }
 
     async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
@@ -1895,6 +1932,40 @@ impl Positions for KuCoinConnector {
                 "This position modification is not supported by KuCoin".to_string()
             )),
         }
+    }
+
+    async fn get_open_interest(
+        &self,
+        symbol: &str,
+        account_type: AccountType,
+    ) -> ExchangeResult<OpenInterest> {
+        let parts: Vec<&str> = symbol.split('/').collect();
+        let raw_symbol = if parts.len() == 2 {
+            let sym = crate::core::Symbol::new(parts[0], parts[1]);
+            format_symbol(&sym.base, &sym.quote, account_type)
+        } else {
+            symbol.to_uppercase()
+        };
+
+        let response = self.get_open_interest(&raw_symbol).await?;
+
+        let data = response.get("data")
+            .ok_or_else(|| ExchangeError::Parse("KuCoin OI: missing data".to_string()))?;
+
+        let oi = data.get("openInterest")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+
+        let oi_value = data.get("openInterestValue")
+            .and_then(|v| v.as_f64())
+            .filter(|&v| v != 0.0);
+
+        Ok(OpenInterest {
+            symbol: raw_symbol,
+            open_interest: oi,
+            open_interest_value: oi_value,
+            timestamp: crate::core::timestamp_millis() as i64,
+        })
     }
 }
 

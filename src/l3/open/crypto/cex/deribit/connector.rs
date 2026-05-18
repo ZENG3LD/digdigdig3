@@ -39,12 +39,14 @@ use crate::core::types::{UserTrade, UserTradeFilter};
 use crate::core::types::{
     FundingPayment, FundingFilter,
     LedgerEntry, LedgerEntryType, LedgerFilter,
+    OpenInterest, MarkPrice,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
-    FundingHistory, AccountLedger,
+    FundingHistory, AccountLedger, MarketDataPublic,
 };
 use crate::core::{CancelAll, AmendOrder};
+use crate::core::types::{PublicTrade, TradeSide};
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight, DecayingLimitConfig, OrderbookCapabilities, WsBookChannel};
 use crate::core::utils::PrecisionCache;
@@ -1115,6 +1117,91 @@ impl Positions for DeribitConnector {
         })
     }
 
+    async fn get_mark_price(
+        &self,
+        symbol: &str,
+    ) -> ExchangeResult<MarkPrice> {
+        // GET /api/v2/public/ticker?instrument_name=BTC-PERPETUAL
+        // Response: {result: {mark_price, index_price, funding_8h, ...}}
+        let symbol_parts: Vec<&str> = symbol.split('/').collect();
+        let symbol_obj = if symbol_parts.len() == 2 {
+            crate::core::Symbol::new(symbol_parts[0], symbol_parts[1])
+        } else {
+            crate::core::Symbol {
+                base: symbol.to_string(),
+                quote: String::new(),
+                raw: Some(symbol.to_string()),
+            }
+        };
+
+        let instrument_name = Self::instrument_from_symbol(
+            &symbol_obj,
+            crate::core::AccountType::FuturesCross,
+        )?;
+
+        let mut params = HashMap::new();
+        params.insert("instrument_name".to_string(), json!(instrument_name));
+
+        let response = self.rpc_call(DeribitMethod::Ticker, params).await?;
+
+        let result = response
+            .get("result")
+            .ok_or_else(|| ExchangeError::Parse("Missing result".to_string()))?;
+
+        let mark_price = result
+            .get("mark_price")
+            .and_then(|v| v.as_f64())
+            .ok_or_else(|| ExchangeError::Parse("Missing mark_price".to_string()))?;
+
+        Ok(MarkPrice {
+            symbol: instrument_name,
+            mark_price,
+            index_price: result.get("index_price").and_then(|v| v.as_f64()),
+            funding_rate: result
+                .get("current_funding")
+                .or_else(|| result.get("funding_8h"))
+                .and_then(|v| v.as_f64()),
+            timestamp: crate::core::timestamp_millis() as i64,
+        })
+    }
+
+    async fn get_open_interest(
+        &self,
+        symbol: &str,
+        account_type: AccountType,
+    ) -> ExchangeResult<OpenInterest> {
+        let parts: Vec<&str> = symbol.split('/').collect();
+        let instrument_name = if parts.len() == 2 {
+            let sym = crate::core::Symbol::new(parts[0], parts[1]);
+            Self::instrument_from_symbol(&sym, account_type)?
+        } else {
+            symbol.to_uppercase()
+        };
+
+        let mut params = HashMap::new();
+        params.insert("instrument_name".to_string(), json!(instrument_name));
+
+        let response = self.rpc_call(DeribitMethod::Ticker, params).await?;
+
+        let result = response.get("result")
+            .ok_or_else(|| ExchangeError::Parse("Deribit OI: missing result".to_string()))?;
+
+        let oi = result.get("open_interest")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+
+        let ts = result.get("timestamp")
+            .and_then(|v| v.as_i64())
+            .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
+
+        Ok(OpenInterest {
+            symbol: instrument_name,
+            open_interest: oi,
+            open_interest_value: None,
+            timestamp: ts,
+        })
+    }
+
     async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
         match req {
             PositionModification::ClosePosition { ref symbol, account_type } => {
@@ -1807,6 +1894,53 @@ fn classify_deribit_entry_type(type_str: &str) -> LedgerEntryType {
         "liquidation" => LedgerEntryType::Liquidation,
         "settlement" | "delivery" => LedgerEntryType::Settlement,
         other        => LedgerEntryType::Other(other.to_string()),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MARKET DATA PUBLIC
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl MarketDataPublic for DeribitConnector {
+    /// Recent public trades for an instrument.
+    ///
+    /// `GET /api/v2/public/get_last_trades_by_instrument?instrument_name=X&count=N`
+    /// Response: `{result:{trades:[{trade_id,price,amount,direction,timestamp}]}}`
+    /// direction: "buy"/"sell". timestamp: already ms.
+    async fn get_recent_trades(
+        &self,
+        symbol: SymbolInput<'_>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<PublicTrade>> {
+        let instrument = symbol.resolve(ExchangeId::Deribit, account_type)?;
+        let mut params = HashMap::new();
+        params.insert("instrument_name".to_string(), json!(&*instrument));
+        params.insert("count".to_string(), json!(limit.unwrap_or(100)));
+        let raw = self.rpc_call(DeribitMethod::GetLastTradesByInstrument, params).await?;
+        let trades = raw.get("result")
+            .and_then(|r| r.get("trades"))
+            .and_then(|t| t.as_array())
+            .ok_or_else(|| ExchangeError::Parse("get_recent_trades: expected result.trades array".into()))?;
+        let symbol_str = instrument.to_string();
+        let mut result = Vec::with_capacity(trades.len());
+        for item in trades {
+            let parse_f64 = |key: &str| -> f64 {
+                item.get(key).and_then(|v| v.as_f64()).unwrap_or(0.0)
+            };
+            let direction = item.get("direction").and_then(|v| v.as_str()).unwrap_or("buy");
+            let side = if direction.eq_ignore_ascii_case("sell") { TradeSide::Sell } else { TradeSide::Buy };
+            result.push(PublicTrade {
+                id: item.get("trade_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                symbol: symbol_str.clone(),
+                price: parse_f64("price"),
+                quantity: parse_f64("amount"),
+                side,
+                timestamp: item.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0),
+            });
+        }
+        Ok(result)
     }
 }
 

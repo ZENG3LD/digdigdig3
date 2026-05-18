@@ -213,12 +213,22 @@ pub fn normalize_symbol(symbol: &str) -> String {
     let upper = symbol.to_uppercase();
 
     // Replace / with - if present
-    let normalized = if upper.contains('/') {
+    let with_dash = if upper.contains('/') {
         upper.replace('/', "-")
     } else if upper.contains('-') {
         upper
     } else {
         format!("{}-USD", upper)
+    };
+
+    // dYdX only trades against USD, not USDT/USDC.
+    // Convert known stablecoin quote suffixes → -USD.
+    let normalized = if with_dash.ends_with("-USDT") {
+        format!("{}-USD", &with_dash[..with_dash.len() - 5])
+    } else if with_dash.ends_with("-USDC") {
+        format!("{}-USD", &with_dash[..with_dash.len() - 5])
+    } else {
+        with_dash
     };
 
     normalized

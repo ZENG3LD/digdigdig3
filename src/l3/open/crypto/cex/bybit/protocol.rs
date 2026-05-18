@@ -91,10 +91,11 @@ impl BybitProtocol {
         let sym = spec.symbol.as_str();
 
         let topic = match &spec.kind {
-            StreamKind::Ticker | StreamKind::MarkPrice | StreamKind::FundingRate => {
+            StreamKind::Ticker | StreamKind::MarkPrice | StreamKind::FundingRate
+            | StreamKind::OpenInterest => {
                 format!("tickers.{}", sym)
             }
-            StreamKind::Trade => format!("publicTrade.{}", sym),
+            StreamKind::Trade | StreamKind::AggTrade => format!("publicTrade.{}", sym),
             StreamKind::Orderbook | StreamKind::OrderbookDelta => {
                 let depth = spec.depth.unwrap_or(50);
                 format!("orderbook.{}.{}", depth, sym)
@@ -303,10 +304,12 @@ fn build_registry(account_type: AccountType) -> TopicRegistry {
 
     // Core streams present on all product lines
     b = b
-        .register(StreamKind::Ticker,      account_type, "tickers.*",     parse_ticker)
+        .register(StreamKind::Ticker,       account_type, "tickers.*",     parse_ticker)
         .register(StreamKind::MarkPrice,   account_type, "tickers.*",     parse_mark_price)
         .register(StreamKind::FundingRate, account_type, "tickers.*",     parse_funding_rate)
+        .register(StreamKind::OpenInterest,account_type, "tickers.*",     parse_open_interest)
         .register(StreamKind::Trade,       account_type, "publicTrade.*", parse_trade)
+        .register(StreamKind::AggTrade,    account_type, "publicTrade.*", parse_agg_trade)
         .register(StreamKind::Orderbook,   account_type, "orderbook.1.*",   parse_orderbook)
         .register(StreamKind::Orderbook,   account_type, "orderbook.50.*",  parse_orderbook)
         .register(StreamKind::Orderbook,   account_type, "orderbook.200.*", parse_orderbook)
@@ -407,6 +410,60 @@ fn parse_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent> {
         .map(|ms| ms as i64);
 
     Ok(StreamEvent::FundingRate { symbol, rate, next_funding_time, timestamp: ts })
+}
+
+fn parse_open_interest(raw: &Value) -> WebSocketResult<StreamEvent> {
+    let data = frame_data(raw)?;
+    let ticker_data = unwrap_array_or_self(data);
+
+    let symbol = ticker_data["symbol"].as_str().unwrap_or("").to_string();
+    let ts = raw.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
+
+    let parse_f64_str = |v: &Value| -> Option<f64> {
+        v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
+    };
+
+    let open_interest = ticker_data.get("openInterest")
+        .and_then(parse_f64_str)
+        .ok_or_else(|| WebSocketError::Parse("tickers: openInterest missing".into()))?;
+
+    let open_interest_value = ticker_data.get("openInterestValue").and_then(parse_f64_str);
+
+    Ok(StreamEvent::OpenInterestUpdate { symbol, open_interest, open_interest_value, timestamp: ts })
+}
+
+fn parse_agg_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
+    use crate::core::types::TradeSide;
+
+    let data = frame_data(raw)?;
+    let arr = data.as_array()
+        .ok_or_else(|| WebSocketError::Parse("publicTrade: data not array".into()))?;
+    let item = arr.first()
+        .ok_or_else(|| WebSocketError::Parse("publicTrade: empty data array".into()))?;
+
+    let symbol = item["s"].as_str()
+        .ok_or_else(|| WebSocketError::Parse("publicTrade: missing s".into()))?
+        .to_string();
+    let price = item["p"].as_str()
+        .and_then(|s| s.parse::<f64>().ok())
+        .ok_or_else(|| WebSocketError::Parse("publicTrade: invalid p".into()))?;
+    let quantity = item["v"].as_str()
+        .and_then(|s| s.parse::<f64>().ok())
+        .ok_or_else(|| WebSocketError::Parse("publicTrade: invalid v".into()))?;
+    let timestamp = item["T"].as_i64()
+        .ok_or_else(|| WebSocketError::Parse("publicTrade: invalid T".into()))?;
+    let side = item["S"].as_str()
+        .map(|s| if s == "Buy" { TradeSide::Buy } else { TradeSide::Sell })
+        .unwrap_or(TradeSide::Buy);
+    let aggregate_id = item["i"].as_str()
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(0);
+
+    Ok(StreamEvent::AggTrade {
+        symbol, aggregate_id, price, quantity, side, timestamp,
+        first_trade_id: 0,
+        last_trade_id: 0,
+    })
 }
 
 fn parse_trade(raw: &Value) -> WebSocketResult<StreamEvent> {

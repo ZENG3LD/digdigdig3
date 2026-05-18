@@ -887,6 +887,16 @@ impl Positions for LighterConnector {
             )),
         }
     }
+
+    async fn get_open_interest(
+        &self,
+        _symbol: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<crate::core::types::OpenInterest> {
+        Err(ExchangeError::NotSupported(
+            "Lighter does not expose REST open interest — use WS market_stats/{market_id} channel".to_string(),
+        ))
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

@@ -36,7 +36,7 @@ use crate::core::types::{
     DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord, FundsHistoryFilter, FundsRecordType,
     SubAccountOperation, SubAccountResult,
     Liquidation,
-    OpenInterest, LongShortRatio,
+    OpenInterest, LongShortRatio, MarkPrice,
 };
 use crate::core::types::OcoResponse;
 use crate::core::types::SymbolInfo;
@@ -1489,7 +1489,62 @@ impl Positions for OkxConnector {
 
         let response = self.get(OkxEndpoint::FundingRate, params).await?;
         OkxParser::parse_funding_rate(&response)
-    
+
+    }
+
+    async fn get_mark_price(
+        &self,
+        symbol: &str,
+    ) -> ExchangeResult<MarkPrice> {
+        // GET /api/v5/public/mark-price?instType=SWAP&instId=BTC-USDT-SWAP
+        // Response: {data: [{instId, markPx, ts}]}
+        let response = self.get_mark_price(symbol, "SWAP").await?;
+
+        let arr = response
+            .get("data")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing data array".to_string()))?;
+
+        let data = arr
+            .first()
+            .ok_or_else(|| ExchangeError::Parse("Empty data array".to_string()))?;
+
+        let mark_price = data
+            .get("markPx")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .ok_or_else(|| ExchangeError::Parse("Missing markPx".to_string()))?;
+
+        Ok(MarkPrice {
+            symbol: symbol.to_string(),
+            mark_price,
+            index_price: None,
+            funding_rate: None,
+            timestamp: data
+                .get("ts")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<i64>().ok())
+                .or_else(|| data.get("ts").and_then(|v| v.as_i64()))
+                .unwrap_or_else(|| crate::core::timestamp_millis() as i64),
+        })
+    }
+
+    async fn get_open_interest(
+        &self,
+        symbol: &str,
+        account_type: AccountType,
+    ) -> ExchangeResult<OpenInterest> {
+        let parts: Vec<&str> = symbol.split('/').collect();
+        let inst_id = if parts.len() == 2 {
+            let sym = crate::core::Symbol::new(parts[0], parts[1]);
+            format_symbol(&sym.base, &sym.quote, account_type)
+        } else {
+            symbol.to_uppercase()
+        };
+
+        let mut ois = self.get_open_interest("SWAP", None, Some(&inst_id)).await?;
+        let oi = ois.pop().ok_or_else(|| ExchangeError::Parse("OKX OI: empty response".to_string()))?;
+        Ok(oi)
     }
 
     async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
@@ -1694,6 +1749,24 @@ impl Positions for OkxConnector {
                 "This position modification is not supported by OKX".to_string()
             )),
         }
+    }
+
+    async fn get_long_short_ratio(
+        &self,
+        symbol: &str,
+        _account_type: AccountType,
+    ) -> ExchangeResult<crate::core::types::LongShortRatio> {
+        // OKX long/short ratio uses base currency (ccy), not inst_id.
+        // Extract base from raw symbol: "BTC-USDT" → "BTC", "BTC-USDT-SWAP" → "BTC".
+        let ccy = symbol.split('-').next().unwrap_or(symbol).to_uppercase();
+        let vec = self
+            .get_long_short_ratio(&ccy, Some("5m"), None, None, Some(1))
+            .await?;
+        vec.into_iter().next().ok_or_else(|| {
+            crate::core::types::ExchangeError::NotFound(
+                format!("No long/short ratio data for {ccy}"),
+            )
+        })
     }
 }
 

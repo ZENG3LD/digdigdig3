@@ -44,6 +44,7 @@ use crate::core::types::{
     SubAccount, ConnectorStats,
     FundingPayment, FundingFilter, LedgerEntry, LedgerFilter,
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
+    OpenInterest, MarkPrice,
 };
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight, OrderbookCapabilities, WsBookChannel};
@@ -1464,7 +1465,51 @@ impl Positions for GateioConnector {
         let mut rate = GateioParser::parse_funding_rate(&response)?;
         rate.symbol = symbol.to_string();
         Ok(rate)
-    
+
+    }
+
+    async fn get_mark_price(
+        &self,
+        symbol: &str,
+    ) -> ExchangeResult<MarkPrice> {
+        // GET /api/v4/futures/usdt/tickers?contract=BTC_USDT
+        // Response: [{contract, mark_price, index_price, funding_rate, ...}]
+        let mut params = HashMap::new();
+        params.insert("contract".to_string(), symbol.to_string());
+
+        let response = self
+            .get(GateioEndpoint::FuturesTickers, params, AccountType::FuturesCross)
+            .await?;
+
+        // Response is an array
+        let data = if let Some(arr) = response.as_array() {
+            arr.first()
+                .ok_or_else(|| ExchangeError::Parse("Empty tickers array".to_string()))?
+                .clone()
+        } else {
+            response
+        };
+
+        let mark_price = data
+            .get("mark_price")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .or_else(|| data.get("mark_price").and_then(|v| v.as_f64()))
+            .ok_or_else(|| ExchangeError::Parse("Missing mark_price".to_string()))?;
+
+        Ok(MarkPrice {
+            symbol: symbol.to_string(),
+            mark_price,
+            index_price: data
+                .get("index_price")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok()),
+            funding_rate: data
+                .get("funding_rate")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok()),
+            timestamp: crate::core::timestamp_millis() as i64,
+        })
     }
 
     async fn modify_position(&self, req: PositionModification) -> ExchangeResult<()> {
@@ -1661,6 +1706,50 @@ impl Positions for GateioConnector {
                 "MovePositions not supported on Gate.io".to_string()
             )),
         }
+    }
+
+    async fn get_open_interest(
+        &self,
+        symbol: &str,
+        account_type: AccountType,
+    ) -> ExchangeResult<OpenInterest> {
+        let parts: Vec<&str> = symbol.split('/').collect();
+        let raw_symbol = if parts.len() == 2 {
+            let sym = crate::core::Symbol::new(parts[0], parts[1]);
+            format_symbol(&sym.base, &sym.quote, account_type)
+        } else {
+            symbol.to_uppercase().replace('-', "_")
+        };
+
+        let mut params = HashMap::new();
+        params.insert("contract".to_string(), raw_symbol.clone());
+        params.insert("limit".to_string(), "1".to_string());
+
+        let response = self.get(GateioEndpoint::FuturesOpenInterest, params, account_type).await?;
+
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("GateIO OI: expected array".to_string()))?;
+
+        let item = arr.first()
+            .ok_or_else(|| ExchangeError::Parse("GateIO OI: empty array".to_string()))?;
+
+        let oi = item.get("open_interest")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .or_else(|| item.get("open_interest").and_then(|v| v.as_f64()))
+            .unwrap_or(0.0);
+
+        let ts = item.get("time")
+            .and_then(|v| v.as_i64())
+            .map(|t| t * 1000)
+            .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
+
+        Ok(OpenInterest {
+            symbol: raw_symbol,
+            open_interest: oi,
+            open_interest_value: None,
+            timestamp: ts,
+        })
     }
 }
 

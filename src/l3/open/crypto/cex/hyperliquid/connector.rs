@@ -17,8 +17,10 @@
 //! request body. Only the `/exchange` endpoint requires EIP-712 signing.
 
 use async_trait::async_trait;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::OnceCell;
 
 use crate::core::{
     HttpClient, Credentials, ExchangeResult, ExchangeError,
@@ -89,6 +91,8 @@ pub struct HyperliquidConnector {
     monitor: Arc<Mutex<RateLimitMonitor>>,
     /// Per-symbol precision cache for safe price/qty formatting
     precision: PrecisionCache,
+    /// Lazy universe cache: coin name → asset index (0-based position in /info meta universe)
+    universe_cache: OnceCell<HashMap<String, usize>>,
 }
 
 impl HyperliquidConnector {
@@ -125,6 +129,7 @@ impl HyperliquidConnector {
             limiter,
             monitor,
             precision: PrecisionCache::new(),
+            universe_cache: OnceCell::new(),
         })
     }
 
@@ -273,23 +278,41 @@ impl HyperliquidConnector {
         ).await
     }
 
-    /// Look up the asset index for a coin symbol from metadata.
-    /// Returns 0 if the symbol is not found (BTC is at index 0).
+    /// Populate the universe cache once from `POST /info {"type":"meta"}`.
+    ///
+    /// Subsequent calls return immediately (OnceCell guarantees single init).
+    async fn ensure_universe(&self) -> ExchangeResult<&HashMap<String, usize>> {
+        self.universe_cache.get_or_try_init(|| async {
+            let meta = self.info_request(InfoType::Meta, serde_json::json!({})).await?;
+            let universe = meta.get("universe")
+                .and_then(|u| u.as_array())
+                .ok_or_else(|| ExchangeError::Parse(
+                    "Missing 'universe' array in meta response".to_string(),
+                ))?;
+
+            let map: HashMap<String, usize> = universe
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, item)| {
+                    let name = item.get("name")?.as_str()?.to_uppercase();
+                    Some((name, idx))
+                })
+                .collect();
+
+            Ok(map)
+        }).await
+    }
+
+    /// Look up the asset index for a coin symbol from the cached universe.
+    ///
+    /// Returns `ExchangeError::InvalidRequest` if the coin is not in the universe.
     async fn symbol_to_asset_index(&self, coin: &str) -> ExchangeResult<u32> {
-        let meta = self.get_metadata().await?;
-        let universe = meta.get("universe")
-            .and_then(|u| u.as_array())
-            .ok_or_else(|| ExchangeError::Parse("Missing universe in metadata".to_string()))?;
-
-        for (idx, item) in universe.iter().enumerate() {
-            if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
-                if name.eq_ignore_ascii_case(coin) {
-                    return Ok(idx as u32);
-                }
-            }
-        }
-
-        Err(ExchangeError::Parse(format!("Symbol '{}' not found in Hyperliquid metadata", coin)))
+        let map = self.ensure_universe().await?;
+        map.get(&coin.to_uppercase())
+            .map(|&idx| idx as u32)
+            .ok_or_else(|| ExchangeError::InvalidRequest(
+                format!("Unknown HyperLiquid coin: {}", coin),
+            ))
     }
 }
 
@@ -625,12 +648,56 @@ impl MarketData for HyperliquidConnector {
 
     async fn get_ticker(
         &self,
-        _symbol: SymbolInput<'_>,
-        _account_type: AccountType,
+        symbol: SymbolInput<'_>,
+        account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        Err(ExchangeError::NotSupported(
-            "get_ticker requires symbol-to-index mapping. Use get_all_mids() instead.".to_string()
-        ))
+        // Raw("BTC") → "BTC"; Canonical({base:"BTC",...}) → exchange-native via normalizer
+        let resolved = symbol.resolve(ExchangeId::HyperLiquid, account_type)
+            .map_err(|e| ExchangeError::InvalidRequest(e.to_string()))?;
+        let coin = resolved.to_uppercase();
+
+        // Resolve coin → asset index (uses lazy cache)
+        let asset_index = self.symbol_to_asset_index(&coin).await? as usize;
+
+        // metaAndAssetCtxs returns [meta_obj, [ctx0, ctx1, ...]]
+        let raw = self.info_request(InfoType::MetaAndAssetCtxs, serde_json::json!({})).await?;
+
+        let arr = raw.as_array()
+            .ok_or_else(|| ExchangeError::Parse(
+                "metaAndAssetCtxs: expected top-level array".to_string(),
+            ))?;
+
+        if arr.len() < 2 {
+            return Err(ExchangeError::Parse(
+                "metaAndAssetCtxs: response has fewer than 2 elements".to_string(),
+            ));
+        }
+
+        let ctxs = arr[1].as_array()
+            .ok_or_else(|| ExchangeError::Parse(
+                "metaAndAssetCtxs: element[1] is not an array".to_string(),
+            ))?;
+
+        let mut ticker = HyperliquidParser::parse_ticker(&arr[1], asset_index)?;
+        ticker.symbol = coin.clone();
+
+        // If markPx was 0, fall back to allMids for the last price
+        if ticker.last_price == 0.0 {
+            let mids = self.info_request(InfoType::AllMids, serde_json::json!({})).await?;
+            if let Some(mid) = mids.get(&coin).and_then(|v| v.as_str()).and_then(|s| s.parse().ok()) {
+                ticker.last_price = mid;
+            }
+        }
+
+        // Enrich with volume from ctx if parse_ticker didn't populate it
+        if ticker.volume_24h.is_none() && asset_index < ctxs.len() {
+            ticker.volume_24h = ctxs[asset_index]
+                .get("dayNtlVlm")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok());
+        }
+
+        Ok(ticker)
     }
 
     async fn ping(&self) -> ExchangeResult<()> {
@@ -657,8 +724,7 @@ impl MarketData for HyperliquidConnector {
         MarketDataCapabilities {
             has_ping: true,
             has_price: true,
-            // get_ticker returns NotSupported — HL has no 24h stats endpoint per symbol
-            has_ticker: false,
+            has_ticker: true,
             has_orderbook: true,
             has_klines: true,
             has_exchange_info: true,

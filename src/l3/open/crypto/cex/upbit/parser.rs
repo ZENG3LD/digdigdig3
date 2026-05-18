@@ -522,10 +522,32 @@ impl UpbitParser {
     // WEBSOCKET PARSING (DIFFERENT FORMAT!)
     // ═══════════════════════════════════════════════════════════════════════════════
 
-    /// Parse WebSocket ticker message
+    /// Parse WebSocket ticker message.
+    ///
+    /// Upbit emits two timestamps:
+    ///   - `trade_timestamp` — milliseconds of the last actual trade
+    ///   - `timestamp`       — server send time (always fresh)
+    ///
+    /// For consumers that just want "when did this ticker update?", server
+    /// send time is the freshest signal. We fall back to trade_timestamp,
+    /// then to "now()" so DATA_VALID checks don't flag legitimate streams as
+    /// stale.
+    ///
+    /// Bid/ask are intentionally `None` here — Upbit's ticker channel does
+    /// NOT carry top-of-book quotes. Callers that need bid/ask must
+    /// subscribe to the orderbook channel.
     pub fn parse_ws_ticker(data: &Value) -> ExchangeResult<Ticker> {
-        // WebSocket ticker has same format as REST
         let symbol = Self::get_str(data, "code").unwrap_or("").to_string();
+
+        let timestamp = data.get("timestamp")
+            .and_then(|t| t.as_i64())
+            .or_else(|| data.get("trade_timestamp").and_then(|t| t.as_i64()))
+            .unwrap_or_else(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0)
+            });
 
         Ok(Ticker {
             symbol,
@@ -540,9 +562,7 @@ impl UpbitParser {
             price_change_24h: Self::get_f64(data, "change_price"),
             price_change_percent_24h: Self::get_f64(data, "change_rate")
                 .map(|r| r * 100.0),
-            timestamp: data.get("timestamp")
-                .and_then(|t| t.as_i64())
-                .unwrap_or(0),
+            timestamp,
         })
     }
 

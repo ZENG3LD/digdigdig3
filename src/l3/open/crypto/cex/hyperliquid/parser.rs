@@ -199,18 +199,25 @@ impl HyperliquidParser {
         Ok(klines)
     }
 
-    /// Parse ticker from metaAndAssetCtxs response
+    /// Parse ticker from a metaAndAssetCtxs context array.
+    ///
+    /// Caller passes the **inner ctx array** (element `[1]` of the
+    /// `metaAndAssetCtxs` response) — each item is already a ctx object
+    /// with fields `markPx`, `prevDayPx`, `dayNtlVlm`, etc. There is no
+    /// outer `{ctx: …}` wrapper.
     pub fn parse_ticker(response: &Value, index: usize) -> ExchangeResult<Ticker> {
         let assets = response.as_array()
-            .ok_or_else(|| ExchangeError::Parse("Expected array of assets".to_string()))?;
+            .ok_or_else(|| ExchangeError::Parse("Expected array of ctx objects".to_string()))?;
 
         if index >= assets.len() {
             return Err(ExchangeError::Parse(format!("Asset index {} out of bounds", index)));
         }
 
-        let asset = &assets[index];
-        let ctx = asset.get("ctx")
-            .ok_or_else(|| ExchangeError::Parse("Missing 'ctx' field".to_string()))?;
+        // The ctx array can either be a flat list of ctx objects (canonical
+        // metaAndAssetCtxs format) or a list of {ctx: …} wrappers (older
+        // assumption). Support both by unwrapping `.ctx` when present.
+        let ctx_owner = &assets[index];
+        let ctx: &Value = ctx_owner.get("ctx").unwrap_or(ctx_owner);
 
         // Calculate 24h change from prevDayPx and markPx
         let prev_day_px = Self::get_f64(ctx, "prevDayPx");

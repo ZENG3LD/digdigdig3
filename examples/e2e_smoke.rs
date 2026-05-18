@@ -306,8 +306,15 @@ fn raw_symbol_for(id: ExchangeId) -> (Symbol, String, AccountType) {
         ExchangeId::Deribit => make(btc_usd, AccountType::FuturesCross),
         // HyperLiquid perps: just "BTC" (FuturesCross)
         ExchangeId::HyperLiquid => make(btc_usd, AccountType::FuturesCross),
-        // Upbit: USDT-BTC (quote-base, reversed format)
-        ExchangeId::Upbit => make(btc_usdt, AccountType::Spot),
+        // Upbit: KRW-BTC (quote-base reversed). KRW pairs are the most liquid
+        // on Upbit; USDT pairs are thinly traded and produce stale tickers.
+        ExchangeId::Upbit => {
+            let btc_krw = Symbol::new("BTC", "KRW");
+            let raw = SymbolNormalizer::to_exchange(id, &btc_krw, AccountType::Spot)
+                .unwrap_or_else(|_| "KRW-BTC".to_string());
+            let sym_with_raw = Symbol::with_raw("BTC", "KRW", raw.clone());
+            (sym_with_raw, raw, AccountType::Spot)
+        }
         // Bitfinex: tBTCUSD (t-prefix, no separator)
         ExchangeId::Bitfinex => make(btc_usd, AccountType::Spot),
         // Gemini: btcusd (lowercase, no separator, USD not USDT)

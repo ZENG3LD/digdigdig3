@@ -226,41 +226,25 @@ impl ExchangeIdentity for KrxConnector {
 impl MarketData for KrxConnector {
     /// Get current price
     ///
-    /// Note: KRX data is delayed by 1 business day
-    async fn get_price(&self, symbol: SymbolInput<'_>, _account_type: AccountType) -> ExchangeResult<Price> {
-        // Get latest OHLCV to extract current price
-        let klines = self.get_klines(symbol, "1d", Some(1), AccountType::Spot, None).await?;
-
-        if let Some(latest) = klines.first() {
-            Ok(latest.close)
-        } else {
-            Err(ExchangeError::NotFound("No price data available".to_string()))
-        }
+    /// Note: KRX Open API response format is currently unknown — `parse_klines`
+    /// in parser.rs is a stub that may return garbage. Until the live format
+    /// is confirmed, we fail loudly rather than serve placeholder data.
+    async fn get_price(&self, _symbol: SymbolInput<'_>, _account_type: AccountType) -> ExchangeResult<Price> {
+        Err(ExchangeError::UnsupportedOperation(
+            "KRX parser is a stub — Open API response format unknown, get_price disabled. \
+             See src/l1/free/krx/parser.rs TODO."
+                .to_string(),
+        ))
     }
 
     /// Get ticker (24h stats)
-    async fn get_ticker(&self, symbol: SymbolInput<'_>, _account_type: AccountType) -> ExchangeResult<Ticker> {
-        // Get latest OHLCV to construct ticker
-        let sym_str: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
-        let klines = self.get_klines(SymbolInput::Raw(&sym_str), "1d", Some(1), AccountType::Spot, None).await?;
-
-        if let Some(latest) = klines.first() {
-            Ok(Ticker {
-                symbol: sym_str.clone(),
-                last_price: latest.close,
-                bid_price: None,
-                ask_price: None,
-                high_24h: Some(latest.high),
-                low_24h: Some(latest.low),
-                volume_24h: Some(latest.volume),
-                quote_volume_24h: latest.quote_volume,
-                price_change_24h: None,
-                price_change_percent_24h: None,
-                timestamp: latest.open_time,
-            })
-        } else {
-            Err(ExchangeError::NotFound("No ticker data available".to_string()))
-        }
+    ///
+    /// Disabled along with `get_price` / `get_klines` — see note above.
+    async fn get_ticker(&self, _symbol: SymbolInput<'_>, _account_type: AccountType) -> ExchangeResult<Ticker> {
+        Err(ExchangeError::UnsupportedOperation(
+            "KRX parser is a stub — Open API response format unknown, get_ticker disabled."
+                .to_string(),
+        ))
     }
 
     /// Get orderbook
@@ -283,24 +267,35 @@ impl MarketData for KrxConnector {
     /// For date ranges, we must loop over each date.
     async fn get_klines(
         &self,
-        symbol: SymbolInput<'_>,
-        interval: &str,
-        limit: Option<u16>,
+        _symbol: SymbolInput<'_>,
+        _interval: &str,
+        _limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        let sym_str: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
+        return Err(ExchangeError::UnsupportedOperation(
+            "KRX parser is a stub — Open API response format unknown, \
+             get_klines disabled. See src/l1/free/krx/parser.rs TODO."
+                .to_string(),
+        ));
+
+        // Old stub implementation kept below behind an unreachable return for
+        // reference — restore once the live KRX Open API response format is
+        // captured and `parse_klines` actually works.
+        #[allow(unreachable_code)]
+        {
+        let sym_str: String = match _symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let symbol = sym_str.as_str();
 
         // KRX only provides daily data
-        if interval != "1d" && interval != "1day" {
+        if _interval != "1d" && _interval != "1day" {
             return Err(ExchangeError::InvalidRequest(
                 "KRX only provides daily (1d) candles".to_string(),
             ));
         }
 
         // Calculate date range
-        let limit = limit.unwrap_or(30) as i64;
+        let limit = _limit.unwrap_or(30) as i64;
 
         use chrono::{Duration, Local, Datelike};
         let end = Local::now();
@@ -346,6 +341,7 @@ impl MarketData for KrxConnector {
         all_klines.sort_by_key(|k| k.open_time);
 
         Ok(all_klines)
+        } // end #[allow(unreachable_code)] block
     }
 
     /// Ping the API

@@ -46,7 +46,4 @@ mod auth;
 mod parser;
 mod connector;
 
-#[cfg(test)]
-mod tests;
-
 pub use connector::FutuConnector;

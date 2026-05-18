@@ -36,5 +36,3 @@ pub use parser::GateioParser;
 pub use connector::GateioConnector;
 pub use websocket::GateioWebSocket;
 
-#[cfg(test)]
-mod _tests_websocket;

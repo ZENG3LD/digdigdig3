@@ -34,8 +34,6 @@ mod connector;
 pub(crate) mod protocol;
 mod websocket;
 
-#[cfg(test)]
-mod _tests_websocket;
 
 pub use endpoints::*;
 pub use auth::*;

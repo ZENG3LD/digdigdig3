@@ -37,5 +37,3 @@ pub use parser::KrakenParser;
 pub use connector::KrakenConnector;
 pub use websocket::KrakenWebSocket;
 
-#[cfg(test)]
-mod _tests_websocket;

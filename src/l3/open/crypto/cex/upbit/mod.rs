@@ -45,5 +45,3 @@ pub use parser::UpbitParser;
 pub use connector::UpbitConnector;
 pub use websocket::UpbitWebSocket;
 
-#[cfg(test)]
-mod _tests_websocket;

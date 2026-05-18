@@ -41,5 +41,3 @@ pub use parser::BitfinexParser;
 pub use connector::BitfinexConnector;
 pub use websocket::BitfinexWebSocket;
 
-#[cfg(test)]
-mod _tests_websocket;

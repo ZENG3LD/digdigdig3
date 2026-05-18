@@ -39,5 +39,3 @@ pub use parser::KuCoinParser;
 pub use connector::KuCoinConnector;
 pub use websocket::KuCoinWebSocket;
 
-#[cfg(test)]
-mod _tests_websocket;

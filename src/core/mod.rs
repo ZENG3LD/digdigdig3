@@ -70,6 +70,7 @@ pub mod http;
 pub mod websocket;
 pub mod chain;
 pub mod macros;
+pub mod storage;
 
 #[cfg(feature = "grpc")]
 pub mod grpc;

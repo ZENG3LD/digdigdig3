@@ -45,6 +45,8 @@ pub mod l3;
 pub mod connector_manager;
 pub mod testing;
 
+pub use core::storage::{EventLog, EventLogIter, EventRecord};
+
 // Re-exports для удобства
 pub use core::{
     // Traits

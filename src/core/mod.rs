@@ -75,6 +75,7 @@ pub mod storage;
 pub mod orderbook;
 pub mod rest_cache;
 pub mod replay;
+pub mod cure;
 
 #[cfg(feature = "grpc")]
 pub mod grpc;

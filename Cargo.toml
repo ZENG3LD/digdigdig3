@@ -118,3 +118,7 @@ toml = "0.8"
 [[bin]]
 name = "dig3-catcher"
 path = "src/bin/dig3_catcher.rs"
+
+[[bin]]
+name = "dig3-cure"
+path = "src/bin/dig3_cure.rs"

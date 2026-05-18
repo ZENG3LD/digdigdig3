@@ -49,6 +49,12 @@ pub use core::storage::{EventLog, EventLogIter, EventRecord, StorageManager, Sto
 pub use core::replay::{ReplayHub, ReplayConfig, ReplayRate};
 pub use core::orderbook::{OrderBookTracker, OrderBookError};
 pub use core::rest_cache::RestCache;
+pub use core::cure::{
+    IntegrityChecker, IntegrityReport,
+    Deduper,
+    GapDetector, GapInfo,
+    RepairPipeline, RepairReport,
+};
 
 // Re-exports для удобства
 pub use core::{

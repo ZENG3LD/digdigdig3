@@ -240,13 +240,25 @@ impl TwelvedataEndpoint {
 /// format_symbol(&Symbol::new("EUR", "USD")) => "EUR/USD"
 /// ```
 pub fn format_symbol(symbol: &Symbol) -> String {
-    // For stocks, typically only base is used (ticker symbol)
-    if symbol.quote.is_empty() || symbol.quote == "USD" {
-        // Stock ticker - just base
-        symbol.base.to_uppercase()
-    } else {
-        // Forex/Crypto - use BASE/QUOTE format
+    // Twelvedata symbol forms by asset class:
+    //   stock   → "AAPL"           (ticker only, 1-5 letter ticker)
+    //   forex   → "EUR/USD"        (BASE/QUOTE; both 3-letter ISO codes)
+    //   crypto  → "BTC/USD"        (BASE/QUOTE; BASE 3-4 letters)
+    //
+    // The previous implementation treated `quote == "USD"` as stock and dropped
+    // the quote — that broke forex/crypto (`EUR/USD` → `"EUR"`). Disambiguate
+    // by base length: 3 letters → forex/crypto, longer → stock ticker.
+    if symbol.quote.is_empty() {
+        return symbol.base.to_uppercase();
+    }
+
+    if symbol.base.len() == 3 {
+        // Both 3-letter forex codes and 3-letter crypto tickers (BTC, ETH).
+        // Twelvedata accepts BASE/QUOTE for both.
         format!("{}/{}", symbol.base, symbol.quote)
+    } else {
+        // 4+ letter base = stock ticker (AAPL, MSFT, GOOGL).
+        symbol.base.to_uppercase()
     }
 }
 

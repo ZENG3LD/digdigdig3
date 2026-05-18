@@ -296,20 +296,25 @@ impl IBEndpoint {
 /// This function is for display/logging purposes only.
 /// Actual trading requires resolving symbol to conid via contract search.
 pub fn _format_symbol(symbol: &Symbol) -> String {
-    // For stocks: just the base (ticker)
-    // For forex: base/quote format
-    // This is mainly for display - actual API uses conid
-    if symbol.quote == "USD" || symbol.quote == "EUR" || symbol.quote == "GBP" {
-        // Likely a stock or forex pair
-        if symbol.base.len() <= 5 {
-            // Stock ticker
-            symbol.base.to_uppercase()
-        } else {
-            // Forex pair
-            format!("{}.{}", symbol.base, symbol.quote)
-        }
+    // IB doesn't trade by symbol — it uses Contract IDs. This formatter is for
+    // display/logging only. Output conventions:
+    //   stock   → "AAPL"            (4+ letter ticker; quote dropped)
+    //   forex   → "EUR.USD"         (3-letter base + ISO quote; dot separator)
+    //   crypto  → "BTC/USDT"        (BASE/QUOTE, slash separator)
+    //
+    // The previous heuristic was reversed: it returned the ticker for any
+    // base of len <= 5, which dropped the quote on 3-letter forex pairs like
+    // EUR/USD → "EUR".
+    let fiat = matches!(symbol.quote.as_str(), "USD" | "EUR" | "GBP" | "JPY" | "CHF" | "CAD" | "AUD" | "NZD");
+
+    if symbol.base.len() == 3 && fiat {
+        // Forex pair (3-letter ISO base × ISO fiat quote) → dot form.
+        format!("{}.{}", symbol.base, symbol.quote)
+    } else if fiat {
+        // Stock ticker quoted in fiat → drop the quote.
+        symbol.base.to_uppercase()
     } else {
-        // Generic format
+        // Crypto / other → slash form.
         format!("{}/{}", symbol.base, symbol.quote)
     }
 }

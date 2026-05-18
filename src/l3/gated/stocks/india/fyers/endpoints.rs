@@ -211,18 +211,36 @@ impl FyersEndpoint {
 /// - Default exchange: NSE
 /// - Default series: EQ (equity)
 pub fn format_symbol(base: &str, quote: &str, _account_type: AccountType) -> String {
-    let exchange = if quote.is_empty() {
-        "NSE"
-    } else {
-        quote
-    };
+    let exchange = if quote.is_empty() { "NSE" } else { quote };
 
-    // If symbol already contains series (e.g., "SBIN-EQ"), use as-is
+    // Symbol already carries its series (e.g., "SBIN-EQ") — use as-is.
     if base.contains('-') {
-        format!("{}:{}", exchange, base)
+        return format!("{}:{}", exchange, base);
+    }
+
+    // Detect Fyers F&O / currency symbols by suffix:
+    //   - "…FUT"            → futures (NIFTY24JANFUT, USDINR24JANFUT)
+    //   - "…<digit>CE"/"PE" → options (NIFTY24500CE, BANKNIFTY2411921500PE)
+    //
+    // Plain CE/PE suffix without preceding digits is NOT an option — equity
+    // tickers like "RELIANCE" or "ACE" naturally end on those letters and
+    // still need the -EQ series tag.
+    let up = base.to_uppercase();
+    let ends_with_option = (up.ends_with("CE") || up.ends_with("PE"))
+        && up
+            .as_bytes()
+            .iter()
+            .rev()
+            .nth(2) // char immediately before the CE/PE suffix
+            .map(|b| b.is_ascii_digit())
+            .unwrap_or(false);
+    let is_fno = up.ends_with("FUT") || ends_with_option;
+
+    if is_fno {
+        format!("{}:{}", exchange, up)
     } else {
-        // Default to equity series
-        format!("{}:{}-EQ", exchange, base.to_uppercase())
+        // Plain cash-market equity → append -EQ series.
+        format!("{}:{}-EQ", exchange, up)
     }
 }
 

@@ -480,10 +480,14 @@ mod tests {
 
     #[test]
     fn test_parse_order_type() {
+        // Fyers API order types (matches doc-comment on parse_order_type):
+        //   1 = Limit, 2 = Market, 3 = SL (Stop-Limit), 4 = SL-M (Stop-Market).
+        // The previous test had 3 and 4 swapped, contradicting both the
+        // implementation and the Fyers docs.
         assert!(matches!(FyersParser::parse_order_type(1), OrderType::Limit { .. }));
         assert!(matches!(FyersParser::parse_order_type(2), OrderType::Market));
-        assert!(matches!(FyersParser::parse_order_type(3), OrderType::StopMarket { .. }));
-        assert!(matches!(FyersParser::parse_order_type(4), OrderType::StopLimit { .. }));
+        assert!(matches!(FyersParser::parse_order_type(3), OrderType::StopLimit { .. }));
+        assert!(matches!(FyersParser::parse_order_type(4), OrderType::StopMarket { .. }));
     }
 
     #[test]

@@ -15,6 +15,17 @@ pub struct ReconnectConfig {
     pub connection_timeout_ms: u64,
     /// Delay after auth failure before retry (longer than normal backoff).
     pub auth_failure_delay_ms: u64,
+    /// Silent-stream threshold = ping_interval × silent_multiplier.
+    /// Watchdog fires a forced reconnect when no frames arrive for this duration.
+    /// Default 2. Lower for chatty streams (1), raise for deliberately quiet feeds (5).
+    pub silent_multiplier: u32,
+    /// Broadcast queue depth that triggers a lag warning.
+    /// If `event_tx.len() > lag_threshold`, `tracing::warn!` fires on target `dig3::ws::lag`.
+    /// Default 512 (half of the 4096 broadcast capacity).
+    pub lag_threshold: usize,
+    /// How often (ms) the lag-check task polls `event_tx.len()`.
+    /// Default 5000 (5 s).
+    pub lag_check_interval_ms: u64,
 }
 
 impl Default for ReconnectConfig {
@@ -27,6 +38,9 @@ impl Default for ReconnectConfig {
             jitter_factor: 0.2,
             connection_timeout_ms: 10_000,
             auth_failure_delay_ms: 5_000,
+            silent_multiplier: 2,
+            lag_threshold: 512,
+            lag_check_interval_ms: 5_000,
         }
     }
 }

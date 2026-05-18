@@ -22,6 +22,7 @@ use tokio::time::interval;
 use tracing::{error, info, warn};
 
 use digdigdig3::connector_manager::ExchangeHub;
+use digdigdig3::core::storage::{EventLog, EventRecord};
 use digdigdig3::core::types::{
     AccountType, ExchangeId, StreamType, SubscriptionRequest, Symbol,
 };
@@ -163,10 +164,18 @@ impl CatcherState {
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
+#[derive(Debug, Deserialize, Default)]
+struct StorageConfig {
+    enabled: bool,
+    root: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct Config {
     #[serde(rename = "target")]
     targets: Vec<TargetConfig>,
+    #[serde(default)]
+    storage: StorageConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -210,7 +219,7 @@ fn default_config() -> Config {
             streams: vec!["Trade".into(), "Ticker".into()],
         },
     ];
-    Config { targets }
+    Config { targets, storage: StorageConfig::default() }
 }
 
 fn parse_exchange(s: &str) -> Option<ExchangeId> {
@@ -254,6 +263,8 @@ struct Args {
     port: u16,
     duration: Option<u64>,
     report_every: u64,
+    /// Optional path to storage root dir (overrides `[storage]` in config).
+    storage_dir: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -262,6 +273,7 @@ fn parse_args() -> Args {
     let mut port = 18250u16;
     let mut duration = None;
     let mut report_every = 60u64;
+    let mut storage_dir = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -282,6 +294,10 @@ fn parse_args() -> Args {
                 report_every = args[i + 1].parse().unwrap_or(60);
                 i += 2;
             }
+            "--storage-dir" if i + 1 < args.len() => {
+                storage_dir = Some(args[i + 1].clone());
+                i += 2;
+            }
             _ => {
                 i += 1;
             }
@@ -293,6 +309,7 @@ fn parse_args() -> Args {
         port,
         duration,
         report_every,
+        storage_dir,
     }
 }
 
@@ -468,6 +485,23 @@ async fn print_report(state: &CatcherState) {
 
 // ── Subscriber loop ───────────────────────────────────────────────────────────
 
+/// Returns the stream_kind string used as the filename stem in EventLog.
+fn stream_kind_str(stream: &StreamType) -> String {
+    match stream {
+        StreamType::Ticker => "ticker".into(),
+        StreamType::Trade => "trade".into(),
+        StreamType::Orderbook => "orderbook".into(),
+        StreamType::OrderbookDelta => "orderbook_delta".into(),
+        StreamType::Kline { interval } => format!("kline_{interval}"),
+        StreamType::MarkPrice => "mark_price".into(),
+        StreamType::FundingRate => "funding_rate".into(),
+        StreamType::Liquidation => "liquidation".into(),
+        StreamType::OpenInterest => "open_interest".into(),
+        StreamType::AggTrade => "agg_trade".into(),
+        other => format!("{other:?}").to_lowercase(),
+    }
+}
+
 async fn run_subscriber_loop(
     hub: Arc<ExchangeHub>,
     exchange: ExchangeId,
@@ -475,7 +509,10 @@ async fn run_subscriber_loop(
     stream: StreamType,
     symbol: String,
     stats: Arc<RwLock<JobStats>>,
+    event_log: Option<Arc<EventLog>>,
 ) {
+    let kind_str = stream_kind_str(&stream);
+
     // Exponential backoff caps at 30s
     let mut backoff = Duration::from_secs(1);
 
@@ -533,8 +570,35 @@ async fn run_subscriber_loop(
         let mut event_rx = ws.event_stream();
         loop {
             match event_rx.next().await {
-                Some(Ok(_event)) => {
+                Some(Ok(event)) => {
                     stats.write().await.record_event();
+
+                    // Persist to EventLog if enabled — failure is non-fatal
+                    if let Some(log) = &event_log {
+                        let ts_ms = chrono::Utc::now().timestamp_millis();
+                        match serde_json::to_vec(&event) {
+                            Ok(payload) => {
+                                let record = EventRecord {
+                                    ts_ms,
+                                    payload: &payload,
+                                };
+                                if let Err(e) = log.append(&symbol, &kind_str, &record) {
+                                    warn!(
+                                        exchange = exchange.as_str(),
+                                        symbol = %symbol,
+                                        kind = %kind_str,
+                                        "storage write failed: {e}"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    exchange = exchange.as_str(),
+                                    "event serialize failed: {e}"
+                                );
+                            }
+                        }
+                    }
                 }
                 Some(Err(e)) => {
                     let msg = format!("recv: {e}");
@@ -587,6 +651,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hub = Arc::new(ExchangeHub::new());
     let state = Arc::new(CatcherState::new());
 
+    // Resolve storage root: CLI flag wins over config file.
+    let storage_root: Option<String> = args.storage_dir.clone().or_else(|| {
+        if config.storage.enabled {
+            config.storage.root.clone()
+        } else {
+            None
+        }
+    });
+
+    let event_log: Option<Arc<EventLog>> = match storage_root {
+        Some(ref root) => match EventLog::new(root) {
+            Ok(log) => {
+                eprintln!("[catcher] storage enabled: {root}");
+                Some(Arc::new(log))
+            }
+            Err(e) => {
+                eprintln!("[catcher] storage init failed ({root}): {e} — continuing without storage");
+                None
+            }
+        },
+        None => None,
+    };
+
     // Spawn HTTP health server
     {
         let state = state.clone();
@@ -636,8 +723,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let hub = hub.clone();
             let symbol = target.symbol.clone();
+            let log_clone = event_log.clone();
             let handle = tokio::spawn(async move {
-                run_subscriber_loop(hub, exchange, account, stream, symbol, job_stats).await;
+                run_subscriber_loop(hub, exchange, account, stream, symbol, job_stats, log_clone).await;
             });
             handles.push(handle);
         }

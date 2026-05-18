@@ -16,12 +16,12 @@ use std::sync::{
     atomic::{AtomicU8, Ordering},
     Arc,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use futures_util::{SinkExt, Stream, StreamExt};
 use serde_json::Value;
-use tokio::sync::{broadcast, mpsc, RwLock as TokioRwLock};
+use tokio::sync::{broadcast, mpsc, Mutex as TokioMutex, RwLock as TokioRwLock};
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, trace, warn};
@@ -152,6 +152,7 @@ impl<P: WsProtocol> UniversalWsTransport<P> {
         };
 
         // Spawn driver task — it holds cmd_rx and owns the WS connection loop.
+        let last_frame_at = Arc::new(TokioMutex::new(Instant::now()));
         let driver = DriverTask {
             protocol: Arc::clone(&transport.protocol),
             account_type,
@@ -163,8 +164,39 @@ impl<P: WsProtocol> UniversalWsTransport<P> {
             event_tx: transport.event_tx.clone(),
             cmd_rx,
             http: reqwest::Client::new(),
+            last_frame_at,
         };
         tokio::spawn(driver.run());
+
+        // ── Lag-check task ─────────────────────────────────────────────────
+        // Periodically inspects the broadcast queue depth.  If depth exceeds
+        // `lag_threshold`, emits a tracing::warn so monitoring can alert before
+        // consumers start receiving RecvError::Lagged.
+        {
+            let lag_tx = transport.event_tx.clone();
+            let lag_threshold = transport.reconnect_cfg.lag_threshold;
+            let lag_interval =
+                Duration::from_millis(transport.reconnect_cfg.lag_check_interval_ms);
+            let protocol_name = transport.protocol.name().to_owned();
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(lag_interval);
+                loop {
+                    tick.tick().await;
+                    let queue_depth = lag_tx.len();
+                    let receiver_count = lag_tx.receiver_count();
+                    if queue_depth > lag_threshold {
+                        tracing::warn!(
+                            target: "dig3::ws::lag",
+                            exchange = %protocol_name,
+                            queue_depth,
+                            threshold = lag_threshold,
+                            receiver_count,
+                            "broadcast queue lagging — consumers may drop events"
+                        );
+                    }
+                }
+            });
+        }
 
         transport
     }
@@ -326,6 +358,8 @@ struct DriverTask<P: WsProtocol> {
     event_tx: broadcast::Sender<WebSocketResult<StreamEvent>>,
     cmd_rx: mpsc::UnboundedReceiver<TransportCmd>,
     http: reqwest::Client,
+    /// Shared timestamp of the last received frame — updated on every incoming frame.
+    last_frame_at: Arc<TokioMutex<Instant>>,
 }
 
 impl<P: WsProtocol> DriverTask<P> {
@@ -451,7 +485,39 @@ impl<P: WsProtocol> DriverTask<P> {
             self.state
                 .store(TransportState::Connected as u8, Ordering::Release);
             backoff.reset();
+            // Reset silence clock so we measure from connection time, not task start.
+            *self.last_frame_at.lock().await = Instant::now();
             debug!(target: "dig3::ws::connect", exchange, "connected");
+
+            // ── Silent-stream watchdog ─────────────────────────────────────
+            // Fires if no frames arrive for ping_interval × silent_multiplier.
+            let (silent_tx, mut silent_rx) = mpsc::channel::<()>(1);
+            {
+                let last_frame_at = Arc::clone(&self.last_frame_at);
+                let ping_interval_dur = self.protocol.ping_interval();
+                let multiplier = self.reconnect_cfg.silent_multiplier;
+                let silent_threshold = ping_interval_dur * multiplier;
+                let check_interval = ping_interval_dur / 2;
+                tokio::spawn(async move {
+                    let mut ticker = tokio::time::interval(check_interval);
+                    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                    loop {
+                        ticker.tick().await;
+                        let elapsed = last_frame_at.lock().await.elapsed();
+                        if elapsed > silent_threshold {
+                            warn!(
+                                target: "dig3::ws::silent",
+                                elapsed_secs = elapsed.as_secs(),
+                                threshold_secs = silent_threshold.as_secs(),
+                                "no frames received — forcing reconnect"
+                            );
+                            // Best-effort send; if transport is gone the channel is closed.
+                            let _ = silent_tx.send(()).await;
+                            break;
+                        }
+                    }
+                });
+            }
 
             // ── Message loop ───────────────────────────────────────────────
             let mut ping_interval =
@@ -464,6 +530,8 @@ impl<P: WsProtocol> DriverTask<P> {
                     frame = read_half.next() => {
                         match frame {
                             Some(Ok(msg)) => {
+                                // Update silence clock on every received frame.
+                                *self.last_frame_at.lock().await = Instant::now();
                                 match self.dispatch_message(msg, exchange).await {
                                     Ok(true) => {} // normal
                                     Ok(false) => break LoopExit::Shutdown, // shutdown cmd via pong
@@ -482,6 +550,11 @@ impl<P: WsProtocol> DriverTask<P> {
                                 break LoopExit::Closed;
                             }
                         }
+                    }
+
+                    // Silent-stream watchdog fired
+                    _ = silent_rx.recv() => {
+                        break LoopExit::Silent;
                     }
 
                     // Command from user
@@ -547,7 +620,7 @@ impl<P: WsProtocol> DriverTask<P> {
                         .store(TransportState::Disconnected as u8, Ordering::Release);
                     return;
                 }
-                LoopExit::Closed | LoopExit::Error => {
+                LoopExit::Closed | LoopExit::Error | LoopExit::Silent => {
                     // Will reconnect
                     if backoff.max_attempts() > 0 && backoff.attempt >= backoff.max_attempts() {
                         warn!(target: "dig3::ws::connect", exchange, "max reconnect attempts reached");
@@ -720,6 +793,8 @@ enum LoopExit {
     Shutdown,
     Closed,
     Error,
+    /// Watchdog detected silence beyond `ping_interval × silent_multiplier`.
+    Silent,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -794,5 +869,45 @@ mod tests {
         let json = br#"{"type":"trade","symbol":"BTCUSDT"}"#;
         let v = decode_binary_default(json).unwrap();
         assert_eq!(v["type"], "trade");
+    }
+
+    /// Verify that the lag-check threshold logic works correctly at the
+    /// broadcast::Sender level — no live exchange connection required.
+    ///
+    /// Build a channel with capacity 16, set lag_threshold = 8.
+    /// Send 12 events without any receiver consuming them.
+    /// Assert that event_tx.len() > lag_threshold (i.e. the check would fire).
+    #[test]
+    fn lag_check_threshold_fires_when_queue_deep() {
+        use crate::core::types::{StreamEvent, WebSocketResult};
+        use tokio::sync::broadcast;
+
+        let capacity = 16_usize;
+        let lag_threshold = 8_usize;
+
+        let (tx, _rx) = broadcast::channel::<WebSocketResult<StreamEvent>>(capacity);
+
+        // Send 12 events; _rx is alive so they are buffered (not dropped).
+        for i in 0_u32..12 {
+            let _ = tx.send(Err(crate::core::types::WebSocketError::ProtocolError(
+                format!("dummy-{i}"),
+            )));
+        }
+
+        let queue_depth = tx.len();
+        // At least 8 events must be buffered for the lag warn to trigger.
+        assert!(
+            queue_depth > lag_threshold,
+            "expected queue_depth {queue_depth} > lag_threshold {lag_threshold}"
+        );
+    }
+
+    /// ReconnectConfig default lag fields are sane.
+    #[test]
+    fn reconnect_config_lag_defaults() {
+        use crate::core::websocket::reconnect::ReconnectConfig;
+        let cfg = ReconnectConfig::default();
+        assert_eq!(cfg.lag_threshold, 512);
+        assert_eq!(cfg.lag_check_interval_ms, 5_000);
     }
 }

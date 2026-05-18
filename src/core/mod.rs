@@ -74,6 +74,7 @@ pub mod normalization;
 pub mod storage;
 pub mod orderbook;
 pub mod rest_cache;
+pub mod replay;
 
 #[cfg(feature = "grpc")]
 pub mod grpc;

@@ -46,6 +46,7 @@ pub mod connector_manager;
 pub mod testing;
 
 pub use core::storage::{EventLog, EventLogIter, EventRecord, StorageManager, StorageConfig, StreamKey};
+pub use core::replay::{ReplayHub, ReplayConfig, ReplayRate};
 pub use core::orderbook::{OrderBookTracker, OrderBookError};
 pub use core::rest_cache::RestCache;
 

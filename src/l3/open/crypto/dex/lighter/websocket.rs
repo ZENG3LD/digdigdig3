@@ -59,7 +59,7 @@ fn build_channel(stream_type: &crate::core::types::StreamType, base: &str) -> Re
     })?;
 
     match stream_type {
-        crate::core::types::StreamType::Ticker => Ok(format!("market_stats/{}", market_id)),
+        crate::core::types::StreamType::Ticker => Ok(format!("ticker/{}", market_id)),
         crate::core::types::StreamType::Trade => Ok(format!("trade/{}", market_id)),
         crate::core::types::StreamType::Orderbook => Ok(format!("order_book/{}", market_id)),
         other => Err(WebSocketError::UnsupportedOperation(
@@ -774,28 +774,52 @@ impl LighterWebSocket {
 
     /// Parse a `ticker/{market_id}` channel update into `StreamEvent::Ticker`.
     ///
-    /// The `ticker` channel delivers a lighter-weight snapshot than `market_stats`.
-    /// Expected format (best-effort, field names may vary):
+    /// Live Lighter format:
     /// ```json
-    /// {"channel":"ticker:0","type":"update/ticker","ticker":{"last_price":"2735.41","best_bid":"2735.00","best_ask":"2735.41","market_id":0},"timestamp":...}
+    /// {
+    ///   "channel": "ticker:0",
+    ///   "type": "update/ticker",
+    ///   "nonce": 12345,
+    ///   "last_updated_at": 1700000000000,
+    ///   "ticker": {
+    ///     "s": "ETH-PERP",
+    ///     "a": {"price": "3500.50", "size": "1.2"},
+    ///     "b": {"price": "3500.00", "size": "0.8"},
+    ///     "last_updated_at": 1700000000000
+    ///   }
+    /// }
     /// ```
     fn parse_ticker_channel(msg: &IncomingMessage, channel: &str) -> Option<StreamEvent> {
-        // Try nested "ticker" object first, then fall back to top level
+        // Data is nested in "ticker" object
         let data = msg.data_object("ticker").unwrap_or(&msg.raw);
 
-        let last_price = Self::val_f64(data, "last_price")
-            .or_else(|| Self::val_f64(data, "mark_price"))?;
+        // Best ask: ticker.a.price (string)
+        let ask_price = data.get("a")
+            .and_then(|a| a.get("price"))
+            .and_then(Self::json_val_to_f64);
 
-        let bid_price = Self::val_f64(data, "best_bid")
-            .or_else(|| Self::val_f64(data, "bid_price"));
-        let ask_price = Self::val_f64(data, "best_ask")
-            .or_else(|| Self::val_f64(data, "ask_price"));
+        // Best bid: ticker.b.price (string)
+        let bid_price = data.get("b")
+            .and_then(|b| b.get("price"))
+            .and_then(Self::json_val_to_f64);
+
+        // last_price: midpoint of ask/bid when both present; fall back to either
+        let last_price = match (bid_price, ask_price) {
+            (Some(b), Some(a)) => (b + a) / 2.0,
+            (Some(b), None) => b,
+            (None, Some(a)) => a,
+            (None, None) => return None,
+        };
 
         let market_id = Self::extract_market_id(channel);
-        let symbol_name = Self::val_str(data, "symbol").unwrap_or(market_id);
+        // Symbol: ticker.s field ("ETH-PERP"), or fall back to market id string
+        let symbol_name = Self::val_str(data, "s").unwrap_or(market_id);
 
-        let timestamp = Self::val_i64(&msg.raw, "timestamp")
-            .or_else(|| Self::val_i64(data, "timestamp"))
+        // Timestamp: ticker.last_updated_at, then top-level last_updated_at, then nonce-fallback 0.
+        // Lighter returns microseconds (17-digit integer); divide by 1000 to get milliseconds.
+        let timestamp = Self::val_i64(data, "last_updated_at")
+            .or_else(|| Self::val_i64(&msg.raw, "last_updated_at"))
+            .map(|us| us / 1000)
             .unwrap_or(0);
 
         Some(StreamEvent::Ticker(Ticker {
@@ -1007,5 +1031,116 @@ impl LighterWebSocket {
     ) -> WebSocketResult<()> {
         let channel = format!("account_market/{}/{}", market_id, account_id);
         self.unsubscribe_channel(&channel).await
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn make_msg(raw: serde_json::Value) -> IncomingMessage {
+        IncomingMessage::from_value(raw)
+    }
+
+    #[test]
+    fn test_parse_ticker_channel_bid_ask() {
+        // Lighter sends microseconds (17-digit). Parser divides by 1000 → ms.
+        // 1700000000000000 µs ÷ 1000 = 1700000000000 ms
+        let raw = json!({
+            "channel": "ticker:0",
+            "type": "update/ticker",
+            "nonce": 12345,
+            "last_updated_at": 1700000000000000i64,
+            "ticker": {
+                "s": "ETH-PERP",
+                "a": {"price": "3500.50", "size": "1.2"},
+                "b": {"price": "3500.00", "size": "0.8"},
+                "last_updated_at": 1700000000000000i64
+            }
+        });
+        let msg = make_msg(raw);
+        let event = LighterWebSocket::parse_ticker_channel(&msg, "ticker:0")
+            .expect("should parse ticker");
+
+        if let StreamEvent::Ticker(t) = event {
+            assert_eq!(t.symbol, "ETH-PERP");
+            assert!((t.bid_price.unwrap() - 3500.00).abs() < 1e-6);
+            assert!((t.ask_price.unwrap() - 3500.50).abs() < 1e-6);
+            // midpoint = (3500.00 + 3500.50) / 2
+            assert!((t.last_price - 3500.25).abs() < 1e-6);
+            // 1700000000000000 µs → 1700000000000 ms
+            assert_eq!(t.timestamp, 1700000000000);
+        } else {
+            panic!("expected StreamEvent::Ticker");
+        }
+    }
+
+    #[test]
+    fn test_parse_ticker_channel_btc() {
+        // 1700000001000000 µs ÷ 1000 = 1700000001000 ms
+        let raw = json!({
+            "channel": "ticker:1",
+            "type": "update/ticker",
+            "last_updated_at": 1700000001000000i64,
+            "ticker": {
+                "s": "BTC-USD",
+                "a": {"price": "68000.00", "size": "0.5"},
+                "b": {"price": "67990.00", "size": "0.3"},
+                "last_updated_at": 1700000001000000i64
+            }
+        });
+        let msg = make_msg(raw);
+        let event = LighterWebSocket::parse_ticker_channel(&msg, "ticker:1")
+            .expect("should parse btc ticker");
+
+        if let StreamEvent::Ticker(t) = event {
+            assert_eq!(t.symbol, "BTC-USD");
+            assert!((t.bid_price.unwrap() - 67990.0).abs() < 1e-3);
+            assert!((t.ask_price.unwrap() - 68000.0).abs() < 1e-3);
+            assert!((t.last_price - 67995.0).abs() < 1e-3);
+        } else {
+            panic!("expected StreamEvent::Ticker");
+        }
+    }
+
+    #[test]
+    fn test_parse_ticker_channel_missing_bid_ask_returns_none() {
+        // No bid or ask → no last_price → None
+        let raw = json!({
+            "channel": "ticker:0",
+            "type": "update/ticker",
+            "ticker": {
+                "s": "ETH-PERP"
+            }
+        });
+        let msg = make_msg(raw);
+        assert!(LighterWebSocket::parse_ticker_channel(&msg, "ticker:0").is_none());
+    }
+
+    #[test]
+    fn test_build_channel_ticker_uses_ticker_not_market_stats() {
+        let st = crate::core::types::StreamType::Ticker;
+        let ch = build_channel(&st, "BTC").expect("BTC known");
+        assert!(ch.starts_with("ticker/"), "expected ticker/ channel, got {}", ch);
+        assert!(!ch.starts_with("market_stats/"), "must NOT use market_stats for Ticker");
+    }
+
+    #[test]
+    fn test_build_channel_btc_market_id_1() {
+        let st = crate::core::types::StreamType::Ticker;
+        let ch = build_channel(&st, "BTC").expect("BTC known");
+        assert_eq!(ch, "ticker/1");
+    }
+
+    #[test]
+    fn test_build_channel_eth_market_id_0() {
+        let st = crate::core::types::StreamType::Ticker;
+        let ch = build_channel(&st, "ETH").expect("ETH known");
+        assert_eq!(ch, "ticker/0");
     }
 }

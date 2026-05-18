@@ -11,7 +11,7 @@
 //! ## Channel Mapping
 //!
 //! Bitstamp does not have a dedicated "ticker" WebSocket channel. Instead:
-//! - `StreamType::Ticker` -> `live_trades_{pair}` (emits Ticker from each trade price)
+//! - `StreamType::Ticker` -> `order_book_{pair}` (best bid/ask snapshot → synthetic Ticker)
 //! - `StreamType::Trade` -> `live_trades_{pair}` (per-trade, emits Trade events)
 //! - `StreamType::Orderbook` -> `order_book_{pair}` (periodic full snapshots)
 //! - `StreamType::OrderbookDelta` -> `diff_order_book_{pair}` (incremental updates)
@@ -91,8 +91,8 @@ pub struct BitstampWebSocket {
     status: Arc<Mutex<ConnectionStatus>>,
     /// Active subscriptions
     subscriptions: Arc<Mutex<HashSet<SubscriptionRequest>>>,
-    /// Channels subscribed as Ticker (live_trades_* channels used for ticker data).
-    /// These channels emit `StreamEvent::Ticker` instead of `StreamEvent::Trade`.
+    /// Channels subscribed as Ticker (order_book_* channels used for ticker data).
+    /// These channels emit `StreamEvent::Ticker` instead of `StreamEvent::OrderbookSnapshot`.
     ticker_channels: Arc<Mutex<HashSet<String>>>,
     /// Event sender (internal - for message handler)
     event_tx: Arc<Mutex<Option<mpsc::UnboundedSender<WebSocketResult<StreamEvent>>>>>,
@@ -145,17 +145,17 @@ impl BitstampWebSocket {
         Ok(())
     }
 
-    /// Subscribe to ticker data via live_trades channel.
+    /// Subscribe to ticker data via order_book channel.
     ///
-    /// Bitstamp has no dedicated ticker WebSocket channel. The `live_trades`
-    /// channel provides actual executed trade prices, which is used to emit
-    /// `StreamEvent::Ticker` events with the latest price. The channel name
-    /// is tracked in `ticker_channels` so the message handler knows to emit
-    /// a Ticker (with last_price) rather than a raw Trade event.
+    /// Bitstamp has no dedicated ticker WebSocket channel. The `order_book`
+    /// channel provides top-100 orderbook snapshots on every change, from which
+    /// we derive best bid/ask and emit `StreamEvent::Ticker`. The channel name
+    /// is tracked in `ticker_channels` so the message handler emits Ticker
+    /// (with bid_price, ask_price, last_price = midpoint) instead of OrderbookSnapshot.
     ///
     /// `pair` must be the exchange-native raw string (e.g. `"btcusd"`).
     pub async fn subscribe_ticker(&self, pair: &str) -> ExchangeResult<()> {
-        let channel = format!("live_trades_{}", pair);
+        let channel = format!("order_book_{}", pair);
         self.ticker_channels.lock().await.insert(channel.clone());
         self.subscribe_channel(&channel).await
     }
@@ -476,9 +476,38 @@ impl BitstampWebSocket {
             // supports only one event per frame. Emit snapshot start if bids are present.
             Ok(events.into_iter().next())
         } else if channel.starts_with("order_book_") {
-            let orderbook = BitstampParser::parse_ws_orderbook(&json)
-                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(StreamEvent::OrderbookSnapshot(orderbook)))
+            if as_ticker {
+                // Build synthetic Ticker from best bid/ask in the orderbook snapshot.
+                let orderbook = BitstampParser::parse_ws_orderbook(&json)
+                    .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+                let bid = orderbook.bids.first().map(|l| l.price);
+                let ask = orderbook.asks.first().map(|l| l.price);
+                let last_price = match (bid, ask) {
+                    (Some(b), Some(a)) => (b + a) / 2.0,
+                    (Some(b), None) => b,
+                    (None, Some(a)) => a,
+                    (None, None) => 0.0,
+                };
+                let pair = channel.trim_start_matches("order_book_").to_uppercase();
+                let ticker = crate::core::types::Ticker {
+                    symbol: pair,
+                    last_price,
+                    bid_price: bid,
+                    ask_price: ask,
+                    high_24h: None,
+                    low_24h: None,
+                    volume_24h: None,
+                    quote_volume_24h: None,
+                    price_change_24h: None,
+                    price_change_percent_24h: None,
+                    timestamp: orderbook.timestamp,
+                };
+                Ok(Some(StreamEvent::Ticker(ticker)))
+            } else {
+                let orderbook = BitstampParser::parse_ws_orderbook(&json)
+                    .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+                Ok(Some(StreamEvent::OrderbookSnapshot(orderbook)))
+            }
         } else {
             // Unknown channel
             Ok(None)
@@ -645,7 +674,7 @@ impl WebSocketConnector for BitstampWebSocket {
 
         let result = match request.stream_type {
             crate::core::types::StreamType::Ticker => {
-                // Ticker -> live_trades (high frequency, reliable)
+                // Ticker -> order_book (best bid/ask on every orderbook change)
                 self.subscribe_ticker(&pair).await
                     .map_err(|e| WebSocketError::Subscription(format!("{:?}", e)))
             }

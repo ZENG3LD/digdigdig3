@@ -204,21 +204,15 @@ impl UpbitWebSocket {
             .ok_or(WebSocketError::NotConnected)?;
 
         // Upbit subscription format: [ticket, type, format?]
-        // `isOnlyRealtime: true` on the orderbook type skips the initial full
-        // snapshot and only delivers real-time incremental updates, reducing
-        // bandwidth on initial connect.
-        let type_obj = if msg_type == "orderbook" {
-            json!({
-                "type": msg_type,
-                "codes": symbols,
-                "isOnlyRealtime": true
-            })
-        } else {
-            json!({
-                "type": msg_type,
-                "codes": symbols
-            })
-        };
+        // `is_only_realtime: false` → server sends snapshot immediately on subscribe
+        // (important for KRW markets that trade infrequently).
+        // `is_only_snapshot: false` → also send real-time updates after snapshot.
+        let type_obj = json!({
+            "type": msg_type,
+            "codes": symbols,
+            "is_only_realtime": false,
+            "is_only_snapshot": false
+        });
 
         let subscription = json!([
             {"ticket": "upbit-connector"},
@@ -296,6 +290,17 @@ impl UpbitWebSocket {
                     .map(StreamEvent::Trade)
             },
             "orderbook" => {
+                // Always emit the raw orderbook snapshot so dedicated
+                // orderbook subscribers receive it.
+                // Additionally, if there is a ticker subscriber that needs
+                // bid/ask, emit a synthetic Ticker.  We emit the orderbook
+                // snapshot as primary return value; the synthetic Ticker is
+                // sent directly to the broadcast channel here.
+                if let Some(synthetic) = UpbitParser::parse_ws_orderbook_as_ticker(&value) {
+                    if let Some(tx) = self.broadcast_tx.lock().unwrap().as_ref() {
+                        let _ = tx.send(Ok(StreamEvent::Ticker(synthetic)));
+                    }
+                }
                 UpbitParser::parse_ws_orderbook(&value)
                     .ok()
                     .map(StreamEvent::OrderbookSnapshot)
@@ -505,7 +510,12 @@ impl WebSocketConnector for UpbitWebSocket {
 
         match request.stream_type {
             StreamType::Ticker => {
-                self.send_subscription("ticker", vec![upbit_symbol]).await?;
+                // Subscribe to ticker for trade-price / volume data.
+                self.send_subscription("ticker", vec![upbit_symbol.clone()]).await?;
+                // Also subscribe to orderbook so handle_message can inject
+                // bid_price / ask_price into synthetic Ticker events — the ticker
+                // channel does not carry top-of-book quotes.
+                self.send_subscription("orderbook", vec![upbit_symbol]).await?;
             },
             StreamType::Trade => {
                 self.send_subscription("trade", vec![upbit_symbol]).await?;

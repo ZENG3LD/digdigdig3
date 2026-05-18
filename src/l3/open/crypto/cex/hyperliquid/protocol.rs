@@ -56,7 +56,8 @@ impl HyperliquidProtocol {
         let subscription = match &spec.kind {
             // Empty coin → allMids (global mid-price snapshot)
             StreamKind::Ticker if coin.is_empty() => json!({ "type": "allMids", "dex": "" }),
-            StreamKind::Ticker => json!({ "type": "activeAssetCtx", "coin": coin }),
+            // Per-coin ticker: use bbo channel for real-time bid/ask top-of-book
+            StreamKind::Ticker => json!({ "type": "bbo", "coin": coin }),
             StreamKind::Trade => json!({ "type": "trades", "coin": coin }),
             StreamKind::Orderbook | StreamKind::OrderbookDelta => json!({
                 "type": "l2Book",
@@ -165,7 +166,6 @@ fn build_registry() -> TopicRegistry {
     let mut b = TopicRegistry::builder()
         // Public market channels
         .register(StreamKind::Ticker, at, "allMids", parse_all_mids)
-        .register(StreamKind::Ticker, at, "activeAssetCtx", parse_active_asset_ctx)
         .register(StreamKind::Trade, at, "trades", parse_trades)
         .register(StreamKind::Orderbook, at, "l2Book", parse_l2_book)
         .register(StreamKind::OrderbookDelta, at, "l2Book", parse_l2_book)
@@ -176,8 +176,8 @@ fn build_registry() -> TopicRegistry {
         .register(StreamKind::Liquidation, at, "liquidations", parse_liquidation)
         // Notifications (public)
         .register(StreamKind::MarketWarning, at, "notifications", parse_notification)
-        // BBO (best bid/offer)
-        .register(StreamKind::Orderbook, at, "bbo", parse_bbo)
+        // BBO (best bid/offer) → emits Ticker with bid_price + ask_price
+        .register(StreamKind::Ticker, at, "bbo", parse_bbo)
         // User/private channels (auth-gated but we register parsers)
         .register(StreamKind::BalanceUpdate, at, "clearinghouseState", parse_clearinghouse)
         .register(StreamKind::PositionUpdate, at, "clearinghouseState", parse_clearinghouse_position)
@@ -245,52 +245,6 @@ fn parse_all_mids(raw: &Value) -> WebSocketResult<StreamEvent> {
     }
 
     Err(WebSocketError::Parse("allMids: empty mids object".into()))
-}
-
-fn parse_active_asset_ctx(raw: &Value) -> WebSocketResult<StreamEvent> {
-    let data = frame_data(raw)?;
-    parse_active_asset_ctx_inner(data)
-}
-
-fn parse_active_asset_ctx_inner(data: &Value) -> WebSocketResult<StreamEvent> {
-    let coin = data
-        .get("coin")
-        .and_then(|c| c.as_str())
-        .ok_or_else(|| WebSocketError::Parse("activeAssetCtx: missing 'coin'".into()))?;
-
-    let ctx = data
-        .get("ctx")
-        .ok_or_else(|| WebSocketError::Parse("activeAssetCtx: missing 'ctx'".into()))?;
-
-    let mark_px = parse_f64_field(ctx, "markPx").unwrap_or(0.0);
-    let mid_px = parse_f64_field(ctx, "midPx");
-    let prev_day_px = parse_f64_field(ctx, "prevDayPx");
-    let volume_24h = parse_f64_field(ctx, "dayNtlVlm");
-
-    let last_price = mid_px.unwrap_or(mark_px);
-    let now = crate::core::utils::timestamp_millis() as i64;
-
-    let (price_change_24h, price_change_percent_24h) = match prev_day_px {
-        Some(prev) if prev > 0.0 => {
-            let change = last_price - prev;
-            (Some(change), Some((change / prev) * 100.0))
-        }
-        _ => (None, None),
-    };
-
-    Ok(StreamEvent::Ticker(crate::core::Ticker {
-        symbol: coin.to_string(),
-        last_price,
-        bid_price: None,
-        ask_price: None,
-        high_24h: None,
-        low_24h: None,
-        volume_24h,
-        quote_volume_24h: None,
-        price_change_24h,
-        price_change_percent_24h,
-        timestamp: now,
-    }))
 }
 
 fn parse_funding_from_ctx(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -415,12 +369,18 @@ fn parse_bbo(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     let bid_price = bbo_arr.first().and_then(|l| l.get("px")).and_then(parse_f64_val);
     let ask_price = bbo_arr.get(1).and_then(|l| l.get("px")).and_then(parse_f64_val);
-    let last_price = bid_price
-        .zip(ask_price)
-        .map(|(b, a)| (b + a) / 2.0)
-        .or(bid_price)
-        .or(ask_price)
-        .unwrap_or(0.0);
+
+    // Skip frames where both sides are absent (initial snapshot before data arrives)
+    let last_price = match (bid_price, ask_price) {
+        (None, None) => {
+            return Err(WebSocketError::Parse(
+                "bbo: both bid and ask are absent — skipping empty frame".into(),
+            ))
+        }
+        (Some(b), Some(a)) => (b + a) / 2.0,
+        (Some(b), None) => b,
+        (None, Some(a)) => a,
+    };
 
     let now = crate::core::utils::timestamp_millis() as i64;
     Ok(StreamEvent::Ticker(crate::core::Ticker {
@@ -824,5 +784,96 @@ mod tests {
             "data": { "method": "subscribe" }
         });
         assert!(proto.extract_topic(&frame).is_none());
+    }
+
+    #[test]
+    fn test_subscribe_frame_ticker_uses_bbo() {
+        let proto = HyperliquidProtocol::new(false);
+        let spec = futures_spec(StreamKind::Ticker);
+        let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed");
+        let text = match msg {
+            Message::Text(t) => t,
+            _ => panic!("expected text frame"),
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert_eq!(v["method"], "subscribe");
+        let sub = &v["subscription"];
+        assert_eq!(sub["type"], "bbo");
+        assert_eq!(sub["coin"], "BTC");
+    }
+
+    #[test]
+    fn test_parse_bbo_emits_ticker_with_bid_ask() {
+        let frame = serde_json::json!({
+            "channel": "bbo",
+            "data": {
+                "coin": "BTC",
+                "time": 1716100000000i64,
+                "bbo": [
+                    {"px": "67100.0", "sz": "0.45", "n": 3},
+                    {"px": "67110.0", "sz": "0.30", "n": 2}
+                ]
+            }
+        });
+        let event = parse_bbo(&frame).expect("parse_bbo must succeed");
+        match event {
+            crate::core::types::StreamEvent::Ticker(t) => {
+                assert_eq!(t.symbol, "BTC");
+                assert!((t.bid_price.unwrap() - 67100.0).abs() < f64::EPSILON);
+                assert!((t.ask_price.unwrap() - 67110.0).abs() < f64::EPSILON);
+                assert!((t.last_price - 67105.0).abs() < f64::EPSILON);
+            }
+            other => panic!("expected Ticker, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_bbo_empty_returns_error() {
+        // Initial frame may arrive with null/missing bid and ask — must be skipped
+        let frame = serde_json::json!({
+            "channel": "bbo",
+            "data": {
+                "coin": "BTC",
+                "time": 1716100000000i64,
+                "bbo": [null, null]
+            }
+        });
+        let result = parse_bbo(&frame);
+        assert!(result.is_err(), "empty bbo frame must return error, not zero ticker");
+    }
+
+    #[test]
+    fn test_active_asset_ctx_not_mapped_to_ticker() {
+        // activeAssetCtx must NOT be in the Ticker registry — only bbo and allMids
+        let proto = HyperliquidProtocol::new(false);
+        let reg = proto.topic_registry(AccountType::FuturesCross);
+        // "activeAssetCtx" topic should dispatch to non-Ticker stream kinds only
+        // (FundingRate, MarkPrice, OpenInterest, IndexPrice)
+        // Verify Ticker is still supported via bbo/allMids
+        assert!(reg.supports(&StreamKind::Ticker, AccountType::FuturesCross));
+        // Verify no parse for Ticker via activeAssetCtx by checking
+        // that parse_active_asset_ctx is not called for Ticker kind.
+        // Indirect: subscribe frame for Ticker must use bbo, not activeAssetCtx.
+        let spec = futures_spec(StreamKind::Ticker);
+        let proto2 = HyperliquidProtocol::new(false);
+        let msg = proto2.subscribe_frame(&spec).expect("subscribe_frame must succeed");
+        let text = match msg {
+            Message::Text(t) => t,
+            _ => panic!("expected text frame"),
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        let sub = &v["subscription"];
+        assert_eq!(sub["type"], "bbo", "Ticker subscribe must use bbo, not activeAssetCtx");
+    }
+
+    #[test]
+    fn test_extract_topic_bbo_frame() {
+        let proto = HyperliquidProtocol::new(false);
+        let frame = serde_json::json!({
+            "channel": "bbo",
+            "data": {"coin":"BTC","time":1716100000000i64,"bbo":[{"px":"67100.0","sz":"0.45","n":3},{"px":"67110.0","sz":"0.30","n":2}]}
+        });
+        let topic = proto.extract_topic(&frame).expect("should extract topic");
+        assert_eq!(topic.as_str(), "bbo");
     }
 }

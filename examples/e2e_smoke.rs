@@ -456,6 +456,12 @@ fn raw_symbol_for(id: ExchangeId) -> (Symbol, String, AccountType) {
             let sym_with_raw = Symbol::with_raw("BTC", "USD", raw.clone());
             (sym_with_raw, raw, AccountType::Spot)
         }
+        // Polymarket: no BTC/USDT concept. "DISCOVER" triggers discover_active_token_id
+        // inside the connector (Gamma API → highest-volume active market → clobTokenIds[0]).
+        ExchangeId::Polymarket => {
+            let sym = Symbol::with_raw("DISCOVER", "USDC", "DISCOVER".to_string());
+            (sym, "DISCOVER".to_string(), AccountType::Spot)
+        }
         // All others: BTCUSDT concat (Binance, Bybit, MEXC, HTX, Bitget, etc.)
         _ => make(btc_usdt, AccountType::Spot),
     }
@@ -747,9 +753,8 @@ fn all_testable_exchanges() -> Vec<ExchangeId> {
         ExchangeId::YahooFinance,
         ExchangeId::CryptoCompare,
         ExchangeId::Twelvedata,
-        // Polymarket: prediction-market CLOB. Tokens are 64-char hex IDs from
-        // /markets, not BTC/USDT. Skipped until we add a market-discovery step.
-        // ExchangeId::Polymarket,
+        // Polymarket: prediction-market CLOB. Dynamic discovery via Gamma API.
+        ExchangeId::Polymarket,
         ExchangeId::Dukascopy,
         ExchangeId::Alpaca,
         ExchangeId::Krx,
@@ -770,11 +775,7 @@ fn all_testable_exchanges() -> Vec<ExchangeId> {
         ExchangeId::Futu,
         // Coinglass — still in factory, kept for now (creds-gated).
         ExchangeId::Coinglass,
-        // Polymarket — prediction-market CLOB; symbols are 64-char hex
-        // token_ids resolved from /markets, not canonical BTC/USDT. The
-        // e2e_smoke harness has no live market-id picker, so skip until
-        // we add a discovery step.
-        // ExchangeId::Polymarket,
+        // (Polymarket already listed above — discovery step added)
         // Extracted to dig2feed (DefiLlama, WhaleAlert, Bitquery) and removed
         // (Fred, Bls). Their ExchangeId variants linger in the enum because
         // ~300 sites reference them; they cannot be smoke-tested from this

@@ -155,13 +155,17 @@ impl YahooFinanceConnector {
         Ok(json)
     }
 
-    /// Internal: Get quote for a symbol
+    /// Internal: Get quote via /v7/finance/quote?symbols= (carries bid/ask)
+    async fn get_quote_v7(&self, yahoo_symbol: &str) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        params.insert("symbols".to_string(), yahoo_symbol.to_string());
+        self.get(YahooFinanceEndpoint::Quote, None, params).await
+    }
+
+    /// Internal: Get quote for a symbol via /v8/finance/chart/{symbol}
     ///
-    /// Uses chart endpoint instead of quote endpoint (quote returns 401 as of Jan 2026).
-    /// Chart endpoint provides the same data in response.chart.result[0].meta
+    /// Fallback path — chart endpoint does NOT carry bid/ask.
     async fn get_quote_internal(&self, yahoo_symbol: &str) -> ExchangeResult<serde_json::Value> {
-        // Use chart endpoint instead of quote endpoint (quote endpoint returns 401)
-        // Chart response includes current price in meta.regularMarketPrice
         self.get(YahooFinanceEndpoint::Chart, Some(yahoo_symbol), HashMap::new()).await
     }
 }
@@ -213,12 +217,30 @@ impl MarketData for YahooFinanceConnector {
     }
 
     /// Get ticker (24h stats)
+    ///
+    /// Tries /v7/finance/quote first (carries bid/ask); falls back to /v8/finance/chart
+    /// when the quote endpoint returns an error or an empty result.
     async fn get_ticker(
         &self,
         symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
         let sym_str: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
+
+        // Primary: /v7/finance/quote — provides bid/ask
+        match self.get_quote_v7(&sym_str).await {
+            Ok(response) => {
+                if let Ok(ticker) = YahooFinanceParser::parse_quote_ticker(&response, &sym_str) {
+                    return Ok(ticker);
+                }
+                // Empty result array — fall through to chart
+            }
+            Err(_) => {
+                // 401/404/network — fall through to chart
+            }
+        }
+
+        // Fallback: /v8/finance/chart — no bid/ask but always works
         let response = self.get_quote_internal(&sym_str).await?;
         YahooFinanceParser::parse_ticker(&response, &sym_str)
     }

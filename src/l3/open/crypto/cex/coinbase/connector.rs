@@ -501,32 +501,42 @@ impl MarketData for CoinbaseConnector {
             let response = self.get(CoinbaseEndpoint::BestBidAsk, params).await?;
             CoinbaseParser::parse_ticker(&response)
         } else {
-            // Public: GET /api/v3/brokerage/market/products/{product_id}
-            // Returns price, volume_24h, and price_percentage_change_24h.
-            let url = format!("{}/products/{}", CoinbaseUrls::market_url(), product_id);
+            // Public: GET /api/v3/brokerage/market/products/{product_id}/ticker?limit=1
+            // Returns best_bid, best_ask, and trades[0].price for last_price.
+            let url = format!("{}/products/{}/ticker?limit=1", CoinbaseUrls::market_url(), product_id);
             let response = self.http.get(&url, &HashMap::new()).await?;
-            // Parse: {"product_id","price","volume_24h","price_percentage_change_24h",...}
-            let last_price = response.get("price")
+            // Response: { "trades": [{"price": "..."}], "best_bid": "...", "best_ask": "..." }
+            let bid_price = response.get("best_bid")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok());
+            let ask_price = response.get("best_ask")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok());
+            // last_price from first trade; fallback to mid of bid/ask
+            let last_price = response.get("trades")
+                .and_then(|t| t.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|trade| trade.get("price"))
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<f64>().ok())
+                .or_else(|| match (bid_price, ask_price) {
+                    (Some(b), Some(a)) => Some((b + a) / 2.0),
+                    (Some(b), None) => Some(b),
+                    (None, Some(a)) => Some(a),
+                    (None, None) => None,
+                })
                 .unwrap_or(0.0);
-            let volume_24h = response.get("volume_24h")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok());
-            let price_change_percent_24h = response.get("price_percentage_change_24h")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok());
             Ok(Ticker {
                 symbol: product_id,
                 last_price,
-                bid_price: None, // Public /products/{id} endpoint does not carry bid/ask — use BestBidAsk endpoint with auth
-                ask_price: None, // Public /products/{id} endpoint does not carry bid/ask — use BestBidAsk endpoint with auth
+                bid_price,
+                ask_price,
                 high_24h: None,
                 low_24h: None,
-                volume_24h,
+                volume_24h: None,
                 quote_volume_24h: None,
                 price_change_24h: None,
-                price_change_percent_24h,
+                price_change_percent_24h: None,
                 timestamp: crate::core::timestamp_millis() as i64,
             })
         }

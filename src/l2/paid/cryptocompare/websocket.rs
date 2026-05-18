@@ -144,7 +144,8 @@ impl CryptoCompareWebSocket {
     /// Build a CryptoCompare subscription string for a given request
     ///
     /// Returns the channel subscription string, e.g.:
-    /// - Ticker: `5~CCCAGG~BTC~USD` (aggregate) or `2~Coinbase~BTC~USD` (exchange)
+    /// - Ticker USD: `5~CCCAGG~BTC~USD` (aggregate, USD-only)
+    /// - Ticker other: `2~Binance~BTC~USDT` (per-exchange)
     /// - Trade: `0~CCCAGG~BTC~USD`
     /// - Kline: `17~CCCAGG~BTC~USD~1m`
     fn build_sub_string(request: &SubscriptionRequest) -> Result<String, WebSocketError> {
@@ -153,8 +154,13 @@ impl CryptoCompareWebSocket {
 
         match &request.stream_type {
             StreamType::Ticker => {
-                // Use aggregate ticker (channel 5) with CCCAGG exchange
-                Ok(format!("5~{}~{}~{}", DEFAULT_EXCHANGE, fsym, tsym))
+                // Channel 5 (CCCAGG aggregate) only works for USD as quote.
+                // For any other quote (USDT, BTC, ETH, …) use channel 2 per-exchange.
+                if tsym == "USD" {
+                    Ok(format!("5~CCCAGG~{}~USD", fsym))
+                } else {
+                    Ok(format!("2~Binance~{}~{}", fsym, tsym))
+                }
             }
             StreamType::Trade => {
                 // Use trade channel (0) with CCCAGG aggregate
@@ -326,8 +332,8 @@ impl CryptoCompareWebSocket {
                         }
                     }
                 }
-                Some("5") => {
-                    // Aggregate ticker
+                Some("2") | Some("5") => {
+                    // Channel 2 = per-exchange ticker, channel 5 = CCCAGG aggregate ticker
                     if let Some(event) = Self::parse_ticker_streamer(&parts) {
                         if let Some(tx) = event_tx.lock().unwrap().as_ref() {
                             let _ = tx.send(Ok(event));
@@ -630,50 +636,170 @@ impl CryptoCompareWebSocket {
         }))
     }
 
-    /// Parse streamer format ticker message (Type 5)
+    /// Parse streamer format ticker message (Type 2 or 5) using bitmask field ordering.
     ///
-    /// Format: `5~MARKET~FSYM~TSYM~FLAGS~PRICE~LASTUPDATE~...~VOLUME24H~VOLUME24HTO~OPEN24H~HIGH24H~LOW24H~...`
+    /// Header (fixed, always present):
+    /// - [0]=TYPE, [1]=MARKET, [2]=FSYM, [3]=TSYM
     ///
-    /// Fields (at least 18 for basic ticker):
-    /// - [0]=TYPE, [1]=MARKET, [2]=FSYM, [3]=TSYM, [4]=FLAGS
-    /// - [5]=PRICE, [6]=LASTUPDATE
-    /// - [11]=VOLUME24H, [12]=VOLUME24HTO
-    /// - [15]=OPEN24H, [16]=HIGH24H, [17]=LOW24H
+    /// Last segment: hex bitmask (e.g. `"1f"`) describing which optional fields follow
+    /// in order starting at index 4.
     ///
-    /// Note: Not all fields are present in every update. The message may contain
-    /// partial updates with only changed fields.
+    /// Bitmask bits (lsb-first, each bit adds one field at the next sequential index):
+    /// - 0x1   PRICE
+    /// - 0x2   BID
+    /// - 0x4   OFFER (ask)
+    /// - 0x8   LASTUPDATE (unix seconds)
+    /// - 0x10  AVG
+    /// - 0x20  LASTVOLUME
+    /// - 0x40  LASTVOLUMETO
+    /// - 0x80  LASTTRADEID
+    /// - 0x100 VOLUMEDAY
+    /// - 0x200 VOLUMEDAYTO
+    /// - 0x400 OPEN24HOUR
+    /// - 0x800 HIGH24HOUR
+    /// - 0x1000 LOW24HOUR
+    /// - 0x2000 LASTMARKET
+    /// - 0x4000 VOLUMEHOUR
+    /// - 0x8000 VOLUMEHOURTO
+    /// - 0x10000 OPENHOUR
+    /// - 0x20000 HIGHHOUR
+    /// - 0x40000 LOWHOUR
+    /// - 0x80000 TOPTIERVOLUME24H
+    /// - 0x100000 TOPTIERVOLUME24HTO
+    /// - 0x200000 CHANGE24HOUR
+    /// - 0x400000 CHANGE24HOURPCT
+    /// - 0x800000 CHANGEDAY
+    /// - 0x1000000 CHANGEDAYPCT
+    /// - 0x2000000 CHANGEHOUR
+    /// - 0x4000000 CHANGEHOURTPCT
+    /// - 0x8000000 CONVERSIONTYPE
+    /// - 0x10000000 CONVERSIONSYMBOL
+    /// - 0x20000000 SUPPLY
+    /// - 0x40000000 MKTCAP
+    /// - 0x80000000 VOLUME24HOUR (rolling)
+    /// - 0x100000000 VOLUME24HOURTO
+    /// - 0x200000000 OPEN24HOUR_rolling
+    ///
+    /// Only PRICE (0x1), BID (0x2), OFFER (0x4), LASTUPDATE (0x8),
+    /// HIGH24HOUR (0x800), LOW24HOUR (0x1000), VOLUME24HOUR (0x80000000),
+    /// VOLUME24HOURTO (0x100000000), OPEN24HOUR (0x400) are consumed here.
+    /// All other fields are skipped (counted but not stored).
     fn parse_ticker_streamer(parts: &[&str]) -> Option<StreamEvent> {
-        // Minimum fields needed: TYPE, MARKET, FSYM, TSYM, FLAGS, PRICE, LASTUPDATE
-        if parts.len() < 7 {
+        // Need at least: TYPE(0), MARKET(1), FSYM(2), TSYM(3), FLAGS(4), bitmask(last)
+        // Minimum 6 parts: 5 mandatory header fields + 1 bitmask.
+        if parts.len() < 6 {
             return None;
         }
 
         let fsym = parts.get(2)?;
         let tsym = parts.get(3)?;
-        let price = parts.get(5)?.parse::<f64>().ok()?;
-        let timestamp = parts.get(6)?.parse::<i64>().ok()?;
 
-        // Optional fields - may not be present in partial updates
-        let volume_24h = parts.get(11).and_then(|s| s.parse::<f64>().ok());
-        let volume_24h_to = parts.get(12).and_then(|s| s.parse::<f64>().ok());
-        let open_24h = parts.get(15).and_then(|s| s.parse::<f64>().ok());
-        let high_24h = parts.get(16).and_then(|s| s.parse::<f64>().ok());
-        let low_24h = parts.get(17).and_then(|s| s.parse::<f64>().ok());
+        // Bitmask is the LAST segment
+        let mask_str = parts.last()?;
+        let mask = u64::from_str_radix(mask_str, 16).ok()?;
+
+        // Mandatory header: TYPE(0), MARKET(1), FSYM(2), TSYM(3), FLAGS(4).
+        // Optional data fields start at index 5 (after FLAGS).
+        // The last segment is the bitmask itself, NOT a data field.
+        let mut idx = 5usize;
+
+        // Helper: consume next field value if bit set, else return None and skip nothing
+        // We capture by moving idx forward only when the bit is set.
+        let mut price: Option<f64> = None;
+        let mut bid: Option<f64> = None;
+        let mut ask: Option<f64> = None;
+        let mut timestamp: Option<i64> = None;
+        let mut volume_24h: Option<f64> = None;
+        let mut volume_24h_to: Option<f64> = None;
+        let mut open_24h: Option<f64> = None;
+        let mut high_24h: Option<f64> = None;
+        let mut low_24h: Option<f64> = None;
+
+        // Ordered bit table: (bit, consume_fn).  Bits in ascending order (0x1 first).
+        // For each bit set in mask we consume one field from parts[idx].
+        // For bits we don't care about we still advance idx to stay in sync.
+        const BITS: &[u64] = &[
+            0x1,        // PRICE
+            0x2,        // BID
+            0x4,        // OFFER
+            0x8,        // LASTUPDATE
+            0x10,       // AVG
+            0x20,       // LASTVOLUME
+            0x40,       // LASTVOLUMETO
+            0x80,       // LASTTRADEID
+            0x100,      // VOLUMEDAY
+            0x200,      // VOLUMEDAYTO
+            0x400,      // OPEN24HOUR
+            0x800,      // HIGH24HOUR
+            0x1000,     // LOW24HOUR
+            0x2000,     // LASTMARKET
+            0x4000,     // VOLUMEHOUR
+            0x8000,     // VOLUMEHOURTO
+            0x10000,    // OPENHOUR
+            0x20000,    // HIGHHOUR
+            0x40000,    // LOWHOUR
+            0x80000,    // TOPTIERVOLUME24H
+            0x100000,   // TOPTIERVOLUME24HTO
+            0x200000,   // CHANGE24HOUR
+            0x400000,   // CHANGE24HOURPCT
+            0x800000,   // CHANGEDAY
+            0x1000000,  // CHANGEDAYPCT
+            0x2000000,  // CHANGEHOUR
+            0x4000000,  // CHANGEHOURTPCT
+            0x8000000,  // CONVERSIONTYPE
+            0x10000000, // CONVERSIONSYMBOL
+            0x20000000, // SUPPLY
+            0x40000000, // MKTCAP
+            0x80000000, // VOLUME24HOUR (rolling 24h)
+            0x100000000,// VOLUME24HOURTO
+            0x200000000,// OPEN24HOUR (rolling)
+        ];
+
+        for &bit in BITS {
+            if mask & bit == 0 {
+                continue;
+            }
+            let val_str = parts.get(idx)?;
+            idx += 1;
+
+            match bit {
+                0x1         => price       = val_str.parse().ok(),
+                0x2         => bid         = val_str.parse().ok(),
+                0x4         => ask         = val_str.parse().ok(),
+                0x8         => timestamp   = val_str.parse().ok(),
+                0x400       => open_24h    = val_str.parse().ok(),
+                0x800       => high_24h    = val_str.parse().ok(),
+                0x1000      => low_24h     = val_str.parse().ok(),
+                0x80000000  => volume_24h  = val_str.parse().ok(),
+                0x100000000 => volume_24h_to = val_str.parse().ok(),
+                // OPEN24HOUR rolling (bit 0x200000000) — also treat as open_24h fallback
+                0x200000000 => {
+                    if open_24h.is_none() {
+                        open_24h = val_str.parse().ok();
+                    }
+                }
+                _ => {} // skip field we don't need
+            }
+        }
+
+        // PRICE is required to emit a useful ticker
+        let last_price = price?;
+        let ts_ms = timestamp.unwrap_or(0) * 1000;
 
         Some(StreamEvent::Ticker(Ticker {
             symbol: format!("{}{}", fsym, tsym),
-            last_price: price,
-            bid_price: None, // Not available in streamer format
-            ask_price: None, // Not available in streamer format
+            last_price,
+            bid_price: bid,
+            ask_price: ask,
             high_24h,
             low_24h,
             volume_24h,
             quote_volume_24h: volume_24h_to,
-            price_change_24h: open_24h.map(|o| price - o),
+            price_change_24h: open_24h.map(|o| last_price - o),
             price_change_percent_24h: open_24h
                 .filter(|&o| o > 0.0)
-                .map(|o| ((price - o) / o) * 100.0),
-            timestamp: timestamp * 1000, // Convert seconds to milliseconds
+                .map(|o| ((last_price - o) / o) * 100.0),
+            timestamp: ts_ms,
         }))
     }
 }
@@ -811,10 +937,17 @@ mod tests {
     }
 
     #[test]
-    fn test_build_sub_string_ticker() {
+    fn test_build_sub_string_ticker_usd() {
         let req = SubscriptionRequest::ticker(Symbol::new("BTC", "USD"));
         let sub = CryptoCompareWebSocket::build_sub_string(&req).unwrap();
         assert_eq!(sub, "5~CCCAGG~BTC~USD");
+    }
+
+    #[test]
+    fn test_build_sub_string_ticker_usdt() {
+        let req = SubscriptionRequest::ticker(Symbol::new("BTC", "USDT"));
+        let sub = CryptoCompareWebSocket::build_sub_string(&req).unwrap();
+        assert_eq!(sub, "2~Binance~BTC~USDT");
     }
 
     #[test]
@@ -963,26 +1096,22 @@ mod tests {
 
     #[test]
     fn test_parse_ticker_streamer() {
-        // Format: 5~MARKET~FSYM~TSYM~FLAGS~PRICE~LASTUPDATE~...~VOL24H~VOL24HTO~OPEN24H~HIGH24H~LOW24H
+        // Format: TYPE~MARKET~FSYM~TSYM~FLAGS~[data fields by bitmask]~HEXMASK
+        // Bitmask layout: PRICE(0x1) | LASTUPDATE(0x8) | OPEN24HOUR(0x400) |
+        //                 HIGH24HOUR(0x800) | LOW24HOUR(0x1000) = 0x1c09
+        // Parts[4]=FLAGS (mandatory), data starts at parts[5]
         let parts: Vec<&str> = vec![
             "5",
             "CCCAGG",
             "BTC",
             "USD",
-            "1",
-            "78716.20", // [5] PRICE
-            "1769917542", // [6] LASTUPDATE
-            "78716.20", // [7] LASTVOLUME_PRICE
-            "0.00023", // [8] LASTVOLUME
-            "18.10", // [9] LASTVOLUMETO
-            "947952988", // [10] LASTTRADEID
-            "1500.5", // [11] VOLUME24H
-            "118074300.0", // [12] VOLUME24HTO
-            "1200.0", // [13] VOLUMEDAY
-            "94459440.0", // [14] VOLUMEDAYTO
-            "78000.0", // [15] OPEN24HOUR
-            "79000.0", // [16] HIGH24HOUR
-            "77500.0", // [17] LOW24HOUR
+            "1",          // FLAGS (mandatory, index 4)
+            "78716.20",   // PRICE (bit 0x1, index 5)
+            "1769917542", // LASTUPDATE (bit 0x8, index 6)
+            "78000.0",    // OPEN24HOUR (bit 0x400, index 7)
+            "79000.0",    // HIGH24HOUR (bit 0x800, index 8)
+            "77500.0",    // LOW24HOUR (bit 0x1000, index 9)
+            "1c09",       // bitmask (last segment)
         ];
 
         let event = CryptoCompareWebSocket::parse_ticker_streamer(&parts);
@@ -993,43 +1122,74 @@ mod tests {
             assert_eq!(ticker.last_price, 78716.20);
             assert_eq!(ticker.high_24h, Some(79000.0));
             assert_eq!(ticker.low_24h, Some(77500.0));
-            assert_eq!(ticker.volume_24h, Some(1500.5));
-            assert_eq!(ticker.quote_volume_24h, Some(118074300.0));
-            // price_change = 78716.20 - 78000.0 ≈ 716.20 (f64 subtraction
-            // emits 716.1999999999971; compare with ε, not bit-exact).
+            // price_change = 78716.20 - 78000.0 ≈ 716.20
             let delta = ticker.price_change_24h.expect("price_change_24h set");
             assert!((delta - 716.20).abs() < 1e-6, "price_change = {delta}");
-            assert!(ticker.bid_price.is_none()); // Not available in streamer format
-            assert!(ticker.ask_price.is_none()); // Not available in streamer format
-            assert_eq!(ticker.timestamp, 1769917542000); // Converted to ms
+            assert!(ticker.bid_price.is_none());
+            assert!(ticker.ask_price.is_none());
+            assert_eq!(ticker.timestamp, 1769917542000);
         } else {
             panic!("Expected StreamEvent::Ticker");
         }
     }
 
     #[test]
-    fn test_parse_ticker_streamer_partial_update() {
-        // Partial update with only first 7 fields
+    fn test_parse_ticker_streamer_with_bid_ask() {
+        // Bitmask: PRICE(0x1) | BID(0x2) | OFFER(0x4) | LASTUPDATE(0x8) = 0xf
+        // Parts[4]=FLAGS (mandatory), data starts at parts[5]
+        // Fixture matches task description: "5~CCCAGG~BTC~USD~1~price~bid~ask~ts~f"
         let parts: Vec<&str> = vec![
-            "5",
-            "CCCAGG",
-            "ETH",
+            "2",
+            "Binance",
+            "BTC",
             "USDT",
-            "1",
-            "2850.50", // PRICE
-            "1769917600", // LASTUPDATE
+            "1",          // FLAGS (mandatory, index 4)
+            "67800.50",   // PRICE (0x1, index 5)
+            "67800.45",   // BID (0x2, index 6)
+            "67800.55",   // OFFER/ASK (0x4, index 7)
+            "1716100000", // LASTUPDATE (0x8, index 8)
+            "f",          // bitmask (last segment)
         ];
 
         let event = CryptoCompareWebSocket::parse_ticker_streamer(&parts);
         assert!(event.is_some());
 
         if let Some(StreamEvent::Ticker(ticker)) = event {
-            assert_eq!(ticker.symbol, "ETHUSDT");
+            assert_eq!(ticker.symbol, "BTCUSDT");
+            assert_eq!(ticker.last_price, 67800.50);
+            assert_eq!(ticker.bid_price, Some(67800.45));
+            assert_eq!(ticker.ask_price, Some(67800.55));
+            assert_eq!(ticker.timestamp, 1716100000000);
+        } else {
+            panic!("Expected StreamEvent::Ticker");
+        }
+    }
+
+    #[test]
+    fn test_parse_ticker_streamer_price_only() {
+        // Partial update: only PRICE changed, bitmask = 0x1
+        // Parts[4]=FLAGS (mandatory), parts[5]=PRICE, parts[6]=bitmask
+        let parts: Vec<&str> = vec![
+            "5",
+            "CCCAGG",
+            "ETH",
+            "USD",
+            "1",       // FLAGS (mandatory, index 4)
+            "2850.50", // PRICE (0x1, index 5)
+            "1",       // bitmask (last segment)
+        ];
+
+        let event = CryptoCompareWebSocket::parse_ticker_streamer(&parts);
+        assert!(event.is_some());
+
+        if let Some(StreamEvent::Ticker(ticker)) = event {
+            assert_eq!(ticker.symbol, "ETHUSD");
             assert_eq!(ticker.last_price, 2850.50);
-            // Optional fields should be None in partial updates
+            assert!(ticker.bid_price.is_none());
+            assert!(ticker.ask_price.is_none());
             assert!(ticker.high_24h.is_none());
             assert!(ticker.low_24h.is_none());
-            assert!(ticker.volume_24h.is_none());
+            assert_eq!(ticker.timestamp, 0); // no LASTUPDATE in mask
         } else {
             panic!("Expected StreamEvent::Ticker");
         }

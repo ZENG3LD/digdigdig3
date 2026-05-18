@@ -930,9 +930,9 @@ impl MexcParser {
             let ticker = Self::parse_pb_aggre_deals(body, &symbol, timestamp)?;
             Ok((channel, StreamEvent::Ticker(ticker)))
         } else if channel.contains("bookTicker") {
-            // field 306: PublicBookTickerV3Api
-            let body = Self::pb_bytes(data, 306)
-                .ok_or_else(|| ExchangeError::Parse("Missing bookTicker body (field 306)".into()))?;
+            // field 305: PublicBookTickerV3Api (PushDataV3ApiWrapper.publicBookTicker)
+            let body = Self::pb_bytes(data, 305)
+                .ok_or_else(|| ExchangeError::Parse("Missing bookTicker body (field 305)".into()))?;
             let ticker = Self::parse_pb_book_ticker(body, &symbol, timestamp)?;
             Ok((channel, StreamEvent::Ticker(ticker)))
         } else if channel.contains("aggre.depth") || channel.contains("public.depth") {

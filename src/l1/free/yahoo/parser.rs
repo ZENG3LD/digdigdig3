@@ -149,6 +149,54 @@ impl YahooFinanceParser {
         Ok(klines)
     }
 
+    /// Parse ticker from /v7/finance/quote?symbols={symbol} response
+    ///
+    /// Response format:
+    /// ```json
+    /// {
+    ///   "quoteResponse": {
+    ///     "result": [{
+    ///       "symbol": "AAPL",
+    ///       "regularMarketPrice": 189.51,
+    ///       "regularMarketTime": 1718788303,
+    ///       "bid": 189.50,
+    ///       "ask": 189.52,
+    ///       "regularMarketDayHigh": 190.00,
+    ///       ...
+    ///     }]
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// `regularMarketTime` is Unix **seconds**; converted to ms on the way out.
+    pub fn parse_quote_ticker(response: &Value, symbol: &str) -> ExchangeResult<Ticker> {
+        let result = Self::get_quote_response_result(response)?;
+        let first = result
+            .first()
+            .ok_or_else(|| ExchangeError::Parse("quoteResponse.result is empty".to_string()))?;
+
+        Ok(Ticker {
+            symbol: first
+                .get("symbol")
+                .and_then(|v| v.as_str())
+                .unwrap_or(symbol)
+                .to_string(),
+            last_price: Self::require_f64(first, "regularMarketPrice")?,
+            bid_price: Self::get_f64(first, "bid"),
+            ask_price: Self::get_f64(first, "ask"),
+            high_24h: Self::get_f64(first, "regularMarketDayHigh"),
+            low_24h: Self::get_f64(first, "regularMarketDayLow"),
+            volume_24h: Self::get_f64(first, "regularMarketVolume"),
+            quote_volume_24h: None,
+            price_change_24h: Self::get_f64(first, "regularMarketChange"),
+            price_change_percent_24h: Self::get_f64(first, "regularMarketChangePercent"),
+            // regularMarketTime is seconds → convert to ms
+            timestamp: Self::get_i64(first, "regularMarketTime")
+                .map(|s| s * 1_000)
+                .unwrap_or_else(|| chrono::Utc::now().timestamp_millis()),
+        })
+    }
+
     /// Parse symbols from /v7/finance/quote response (multiple symbols)
     pub fn parse_symbols(response: &Value) -> ExchangeResult<Vec<String>> {
         let result = Self::get_quote_response_result(response)?;
@@ -345,6 +393,56 @@ mod tests {
 
         let price = YahooFinanceParser::parse_price(&response).unwrap();
         assert_eq!(price, 150.25);
+    }
+
+    #[test]
+    fn test_parse_quote_ticker() {
+        let response = json!({
+            "quoteResponse": {
+                "result": [{
+                    "symbol": "AAPL",
+                    "regularMarketPrice": 189.51,
+                    "regularMarketTime": 1718788303_i64,
+                    "bid": 189.50,
+                    "ask": 189.52,
+                    "bidSize": 800,
+                    "askSize": 1100,
+                    "regularMarketDayHigh": 190.00,
+                    "regularMarketDayLow": 188.50,
+                    "regularMarketVolume": 50000000,
+                    "regularMarketChange": 1.0,
+                    "regularMarketChangePercent": 0.5
+                }],
+                "error": null
+            }
+        });
+
+        let ticker = YahooFinanceParser::parse_quote_ticker(&response, "AAPL").unwrap();
+        assert_eq!(ticker.symbol, "AAPL");
+        assert!((ticker.last_price - 189.51).abs() < 1e-4);
+        assert_eq!(ticker.bid_price, Some(189.50));
+        assert_eq!(ticker.ask_price, Some(189.52));
+        assert_eq!(ticker.timestamp, 1718788303_i64 * 1_000);
+    }
+
+    #[test]
+    fn test_parse_quote_ticker_no_bid_ask() {
+        // Crypto may return no bid/ask — must not error, just None
+        let response = json!({
+            "quoteResponse": {
+                "result": [{
+                    "symbol": "BTC-USD",
+                    "regularMarketPrice": 65000.0,
+                    "regularMarketTime": 1718788303_i64
+                }],
+                "error": null
+            }
+        });
+
+        let ticker = YahooFinanceParser::parse_quote_ticker(&response, "BTC-USD").unwrap();
+        assert_eq!(ticker.symbol, "BTC-USD");
+        assert!(ticker.bid_price.is_none());
+        assert!(ticker.ask_price.is_none());
     }
 
     #[test]

@@ -3,8 +3,6 @@
 //! Data provider connector that downloads and parses binary tick data files.
 
 use async_trait::async_trait;
-use chrono::{Datelike, Timelike};
-
 use crate::core::{
     ExchangeId, ExchangeType, AccountType, SymbolInput,
     ExchangeError, ExchangeResult,
@@ -209,73 +207,34 @@ impl ExchangeIdentity for DukascopyConnector {
 
 #[async_trait]
 impl MarketData for DukascopyConnector {
-    /// Get current price (from latest available tick data)
+    /// Get current price — NOT SUPPORTED
     ///
-    /// Note: This returns the most recent tick from the last complete hour.
-    /// For true real-time prices, use JForex SDK or FIX API.
+    /// Dukascopy has no public live-quote REST endpoint. Only LZMA-compressed binary
+    /// archives (.bi5) with 1-4h lag are available. Real-time prices require JForex SDK
+    /// + account credentials.
     async fn get_price(
         &self,
-        symbol: SymbolInput<'_>,
+        _symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<f64> {
-        let symbol_str: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
-
-        // Try to find the most recent hour with data (backtrack up to 72 hours for weekends)
-        let now = chrono::Utc::now();
-        for hours_back in 1..=72 {
-            let target = now - chrono::Duration::hours(hours_back);
-            let year = target.year() as u32;
-            let month = target.month() - 1;
-            let day = target.day();
-            let hour = target.hour();
-
-            match self.get_hour_ticks(&symbol_str, year, month, day, hour).await {
-                Ok(ticks) if !ticks.is_empty() => {
-                    return DukascopyParser::get_latest_price(&ticks);
-                }
-                _ => continue, // No data for this hour, try earlier
-            }
-        }
-
-        Err(ExchangeError::Api {
-            code: 404,
-            message: format!("No tick data found for {} in last 72 hours", symbol_str),
-        })
+        Err(ExchangeError::UnsupportedOperation(
+            "Dukascopy has no public live-quote REST endpoint — only LZMA-compressed binary archives (.bi5) with 1-4h lag at https://datafeed.dukascopy.com/datafeed/. Real-time quotes require JForex SDK + account credentials.".to_string(),
+        ))
     }
 
-    /// Get ticker (24h stats from last 24 hours of tick data)
+    /// Get ticker — NOT SUPPORTED
     ///
-    /// Note: This requires downloading 24 hours of data, which may be slow.
+    /// Dukascopy has no public live-quote REST endpoint. Only LZMA-compressed binary
+    /// archives (.bi5) with 1-4h lag are available. Real-time quotes require JForex SDK
+    /// + account credentials.
     async fn get_ticker(
         &self,
-        symbol: SymbolInput<'_>,
+        _symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        let symbol_str: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
-
-        // Try to find the most recent hour with data (backtrack up to 72 hours for weekends)
-        let now = chrono::Utc::now();
-        for hours_back in 1..=72 {
-            let target = now - chrono::Duration::hours(hours_back);
-            let year = target.year() as u32;
-            let month = target.month() - 1;
-            let day = target.day();
-            let hour = target.hour();
-
-            match self.get_hour_ticks(&symbol_str, year, month, day, hour).await {
-                Ok(ticks) if !ticks.is_empty() => {
-                    if let Some(last_tick) = ticks.last() {
-                        return Ok(DukascopyParser::tick_to_ticker(last_tick, &symbol_str));
-                    }
-                }
-                _ => continue, // No data for this hour, try earlier
-            }
-        }
-
-        Err(ExchangeError::Api {
-            code: 404,
-            message: format!("No tick data found for {} in last 72 hours", symbol_str),
-        })
+        Err(ExchangeError::UnsupportedOperation(
+            "Dukascopy has no public live-quote REST endpoint — only LZMA-compressed binary archives (.bi5) with 1-4h lag at https://datafeed.dukascopy.com/datafeed/. Real-time quotes require JForex SDK + account credentials.".to_string(),
+        ))
     }
 
     /// Get orderbook (NOT SUPPORTED - tick data only)

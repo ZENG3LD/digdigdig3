@@ -498,6 +498,40 @@ impl BingxParser {
         })
     }
 
+    /// Parse WebSocket bookTicker frame.
+    ///
+    /// Channel: `{symbol}@bookTicker`
+    /// Payload: `{ "bidPrice": "...", "bidQty": "...", "askPrice": "...", "askQty": "..." }`
+    ///
+    /// Emits a `Ticker` with `last_price` = midpoint of bid/ask and
+    /// `bid_price`/`ask_price` populated. High/low/volume fields are absent
+    /// in bookTicker and left as `None`.
+    pub fn parse_ws_book_ticker(data_type: &str, data: &Value) -> ExchangeResult<Ticker> {
+        let symbol = data_type.split('@').next().unwrap_or("").to_string();
+
+        let bid_price = Self::get_f64(data, "bidPrice")
+            .ok_or_else(|| ExchangeError::Parse("Missing bidPrice in bookTicker".to_string()))?;
+        let ask_price = Self::get_f64(data, "askPrice")
+            .ok_or_else(|| ExchangeError::Parse("Missing askPrice in bookTicker".to_string()))?;
+
+        let last_price = (bid_price + ask_price) / 2.0;
+        let timestamp = crate::core::timestamp_millis() as i64;
+
+        Ok(Ticker {
+            symbol,
+            last_price,
+            bid_price: Some(bid_price),
+            ask_price: Some(ask_price),
+            high_24h: None,
+            low_24h: None,
+            volume_24h: None,
+            quote_volume_24h: None,
+            price_change_24h: None,
+            price_change_percent_24h: None,
+            timestamp,
+        })
+    }
+
     /// Parse WebSocket trade
     pub fn parse_ws_trade(data: &Value) -> ExchangeResult<crate::core::PublicTrade> {
         use crate::core::types::TradeSide;
@@ -1070,6 +1104,24 @@ mod tests {
         assert_eq!(orderbook.bids.len(), 2);
         assert_eq!(orderbook.asks.len(), 2);
         assert!((orderbook.bids[0].price - 43302.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_parse_ws_book_ticker() {
+        let data = json!({
+            "bidPrice": "67432.10",
+            "bidQty": "0.543",
+            "askPrice": "67433.50",
+            "askQty": "0.821"
+        });
+        let ticker = BingxParser::parse_ws_book_ticker("BTC-USDT@bookTicker", &data).unwrap();
+        assert_eq!(ticker.symbol, "BTC-USDT");
+        assert!((ticker.bid_price.unwrap() - 67432.10).abs() < 0.001);
+        assert!((ticker.ask_price.unwrap() - 67433.50).abs() < 0.001);
+        let expected_mid = (67432.10 + 67433.50) / 2.0;
+        assert!((ticker.last_price - expected_mid).abs() < 0.001);
+        assert!(ticker.high_24h.is_none());
+        assert!(ticker.volume_24h.is_none());
     }
 
     #[test]

@@ -334,6 +334,7 @@ impl BingxWebSocket {
                         // Decompress GZIP data
                         match Self::decompress_message(&data) {
                             Ok(text) => {
+                                tracing::debug!(target: "bingx::ws", "gzip binary decoded: {}", &text[..text.len().min(200)]);
                                 // Check for ping message
                                 if let Ok(ping) = serde_json::from_str::<PingMessage>(&text) {
                                     // Send pong via the write half — no deadlock risk
@@ -433,6 +434,8 @@ impl BingxWebSocket {
         event_tx: &broadcast::Sender<WebSocketResult<StreamEvent>>,
         account_type: AccountType,
     ) -> WebSocketResult<()> {
+        tracing::debug!(target: "bingx::ws", "frame: {}", &text[..text.len().min(200)]);
+
         let msg: IncomingMessage = serde_json::from_str(text)
             .map_err(|e| WebSocketError::Parse(format!("Failed to parse message: {}", e)))?;
 
@@ -468,8 +471,13 @@ impl BingxWebSocket {
         // Parse based on stream type from dataType
         // Format: "SYMBOL@streamType" or "streamType" for private channels
 
-        if data_type.ends_with("@ticker") {
-            // Ticker stream
+        if data_type.ends_with("@bookTicker") {
+            // Best bid/ask stream — preferred for real-time bid/ask quotes
+            let ticker = BingxParser::parse_ws_book_ticker(data_type, data)
+                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+            Ok(Some(StreamEvent::Ticker(ticker)))
+        } else if data_type.ends_with("@ticker") {
+            // Full 24h stats stream (high/low/volume) — no bid/ask
             let ticker = BingxParser::parse_ws_ticker(data, account_type)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
             Ok(Some(StreamEvent::Ticker(ticker)))
@@ -600,7 +608,7 @@ impl BingxWebSocket {
         match &request.stream_type {
             StreamType::Ticker => {
                 let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, _account_type);
-                format!("{}@ticker", symbol)
+                format!("{}@bookTicker", symbol)
             }
             StreamType::Trade => {
                 let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, _account_type);
@@ -786,14 +794,21 @@ impl WebSocketConnector for BingxWebSocket {
     async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let data_type = Self::build_data_type(&request, *self.account_type.lock().await);
 
+        // Brief delay so the server completes the WS handshake before we send
+        // subscription frames. Some BingX endpoints drop frames sent immediately
+        // after connect before the upgrade is fully acknowledged.
+        sleep(Duration::from_millis(100)).await;
+
         let msg = SubscribeMessage {
             id: Uuid::new_v4().to_string(),
             req_type: "sub".to_string(),
-            data_type,
+            data_type: data_type.clone(),
         };
 
         let msg_json = serde_json::to_string(&msg)
             .map_err(|e| WebSocketError::ProtocolError(e.to_string()))?;
+
+        tracing::debug!(target: "bingx::ws", "subscribe: dataType={}", data_type);
 
         let mut writer_guard = self.ws_writer.lock().await;
         let writer = writer_guard

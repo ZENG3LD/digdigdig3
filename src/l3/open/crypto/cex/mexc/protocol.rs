@@ -75,7 +75,7 @@ impl MexcProtocol {
     fn spot_subscribe_frame(spec: &StreamSpec, op: &str) -> Result<Message, WebSocketError> {
         let sym = spec.symbol.as_str();
         let params = match &spec.kind {
-            StreamKind::Ticker => vec![MexcWsChannels::mini_ticker(sym)],
+            StreamKind::Ticker => vec![MexcWsChannels::book_ticker(sym)],
             StreamKind::Trade | StreamKind::AggTrade => vec![MexcWsChannels::aggre_deals(sym)],
             StreamKind::Orderbook | StreamKind::OrderbookDelta => {
                 vec![MexcWsChannels::aggre_depth(sym)]
@@ -97,7 +97,9 @@ impl MexcProtocol {
             "UNSUBSCRIPTION"
         };
 
-        let frame = json!({ "method": method, "params": params });
+        // MEXC requires an "id" field in every subscribe/unsubscribe request.
+        // Without it the server silently drops the subscription (0 events).
+        let frame = json!({ "id": 1, "method": method, "params": params });
         Ok(Message::Text(frame.to_string()))
     }
 
@@ -287,8 +289,11 @@ impl WsProtocol for MexcProtocol {
     fn decode_binary(&self, bytes: &[u8]) -> Result<Value, WebSocketError> {
         // Extract channel from protobuf wrapper field 1 (string, wire type 2).
         let channel = pb_string(bytes, 1).ok_or_else(|| {
+            tracing::warn!(target: "mexc::ws", "binary frame {} bytes — field 1 missing, raw prefix: {:?}", bytes.len(), &bytes[..bytes.len().min(16)]);
             WebSocketError::Parse("mexc: missing channel in protobuf wrapper (field 1)".into())
         })?;
+
+        tracing::debug!(target: "mexc::ws", "binary frame {} bytes, channel: {}", bytes.len(), channel);
 
         // Store raw bytes as JSON array so the parser can re-decode them.
         let pb_array: Vec<Value> = bytes.iter().map(|&b| Value::from(b)).collect();

@@ -494,11 +494,19 @@ impl CoinbaseParser {
             .and_then(Self::parse_rfc3339_to_millis)
             .unwrap_or(0);
 
+        let bid_price = ticker_data.get("best_bid")
+            .and_then(|b| b.as_str())
+            .and_then(|s| s.parse::<f64>().ok());
+
+        let ask_price = ticker_data.get("best_ask")
+            .and_then(|a| a.as_str())
+            .and_then(|s| s.parse::<f64>().ok());
+
         Ok(Ticker {
             symbol: symbol.to_string(),
             last_price,
-            bid_price: None, // Coinbase WS ticker channel does not carry top-of-book quotes — use level2 channel for bid/ask
-            ask_price: None, // Coinbase WS ticker channel does not carry top-of-book quotes — use level2 channel for bid/ask
+            bid_price,
+            ask_price,
             high_24h,
             low_24h,
             volume_24h,

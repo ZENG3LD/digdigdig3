@@ -6,6 +6,8 @@ pub struct KrxEndpoints {
     pub openapi_base: &'static str,
     /// Public Data Portal API (government, still works with serviceKey)
     pub public_data_portal: &'static str,
+    /// KRX Data Marketplace — public POST form endpoint, no auth required
+    pub data_marketplace: &'static str,
 }
 
 impl Default for KrxEndpoints {
@@ -13,6 +15,7 @@ impl Default for KrxEndpoints {
         Self {
             openapi_base: "https://data-dbg.krx.co.kr",
             public_data_portal: "https://apis.data.go.kr/1160100/service/GetKrxListedInfoService/getItemInfo",
+            data_marketplace: "http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd",
         }
     }
 }

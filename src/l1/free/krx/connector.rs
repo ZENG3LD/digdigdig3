@@ -11,19 +11,6 @@ use super::endpoints::*;
 use super::auth::*;
 use super::parser::*;
 
-/// Detect the most likely KRX market for a given 6-digit stock code.
-///
-/// KOSDAQ codes predominantly start with 2 or 3 (e.g. 035720 Kakao, 293490 Kakao Pay).
-/// All other first digits (0, 1, 4, 5, 6, 7, 8, 9) are KOSPI by convention.
-/// This is a heuristic — authoritative classification requires querying the KRX base-info
-/// endpoint, but this covers the vast majority of real-world cases without a network round-trip.
-fn detect_market(code: &str) -> MarketId {
-    let first_digit = code.chars().next().unwrap_or('0');
-    match first_digit {
-        '2' | '3' => MarketId::Kosdaq,
-        _ => MarketId::Kospi,
-    }
-}
 
 /// KRX (Korea Exchange) connector
 pub struct KrxConnector {
@@ -136,6 +123,44 @@ impl KrxConnector {
         Ok(json)
     }
 
+    /// POST form-encoded request to KRX Data Marketplace (no auth required)
+    ///
+    /// Endpoint: `http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd`
+    /// Requires a browser-like User-Agent header or the server returns a block page.
+    async fn post_data_marketplace(
+        &self,
+        params: &[(&str, &str)],
+    ) -> ExchangeResult<serde_json::Value> {
+        let url = self.endpoints.data_marketplace;
+
+        let response = self
+            .client
+            .post(url)
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            )
+            .header("Referer", "http://data.krx.co.kr/")
+            .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+            .form(params)
+            .send()
+            .await
+            .map_err(|e| ExchangeError::Network(format!("KRX marketplace request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ExchangeError::Http(format!("HTTP {}: {}", status, body)));
+        }
+
+        let json: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| ExchangeError::Parse(format!("JSON parse error: {}", e)))?;
+
+        Ok(json)
+    }
+
     /// Make GET request to Public Data Portal API
     async fn get_portal(&self, mut params: HashMap<String, String>) -> ExchangeResult<serde_json::Value> {
         let url = self.endpoints.public_data_portal;
@@ -174,25 +199,6 @@ impl KrxConnector {
         Ok(json)
     }
 
-    /// Get daily trading data for a specific date
-    ///
-    /// Internal helper that fetches data for a single date.
-    /// The new API only supports single-date queries.
-    async fn get_daily_data(
-        &self,
-        _symbol: &str,
-        date: &str,
-        market: MarketId,
-    ) -> ExchangeResult<serde_json::Value> {
-        let endpoint = market.daily_trading_endpoint();
-
-        // Build request body
-        let body = serde_json::json!({
-            "basDd": date
-        });
-
-        self.post_openapi(endpoint, body).await
-    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -224,27 +230,40 @@ impl ExchangeIdentity for KrxConnector {
 
 #[async_trait]
 impl MarketData for KrxConnector {
-    /// Get current price
-    ///
-    /// Note: KRX Open API response format is currently unknown — `parse_klines`
-    /// in parser.rs is a stub that may return garbage. Until the live format
-    /// is confirmed, we fail loudly rather than serve placeholder data.
-    async fn get_price(&self, _symbol: SymbolInput<'_>, _account_type: AccountType) -> ExchangeResult<Price> {
-        Err(ExchangeError::UnsupportedOperation(
-            "KRX parser is a stub — Open API response format unknown, get_price disabled. \
-             See src/l1/free/krx/parser.rs TODO."
-                .to_string(),
-        ))
+    /// Get current price via Data Marketplace (last daily close)
+    async fn get_price(&self, symbol: SymbolInput<'_>, account_type: AccountType) -> ExchangeResult<Price> {
+        let klines = self.get_klines(symbol, "1d", Some(1), account_type, None).await?;
+        klines
+            .first()
+            .map(|k| k.close)
+            .ok_or_else(|| ExchangeError::NotFound("No data returned for symbol".to_string()))
     }
 
-    /// Get ticker (24h stats)
-    ///
-    /// Disabled along with `get_price` / `get_klines` — see note above.
-    async fn get_ticker(&self, _symbol: SymbolInput<'_>, _account_type: AccountType) -> ExchangeResult<Ticker> {
-        Err(ExchangeError::UnsupportedOperation(
-            "KRX parser is a stub — Open API response format unknown, get_ticker disabled."
-                .to_string(),
-        ))
+    /// Get ticker (24h stats) via Data Marketplace (last daily bar)
+    async fn get_ticker(&self, symbol: SymbolInput<'_>, account_type: AccountType) -> ExchangeResult<Ticker> {
+        let sym_str: String = match symbol {
+            SymbolInput::Raw(s) => s.to_string(),
+            SymbolInput::Canonical(c) => c.to_concat(),
+        };
+        let klines = self
+            .get_klines(SymbolInput::Raw(&sym_str), "1d", Some(1), account_type, None)
+            .await?;
+        let k = klines
+            .first()
+            .ok_or_else(|| ExchangeError::NotFound("No data returned for symbol".to_string()))?;
+        Ok(Ticker {
+            symbol: sym_str,
+            last_price: k.close,
+            bid_price: None,
+            ask_price: None,
+            high_24h: Some(k.high),
+            low_24h: Some(k.low),
+            volume_24h: Some(k.volume),
+            quote_volume_24h: k.quote_volume,
+            price_change_24h: None,
+            price_change_percent_24h: None,
+            timestamp: k.open_time,
+        })
     }
 
     /// Get orderbook
@@ -261,87 +280,56 @@ impl MarketData for KrxConnector {
         ))
     }
 
-    /// Get klines/candles (historical OHLCV data)
+    /// Get klines/candles via KRX Data Marketplace (public, no auth required)
     ///
-    /// Note: The new API only supports single-date queries.
-    /// For date ranges, we must loop over each date.
+    /// KRX only provides daily (`1d`) candles.
+    /// `limit` controls how many calendar days back to start (default 30).
     async fn get_klines(
         &self,
-        _symbol: SymbolInput<'_>,
-        _interval: &str,
-        _limit: Option<u16>,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        limit: Option<u16>,
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        return Err(ExchangeError::UnsupportedOperation(
-            "KRX parser is a stub — Open API response format unknown, \
-             get_klines disabled. See src/l1/free/krx/parser.rs TODO."
-                .to_string(),
-        ));
-
-        // Old stub implementation kept below behind an unreachable return for
-        // reference — restore once the live KRX Open API response format is
-        // captured and `parse_klines` actually works.
-        #[allow(unreachable_code)]
-        {
-        let sym_str: String = match _symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
-        let symbol = sym_str.as_str();
-
-        // KRX only provides daily data
-        if _interval != "1d" && _interval != "1day" {
+        if interval != "1d" && interval != "1day" {
             return Err(ExchangeError::InvalidRequest(
                 "KRX only provides daily (1d) candles".to_string(),
             ));
         }
 
-        // Calculate date range
-        let limit = _limit.unwrap_or(30) as i64;
+        let sym_str: String = match symbol {
+            SymbolInput::Raw(s) => s.to_string(),
+            SymbolInput::Canonical(c) => c.to_concat(),
+        };
+        let code = sym_str.as_str();
+
+        let n_days = limit.unwrap_or(30) as i64;
 
         use chrono::{Duration, Local, Datelike};
         let end = Local::now();
-        let start = end - Duration::days(limit - 1);
+        let start = end - Duration::days(n_days - 1);
 
-        // Collect dates to fetch
-        let mut dates = Vec::new();
-        let mut current = start;
-        while current <= end {
-            dates.push(format_date(current.year(), current.month(), current.day()));
-            current += Duration::days(1);
-        }
+        let strt_dd = format_date(start.year(), start.month(), start.day());
+        let end_dd = format_date(end.year(), end.month(), end.day());
 
-        // Detect market from the stock code.
-        // Korean 6-digit codes have a conventional first-digit breakdown:
-        //   0, 1        → KOSPI (e.g. 005930 Samsung, 000660 SK Hynix)
-        //   2 (2xxxxx)  → KOSDAQ (most 2-series codes)
-        //   3 (3xxxxx)  → KOSDAQ (e.g. 035720 Kakao also classified here)
-        //   4, 5        → KOSPI preferred (ETFs, preferred shares)
-        //   6, 7, 8, 9  → KOSPI
-        // This is a best-effort heuristic; exact classification requires
-        // querying the KRX base info endpoint.
-        let market = detect_market(symbol);
+        // Full ISIN = KR7 + 6-digit + 003 (best-effort; real ISIN may differ for some codes)
+        let isin = format!("KR7{}003", code);
 
-        // Fetch all dates and collect klines
-        // Note: In production, you may want to add rate limiting and concurrency control
-        let mut all_klines = Vec::new();
+        let params: &[(&str, &str)] = &[
+            ("bld", "dbms/MDC/STAT/standard/MDCSTAT01701"),
+            ("isuCd", &isin),
+            ("isuCd2", code),
+            ("strtDd", &strt_dd),
+            ("endDd", &end_dd),
+            ("adjStkPrc", "2"),
+            ("adjStkPrcTpCd", "S"),
+        ];
 
-        for date in dates {
-            match self.get_daily_data(symbol, &date, market).await {
-                Ok(response) => {
-                    // Parse klines from response for this specific date and symbol
-                    match KrxParser::parse_klines(&response, symbol) {
-                        Ok(mut klines) => all_klines.append(&mut klines),
-                        Err(_) => continue, // Skip dates with no data
-                    }
-                }
-                Err(_) => continue, // Skip dates that fail (weekends, holidays, etc.)
-            }
-        }
-
-        // Sort by timestamp
-        all_klines.sort_by_key(|k| k.open_time);
-
-        Ok(all_klines)
-        } // end #[allow(unreachable_code)] block
+        let response = self.post_data_marketplace(params).await?;
+        let mut klines = KrxParser::parse_klines(&response, code)?;
+        klines.sort_by_key(|k| k.open_time);
+        Ok(klines)
     }
 
     /// Ping the API

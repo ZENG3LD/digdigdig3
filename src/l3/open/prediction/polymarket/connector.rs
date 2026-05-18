@@ -17,7 +17,7 @@
 //! Public mode gives access to all read endpoints.
 //! Authenticated mode additionally enables /orders endpoint.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -39,7 +39,7 @@ use super::endpoints::{
 use super::parser::{
     PolymarketParser, ClobMarket, PolyMarket, PolyOrderBook, PolyMidpoint,
     PolyEvent,
-    clob_market_to_symbol_info, clob_market_to_ticker,
+    clob_market_to_symbol_info,
     poly_market_to_symbol_info,
     price_history_to_klines, poly_orderbook_to_v5,
     interval_to_ms,
@@ -107,6 +107,8 @@ pub struct PolymarketConnector {
     limiter: Arc<Mutex<RuntimeLimiter>>,
     /// Pressure monitor — logs transitions, gates non-essential requests at >= 90%
     monitor: Arc<Mutex<RateLimitMonitor>>,
+    /// Cached token_id from Gamma discovery (one HTTP round-trip shared across callers)
+    token_cache: Arc<OnceLock<String>>,
 }
 
 impl PolymarketConnector {
@@ -125,6 +127,7 @@ impl PolymarketConnector {
             endpoints: PolymarketEndpoints::default(),
             limiter: Arc::new(Mutex::new(RuntimeLimiter::from_caps(&POLYMARKET_RATE_CAPS))),
             monitor: Arc::new(Mutex::new(RateLimitMonitor::new("Polymarket"))),
+            token_cache: Arc::new(OnceLock::new()),
         }
     }
 
@@ -139,6 +142,7 @@ impl PolymarketConnector {
             endpoints: PolymarketEndpoints::default(),
             limiter: Arc::new(Mutex::new(RuntimeLimiter::from_caps(&POLYMARKET_RATE_CAPS))),
             monitor: Arc::new(Mutex::new(RateLimitMonitor::new("Polymarket"))),
+            token_cache: Arc::new(OnceLock::new()),
         }
     }
 
@@ -153,6 +157,7 @@ impl PolymarketConnector {
             endpoints: PolymarketEndpoints::default(),
             limiter: Arc::new(Mutex::new(RuntimeLimiter::from_caps(&POLYMARKET_RATE_CAPS))),
             monitor: Arc::new(Mutex::new(RateLimitMonitor::new("Polymarket"))),
+            token_cache: Arc::new(OnceLock::new()),
         }
     }
 
@@ -391,6 +396,57 @@ impl PolymarketConnector {
             std::borrow::Cow::Borrowed(symbol)
         }
     }
+
+    /// Fetch the most active CLOB-tradable market and return its first token_id.
+    ///
+    /// Uses Gamma API sorted by `volume_24hr` descending, filtered to active+open
+    /// markets. The result is cached in `token_cache` so multiple callers share
+    /// a single HTTP round-trip per connector lifetime.
+    async fn discover_active_token_id(&self) -> ExchangeResult<String> {
+        if let Some(cached) = self.token_cache.get() {
+            return Ok(cached.clone());
+        }
+
+        let url = format!(
+            "{}/markets?active=true&closed=false&order=volume_24hr&ascending=false&limit=1",
+            self.endpoints.gamma_base
+        );
+        let response = self.get_url(&url).await?;
+
+        let arr = response
+            .as_array()
+            .ok_or_else(|| ExchangeError::Parse("Gamma discovery: expected array".to_string()))?;
+
+        let market = arr.first().ok_or_else(|| {
+            ExchangeError::Parse("Gamma discovery: no active markets returned".to_string())
+        })?;
+
+        let token_id = market
+            .get("clobTokenIds")
+            .and_then(|v| {
+                // clobTokenIds may be a JSON array or a stringified JSON array
+                if let Some(arr) = v.as_array() {
+                    arr.first().and_then(|t| t.as_str()).map(String::from)
+                } else if let Some(s) = v.as_str() {
+                    // parse stringified array
+                    serde_json::from_str::<Vec<String>>(s)
+                        .ok()
+                        .and_then(|ids| ids.into_iter().next())
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| {
+                ExchangeError::Parse(
+                    "Gamma discovery: clobTokenIds[0] missing or empty".to_string(),
+                )
+            })?;
+
+        // Best-effort cache — if another task already set it, use theirs.
+        let _ = self.token_cache.set(token_id.clone());
+        Ok(token_id)
+    }
+
 }
 
 impl Default for PolymarketConnector {
@@ -611,24 +667,90 @@ impl MarketData for PolymarketConnector {
         Ok(klines)
     }
 
-    /// Get 24h ticker for a market
+    /// Get ticker for a market.
     ///
-    /// `symbol` should be the `condition_id` (0x...).
+    /// `symbol` may be:
+    /// - Empty string or a string containing "DISCOVER" → auto-discover the most
+    ///   active token_id from Gamma API and query CLOB midpoint + book.
+    /// - A raw token_id (large decimal number ~77 digits) → used directly.
+    /// - A condition_id (0x… 66 chars) → resolved to YES token_id via CLOB `/markets`.
     async fn get_ticker(
         &self,
         symbol: SymbolInput<'_>,
         account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
         let symbol = symbol.resolve(ExchangeId::Polymarket, account_type)?;
-        let id = self.lower_id(&symbol);
-        let condition_id = id.as_ref();
-        let market = self.get_market(condition_id).await?;
+        let raw = symbol.as_ref();
 
-        clob_market_to_ticker(&market).ok_or_else(|| {
-            ExchangeError::Parse(format!(
-                "No ticker data available for market {}",
-                condition_id
-            ))
+        // Determine the CLOB token_id to use.
+        let token_id: String =
+            if raw.is_empty() || raw.contains("DISCOVER") {
+                // Auto-discover the highest-volume active market token.
+                self.discover_active_token_id().await?
+            } else if (raw.starts_with("0x") || raw.starts_with("0X")) && raw.len() == 66 {
+                // condition_id → look up YES token via CLOB markets endpoint.
+                let lowered = self.lower_id(raw);
+                self.get_yes_token_id(lowered.as_ref()).await?
+            } else {
+                // Already a token_id — use as-is.
+                raw.to_string()
+            };
+
+        // Fetch midpoint as last_price.
+        let mid_resp = self
+            .get_clob("/midpoint", &[("token_id", token_id.as_str())])
+            .await?;
+        let mid: f64 = mid_resp
+            .get("mid")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse().ok())
+            .or_else(|| mid_resp.get("mid").and_then(|v| v.as_f64()))
+            .unwrap_or(0.0);
+
+        // Fetch best bid/ask from order book.
+        let (bid, ask) = match self
+            .get_clob("/book", &[("token_id", token_id.as_str())])
+            .await
+        {
+            Ok(book_resp) => {
+                let bid = book_resp
+                    .get("bids")
+                    .and_then(|v| v.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|entry| entry.get("price"))
+                    .and_then(|p| p.as_str())
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                let ask = book_resp
+                    .get("asks")
+                    .and_then(|v| v.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|entry| entry.get("price"))
+                    .and_then(|p| p.as_str())
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                (bid, ask)
+            }
+            Err(_) => (0.0, 0.0),
+        };
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+
+        Ok(Ticker {
+            symbol: token_id,
+            last_price: mid,
+            bid_price: if bid > 0.0 { Some(bid) } else { None },
+            ask_price: if ask > 0.0 { Some(ask) } else { None },
+            volume_24h: None,
+            quote_volume_24h: None,
+            price_change_24h: None,
+            price_change_percent_24h: None,
+            high_24h: None,
+            low_24h: None,
+            timestamp: now_ms,
         })
     }
 

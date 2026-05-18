@@ -593,6 +593,45 @@ impl UpbitParser {
         })
     }
 
+    /// Synthesize a Ticker from a WebSocket orderbook frame.
+    ///
+    /// Upbit's ticker channel does not carry best bid/ask. Callers subscribed
+    /// to `StreamType::Ticker` receive a companion orderbook subscription so
+    /// that bid_price / ask_price can be filled from `orderbook_units[0]`.
+    ///
+    /// Returns `None` if `orderbook_units` is missing or empty (no bid/ask
+    /// available yet), in which case the caller should skip emitting a Ticker.
+    pub fn parse_ws_orderbook_as_ticker(data: &Value) -> Option<Ticker> {
+        let units = data.get("orderbook_units")?.as_array()?;
+        let best = units.first()?;
+
+        let bid_price = Self::get_f64(best, "bid_price")?;
+        let ask_price = Self::get_f64(best, "ask_price")?;
+        let symbol = Self::get_str(data, "code").unwrap_or("").to_string();
+        let timestamp = data.get("timestamp")
+            .and_then(|t| t.as_i64())
+            .unwrap_or_else(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0)
+            });
+
+        Some(Ticker {
+            symbol,
+            last_price: 0.0, // not available in orderbook frame; consumers use bid/ask
+            bid_price: Some(bid_price),
+            ask_price: Some(ask_price),
+            high_24h: None,
+            low_24h: None,
+            volume_24h: None,
+            quote_volume_24h: None,
+            price_change_24h: None,
+            price_change_percent_24h: None,
+            timestamp,
+        })
+    }
+
     /// Parse WebSocket orderbook message
     pub fn parse_ws_orderbook(data: &Value) -> ExchangeResult<OrderBook> {
         let units = data.get("orderbook_units")

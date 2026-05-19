@@ -13,29 +13,29 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use tokio::time::timeout;
 
-use digdigdig3::l3::open::crypto::cex::binance::{BinanceConnector, BinanceWebSocket};
-use digdigdig3::l3::open::crypto::cex::bybit::{BybitConnector, BybitWebSocket};
-use digdigdig3::l3::open::crypto::cex::okx::{OkxConnector, OkxWebSocket};
-use digdigdig3::l3::open::crypto::cex::hyperliquid::{HyperliquidConnector, HyperliquidWebSocket};
-use digdigdig3::l3::open::crypto::cex::deribit::{DeribitConnector, DeribitWebSocket};
-use digdigdig3::l3::open::crypto::cex::bitget::BitgetConnector;
-use digdigdig3::l3::open::crypto::cex::htx::{HtxConnector, HtxWebSocket};
-use digdigdig3::l3::open::crypto::cex::kucoin::{KuCoinConnector, KuCoinWebSocket};
-use digdigdig3::l3::open::crypto::cex::gateio::{GateioConnector, GateioWebSocket};
-use digdigdig3::l3::open::crypto::cex::bitfinex::{BitfinexConnector, BitfinexWebSocket};
-use digdigdig3::l3::open::crypto::cex::kraken::{KrakenConnector, KrakenWebSocket};
-use digdigdig3::l3::open::crypto::cex::gemini::{GeminiConnector, GeminiWebSocket};
-use digdigdig3::l3::open::crypto::cex::bitstamp::{BitstampConnector, BitstampWebSocket};
-use digdigdig3::l3::open::crypto::cex::upbit::UpbitConnector;
-use digdigdig3::l3::open::crypto::cex::crypto_com::{CryptoComConnector, CryptoComWebSocket};
-use digdigdig3::l3::open::crypto::cex::bingx::BingxConnector;
-use digdigdig3::l3::open::crypto::cex::coinbase::CoinbaseWebSocket;
-use digdigdig3::l3::open::crypto::dex::dydx::DydxConnector;
+use digdigdig3_core::l3::open::crypto::cex::binance::{BinanceConnector, BinanceWebSocket};
+use digdigdig3_core::l3::open::crypto::cex::bybit::{BybitConnector, BybitWebSocket};
+use digdigdig3_core::l3::open::crypto::cex::okx::{OkxConnector, OkxWebSocket};
+use digdigdig3_core::l3::open::crypto::cex::hyperliquid::{HyperliquidConnector, HyperliquidWebSocket};
+use digdigdig3_core::l3::open::crypto::cex::deribit::{DeribitConnector, DeribitWebSocket};
+use digdigdig3_core::l3::open::crypto::cex::bitget::BitgetConnector;
+use digdigdig3_core::l3::open::crypto::cex::htx::{HtxConnector, HtxWebSocket};
+use digdigdig3_core::l3::open::crypto::cex::kucoin::{KuCoinConnector, KuCoinWebSocket};
+use digdigdig3_core::l3::open::crypto::cex::gateio::{GateioConnector, GateioWebSocket};
+use digdigdig3_core::l3::open::crypto::cex::bitfinex::{BitfinexConnector, BitfinexWebSocket};
+use digdigdig3_core::l3::open::crypto::cex::kraken::{KrakenConnector, KrakenWebSocket};
+use digdigdig3_core::l3::open::crypto::cex::gemini::{GeminiConnector, GeminiWebSocket};
+use digdigdig3_core::l3::open::crypto::cex::bitstamp::{BitstampConnector, BitstampWebSocket};
+use digdigdig3_core::l3::open::crypto::cex::upbit::UpbitConnector;
+use digdigdig3_core::l3::open::crypto::cex::crypto_com::{CryptoComConnector, CryptoComWebSocket};
+use digdigdig3_core::l3::open::crypto::cex::bingx::BingxConnector;
+use digdigdig3_core::l3::open::crypto::cex::coinbase::CoinbaseWebSocket;
+use digdigdig3_core::l3::open::crypto::dex::dydx::DydxConnector;
 
-use digdigdig3::core::{
+use digdigdig3_core::core::{
     AccountType, Symbol, StreamType, SubscriptionRequest,
 };
-use digdigdig3::core::traits::WebSocketConnector;
+use digdigdig3_core::core::traits::WebSocketConnector;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 

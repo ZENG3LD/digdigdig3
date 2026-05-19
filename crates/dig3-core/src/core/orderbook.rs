@@ -3,8 +3,8 @@
 //! ## Usage
 //!
 //! ```rust
-//! use digdigdig3::core::orderbook::{OrderBookTracker, OrderBookError};
-//! use digdigdig3::core::types::{OrderBook, OrderbookDelta};
+//! use digdigdig3_core::core::orderbook::{OrderBookTracker, OrderBookError};
+//! use digdigdig3_core::core::types::{OrderBook, OrderbookDelta};
 //!
 //! let mut tracker = OrderBookTracker::new("BTCUSDT");
 //! tracker.apply_snapshot(&snapshot)?;

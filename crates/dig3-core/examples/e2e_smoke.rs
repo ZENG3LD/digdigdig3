@@ -24,16 +24,16 @@
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use digdigdig3::connector_manager::ExchangeHub;
-use digdigdig3::core::traits::{Credentials, MarketData, WebSocketConnector};
-use digdigdig3::core::types::{
+use digdigdig3_core::connector_manager::ExchangeHub;
+use digdigdig3_core::core::traits::{Credentials, MarketData, WebSocketConnector};
+use digdigdig3_core::core::types::{
     AccountType, BalanceQuery, ExchangeId, PositionQuery,
     StreamEvent, StreamType, SubscriptionRequest, Symbol, SymbolInput,
     UserTradeFilter,
 };
-use digdigdig3::core::utils::SymbolNormalizer;
-use digdigdig3::l2::free::moex::MoexWebSocket;
-use digdigdig3::testing::harness::TestHarness;
+use digdigdig3_core::core::utils::SymbolNormalizer;
+use digdigdig3_core::l2::free::moex::MoexWebSocket;
+use digdigdig3_core::testing::harness::TestHarness;
 use futures_util::StreamExt;
 use tokio::time::{timeout, Duration};
 

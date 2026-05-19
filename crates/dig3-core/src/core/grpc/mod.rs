@@ -10,7 +10,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! digdigdig3 = { version = "...", features = ["grpc"] }
+//! digdigdig3-core = { version = "...", features = ["grpc"] }
 //! ```
 
 mod client;

@@ -954,8 +954,8 @@ impl TinkoffConnector {
     /// ```rust,no_run
     /// # #[cfg(feature = "grpc")]
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// use digdigdig3::core::grpc::GrpcClient;
-    /// use digdigdig3::stocks::russia::tinkoff::TinkoffConnector;
+    /// use digdigdig3_core::core::grpc::GrpcClient;
+    /// use digdigdig3_core::stocks::russia::tinkoff::TinkoffConnector;
     ///
     /// let grpc = GrpcClient::connect("https://invest-public-api.tinkoff.ru:443").await?;
     /// let connector = TinkoffConnector::from_env()

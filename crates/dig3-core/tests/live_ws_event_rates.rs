@@ -12,8 +12,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::timeout;
 
-use digdigdig3::connector_manager::ExchangeHub;
-use digdigdig3::core::types::{AccountType, ExchangeId, StreamType, Symbol, SubscriptionRequest};
+use digdigdig3_core::connector_manager::ExchangeHub;
+use digdigdig3_core::core::types::{AccountType, ExchangeId, StreamType, Symbol, SubscriptionRequest};
 
 // (ExchangeId, AccountType, raw_symbol, stream_types)
 // Ticker + Trade for each exchange, using exchange-native symbols.

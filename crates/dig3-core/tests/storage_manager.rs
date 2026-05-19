@@ -4,7 +4,7 @@
 
 use byteorder::{LittleEndian, WriteBytesExt};
 use chrono::Utc;
-use digdigdig3::core::storage::{StorageConfig, StorageManager, StreamKey};
+use digdigdig3_core::core::storage::{StorageConfig, StorageManager, StreamKey};
 use std::path::PathBuf;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -218,7 +218,7 @@ async fn concurrent_writes_to_different_keys() {
 
 #[tokio::test]
 async fn rotation_at_midnight_creates_new_file() {
-    use digdigdig3::core::storage::rotation::{read_file_range, RotatingWriter};
+    use digdigdig3_core::core::storage::rotation::{read_file_range, RotatingWriter};
 
     let dir = tmpdir("rotation");
     let stream_dir = dir.join("test_stream");
@@ -275,7 +275,7 @@ async fn rotation_at_midnight_creates_new_file() {
 #[tokio::test]
 async fn read_range_spans_multiple_days() {
     use chrono::Duration;
-    use digdigdig3::core::storage::rotation::RotatingWriter;
+    use digdigdig3_core::core::storage::rotation::RotatingWriter;
 
     let dir = tmpdir("span_days");
     let mgr_dir = dir.join("binance").join("spot").join("BTCUSDT").join("ticker");

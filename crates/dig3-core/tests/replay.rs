@@ -7,11 +7,11 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use chrono::Utc;
-use digdigdig3::core::storage::{StorageConfig, StorageManager, StreamKey};
-use digdigdig3::core::types::{
+use digdigdig3_core::core::storage::{StorageConfig, StorageManager, StreamKey};
+use digdigdig3_core::core::types::{
     AccountType, ExchangeId, StreamEvent, SubscriptionRequest, Symbol, Ticker,
 };
-use digdigdig3::{ReplayConfig, ReplayHub, ReplayRate};
+use digdigdig3_core::{ReplayConfig, ReplayHub, ReplayRate};
 use futures_util::StreamExt;
 
 // ── helpers ───────────────────────────────────────────────────────────────────

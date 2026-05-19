@@ -20,7 +20,7 @@ use super::client::HttpClient;
 /// # Example
 ///
 /// ```rust,no_run
-/// # use digdigdig3::core::http::{HttpClient, GraphQlClient};
+/// # use digdigdig3_core::core::http::{HttpClient, GraphQlClient};
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let http = HttpClient::new(10_000)?;
 /// let client = GraphQlClient::new(http, "https://api.example.com/graphql");

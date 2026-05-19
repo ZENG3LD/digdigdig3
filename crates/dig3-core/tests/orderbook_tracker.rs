@@ -1,7 +1,7 @@
 //! Unit tests for OrderBookTracker.
 
-use digdigdig3::core::orderbook::{OrderBookError, OrderBookTracker};
-use digdigdig3::core::types::{OrderBook, OrderBookLevel, OrderbookDelta};
+use digdigdig3_core::core::orderbook::{OrderBookError, OrderBookTracker};
+use digdigdig3_core::core::types::{OrderBook, OrderBookLevel, OrderbookDelta};
 use rust_decimal::Decimal;
 use rust_decimal::prelude::FromPrimitive;
 

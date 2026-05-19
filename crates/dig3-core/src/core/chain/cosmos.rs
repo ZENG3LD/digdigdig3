@@ -9,7 +9,7 @@
 //! in your `Cargo.toml`:
 //!
 //! ```toml
-//! digdigdig3 = { version = "...", features = ["onchain-cosmos"] }
+//! digdigdig3-core = { version = "...", features = ["onchain-cosmos"] }
 //! ```
 //!
 //! ## Key feature: sequence number management
@@ -30,7 +30,7 @@
 //! ## Usage
 //!
 //! ```rust,ignore
-//! use digdigdig3::core::chain::{CosmosProvider, CosmosChain};
+//! use digdigdig3_core::core::chain::{CosmosProvider, CosmosChain};
 //!
 //! let provider = CosmosProvider::dydx_mainnet();
 //! let height = provider.get_height().await?;

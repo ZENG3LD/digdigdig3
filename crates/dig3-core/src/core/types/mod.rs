@@ -42,7 +42,7 @@ pub use responses::{
 };
 
 // ── Wave 0: WebSocket framework types ────────────────────────────────────────
-// Re-exported so callers can use `digdigdig3::core::types::StreamKind` etc.
+// Re-exported so callers can use `digdigdig3_core::core::types::StreamKind` etc.
 pub use crate::core::websocket::{KlineInterval, StreamKind, StreamSpec, SupportLevel};
 
 // ── Phase γ: Empirical validation types ──────────────────────────────────────

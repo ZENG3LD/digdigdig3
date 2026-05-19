@@ -9,7 +9,7 @@
 //! ```rust,no_run
 //! # #[cfg(feature = "grpc")]
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! use digdigdig3::core::grpc::GrpcClient;
+//! use digdigdig3_core::core::grpc::GrpcClient;
 //!
 //! // Connect with TLS
 //! let client = GrpcClient::connect("https://invest-public-api.tinkoff.ru:443").await?;
@@ -61,7 +61,7 @@ impl GrpcClient {
     /// ```rust,no_run
     /// # #[cfg(feature = "grpc")]
     /// # async fn example(token: String) -> Result<(), Box<dyn std::error::Error>> {
-    /// use digdigdig3::core::grpc::GrpcClient;
+    /// use digdigdig3_core::core::grpc::GrpcClient;
     /// use tonic::metadata::AsciiMetadataValue;
     ///
     /// let client = GrpcClient::connect_with_token(
@@ -90,7 +90,7 @@ impl GrpcClient {
     ///
     /// ```rust,no_run
     /// # #[cfg(feature = "grpc")]
-    /// # async fn example(grpc: digdigdig3::core::grpc::GrpcClient) {
+    /// # async fn example(grpc: digdigdig3_core::core::grpc::GrpcClient) {
     /// // let stub = SomeServiceClient::new(grpc.channel());
     /// # }
     /// ```

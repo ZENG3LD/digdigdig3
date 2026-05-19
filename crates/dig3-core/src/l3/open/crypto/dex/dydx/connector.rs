@@ -291,8 +291,8 @@ impl DydxConnector {
     /// ```rust,no_run
     /// # #[cfg(feature = "grpc")]
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// use digdigdig3::core::grpc::GrpcClient;
-    /// use digdigdig3::crypto::dex::dydx::DydxConnector;
+    /// use digdigdig3_core::core::grpc::GrpcClient;
+    /// use digdigdig3_core::crypto::dex::dydx::DydxConnector;
     ///
     /// let grpc = GrpcClient::connect("https://dydx-ops-grpc.kingnodes.com:443").await?;
     /// let connector = DydxConnector::public(false).await?
@@ -321,9 +321,9 @@ impl DydxConnector {
     /// # #[cfg(all(feature = "onchain-cosmos", feature = "grpc"))]
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// use std::sync::Arc;
-    /// use digdigdig3::core::chain::cosmos::CosmosProvider;
-    /// use digdigdig3::core::grpc::GrpcClient;
-    /// use digdigdig3::crypto::dex::dydx::DydxConnector;
+    /// use digdigdig3_core::core::chain::cosmos::CosmosProvider;
+    /// use digdigdig3_core::core::grpc::GrpcClient;
+    /// use digdigdig3_core::crypto::dex::dydx::DydxConnector;
     ///
     /// let cosmos = Arc::new(CosmosProvider::dydx_mainnet());
     /// let grpc = GrpcClient::connect("https://dydx-ops-grpc.kingnodes.com:443").await?;

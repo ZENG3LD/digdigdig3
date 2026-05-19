@@ -11,7 +11,7 @@
 //! # Usage
 //!
 //! ```rust
-//! use digdigdig3::core::normalization::{Canonicalize, CanonicalEvent};
+//! use digdigdig3_core::core::normalization::{Canonicalize, CanonicalEvent};
 //!
 //! // Given a StreamEvent from any exchange WebSocket:
 //! // if let Some(canonical) = event.canonicalize() {

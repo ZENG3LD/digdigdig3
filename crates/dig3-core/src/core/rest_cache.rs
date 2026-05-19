@@ -19,7 +19,7 @@
 //!
 //! ```rust,no_run
 //! # use std::time::Duration;
-//! # use digdigdig3::core::rest_cache::RestCache;
+//! # use digdigdig3_core::core::rest_cache::RestCache;
 //! # async fn example() -> Result<(), String> {
 //! let cache: RestCache<String, String> = RestCache::new(Duration::from_secs(3600));
 //! let info = cache.get_or_fetch("binance".to_string(), || async {

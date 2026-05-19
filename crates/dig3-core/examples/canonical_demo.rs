@@ -8,8 +8,8 @@
 //!
 //! No API keys required — uses synthesized events to show the API.
 
-use digdigdig3::core::normalization::{CanonicalEvent, Canonicalize};
-use digdigdig3::core::types::{PublicTrade, StreamEvent, Ticker, TradeSide};
+use digdigdig3_core::core::normalization::{CanonicalEvent, Canonicalize};
+use digdigdig3_core::core::types::{PublicTrade, StreamEvent, Ticker, TradeSide};
 
 fn main() {
     println!("── canonical_demo: Phase λ.A normalization ─────────────────\n");

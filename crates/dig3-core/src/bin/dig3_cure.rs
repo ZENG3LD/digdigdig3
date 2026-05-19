@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use digdigdig3::core::storage::{StorageConfig, StorageManager, StreamKey};
+use digdigdig3_core::core::storage::{StorageConfig, StorageManager, StreamKey};
 
 fn usage() -> ! {
     eprintln!(
@@ -137,7 +137,7 @@ async fn main() -> std::io::Result<()> {
 
     // Use IntegrityChecker directly so we can apply the custom time-gap threshold,
     // then run Deduper + GapDetector for the full picture.
-    let integrity = digdigdig3::core::cure::integrity::IntegrityChecker::new(&storage)
+    let integrity = digdigdig3_core::core::cure::integrity::IntegrityChecker::new(&storage)
         .with_time_gap_threshold(args.time_gap_ms)
         .check(&key, args.from_ms, args.to_ms)
         .await?;
@@ -145,14 +145,14 @@ async fn main() -> std::io::Result<()> {
     let (kept, removed) = if args.dry_run {
         (integrity.record_count, integrity.duplicate_count)
     } else {
-        digdigdig3::core::cure::dedup::Deduper::new(&storage)
+        digdigdig3_core::core::cure::dedup::Deduper::new(&storage)
             .dedup(&key, args.from_ms, args.to_ms)
             .await?
     };
 
     let kind_lower = key.stream_kind.to_lowercase();
     let ob_gaps = if kind_lower.contains("orderbook") || kind_lower.contains("delta") {
-        digdigdig3::core::cure::gap::GapDetector::new(&storage)
+        digdigdig3_core::core::cure::gap::GapDetector::new(&storage)
             .detect(&key, args.from_ms, args.to_ms)
             .await?
     } else {

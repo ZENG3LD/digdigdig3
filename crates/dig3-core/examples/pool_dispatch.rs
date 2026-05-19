@@ -13,9 +13,9 @@
 //!
 //! No API keys required — all calls hit public endpoints.
 
-use digdigdig3::connector_manager::ExchangeHub;
-use digdigdig3::core::traits::{CoreConnector, MarketData, MarketDataPublic, BatchOrders};
-use digdigdig3::core::types::{AccountType, ExchangeId, Symbol};
+use digdigdig3_core::connector_manager::ExchangeHub;
+use digdigdig3_core::core::traits::{CoreConnector, MarketData, MarketDataPublic, BatchOrders};
+use digdigdig3_core::core::types::{AccountType, ExchangeId, Symbol};
 
 async fn smoke_ticker(conn: std::sync::Arc<dyn CoreConnector>, symbol: Symbol) {
     let id = conn.exchange_id();
@@ -97,7 +97,7 @@ async fn main() {
 
     println!("\n[as_any downcast: exchange-specific Binance method]");
     if let Some(conn) = hub.rest(ExchangeId::Binance) {
-        use digdigdig3::l3::open::crypto::cex::binance::BinanceConnector;
+        use digdigdig3_core::l3::open::crypto::cex::binance::BinanceConnector;
         if let Some(binance) = conn.as_any().downcast_ref::<BinanceConnector>() {
             match binance.get_basis_history("BTCUSDT", "PERPETUAL", "5m", Some(3), None, None).await {
                 Ok(v) => println!("  OK  Binance.get_basis_history -> {} items", v.as_array().map(|a| a.len()).unwrap_or(0)),

@@ -9,12 +9,12 @@
 //!
 //! Run with: cargo test --test silent_watchdog -- --nocapture
 
-use digdigdig3::core::websocket::reconnect::ReconnectConfig;
-use digdigdig3::core::websocket::transport::UniversalWsTransport;
-use digdigdig3::core::websocket::protocol::WsProtocol;
-use digdigdig3::core::websocket::stream_spec::StreamSpec;
-use digdigdig3::core::websocket::topic_registry::TopicRegistry;
-use digdigdig3::core::types::{AccountType, ConnectionStatus, WebSocketError};
+use digdigdig3_core::core::websocket::reconnect::ReconnectConfig;
+use digdigdig3_core::core::websocket::transport::UniversalWsTransport;
+use digdigdig3_core::core::websocket::protocol::WsProtocol;
+use digdigdig3_core::core::websocket::stream_spec::StreamSpec;
+use digdigdig3_core::core::websocket::topic_registry::TopicRegistry;
+use digdigdig3_core::core::types::{AccountType, ConnectionStatus, WebSocketError};
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio_tungstenite::accept_async;
@@ -76,12 +76,12 @@ impl WsProtocol for SilentProtocol {
 
     fn auth_frame(
         &self,
-        _: &digdigdig3::core::traits::Credentials,
+        _: &digdigdig3_core::core::traits::Credentials,
     ) -> Option<Result<tokio_tungstenite::tungstenite::Message, WebSocketError>> {
         None
     }
 
-    fn extract_topic(&self, _: &serde_json::Value) -> Option<digdigdig3::core::websocket::topic_registry::TopicKey> {
+    fn extract_topic(&self, _: &serde_json::Value) -> Option<digdigdig3_core::core::websocket::topic_registry::TopicKey> {
         None
     }
 

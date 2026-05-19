@@ -9,10 +9,10 @@
 //!
 //! No API keys required — public endpoints only.
 
-use digdigdig3::connector_manager::ExchangeHub;
-use digdigdig3::core::traits::{HasCapabilities, MarketData, MarketDataPublic};
-use digdigdig3::core::types::{AccountType, ExchangeId, Symbol};
-use digdigdig3::l3::open::crypto::cex::binance::BinanceConnector;
+use digdigdig3_core::connector_manager::ExchangeHub;
+use digdigdig3_core::core::traits::{HasCapabilities, MarketData, MarketDataPublic};
+use digdigdig3_core::core::types::{AccountType, ExchangeId, Symbol};
+use digdigdig3_core::l3::open::crypto::cex::binance::BinanceConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

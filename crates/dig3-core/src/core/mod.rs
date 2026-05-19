@@ -80,6 +80,18 @@ pub mod cure;
 #[cfg(feature = "grpc")]
 pub mod grpc;
 
+/// Install the process-level rustls `CryptoProvider` (ring).
+///
+/// rustls 0.23 panics at TLS init unless exactly one provider is registered.
+/// `HttpClient::new` calls this implicitly; callers that only need WebSocket
+/// (e.g. `digdigdig3-station`) should call this before opening any TLS
+/// connection. Idempotent: returns `Err(())` if a provider is already set.
+pub fn install_default_crypto_provider() -> std::result::Result<(), ()> {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .map_err(|_| ())
+}
+
 // Re-exports types
 pub use types::{
     // Common

@@ -44,11 +44,11 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use digdigdig3::connector_manager::ExchangeHub;
-use digdigdig3::core::types::{
+use digdigdig3_core::connector_manager::ExchangeHub;
+use digdigdig3_core::core::types::{
     AccountType, ExchangeId, StreamEvent, StreamType, SubscriptionRequest, Symbol,
 };
-use digdigdig3::core::utils::SymbolNormalizer;
+use digdigdig3_core::core::utils::SymbolNormalizer;
 use futures_util::StreamExt;
 use tokio::time::{timeout, Duration, Instant};
 

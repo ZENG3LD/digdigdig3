@@ -2,7 +2,7 @@
 //!
 //! Pure file I/O — no network, no async runtime. No new crate dependencies.
 
-use digdigdig3::core::storage::{EventLog, EventRecord};
+use digdigdig3_core::core::storage::{EventLog, EventRecord};
 use std::io::Write;
 
 // ── helpers ───────────────────────────────────────────────────────────────────

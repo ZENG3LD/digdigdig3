@@ -10,9 +10,9 @@
 
 use std::time::Duration;
 
-use digdigdig3::l3::open::crypto::dex::lighter::LighterConnector;
-use digdigdig3::core::{AccountType, Symbol};
-use digdigdig3::MarketData;
+use digdigdig3_core::l3::open::crypto::dex::lighter::LighterConnector;
+use digdigdig3_core::core::{AccountType, Symbol};
+use digdigdig3_core::MarketData;
 
 /// get_klines must complete (or fail with a network/API error) within 5 seconds.
 /// A hung runtime means the timeout fires and the test fails.

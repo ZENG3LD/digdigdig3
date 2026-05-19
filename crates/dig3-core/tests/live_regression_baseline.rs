@@ -16,10 +16,10 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::timeout;
 
-use digdigdig3::connector_manager::ExchangeHub;
-use digdigdig3::core::types::{AccountType, ExchangeId, StreamType, Symbol, SubscriptionRequest};
+use digdigdig3_core::connector_manager::ExchangeHub;
+use digdigdig3_core::core::types::{AccountType, ExchangeId, StreamType, Symbol, SubscriptionRequest};
 
-const BASELINE_JSON: &str = include_str!("../data/expected_event_rates.json");
+const BASELINE_JSON: &str = include_str!("../../../data/expected_event_rates.json");
 
 /// 50% tolerance: accept if actual >= baseline * 0.5
 const TOLERANCE: f64 = 0.5;

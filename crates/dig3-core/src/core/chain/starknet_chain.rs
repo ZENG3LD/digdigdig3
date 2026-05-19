@@ -8,7 +8,7 @@
 //! in your `Cargo.toml`:
 //!
 //! ```toml
-//! digdigdig3 = { version = "...", features = ["onchain-starknet"] }
+//! digdigdig3-core = { version = "...", features = ["onchain-starknet"] }
 //! ```
 //!
 //! ## Transport
@@ -32,7 +32,7 @@
 //! ## Usage
 //!
 //! ```rust,ignore
-//! use digdigdig3::core::chain::{StarkNetProvider, StarkNetChain};
+//! use digdigdig3_core::core::chain::{StarkNetProvider, StarkNetChain};
 //!
 //! let provider = StarkNetProvider::mainnet();
 //! let height = provider.get_height().await?;

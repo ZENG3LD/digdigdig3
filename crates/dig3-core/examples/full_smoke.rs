@@ -11,9 +11,9 @@
 
 use std::time::Instant;
 
-use digdigdig3::connector_manager::ExchangeHub;
-use digdigdig3::core::traits::MarketData;
-use digdigdig3::core::types::{AccountType, ExchangeId, SubscriptionRequest, Symbol};
+use digdigdig3_core::connector_manager::ExchangeHub;
+use digdigdig3_core::core::traits::MarketData;
+use digdigdig3_core::core::types::{AccountType, ExchangeId, SubscriptionRequest, Symbol};
 use futures_util::StreamExt;
 use tokio::time::{timeout, Duration};
 

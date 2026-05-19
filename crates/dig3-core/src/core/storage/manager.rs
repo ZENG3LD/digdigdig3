@@ -56,7 +56,7 @@ pub struct StreamKey {
 ///
 /// # Example
 /// ```no_run
-/// use digdigdig3::core::storage::{StorageManager, StorageConfig, StreamKey};
+/// use digdigdig3_core::core::storage::{StorageManager, StorageConfig, StreamKey};
 ///
 /// #[tokio::main]
 /// async fn main() -> std::io::Result<()> {

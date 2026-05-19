@@ -21,4 +21,8 @@ pub mod reconnect;
 pub use builder::StationBuilder;
 pub use error::{Result, StationError};
 pub use station::Station;
-pub use subscription::{Stream, SubscriptionHandle, SubscriptionSet};
+pub use subscription::{Event, Stream, SubscriptionHandle, SubscriptionSet};
+
+// Re-export common core types so consumers can build a SubscriptionSet without
+// pulling `digdigdig3-core` directly.
+pub use digdigdig3_core::core::types::{AccountType, ExchangeId};

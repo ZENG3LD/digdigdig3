@@ -17,8 +17,8 @@
 mod common;
 
 use common::{run_jobs, JobOutcome};
-use digdigdig3::connector_manager::ExchangeHub;
-use digdigdig3::{AccountType, ExchangeId, StreamEvent};
+use digdigdig3_core::connector_manager::ExchangeHub;
+use digdigdig3_core::{AccountType, ExchangeId, StreamEvent};
 use futures_util::StreamExt;
 use std::time::Duration;
 use tokio::time::timeout;
@@ -57,9 +57,9 @@ async fn orderbook_delta_no_gaps() {
                 .ok_or_else(|| format!("{label}: no ws handle"))?;
 
             // Subscribe to orderbook delta stream
-            ws.subscribe(digdigdig3::SubscriptionRequest {
-                symbol: digdigdig3::Symbol::with_raw("", "", sym_str.to_string()),
-                stream_type: digdigdig3::StreamType::OrderbookDelta,
+            ws.subscribe(digdigdig3_core::SubscriptionRequest {
+                symbol: digdigdig3_core::Symbol::with_raw("", "", sym_str.to_string()),
+                stream_type: digdigdig3_core::StreamType::OrderbookDelta,
                 account_type: *acct,
                 depth: None,
                 update_speed_ms: None,

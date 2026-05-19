@@ -10,8 +10,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use digdigdig3::connector_manager::{ExchangeHub, MarketFeed};
-use digdigdig3::core::types::{AccountType, ExchangeId};
+use digdigdig3_core::connector_manager::{ExchangeHub, MarketFeed};
+use digdigdig3_core::core::types::{AccountType, ExchangeId};
 use tokio::time::timeout;
 
 #[tokio::main]

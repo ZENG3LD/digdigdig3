@@ -42,7 +42,7 @@ use std::sync::RwLock;
 /// # Examples
 ///
 /// ```
-/// use digdigdig3::safe_price;
+/// use digdigdig3_core::safe_price;
 /// assert_eq!(safe_price(100.05, "0.01"), "100.05");
 /// assert_eq!(safe_price(100.054, "0.01"), "100.05");
 /// assert_eq!(safe_price(100.055, "0.01"), "100.06");
@@ -71,7 +71,7 @@ pub fn safe_price(price: f64, tick_size: &str) -> String {
 /// # Examples
 ///
 /// ```
-/// use digdigdig3::safe_qty;
+/// use digdigdig3_core::safe_qty;
 /// assert_eq!(safe_qty(1.999, "0.01"), "1.99");    // floor, NOT round
 /// assert_eq!(safe_qty(0.12345, "0.001"), "0.123");
 /// assert_eq!(safe_qty(0.999, "0.01"), "0.99");    // never rounds up
@@ -98,7 +98,7 @@ pub fn safe_qty(qty: f64, step_size: &str) -> String {
 /// # Examples
 ///
 /// ```
-/// use digdigdig3::format_price;
+/// use digdigdig3_core::format_price;
 /// assert_eq!(format_price(100.5,  "0.01"), "100.50");
 /// assert_eq!(format_price(100.0,  "0.01"), "100.00");
 /// assert_eq!(format_price(67543.2,"0.01"), "67543.20");
@@ -121,7 +121,7 @@ pub fn format_price(price: f64, tick_size: &str) -> String {
 /// # Examples
 ///
 /// ```
-/// use digdigdig3::format_qty;
+/// use digdigdig3_core::format_qty;
 /// assert_eq!(format_qty(1.5,  "0.001"),   "1.500");
 /// assert_eq!(format_qty(0.1,  "0.00001"), "0.10000");
 /// ```

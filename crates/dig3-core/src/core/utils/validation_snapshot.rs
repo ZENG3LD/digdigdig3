@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 use crate::core::types::{ExchangeId, ValidationStamp};
 
-const SNAPSHOT_JSON: &str = include_str!("../../../data/validation_snapshot.json");
+const SNAPSHOT_JSON: &str = include_str!("../../../../../data/validation_snapshot.json");
 
 static SNAPSHOT: OnceLock<HashMap<ExchangeId, ValidationStamp>> = OnceLock::new();
 

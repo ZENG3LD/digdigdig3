@@ -15,8 +15,8 @@
 mod common;
 
 use common::{run_jobs, JobOutcome};
-use digdigdig3::connector_manager::ExchangeHub;
-use digdigdig3::{AccountType, ExchangeId, StreamEvent, StreamType, SubscriptionRequest, Symbol};
+use digdigdig3_core::connector_manager::ExchangeHub;
+use digdigdig3_core::{AccountType, ExchangeId, StreamEvent, StreamType, SubscriptionRequest, Symbol};
 use futures_util::StreamExt;
 use std::time::Duration;
 use tokio::time::timeout;

@@ -635,18 +635,26 @@ impl DydxParser {
                 "v4_candles: missing 'contents' field".to_string()
             ))?;
 
-        let open_time = Self::get_str(contents, "startedAt")
+        // Wire format wraps candle fields in `contents.candles[0]`.
+        // Fall back to contents itself for any hypothetical flat format.
+        let candle = contents
+            .get("candles")
+            .and_then(|c| c.as_array())
+            .and_then(|arr| arr.first())
+            .unwrap_or(contents);
+
+        let open_time = Self::get_str(candle, "startedAt")
             .and_then(Self::parse_iso_timestamp)
             .unwrap_or(0);
 
-        let open  = Self::require_f64(contents, "open")?;
-        let high  = Self::require_f64(contents, "high")?;
-        let low   = Self::require_f64(contents, "low")?;
-        let close = Self::require_f64(contents, "close")?;
+        let open  = Self::require_f64(candle, "open")?;
+        let high  = Self::require_f64(candle, "high")?;
+        let low   = Self::require_f64(candle, "low")?;
+        let close = Self::require_f64(candle, "close")?;
 
-        let volume = Self::get_f64(contents, "baseTokenVolume").unwrap_or(0.0);
-        let quote_volume = Self::get_f64(contents, "usdVolume");
-        let trades = contents
+        let volume = Self::get_f64(candle, "baseTokenVolume").unwrap_or(0.0);
+        let quote_volume = Self::get_f64(candle, "usdVolume");
+        let trades = candle
             .get("trades")
             .and_then(|t| t.as_u64());
 

@@ -82,6 +82,12 @@ impl HyperliquidProtocol {
                      not available as a public anonymous stream".to_string(),
                 ));
             }
+            StreamKind::AggTrade => {
+                return Err(WebSocketError::NotSupported(
+                    "HyperLiquid has no aggregated trade WS channel — \
+                     subscribe to StreamKind::Trade for trades per coin".to_string(),
+                ));
+            }
             StreamKind::BalanceUpdate => json!({ "type": "clearinghouseState", "user": coin }),
             StreamKind::PositionUpdate => json!({ "type": "clearinghouseState", "user": coin }),
             StreamKind::OrderUpdate => json!({ "type": "orderUpdates", "user": coin }),
@@ -180,6 +186,7 @@ fn build_registry() -> TopicRegistry {
         .register(StreamKind::MarkPrice, at, "activeAssetCtx", parse_mark_price_from_ctx)
         .register(StreamKind::OpenInterest, at, "activeAssetCtx", parse_open_interest_from_ctx)
         .register(StreamKind::IndexPrice, at, "activeAssetCtx", parse_index_price_from_ctx)
+        .register(StreamKind::Ticker, at, "activeAssetCtx", parse_ticker_from_ctx)
         // Liquidation: user-specific (requires wallet address) — not a public feed.
         // Removed from registry; subscribe_frame returns NotSupported.
         // Notifications (public)
@@ -333,6 +340,41 @@ fn parse_index_price_from_ctx(raw: &Value) -> WebSocketResult<StreamEvent> {
         price,
         timestamp: now,
     })
+}
+
+fn parse_ticker_from_ctx(raw: &Value) -> WebSocketResult<StreamEvent> {
+    let data = frame_data(raw)?;
+    let coin = data
+        .get("coin")
+        .and_then(|c| c.as_str())
+        .ok_or_else(|| WebSocketError::Parse("activeAssetCtx/ticker: missing 'coin'".into()))?;
+    let ctx = data
+        .get("ctx")
+        .ok_or_else(|| WebSocketError::Parse("activeAssetCtx/ticker: missing 'ctx'".into()))?;
+    let mid_px = parse_f64_field(ctx, "midPx")
+        .ok_or_else(|| WebSocketError::FieldAbsent("midPx".into()))?;
+    let volume_24h = parse_f64_field(ctx, "dayBaseVlm");
+    let quote_volume_24h = parse_f64_field(ctx, "dayNtlVlm");
+    let mark_px = parse_f64_field(ctx, "markPx");
+    let prev_day_px = parse_f64_field(ctx, "prevDayPx");
+    let price_change_24h = match (mark_px, prev_day_px) {
+        (Some(mark), Some(prev)) if prev > 0.0 => Some((mark - prev) / prev),
+        _ => None,
+    };
+    let now = crate::core::utils::timestamp_millis() as i64;
+    Ok(StreamEvent::Ticker(crate::core::Ticker {
+        symbol: coin.to_string(),
+        last_price: mid_px,
+        bid_price: None,
+        ask_price: None,
+        high_24h: None,
+        low_24h: None,
+        volume_24h,
+        quote_volume_24h,
+        price_change_24h,
+        price_change_percent_24h: price_change_24h.map(|c| c * 100.0),
+        timestamp: now,
+    }))
 }
 
 fn parse_trades(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -871,17 +913,13 @@ mod tests {
     }
 
     #[test]
-    fn test_active_asset_ctx_not_mapped_to_ticker() {
-        // activeAssetCtx must NOT be in the Ticker registry — only bbo and allMids
+    fn test_ticker_subscribe_frame_uses_bbo() {
+        // subscribe_frame for Ticker must request bbo (bid/ask channel).
+        // activeAssetCtx is also registered as a Ticker fan-out (24h stats),
+        // but the subscribe frame still routes to bbo.
         let proto = HyperliquidProtocol::new(false);
         let reg = proto.topic_registry(AccountType::FuturesCross);
-        // "activeAssetCtx" topic should dispatch to non-Ticker stream kinds only
-        // (FundingRate, MarkPrice, OpenInterest, IndexPrice)
-        // Verify Ticker is still supported via bbo/allMids
         assert!(reg.supports(&StreamKind::Ticker, AccountType::FuturesCross));
-        // Verify no parse for Ticker via activeAssetCtx by checking
-        // that parse_active_asset_ctx is not called for Ticker kind.
-        // Indirect: subscribe frame for Ticker must use bbo, not activeAssetCtx.
         let spec = futures_spec(StreamKind::Ticker);
         let proto2 = HyperliquidProtocol::new(false);
         let msg = proto2.subscribe_frame(&spec).expect("subscribe_frame must succeed");
@@ -891,7 +929,58 @@ mod tests {
         };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
         let sub = &v["subscription"];
-        assert_eq!(sub["type"], "bbo", "Ticker subscribe must use bbo, not activeAssetCtx");
+        assert_eq!(sub["type"], "bbo", "Ticker subscribe must use bbo");
+    }
+
+    #[test]
+    fn test_parse_ticker_from_ctx_emits_24h_stats() {
+        let frame = serde_json::json!({
+            "channel": "activeAssetCtx",
+            "data": {
+                "coin": "ETH",
+                "ctx": {
+                    "midPx": "3200.0",
+                    "markPx": "3205.0",
+                    "prevDayPx": "3100.0",
+                    "dayBaseVlm": "12500.5",
+                    "dayNtlVlm": "40000000.0",
+                    "funding": "0.0001",
+                    "openInterest": "50000.0",
+                    "oraclePx": "3201.0"
+                }
+            }
+        });
+        let event = parse_ticker_from_ctx(&frame).expect("parse_ticker_from_ctx must succeed");
+        match event {
+            crate::core::types::StreamEvent::Ticker(t) => {
+                assert_eq!(t.symbol, "ETH");
+                assert!((t.last_price - 3200.0).abs() < f64::EPSILON);
+                assert!(t.bid_price.is_none());
+                assert!(t.ask_price.is_none());
+                assert!((t.volume_24h.unwrap() - 12500.5).abs() < f64::EPSILON);
+                assert!((t.quote_volume_24h.unwrap() - 40000000.0).abs() < 0.01);
+                // price_change_24h = (3205 - 3100) / 3100 ≈ 0.033871
+                let pct = t.price_change_24h.unwrap();
+                assert!((pct - (3205.0 - 3100.0) / 3100.0).abs() < 1e-9);
+            }
+            other => panic!("expected Ticker, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_ticker_from_ctx_missing_midpx_returns_error() {
+        let frame = serde_json::json!({
+            "channel": "activeAssetCtx",
+            "data": {
+                "coin": "BTC",
+                "ctx": {
+                    "markPx": "67000.0",
+                    "prevDayPx": "65000.0"
+                }
+            }
+        });
+        let result = parse_ticker_from_ctx(&frame);
+        assert!(result.is_err(), "missing midPx must return error");
     }
 
     #[test]

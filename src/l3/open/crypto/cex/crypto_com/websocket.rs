@@ -405,10 +405,14 @@ impl CryptoComWebSocket {
                 }
             }
             WsEvent::MarkPrice(data) => {
-                // mark.<instrument> — fields: i (symbol), mp (mark price), ip (index price), t (timestamp)
+                // mark.<instrument> — fields: i (symbol), v or mp (mark price), t (timestamp)
+                // Crypto.com mark channel sends price as "v" (not "mp"); "mp" kept as fallback
+                // for forward-compatibility if the field name changes.
                 let symbol = data.get("i").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let mark_price = data.get("mp")
+                let mark_price = data.get("v")
                     .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64()))
+                    .or_else(|| data.get("mp")
+                        .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())))
                     .unwrap_or(0.0);
                 let index_price = data.get("ip")
                     .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64()));
@@ -541,17 +545,44 @@ impl CryptoComWebSocket {
     /// Crypto.com data pushes wrap the actual payload in a `data` array inside `result`.
     /// We extract the first element from that array so downstream parsers receive
     /// the individual data object (with fields like `i`, `b`, `k`, etc.) directly.
+    ///
+    /// For derivative channels (mark, index, funding, settlement, estimatedfunding) the
+    /// instrument name lives at `result.instrument_name`, not inside the data item.
+    /// We inject it as `"i"` so downstream event converters can read a consistent field.
     fn parse_data_message(result: &Value) -> Option<WsEvent> {
         let channel = result.get("channel")?.as_str()?;
 
         // Extract the first element from the "data" array.
         // Fall back to the full result if "data" is missing (shouldn't happen for real pushes).
-        let data = result
+        let raw_data = result
             .get("data")
             .and_then(|d| d.as_array())
             .and_then(|arr| arr.first())
             .cloned()
             .unwrap_or_else(|| result.clone());
+
+        // For derivative-specific channels the item payload does NOT include the
+        // instrument name; it lives at `result.instrument_name`.  Inject it as `"i"`
+        // when it is missing from the data item so all downstream handlers can read
+        // `data["i"]` uniformly.
+        let is_deriv_channel = matches!(channel, "mark" | "index" | "funding" | "settlement" | "estimatedfunding");
+        let data = if is_deriv_channel {
+            if raw_data.get("i").is_none() {
+                if let Some(instr) = result.get("instrument_name").and_then(|v| v.as_str()) {
+                    let mut obj = raw_data.clone();
+                    if let Some(map) = obj.as_object_mut() {
+                        map.insert("i".to_string(), serde_json::Value::String(instr.to_string()));
+                    }
+                    obj
+                } else {
+                    raw_data
+                }
+            } else {
+                raw_data
+            }
+        } else {
+            raw_data
+        };
 
         match channel {
             "ticker" => Some(WsEvent::Ticker(data)),
@@ -926,8 +957,16 @@ impl WebSocketConnector for CryptoComWebSocket {
     async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let channels = Self::build_channel(&request, *self.account_type.lock().await);
         if channels.is_empty() {
-            return Err(WebSocketError::UnsupportedOperation(
-                format!("Unsupported stream type: {:?}", request.stream_type),
+            // Crypto.com public WS has no aggregated-trade channel, no public liquidation
+            // feed, and no separate open-interest stream (OI is part of the ticker frame
+            // already). These map to nothing — eager NotSupported so the matrix prints
+            // `--` instead of `ERR`.
+            return Err(WebSocketError::NotSupported(
+                format!(
+                    "Crypto.com public WS does not expose stream type {:?} — \
+                     liquidation/aggTrade not in V1 public channels, openInterest is in ticker frame",
+                    request.stream_type
+                ),
             ));
         }
 
@@ -941,8 +980,8 @@ impl WebSocketConnector for CryptoComWebSocket {
     async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let channels = Self::build_channel(&request, *self.account_type.lock().await);
         if channels.is_empty() {
-            return Err(WebSocketError::UnsupportedOperation(
-                format!("Unsupported stream type: {:?}", request.stream_type),
+            return Err(WebSocketError::NotSupported(
+                format!("Crypto.com public WS does not expose stream type {:?}", request.stream_type),
             ));
         }
 

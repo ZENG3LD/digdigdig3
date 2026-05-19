@@ -234,7 +234,16 @@ impl<P: WsProtocol> UniversalWsTransport<P> {
     }
 
     /// Subscribe to a stream.
+    ///
+    /// Eagerly checks whether the protocol supports this stream kind via
+    /// `subscribe_frame`.  If `subscribe_frame` returns `NotSupported` the error
+    /// is propagated immediately so callers get a clean error instead of
+    /// `silent_0_events` after a timeout.
     pub async fn subscribe(&self, spec: StreamSpec) -> WebSocketResult<()> {
+        match self.protocol.subscribe_frame(&spec) {
+            Err(e @ WebSocketError::NotSupported(_)) => return Err(e),
+            _ => {}
+        }
         self.cmd_tx
             .send(TransportCmd::Subscribe(spec))
             .map_err(|_| WebSocketError::ProtocolError("transport shut down".into()))
@@ -328,14 +337,6 @@ impl<P: WsProtocol> crate::core::traits::WebSocketConnector for UniversalWsTrans
 
     async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let spec = StreamSpec::try_from(request)?;
-        // Eagerly check whether the exchange supports this stream kind.
-        // subscribe_frame returning NotSupported means the exchange genuinely
-        // does not expose this feed publicly — propagate immediately so callers
-        // get a clean error instead of silent_0_events after a timeout.
-        match self.protocol.subscribe_frame(&spec) {
-            Err(e @ WebSocketError::NotSupported(_)) => return Err(e),
-            _ => {}
-        }
         UniversalWsTransport::subscribe(self, spec).await
     }
 

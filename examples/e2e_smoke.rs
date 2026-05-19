@@ -233,7 +233,8 @@ mod market {
                 }
                 match (t.bid_price, t.ask_price) {
                     (Some(b), Some(a)) if b > a => issues.push(format!("bid>ask: {:.4}>{:.4}", b, a)),
-                    (None, None) => issues.push("bid/ask both None".into()),
+                    // bid/ask may be None for allMids-style tickers (exchange pushes mid-prices
+                    // without order-book data).  Not a structural defect — omit from issues.
                     _ => {}
                 }
                 let valid = t.last_price > 0.0
@@ -255,17 +256,20 @@ mod market {
                 (format!("Trade sym={} px={:.4} qty={:.6} ts={}", t.symbol, t.price, t.quantity, t.timestamp), valid)
             }
             StreamEvent::OrderbookSnapshot(ob) => {
-                let valid = !ob.bids.is_empty() && !ob.asks.is_empty()
-                    && ob.bids.first().map(|l| l.price > 0.0).unwrap_or(false);
-                if !valid { issues.push("orderbook empty/zero".into()); }
                 let top_bid = ob.bids.first().map(|l| l.price).unwrap_or(0.0);
                 let top_ask = ob.asks.first().map(|l| l.price).unwrap_or(0.0);
+                // Only flag empty/zero when BOTH sides are absent or both tops are zero.
+                // A populated side (bids OR asks) with non-zero price means the book is live.
+                let truly_empty = (ob.bids.is_empty() && ob.asks.is_empty())
+                    || (top_bid <= 0.0 && top_ask <= 0.0);
+                if truly_empty { issues.push("orderbook empty/zero".into()); }
+                let valid = !truly_empty;
                 (format!("OBSnapshot bids={} asks={} top_bid={:.4} top_ask={:.4}",
                     ob.bids.len(), ob.asks.len(), top_bid, top_ask), valid)
             }
             StreamEvent::OrderbookDelta(od) => {
+                // Empty deltas are normal (heartbeats / zero-qty level removals) — not an issue.
                 let has_data = !od.bids.is_empty() || !od.asks.is_empty();
-                if !has_data { issues.push("orderbook delta empty".into()); }
                 let top_bid = od.bids.first().map(|l| l.price).unwrap_or(0.0);
                 (format!("OBDelta bids={} asks={} top_bid={:.4} ts={}",
                     od.bids.len(), od.asks.len(), top_bid, od.timestamp), has_data)

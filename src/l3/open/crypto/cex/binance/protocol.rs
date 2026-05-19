@@ -658,12 +658,14 @@ fn parse_force_order(raw: &Value) -> WebSocketResult<StreamEvent> {
     };
 
     let side = match o.get("S").and_then(|s| s.as_str()).unwrap_or("") {
-        "SELL" => TradeSide::Buy,
+        "BUY" => TradeSide::Buy,
         _ => TradeSide::Sell,
     };
 
+    // ap = average filled price (better than original p for executed liquidations).
+    // z = accumulated filled qty (actual size liquidated, better than original q).
     let price = parse_f64("ap").unwrap_or_else(|| parse_f64("p").unwrap_or(0.0));
-    let quantity = parse_f64("q").unwrap_or(0.0);
+    let quantity = parse_f64("z").unwrap_or_else(|| parse_f64("q").unwrap_or(0.0));
 
     Ok(StreamEvent::Liquidation {
         symbol: o.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string(),
@@ -676,16 +678,12 @@ fn parse_force_order(raw: &Value) -> WebSocketResult<StreamEvent> {
 }
 
 fn parse_force_order_arr(raw: &Value) -> WebSocketResult<StreamEvent> {
-    // !forceOrder@arr: {"stream":"!forceOrder@arr","data":[{...}]}
-    let data = frame_data(raw);
-    let item = if let Some(arr) = data.as_array() {
-        arr.first().unwrap_or(data)
-    } else {
-        data
-    };
-    // Wrap single item to reuse parse_force_order
-    let wrapped = json!({"o": item});
-    parse_force_order(&wrapped)
+    // !forceOrder@arr combined-stream frame:
+    //   {"stream":"!forceOrder@arr","data":{"e":"forceOrder","E":...,"o":{...}}}
+    // The "data" field is a single event object identical in shape to the
+    // per-symbol forceOrder event — NOT an array despite the "@arr" suffix.
+    // Delegate directly: parse_force_order calls frame_data which extracts "data".
+    parse_force_order(raw)
 }
 
 fn parse_composite_index(raw: &Value) -> WebSocketResult<StreamEvent> {

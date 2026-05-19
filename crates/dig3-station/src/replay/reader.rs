@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use crate::core::storage::{StorageManager, StreamKey};
+use crate::storage::{StorageManager, StreamKey};
 
 /// Load all `(ts_ms, payload)` records for `key` in `[from_ms, to_ms]`.
 ///

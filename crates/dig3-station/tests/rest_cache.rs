@@ -4,7 +4,7 @@
 //!
 //! Run with: cargo test --test rest_cache -- --nocapture
 
-use digdigdig3_core::RestCache;
+use digdigdig3_station::RestCache;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;

@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use digdigdig3_core::{StorageManager, StorageConfig, StreamKey};
+use digdigdig3_station::{StorageManager, StorageConfig, StreamKey};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

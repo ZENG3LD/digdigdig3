@@ -6,9 +6,9 @@
 //! Repair (REST snapshot fetch) is out of scope here — [`GapInfo`] gives the
 //! caller the information needed to request a fresh snapshot from the exchange.
 
-use crate::core::orderbook::{OrderBookError, OrderBookTracker};
-use crate::core::storage::{StorageManager, StreamKey};
-use crate::core::types::{OrderBook, OrderbookDelta};
+use crate::orderbook::{OrderBookError, OrderBookTracker};
+use crate::storage::{StorageManager, StreamKey};
+use digdigdig3_core::core::types::{OrderBook, OrderbookDelta};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 

@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use sha2::{Digest, Sha256};
 
-use crate::core::storage::{StorageManager, StreamKey};
+use crate::storage::{StorageManager, StreamKey};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 

@@ -13,9 +13,9 @@ use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt as _;
 
-use crate::core::storage::{StorageManager, StreamKey};
-use crate::core::traits::WebSocketConnector;
-use crate::core::types::{
+use crate::storage::{StorageManager, StreamKey};
+use digdigdig3_core::core::traits::WebSocketConnector;
+use digdigdig3_core::core::types::{
     AccountType, ConnectionStatus, ExchangeId, OrderbookCapabilities, StreamEvent,
     StreamType, SubscriptionRequest, WebSocketError, WebSocketResult,
 };

@@ -8,13 +8,13 @@ use std::time::Duration;
 ///
 /// - `Off` — feed only fans out events; consumer writes to disk if needed.
 /// - `Default` — feed owns a `StorageManager` rooted at `dig3_storage/`.
-/// - `Custom(StorageConfig)` — caller supplies the storage config.
+/// - `Custom(PathBuf)` — caller supplies a custom storage root path.
 #[derive(Debug, Clone, Default)]
 pub enum PersistenceOption {
     #[default]
     Off,
     Default,
-    Custom(crate::core::storage::StorageConfig),
+    Custom(PathBuf),
 }
 
 /// Reconnect / backoff policy applied on top of `UniversalWsTransport`.

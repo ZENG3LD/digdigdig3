@@ -1,12 +1,12 @@
 # digdigdig3 (dig3)
 
-Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major crypto + 4 DEX, full futures coverage). Designed as three layers:
+Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major crypto + 4 DEX, full futures coverage). Three crates in one workspace:
 
-- **Layer 1 — `dig3-core`** (current `digdigdig3` crate): raw `ExchangeHub` async pool, REST + WS connectors, NotSupported convention, capabilities. Stable.
-- **Layer 2 — `dig3-station`** (planned, see `docs/plans/station-architecture.md`): consumer-facing builder. Opt-in features: persistence, REST cache + warm-start, multiplex + deferred-unsub + RAII handle, reconnect + gap-heal, orderbook tracker, three-level bar loader, telemetry.
-- **Layer 3 — `dig3-cli`** (planned): `dig3` binary with subcommands (watch / persist / replay / matrix / inspect / capture / benchmark).
+- **`digdigdig3-core`** (crate `digdigdig3_core`) — pure connector library. ONLY `ExchangeHub` + REST/WS connectors + capabilities + symbol normalization. No persistence, no replay, no cure/cache infrastructure.
+- **`digdigdig3-station`** (crate `digdigdig3_station`) — high-level builder layer over `ExchangeHub`. OWNS: `storage::*` (StorageManager + EventLog), `orderbook::*` (OrderBookTracker), `rest_cache::*` (LRU+TTL), `replay::*` (ReplayHub), `cure::*` (Integrity/Dedup/Gap/Repair), `persistence::TradeWriter`, `cache::*`, `Station` builder + `SubscriptionSet` + `SubscriptionHandle`.
+- **`digdigdig3-cli`** (binary `dig3`) — `dig3 watch trades` (wired Phase 1 step 6), plus `dig3-catcher` / `dig3-cure` bins. Other subcommands (persist / replay / matrix / inspect / capture / benchmark) are skeletons; will be folded into `dig3` in step 7+.
 
-Current state: Layer 1 done and validated (TRUSTED 18). Workspace split + Station + CLI start in Phase 1 (see `docs/plans/station-phase-1-plan.md`).
+Current state: workspace split done. Phase 1 steps 1+4+5+6 done (commit chain `bc50508` → `6605071`+). Live `dig3 watch trades binance BTC-USDT` writes to `./dig3_storage/trades/binance/spot/btcusdt/<date>.dat` (binary append, 41 bytes/record, sparse `.idx`). `--storage-root` and `DIG3_STORAGE_ROOT` honored.
 
 ## Architectural principles
 
@@ -198,15 +198,24 @@ The harness was renamed from `deep_smoke` to `e2e_smoke` (commit 4866465) — it
 
 ## Scope of development
 
-### In scope
+### In scope (`digdigdig3-core`)
 - L3-open crypto (CEX + DEX + Polymarket) — primary consumer surface
 - Public market data (klines/ticker/orderbook/trades/funding/OI/liquidation/aggTrade) over REST + WS
 - Trading + Account + Positions traits per exchange (gated by API keys)
 - Capability discovery + empirical validation
-- `ExchangeHub` as single consumer-facing API (Layer 1)
-- `Station` builder for high-level consumer use (Layer 2, in progress — see "Upcoming" section)
+- `ExchangeHub` as single consumer-facing API
 - **Validated subset**: 18 TRUSTED connectors (full futures, mark/funding/OI/liquidation/aggTrade verified). See above for the list and which ones are wire-not-present.
 - **L1/L2-paid + L3-gated** (~16 exchanges): compile-validated only; functional validation runs only when ENV creds populated (use `e2e_smoke --trading`).
+
+### In scope (`digdigdig3-station`)
+- `storage::*` — `StorageManager`, `EventLog`, `StreamKey`, `StorageConfig` (binary append-only event log per stream, day rotation, retention)
+- `orderbook::*` — `OrderBookTracker` with delta-merge + gap detection
+- `rest_cache::*` — generic LRU+TTL cache (used by `cache::ticker_cache` and future symbol-info caches)
+- `replay::*` — `ReplayHub`, `ReplayConfig`, `ReplayRate` (historical replay of event log)
+- `cure::*` — `IntegrityChecker`, `Deduper`, `GapDetector`, `RepairPipeline` (post-capture cleanup tools)
+- `persistence::TradeWriter` (Phase 1 step 4 — fixed 41-byte records + sparse `.idx`)
+- `cache::*` — Station-facing typed cache helpers (e.g. `ticker_cache`)
+- `Station` builder + `SubscriptionSet` + `SubscriptionHandle` (Phase 1 step 6)
 
 ### Out of scope (deferred to other crates / future)
 - On-chain monitoring → `dig2chain`
@@ -214,6 +223,7 @@ The harness was renamed from `deep_smoke` to `e2e_smoke` (commit 4866465) — it
 - Per-exchange UI / dashboard (consumer = `mylittlechart`)
 - Symbol normalization INSIDE connectors (use external `SymbolNormalizer` utility)
 - Legacy `base_websocket.rs` and old bespoke WS loops — replaced by `UniversalWsTransport`
+- Anything storage/replay/cure-related belongs in `digdigdig3-station`, NEVER in `digdigdig3-core`. Core is pure transport + connectors.
 
 ### Known state (after Waves 1-10, 2026-05-20)
 
@@ -315,34 +325,46 @@ target\release\examples\e2e_smoke.exe
 cargo run --example exchange_hub_demo --release
 ```
 
-## Upcoming: workspace split (Wave 11, Phase 1)
+## Workspace layout (Phase 1 — done)
 
-Designed in `docs/plans/station-architecture.md`, planned in `docs/plans/station-phase-1-plan.md`, handoff snapshot in `docs/plans/handoff-2026-05-20.md`. TL;DR:
+Designed in `docs/plans/station-architecture.md`, plan in `docs/plans/station-phase-1-plan.md`, handoff snapshot in `docs/plans/handoff-2026-05-20.md`.
 
 ```
 digdigdig3/
-├── crates/dig3-core/      ← existing code (Layer 1: ExchangeHub, raw connectors)
-├── crates/dig3-station/   ← NEW Layer 2: builder, persistence, cache, multiplex, OB tracker, etc.
-└── crates/dig3-cli/       ← NEW Layer 3: bin `dig3` (watch / persist / replay / matrix / inspect / capture / benchmark)
+├── crates/dig3-core/      ← Layer 1: ExchangeHub + raw connectors ONLY
+│   ├── src/core/{types,traits,utils,http,websocket,chain,macros,normalization}/
+│   ├── src/connector_manager/   (ExchangeHub + pools + factory)
+│   ├── src/l{1,2,3}/             (connector implementations)
+│   └── examples/                  (e2e_smoke, exchange_hub_demo, etc.)
+├── crates/dig3-station/   ← Layer 2: persistence/cache/replay/cure/OB/builder
+│   ├── src/storage/        (moved from core in Wave 11C)
+│   ├── src/orderbook.rs    (moved from core)
+│   ├── src/rest_cache.rs   (moved from core)
+│   ├── src/replay/         (moved from core)
+│   ├── src/cure/           (moved from core)
+│   ├── src/persistence.rs  (TradeWriter — Phase 1 step 4)
+│   ├── src/cache.rs        (Station-typed cache helpers)
+│   ├── src/{station,builder,subscription,error}.rs
+│   └── tests/, examples/   (storage_manager, event_log, cure, replay, etc.)
+└── crates/dig3-cli/       ← Layer 3: `dig3` binary + dig3-catcher + dig3-cure bins
+    └── src/{main.rs,bin/{dig3_catcher,dig3_cure}.rs}
 ```
 
-Station = consumer-facing fluent builder with opt-in features (cargo features `persistence` / `cache` / `multiplex` / `reconnect` / `orderbook-tracker` / `bar-loader` / `metrics` / `prometheus`). Sample usage:
+Sample usage:
 
 ```rust
 let station = Station::builder()
-    .persistence(Persistence::on().bars(true).trades(true).retention(Retention::days(30)))
-    .cache(Cache::on().warm_start(WarmStart::LastN(300)))
-    .reconnect(Reconnect::on().gap_heal(GapHeal::OnReconnect))
-    .multiplex(Multiplex::on().deferred_unsub(Duration::from_secs(30)))
+    .storage_root("./dig3_storage")
+    .persistence(PersistenceConfig::on())
     .build().await?;
 
 let handle = station.subscribe(
     SubscriptionSet::new()
-        .add(Binance, "BTC-USDT", FuturesCross, [Trade, Orderbook])
+        .add(ExchangeId::Binance, "BTC-USDT", AccountType::Spot, [Stream::Trade])
 ).await?;
 ```
 
-dig3-core stays stable; station is pure addition; cli is consumer of station.
+Phase 1 steps done: 1 (split) + 4 (TradeWriter) + 5 (RestCache wrapper) + 6 (subscribe wiring). Step 7 (`dig3 watch trades` end-to-end) operational since commit `2fde113`.
 
 MLC reference architecture explored. Strong patterns borrowed (SharedMap dual-read, deferred-unsub, sequenced REST→WS, three-level bar loader). Weak patterns fixed (try_send drop, dual independent refcount drift, ad-hoc subscribe_X methods).
 

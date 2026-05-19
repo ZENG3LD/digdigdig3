@@ -4,13 +4,13 @@
 
 use std::path::PathBuf;
 
-use digdigdig3_core::core::cure::{
+use digdigdig3_station::cure::{
     dedup::Deduper,
     gap::GapDetector,
     integrity::IntegrityChecker,
     repair::RepairPipeline,
 };
-use digdigdig3_core::core::storage::{StorageConfig, StorageManager, StreamKey};
+use digdigdig3_station::storage::{StorageConfig, StorageManager, StreamKey};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 

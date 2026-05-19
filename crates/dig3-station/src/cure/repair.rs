@@ -3,12 +3,12 @@
 //! Runs integrity check → dedup → gap detection in sequence, returning a single
 //! [`RepairReport`].  Pass `dry_run = true` to skip the actual dedup write.
 
-use crate::core::cure::{
+use crate::cure::{
     dedup::Deduper,
     gap::{GapDetector, GapInfo},
     integrity::{IntegrityChecker, IntegrityReport},
 };
-use crate::core::storage::{StorageManager, StreamKey};
+use crate::storage::{StorageManager, StreamKey};
 
 // ── RepairReport ──────────────────────────────────────────────────────────────
 

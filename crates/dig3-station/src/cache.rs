@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use digdigdig3_core::core::rest_cache::RestCache;
+use crate::rest_cache::RestCache;
 use digdigdig3_core::core::types::{AccountType, ExchangeId, Ticker};
 
 pub type TickerKey = (ExchangeId, AccountType, String);

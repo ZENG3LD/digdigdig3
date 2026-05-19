@@ -15,6 +15,7 @@ path = "src/lib.rs"
 digdigdig3-core = { path = "../dig3-core" }
 
 tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
 async-trait = "0.1"
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
@@ -23,6 +24,11 @@ tracing = "0.1"
 dashmap = "5"
 thiserror = "1"
 chrono = "0.4"
+
+# needed by moved modules (orderbook, cure, storage)
+rust_decimal = "1"
+sha2 = "0.10"
+byteorder = "1.5"
 
 # feature-gated deps
 zstd = { version = "0.13", optional = true }

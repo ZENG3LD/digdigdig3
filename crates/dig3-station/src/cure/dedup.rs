@@ -8,8 +8,8 @@
 
 use std::collections::HashSet;
 
-use crate::core::cure::integrity::sha256_first16;
-use crate::core::storage::{StorageManager, StreamKey};
+use crate::cure::integrity::sha256_first16;
+use crate::storage::{StorageManager, StreamKey};
 
 // ── Deduper ───────────────────────────────────────────────────────────────────
 

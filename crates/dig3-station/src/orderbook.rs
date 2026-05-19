@@ -2,9 +2,8 @@
 //!
 //! ## Usage
 //!
-//! ```rust
-//! use digdigdig3_core::core::orderbook::{OrderBookTracker, OrderBookError};
-//! use digdigdig3_core::core::types::{OrderBook, OrderbookDelta};
+//! ```rust,no_run
+//! use digdigdig3_station::orderbook::{OrderBookTracker, OrderBookError};
 //!
 //! let mut tracker = OrderBookTracker::new("BTCUSDT");
 //! tracker.apply_snapshot(&snapshot)?;
@@ -18,7 +17,7 @@
 use std::collections::BTreeMap;
 use rust_decimal::Decimal;
 
-use crate::core::types::{OrderBook, OrderbookDelta};
+use digdigdig3_core::core::types::{OrderBook, OrderbookDelta};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DecimalKey — BTreeMap-safe wrapper

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use digdigdig3_core::core::types::{AccountType, ExchangeId, StreamEvent, StreamType, SubscriptionRequest, Symbol};
-use digdigdig3_core::{ReplayConfig, ReplayHub, ReplayRate};
+use digdigdig3_station::{ReplayConfig, ReplayHub, ReplayRate};
 use futures_util::StreamExt;
 
 #[tokio::main]

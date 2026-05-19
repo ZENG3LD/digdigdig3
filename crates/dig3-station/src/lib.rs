@@ -13,6 +13,13 @@ pub mod persistence;
 pub mod station;
 pub mod subscription;
 
+// Modules moved from dig3-core (persistence/cache/cure/OB concerns belong in station)
+pub mod storage;
+pub mod orderbook;
+pub mod rest_cache;
+pub mod replay;
+pub mod cure;
+
 #[cfg(feature = "reconnect")]
 pub mod reconnect;
 
@@ -22,6 +29,18 @@ pub use error::{Result, StationError};
 pub use persistence::{PersistenceConfig, TradeWriter};
 pub use station::Station;
 pub use subscription::{Event, Stream, SubscriptionHandle, SubscriptionSet};
+
+// Re-exports for moved modules (mirror what core used to expose)
+pub use storage::{EventLog, EventLogIter, EventRecord, StorageManager, StorageConfig, StreamKey};
+pub use replay::{ReplayHub, ReplayConfig, ReplayRate};
+pub use orderbook::{OrderBookTracker, OrderBookError};
+pub use rest_cache::RestCache;
+pub use cure::{
+    IntegrityChecker, IntegrityReport,
+    Deduper,
+    GapDetector, GapInfo,
+    RepairPipeline, RepairReport,
+};
 
 // Re-export common core types so consumers can build a SubscriptionSet without
 // pulling `digdigdig3-core` directly.

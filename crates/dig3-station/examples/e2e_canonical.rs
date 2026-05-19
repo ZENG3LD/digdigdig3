@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use digdigdig3_core::core::normalization::{CanonicalEvent, Canonicalize};
 use digdigdig3_core::core::types::StreamEvent;
-use digdigdig3_core::{StorageConfig, StorageManager, StreamKey};
+use digdigdig3_station::{StorageConfig, StorageManager, StreamKey};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

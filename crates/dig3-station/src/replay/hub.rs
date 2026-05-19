@@ -12,9 +12,9 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 
-use crate::core::storage::{StorageConfig, StorageManager};
-use crate::core::traits::WebSocketConnector;
-use crate::core::types::{AccountType, ExchangeError, ExchangeId};
+use crate::storage::{StorageConfig, StorageManager};
+use digdigdig3_core::core::traits::WebSocketConnector;
+use digdigdig3_core::core::types::{AccountType, ExchangeError, ExchangeId};
 
 use super::rate::ReplayRate;
 use super::ws::ReplayWebSocket;
@@ -42,7 +42,7 @@ pub struct ReplayConfig {
 ///
 /// ```no_run
 /// # use std::path::PathBuf;
-/// # use digdigdig3_core::core::replay::{ReplayHub, ReplayConfig, ReplayRate};
+/// # use digdigdig3_station::replay::{ReplayHub, ReplayConfig, ReplayRate};
 /// # use digdigdig3_core::core::types::{AccountType, ExchangeId, SubscriptionRequest, Symbol};
 /// # use futures_util::StreamExt;
 /// # #[tokio::main] async fn main() -> Result<(), Box<dyn std::error::Error>> {

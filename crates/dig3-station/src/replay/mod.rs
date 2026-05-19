@@ -9,7 +9,7 @@
 //!
 //! ```no_run
 //! # use std::path::PathBuf;
-//! # use digdigdig3_core::core::replay::{ReplayHub, ReplayConfig, ReplayRate};
+//! # use digdigdig3_station::replay::{ReplayHub, ReplayConfig, ReplayRate};
 //! # use digdigdig3_core::core::types::{AccountType, ExchangeId, SubscriptionRequest, Symbol};
 //! # use futures_util::StreamExt;
 //! # #[tokio::main] async fn main() -> Result<(), Box<dyn std::error::Error>> {

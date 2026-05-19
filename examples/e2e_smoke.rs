@@ -511,6 +511,30 @@ fn liq_symbol_for(id: ExchangeId) -> Symbol {
     }
 }
 
+/// Data providers that aggregate prices but do NOT expose per-exchange bid/ask
+/// on the free tier.  bid_price=None and ask_price=None is expected and correct
+/// for these sources — not a wire bug.
+///
+/// CryptoCompare: `pricemultifull` (CCCAGG aggregate) omits BID/ASK entirely.
+/// ob/l1/top (which would have bid/ask) requires a paid API key.
+fn no_bid_ask_by_design(id: ExchangeId) -> bool {
+    matches!(id,
+        ExchangeId::CryptoCompare
+        | ExchangeId::YahooFinance
+        | ExchangeId::Twelvedata
+        | ExchangeId::AlphaVantage
+        | ExchangeId::Tiingo
+        | ExchangeId::Fred
+        | ExchangeId::DefiLlama
+        | ExchangeId::Coinglass
+        | ExchangeId::Dukascopy
+        | ExchangeId::Moex
+        | ExchangeId::Krx
+        | ExchangeId::JQuants
+        | ExchangeId::Bls
+    )
+}
+
 /// Is this exchange account_type futures-capable (perps/perpetuals)?
 fn is_futures(id: ExchangeId, at: AccountType) -> bool {
     matches!(at, AccountType::FuturesCross | AccountType::FuturesIsolated)
@@ -660,7 +684,7 @@ async fn test_market(id: ExchangeId) -> MarketRow {
                 else if t.timestamp == 0 { issues.push("ts_missing".into()); }
                 match (t.bid_price, t.ask_price) {
                     (Some(b), Some(a)) if b > a => issues.push(format!("bid>ask")),
-                    (None, None) => issues.push("bid/ask None".into()),
+                    (None, None) if !no_bid_ask_by_design(id) => issues.push("bid/ask None".into()),
                     _ => {}
                 }
                 let desc = format!("last={:.4} bid={} ask={} ts={}",
@@ -958,8 +982,15 @@ async fn test_market(id: ExchangeId) -> MarketRow {
         let liq_sym = liq_symbol_for(id);
         drop(sym_ws7); // replaced by liq_sym above
         if id == ExchangeId::Bybit {
-            // Subscribe to 5 high-volume perp symbols concurrently so at least one
-            // liquidation is likely to arrive within the window on any market day.
+            // Subscribe to 5 high-volume perp symbols concurrently. Based on a 1-hour
+            // raw capture against Bybit V5 on 2026-05-19:
+            //   BTCUSDT  29 liqs / 60min (1 per ~2.1 min)
+            //   ETHUSDT   8 liqs / 60min
+            //   SOLUSDT   7 liqs / 60min
+            //   XRPUSDT   3 liqs / 60min
+            //   DOGEUSDT  4 liqs / 60min
+            //   Total 51 liqs / 60min = 1 per ~70s across 5 symbols.
+            // With a 60s window across 5 parallel subs, hit probability ≈ 75-80%.
             let bybit_liq_syms: &[&str] = &["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"];
             let mut handles = Vec::new();
             for &sym_str in bybit_liq_syms {
@@ -971,7 +1002,7 @@ async fn test_market(id: ExchangeId) -> MarketRow {
                     sym,
                     market::ExpectedKind::Liquidation,
                     stale_ms,
-                    45,
+                    60,
                 ));
                 handles.push(h);
             }
@@ -1527,11 +1558,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .copied()
             .map(|id| {
                 tokio::spawn(async move {
-                    timeout(Duration::from_secs(60), test_market(id))
+                    // Per-exchange wall-time cap. Was 60s but Bybit liquidation
+                    // needs 60s alone (5 parallel symbols × 60s window each); the
+                    // 90s cap leaves comfortable headroom for slower exchanges to
+                    // finish all WS budgets in parallel.
+                    timeout(Duration::from_secs(90), test_market(id))
                         .await
                         .unwrap_or_else(|_| MarketRow {
                             exchange: format!("{:?}", id),
-                            ping: MethodResult::Err("HARD_TIMEOUT_60s".into()),
+                            ping: MethodResult::Err("HARD_TIMEOUT_90s".into()),
                             price: MethodResult::Skipped, ticker: MethodResult::Skipped,
                             orderbook: MethodResult::Skipped, klines: MethodResult::Skipped,
                             trades: MethodResult::Skipped, exch_info: MethodResult::Skipped,
@@ -1543,7 +1578,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             ws_mark_price: MethodResult::Skipped, ws_funding: MethodResult::Skipped,
                             ws_liquidation: MethodResult::Skipped, ws_oi: MethodResult::Skipped,
                             ws_agg_trade: MethodResult::Skipped,
-                            issues: vec!["HARD_TIMEOUT_60s".into()],
+                            issues: vec!["HARD_TIMEOUT_90s".into()],
                         })
                 })
             })

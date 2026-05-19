@@ -18,8 +18,10 @@ use url::Url;
 
 use crate::core::traits::Credentials;
 use crate::core::types::{
-    AccountType, StreamEvent, WebSocketError, WebSocketResult,
+    AccountType, OrderSide, OrderStatus, OrderType, StreamEvent,
+    WebSocketError, WebSocketResult,
 };
+use crate::core::OrderUpdateEvent;
 use crate::core::websocket::{
     KlineInterval, StreamKind, StreamSpec, TopicKey, TopicRegistry, WsProtocol,
 };
@@ -610,27 +612,88 @@ fn parse_order_update(raw: &Value) -> WebSocketResult<StreamEvent> {
         .first()
         .ok_or_else(|| WebSocketError::Parse("orderUpdates: empty array".into()))?;
 
-    // Extract basic fields
-    let symbol = order_obj
+    let inner = order_obj
         .get("order")
-        .and_then(|o| o.get("coin"))
+        .ok_or_else(|| WebSocketError::Parse("orderUpdates: missing 'order' field".into()))?;
+
+    let symbol = inner
+        .get("coin")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
 
-    let now = crate::core::utils::timestamp_millis() as i64;
+    let order_id = inner
+        .get("oid")
+        .and_then(|v| v.as_u64())
+        .map(|id| id.to_string())
+        .unwrap_or_default();
 
-    // Emit as a BalanceUpdate placeholder — full OrderUpdate parsing would require
-    // mapping HL order status strings to OrderUpdateEvent; defer to connector layer.
-    // Use BalanceUpdate with zero delta as a notification sentinel.
-    Ok(StreamEvent::BalanceUpdate(crate::core::BalanceUpdateEvent {
-        asset: symbol,
-        free: 0.0,
-        locked: 0.0,
-        total: 0.0,
-        delta: None,
-        reason: None,
-        timestamp: now,
+    let client_order_id = inner
+        .get("cloid")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty() && *s != "null")
+        .map(|s| s.to_string());
+
+    let side = match inner.get("side").and_then(|v| v.as_str()) {
+        Some("B") => OrderSide::Buy,
+        _ => OrderSide::Sell,
+    };
+
+    let price = inner
+        .get("limitPx")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|&p| p > 0.0);
+
+    let quantity = inner
+        .get("sz")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.0);
+
+    let orig_sz = inner
+        .get("origSz")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.0);
+    // filled = origSz - remaining sz
+    let filled_quantity = (orig_sz - quantity).max(0.0);
+
+    let status_str = order_obj
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("open");
+
+    let status = match status_str {
+        "open" | "triggered" => OrderStatus::Open,
+        "filled" => OrderStatus::Filled,
+        "canceled" | "marginCanceled" => OrderStatus::Canceled,
+        "rejected" => OrderStatus::Rejected,
+        _ => OrderStatus::Open,
+    };
+
+    let timestamp = order_obj
+        .get("statusTimestamp")
+        .and_then(|v| v.as_i64())
+        .unwrap_or_else(|| crate::core::utils::timestamp_millis() as i64);
+
+    Ok(StreamEvent::OrderUpdate(OrderUpdateEvent {
+        order_id,
+        client_order_id,
+        symbol,
+        side,
+        order_type: OrderType::Limit { price: price.unwrap_or(0.0) },
+        status,
+        price,
+        quantity: orig_sz,
+        filled_quantity,
+        average_price: None,
+        last_fill_price: None,
+        last_fill_quantity: None,
+        last_fill_commission: None,
+        commission_asset: None,
+        trade_id: None,
+        timestamp,
     }))
 }
 

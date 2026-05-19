@@ -314,12 +314,14 @@ mod market {
         (s, valid, issues)
     }
 
-    /// Collect events from a single WS subscription (5s window).
+    /// Collect events from a single WS subscription.
+    /// `budget_secs` — collection window after subscribe ACK.
     pub async fn collect_ws_stream(
         ws: Arc<dyn WebSocketConnector>,
         sub: SubscriptionRequest,
         expected_kind: ExpectedKind,
         stale_ms: i64,
+        budget_secs: u64,
     ) -> MethodResult {
         let account_type = sub.account_type;
         match timeout(Duration::from_secs(8), ws.connect(account_type)).await {
@@ -348,7 +350,7 @@ mod market {
         let mut wrong_type: Vec<String> = Vec::new();
         let mut saw_expected = false;
         let collect_start = Instant::now();
-        let budget = Duration::from_secs(5);
+        let budget = Duration::from_secs(budget_secs);
 
         loop {
             let remaining = budget.saturating_sub(collect_start.elapsed());
@@ -397,6 +399,8 @@ mod market {
     }
 
     /// Run a single WS subscription through the hub (creates its own WS connection).
+    /// `budget_secs` — collection window after subscribe ACK (5s for high-freq streams,
+    /// 20s for low-freq streams like Liquidation / OpenInterest).
     pub async fn run_ws_sub(
         exchange: ExchangeId,
         account_type: AccountType,
@@ -404,6 +408,7 @@ mod market {
         symbol: Symbol,
         expected_kind: ExpectedKind,
         stale_ms: i64,
+        budget_secs: u64,
     ) -> MethodResult {
         let hub = ExchangeHub::new();
         match timeout(Duration::from_secs(8), hub.connect_websocket(exchange, account_type, false)).await {
@@ -428,7 +433,7 @@ mod market {
                     depth: None,
                     update_speed_ms: None,
                 };
-                collect_ws_stream(ws, sub, expected_kind, stale_ms).await
+                collect_ws_stream(ws, sub, expected_kind, stale_ms, budget_secs).await
             }
             None => MethodResult::Err("ws_none_after_connect".into()),
         }
@@ -899,39 +904,41 @@ async fn test_market(id: ExchangeId) -> MarketRow {
 
     let ws_ticker_fut = async {
         if !caps.has_ws_ticker { return MethodResult::Skipped; }
-        market::run_ws_sub(id, account_type, StreamType::Ticker, sym_ws, market::ExpectedKind::Ticker, stale_ms).await
+        market::run_ws_sub(id, account_type, StreamType::Ticker, sym_ws, market::ExpectedKind::Ticker, stale_ms, 5).await
     };
     let ws_trade_fut = async {
         if !caps.has_ws_trades { return MethodResult::Skipped; }
-        market::run_ws_sub(id, account_type, StreamType::Trade, sym_ws2, market::ExpectedKind::Trade, stale_ms).await
+        market::run_ws_sub(id, account_type, StreamType::Trade, sym_ws2, market::ExpectedKind::Trade, stale_ms, 5).await
     };
     let ws_ob_fut = async {
         if !caps.has_ws_orderbook { return MethodResult::Skipped; }
-        market::run_ws_sub(id, account_type, StreamType::Orderbook, sym_ws3, market::ExpectedKind::Orderbook, stale_ms).await
+        market::run_ws_sub(id, account_type, StreamType::Orderbook, sym_ws3, market::ExpectedKind::Orderbook, stale_ms, 5).await
     };
     let ws_kline_fut = async {
         if !caps.has_ws_klines { return MethodResult::Skipped; }
-        market::run_ws_sub(id, account_type, StreamType::Kline { interval: "1m".into() }, sym_ws4, market::ExpectedKind::Kline, stale_ms).await
+        market::run_ws_sub(id, account_type, StreamType::Kline { interval: "1m".into() }, sym_ws4, market::ExpectedKind::Kline, stale_ms, 5).await
     };
     let ws_mark_fut = async {
         if !futures_capable || !caps.has_ws_mark_price { return MethodResult::Skipped; }
-        market::run_ws_sub(id, futures_at, StreamType::MarkPrice, sym_ws5, market::ExpectedKind::MarkPrice, stale_ms).await
+        market::run_ws_sub(id, futures_at, StreamType::MarkPrice, sym_ws5, market::ExpectedKind::MarkPrice, stale_ms, 5).await
     };
     let ws_funding_fut = async {
         if !futures_capable || !caps.has_ws_funding_rate { return MethodResult::Skipped; }
-        market::run_ws_sub(id, futures_at, StreamType::FundingRate, sym_ws6, market::ExpectedKind::FundingRate, stale_ms).await
+        market::run_ws_sub(id, futures_at, StreamType::FundingRate, sym_ws6, market::ExpectedKind::FundingRate, stale_ms, 5).await
     };
     let ws_liq_fut = async {
         if !futures_capable { return MethodResult::Skipped; }
-        market::run_ws_sub(id, futures_at, StreamType::Liquidation, sym_ws7, market::ExpectedKind::Liquidation, stale_ms).await
+        // Liquidation fires at market events (not periodic) — use 20s window.
+        market::run_ws_sub(id, futures_at, StreamType::Liquidation, sym_ws7, market::ExpectedKind::Liquidation, stale_ms, 20).await
     };
     let ws_oi_fut = async {
         if !futures_capable { return MethodResult::Skipped; }
-        market::run_ws_sub(id, futures_at, StreamType::OpenInterest, sym_ws8, market::ExpectedKind::OpenInterest, stale_ms).await
+        // OpenInterest update cadence varies by exchange — use 20s window.
+        market::run_ws_sub(id, futures_at, StreamType::OpenInterest, sym_ws8, market::ExpectedKind::OpenInterest, stale_ms, 20).await
     };
     let ws_agg_fut = async {
         if !futures_capable { return MethodResult::Skipped; }
-        market::run_ws_sub(id, futures_at, StreamType::AggTrade, sym_ws9, market::ExpectedKind::AggTrade, stale_ms).await
+        market::run_ws_sub(id, futures_at, StreamType::AggTrade, sym_ws9, market::ExpectedKind::AggTrade, stale_ms, 5).await
     };
 
     let (ws_ticker, ws_trade, ws_orderbook, ws_kline, ws_mark_price, ws_funding, ws_liquidation, ws_oi, ws_agg_trade) =
@@ -1257,7 +1264,7 @@ async fn test_moex_market() -> MarketRow {
         let moex_sym = Symbol::new("GAZP", "");
         let sub = SubscriptionRequest::ticker_for(moex_sym, AccountType::Spot);
         match timeout(Duration::from_secs(20),
-            market::collect_ws_stream(ws, sub, market::ExpectedKind::Ticker, stale_ms)).await {
+            market::collect_ws_stream(ws, sub, market::ExpectedKind::Ticker, stale_ms, 5)).await {
             Ok(r) => r,
             Err(_) => MethodResult::Err("overall_timeout_20s".into()),
         }

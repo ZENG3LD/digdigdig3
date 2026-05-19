@@ -39,6 +39,10 @@ use crate::core::{
 use crate::core::types::OrderBookLevel;
 use crate::core::types::TradeSide;
 use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities};
+use crate::core::types::{
+    BalanceUpdateEvent, PositionUpdateEvent, OrderUpdateEvent,
+    PositionSide, OrderSide, OrderType, OrderStatus, BalanceChangeReason, PositionChangeReason,
+};
 use crate::core::traits::WebSocketConnector;
 
 use super::auth::LighterAuth;
@@ -520,15 +524,38 @@ impl LighterWebSocket {
                 }
             }
 
+            // ── All-markets stats (emits one Ticker per market) ──────
+            // {"type":"update/market_stats_all","market_stats_all":[{symbol,last_trade_price,...},...]}
+            "update/market_stats_all" => {
+                for event in Self::parse_market_stats_all(&msg) {
+                    let _ = event_tx.send(Ok(event));
+                }
+            }
+
             // ── Height (block height) ─────────────────────────────────
             // {"type":"update/height","height":12345678}
-            // No matching StreamEvent variant yet — acknowledged silently.
-            "update/height" => {}
+            // No StreamEvent::BlockHeight variant in StreamEvent — drop with trace.
+            "update/height" => {
+                tracing::trace!(
+                    target: "dig3::ws::lighter",
+                    height = ?msg.raw.get("height").and_then(|v| v.as_u64()),
+                    "update/height received — no BlockHeight variant in StreamEvent yet"
+                );
+            }
 
             // ── Account updates ───────────────────────────────────────
-            // account_all/{id}, account_market/{mkt}/{id} — private streams
-            // carrying order/fill/position updates.  No StreamEvent mapping yet.
-            "update/account" | "update/account_all" | "update/account_market" => {}
+            // account_all/{id}: {collateral, available_balance, positions:[]}
+            // account_market/{mkt}/{id}: {position, avg_entry_price, unrealized_pnl, realized_pnl, open_orders:[]}
+            "update/account" | "update/account_all" => {
+                for event in Self::parse_account_all(&msg) {
+                    let _ = event_tx.send(Ok(event));
+                }
+            }
+            "update/account_market" => {
+                for event in Self::parse_account_market(&msg, channel) {
+                    let _ = event_tx.send(Ok(event));
+                }
+            }
 
             // ── Subscription acknowledgements and unknown types ──────
             _ => {}
@@ -794,6 +821,204 @@ impl LighterWebSocket {
             price_change_percent_24h,
             timestamp,
         }))
+    }
+
+    /// Parse `update/market_stats_all` — array of market_stats objects, one Ticker per market.
+    ///
+    /// Payload shape:
+    /// ```json
+    /// {"type":"update/market_stats_all","market_stats_all":[
+    ///   {"symbol":"ETH","last_trade_price":"2735.41","daily_price_high":"...","daily_price_low":"...",
+    ///    "daily_price_change":"...","daily_volume":"...","current_funding_rate":"...",
+    ///    "index_price":"...","mark_price":"...","open_interest":"..."},
+    ///   ...
+    /// ]}
+    /// ```
+    fn parse_market_stats_all(msg: &IncomingMessage) -> Vec<StreamEvent> {
+        let arr = match msg.raw.get("market_stats_all").and_then(|v| v.as_array()) {
+            Some(a) => a,
+            None => return Vec::new(),
+        };
+
+        let timestamp = Self::val_i64(&msg.raw, "timestamp").unwrap_or(0);
+
+        arr.iter().filter_map(|item| {
+            let last_price = Self::val_f64(item, "last_trade_price")
+                .or_else(|| Self::val_f64(item, "mark_price"))?;
+            let symbol_name = Self::val_str(item, "symbol").unwrap_or("UNKNOWN");
+            let high_24h = Self::val_f64(item, "daily_price_high");
+            let low_24h = Self::val_f64(item, "daily_price_low");
+            let volume_24h = Self::val_f64(item, "daily_volume");
+            let price_change_24h = Self::val_f64(item, "daily_price_change");
+            let price_change_percent_24h = price_change_24h.and_then(|change| {
+                let open = last_price - change;
+                if open.abs() > 1e-10 { Some((change / open) * 100.0) } else { None }
+            });
+            Some(StreamEvent::Ticker(Ticker {
+                symbol: symbol_name.to_string(),
+                last_price,
+                bid_price: None,
+                ask_price: None,
+                high_24h,
+                low_24h,
+                volume_24h,
+                quote_volume_24h: None,
+                price_change_24h,
+                price_change_percent_24h,
+                timestamp,
+            }))
+        }).collect()
+    }
+
+    /// Parse `update/account_all` — emits BalanceUpdate for collateral + PositionUpdate per position.
+    ///
+    /// Payload shape:
+    /// ```json
+    /// {"type":"update/account_all","collateral":"10000.00","available_balance":"9500.00",
+    ///  "positions":[{"symbol":"ETH","side":"long","quantity":"1.5","entry_price":"2700.0",
+    ///                "mark_price":"2735.0","unrealized_pnl":"52.5","realized_pnl":"0"}]}
+    /// ```
+    fn parse_account_all(msg: &IncomingMessage) -> Vec<StreamEvent> {
+        let mut events = Vec::new();
+        let timestamp = Self::val_i64(&msg.raw, "timestamp").unwrap_or(0);
+
+        // Collateral → BalanceUpdate
+        if let Some(total) = Self::val_f64(&msg.raw, "collateral") {
+            let free = Self::val_f64(&msg.raw, "available_balance").unwrap_or(total);
+            let locked = (total - free).max(0.0);
+            events.push(StreamEvent::BalanceUpdate(BalanceUpdateEvent {
+                asset: "USDC".to_string(),
+                free,
+                locked,
+                total,
+                delta: None,
+                reason: Some(BalanceChangeReason::Other),
+                timestamp,
+            }));
+        }
+
+        // Positions
+        if let Some(positions) = msg.raw.get("positions").and_then(|v| v.as_array()) {
+            for pos in positions {
+                let Some(symbol) = Self::val_str(pos, "symbol") else { continue };
+                let quantity = Self::val_f64(pos, "quantity").unwrap_or(0.0);
+                let entry_price = Self::val_f64(pos, "entry_price").unwrap_or(0.0);
+                let mark_price = Self::val_f64(pos, "mark_price");
+                let unrealized_pnl = Self::val_f64(pos, "unrealized_pnl").unwrap_or(0.0);
+                let realized_pnl = Self::val_f64(pos, "realized_pnl");
+                let side = match Self::val_str(pos, "side") {
+                    Some("short") => PositionSide::Short,
+                    _ => PositionSide::Long,
+                };
+                events.push(StreamEvent::PositionUpdate(PositionUpdateEvent {
+                    symbol: symbol.to_string(),
+                    side,
+                    quantity,
+                    entry_price,
+                    mark_price,
+                    unrealized_pnl,
+                    realized_pnl,
+                    liquidation_price: None,
+                    leverage: None,
+                    margin_type: None,
+                    reason: Some(PositionChangeReason::Other),
+                    timestamp,
+                }));
+            }
+        }
+
+        events
+    }
+
+    /// Parse `update/account_market` — per-market account snapshot.
+    ///
+    /// Payload shape:
+    /// ```json
+    /// {"type":"update/account_market","channel":"account_market/0/42",
+    ///  "position":"1.5","avg_entry_price":"2700.0","unrealized_pnl":"52.5","realized_pnl":"10.0",
+    ///  "open_orders":[{"order_id":"123","side":"buy","price":"2650.0","size":"0.5","status":"open"}]}
+    /// ```
+    fn parse_account_market(msg: &IncomingMessage, channel: &str) -> Vec<StreamEvent> {
+        let mut events = Vec::new();
+        let timestamp = Self::val_i64(&msg.raw, "timestamp").unwrap_or(0);
+
+        // Derive symbol from channel "account_market/{market_id}/{account_id}"
+        // market_id → symbol lookup via reverse of symbol_to_market_id is unavailable here;
+        // use market_id string as symbol fallback.
+        let symbol = {
+            let parts: Vec<&str> = channel.splitn(4, '/').collect();
+            // "account_market/0/42" → parts[1] = "0"
+            if parts.len() >= 3 { parts[1].to_string() } else { channel.to_string() }
+        };
+
+        // Position update
+        if let Some(quantity) = Self::val_f64(&msg.raw, "position") {
+            let entry_price = Self::val_f64(&msg.raw, "avg_entry_price").unwrap_or(0.0);
+            let unrealized_pnl = Self::val_f64(&msg.raw, "unrealized_pnl").unwrap_or(0.0);
+            let realized_pnl = Self::val_f64(&msg.raw, "realized_pnl");
+            let side = if quantity >= 0.0 { PositionSide::Long } else { PositionSide::Short };
+            events.push(StreamEvent::PositionUpdate(PositionUpdateEvent {
+                symbol: symbol.clone(),
+                side,
+                quantity: quantity.abs(),
+                entry_price,
+                mark_price: None,
+                unrealized_pnl,
+                realized_pnl,
+                liquidation_price: None,
+                leverage: None,
+                margin_type: None,
+                reason: Some(PositionChangeReason::Other),
+                timestamp,
+            }));
+        }
+
+        // Open orders
+        if let Some(orders) = msg.raw.get("open_orders").and_then(|v| v.as_array()) {
+            for order in orders {
+                let order_id = Self::val_str(order, "order_id")
+                    .or_else(|| Self::val_str(order, "id"))
+                    .unwrap_or("0")
+                    .to_string();
+                let side = match Self::val_str(order, "side") {
+                    Some("sell") => OrderSide::Sell,
+                    _ => OrderSide::Buy,
+                };
+                let price = Self::val_f64(order, "price");
+                let quantity = Self::val_f64(order, "size").unwrap_or(0.0);
+                let status = match Self::val_str(order, "status") {
+                    Some("filled") => OrderStatus::Filled,
+                    Some("canceled") | Some("cancelled") => OrderStatus::Canceled,
+                    Some("partially_filled") => OrderStatus::PartiallyFilled,
+                    _ => OrderStatus::Open,
+                };
+                let order_type = if let Some(p) = price {
+                    OrderType::Limit { price: p }
+                } else {
+                    OrderType::Market
+                };
+                events.push(StreamEvent::OrderUpdate(OrderUpdateEvent {
+                    order_id,
+                    client_order_id: None,
+                    symbol: symbol.clone(),
+                    side,
+                    order_type,
+                    status,
+                    price,
+                    quantity,
+                    filled_quantity: 0.0,
+                    average_price: None,
+                    last_fill_price: None,
+                    last_fill_quantity: None,
+                    last_fill_commission: None,
+                    commission_asset: None,
+                    trade_id: None,
+                    timestamp,
+                }));
+            }
+        }
+
+        events
     }
 
     /// Parse a `ticker/{market_id}` channel update into `StreamEvent::Ticker`.

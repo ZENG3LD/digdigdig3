@@ -36,9 +36,10 @@ use crate::core::{
     CancelAllResponse,
     UserTrade, UserTradeFilter,
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
+    PublicTrade,
 };
 use crate::core::types::SymbolInput;
-use crate::core::traits::{Trading, Account, Positions, AmendOrder, BatchOrders, CancelAll, AccountTransfers, FundingHistory};
+use crate::core::traits::{Trading, Account, Positions, AmendOrder, BatchOrders, CancelAll, AccountTransfers, FundingHistory, MarketDataPublic};
 use crate::core::types::{ConnectorStats, SymbolInfo, AlgoOrderResponse, TransferRequest, TransferHistoryFilter, TransferResponse, FundingPayment, FundingFilter};
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, OrderbookCapabilities};
@@ -740,8 +741,7 @@ impl MarketData for HyperliquidConnector {
             has_orderbook: true,
             has_klines: true,
             has_exchange_info: true,
-            // get_recent_trades not implemented (InfoType::RecentTrades exists but no method)
-            has_recent_trades: false,
+            has_recent_trades: true,
             has_ws_klines: true,     // candle channel
             has_ws_trades: true,     // trades channel
             has_ws_orderbook: true,  // l2Book channel
@@ -2197,11 +2197,31 @@ impl HyperliquidConnector {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// MARKET DATA PUBLIC TRAIT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+impl MarketDataPublic for HyperliquidConnector {
+    async fn get_recent_trades(
+        &self,
+        symbol: crate::core::types::SymbolInput<'_>,
+        _limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<PublicTrade>> {
+        let coin = symbol.resolve(ExchangeId::HyperLiquid, account_type)?;
+        let response = self
+            .info_request(InfoType::RecentTrades, serde_json::json!({ "coin": &*coin }))
+            .await?;
+        HyperliquidParser::parse_recent_trades(&response)
+    }
+}
+
 impl crate::core::traits::HasCapabilities for HyperliquidConnector {
     fn capabilities(&self) -> crate::core::types::ConnectorCapabilities {
         crate::core::types::ConnectorCapabilities {
             has_ticker: true, has_orderbook: true, has_klines: true,
-            has_recent_trades: false, has_exchange_info: true,
+            has_recent_trades: true, has_exchange_info: true,
             has_liquidation_history: false, has_open_interest_history: false,
             has_premium_index: false, has_long_short_ratio_history: false,
             has_funding_rate_history: false, has_mark_price_klines: false,

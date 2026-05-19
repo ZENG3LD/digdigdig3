@@ -16,9 +16,7 @@ use crate::l3::open::crypto::cex::htx::HtxConnector;
 use crate::l3::open::crypto::cex::bitget::BitgetConnector;
 use crate::l3::open::crypto::cex::bingx::BingxConnector;
 use crate::l3::open::crypto::cex::crypto_com::CryptoComConnector;
-use crate::l3::open::crypto::cex::hyperliquid::HyperliquidConnector;
-
-// DEX — Lighter, dYdX have real impls in their connector.rs files
+// DEX — Lighter, dYdX, HyperLiquid have real impls in their connector.rs files
 
 // Stocks US
 use crate::l2::paid::polygon::PolygonConnector;
@@ -72,7 +70,7 @@ impl MarketDataPublic for BingxConnector {}
 impl MarketDataPublic for CryptoComConnector {}
 // UpbitConnector — real impl in connector.rs
 // DeribitConnector — real impl in connector.rs
-impl MarketDataPublic for HyperliquidConnector {}
+// HyperliquidConnector — real impl in connector.rs (get_recent_trades overridden)
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DEX stubs

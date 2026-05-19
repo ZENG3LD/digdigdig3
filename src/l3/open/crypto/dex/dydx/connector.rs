@@ -643,7 +643,7 @@ impl MarketData for DydxConnector {
             has_orderbook: true,    // GET /v4/orderbooks/perpetualMarket/{market}
             has_klines: true,       // GET /v4/candles/perpetualMarkets/{market}
             has_exchange_info: true, // GET /v4/perpetualMarkets (full symbol list)
-            has_recent_trades: false, // Trades endpoint exists but not exposed via trait
+            has_recent_trades: true,  // GET /v4/trades/perpetualMarket/{market} — fully implemented
             has_ws_klines: true,     // v4_candles channel
             has_ws_trades: true,     // v4_trades channel
             has_ws_orderbook: true,  // v4_orderbook channel

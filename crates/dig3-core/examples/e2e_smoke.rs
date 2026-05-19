@@ -14,10 +14,14 @@
 //!   --market            run only market-data section (default)
 //!   --trading           run only trading/account section (needs ENV creds)
 //!   --all               run both market + trading
-//!   --json-out <path>   write JSON report to file
+//!   --json-out <path>   write JSON report. `auto` → target/harness_out/e2e_smoke_<ts>.json
 //!
-//! Run:
-//!     cargo run --example e2e_smoke --release 2>&1 | tee e2e_smoke_report.txt
+//! Env (optional):
+//!   DIG3_WS_TRACE=1                → write raw WS frames to target/harness_out/ws_trace/
+//!   DIG3_WS_TRACE=<absolute-path>  → write raw WS frames to the given dir
+//!
+//! Run (recommended — keep artefacts out of workspace root):
+//!     cargo run --example e2e_smoke --release -- --json-out auto 2>&1 | tee target/harness_out/e2e_report.txt
 //!
 //! No API keys required for market-data. Trading section auto-skips when no creds.
 
@@ -1477,6 +1481,18 @@ mod report {
     }
 
     pub fn write_json(path: &str, reports: &[(ExchangeId, ExchangeReport)]) {
+        // `--json-out auto` → target/harness_out/e2e_smoke_<unix_ms>.json
+        let path_buf: std::path::PathBuf = if path == "auto" || path == "default" {
+            std::path::PathBuf::from(format!(
+                "target/harness_out/e2e_smoke_{}.json",
+                now_ms()
+            ))
+        } else {
+            std::path::PathBuf::from(path)
+        };
+        if let Some(parent) = path_buf.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         let json = serde_json::json!({
             "timestamp": now_ms(),
             "exchanges": reports.iter().map(|(id, r)| {
@@ -1486,8 +1502,8 @@ mod report {
                 })
             }).collect::<Vec<_>>(),
         });
-        match std::fs::write(path, serde_json::to_string_pretty(&json).unwrap_or_default()) {
-            Ok(()) => println!("JSON report written to {}", path),
+        match std::fs::write(&path_buf, serde_json::to_string_pretty(&json).unwrap_or_default()) {
+            Ok(()) => println!("JSON report written to {}", path_buf.display()),
             Err(e) => println!("Failed to write JSON: {}", e),
         }
     }

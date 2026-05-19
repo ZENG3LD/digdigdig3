@@ -877,9 +877,13 @@ pub fn decode_binary_default(bytes: &[u8]) -> WebSocketResult<Value> {
 // ─────────────────────────────────────────────────────────────────────────────
 // Raw frame trace (debug)
 //
-// When env `DIG3_WS_TRACE=<dir>` is set, every incoming WS frame is appended
-// to `<dir>/<exchange>.jsonl` as one line per frame:
+// When env `DIG3_WS_TRACE` is set, every incoming WS frame is appended to
+// `<dir>/<exchange>.jsonl` as one line per frame:
 //   {"kind":"text","ts":<unix_ms>,"len":<bytes>,"body":"<utf8-or-hex>"}
+//
+// Accepted values:
+//   DIG3_WS_TRACE=1                        → default dir `target/harness_out/ws_trace/`
+//   DIG3_WS_TRACE=<absolute-or-rel-path>   → use the given dir verbatim
 //
 // Use for debug-only inspection of live wire traffic when a stream is silent
 // or producing WRONG_TYPE. Not for production — fsync-per-line is slow.
@@ -887,8 +891,14 @@ pub fn decode_binary_default(bytes: &[u8]) -> WebSocketResult<Value> {
 
 fn trace_raw_frame(exchange: &str, kind: &str, payload: &[u8]) {
     use std::io::Write;
-    let Ok(dir) = std::env::var("DIG3_WS_TRACE") else { return; };
-    let dir_path = std::path::Path::new(&dir);
+    let Ok(raw) = std::env::var("DIG3_WS_TRACE") else { return; };
+    let dir_buf;
+    let dir_path: &std::path::Path = if raw == "1" || raw.eq_ignore_ascii_case("true") {
+        dir_buf = std::path::PathBuf::from("target/harness_out/ws_trace");
+        dir_buf.as_path()
+    } else {
+        std::path::Path::new(&raw)
+    };
     if std::fs::create_dir_all(dir_path).is_err() { return; }
     let path = dir_path.join(format!("{}.jsonl", exchange));
     let ts = std::time::SystemTime::now()

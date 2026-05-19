@@ -1,14 +1,20 @@
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use digdigdig3_station::{
-    AccountType, Event, ExchangeId, Station, Stream, SubscriptionSet,
+    AccountType, Event, ExchangeId, PersistenceConfig, Station, Stream, SubscriptionSet,
 };
 
 #[derive(Parser, Debug)]
 #[command(name = "dig3", version, about = "digdigdig3 unified CLI")]
 struct Cli {
+    /// Root directory for Station-managed artefacts (trades / bars / snapshots).
+    /// Resolves: --storage-root > DIG3_STORAGE_ROOT > ./dig3_storage
+    #[arg(long, global = true)]
+    storage_root: Option<PathBuf>,
+
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -42,6 +48,10 @@ enum WatchKind {
         /// Stop after N seconds (omit to run until Ctrl-C).
         #[arg(long)]
         duration: Option<u64>,
+        /// Persist each trade to <storage-root>/trades/<exch>/<acct>/<sym>/<date>.dat
+        /// Default: on. Pass `--no-persist` to disable.
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        persist: bool,
     },
 }
 
@@ -58,8 +68,9 @@ async fn main() -> Result<()> {
 
     match cli.cmd {
         Cmd::Watch { what } => match what {
-            WatchKind::Trades { exchange, symbol, account, duration } => {
-                run_watch_trades(&exchange, &symbol, &account, duration).await?;
+            WatchKind::Trades { exchange, symbol, account, duration, persist } => {
+                run_watch_trades(&exchange, &symbol, &account, duration, persist, cli.storage_root)
+                    .await?;
             }
         },
         Cmd::Persist => println!("dig3 persist: not yet implemented in Phase 1"),
@@ -80,12 +91,21 @@ async fn run_watch_trades(
     symbol: &str,
     account: &str,
     duration: Option<u64>,
+    persist: bool,
+    storage_root_override: Option<PathBuf>,
 ) -> Result<()> {
     let exch = ExchangeId::from_str(exchange)
         .ok_or_else(|| anyhow!("unknown exchange `{exchange}`"))?;
     let acct = parse_account(account)?;
 
-    let station = Station::builder().build().await.context("Station::build")?;
+    let mut builder = Station::builder();
+    if let Some(root) = storage_root_override {
+        builder = builder.storage_root(root);
+    }
+    if persist {
+        builder = builder.persistence(PersistenceConfig::on());
+    }
+    let station = builder.build().await.context("Station::build")?;
 
     let set = SubscriptionSet::new().add(exch, symbol, acct, [Stream::Trade]);
 
@@ -95,7 +115,8 @@ async fn run_watch_trades(
         .context("Station::subscribe")?;
 
     eprintln!(
-        "dig3 watch trades: exchange={exchange} symbol={symbol} account={account} duration={duration:?}"
+        "dig3 watch trades: exchange={exchange} symbol={symbol} account={account} duration={duration:?} persist={persist} storage_root={}",
+        station.storage_root().display()
     );
 
     let deadline = duration.map(|d| tokio::time::Instant::now() + Duration::from_secs(d));

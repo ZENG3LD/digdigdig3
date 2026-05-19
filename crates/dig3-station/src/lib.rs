@@ -7,19 +7,19 @@
 //! Phase 1 scope (current): skeleton only. Modules below are stubs.
 
 pub mod builder;
+pub mod cache;
 pub mod error;
+pub mod persistence;
 pub mod station;
 pub mod subscription;
 
-#[cfg(feature = "cache")]
-pub mod cache;
-#[cfg(feature = "persistence")]
-pub mod persistence;
 #[cfg(feature = "reconnect")]
 pub mod reconnect;
 
 pub use builder::StationBuilder;
+pub use cache::{ticker_cache, CacheConfig, TickerKey};
 pub use error::{Result, StationError};
+pub use persistence::{PersistenceConfig, TradeWriter};
 pub use station::Station;
 pub use subscription::{Event, Stream, SubscriptionHandle, SubscriptionSet};
 

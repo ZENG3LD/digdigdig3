@@ -185,30 +185,35 @@ pub fn format_symbol(symbol: &Symbol) -> (String, String) {
 /// - aggregate=7 -> 7-day bars (groups 7x daily bars)
 ///
 /// This function returns a sensible default aggregation for common intervals.
+/// Map interval string to (v2 endpoint, aggregate) for CryptoCompare.
+///
+/// Uses v2 endpoints (`/data/v2/histo*`) which return `{Data:{Data:[...]}}` — the
+/// structure expected by `CryptoCompareParser::parse_klines`. v1 endpoints return
+/// `{Data:[...]}` directly and would break the parser.
 pub fn map_interval_aggregate(interval: &str) -> (CryptoCompareEndpoint, u32) {
     match interval {
-        // Minute intervals (use histominute)
-        "1m" => (CryptoCompareEndpoint::HistoMinute, 1),
-        "3m" => (CryptoCompareEndpoint::HistoMinute, 3),
-        "5m" => (CryptoCompareEndpoint::HistoMinute, 5),
-        "15m" => (CryptoCompareEndpoint::HistoMinute, 15),
-        "30m" => (CryptoCompareEndpoint::HistoMinute, 30),
+        // Minute intervals (use v2 histominute)
+        "1m" => (CryptoCompareEndpoint::HistoMinuteV2, 1),
+        "3m" => (CryptoCompareEndpoint::HistoMinuteV2, 3),
+        "5m" => (CryptoCompareEndpoint::HistoMinuteV2, 5),
+        "15m" => (CryptoCompareEndpoint::HistoMinuteV2, 15),
+        "30m" => (CryptoCompareEndpoint::HistoMinuteV2, 30),
 
-        // Hourly intervals (use histohour)
-        "1h" => (CryptoCompareEndpoint::HistoHour, 1),
-        "2h" => (CryptoCompareEndpoint::HistoHour, 2),
-        "4h" => (CryptoCompareEndpoint::HistoHour, 4),
-        "6h" => (CryptoCompareEndpoint::HistoHour, 6),
-        "8h" => (CryptoCompareEndpoint::HistoHour, 8),
-        "12h" => (CryptoCompareEndpoint::HistoHour, 12),
+        // Hourly intervals (use v2 histohour)
+        "1h" => (CryptoCompareEndpoint::HistoHourV2, 1),
+        "2h" => (CryptoCompareEndpoint::HistoHourV2, 2),
+        "4h" => (CryptoCompareEndpoint::HistoHourV2, 4),
+        "6h" => (CryptoCompareEndpoint::HistoHourV2, 6),
+        "8h" => (CryptoCompareEndpoint::HistoHourV2, 8),
+        "12h" => (CryptoCompareEndpoint::HistoHourV2, 12),
 
-        // Daily intervals (use histoday)
-        "1d" => (CryptoCompareEndpoint::HistoDay, 1),
-        "1w" => (CryptoCompareEndpoint::HistoDay, 7),
-        "1M" => (CryptoCompareEndpoint::HistoDay, 30),
+        // Daily intervals (use v2 histoday)
+        "1d" => (CryptoCompareEndpoint::HistoDayV2, 1),
+        "1w" => (CryptoCompareEndpoint::HistoDayV2, 7),
+        "1M" => (CryptoCompareEndpoint::HistoDayV2, 30),
 
-        // Default: 1 hour
-        _ => (CryptoCompareEndpoint::HistoHour, 1),
+        // Default: 1 hour v2
+        _ => (CryptoCompareEndpoint::HistoHourV2, 1),
     }
 }
 

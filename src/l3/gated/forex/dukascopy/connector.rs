@@ -250,6 +250,16 @@ impl MarketData for DukascopyConnector {
     }
 
     /// Get klines (constructed from tick data)
+    ///
+    /// Dukascopy tick data is stored as per-hour LZMA-compressed binary archives
+    /// (`https://datafeed.dukascopy.com/datafeed/{SYM}/{YYYY}/{MM}/{DD}/{HH}h_ticks.bi5`).
+    /// Each hour requires a separate HTTP download + LZMA decompression.
+    ///
+    /// To keep latency acceptable the effective lookback window is capped at
+    /// **48 source hours** regardless of `limit`. For sub-hourly intervals this
+    /// still yields many candles; for longer intervals (4h, 1d) fewer files are
+    /// downloaded. Callers that need deep history should reduce the interval or
+    /// call in batches with an explicit `end_time`.
     async fn get_klines(
         &self,
         symbol: SymbolInput<'_>,
@@ -261,10 +271,19 @@ impl MarketData for DukascopyConnector {
         let symbol_str: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let interval_ms = DukascopyParser::parse_interval_to_ms(interval)?;
 
-        // Calculate time range based on limit
+        // Each source hour is one network round-trip + LZMA decompression.
+        // Cap the lookback window at 48 hours so the call finishes in <10s on a
+        // typical WAN connection (average ~200ms/file, 48 files ≈ 10s worst case).
+        const MAX_SOURCE_HOURS: i64 = 48;
+        let hour_ms: i64 = 3_600_000;
+
+        let limit_count = limit.unwrap_or(24) as i64;
+        // How many source hours are needed to produce `limit_count` candles?
+        let source_hours_needed = ((interval_ms * limit_count) / hour_ms).max(1);
+        let source_hours = source_hours_needed.min(MAX_SOURCE_HOURS);
+
         let now = chrono::Utc::now();
-        let limit_count = limit.unwrap_or(100) as i64;
-        let from_ms = now.timestamp_millis() - (interval_ms * limit_count);
+        let from_ms = now.timestamp_millis() - (source_hours * hour_ms);
         let to_ms = now.timestamp_millis();
 
         // Get ticks
@@ -273,7 +292,7 @@ impl MarketData for DukascopyConnector {
         // Convert to klines
         let klines = DukascopyParser::ticks_to_klines(&ticks, interval_ms)?;
 
-        // Apply limit
+        // Apply limit (take the most recent candles)
         let start = if klines.len() > limit_count as usize {
             klines.len() - limit_count as usize
         } else {

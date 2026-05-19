@@ -55,8 +55,12 @@ impl YahooFinanceParser {
         Ok(Ticker {
             symbol: symbol.to_string(),
             last_price: Self::require_f64(meta, "regularMarketPrice")?,
-            bid_price: None, // Chart endpoint doesn't provide bid/ask
-            ask_price: None, // Chart endpoint doesn't provide bid/ask
+            // Chart endpoint carries no bid/ask. Even /v7/finance/quote omits
+            // bid/ask for crypto symbols (Yahoo does not expose live bid/ask for
+            // crypto — only for stocks during market hours). This is expected; None
+            // is the correct signal, not a parse failure.
+            bid_price: None,
+            ask_price: None,
             high_24h: Self::get_f64(meta, "regularMarketDayHigh"),
             low_24h: Self::get_f64(meta, "regularMarketDayLow"),
             volume_24h: Self::get_f64(meta, "regularMarketVolume"),

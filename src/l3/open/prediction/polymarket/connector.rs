@@ -558,38 +558,35 @@ impl MarketData for PolymarketConnector {
 
     /// Get current YES probability for a market
     ///
-    /// `symbol` should be the `condition_id` (0x...).
-    /// Returns the YES outcome probability as the "price" (0.0 - 1.0).
+    /// `symbol` may be:
+    /// - Empty string or a string containing "DISCOVER" → auto-discover the most
+    ///   active token_id from Gamma API (same as get_ticker discovery path).
+    /// - A raw token_id (large decimal number ~77 digits) → used directly.
+    /// - A condition_id (0x… 66 chars) → resolved to YES token_id via CLOB `/markets`.
     async fn get_price(
         &self,
         symbol: SymbolInput<'_>,
         account_type: AccountType,
     ) -> ExchangeResult<Price> {
         let symbol = symbol.resolve(ExchangeId::Polymarket, account_type)?;
-        let id = self.lower_id(&symbol);
-        let condition_id = id.as_ref();
+        let raw = symbol.as_ref();
 
-        // Get the market to find the primary token ID.
-        // Prefers "Yes" outcome; falls back to first token for non-binary markets.
-        let market = self.get_market(condition_id).await?;
-        let yes_token = market
-            .tokens
-            .iter()
-            .find(|t| t.outcome == "Yes")
-            .or_else(|| market.tokens.first())
-            .ok_or_else(|| {
-                ExchangeError::Parse(format!(
-                    "No tokens found for market {}",
-                    condition_id,
-                ))
-            })?;
+        // Mirror the same token resolution logic as get_ticker so the e2e_smoke
+        // "price" test cell uses a live token_id rather than a stale hardcoded one.
+        let token_id: String = if raw.is_empty() || raw.contains("DISCOVER") {
+            self.discover_active_token_id().await?
+        } else if (raw.starts_with("0x") || raw.starts_with("0X")) && raw.len() == 66 {
+            let lowered = self.lower_id(raw);
+            self.get_yes_token_id(lowered.as_ref()).await?
+        } else {
+            raw.to_string()
+        };
 
-        // Get last trade price for the primary token
-        match self.get_last_trade_price(&yes_token.token_id).await {
+        // Get last trade price for the token; fall back to midpoint.
+        match self.get_last_trade_price(&token_id).await {
             Ok(price) => Ok(price),
             Err(_) => {
-                // Fall back to midpoint if last trade is unavailable
-                let midpoint = self.get_midpoint(&yes_token.token_id).await?;
+                let midpoint = self.get_midpoint(&token_id).await?;
                 Ok(midpoint.mid)
             }
         }
@@ -597,7 +594,10 @@ impl MarketData for PolymarketConnector {
 
     /// Get order book for a market's YES token
     ///
-    /// `symbol` should be the `condition_id` (0x...).
+    /// `symbol` may be:
+    /// - Empty string or a string containing "DISCOVER" → auto-discover active token_id.
+    /// - A raw token_id (large decimal number ~77 digits) → used directly.
+    /// - A condition_id (0x… 66 chars) → resolved to YES token_id via CLOB `/markets`.
     async fn get_orderbook(
         &self,
         symbol: SymbolInput<'_>,
@@ -605,14 +605,19 @@ impl MarketData for PolymarketConnector {
         account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
         let symbol = symbol.resolve(ExchangeId::Polymarket, account_type)?;
-        let id = self.lower_id(&symbol);
-        let condition_id = id.as_ref();
+        let raw = symbol.as_ref();
 
-        // Get the YES token ID
-        let yes_token_id = self.get_yes_token_id(condition_id).await?;
+        let token_id: String = if raw.is_empty() || raw.contains("DISCOVER") {
+            self.discover_active_token_id().await?
+        } else if (raw.starts_with("0x") || raw.starts_with("0X")) && raw.len() == 66 {
+            let lowered = self.lower_id(raw);
+            self.get_yes_token_id(lowered.as_ref()).await?
+        } else {
+            raw.to_string()
+        };
 
         // Fetch and convert the order book
-        let poly_book = self.get_order_book(&yes_token_id).await?;
+        let poly_book = self.get_order_book(&token_id).await?;
         Ok(poly_orderbook_to_v5(&poly_book))
     }
 

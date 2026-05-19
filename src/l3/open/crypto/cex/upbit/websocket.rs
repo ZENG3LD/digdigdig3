@@ -2,28 +2,11 @@
 //!
 //! WebSocket connector for Upbit.
 //!
-//! ## Features
-//! - Public channels (ticker, orderbook, trade)
-//! - Private channels (myAsset, myOrder)
-//! - Ping/pong heartbeat (PING message every 30-60 seconds)
-//! - Subscription management
-//! - Message parsing to StreamEvent
-//!
-//! ## Usage
-//!
-//! ```ignore
-//! let mut ws = UpbitWebSocket::new(None, "sg").await?;
-//! ws.connect().await?;
-//! ws.subscribe_ticker(Symbol::new("BTC", "SGD")).await?;
-//!
-//! let stream = ws.event_stream();
-//! while let Some(event) = stream.next().await {
-//!     match event {
-//!         Ok(StreamEvent::Ticker(ticker)) => println!("{:?}", ticker),
-//!         _ => {}
-//!     }
-//! }
-//! ```
+//! ## Design
+//! Uses a split sink/stream pattern: a background read task owns the `SplitStream`
+//! half and a write channel (`mpsc::UnboundedSender<Message>`) allows `subscribe()`
+//! to send frames without contending with reads. This eliminates the shared-mutex
+//! bottleneck that caused snapshots to be missed.
 
 use std::collections::HashSet;
 use std::pin::Pin;
@@ -32,11 +15,11 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use futures_util::{Stream, StreamExt, SinkExt};
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::sync::{broadcast, Mutex};
-use tokio::time::sleep;
+use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream, MaybeTlsStream};
+use futures_util::stream::SplitSink;
+use futures_util::stream::SplitStream;
 
 use crate::core::{
     Credentials, AccountType, ExchangeResult,
@@ -54,55 +37,13 @@ use super::parser::UpbitParser;
 // GLOBAL RATE LIMITER
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Global rate limiter for Upbit WebSocket connections
-/// Upbit has strict rate limits: conservative approach with 10 connections per 10 seconds
+/// Global rate limiter for Upbit WebSocket connections (5 per 10 seconds)
 static GLOBAL_WS_LIMITER: OnceLock<Arc<StdMutex<SimpleRateLimiter>>> = OnceLock::new();
 
 fn get_global_ws_limiter() -> Arc<StdMutex<SimpleRateLimiter>> {
     GLOBAL_WS_LIMITER.get_or_init(|| {
-        Arc::new(StdMutex::new(
-            // Very conservative: 5 connections per 10 seconds to avoid 429 errors
-            // Upbit has strict rate limits
-            SimpleRateLimiter::new(5, Duration::from_secs(10))
-        ))
+        Arc::new(StdMutex::new(SimpleRateLimiter::new(5, Duration::from_secs(10))))
     }).clone()
-}
-
-/// Global rate limiter for subscriptions (separate from connections)
-static SUBSCRIPTION_LIMITER: OnceLock<Arc<StdMutex<SimpleRateLimiter>>> = OnceLock::new();
-
-fn get_subscription_limiter() -> Arc<StdMutex<SimpleRateLimiter>> {
-    SUBSCRIPTION_LIMITER.get_or_init(|| {
-        Arc::new(StdMutex::new(
-            // Conservative: 3 subscriptions per second
-            SimpleRateLimiter::new(3, Duration::from_secs(1))
-        ))
-    }).clone()
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// WEBSOCKET MESSAGES
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/// Subscription message format for Upbit
-/// Format: [ticket_object, type_object(s), format_object?]
-#[derive(Debug, Clone, Serialize)]
-#[allow(dead_code)]
-struct SubscriptionMessage {
-    ticket: String,
-    #[serde(rename = "type")]
-    msg_type: String,
-    codes: Vec<String>,
-}
-
-/// Incoming message from Upbit
-#[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
-struct IncomingMessage {
-    #[serde(rename = "type")]
-    msg_type: Option<String>,
-    code: Option<String>,
-    status: Option<String>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -110,6 +51,8 @@ struct IncomingMessage {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+type WsWriter = SplitSink<WsStream, Message>;
+type WsReader = SplitStream<WsStream>;
 
 /// Upbit WebSocket connector
 pub struct UpbitWebSocket {
@@ -123,22 +66,25 @@ pub struct UpbitWebSocket {
     subscriptions: Arc<Mutex<HashSet<SubscriptionRequest>>>,
     /// Broadcast sender (for multiple consumers)
     broadcast_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
-    /// WebSocket stream
-    ws_stream: Arc<Mutex<Option<WsStream>>>,
-    /// Last ping time (updated when WS-frame ping is sent)
+    /// Write command channel — subscribe/ping send here; background task owns WsWriter
+    write_tx: Arc<Mutex<Option<mpsc::UnboundedSender<Message>>>>,
+    /// WebSocket writer (used by background write task)
+    ws_writer: Arc<Mutex<Option<WsWriter>>>,
+    /// Last ping time
     last_ping: Arc<Mutex<Instant>>,
     /// WebSocket ping round-trip time in milliseconds (0 = not measured yet).
     ws_ping_rtt_ms: Arc<Mutex<u64>>,
 }
 
 impl UpbitWebSocket {
-    /// Create new Upbit WebSocket connector
-    /// region: "sg" (Singapore), "id" (Indonesia), "th" (Thailand)
+    /// Create new Upbit WebSocket connector.
+    /// region: "kr" (Korea / KRW markets), "sg" (Singapore), "id" (Indonesia), "th" (Thailand)
     pub async fn new(
         credentials: Option<Credentials>,
         region: &str,
     ) -> ExchangeResult<Self> {
         let urls = match region {
+            "kr" | "korea" => UpbitUrls::KOREA,
             "id" => UpbitUrls::INDONESIA,
             "th" => UpbitUrls::THAILAND,
             _ => UpbitUrls::SINGAPORE,
@@ -155,293 +101,158 @@ impl UpbitWebSocket {
             status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
             broadcast_tx: Arc::new(StdMutex::new(None)),
-            ws_stream: Arc::new(Mutex::new(None)),
+            write_tx: Arc::new(Mutex::new(None)),
+            ws_writer: Arc::new(Mutex::new(None)),
             last_ping: Arc::new(Mutex::new(Instant::now())),
             ws_ping_rtt_ms: Arc::new(Mutex::new(0)),
         })
     }
 
-    /// Wait for subscription rate limit if needed
-    async fn subscription_rate_limit_wait() {
-        loop {
-            // Scope the lock to ensure it's dropped before await
-            let can_subscribe = {
-                let limiter = get_subscription_limiter();
-                let mut guard = limiter.lock().expect("Mutex poisoned");
-                guard.try_acquire()
-            };
-
-            if can_subscribe {
-                return; // Successfully acquired, proceed
-            }
-
-            // Get wait time
-            let wait_time = {
-                let limiter = get_subscription_limiter();
-                let guard = limiter.lock().expect("Mutex poisoned");
-                guard.time_until_ready()
-            };
-
-            if wait_time > Duration::ZERO {
-                sleep(wait_time).await;
-            } else {
-                sleep(Duration::from_millis(100)).await;
-            }
-        }
-    }
-
-    /// Subscribe to channels
-    async fn send_subscription(
-        &self,
-        msg_type: &str,
-        symbols: Vec<String>,
-    ) -> WebSocketResult<()> {
-        // Wait for rate limit
-        Self::subscription_rate_limit_wait().await;
-
-        let mut ws_lock = self.ws_stream.lock().await;
-        let ws = ws_lock.as_mut()
-            .ok_or(WebSocketError::NotConnected)?;
-
-        // Upbit subscription format: [ticket, type, format?]
-        // `is_only_realtime: false` → server sends snapshot immediately on subscribe
-        // (important for KRW markets that trade infrequently).
-        // `is_only_snapshot: false` → also send real-time updates after snapshot.
-        let type_obj = json!({
-            "type": msg_type,
-            "codes": symbols,
-            "is_only_realtime": false,
-            "is_only_snapshot": false
-        });
-
-        let subscription = json!([
+    /// Build Upbit subscription JSON payload.
+    ///
+    /// Format: `[{"ticket":"…"}, {"type":"…","codes":["…"],"is_only_realtime":true}, {"format":"DEFAULT"}]`
+    ///
+    /// `is_only_realtime: true` → skip initial snapshot; only real-time updates.
+    /// This avoids the race where the snapshot is broadcast before the consumer
+    /// has subscribed to the broadcast channel.
+    fn build_sub_message(msg_type: &str, symbols: &[String]) -> Message {
+        let payload = json!([
             {"ticket": "upbit-connector"},
-            type_obj,
+            {
+                "type": msg_type,
+                "codes": symbols,
+                "is_only_realtime": true
+            },
             {"format": "DEFAULT"}
         ]);
-
-        ws.send(Message::Text(subscription.to_string())).await
-            .map_err(|e| WebSocketError::SendError(e.to_string()))?;
-
-        Ok(())
+        Message::Text(payload.to_string())
     }
 
-    /// Send PING message to keep connection alive and measure RTT.
-    ///
-    /// Sends both a text "PING" (Upbit application-level keepalive) and a
-    /// WS-frame `Message::Ping` (for transport-level RTT measurement).
-    async fn send_ping(&self) -> WebSocketResult<()> {
-        let mut ws_lock = self.ws_stream.lock().await;
-        let ws = ws_lock.as_mut()
-            .ok_or(WebSocketError::NotConnected)?;
+    /// Parse a raw frame text (binary decoded or text) into a StreamEvent.
+    fn parse_frame(text: &str) -> Option<StreamEvent> {
+        let value: Value = serde_json::from_str(text).ok()?;
 
-        // Upbit accepts text "PING" message (application-level keepalive)
-        ws.send(Message::Text("PING".to_string())).await
-            .map_err(|e| WebSocketError::SendError(e.to_string()))?;
-
-        // Also send a WS-frame ping for RTT measurement (server responds with Pong)
-        *self.last_ping.lock().await = Instant::now();
-        ws.send(Message::Ping(vec![])).await
-            .map_err(|e| WebSocketError::SendError(e.to_string()))?;
-
-        Ok(())
-    }
-
-    /// Handle incoming message
-    async fn handle_message(&self, text: &str) -> Option<StreamEvent> {
-        // Try to parse as JSON
-        let value: Value = match serde_json::from_str(text) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::debug!(target: "upbit::ws", "non-JSON frame ({} bytes): {}", text.len(), e);
-                return None;
-            }
-        };
-
-        // Check for status message (server ping response)
+        // Server status ping response — ignore
         if let Some(status) = value.get("status") {
             if status == "UP" {
-                return None; // Ignore status messages
+                return None;
             }
         }
 
-        // Parse based on message type. Upbit DEFAULT format uses `"type"`,
-        // SIMPLE format uses `"ty"`. We subscribe with DEFAULT.
-        let msg_type = match value.get("type")
+        let msg_type = value.get("type")
             .or_else(|| value.get("ty"))
-            .and_then(|t| t.as_str())
-        {
-            Some(t) => t,
-            None => {
-                tracing::debug!(target: "upbit::ws", "frame without type/ty: {}", &text[..text.len().min(200)]);
-                return None;
-            }
-        };
+            .and_then(|t| t.as_str())?;
 
         match msg_type {
             "ticker" => {
-                UpbitParser::parse_ws_ticker(&value)
-                    .ok()
-                    .map(StreamEvent::Ticker)
-            },
+                UpbitParser::parse_ws_ticker(&value).ok().map(StreamEvent::Ticker)
+            }
             "trade" => {
-                UpbitParser::parse_ws_trade(&value)
-                    .ok()
-                    .map(StreamEvent::Trade)
-            },
+                UpbitParser::parse_ws_trade(&value).ok().map(StreamEvent::Trade)
+            }
             "orderbook" => {
-                // Always emit the raw orderbook snapshot so dedicated
-                // orderbook subscribers receive it.
-                // Additionally, if there is a ticker subscriber that needs
-                // bid/ask, emit a synthetic Ticker.  We emit the orderbook
-                // snapshot as primary return value; the synthetic Ticker is
-                // sent directly to the broadcast channel here.
-                if let Some(synthetic) = UpbitParser::parse_ws_orderbook_as_ticker(&value) {
-                    if let Some(tx) = self.broadcast_tx.lock().unwrap().as_ref() {
-                        let _ = tx.send(Ok(StreamEvent::Ticker(synthetic)));
-                    }
-                }
-                UpbitParser::parse_ws_orderbook(&value)
-                    .ok()
-                    .map(StreamEvent::OrderbookSnapshot)
-            },
+                UpbitParser::parse_ws_orderbook(&value).ok().map(StreamEvent::OrderbookSnapshot)
+            }
             _ => None,
         }
     }
 
-    /// Start message receiving loop
-    async fn start_message_loop(&self) -> WebSocketResult<()> {
-        let ws_stream = self.ws_stream.clone();
-        let broadcast_tx = self.broadcast_tx.clone();
-        let status = self.status.clone();
-        let last_ping = self.last_ping.clone();
-        let ws_ping_rtt_ms = self.ws_ping_rtt_ms.clone();
-        let ws_clone = self.clone_for_loop();
+    /// Start the background read task.
+    ///
+    /// Reads from `ws_reader` and broadcasts parsed events. Returns the write
+    /// channel sender so callers can push frames without locking the reader.
+    fn start_tasks(
+        ws_writer: Arc<Mutex<Option<WsWriter>>>,
+        ws_reader: WsReader,
+        broadcast_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
+        status: Arc<Mutex<ConnectionStatus>>,
+        last_ping: Arc<Mutex<Instant>>,
+        ws_ping_rtt_ms: Arc<Mutex<u64>>,
+    ) -> mpsc::UnboundedSender<Message> {
+        let (write_tx, mut write_rx) = mpsc::unbounded_channel::<Message>();
 
+        // Write task: drains write_rx and sends to WsWriter
+        let status_w = status.clone();
         tokio::spawn(async move {
-            loop {
-                // Check if should ping (every 30 seconds)
-                {
-                    let last = last_ping.lock().await;
-                    if last.elapsed() > Duration::from_secs(30) {
-                        drop(last);
-                        if let Err(e) = ws_clone.send_ping().await {
-                            if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
-                                let _ = tx.send(Err(e));
-                            }
-                            break;
-                        }
+            while let Some(msg) = write_rx.recv().await {
+                let mut guard = ws_writer.lock().await;
+                if let Some(writer) = guard.as_mut() {
+                    if writer.send(msg).await.is_err() {
+                        *status_w.lock().await = ConnectionStatus::Disconnected;
+                        break;
                     }
+                } else {
+                    break;
                 }
+            }
+        });
 
-                // Read next message
-                let msg = {
-                    let mut ws_lock = ws_stream.lock().await;
-                    match ws_lock.as_mut() {
-                        Some(ws) => {
-                            match tokio::time::timeout(Duration::from_millis(100), ws.next()).await {
-                                Ok(Some(msg)) => msg,
-                                Ok(None) => break,
-                                Err(_) => continue, // Timeout, continue loop
-                            }
-                        },
-                        None => break,
-                    }
-                };
-
-                // Process message
-                match msg {
+        // Read task: reads from WsReader and broadcasts events
+        let write_tx_clone = write_tx.clone();
+        tokio::spawn(async move {
+            let mut reader = ws_reader;
+            while let Some(msg_result) = reader.next().await {
+                match msg_result {
                     Ok(Message::Text(text)) => {
-                        if let Some(event) = ws_clone.handle_message(&text).await {
+                        if let Some(event) = Self::parse_frame(&text) {
                             if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
                                 let _ = tx.send(Ok(event));
                             }
                         }
-                    },
+                    }
                     Ok(Message::Binary(data)) => {
-                        // Upbit sends `format: DEFAULT` payloads as Binary
-                        // frames, but the bytes are plain UTF-8 JSON (no
-                        // compression). Decode as UTF-8 and parse the same
-                        // way as a Text frame.
-                        match String::from_utf8(data) {
-                            Ok(text) => {
-                                if let Some(event) = ws_clone.handle_message(&text).await {
-                                    if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
-                                        let _ = tx.send(Ok(event));
-                                    }
-                                } else {
-                                    tracing::debug!(target: "upbit::ws", "binary frame parsed as text but produced no event: {}", &text[..text.len().min(120)]);
+                        // Upbit DEFAULT format sends binary frames with raw UTF-8 JSON.
+                        if let Ok(text) = String::from_utf8(data) {
+                            if let Some(event) = Self::parse_frame(&text) {
+                                if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
+                                    let _ = tx.send(Ok(event));
                                 }
                             }
-                            Err(e) => {
-                                tracing::warn!(target: "upbit::ws", "binary frame not utf-8: {}", e);
-                            }
                         }
-                    },
+                    }
+                    Ok(Message::Ping(payload)) => {
+                        let _ = write_tx_clone.send(Message::Pong(payload));
+                    }
                     Ok(Message::Pong(_)) => {
-                        // Measure RTT from our last WS-frame ping.
                         let rtt = last_ping.lock().await.elapsed().as_millis() as u64;
                         *ws_ping_rtt_ms.lock().await = rtt;
-                    },
-                    Ok(Message::Close(_)) => {
+                    }
+                    Ok(Message::Close(_)) | Err(_) => {
                         *status.lock().await = ConnectionStatus::Disconnected;
                         break;
-                    },
-                    Err(e) => {
-                        if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
-                            let _ = tx.send(Err(WebSocketError::ReceiveError(e.to_string())));
-                        }
-                        break;
-                    },
-                    _ => {},
+                    }
+                    _ => {}
                 }
             }
+            // Drop broadcast sender so all stream receivers see end-of-stream.
             let _ = broadcast_tx.lock().unwrap().take();
         });
 
-        Ok(())
-    }
-
-    /// Clone self for message loop (workaround for async move)
-    fn clone_for_loop(&self) -> Self {
-        Self {
-            auth: self.auth.clone(),
-            urls: self.urls.clone(),
-            status: self.status.clone(),
-            subscriptions: self.subscriptions.clone(),
-            broadcast_tx: self.broadcast_tx.clone(),
-            ws_stream: self.ws_stream.clone(),
-            last_ping: self.last_ping.clone(),
-            ws_ping_rtt_ms: self.ws_ping_rtt_ms.clone(),
-        }
+        write_tx
     }
 }
 
 #[async_trait]
 impl WebSocketConnector for UpbitWebSocket {
     async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
-        // Rate limit WebSocket connections to avoid 429 errors
-        let limiter = get_global_ws_limiter();
-        loop {
-            let can_connect = {
-                let mut limiter_guard = limiter.lock().expect("Mutex poisoned");
-                limiter_guard.try_acquire()
-            };
-
-            if can_connect {
-                break;
-            }
-
-            // Wait before retrying
-            let wait_time = {
-                let limiter_guard = limiter.lock().expect("Mutex poisoned");
-                limiter_guard.time_until_ready()
-            };
-
-            if wait_time > Duration::ZERO {
-                sleep(wait_time).await;
-            } else {
-                sleep(Duration::from_millis(100)).await;
+        // Rate limit connections
+        {
+            let limiter = get_global_ws_limiter();
+            loop {
+                let can_connect = {
+                    let mut g = limiter.lock().expect("limiter poisoned");
+                    g.try_acquire()
+                };
+                if can_connect { break; }
+                let wait = {
+                    let g = limiter.lock().expect("limiter poisoned");
+                    g.time_until_ready()
+                };
+                if wait > Duration::ZERO {
+                    tokio::time::sleep(wait).await;
+                } else {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
             }
         }
 
@@ -451,40 +262,41 @@ impl WebSocketConnector for UpbitWebSocket {
             self.urls.ws_url().to_string()
         };
 
-        // For private WebSocket, need to add JWT token as header
-        // Note: tokio-tungstenite doesn't support custom headers easily
-        // This is a simplified implementation - full version would need custom headers
         let (ws_stream, _) = connect_async(&ws_url).await
             .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
 
-        *self.ws_stream.lock().await = Some(ws_stream);
+        let (writer, reader) = ws_stream.split();
+        *self.ws_writer.lock().await = Some(writer);
         *self.status.lock().await = ConnectionStatus::Connected;
         *self.last_ping.lock().await = Instant::now();
 
-        // Create broadcast channel and store sender
+        // Create broadcast channel
         let (tx, _) = broadcast::channel(1000);
         *self.broadcast_tx.lock().unwrap() = Some(tx);
 
-        // Start message receiving loop
-        self.start_message_loop().await?;
+        // Start background tasks and store write channel
+        let write_tx = Self::start_tasks(
+            self.ws_writer.clone(),
+            reader,
+            self.broadcast_tx.clone(),
+            self.status.clone(),
+            self.last_ping.clone(),
+            self.ws_ping_rtt_ms.clone(),
+        );
+        *self.write_tx.lock().await = Some(write_tx);
 
         Ok(())
     }
 
     async fn disconnect(&self) -> WebSocketResult<()> {
-        let mut ws_lock = self.ws_stream.lock().await;
-        if let Some(ws) = ws_lock.as_mut() {
-            ws.close(None).await
-                .map_err(|e: tokio_tungstenite::tungstenite::Error| WebSocketError::ConnectionError(e.to_string()))?;
-        }
-        *ws_lock = None;
+        *self.write_tx.lock().await = None;
+        *self.ws_writer.lock().await = None;
         *self.status.lock().await = ConnectionStatus::Disconnected;
         let _ = self.broadcast_tx.lock().unwrap().take();
         Ok(())
     }
 
     fn connection_status(&self) -> ConnectionStatus {
-        // We need to block on the async lock - use try_lock or return a default
         self.status.try_lock()
             .map(|s| *s)
             .unwrap_or(ConnectionStatus::Disconnected)
@@ -493,8 +305,6 @@ impl WebSocketConnector for UpbitWebSocket {
     async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         self.subscriptions.lock().await.insert(request.clone());
 
-        // Caller passes Upbit-native symbol via Symbol::raw() or canonical Symbol.
-        // SymbolNormalizer encodes reversed Upbit format (QUOTE-BASE).
         use crate::core::utils::symbol_normalizer::SymbolNormalizer;
         use crate::core::types::ExchangeId;
         let upbit_symbol = if let Some(raw) = request.symbol.raw() {
@@ -508,23 +318,29 @@ impl WebSocketConnector for UpbitWebSocket {
                 ))
         };
 
+        let write_tx_guard = self.write_tx.lock().await;
+        let tx = write_tx_guard.as_ref().ok_or(WebSocketError::NotConnected)?;
+
         match request.stream_type {
             StreamType::Ticker => {
-                // Subscribe to ticker for trade-price / volume data.
-                self.send_subscription("ticker", vec![upbit_symbol.clone()]).await?;
-                // Also subscribe to orderbook so handle_message can inject
-                // bid_price / ask_price into synthetic Ticker events — the ticker
-                // channel does not carry top-of-book quotes.
-                self.send_subscription("orderbook", vec![upbit_symbol]).await?;
-            },
+                tx.send(Self::build_sub_message("ticker", &[upbit_symbol.clone()]))
+                    .map_err(|e| WebSocketError::SendError(e.to_string()))?;
+                // Also subscribe orderbook so bid/ask can flow via synthetic Ticker.
+                tx.send(Self::build_sub_message("orderbook", &[upbit_symbol]))
+                    .map_err(|e| WebSocketError::SendError(e.to_string()))?;
+            }
             StreamType::Trade => {
-                self.send_subscription("trade", vec![upbit_symbol]).await?;
-            },
+                tx.send(Self::build_sub_message("trade", &[upbit_symbol]))
+                    .map_err(|e| WebSocketError::SendError(e.to_string()))?;
+            }
             StreamType::Orderbook => {
-                self.send_subscription("orderbook", vec![upbit_symbol]).await?;
-            },
+                tx.send(Self::build_sub_message("orderbook", &[upbit_symbol]))
+                    .map_err(|e| WebSocketError::SendError(e.to_string()))?;
+            }
             _ => {
-                return Err(WebSocketError::UnsupportedOperation(format!("Unsupported stream type: {:?}", request.stream_type)));
+                return Err(WebSocketError::UnsupportedOperation(
+                    format!("Upbit WS: unsupported stream type {:?}", request.stream_type)
+                ));
             }
         }
 
@@ -532,9 +348,10 @@ impl WebSocketConnector for UpbitWebSocket {
     }
 
     async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
-        // Upbit doesn't support unsubscribe - need to reconnect
         self.subscriptions.lock().await.remove(&request);
-        Err(WebSocketError::UnsupportedOperation("Upbit doesn't support unsubscribe - reconnect required".to_string()))
+        Err(WebSocketError::UnsupportedOperation(
+            "Upbit does not support unsubscribe — reconnect required".to_string()
+        ))
     }
 
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {

@@ -1134,6 +1134,18 @@ impl WebSocketConnector for MoexWebSocket {
 
     /// Subscribe to a data stream
     async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
+        // MOEX FAST/CEDR bid/ask data (Ticker stream) is accessible only from
+        // Russian IP address space via the MXSE.securities STOMP topic.
+        // Outside RU the STOMP connection succeeds but bid/ask fields are always null.
+        if matches!(request.stream_type, StreamType::Ticker) {
+            return Err(WebSocketError::NotSupported(
+                "MOEX FAST/CEDR bid/ask streams require Russian IP address space — \
+                 STOMP connect succeeds globally but bid/ask fields remain null outside RU. \
+                 Use MOEX ISS REST /engines/stock/markets/shares/boards/TQBR/securities \
+                 for delayed quote data (15-min lag on guest credentials)."
+                    .to_string(),
+            ));
+        }
         if let Some(tx) = &*self.command_tx.lock().await {
             tx.send(WsCommand::Subscribe(request))
                 .map_err(|_| WebSocketError::SendError("Command channel closed".to_string()))?;

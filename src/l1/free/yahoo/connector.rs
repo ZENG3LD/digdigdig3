@@ -245,17 +245,20 @@ impl MarketData for YahooFinanceConnector {
         YahooFinanceParser::parse_ticker(&response, &sym_str)
     }
 
-    /// Get orderbook
+    /// Get orderbook — NOT SUPPORTED
     ///
-    /// Yahoo Finance does NOT provide orderbook data.
+    /// Yahoo Finance is a data feed; it does not expose level-2 order book data.
+    /// No alternative endpoint exists in the public Yahoo Finance API.
     async fn get_orderbook(
         &self,
         _symbol: SymbolInput<'_>,
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        Err(ExchangeError::UnsupportedOperation(
-            "Yahoo Finance does not provide orderbook data - data feed only".to_string(),
+        Err(ExchangeError::NotSupported(
+            "Yahoo Finance does not expose order book data — data feed only (price, klines, ticker). \
+             Use a dedicated exchange connector (Binance, Coinbase, etc.) for order book depth."
+                .to_string(),
         ))
     }
 

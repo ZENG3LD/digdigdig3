@@ -697,6 +697,18 @@ impl MarketData for HyperliquidConnector {
                 .and_then(|s| s.parse().ok());
         }
 
+        // Enrich bid/ask from l2Book (top-of-book only, depth=1 equivalent).
+        // metaAndAssetCtxs does not carry top-of-book quotes; l2Book does.
+        // Ignore failures — ticker without bid/ask is still valid.
+        if let Ok(l2) = self.info_request(
+            InfoType::L2Book,
+            serde_json::json!({ "coin": coin, "nSigFigs": 5 }),
+        ).await {
+            let (bid, ask) = HyperliquidParser::parse_l2book_top(&l2);
+            if bid.is_some() { ticker.bid_price = bid; }
+            if ask.is_some() { ticker.ask_price = ask; }
+        }
+
         Ok(ticker)
     }
 

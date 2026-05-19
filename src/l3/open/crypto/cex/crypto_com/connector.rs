@@ -45,7 +45,7 @@ use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLim
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 use crate::core::utils::PrecisionCache;
 
-use super::endpoints::{CryptoComUrls, CryptoComEndpoint, format_symbol, account_type_to_instrument, map_kline_interval};
+use super::endpoints::{CryptoComUrls, CryptoComEndpoint, InstrumentType, format_symbol, account_type_to_instrument, map_kline_interval};
 use super::auth::CryptoComAuth;
 use super::parser::CryptoComParser;
 
@@ -1316,13 +1316,24 @@ impl Positions for CryptoComConnector {
     async fn get_open_interest(
         &self,
         symbol: &str,
-        account_type: AccountType,
+        _account_type: AccountType,
     ) -> ExchangeResult<OpenInterest> {
-        let parts: Vec<&str> = symbol.split('/').collect();
-        let instrument_name = if parts.len() == 2 {
-            let instrument_type = account_type_to_instrument(account_type);
-            format_symbol(parts[0], parts[1], instrument_type)
+        // Derive the perpetual instrument name for OI queries.
+        //
+        // Input forms:
+        //   "BTC/USDT"   (canonical slash)  → format_symbol("BTC","USDT", Perpetual) → "BTCUSD-PERP"
+        //   "BTC_USDT"   (raw spot)         → split on '_', take base → "BTCUSD-PERP"
+        //   "BTCUSD-PERP" (already perp)    → use as-is
+        let instrument_name = if symbol.ends_with("-PERP") {
+            symbol.to_uppercase()
+        } else if let Some((base, _quote)) = symbol.split_once('/') {
+            // Canonical base/quote — always use USD for CryptoCom perps
+            format_symbol(base, "USD", InstrumentType::Perpetual)
+        } else if let Some((base, _quote)) = symbol.split_once('_') {
+            // Raw spot format BASE_QUOTE — use base + USD for perp
+            format_symbol(base, "USD", InstrumentType::Perpetual)
         } else {
+            // Fallback: treat whole string as instrument name
             symbol.to_uppercase()
         };
 

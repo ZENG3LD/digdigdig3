@@ -830,12 +830,20 @@ mod crypto_com {
 
     /// Spot: `BASE_QUOTE` underscore uppercase e.g. `BTC_USDT`.
     /// FuturesCross/Isolated: `BASEUSD-PERP` e.g. `BTCUSD-PERP`.
+    ///
+    /// Crypto.com perpetuals are all USD-denominated (BTCUSD-PERP, ETHUSD-PERP).
+    /// USDT/USDC quote symbols are normalised to USD for futures.
     pub(super) fn to_exchange(sym: &Symbol, account_type: AccountType) -> Result<String, NormalizerError> {
         let base = sym.base.to_uppercase();
-        let quote = sym.quote.to_uppercase();
         match account_type {
-            AccountType::FuturesCross | AccountType::FuturesIsolated => Ok(format!("{}{}-PERP", base, quote)),
-            _ => Ok(format!("{}_{}", base, quote)),
+            AccountType::FuturesCross | AccountType::FuturesIsolated => {
+                // All Crypto.com perpetuals use USD quote regardless of canonical quote.
+                Ok(format!("{}USD-PERP", base))
+            }
+            _ => {
+                let quote = sym.quote.to_uppercase();
+                Ok(format!("{}_{}", base, quote))
+            }
         }
     }
 

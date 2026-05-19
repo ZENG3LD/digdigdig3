@@ -205,6 +205,14 @@ impl MarketData for TwelvedataConnector {
         symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Price> {
+        if !self.auth.has_credentials() || self.auth.is_demo() {
+            return Err(ExchangeError::NotSupported(
+                "Twelvedata requires a real API key — set TWELVEDATA_API_KEY env. \
+                 Demo key is scope-limited and returns HTTP 401 for most endpoints. \
+                 Sign up at https://twelvedata.com/ for a free tier key."
+                    .to_string(),
+            ));
+        }
         let symbol: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let mut params = HashMap::new();
         params.insert("symbol".to_string(), symbol);
@@ -219,9 +227,10 @@ impl MarketData for TwelvedataConnector {
         _depth: Option<u16>,
         _account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        // Twelvedata is a stocks data provider - no orderbook depth available
-        Err(ExchangeError::UnsupportedOperation(
-            "Orderbook not available from Twelvedata (stocks/data provider)".to_string(),
+        Err(ExchangeError::NotSupported(
+            "Twelvedata does not expose order book depth — stocks/data provider only. \
+             Use a dedicated exchange connector for L2 order book data."
+                .to_string(),
         ))
     }
 
@@ -233,6 +242,14 @@ impl MarketData for TwelvedataConnector {
         _account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
+        if !self.auth.has_credentials() || self.auth.is_demo() {
+            return Err(ExchangeError::NotSupported(
+                "Twelvedata requires a real API key — set TWELVEDATA_API_KEY env. \
+                 Demo key is scope-limited and returns HTTP 401 for most endpoints. \
+                 Sign up at https://twelvedata.com/ for a free tier key."
+                    .to_string(),
+            ));
+        }
         let symbol: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let mut params = HashMap::new();
         params.insert("symbol".to_string(), symbol);
@@ -251,6 +268,14 @@ impl MarketData for TwelvedataConnector {
         symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
+        if !self.auth.has_credentials() || self.auth.is_demo() {
+            return Err(ExchangeError::NotSupported(
+                "Twelvedata requires a real API key — set TWELVEDATA_API_KEY env. \
+                 Demo key is scope-limited and returns HTTP 401 for most endpoints. \
+                 Sign up at https://twelvedata.com/ for a free tier key."
+                    .to_string(),
+            ));
+        }
         let symbol: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let mut params = HashMap::new();
         params.insert("symbol".to_string(), symbol.clone());
@@ -260,7 +285,12 @@ impl MarketData for TwelvedataConnector {
     }
 
     async fn ping(&self) -> ExchangeResult<()> {
-        // Test connection with a simple price request for a known symbol
+        if !self.auth.has_credentials() || self.auth.is_demo() {
+            return Err(ExchangeError::NotSupported(
+                "Twelvedata requires a real API key — set TWELVEDATA_API_KEY env."
+                    .to_string(),
+            ));
+        }
         let mut params = HashMap::new();
         params.insert("symbol".to_string(), "AAPL".to_string());
 

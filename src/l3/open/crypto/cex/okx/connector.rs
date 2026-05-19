@@ -61,6 +61,26 @@ use super::auth::OkxAuth;
 use super::parser::OkxParser;
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// SYMBOL HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Normalize any OKX symbol form to a SWAP perpetual instId.
+///
+/// - `"BTC-USDT"`        → `"BTC-USDT-SWAP"`   (spot form → add suffix)
+/// - `"BTC/USDT"`        → `"BTC-USDT-SWAP"`   (slash-separated → dash + SWAP)
+/// - `"BTC-USDT-SWAP"`   → `"BTC-USDT-SWAP"`   (already SWAP — unchanged)
+/// - `"BTC-USD-260925"`  → `"BTC-USD-260925"`   (dated delivery — unchanged)
+fn to_okx_swap_instid(raw: &str) -> String {
+    // Handle slash-separated canonical form "BTC/USDT".
+    let normalised = raw.replace('/', "-");
+    let parts: Vec<&str> = normalised.split('-').collect();
+    match parts.len() {
+        2 => format!("{}-{}-SWAP", parts[0].to_uppercase(), parts[1].to_uppercase()),
+        _ => normalised.to_uppercase(),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // RATE LIMIT CAPABILITIES (static — embedded in binary, no allocation)
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1471,25 +1491,16 @@ impl Positions for OkxConnector {
     async fn get_funding_rate(
         &self,
         symbol: &str,
-        account_type: AccountType,
+        _account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
-        // Parse symbol string into Symbol struct
-        let symbol_str = symbol;
-        let symbol = {
-            let parts: Vec<&str> = symbol_str.split('/').collect();
-            if parts.len() == 2 {
-                crate::core::Symbol::new(parts[0], parts[1])
-            } else {
-                crate::core::Symbol { base: symbol_str.to_string(), quote: String::new(), raw: Some(symbol_str.to_string()) }
-            }
-        };
+        // Funding rate is a perpetual-swap concept — always use SWAP instId.
+        let inst_id = to_okx_swap_instid(symbol);
 
         let mut params = HashMap::new();
-        params.insert("instId".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("instId".to_string(), inst_id);
 
         let response = self.get(OkxEndpoint::FundingRate, params).await?;
         OkxParser::parse_funding_rate(&response)
-
     }
 
     async fn get_mark_price(
@@ -1498,7 +1509,8 @@ impl Positions for OkxConnector {
     ) -> ExchangeResult<MarkPrice> {
         // GET /api/v5/public/mark-price?instType=SWAP&instId=BTC-USDT-SWAP
         // Response: {data: [{instId, markPx, ts}]}
-        let response = self.get_mark_price(symbol, "SWAP").await?;
+        let inst_id = to_okx_swap_instid(symbol);
+        let response = self.get_mark_price(&inst_id, "SWAP").await?;
 
         let arr = response
             .get("data")
@@ -1532,15 +1544,10 @@ impl Positions for OkxConnector {
     async fn get_open_interest(
         &self,
         symbol: &str,
-        account_type: AccountType,
+        _account_type: AccountType,
     ) -> ExchangeResult<OpenInterest> {
-        let parts: Vec<&str> = symbol.split('/').collect();
-        let inst_id = if parts.len() == 2 {
-            let sym = crate::core::Symbol::new(parts[0], parts[1]);
-            format_symbol(&sym.base, &sym.quote, account_type)
-        } else {
-            symbol.to_uppercase()
-        };
+        // Open interest is a perpetual-swap concept — always use SWAP instId.
+        let inst_id = to_okx_swap_instid(symbol);
 
         let mut ois = self.get_open_interest("SWAP", None, Some(&inst_id)).await?;
         let oi = ois.pop().ok_or_else(|| ExchangeError::Parse("OKX OI: empty response".to_string()))?;

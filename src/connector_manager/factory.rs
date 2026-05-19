@@ -884,6 +884,13 @@ impl ConnectorFactory {
             // CEX — new(credentials, testnet) — no account_type param
             // ═══════════════════════════════════════════════════════════════════
             ExchangeId::OKX => {
+                // OKX V5 splits channels across two endpoints (NOT supersets):
+                //   /ws/v5/public  — tickers, mark-price, funding-rate, open-interest,
+                //                    trades, liquidation-orders, books
+                //   /ws/v5/business — candle*, opt-summary, ...
+                // We connect to public here — kline/candle is documented as
+                // NotSupported in the connector with a citation pointing to the
+                // business endpoint. Multi-endpoint per connector is a Wave-4 item.
                 let ws = OkxWebSocket::new(None, testnet, account_type).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
@@ -930,7 +937,10 @@ impl ConnectorFactory {
             // CEX — Upbit: new(credentials, region)
             // ═══════════════════════════════════════════════════════════════════
             ExchangeId::Upbit => {
-                let ws = UpbitWebSocket::new(None, "sg").await?;
+                // KRW markets live on the Korean endpoint (api.upbit.com).
+                // sg-api.upbit.com handles international accounts but does not
+                // serve KRW-* pairs over WebSocket.
+                let ws = UpbitWebSocket::new(None, "kr").await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
             // ═══════════════════════════════════════════════════════════════════

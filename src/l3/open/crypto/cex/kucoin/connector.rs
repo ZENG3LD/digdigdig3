@@ -806,6 +806,25 @@ fn interval_to_secs(interval: &str) -> u64 {
     }
 }
 
+/// Convert any symbol representation to KuCoin futures-native form (e.g. `XBTUSDTM`).
+///
+/// Accepts:
+/// - Canonical slash form: `"BTC/USDT"` → `"XBTUSDTM"`
+/// - Spot hyphen form:     `"BTC-USDT"` → `"XBTUSDTM"`
+/// - Already native:       `"XBTUSDTM"` → `"XBTUSDTM"` (pass-through)
+fn to_futures_symbol(symbol: &str) -> String {
+    // Try slash separator first, then hyphen.
+    let (base, quote) = if let Some(idx) = symbol.find('/') {
+        (&symbol[..idx], &symbol[idx + 1..])
+    } else if let Some(idx) = symbol.find('-') {
+        (&symbol[..idx], &symbol[idx + 1..])
+    } else {
+        // Already exchange-native (e.g. "XBTUSDTM") — return as-is.
+        return symbol.to_uppercase();
+    };
+    format_symbol(base, quote, AccountType::FuturesCross)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // MARKET DATA
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1686,30 +1705,11 @@ impl Positions for KuCoinConnector {
     async fn get_funding_rate(
         &self,
         symbol: &str,
-        account_type: AccountType,
+        _account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
-        // Parse symbol string into Symbol struct
-        let symbol_str = symbol;
-        let symbol = {
-            let parts: Vec<&str> = symbol_str.split('/').collect();
-            if parts.len() == 2 {
-                crate::core::Symbol::new(parts[0], parts[1])
-            } else {
-                crate::core::Symbol { base: symbol_str.to_string(), quote: String::new(), raw: Some(symbol_str.to_string()) }
-            }
-        };
-
-        match account_type {
-            AccountType::Spot | AccountType::Margin => {
-                return Err(ExchangeError::UnsupportedOperation(
-                    "Funding rate not supported for Spot/Margin".to_string()
-                ));
-            }
-            _ => {}
-        }
-
-        let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
-        let base_url = self.urls.rest_url(account_type);
+        // Funding rate is futures-only — always use futures domain + XBTUSDTM symbol form.
+        let formatted = to_futures_symbol(symbol);
+        let base_url = self.urls.futures_rest;
         let path = KuCoinEndpoint::FundingRate.path().replace("{symbol}", &formatted);
         let url = format!("{}{}", base_url, path);
 
@@ -1717,7 +1717,6 @@ impl Positions for KuCoinConnector {
         self.check_response(&response)?;
 
         KuCoinParser::parse_funding_rate(&response)
-
     }
 
     async fn get_mark_price(
@@ -1726,10 +1725,11 @@ impl Positions for KuCoinConnector {
     ) -> ExchangeResult<MarkPrice> {
         // GET /api/v1/mark-price/{symbol}/current (futures domain, no auth)
         // Response: {code, data: {symbol, granularity, timePoint, value, indexPrice}}
-        let base_url = self.urls.rest_url(AccountType::FuturesCross);
+        let formatted = to_futures_symbol(symbol);
+        let base_url = self.urls.futures_rest;
         let path = KuCoinEndpoint::FuturesMarkPrice
             .path()
-            .replace("{symbol}", symbol);
+            .replace("{symbol}", &formatted);
         let url = format!("{}{}", base_url, path);
 
         let response = self.http.get(&url, &HashMap::new()).await?;
@@ -1739,13 +1739,14 @@ impl Positions for KuCoinConnector {
             .get("data")
             .ok_or_else(|| ExchangeError::Parse("Missing data".to_string()))?;
 
+        // KuCoin futures mark-price endpoint returns "value" (not "markPrice").
         let mark_price = data
-            .get("markPrice")
+            .get("value")
             .and_then(|v| v.as_f64())
-            .ok_or_else(|| ExchangeError::Parse("Missing markPrice field".to_string()))?;
+            .ok_or_else(|| ExchangeError::Parse("Missing value field in mark-price response".to_string()))?;
 
         Ok(MarkPrice {
-            symbol: symbol.to_string(),
+            symbol: formatted,
             mark_price,
             index_price: data.get("indexPrice").and_then(|v| v.as_f64()),
             funding_rate: None,
@@ -1937,23 +1938,19 @@ impl Positions for KuCoinConnector {
     async fn get_open_interest(
         &self,
         symbol: &str,
-        account_type: AccountType,
+        _account_type: AccountType,
     ) -> ExchangeResult<OpenInterest> {
-        let parts: Vec<&str> = symbol.split('/').collect();
-        let raw_symbol = if parts.len() == 2 {
-            let sym = crate::core::Symbol::new(parts[0], parts[1]);
-            format_symbol(&sym.base, &sym.quote, account_type)
-        } else {
-            symbol.to_uppercase()
-        };
+        // Open interest is futures-only — always use futures domain + XBTUSDTM symbol form.
+        let raw_symbol = to_futures_symbol(symbol);
 
         let response = self.get_open_interest(&raw_symbol).await?;
 
         let data = response.get("data")
             .ok_or_else(|| ExchangeError::Parse("KuCoin OI: missing data".to_string()))?;
 
+        // KuCoin returns openInterest as a JSON string, not a number.
         let oi = data.get("openInterest")
-            .and_then(|v| v.as_f64())
+            .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
             .unwrap_or(0.0);
 
         let oi_value = data.get("openInterestValue")

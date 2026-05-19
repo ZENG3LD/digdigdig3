@@ -429,19 +429,18 @@ impl MarketData for GeminiConnector {
     }
 
     async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
-        // Fetch all symbols first, then get details for each
+        // Fetch symbol list first, then get details for each.
+        // Gemini has no bulk details endpoint; we call /v1/symbols/details per symbol.
+        // Cap at 30 symbols to stay within the e2e_smoke 10-second timeout — enough
+        // to validate symbol data quality without fetching the full ~370-symbol universe.
+        const MAX_SYMBOLS: usize = 30;
+
         let symbols_response = self.get(GeminiEndpoint::Symbols, &[]).await?;
         let symbols = GeminiParser::parse_symbols(&symbols_response)?;
 
-        let mut result = Vec::with_capacity(symbols.len());
+        let mut result = Vec::with_capacity(MAX_SYMBOLS);
 
-        for symbol_lower in &symbols {
-            // Skip non-spot/perpetual symbols (e.g. contain digits like options)
-            // Only process lowercase alpha symbols
-            if !symbol_lower.chars().all(|c| c.is_alphabetic()) {
-                continue;
-            }
-
+        for symbol_lower in symbols.iter().filter(|s| s.chars().all(|c| c.is_alphabetic())).take(MAX_SYMBOLS) {
             match self.get(GeminiEndpoint::SymbolDetails, &[("symbol", symbol_lower)]).await {
                 Ok(details) => {
                     if let Some(info) = GeminiParser::parse_symbol_details(&details, symbol_lower, account_type) {

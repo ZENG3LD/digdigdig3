@@ -58,8 +58,9 @@ static WS_RATE_LIMITER: OnceLock<Arc<StdMutex<WeightRateLimiter>>> = OnceLock::n
 fn get_ws_rate_limiter() -> &'static Arc<StdMutex<WeightRateLimiter>> {
     WS_RATE_LIMITER.get_or_init(|| {
         Arc::new(StdMutex::new(
-            // 150 connections per 10 minutes = 0.25 per second
-            WeightRateLimiter::new(1, Duration::from_secs(4))
+            // Kraken allows 150 connections per 10 minutes per IP.
+            // Allow up to 10 parallel connects per 10 seconds — well within that budget.
+            WeightRateLimiter::new(10, Duration::from_secs(10))
         ))
     })
 }

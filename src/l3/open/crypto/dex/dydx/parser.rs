@@ -489,38 +489,90 @@ impl DydxParser {
         })
     }
 
-    /// Parse WebSocket orderbook delta message
+    /// Parse WebSocket orderbook message (snapshot or delta).
+    ///
+    /// dYdX v4 Indexer emits two message shapes for the `v4_orderbook` channel:
+    ///
+    /// 1. `type: "subscribed"` — initial full snapshot.  Each level is an object:
+    ///    `{"price": "50000.0", "size": "1.5"}`.
+    ///
+    /// 2. `type: "channel_data"` — incremental delta.  Each level is a two-element
+    ///    array: `["50000.0", "1.5"]`.  A size of `"0"` means remove that level.
+    ///
+    /// Both formats are normalised into `OrderBookLevel` by `parse_ob_level`.
     pub fn parse_ws_orderbook_delta(data: &Value) -> ExchangeResult<StreamEvent> {
         let contents = data.get("contents")
             .ok_or_else(|| ExchangeError::Parse("Missing 'contents' field".to_string()))?;
+
+        /// Parse one orderbook level from either object `{"price":..,"size":..}` or
+        /// two-element array `["price","size"]`.
+        fn parse_ob_level(level: &Value) -> Option<OrderBookLevel> {
+            // Object format (subscribed snapshot)
+            if let Some(obj) = level.as_object() {
+                let price = obj.get("price")
+                    .or_else(|| obj.get("px"))
+                    .and_then(|v| {
+                        v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
+                    })?;
+                let size = obj.get("size")
+                    .or_else(|| obj.get("sz"))
+                    .and_then(|v| {
+                        v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
+                    })?;
+                return Some(OrderBookLevel::new(price, size));
+            }
+            // Array format (channel_data delta)
+            let pair = level.as_array()?;
+            if pair.len() < 2 { return None; }
+            let price = pair[0].as_str().and_then(|s| s.parse().ok()).or_else(|| pair[0].as_f64())?;
+            let size  = pair[1].as_str().and_then(|s| s.parse().ok()).or_else(|| pair[1].as_f64())?;
+            Some(OrderBookLevel::new(price, size))
+        }
 
         let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
             contents.get(key)
                 .and_then(|arr| arr.as_array())
                 .map(|levels| {
-                    levels.iter()
-                        .filter_map(|level| {
-                            let pair = level.as_array()?;
-                            if pair.len() < 2 { return None; }
-                            let price = Self::parse_f64(&pair[0])?;
-                            let size = Self::parse_f64(&pair[1])?;
-                            Some(OrderBookLevel::new(price, size))
-                        })
-                        .collect()
+                    levels.iter().filter_map(parse_ob_level).collect()
                 })
                 .unwrap_or_default()
         };
 
-        Ok(StreamEvent::OrderbookDelta(OrderbookDeltaData {
-            bids: parse_levels("bids"),
-            asks: parse_levels("asks"),
-            timestamp: chrono::Utc::now().timestamp_millis(),
-            first_update_id: None,
-            last_update_id: None,
-            prev_update_id: None,
-            event_time: None,
-            checksum: None,
-        }))
+        // Distinguish snapshot (subscribed) from delta (channel_data) by msg type.
+        let is_snapshot = data.get("type")
+            .and_then(|t| t.as_str())
+            .map(|t| t == "subscribed")
+            .unwrap_or(false);
+
+        let bids = parse_levels("bids");
+        let asks = parse_levels("asks");
+        let ts = chrono::Utc::now().timestamp_millis();
+
+        if is_snapshot {
+            Ok(StreamEvent::OrderbookSnapshot(OrderBook {
+                bids,
+                asks,
+                timestamp: ts,
+                sequence: None,
+                last_update_id: None,
+                first_update_id: None,
+                prev_update_id: None,
+                event_time: None,
+                transaction_time: None,
+                checksum: None,
+            }))
+        } else {
+            Ok(StreamEvent::OrderbookDelta(OrderbookDeltaData {
+                bids,
+                asks,
+                timestamp: ts,
+                first_update_id: None,
+                last_update_id: None,
+                prev_update_id: None,
+                event_time: None,
+                checksum: None,
+            }))
+        }
     }
 
     /// Parse a `v4_candles` WebSocket message into a [`Kline`].

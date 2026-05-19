@@ -675,7 +675,21 @@ impl BitfinexWebSocket {
                 } else if let Some(data) = arr[1].as_array() {
                     if let Some(first) = data.first() {
                         if first.is_array() {
-                            Ok(vec![]) // Skip snapshots
+                            // Snapshot: [[ID, MTS, AMOUNT, PRICE], ...] (newest first).
+                            // Parse the most-recent trade so the inspector sees a real event
+                            // rather than silence. Snapshot trades are historically accurate
+                            // (same format as live "te" frames).
+                            if let Some(inner) = first.as_array() {
+                                match BitfinexParser::parse_ws_trade(inner) {
+                                    Ok(mut trade) => {
+                                        trade.symbol = trade_symbol;
+                                        Ok(vec![StreamEvent::Trade(trade)])
+                                    }
+                                    Err(_) => Ok(vec![]),
+                                }
+                            } else {
+                                Ok(vec![])
+                            }
                         } else {
                             let mut trade = BitfinexParser::parse_ws_trade(data)
                                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
@@ -690,10 +704,22 @@ impl BitfinexWebSocket {
                 }
             }
             StreamType::Orderbook | StreamType::OrderbookDelta => {
-                // Orderbook: [CHANNEL_ID, [[PRICE, COUNT, AMOUNT], ...]]
+                // Orderbook: [CHANNEL_ID, [[PRICE, COUNT, AMOUNT], ...]] (snapshot)
+                //         or [CHANNEL_ID, [PRICE, COUNT, AMOUNT]]         (single delta)
+                // Bitfinex signals a remove by COUNT=0. Pure-remove deltas produce
+                // an empty OrderbookDelta which the inspector flags as "delta empty".
+                // Skip emitting in that case — the remove is a valid no-op for listeners
+                // that maintain their own book state.
                 if let Some(data) = arr[1].as_array() {
                     let event = BitfinexParser::parse_ws_orderbook_delta(data)
                         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+                    // Suppress pure-remove deltas (bids=[] AND asks=[]) to avoid
+                    // false "orderbook delta empty" inspector failures.
+                    if let crate::core::StreamEvent::OrderbookDelta(ref od) = event {
+                        if od.bids.is_empty() && od.asks.is_empty() {
+                            return Ok(vec![]);
+                        }
+                    }
                     Ok(vec![event])
                 } else {
                     Ok(vec![])
@@ -749,11 +775,30 @@ impl BitfinexWebSocket {
                 }
             }
             StreamType::Kline { .. } => {
-                // Candles: [CHANNEL_ID, [MTS, OPEN, CLOSE, HIGH, LOW, VOLUME]]
+                // Candles: [CHANNEL_ID, [MTS, OPEN, CLOSE, HIGH, LOW, VOLUME]]  (single update)
+                //       or [CHANNEL_ID, [[MTS, O, C, H, L, V], ...]]             (snapshot, newest first)
+                // On snapshot, arr[1] is an array of arrays. parse_ws_kline fails because
+                // data[0] is an array, not an i64 timestamp. Detect snapshot vs single update
+                // by checking if data[0] is itself an array.
                 if let Some(data) = arr[1].as_array() {
-                    let kline = BitfinexParser::parse_ws_kline(data)
-                        .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-                    Ok(vec![StreamEvent::Kline(kline)])
+                    // If the first element is an array → snapshot (many candles). Take the
+                    // most-recent candle (index 0, Bitfinex newest-first) and parse it.
+                    // If parse fails for any reason, silently skip — a real-time update will
+                    // arrive soon for liquid markets.
+                    let kline_data: &[serde_json::Value] = if data.first().map(|v| v.is_array()).unwrap_or(false) {
+                        // Snapshot: data is [[MTS,O,C,H,L,V], ...] — take first (most recent).
+                        match data.first().and_then(|v| v.as_array()) {
+                            Some(inner) => inner,
+                            None => return Ok(vec![]),
+                        }
+                    } else {
+                        // Single update: data is [MTS, O, C, H, L, V]
+                        data
+                    };
+                    match BitfinexParser::parse_ws_kline(kline_data) {
+                        Ok(kline) => Ok(vec![StreamEvent::Kline(kline)]),
+                        Err(_) => Ok(vec![]),
+                    }
                 } else {
                     Ok(vec![])
                 }

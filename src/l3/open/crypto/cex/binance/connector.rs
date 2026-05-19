@@ -3071,14 +3071,24 @@ impl MarketDataPublic for BinanceConnector {
 
     async fn get_liquidation_history(
         &self,
-        symbol: Option<SymbolInput<'_>>,
-        start_time: Option<i64>,
-        end_time: Option<i64>,
-        limit: Option<u32>,
-        account_type: AccountType,
+        _symbol: Option<SymbolInput<'_>>,
+        _start_time: Option<i64>,
+        _end_time: Option<i64>,
+        _limit: Option<u32>,
+        _account_type: AccountType,
     ) -> ExchangeResult<Vec<Liquidation>> {
-        let symbol = symbol.map(|s| s.resolve(ExchangeId::Binance, account_type)).transpose()?;
-        self.get_force_orders(symbol.as_deref(), None, start_time, end_time, limit).await
+        // GET /fapi/v1/forceOrders has security type USER_DATA (requires API key + HMAC
+        // signature). It returns the *authenticated user's own* forced-liquidation orders,
+        // not market-wide public events. It must never appear in the unauthenticated market
+        // matrix. For market-wide real-time liquidation feed use WS stream `@forceOrder`.
+        // Ref: https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Users-Force-Orders
+        Err(ExchangeError::NotSupported(
+            "NotSupported: Binance /fapi/v1/forceOrders is USER_DATA (signed, auth-required) — \
+             returns own liquidation orders only, not market-wide events. \
+             Use WS stream @forceOrder for public market liquidation feed. \
+             Ref: https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Users-Force-Orders"
+                .into(),
+        ))
     }
 
     async fn get_open_interest_history(
@@ -3149,10 +3159,11 @@ impl crate::core::traits::HasCapabilities for BinanceConnector {
             has_klines: true,
             has_recent_trades: true,
             has_exchange_info: true,
-            // MarketDataPublic (verified overrides: get_liquidation_history,
-            //   get_open_interest_history, get_premium_index,
-            //   get_long_short_ratio_history, get_funding_rate_history)
-            has_liquidation_history: true,
+            // MarketDataPublic (verified overrides: get_open_interest_history,
+            //   get_premium_index, get_long_short_ratio_history, get_funding_rate_history)
+            // get_liquidation_history: NOT supported — /fapi/v1/forceOrders is USER_DATA (signed).
+            //   Use WS @forceOrder for market-wide public liquidation events.
+            has_liquidation_history: false,
             has_open_interest_history: true,
             has_premium_index: true,
             has_long_short_ratio_history: true,

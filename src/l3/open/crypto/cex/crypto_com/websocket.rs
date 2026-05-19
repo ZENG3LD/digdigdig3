@@ -790,9 +790,28 @@ impl CryptoComWebSocket {
             AccountType::FuturesCross | AccountType::FuturesIsolated => InstrumentType::Perpetual,
             _ => InstrumentType::Spot,
         };
-        let symbol_str = request.symbol.raw()
-            .map(|r| r.to_string())
-            .unwrap_or_else(|| fmt_symbol(&request.symbol.base, &request.symbol.quote, instrument_type));
+
+        // For spot channels, use raw symbol when available (avoids re-normalizing).
+        // For futures-specific channels (MarkPrice / FundingRate / etc.) always derive
+        // from base + "USD" because Crypto.com perpetuals are all USD-denominated and
+        // the spot raw (e.g. "BTC_USDT") would produce a wrong channel name.
+        let is_futures_stream = matches!(
+            &request.stream_type,
+            StreamType::MarkPrice
+                | StreamType::FundingRate
+                | StreamType::IndexPrice
+                | StreamType::PredictedFunding
+                | StreamType::SettlementEvent
+        );
+
+        let symbol_str = if is_futures_stream {
+            // Always derive perp format: BTCUSD-PERP (USD quote, never USDT)
+            fmt_symbol(&request.symbol.base, "USD", InstrumentType::Perpetual)
+        } else {
+            request.symbol.raw()
+                .map(|r| r.to_string())
+                .unwrap_or_else(|| fmt_symbol(&request.symbol.base, &request.symbol.quote, instrument_type))
+        };
 
         match &request.stream_type {
             StreamType::Ticker => vec![format!("ticker.{}", symbol_str)],

@@ -622,12 +622,20 @@ impl LighterWebSocket {
 
     /// Parse order book update into StreamEvent::OrderbookSnapshot.
     ///
-    /// Expected format:
-    /// ```json
-    /// {"channel":"order_book:0","type":"update/orderbook","order_book":{"asks":[...],"bids":[...],"offset":...,"nonce":...},"timestamp":...}
-    /// ```
+    /// Lighter sends two possible shapes:
+    ///
+    /// 1. Nested (older/some responses):
+    ///    `{"channel":"order_book:0","type":"update/order_book","order_book":{"asks":[...],"bids":[...]},...}`
+    ///
+    /// 2. Flat top-level (current mainnet, per API research):
+    ///    `{"channel":"order_book/0","type":"update/order_book","asks":[["3024.66","1.5"],...],"bids":[...],"offset":...,"nonce":...,"timestamp":1640995200}`
+    ///
+    /// Both shapes are handled: try nested `"order_book"` object first, fall back to raw.
+    ///
+    /// `timestamp` from Lighter is in **seconds** (Unix integer ~10 digits).  Multiply by 1000
+    /// to convert to milliseconds for the event.
     fn parse_orderbook(msg: &IncomingMessage, _channel: &str) -> Option<StreamEvent> {
-        // Try nested "order_book" object first, then fall back to top level
+        // Try nested "order_book" object first (some server versions), fall back to top-level
         let data = msg.data_object("order_book").unwrap_or(&msg.raw);
 
         let asks = data.get("asks").map(Self::parse_levels).unwrap_or_default();
@@ -637,10 +645,20 @@ impl LighterWebSocket {
             return None;
         }
 
-        let timestamp = Self::val_i64(&msg.raw, "timestamp")
+        // Lighter timestamp is in seconds — convert to ms.
+        let timestamp_raw = Self::val_i64(&msg.raw, "timestamp")
             .or_else(|| Self::val_i64(data, "timestamp"))
             .unwrap_or(0);
-        let sequence = Self::val_i64(data, "nonce").map(|n| n.to_string());
+        // Heuristic: if the value looks like seconds (< 1e12), multiply by 1000.
+        let timestamp = if timestamp_raw > 0 && timestamp_raw < 1_000_000_000_000 {
+            timestamp_raw * 1000
+        } else {
+            timestamp_raw
+        };
+
+        let sequence = Self::val_i64(data, "nonce")
+            .or_else(|| Self::val_i64(&msg.raw, "nonce"))
+            .map(|n| n.to_string());
 
         Some(StreamEvent::OrderbookSnapshot(OrderBook {
             bids,

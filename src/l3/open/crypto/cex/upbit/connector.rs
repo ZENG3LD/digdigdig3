@@ -611,11 +611,30 @@ impl MarketData for UpbitConnector {
 
     async fn get_ticker(&self, symbol: SymbolInput<'_>, account_type: AccountType) -> ExchangeResult<Ticker> {
         let symbol = symbol.resolve(ExchangeId::Upbit, account_type)?;
+        let symbol_str = symbol.to_string();
         let mut params = HashMap::new();
-        params.insert("markets".to_string(), symbol.to_string());
+        params.insert("markets".to_string(), symbol_str.clone());
 
-        let response = self.get(UpbitEndpoint::Tickers, params, account_type).await?;
-        UpbitParser::parse_ticker(&response)
+        // Fetch ticker (has price, volume, change) and orderbook (has bid/ask) in parallel.
+        // Upbit's /v1/ticker does not carry bid/ask; /v1/orderbook does.
+        let ticker_fut = self.get(UpbitEndpoint::Tickers, params.clone(), account_type);
+        let mut ob_params = HashMap::new();
+        ob_params.insert("markets".to_string(), symbol_str);
+        ob_params.insert("count".to_string(), "1".to_string());
+        let ob_fut = self.get(UpbitEndpoint::Orderbook, ob_params, account_type);
+
+        let (ticker_resp, ob_resp) = tokio::join!(ticker_fut, ob_fut);
+        let mut ticker = UpbitParser::parse_ticker(&ticker_resp?)?;
+
+        // Populate bid/ask from orderbook if available.
+        if let Ok(ob) = ob_resp {
+            if let Ok(ob_data) = UpbitParser::parse_orderbook(&ob) {
+                ticker.bid_price = ob_data.bids.first().map(|l| l.price);
+                ticker.ask_price = ob_data.asks.first().map(|l| l.price);
+            }
+        }
+
+        Ok(ticker)
     }
 
     async fn ping(&self) -> ExchangeResult<()> {

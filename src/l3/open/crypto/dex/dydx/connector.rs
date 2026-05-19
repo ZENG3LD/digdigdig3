@@ -894,6 +894,45 @@ impl Positions for DydxConnector {
         })
     }
 
+    /// Get mark (oracle) price for a dYdX v4 perpetual market.
+    ///
+    /// dYdX v4 Indexer exposes oracle price via `GET /v4/perpetualMarkets?ticker=BTC-USD`
+    /// (field `oraclePrice` inside `markets.{TICKER}`).  There is no dedicated mark-price
+    /// endpoint; oracle price is the closest equivalent.
+    ///
+    /// Ref: <https://indexer.dydx.trade/v4/perpetualMarkets?ticker=BTC-USD>
+    async fn get_mark_price(&self, symbol: &str) -> ExchangeResult<crate::core::types::MarkPrice> {
+        let market = if symbol.contains('-') {
+            symbol.to_uppercase()
+        } else {
+            format!("{}-USD", symbol.to_uppercase())
+        };
+
+        let mut params = HashMap::new();
+        params.insert("ticker".to_string(), market.clone());
+
+        let response = self.get(DydxEndpoint::PerpetualMarkets, params).await?;
+
+        let oracle_price = response
+            .get("markets")
+            .and_then(|m| m.get(&market))
+            .and_then(|mkt| {
+                mkt.get("oraclePrice")
+                    .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| v.as_f64()))
+            })
+            .ok_or_else(|| ExchangeError::Parse(
+                format!("dYdX get_mark_price: oraclePrice not found for {}", market),
+            ))?;
+
+        Ok(crate::core::types::MarkPrice {
+            symbol: market,
+            mark_price: oracle_price,
+            index_price: Some(oracle_price), // oracle IS the index on dYdX v4
+            funding_rate: None,
+            timestamp: crate::core::timestamp_millis() as i64,
+        })
+    }
+
     async fn modify_position(&self, _req: PositionModification) -> ExchangeResult<()> {
         Err(ExchangeError::UnsupportedOperation(
             "dYdX v4 position modification (leverage, margin mode) requires Cosmos gRPC (Node API). \

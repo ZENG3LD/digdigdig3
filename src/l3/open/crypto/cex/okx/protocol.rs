@@ -200,6 +200,23 @@ impl WsProtocol for OkxProtocol {
     fn subscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
         // Special cases first.
         match &spec.kind {
+            StreamKind::Kline { .. }
+            | StreamKind::MarkPriceKline { .. }
+            | StreamKind::IndexPriceKline { .. } => {
+                // OKX V5 moved candle/kline channels to the /ws/v5/business endpoint.
+                // Our factory currently connects only to /ws/v5/public (which serves
+                // tickers, mark/funding/OI, trades, books, liquidation). Subscribing
+                // to candle* on /ws/v5/public returns error 60018 "Wrong URL or
+                // channel". Multi-endpoint per connector is a Wave-4 architecture
+                // change. Until then we honestly report this as not supported.
+                //
+                // Docs: https://www.okx.com/docs-v5/en/#overview-websocket-overview
+                return Err(WebSocketError::NotSupported(
+                    "OKX candle/kline channels live on /ws/v5/business endpoint; \
+                     current OkxWebSocket connects to /ws/v5/public — subscribe via \
+                     a separate business connection or use REST GET /api/v5/market/candles".into(),
+                ));
+            }
             StreamKind::Liquidation => {
                 let frame = json!({
                     "op": "subscribe",
@@ -459,7 +476,9 @@ fn build_futures_registry() -> TopicRegistry {
         .register(StreamKind::Trade, at, "trades", parse_trades)
         .register(StreamKind::Trade, at, "trades-all", parse_trades)
         // AggTrade maps to the same "trades" channel (OKX has no separate aggTrade).
-        .register(StreamKind::AggTrade, at, "trades", parse_trades)
+        // parse_agg_trades emits StreamEvent::AggTrade from the same wire frame;
+        // dispatch_all will fire both Trade and AggTrade parsers per frame.
+        .register(StreamKind::AggTrade, at, "trades", parse_agg_trades)
         .register(StreamKind::Orderbook, at, "books", parse_books)
         .register(StreamKind::Orderbook, at, "books5", parse_books)
         .register(StreamKind::Orderbook, at, "bbo-tbt", parse_books)
@@ -623,6 +642,46 @@ fn parse_trades(raw: &Value) -> WebSocketResult<StreamEvent> {
     let trade = OkxParser::parse_ws_trade(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
     Ok(StreamEvent::Trade(trade))
+}
+
+/// Parse `trades` channel frame as `StreamEvent::AggTrade`.
+///
+/// OKX has no dedicated aggTrade channel — the `trades` channel is reused.
+/// `dispatch_all` emits both Trade and AggTrade events from the same frame.
+fn parse_agg_trades(raw: &Value) -> WebSocketResult<StreamEvent> {
+    let data = first_data_item(raw)?;
+    let symbol = data.get("instId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let price = data.get("px")
+        .and_then(parse_f64_field)
+        .ok_or_else(|| WebSocketError::Parse("agg_trades: missing px".into()))?;
+    let quantity = data.get("sz")
+        .and_then(parse_f64_field)
+        .ok_or_else(|| WebSocketError::Parse("agg_trades: missing sz".into()))?;
+    let side = match data.get("side").and_then(|v| v.as_str()).unwrap_or("buy") {
+        "sell" => TradeSide::Sell,
+        _ => TradeSide::Buy,
+    };
+    let timestamp = data.get("ts")
+        .and_then(parse_f64_field)
+        .map(|ms| ms as i64)
+        .unwrap_or(0);
+    let trade_id = data.get("tradeId")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(0);
+    Ok(StreamEvent::AggTrade {
+        symbol,
+        aggregate_id: trade_id,
+        price,
+        quantity,
+        first_trade_id: trade_id,
+        last_trade_id: trade_id,
+        side,
+        timestamp,
+    })
 }
 
 fn parse_books(raw: &Value) -> WebSocketResult<StreamEvent> {

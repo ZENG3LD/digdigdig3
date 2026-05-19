@@ -178,6 +178,29 @@ impl HyperliquidParser {
         })
     }
 
+    /// Extract top-of-book bid and ask prices from a Hyperliquid `l2Book` response.
+    ///
+    /// Response shape: `{"coin":"BTC","time":1716100000000,"levels":[[{px,sz,n},...],[{px,sz,n},...]]}`
+    /// where `levels[0]` = bids (sorted descending) and `levels[1]` = asks (sorted ascending).
+    ///
+    /// Returns `(bid, ask)`.  Either side may be `None` if the book is empty.
+    pub fn parse_l2book_top(response: &Value) -> (Option<f64>, Option<f64>) {
+        let levels = match response.get("levels").and_then(|v| v.as_array()) {
+            Some(l) if l.len() >= 2 => l,
+            _ => return (None, None),
+        };
+
+        let top_px = |side: &Value| -> Option<f64> {
+            side.as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|level| Self::get_f64(level, "px"))
+        };
+
+        let bid = top_px(&levels[0]);
+        let ask = top_px(&levels[1]);
+        (bid, ask)
+    }
+
     /// Parse klines from candleSnapshot response
     pub fn parse_klines(response: &Value) -> ExchangeResult<Vec<Kline>> {
         let candles = response.as_array()

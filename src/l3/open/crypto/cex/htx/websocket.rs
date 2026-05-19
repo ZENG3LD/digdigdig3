@@ -32,11 +32,10 @@ use tokio::sync::Mutex as TokioMutex;
 use crate::core::traits::{Credentials, WebSocketConnector};
 use crate::core::types::{
     AccountType, ConnectionStatus, ExchangeResult,
-    OrderbookCapabilities, StreamEvent, SubscriptionRequest, WebSocketResult,
+    OrderbookCapabilities, StreamEvent, SubscriptionRequest, WebSocketError, WebSocketResult,
     WsBookChannel,
 };
-use crate::core::websocket::UniversalWsTransport;
-use crate::core::websocket::StreamSpec;
+use crate::core::websocket::{StreamSpec, UniversalWsTransport, WsProtocol};
 
 use super::protocol::HtxProtocol;
 
@@ -48,6 +47,7 @@ use super::protocol::HtxProtocol;
 pub struct HtxWebSocket {
     inner: UniversalWsTransport<HtxProtocol>,
     _account_type: AccountType,
+    _testnet: bool,
 }
 
 impl HtxWebSocket {
@@ -63,7 +63,7 @@ impl HtxWebSocket {
     ) -> ExchangeResult<Self> {
         let protocol = HtxProtocol::new(account_type, testnet);
         let inner = UniversalWsTransport::new(protocol, account_type, testnet, credentials);
-        Ok(Self { inner, _account_type: account_type })
+        Ok(Self { inner, _account_type: account_type, _testnet: testnet })
     }
 }
 
@@ -87,6 +87,14 @@ impl WebSocketConnector for HtxWebSocket {
 
     async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let spec = StreamSpec::try_from(request)?;
+        // Eagerly reject NotSupported streams before queuing the subscription.
+        // The transport's cmd-channel subscribe does not do this check, so we
+        // must inspect subscribe_frame here to avoid silent_0_events timeouts.
+        let probe = HtxProtocol::new(spec.account_type, self._testnet);
+        match probe.subscribe_frame(&spec) {
+            Err(e @ WebSocketError::NotSupported(_)) => return Err(e),
+            _ => {}
+        }
         self.inner.subscribe(spec).await
     }
 

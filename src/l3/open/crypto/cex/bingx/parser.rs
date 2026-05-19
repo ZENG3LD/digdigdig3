@@ -501,21 +501,33 @@ impl BingxParser {
     /// Parse WebSocket bookTicker frame.
     ///
     /// Channel: `{symbol}@bookTicker`
-    /// Payload: `{ "bidPrice": "...", "bidQty": "...", "askPrice": "...", "askQty": "..." }`
+    /// Payload (swap): `{ "b": "<bid>", "B": "<bidQty>", "a": "<ask>", "A": "<askQty>", "s": "<sym>", ... }`
+    ///
+    /// BingX swap uses single-letter field names: `b`=bid, `a`=ask, `B`=bidQty, `A`=askQty.
+    /// (Not Binance-style `bidPrice`/`askPrice`.)
     ///
     /// Emits a `Ticker` with `last_price` = midpoint of bid/ask and
     /// `bid_price`/`ask_price` populated. High/low/volume fields are absent
     /// in bookTicker and left as `None`.
     pub fn parse_ws_book_ticker(data_type: &str, data: &Value) -> ExchangeResult<Ticker> {
-        let symbol = data_type.split('@').next().unwrap_or("").to_string();
+        // Symbol from payload field `s`, fallback to dataType prefix
+        let symbol = data.get("s")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| data_type.split('@').next().unwrap_or("").to_string());
 
-        let bid_price = Self::get_f64(data, "bidPrice")
-            .ok_or_else(|| ExchangeError::Parse("Missing bidPrice in bookTicker".to_string()))?;
-        let ask_price = Self::get_f64(data, "askPrice")
-            .ok_or_else(|| ExchangeError::Parse("Missing askPrice in bookTicker".to_string()))?;
+        // BingX swap bookTicker uses short field names: b=bid, a=ask
+        let bid_price = Self::get_f64(data, "b")
+            .ok_or_else(|| ExchangeError::Parse("Missing bid (b) in bookTicker".to_string()))?;
+        let ask_price = Self::get_f64(data, "a")
+            .ok_or_else(|| ExchangeError::Parse("Missing ask (a) in bookTicker".to_string()))?;
 
         let last_price = (bid_price + ask_price) / 2.0;
-        let timestamp = crate::core::timestamp_millis() as i64;
+        // Use event time E or transaction time T from payload; fallback to now
+        let timestamp = data.get("E")
+            .or_else(|| data.get("T"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
 
         Ok(Ticker {
             symbol,
@@ -532,15 +544,31 @@ impl BingxParser {
         })
     }
 
-    /// Parse WebSocket trade
+    /// Parse WebSocket trade.
+    ///
+    /// BingX swap @trade payload wraps the trade object in an array:
+    /// `data: [{"q":"0.005","p":"76773.4","T":1779184172494,"m":false,"s":"BTC-USDT"}]`
+    ///
+    /// Fields: `p`=price, `q`=quantity, `T`=timestamp(ms), `m`=isBuyerMaker, `s`=symbol.
+    /// Note: timestamp field is capital `T`, not lowercase `t`.
     pub fn parse_ws_trade(data: &Value) -> ExchangeResult<crate::core::PublicTrade> {
         use crate::core::types::TradeSide;
 
-        let symbol = Self::require_str(data, "s")?.to_string();
-        let price = Self::require_f64(data, "p")?;
-        let quantity = Self::require_f64(data, "q")?;
-        let timestamp = Self::get_f64(data, "t").map(|t| t as i64).unwrap_or(0);
-        let is_buyer_maker = data.get("m").and_then(|v| v.as_bool()).unwrap_or(false);
+        // BingX wraps the trade in an array; take the first element
+        let trade = if let Some(arr) = data.as_array() {
+            arr.first()
+                .ok_or_else(|| ExchangeError::Parse("Empty trade array in BingX @trade push".to_string()))?
+        } else {
+            data
+        };
+
+        let symbol = Self::require_str(trade, "s")?.to_string();
+        let price = Self::require_f64(trade, "p")?;
+        let quantity = Self::require_f64(trade, "q")?;
+        // Timestamp field is capital T in BingX swap WS (milliseconds)
+        let timestamp = trade.get("T").and_then(|v| v.as_i64()).unwrap_or(0);
+        let trade_id = timestamp.to_string();
+        let is_buyer_maker = trade.get("m").and_then(|v| v.as_bool()).unwrap_or(false);
 
         // If buyer is maker, then seller is taker (Sell side)
         // If buyer is taker, then buyer initiated (Buy side)
@@ -551,7 +579,7 @@ impl BingxParser {
         };
 
         Ok(crate::core::PublicTrade {
-            id: data.get("t").and_then(|v| v.as_i64()).map(|id| id.to_string()).unwrap_or_default(),
+            id: trade_id,
             symbol,
             price,
             quantity,
@@ -603,13 +631,25 @@ impl BingxParser {
         }))
     }
 
-    /// Parse WebSocket kline
+    /// Parse WebSocket kline.
+    ///
+    /// BingX swap @kline_1m payload wraps the kline in an array (no nested `k` object):
+    /// `data: [{"c":"76797.3","o":"76784.5","h":"76801.8","l":"76784.5","v":"2.2693","T":1779184200000}]`
+    ///
+    /// Top-level `s` field carries the symbol. `T` = open-time (ms).
     pub fn parse_ws_kline(data: &Value) -> ExchangeResult<Kline> {
-        let kline_data = data.get("k")
-            .ok_or_else(|| ExchangeError::Parse("Missing 'k' field in kline data".to_string()))?;
+        // BingX swap wraps the kline in an array; take first element
+        let kline_data = if let Some(arr) = data.as_array() {
+            arr.first()
+                .ok_or_else(|| ExchangeError::Parse("Empty kline array in BingX @kline push".to_string()))?
+        } else {
+            // Fallback: try the old nested-k format (spot or future schema change)
+            data.get("k").unwrap_or(data)
+        };
 
-        let open_time = Self::get_f64(kline_data, "t").map(|t| t as i64)
-            .ok_or_else(|| ExchangeError::Parse("Missing timestamp".to_string()))?;
+        // BingX kline uses capital T for open-time (the candle start timestamp)
+        let open_time = kline_data.get("T").and_then(|v| v.as_i64())
+            .ok_or_else(|| ExchangeError::Parse("Missing open_time (T) in BingX kline".to_string()))?;
         let open = Self::require_f64(kline_data, "o")?;
         let high = Self::require_f64(kline_data, "h")?;
         let low = Self::require_f64(kline_data, "l")?;
@@ -623,7 +663,7 @@ impl BingxParser {
             low,
             close,
             volume,
-            close_time: Self::get_f64(kline_data, "T").map(|t| t as i64),
+            close_time: None,
             quote_volume: None,
             trades: None,
         })
@@ -1108,11 +1148,15 @@ mod tests {
 
     #[test]
     fn test_parse_ws_book_ticker() {
+        // BingX wire format on /swap-market uses short field names:
+        // s = symbol, b/B = bid price/qty, a/A = ask price/qty, T = event time.
         let data = json!({
-            "bidPrice": "67432.10",
-            "bidQty": "0.543",
-            "askPrice": "67433.50",
-            "askQty": "0.821"
+            "s": "BTC-USDT",
+            "b": "67432.10",
+            "B": "0.543",
+            "a": "67433.50",
+            "A": "0.821",
+            "T": 1779148957000_i64
         });
         let ticker = BingxParser::parse_ws_book_ticker("BTC-USDT@bookTicker", &data).unwrap();
         assert_eq!(ticker.symbol, "BTC-USDT");

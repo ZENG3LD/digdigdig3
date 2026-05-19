@@ -197,6 +197,17 @@ impl KuCoinProtocol {
     fn futures_registry() -> &'static TopicRegistry {
         FUTURES_REGISTRY.get_or_init(|| build_registry(AccountType::FuturesCross))
     }
+
+    /// Pre-check whether a StreamSpec is supported before queuing to the transport.
+    ///
+    /// UniversalWsTransport.subscribe() is fire-and-forget via an internal
+    /// channel — errors from subscribe_frame() are only logged, never returned
+    /// to the caller. This method lets KuCoinWebSocket detect NotSupported early
+    /// and return the error synchronously so e2e_smoke can display `--` rather
+    /// than `silent_0_events / ERR`.
+    pub fn check_subscribe(spec: &StreamSpec) -> WebSocketResult<()> {
+        Self::build_topic(spec).map(|_| ())
+    }
 }
 
 impl WsProtocol for KuCoinProtocol {
@@ -257,15 +268,31 @@ impl WsProtocol for KuCoinProtocol {
 
         let topic = raw.get("topic").and_then(|v| v.as_str())?;
 
-        // Strip symbol suffix after ':' to get the channel prefix for registry lookup.
-        // e.g. "/market/ticker:BTC-USDT" → "/market/ticker:*"
-        // e.g. "/contractMarket/tickerV2:XBTUSDTM" → "/contractMarket/tickerV2:*"
-        // e.g. "/market/candles:BTC-USDT_1min" → "/market/candles:*"
-        // e.g. "/spotMarket/tradeOrdersV2" → "/spotMarket/tradeOrdersV2" (no ':')
-        let key = if topic.contains(':') {
-            // Split at ':' to get the channel part, then wildcard the symbol
-            let channel = &topic[..topic.find(':').unwrap()];
-            format!("{}:*", channel)
+        // Build registry key from incoming topic:
+        //
+        // - No ':' → use topic as-is (e.g. "/spotMarket/tradeOrdersV2")
+        // - Has ':' → replace symbol prefix with '*', preserving interval suffix
+        //   if present (kline topics encode both symbol and interval).
+        //
+        // Examples:
+        //   "/market/ticker:BTC-USDT"           → "/market/ticker:*"
+        //   "/contractMarket/tickerV2:XBTUSDTM" → "/contractMarket/tickerV2:*"
+        //   "/market/candles:BTC-USDT_1min"     → "/market/candles:*_1min"
+        //   "/contractMarket/limitCandle:XBTUSDTM_1" → "/contractMarket/limitCandle:*_1"
+        //   "/spotMarket/level2Depth5:BTC-USDT" → "/spotMarket/level2Depth5:*"
+        let key = if let Some(colon_pos) = topic.find(':') {
+            let channel = &topic[..colon_pos];
+            let sym_and_suffix = &topic[colon_pos + 1..];
+
+            // Kline topics use '_' to separate symbol from interval (e.g. "BTC-USDT_1min").
+            // KuCoin symbols use '-' (spot) or no separator (futures), never '_'.
+            // So if '_' is present after ':', it marks the interval boundary.
+            if let Some(underscore_pos) = sym_and_suffix.rfind('_') {
+                let interval_suffix = &sym_and_suffix[underscore_pos..]; // e.g. "_1min"
+                format!("{}:*{}", channel, interval_suffix)
+            } else {
+                format!("{}:*", channel)
+            }
         } else {
             topic.to_string()
         };

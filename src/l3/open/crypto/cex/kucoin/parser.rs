@@ -596,27 +596,21 @@ impl KuCoinParser {
         })
     }
 
-    /// Parse WebSocket orderbook delta message
+    /// Parse WebSocket orderbook delta message.
+    ///
+    /// Handles three wire formats from KuCoin:
+    ///
+    /// 1. Spot snapshot (`/spotMarket/level2Depth5:*`, subject `level2`):
+    ///    `{"asks":[[price,qty],…], "bids":[[price,qty],…], "timestamp":…}`
+    ///    Direct `bids`/`asks` arrays — NO `changes` wrapper.
+    ///
+    /// 2. Spot delta (`/market/level2:*`, subject `trade.l2update`):
+    ///    `{"changes":{"bids":[[price,qty,seq],…], "asks":…}, "sequenceEnd":…}`
+    ///
+    /// 3. Futures delta (`/contractMarket/level2:*`):
+    ///    `{"change":"price,side,size", "timestamp":…}` — single-entry string.
     pub fn parse_ws_orderbook_delta(data: &Value) -> ExchangeResult<StreamEvent> {
-        let parse_changes = |key: &str| -> Vec<OrderBookLevel> {
-            data.get("changes")
-                .and_then(|c| c.get(key))
-                .and_then(|arr| arr.as_array())
-                .map(|changes| {
-                    changes.iter()
-                        .filter_map(|change| {
-                            let pair = change.as_array()?;
-                            if pair.len() < 2 { return None; }
-                            let price = Self::parse_f64(&pair[0])?;
-                            let size = Self::parse_f64(&pair[1])?;
-                            Some(OrderBookLevel::new(price, size))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
-
-        // Futures format (change string)
+        // ── Format 3: Futures single-change string ────────────────────────────
         if let Some(change_str) = Self::get_str(data, "change") {
             let parts: Vec<&str> = change_str.split(',').collect();
             if parts.len() >= 3 {
@@ -643,7 +637,56 @@ impl KuCoinParser {
             }
         }
 
-        // Spot format (changes object)
+        // ── Format 1: Spot snapshot — direct bids/asks arrays ─────────────────
+        // `/spotMarket/level2Depth5:*` and `/contractMarket/level2Depth5:*` push
+        // snapshots with top-level `bids`/`asks` (no `changes` wrapper).
+        if data.get("bids").is_some() || data.get("asks").is_some() {
+            let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
+                data.get(key)
+                    .and_then(|arr| arr.as_array())
+                    .map(|levels| {
+                        levels.iter().filter_map(|level| {
+                            let pair = level.as_array()?;
+                            if pair.len() < 2 { return None; }
+                            let price = Self::parse_f64(&pair[0])?;
+                            let size = Self::parse_f64(&pair[1])?;
+                            Some(OrderBookLevel::new(price, size))
+                        }).collect()
+                    })
+                    .unwrap_or_default()
+            };
+
+            return Ok(StreamEvent::OrderbookDelta(OrderbookDeltaData {
+                bids: parse_levels("bids"),
+                asks: parse_levels("asks"),
+                timestamp: data.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0),
+                first_update_id: None,
+                last_update_id: None,
+                prev_update_id: None,
+                event_time: None,
+                checksum: None,
+            }));
+        }
+
+        // ── Format 2: Spot delta — changes object ─────────────────────────────
+        let parse_changes = |key: &str| -> Vec<OrderBookLevel> {
+            data.get("changes")
+                .and_then(|c| c.get(key))
+                .and_then(|arr| arr.as_array())
+                .map(|changes| {
+                    changes.iter()
+                        .filter_map(|change| {
+                            let pair = change.as_array()?;
+                            if pair.len() < 2 { return None; }
+                            let price = Self::parse_f64(&pair[0])?;
+                            let size = Self::parse_f64(&pair[1])?;
+                            Some(OrderBookLevel::new(price, size))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
         Ok(StreamEvent::OrderbookDelta(OrderbookDeltaData {
             bids: parse_changes("bids"),
             asks: parse_changes("asks"),

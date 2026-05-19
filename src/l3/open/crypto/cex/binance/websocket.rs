@@ -28,7 +28,7 @@ use tokio::sync::Mutex as TokioMutex;
 use crate::core::traits::{Credentials, WebSocketConnector};
 use crate::core::types::{
     AccountType, ConnectionStatus, ExchangeResult,
-    OrderbookCapabilities, StreamEvent, SubscriptionRequest, WebSocketResult,
+    OrderbookCapabilities, StreamEvent, SubscriptionRequest, WebSocketError, WebSocketResult,
     WsBookChannel,
 };
 use crate::core::websocket::UniversalWsTransport;
@@ -86,6 +86,12 @@ impl WebSocketConnector for BinanceWebSocket {
 
     async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let spec = StreamSpec::try_from(request)?;
+        // Eagerly propagate NotSupported before queuing — avoids silent_0_events timeout.
+        let protocol = super::protocol::BinanceProtocol::new(self._account_type, false);
+        use crate::core::websocket::WsProtocol;
+        if let Err(e @ WebSocketError::NotSupported(_)) = protocol.subscribe_frame(&spec) {
+            return Err(e);
+        }
         self.inner.subscribe(spec).await
     }
 

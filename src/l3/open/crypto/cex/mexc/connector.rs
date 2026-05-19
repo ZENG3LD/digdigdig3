@@ -1929,8 +1929,16 @@ impl crate::core::traits::Positions for MexcConnector {
                 parts[0].to_uppercase(),
                 parts.get(1).copied().unwrap_or("USDT").to_uppercase()
             )
-        } else {
+        } else if symbol.contains('-') {
             symbol.to_uppercase().replace('-', "_")
+        } else if !symbol.contains('_') {
+            // Spot-format symbol (BTCUSDT) — convert to futures format (BTC_USDT).
+            use crate::core::utils::symbol_normalizer::SymbolNormalizer;
+            SymbolNormalizer::from_exchange(crate::core::types::ExchangeId::MEXC, symbol, AccountType::Spot)
+                .and_then(|canonical| SymbolNormalizer::to_exchange(crate::core::types::ExchangeId::MEXC, &canonical, AccountType::FuturesCross))
+                .unwrap_or_else(|_| symbol.to_uppercase())
+        } else {
+            symbol.to_uppercase()
         };
         let response = self.get_futures_ticker_raw(&raw_symbol).await?;
         let data = response

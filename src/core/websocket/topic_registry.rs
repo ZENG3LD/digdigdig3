@@ -71,28 +71,57 @@ impl std::fmt::Display for TopicPattern {
     }
 }
 
-/// Pattern matching: split on `*` → prefix + optional suffix.
-/// key must start_with(prefix) AND end_with(suffix).
+/// Pattern matching supporting multiple `*` wildcards.
+///
+/// Each `*` matches zero or more characters (greedy left-to-right).
 /// If no `*`, requires exact equality.
+///
+/// Examples:
+///   `"*@trade"`         matches `"btcusdt@trade"`
+///   `"*@depth20@*"`     matches `"btcusdt@depth20@100ms"`
+///   `"market.*.depth"`  matches `"market.BTC-USDT.depth"`
 pub fn topic_pattern_matches(pattern: &str, key: &str) -> bool {
-    match pattern.find('*') {
-        None => pattern == key,
-        Some(star_pos) => {
-            let prefix = &pattern[..star_pos];
-            let suffix = &pattern[star_pos + 1..];
+    // Split pattern on `*` to get literal segments.
+    // Invariant: segments[0] is a prefix anchor, segments[last] is a suffix anchor,
+    // inner segments must appear in order (greedy scan).
+    let segments: Vec<&str> = pattern.split('*').collect();
 
-            // Ensure prefix fits
+    match segments.len() {
+        // No `*` — exact match.
+        1 => pattern == key,
+
+        n => {
+            // First segment: must be an anchored prefix.
+            let prefix = segments[0];
             if !key.starts_with(prefix) {
                 return false;
             }
-            // Remaining after stripping prefix
-            let rest = &key[prefix.len()..];
-            // Suffix must fit into rest, and the wildcard must match at least 0 chars
-            if suffix.is_empty() {
-                true
-            } else {
-                rest.ends_with(suffix) && rest.len() >= suffix.len()
+
+            // Last segment: must be an anchored suffix.
+            let suffix = segments[n - 1];
+            if !suffix.is_empty() && !key.ends_with(suffix) {
+                return false;
             }
+
+            // Middle segments (if any): scan left-to-right from after prefix.
+            let mut pos = prefix.len();
+            // The suffix will be consumed from the right — don't scan past it.
+            let limit = key.len().saturating_sub(suffix.len());
+
+            for seg in &segments[1..n - 1] {
+                if seg.is_empty() {
+                    // Consecutive `*`s — skip (empty segment matches nothing extra).
+                    continue;
+                }
+                // Find `seg` in key[pos..limit].
+                match key[pos..limit].find(seg) {
+                    Some(off) => pos += off + seg.len(),
+                    None => return false,
+                }
+            }
+
+            // Verify the consumed prefix + middle + suffix regions don't overlap.
+            pos <= limit + suffix.len()
         }
     }
 }

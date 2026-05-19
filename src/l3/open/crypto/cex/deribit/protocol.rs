@@ -93,7 +93,10 @@ impl DeribitProtocol {
                 let res = deribit_kline_resolution(interval);
                 format!("chart.trades.{}.{}", instrument, res)
             }
-            StreamKind::MarkPrice => format!("mark_price.{}", instrument),
+            // MarkPrice is a fan-out from the ticker channel — Deribit has no standalone
+            // mark_price.* WS channel. Use ticker.{instrument}.100ms and extract mark_price
+            // via parse_mark_price_from_ticker registered on "ticker.*.100ms".
+            StreamKind::MarkPrice => format!("ticker.{}.100ms", instrument),
             StreamKind::FundingRate => format!("perpetual.{}.100ms", instrument),
             StreamKind::IndexPrice => {
                 // deribit_price_index.btc_usd — extract base prefix from instrument
@@ -384,7 +387,10 @@ fn build_registry() -> TopicRegistry {
         b = b.register(kind, at, pattern, parse_kline);
     }
 
-    // Mark price
+    // Mark price — Deribit has no standalone mark_price.* WS channel.
+    // MarkPrice subscribes to ticker.*.100ms and is dispatched via fan-out
+    // (parse_mark_price_from_ticker registered above on "ticker.*.100ms").
+    // The mark_price.* pattern below is kept for markprice.options.* frames only.
     b = b.register(StreamKind::MarkPrice, at, "mark_price.*", parse_mark_price);
 
     // Perpetual interest rate (→ FundingRate)
@@ -668,8 +674,10 @@ fn parse_perpetual(raw: &Value) -> WebSocketResult<StreamEvent> {
     let timestamp = get_i64(data, "timestamp").unwrap_or(0);
     let instrument = get_str(data, "instrument_name")
         .unwrap_or_else(|| channel.split('.').nth(1).unwrap_or(""));
-    let rate = get_f64(data, "interest_rate")
-        .ok_or_else(|| WebSocketError::Parse("perpetual: missing interest_rate".into()))?;
+    // Gate.io Perpetual channel data uses "interest" (not "interest_rate")
+    let rate = get_f64(data, "interest")
+        .or_else(|| get_f64(data, "interest_rate"))
+        .ok_or_else(|| WebSocketError::Parse("perpetual: missing interest/interest_rate".into()))?;
     Ok(StreamEvent::FundingRate {
         symbol: instrument.to_string(),
         rate,

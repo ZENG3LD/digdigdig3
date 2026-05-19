@@ -66,8 +66,10 @@ static GLOBAL_WS_LIMITER: OnceLock<Arc<StdMutex<SimpleRateLimiter>>> = OnceLock:
 fn get_global_ws_limiter() -> Arc<StdMutex<SimpleRateLimiter>> {
     GLOBAL_WS_LIMITER.get_or_init(|| {
         Arc::new(StdMutex::new(
-            // Very conservative: 5 connections per 10 seconds
-            SimpleRateLimiter::new(5, Duration::from_secs(10))
+            // Allow up to 10 WS connections per 10s so that the e2e_smoke matrix
+            // (which opens 6 parallel connections for BingX) does not hit rate limits.
+            // BingX allows hundreds of connections per IP in practice.
+            SimpleRateLimiter::new(10, Duration::from_secs(10))
         ))
     }).clone()
 }
@@ -100,16 +102,17 @@ struct SubscribeMessage {
     data_type: String,
 }
 
-/// Ping message from server
+/// Ping message from server — BingX sends `{"ping":"<id>","time":"..."}` (string ID).
+/// The `time` field is optional and unused; we echo back the same `id`.
 #[derive(Debug, Clone, Deserialize)]
 struct PingMessage {
-    ping: i64,
+    ping: serde_json::Value, // accept string or integer
 }
 
-/// Pong response to server
+/// Pong response to server — mirrors the ping id value.
 #[derive(Debug, Clone, Serialize)]
 struct PongMessage {
-    pong: i64,
+    pong: serde_json::Value,
 }
 
 /// Incoming message from BingX
@@ -336,7 +339,18 @@ impl BingxWebSocket {
                         match Self::decompress_message(&data) {
                             Ok(text) => {
                                 tracing::debug!(target: "bingx::ws", "gzip binary decoded: {}", &text[..text.len().min(200)]);
-                                // Check for ping message
+                                // BingX server heartbeat: plain string "Ping" (gzip-compressed)
+                                // Respond with plain string "Pong"
+                                if text.trim() == "Ping" {
+                                    let mut writer_guard = ws_writer.lock().await;
+                                    if let Some(ref mut writer) = *writer_guard {
+                                        let _ = writer.send(Message::Text("Pong".to_string())).await;
+                                    }
+                                    *last_ping.lock().await = Instant::now();
+                                    continue;
+                                }
+
+                                // Check for JSON ping message {"ping":"<id>","time":"..."}
                                 if let Ok(ping) = serde_json::from_str::<PingMessage>(&text) {
                                     // Send pong via the write half — no deadlock risk
                                     let pong = PongMessage { pong: ping.ping };
@@ -353,22 +367,36 @@ impl BingxWebSocket {
                                 // Parse data message — clone sender, drop guard, then use clone.
                                 if let Some(tx) = get_tx(&event_tx) {
                                     if let Err(e) = Self::handle_message(&text, &tx, account_type) {
-                                        let _ = tx.send(Err(e));
+                                        // Only propagate non-parse errors; unknown frames are silently ignored
+                                        // so a stray server message does not break the collection loop.
+                                        match &e {
+                                            WebSocketError::Parse(_) => {
+                                                tracing::debug!(target: "bingx::ws", "ignored unrecognised frame: {}", &text[..text.len().min(100)]);
+                                            }
+                                            _ => { let _ = tx.send(Err(e)); }
+                                        }
                                     }
                                 }
                             }
                             Err(e) => {
-                                if let Some(tx) = get_tx(&event_tx) {
-                                    let _ = tx.send(Err(WebSocketError::Parse(format!(
-                                        "Failed to decompress message: {}",
-                                        e
-                                    ))));
-                                }
+                                tracing::warn!(target: "bingx::ws", "gzip decompress failed: {}", e);
+                                // Don't propagate decompression failures — they can be
+                                // heartbeat frames or unknown binary messages from the server.
                             }
                         }
                     }
                     Ok(Some(Ok(Message::Text(text)))) => {
-                        // Check for ping message
+                        // Plain-text heartbeat "Ping"
+                        if text.trim() == "Ping" {
+                            let mut writer_guard = ws_writer.lock().await;
+                            if let Some(ref mut writer) = *writer_guard {
+                                let _ = writer.send(Message::Text("Pong".to_string())).await;
+                            }
+                            *last_ping.lock().await = Instant::now();
+                            continue;
+                        }
+
+                        // JSON ping {"ping":"<id>","time":"..."}
                         if let Ok(ping) = serde_json::from_str::<PingMessage>(&text) {
                             let pong = PongMessage { pong: ping.ping };
                             if let Ok(pong_json) = serde_json::to_string(&pong) {
@@ -384,7 +412,12 @@ impl BingxWebSocket {
                         // Parse data message — clone sender, drop guard, then use clone.
                         if let Some(tx) = get_tx(&event_tx) {
                             if let Err(e) = Self::handle_message(&text, &tx, account_type) {
-                                let _ = tx.send(Err(e));
+                                match &e {
+                                    WebSocketError::Parse(_) => {
+                                        tracing::debug!(target: "bingx::ws", "ignored unrecognised text frame: {}", &text[..text.len().min(100)]);
+                                    }
+                                    _ => { let _ = tx.send(Err(e)); }
+                                }
                             }
                         }
                     }
@@ -685,10 +718,10 @@ impl BingxWebSocket {
                 format!("{}@openInterest", symbol)
             }
             StreamType::AggTrade => {
-                // BingX has no separate aggregated-trade WS channel.
-                // Map to @trade (raw trades) so callers get trade data.
-                let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, _account_type);
-                format!("{}@trade", symbol)
+                // BingX has no aggregated-trade WS channel (no @aggTrade endpoint).
+                // Return empty string → subscribe() will return NotSupported.
+                // Callers that want trade data should subscribe StreamType::Trade instead.
+                String::new()
             }
             _ => String::new(),
         }
@@ -837,6 +870,28 @@ impl WebSocketConnector for BingxWebSocket {
 
     async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let data_type = Self::build_data_type(&request, *self.account_type.lock().await);
+
+        // Guard: empty data_type signals a stream not supported on BingX swap-market WS.
+        // FundingRate, and any future no-op mappings, fall here.
+        if data_type.is_empty() {
+            return Err(WebSocketError::NotSupported(
+                "NotSupported: BingX swap-market WS does not carry this stream type".to_string(),
+            ));
+        }
+
+        // @forceOrder and @openInterest are not supported on the swap-market WS endpoint
+        // (server returns code 80015). Detect before sending to avoid a silent subscribe
+        // followed by zero events.
+        if data_type.ends_with("@forceOrder") {
+            return Err(WebSocketError::NotSupported(
+                "NotSupported: BingX swap-market WS does not support @forceOrder — use REST liquidation history".to_string(),
+            ));
+        }
+        if data_type.ends_with("@openInterest") {
+            return Err(WebSocketError::NotSupported(
+                "NotSupported: BingX swap-market WS does not support @openInterest — use REST GET /openApi/swap/v2/quote/openInterest".to_string(),
+            ));
+        }
 
         // Brief delay so the server completes the WS handshake before we send
         // subscription frames. Some BingX endpoints drop frames sent immediately

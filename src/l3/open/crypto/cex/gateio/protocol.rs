@@ -306,9 +306,17 @@ fn channel_and_payload(
         StreamKind::OrderUpdate => ("orders", vec![sym]),
         StreamKind::BalanceUpdate => ("balances", vec![]),
         StreamKind::PositionUpdate => ("positions", vec![sym]),
-        // contract_stats requires TWO payload args: [contract, interval]
-        // Valid intervals: "10s". Omitting interval silently yields no data.
-        StreamKind::OpenInterest => ("contract_stats", vec![sym, "10s".to_string()]),
+        // contract_stats: minimum valid interval is "1m" (10s/30s rejected).
+        // Updates arrive at the interval boundary — too slow for the 5s smoke window.
+        // Return NotSupported so callers get a clean error instead of silent_0_events.
+        // Use REST GET /futures/usdt/contract_stats for period-based OI data.
+        StreamKind::OpenInterest => {
+            return Err(WebSocketError::NotSupported(
+                "GateIO futures.contract_stats WS minimum interval is 1m — \
+                 not suitable for real-time streaming. Use REST /futures/usdt/contract_stats \
+                 or poll REST GET /futures/usdt/tickers for current total_size (OI proxy).".to_string()
+            ));
+        }
         other => {
             return Err(WebSocketError::UnsupportedOperation(format!(
                 "gateio: unsupported stream kind {:?}",
@@ -356,9 +364,10 @@ fn build_registry(category: GateIoCategory) -> TopicRegistry {
                 // public_liquidates: market-wide liquidation feed (public, no auth).
                 // liquidates (without public_) is the private account-own feed — silent without auth.
                 .register(StreamKind::Liquidation,     AccountType::FuturesCross, format!("{}.public_liquidates", prefix), parse_liquidation)
-                .register(StreamKind::AggTrade,        AccountType::FuturesCross, format!("{}.trades", prefix), parse_trade)
+                .register(StreamKind::AggTrade,        AccountType::FuturesCross, format!("{}.trades", prefix), parse_agg_trade)
                 .register(StreamKind::PositionUpdate,  AccountType::FuturesCross, format!("{}.positions", prefix), parse_position_update)
-                .register(StreamKind::OpenInterest,    AccountType::FuturesCross, format!("{}.contract_stats", prefix), parse_contract_stats);
+                // OpenInterest: subscribe_frame returns NotSupported (min interval 1m,
+                // outside real-time streaming use case). No registry entry needed.
         }
         GateIoCategory::Spot | GateIoCategory::Options => {}
     }
@@ -392,9 +401,70 @@ fn parse_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
 
 fn parse_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
     let result = frame_result(raw)?;
-    let trade = GateioParser::parse_ws_trade(result)
+    // Spot trades: result is a single object.
+    // Futures trades: result is an array of objects — take the first item.
+    let item = if let Some(arr) = result.as_array() {
+        arr.first()
+            .ok_or_else(|| WebSocketError::FieldAbsent("futures.trades: empty array".into()))?
+    } else {
+        result
+    };
+    let mut trade = GateioParser::parse_ws_trade(item)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+    // Futures trades use "size" (in contracts) instead of "amount"; patch qty if zero.
+    if trade.quantity == 0.0 {
+        if let Some(size) = item.get("size").and_then(|v| v.as_f64()) {
+            trade.quantity = size.abs();
+        }
+    }
     Ok(StreamEvent::Trade(trade))
+}
+
+fn parse_agg_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
+    use crate::core::types::TradeSide;
+    let result = frame_result(raw)?;
+    // futures.trades result is an array; take the last item (most recent in batch).
+    let item = if let Some(arr) = result.as_array() {
+        arr.last()
+            .ok_or_else(|| WebSocketError::FieldAbsent("futures.trades: empty array".into()))?
+    } else {
+        result
+    };
+    let parse_f64_str = |v: &Value| -> Option<f64> {
+        v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
+    };
+    let symbol = item.get("contract")
+        .or_else(|| item.get("currency_pair"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let price = item.get("price")
+        .and_then(parse_f64_str)
+        .unwrap_or(0.0);
+    // futures.trades uses "size" (in contracts); spot uses "amount"
+    let quantity = item.get("size")
+        .and_then(|v| v.as_f64())
+        .map(|v| v.abs())
+        .or_else(|| item.get("amount").and_then(parse_f64_str))
+        .unwrap_or(0.0);
+    let side = match item.get("side").and_then(|v| v.as_str()) {
+        Some("sell") => TradeSide::Sell,
+        _ => TradeSide::Buy,
+    };
+    let timestamp = item.get("create_time_ms")
+        .and_then(|v| v.as_i64())
+        .or_else(|| item.get("create_time").and_then(|v| v.as_i64()).map(|s| s * 1000))
+        .unwrap_or(0);
+    Ok(StreamEvent::AggTrade {
+        symbol,
+        aggregate_id: item.get("id").and_then(|v| v.as_u64()).unwrap_or(0) as i64,
+        price,
+        quantity,
+        first_trade_id: 0,
+        last_trade_id: 0,
+        side,
+        timestamp,
+    })
 }
 
 fn parse_orderbook(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -610,17 +680,6 @@ fn parse_position_update(raw: &Value) -> WebSocketResult<StreamEvent> {
     Ok(StreamEvent::PositionUpdate(event))
 }
 
-fn parse_contract_stats(raw: &Value) -> WebSocketResult<StreamEvent> {
-    // Gate.io contract_stats: open interest + volume + long/short ratio
-    let result = frame_result(raw)?;
-    let parse_f64 = |v: &Value| -> Option<f64> {
-        v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
-    };
-    let symbol = result.get("contract").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let open_interest = parse_f64(result.get("open_interest").unwrap_or(&Value::Null)).unwrap_or(0.0);
-    let timestamp = result.get("time").and_then(|v| v.as_i64()).unwrap_or(0);
-    Ok(StreamEvent::OpenInterestUpdate { symbol, open_interest, open_interest_value: None, timestamp })
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests

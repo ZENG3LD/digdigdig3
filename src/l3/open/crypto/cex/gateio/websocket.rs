@@ -27,10 +27,10 @@ use tokio::sync::Mutex as TokioMutex;
 use crate::core::traits::{Credentials, WebSocketConnector};
 use crate::core::types::{
     AccountType, ConnectionStatus, ExchangeResult,
-    OrderbookCapabilities, StreamEvent, SubscriptionRequest, WebSocketResult,
+    OrderbookCapabilities, StreamEvent, SubscriptionRequest, WebSocketError, WebSocketResult,
     WsBookChannel,
 };
-use crate::core::websocket::UniversalWsTransport;
+use crate::core::websocket::{UniversalWsTransport, WsProtocol};
 use crate::core::websocket::StreamSpec;
 
 use super::protocol::GateIoProtocol;
@@ -85,6 +85,12 @@ impl WebSocketConnector for GateioWebSocket {
 
     async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let spec = StreamSpec::try_from(request)?;
+        // Eagerly surface NotSupported so callers get a clean error instead of
+        // silent_0_events (transport loop warns but does not propagate subscribe_frame errors).
+        match self.inner.protocol().subscribe_frame(&spec) {
+            Err(e @ WebSocketError::NotSupported(_)) => return Err(e),
+            _ => {}
+        }
         self.inner.subscribe(spec).await
     }
 

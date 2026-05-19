@@ -82,17 +82,27 @@ impl HtxProtocol {
             AccountType::FuturesCross | AccountType::FuturesIsolated
         );
         match &spec.kind {
-            // For futures, subscribe to .bbo (has bid/ask); for spot, .detail has bid/ask inline.
-            StreamKind::Ticker if is_futures => Ok(format!("market.{sym}.bbo")),
-            StreamKind::Ticker => Ok(format!("market.{sym}.detail")),
+            // Both spot and futures subscribe to .bbo which carries bid/ask.
+            // Spot .detail has no bid/ask fields — .bbo is the correct ticker channel.
+            StreamKind::Ticker => Ok(format!("market.{sym}.bbo")),
             StreamKind::Trade => Ok(format!("market.{sym}.trade.detail")),
             StreamKind::Orderbook => Ok(format!("market.{sym}.depth.step0")),
             StreamKind::OrderbookDelta => Ok(format!("market.{sym}.mbp.150")),
             StreamKind::Kline { interval } => {
                 Ok(format!("market.{sym}.kline.{}", htx_kline_wire(interval)))
             }
-            StreamKind::FundingRate => Ok(format!("public.{sym}.funding_rate")),
-            StreamKind::Liquidation => Ok(format!("public.{sym}.liquidation_orders")),
+            StreamKind::FundingRate => {
+                let contract = if is_futures { to_futures_contract(sym) } else { sym.to_string() };
+                Ok(format!("public.{contract}.funding_rate"))
+            }
+            StreamKind::Liquidation => {
+                // HTX public.{contract}.liquidation_orders is offline (deprecated per
+                // HTX bulletin 2024). REST alternative: /linear-swap-api/v1/swap_liquidation_orders.
+                Err(WebSocketError::NotSupported(
+                    "HTX liquidation_orders WS channel is offline (deprecated) — \
+                     use REST GET /linear-swap-api/v1/swap_liquidation_orders".to_string(),
+                ))
+            }
             StreamKind::AggTrade => Err(WebSocketError::NotSupported(
                 "HTX has no aggregated trade WS channel — \
                  subscribe StreamKind::Trade for raw fills via market.{sym}.trade.detail".to_string(),
@@ -179,10 +189,13 @@ impl WsProtocol for HtxProtocol {
 
     fn is_subscribe_ack(&self, raw: &Value) -> bool {
         // Subscription ack: {"id":"id1","status":"ok","subbed":"market.btcusdt.kline.1min","ts":...}
+        // Error ack: {"status":"error","err-code":"bad-request","err-msg":"invalid topic ..."}
+        // Both forms are subscription responses — filter them from the data stream.
         raw.get("subbed").is_some()
             || raw.get("unsubbed").is_some()
             || (raw.get("status").and_then(|v| v.as_str()) == Some("ok")
                 && raw.get("subbed").is_some())
+            || raw.get("err-msg").is_some()
     }
 
     fn extract_topic(&self, raw: &Value) -> Option<TopicKey> {
@@ -216,7 +229,7 @@ impl WsProtocol for HtxProtocol {
     }
 
     fn unsupported_by_exchange(&self, _account_type: AccountType) -> &'static [StreamKind] {
-        &[StreamKind::MarkPrice, StreamKind::IndexPrice]
+        &[StreamKind::MarkPrice, StreamKind::IndexPrice, StreamKind::Liquidation]
     }
 
     /// Override binary decode to gunzip HTX frames before JSON parsing.
@@ -236,6 +249,35 @@ impl WsProtocol for HtxProtocol {
 // ─────────────────────────────────────────────────────────────────────────────
 
 use super::endpoints::HtxUrls;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Symbol helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Convert a raw symbol to HTX futures contract code format (`BASE-QUOTE` uppercase).
+///
+/// HTX futures channels require the contract code, e.g. `BTC-USDT` not `btcusdt`.
+/// If the symbol already contains a dash (futures format), uppercase it.
+/// Otherwise, strip known quote suffixes to reconstruct the dash-separated form.
+/// Falls back to the uppercase input if no known quote suffix is matched.
+fn to_futures_contract(sym: &str) -> String {
+    // Already in futures format
+    if sym.contains('-') {
+        return sym.to_uppercase();
+    }
+    // Lowercase spot format: strip known quote currencies (longest first)
+    let lower = sym.to_lowercase();
+    const KNOWN_QUOTES: &[&str] = &["usdt", "busd", "usdc", "tusd", "usdp", "fdusd", "btc", "eth", "bnb", "trx"];
+    for quote in KNOWN_QUOTES {
+        if let Some(base) = lower.strip_suffix(quote) {
+            if !base.is_empty() {
+                return format!("{}-{}", base.to_uppercase(), quote.to_uppercase());
+            }
+        }
+    }
+    // Unknown format — return uppercase as-is
+    sym.to_uppercase()
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Registry builder
@@ -334,11 +376,16 @@ fn parse_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     let data = tick_data(raw)?;
 
+    // Return FieldAbsent (silently skipped) rather than Parse error when the
+    // price field is absent.  The pattern "market.*.detail" is greedy and also
+    // matches "market.btcusdt.trade.detail" — returning FieldAbsent lets the
+    // trade parser still emit its event without the ticker parser breaking the
+    // consumer with an error frame.
     let last_price = data
         .get("close")
         .or_else(|| data.get("last_px"))
         .and_then(parse_f64_field)
-        .ok_or_else(|| WebSocketError::Parse("htx ticker: missing close/last_px".into()))?;
+        .ok_or_else(|| WebSocketError::FieldAbsent("htx ticker: missing close/last_px".into()))?;
 
     let bid_price = data
         .get("bid")
@@ -381,7 +428,12 @@ fn parse_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
     }))
 }
 
-/// Parse HTX BBO frame: `{"ch":"market.BTC-USDT.bbo","ts":...,"tick":{"bid":[price,size],"ask":[price,size],...}}`
+/// Parse HTX BBO frame.
+///
+/// HTX spot BBO tick shape:
+/// `{"seqId":...,"ask":76816.05,"askSize":2.98,"bid":76816.04,"bidSize":0.07,"quoteTime":...,"symbol":"btcusdt"}`
+///
+/// HTX futures BBO tick shape may use `[price, size]` arrays — fall back gracefully.
 fn parse_bbo(raw: &Value) -> WebSocketResult<StreamEvent> {
     use crate::core::types::Ticker;
     use crate::core::timestamp_millis;
@@ -395,17 +447,23 @@ fn parse_bbo(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     let data = tick_data(raw)?;
 
-    let bid_price = data
-        .get("bid")
-        .and_then(|v| v.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(parse_f64_field);
+    // HTX spot BBO: bid/ask are scalars.  HTX futures BBO: bid/ask may be [price,qty] arrays.
+    // Try scalar first, then array.
+    let bid_price = parse_f64_field(data.get("bid").unwrap_or(&Value::Null))
+        .or_else(|| {
+            data.get("bid")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(parse_f64_field)
+        });
 
-    let ask_price = data
-        .get("ask")
-        .and_then(|v| v.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(parse_f64_field);
+    let ask_price = parse_f64_field(data.get("ask").unwrap_or(&Value::Null))
+        .or_else(|| {
+            data.get("ask")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(parse_f64_field)
+        });
 
     // BBO frames have no last price — use bid as a proxy so downstream has a non-zero value.
     let last_price = bid_price
@@ -778,6 +836,91 @@ mod tests {
         let proto = HtxProtocol::new(AccountType::Spot, false);
         let frame = serde_json::json!({ "ping": 1629384000000i64 });
         assert!(proto.extract_topic(&frame).is_none());
+    }
+
+    #[test]
+    fn test_subscribe_frame_ticker_uses_bbo() {
+        let proto = HtxProtocol::new(AccountType::Spot, false);
+        let spec = spot_spec(StreamKind::Ticker);
+        let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed");
+        let text = match msg {
+            Message::Text(t) => t,
+            _ => panic!("expected text frame"),
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        // Ticker must subscribe to .bbo (has bid/ask), not .detail (no bid/ask)
+        assert_eq!(v["sub"], "market.btcusdt.bbo");
+    }
+
+    #[test]
+    fn test_to_futures_contract() {
+        assert_eq!(to_futures_contract("btcusdt"), "BTC-USDT");
+        assert_eq!(to_futures_contract("ethusdt"), "ETH-USDT");
+        assert_eq!(to_futures_contract("BTC-USDT"), "BTC-USDT");
+        assert_eq!(to_futures_contract("btcbtc"), "BTC-BTC");
+    }
+
+    #[test]
+    fn test_parse_bbo_frame_scalar() {
+        // HTX spot BBO uses scalar bid/ask (not arrays)
+        let proto = HtxProtocol::new(AccountType::Spot, false);
+        let frame = serde_json::json!({
+            "ch": "market.btcusdt.bbo",
+            "ts": 1629384000000i64,
+            "tick": {
+                "seqId": 1234567,
+                "ask": 49500.0,
+                "askSize": 0.5,
+                "bid": 49490.0,
+                "bidSize": 1.0,
+                "quoteTime": 1629384000000i64,
+                "symbol": "btcusdt"
+            }
+        });
+        let topic = proto.extract_topic(&frame).expect("should extract topic");
+        assert_eq!(topic.as_str(), "market.btcusdt.bbo");
+        let registry = proto.topic_registry(AccountType::Spot);
+        let parsers = registry.dispatch_all(&topic);
+        assert!(!parsers.is_empty(), "bbo topic must have a registered parser");
+        let event = parsers[0](&frame).expect("parse must succeed");
+        match event {
+            crate::core::types::StreamEvent::Ticker(t) => {
+                assert!(t.bid_price.is_some(), "bid must be present");
+                assert!(t.ask_price.is_some(), "ask must be present");
+                assert!((t.bid_price.unwrap() - 49490.0).abs() < 0.01);
+                assert!((t.ask_price.unwrap() - 49500.0).abs() < 0.01);
+            }
+            other => panic!("expected Ticker, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_bbo_frame_array() {
+        // HTX futures BBO may use array bid/ask
+        let proto = HtxProtocol::new(AccountType::Spot, false);
+        let frame = serde_json::json!({
+            "ch": "market.btcusdt.bbo",
+            "ts": 1629384000000i64,
+            "tick": {
+                "seqId": 1234567,
+                "ask": [49500.0, 0.5],
+                "bid": [49490.0, 1.0],
+                "quoteTime": 1629384000000i64,
+                "symbol": "btcusdt"
+            }
+        });
+        let topic = proto.extract_topic(&frame).expect("should extract topic");
+        let registry = proto.topic_registry(AccountType::Spot);
+        let parsers = registry.dispatch_all(&topic);
+        assert!(!parsers.is_empty());
+        let event = parsers[0](&frame).expect("parse must succeed for array format too");
+        match event {
+            crate::core::types::StreamEvent::Ticker(t) => {
+                assert!(t.bid_price.is_some());
+                assert!(t.ask_price.is_some());
+            }
+            other => panic!("expected Ticker, got {:?}", other),
+        }
     }
 
     #[test]

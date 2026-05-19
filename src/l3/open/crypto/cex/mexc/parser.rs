@@ -954,9 +954,77 @@ impl MexcParser {
                 checksum: orderbook.checksum,
             };
             Ok((channel, StreamEvent::OrderbookDelta(delta)))
+        } else if channel.contains("limit.depth") {
+            // field 303: PublicLimitDepthV3Api (N-level snapshot).
+            // Same body layout as aggre.depth: field1=repeated bids, field2=repeated asks.
+            let body = Self::pb_bytes(data, 303)
+                .ok_or_else(|| ExchangeError::Parse("Missing limit.depth body (field 303)".into()))?;
+            let orderbook = Self::parse_pb_aggre_depth(body, &symbol, timestamp)?;
+            let delta = crate::core::types::OrderbookDelta {
+                bids: orderbook.bids,
+                asks: orderbook.asks,
+                timestamp: orderbook.timestamp,
+                first_update_id: orderbook.first_update_id,
+                last_update_id: orderbook.last_update_id,
+                prev_update_id: orderbook.prev_update_id,
+                event_time: orderbook.event_time,
+                checksum: orderbook.checksum,
+            };
+            Ok((channel, StreamEvent::OrderbookDelta(delta)))
+        } else if channel.contains("kline") {
+            // field 308: PublicKlineV3Api
+            // body: f1=interval(str), f2=openTime(sec varint), f3=open, f4=high, f5=low,
+            //       f6=close, f7=vol, f8=quoteVol, f9=closeTime(sec varint)
+            // Outer sendTime is at field 5 for kline frames (field 6 for ticker).
+            let send_time = Self::pb_varint(data, 5)
+                .or_else(|| Self::pb_varint(data, 6))
+                .unwrap_or(0) as i64;
+            let body = Self::pb_bytes(data, 308)
+                .ok_or_else(|| ExchangeError::Parse("Missing kline body (field 308)".into()))?;
+            let event = Self::parse_pb_kline(body, send_time)?;
+            Ok((channel, event))
         } else {
             Err(ExchangeError::Parse(format!("Unsupported protobuf channel: {}", channel)))
         }
+    }
+
+    /// Parse PublicKlineV3Api protobuf body.
+    ///
+    /// body fields: 1=interval(str), 2=openTime(varint sec), 3=open(str), 4=high(str),
+    ///              5=low(str), 6=close(str), 7=vol(str), 8=quoteVol(str), 9=closeTime(varint sec)
+    fn parse_pb_kline(body: &[u8], _send_time: i64) -> ExchangeResult<StreamEvent> {
+        let open_time = Self::pb_varint(body, 2).unwrap_or(0) as i64 * 1000;
+
+        let open = Self::pb_string(body, 3)
+            .and_then(|s| s.parse::<f64>().ok())
+            .ok_or_else(|| ExchangeError::Parse("pb_kline: missing open".into()))?;
+        let high = Self::pb_string(body, 4)
+            .and_then(|s| s.parse::<f64>().ok())
+            .ok_or_else(|| ExchangeError::Parse("pb_kline: missing high".into()))?;
+        let low = Self::pb_string(body, 5)
+            .and_then(|s| s.parse::<f64>().ok())
+            .ok_or_else(|| ExchangeError::Parse("pb_kline: missing low".into()))?;
+        let close = Self::pb_string(body, 6)
+            .and_then(|s| s.parse::<f64>().ok())
+            .ok_or_else(|| ExchangeError::Parse("pb_kline: missing close".into()))?;
+        let volume = Self::pb_string(body, 7)
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        let quote_volume = Self::pb_string(body, 8)
+            .and_then(|s| s.parse::<f64>().ok());
+        let close_time = Self::pb_varint(body, 9).map(|t| t as i64 * 1000);
+
+        Ok(StreamEvent::Kline(Kline {
+            open_time,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            quote_volume,
+            close_time,
+            trades: None,
+        }))
     }
 
     /// Parse PublicMiniTickerV3Api protobuf body.

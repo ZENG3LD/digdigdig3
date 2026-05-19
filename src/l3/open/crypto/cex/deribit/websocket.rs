@@ -34,9 +34,9 @@ use tokio::sync::Mutex as TokioMutex;
 use crate::core::traits::{Credentials, WebSocketConnector};
 use crate::core::types::{
     AccountType, ConnectionStatus, ExchangeResult, OrderbookCapabilities,
-    StreamEvent, SubscriptionRequest, WebSocketResult, WsBookChannel,
+    StreamEvent, SubscriptionRequest, WebSocketError, WebSocketResult, WsBookChannel,
 };
-use crate::core::websocket::{StreamSpec, UniversalWsTransport};
+use crate::core::websocket::{StreamSpec, UniversalWsTransport, WsProtocol};
 
 use super::protocol::DeribitProtocol;
 
@@ -89,6 +89,13 @@ impl WebSocketConnector for DeribitWebSocket {
 
     async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let spec = StreamSpec::try_from(request)?;
+        // Eagerly surface NotSupported so callers see a clean error instead of
+        // silent_0_events (the transport loop only warns on subscribe_frame failure,
+        // it does not propagate the error back to the subscriber).
+        match self.inner.protocol().subscribe_frame(&spec) {
+            Err(e @ WebSocketError::NotSupported(_)) => return Err(e),
+            _ => {}
+        }
         self.inner.subscribe(spec).await
     }
 

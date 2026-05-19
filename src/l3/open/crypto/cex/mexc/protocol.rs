@@ -31,6 +31,8 @@ use crate::core::websocket::{
     TopicKey, TopicRegistry,
     WsProtocol,
 };
+use crate::core::utils::symbol_normalizer::SymbolNormalizer;
+use crate::core::types::ExchangeId;
 
 use super::endpoints::{MexcUrls, MexcWsChannels};
 use super::parser::MexcParser;
@@ -75,7 +77,7 @@ impl MexcProtocol {
     fn spot_subscribe_frame(spec: &StreamSpec, op: &str) -> Result<Message, WebSocketError> {
         let sym = spec.symbol.as_str();
         let params = match &spec.kind {
-            StreamKind::Ticker => vec![MexcWsChannels::book_ticker(sym)],
+            StreamKind::Ticker => vec![MexcWsChannels::mini_ticker(sym)],
             StreamKind::Trade | StreamKind::AggTrade => vec![MexcWsChannels::aggre_deals(sym)],
             StreamKind::Orderbook | StreamKind::OrderbookDelta => {
                 // Use limit-depth snapshot channel (5 levels) — reliable on MEXC spot.
@@ -107,7 +109,20 @@ impl MexcProtocol {
 
     /// Build subscribe/unsubscribe frame for futures (method per channel).
     fn futures_subscribe_frame(spec: &StreamSpec, op: &str) -> Result<Message, WebSocketError> {
-        let sym = spec.symbol.as_str();
+        // MEXC futures requires `BTC_USDT` format. If caller passes spot raw symbol
+        // `BTCUSDT` (no underscore), convert via normalizer round-trip.
+        let sym_normalized: String = {
+            let raw = spec.symbol.as_str();
+            if !raw.contains('_') && raw.chars().all(|c| c.is_ascii_alphanumeric()) {
+                // Looks like a spot-format symbol — try to normalize to futures format.
+                SymbolNormalizer::from_exchange(ExchangeId::MEXC, raw, AccountType::Spot)
+                    .and_then(|canonical| SymbolNormalizer::to_exchange(ExchangeId::MEXC, &canonical, AccountType::FuturesCross))
+                    .unwrap_or_else(|_| raw.to_string())
+            } else {
+                raw.to_string()
+            }
+        };
+        let sym = sym_normalized.as_str();
         let method_prefix = if op == "subscribe" { "sub" } else { "unsub" };
 
         let (method, param) = match &spec.kind {
@@ -341,15 +356,15 @@ fn build_spot_registry() -> TopicRegistry {
     let at = AccountType::Spot;
     let mut b = TopicRegistry::builder()
         // Mini ticker: spot@public.miniTicker.v3.api.pb@<sym>@UTC+0
+        // bookTicker (spot@public.bookTicker.v3.api.pb@*) is blocked by MEXC ("Reason: Blocked!")
+        // — use miniTicker only.
         .register(StreamKind::Ticker, at, "spot@public.miniTicker.v3.api.pb@*", parse_spot_pb)
         // Aggre deals (trades): spot@public.aggre.deals.v3.api.pb@100ms@<sym>
         .register(StreamKind::Trade, at, "spot@public.aggre.deals.v3.api.pb@*", parse_spot_pb)
         .register(StreamKind::AggTrade, at, "spot@public.aggre.deals.v3.api.pb@*", parse_spot_pb)
         // Limit depth (orderbook snapshot): spot@public.limit.depth.v3.api.pb@<sym>@<levels>
         .register(StreamKind::OrderbookDelta, at, "spot@public.limit.depth.v3.api.pb@*", parse_spot_pb)
-        .register(StreamKind::Orderbook, at, "spot@public.limit.depth.v3.api.pb@*", parse_spot_pb)
-        // Book ticker uses the Ticker kind (best bid/ask updates)
-        .register(StreamKind::Ticker, at, "spot@public.bookTicker.v3.api.pb@*", parse_spot_pb);
+        .register(StreamKind::Orderbook, at, "spot@public.limit.depth.v3.api.pb@*", parse_spot_pb);
 
     // Kline: spot@public.kline.v3.api.pb@<sym>@<interval>
     for interval in MEXC_SPOT_KLINE_INTERVALS {
@@ -373,7 +388,7 @@ fn build_futures_registry() -> TopicRegistry {
         .register(StreamKind::IndexPrice, at, "push.ticker", parse_futures_ticker_index_price)
         // Dedicated topic parsers (for when user subscribes to dedicated channels)
         .register(StreamKind::Trade, at, "push.deal", parse_futures_deal)
-        .register(StreamKind::AggTrade, at, "push.deal", parse_futures_deal)
+        .register(StreamKind::AggTrade, at, "push.deal", parse_futures_agg_trade)
         .register(StreamKind::Orderbook, at, "push.depth", parse_futures_depth)
         .register(StreamKind::OrderbookDelta, at, "push.depth", parse_futures_depth)
         .register(StreamKind::Kline { interval: KlineInterval::new("1m") }, at, "push.kline", parse_futures_kline)
@@ -566,42 +581,62 @@ fn parse_futures_ticker_index_price(raw: &Value) -> WebSocketResult<StreamEvent>
     })
 }
 
+/// Extract the first deal item from `push.deal` data.
+///
+/// `push.deal` carries `"data": [{...}]` — an array of deal objects.
+/// Use the first (most recent) item.
+fn futures_deal_item(raw: &Value) -> WebSocketResult<&Value> {
+    let data = futures_data(raw)?;
+    // data can be a single object (older API) or an array (current API, 2025+)
+    if let Some(arr) = data.as_array() {
+        arr.first()
+            .ok_or_else(|| WebSocketError::Parse("futures deal: empty data array".into()))
+    } else {
+        Ok(data)
+    }
+}
+
 fn parse_futures_deal(raw: &Value) -> WebSocketResult<StreamEvent> {
     use crate::core::utils::timestamp_millis;
     use crate::core::types::{PublicTrade, TradeSide};
 
-    let data = futures_data(raw)?;
+    let item = futures_deal_item(raw)?;
     let symbol = futures_symbol(raw);
 
-    let price = data
-        .get("price")
+    let price = item
+        .get("p")
+        .or_else(|| item.get("price"))
         .and_then(parse_f64_field)
         .ok_or_else(|| WebSocketError::Parse("futures deal: missing price".into()))?;
 
-    let quantity = data
-        .get("vol")
-        .or_else(|| data.get("quantity"))
+    let quantity = item
+        .get("v")
+        .or_else(|| item.get("vol"))
+        .or_else(|| item.get("quantity"))
         .and_then(parse_f64_field)
         .unwrap_or(0.0);
 
-    // taker_side: 1=buy,2=sell (MEXC futures)
-    let side = data
-        .get("takerSide")
-        .or_else(|| data.get("side"))
+    // T field: 1=buy (Taker Buy), 2=sell (Taker Sell)
+    let side = item
+        .get("T")
+        .or_else(|| item.get("takerSide"))
+        .or_else(|| item.get("side"))
         .and_then(|v| v.as_i64())
         .map(|s| if s == 1 { TradeSide::Buy } else { TradeSide::Sell })
         .unwrap_or(TradeSide::Buy);
 
-    let timestamp = data
-        .get("time")
+    let timestamp = item
+        .get("t")
+        .or_else(|| item.get("time"))
         .and_then(|t| t.as_i64())
         .unwrap_or_else(|| timestamp_millis() as i64);
 
-    let id = data
-        .get("dealId")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+    let id = item
+        .get("i")
+        .or_else(|| item.get("dealId"))
+        .and_then(|v| v.as_str().map(|s| s.to_string())
+            .or_else(|| v.as_i64().map(|n| n.to_string())))
+        .unwrap_or_default();
 
     Ok(StreamEvent::Trade(PublicTrade {
         id,
@@ -611,6 +646,61 @@ fn parse_futures_deal(raw: &Value) -> WebSocketResult<StreamEvent> {
         side,
         timestamp,
     }))
+}
+
+/// Parse `push.deal` as `StreamEvent::AggTrade` (for AggTrade subscriptions).
+///
+/// MEXC Futures `push.deal` carries individual trade records; treated as agg-trade
+/// since MEXC has no separate aggregated-trade channel.
+fn parse_futures_agg_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
+    use crate::core::utils::timestamp_millis;
+
+    let item = futures_deal_item(raw)?;
+    let symbol = futures_symbol(raw);
+
+    let price = item
+        .get("p")
+        .or_else(|| item.get("price"))
+        .and_then(parse_f64_field)
+        .ok_or_else(|| WebSocketError::Parse("futures deal(agg): missing price".into()))?;
+
+    let quantity = item
+        .get("v")
+        .or_else(|| item.get("vol"))
+        .or_else(|| item.get("quantity"))
+        .and_then(parse_f64_field)
+        .unwrap_or(0.0);
+
+    let side = item
+        .get("T")
+        .or_else(|| item.get("takerSide"))
+        .or_else(|| item.get("side"))
+        .and_then(|v| v.as_i64())
+        .map(|s| if s == 1 { crate::core::types::TradeSide::Buy } else { crate::core::types::TradeSide::Sell })
+        .unwrap_or(crate::core::types::TradeSide::Buy);
+
+    let timestamp = item
+        .get("t")
+        .or_else(|| item.get("time"))
+        .and_then(|t| t.as_i64())
+        .unwrap_or_else(|| timestamp_millis() as i64);
+
+    let id = item
+        .get("i")
+        .or_else(|| item.get("dealId"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+
+    Ok(StreamEvent::AggTrade {
+        symbol,
+        aggregate_id: id,
+        price,
+        quantity,
+        first_trade_id: id,
+        last_trade_id: id,
+        side,
+        timestamp,
+    })
 }
 
 fn parse_futures_depth(raw: &Value) -> WebSocketResult<StreamEvent> {

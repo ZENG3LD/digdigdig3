@@ -1389,7 +1389,7 @@ impl Positions for HtxConnector {
 
         let mark_price = kline
             .get("close")
-            .and_then(|v| v.as_f64())
+            .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
             .ok_or_else(|| ExchangeError::Parse("Missing close in mark price kline".to_string()))?;
 
         Ok(MarkPrice {

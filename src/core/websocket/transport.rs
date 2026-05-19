@@ -278,6 +278,11 @@ impl<P: WsProtocol> UniversalWsTransport<P> {
             Err(_) => Vec::new(),
         }
     }
+
+    /// Read-only access to the protocol shim.
+    pub fn protocol(&self) -> &P {
+        &self.protocol
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -650,20 +655,26 @@ impl<P: WsProtocol> DriverTask<P> {
         exchange: &str,
     ) -> WebSocketResult<bool> {
         let raw: Value = match msg {
-            Message::Text(text) => match serde_json::from_str(&text) {
-                Ok(v) => v,
-                Err(e) => {
-                    warn!(target: "dig3::ws::frame", exchange, error = %e, "JSON parse failed");
-                    return Ok(true);
+            Message::Text(text) => {
+                trace_raw_frame(exchange, "text", text.as_bytes());
+                match serde_json::from_str(&text) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!(target: "dig3::ws::frame", exchange, error = %e, "JSON parse failed");
+                        return Ok(true);
+                    }
                 }
-            },
-            Message::Binary(bytes) => match self.protocol.decode_binary(&bytes) {
-                Ok(v) => v,
-                Err(e) => {
-                    warn!(target: "dig3::ws::frame", exchange, error = %e, "binary decode failed");
-                    return Ok(true);
+            }
+            Message::Binary(bytes) => {
+                trace_raw_frame(exchange, "binary", &bytes);
+                match self.protocol.decode_binary(&bytes) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!(target: "dig3::ws::frame", exchange, error = %e, "binary decode failed");
+                        return Ok(true);
+                    }
                 }
-            },
+            }
             Message::Ping(data) => {
                 // Native WebSocket ping — we'd need the write half here.
                 // Since write_half is not accessible from dispatch_message,
@@ -860,6 +871,51 @@ pub fn decode_binary_default(bytes: &[u8]) -> WebSocketResult<Value> {
     let text = std::str::from_utf8(bytes)
         .map_err(|e| WebSocketError::Parse(format!("binary not valid UTF-8: {e}")))?;
     serde_json::from_str(text).map_err(|e| WebSocketError::Parse(e.to_string()))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Raw frame trace (debug)
+//
+// When env `DIG3_WS_TRACE=<dir>` is set, every incoming WS frame is appended
+// to `<dir>/<exchange>.jsonl` as one line per frame:
+//   {"kind":"text","ts":<unix_ms>,"len":<bytes>,"body":"<utf8-or-hex>"}
+//
+// Use for debug-only inspection of live wire traffic when a stream is silent
+// or producing WRONG_TYPE. Not for production — fsync-per-line is slow.
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn trace_raw_frame(exchange: &str, kind: &str, payload: &[u8]) {
+    use std::io::Write;
+    let Ok(dir) = std::env::var("DIG3_WS_TRACE") else { return; };
+    let dir_path = std::path::Path::new(&dir);
+    if std::fs::create_dir_all(dir_path).is_err() { return; }
+    let path = dir_path.join(format!("{}.jsonl", exchange));
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let body = match std::str::from_utf8(payload) {
+        Ok(s) => serde_json::Value::String(s.to_string()),
+        Err(_) => serde_json::Value::String(format!("0x{}", hex_encode(payload))),
+    };
+    let line = serde_json::json!({
+        "kind": kind,
+        "ts": ts,
+        "len": payload.len(),
+        "body": body,
+    });
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "{}", line);
+    }
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(s, "{:02x}", b);
+    }
+    s
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

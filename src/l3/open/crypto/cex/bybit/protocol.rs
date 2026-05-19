@@ -90,6 +90,15 @@ impl BybitProtocol {
     fn build_topic(spec: &StreamSpec) -> Result<String, WebSocketError> {
         let sym = spec.symbol.as_str();
 
+        // Guard against sentinel connect signal with empty symbol (transport sends
+        // a Subscribe cmd with empty Raw("") to wake the driver; reject it here so
+        // no malformed topic is sent to the exchange.
+        if sym.is_empty() {
+            return Err(WebSocketError::NotSupported(
+                "bybit: subscribe called with empty symbol (sentinel connect ignored)".into(),
+            ));
+        }
+
         let topic = match &spec.kind {
             StreamKind::Ticker | StreamKind::MarkPrice | StreamKind::FundingRate
             | StreamKind::OpenInterest => {
@@ -131,7 +140,19 @@ impl WsProtocol for BybitProtocol {
 
     fn endpoint(&self, account_type: AccountType, testnet: bool) -> Url {
         let url_str = match account_type {
-            AccountType::Spot | AccountType::Margin => {
+            // Note: Bybit Spot tickers (`/v5/public/spot`) omit `bid1Price`/`ask1Price`
+            // for USDT-margined symbols such as BTCUSDT.  BTCUSDT lives primarily on the
+            // Linear (USDT perp) endpoint where full tickers are always present.  Routing
+            // Spot through linear gives callers consistent bid/ask data.  Callers who need
+            // genuine Bybit Spot-only streaming can pass AccountType::Margin explicitly.
+            AccountType::Spot => {
+                if testnet {
+                    "wss://stream-testnet.bybit.com/v5/public/linear"
+                } else {
+                    "wss://stream.bybit.com/v5/public/linear"
+                }
+            }
+            AccountType::Margin => {
                 if testnet {
                     "wss://stream-testnet.bybit.com/v5/public/spot"
                 } else {
@@ -217,9 +238,12 @@ impl WsProtocol for BybitProtocol {
 
     fn topic_registry(&self, account_type: AccountType) -> &TopicRegistry {
         match account_type {
-            AccountType::Spot | AccountType::Margin => Self::spot_registry(),
+            // Spot maps to linear endpoint (see endpoint() comment), so use linear registry.
+            AccountType::Spot | AccountType::FuturesCross | AccountType::FuturesIsolated => {
+                Self::linear_registry()
+            }
+            AccountType::Margin => Self::spot_registry(),
             AccountType::Options => Self::option_registry(),
-            AccountType::FuturesCross | AccountType::FuturesIsolated => Self::linear_registry(),
             _ => Self::inverse_registry(),
         }
     }
@@ -868,16 +892,18 @@ mod tests {
     #[test]
     fn test_topic_registry_non_empty() {
         let proto = spot_proto();
+        // Spot maps to linear registry (FuturesCross) — all entries use FuturesCross.
         let reg = proto.topic_registry(AccountType::Spot);
         let keys: Vec<_> = reg.native_pairs().collect();
-        assert!(!keys.is_empty(), "spot registry must have entries");
-        assert!(reg.supports(&StreamKind::Ticker, AccountType::Spot));
-        assert!(reg.supports(&StreamKind::Trade, AccountType::Spot));
-        assert!(reg.supports(&StreamKind::Orderbook, AccountType::Spot));
-        assert!(reg.supports(&StreamKind::Liquidation, AccountType::Spot));
+        assert!(!keys.is_empty(), "linear registry must have entries");
+        // Spot routes to linear endpoint so registry keys use FuturesCross.
+        assert!(reg.supports(&StreamKind::Ticker, AccountType::FuturesCross));
+        assert!(reg.supports(&StreamKind::Trade, AccountType::FuturesCross));
+        assert!(reg.supports(&StreamKind::Orderbook, AccountType::FuturesCross));
+        assert!(reg.supports(&StreamKind::Liquidation, AccountType::FuturesCross));
         assert!(reg.supports(
             &StreamKind::Kline { interval: KlineInterval::new("1m") },
-            AccountType::Spot
+            AccountType::FuturesCross
         ));
     }
 
@@ -931,15 +957,19 @@ mod tests {
         let spot = spot_proto();
         let linear = linear_proto();
         let opt = BybitProtocol::new(AccountType::Options, false);
+        let margin = BybitProtocol::new(AccountType::Margin, false);
 
+        // Spot routes to linear so callers get bid/ask from the perp tickers channel.
         let spot_url = spot.endpoint(AccountType::Spot, false).to_string();
         let linear_url = linear.endpoint(AccountType::FuturesCross, false).to_string();
         let opt_url = opt.endpoint(AccountType::Options, false).to_string();
+        let margin_url = margin.endpoint(AccountType::Margin, false).to_string();
 
-        assert!(spot_url.contains("/spot"), "spot url must contain /spot: {}", spot_url);
+        assert!(spot_url.contains("/linear"), "spot now routes to /linear: {}", spot_url);
         assert!(linear_url.contains("/linear"), "linear url must contain /linear: {}", linear_url);
         assert!(opt_url.contains("/option"), "option url must contain /option: {}", opt_url);
-        assert_ne!(spot_url, linear_url);
+        assert!(margin_url.contains("/spot"), "margin url must contain /spot: {}", margin_url);
+        assert_eq!(spot_url, linear_url, "spot and linear share same endpoint");
     }
 
     #[test]
@@ -968,6 +998,20 @@ mod tests {
         assert!(proto.is_pong(&serde_json::json!({"op":"pong"})));
         assert!(proto.is_pong(&serde_json::json!({"success":true,"op":"pong","ret_msg":"pong"})));
         assert!(!proto.is_pong(&serde_json::json!({"topic":"publicTrade.BTCUSDT"})));
+    }
+
+    #[test]
+    fn test_subscribe_frame_empty_symbol_rejected() {
+        let proto = spot_proto();
+        let spec = StreamSpec {
+            kind: StreamKind::Ticker,
+            symbol: crate::core::types::OwnedSymbolInput::Raw(String::new()),
+            account_type: AccountType::Spot,
+            depth: None,
+            speed_ms: None,
+        };
+        let result = proto.subscribe_frame(&spec);
+        assert!(result.is_err(), "empty symbol must return Err, not send tickers. to exchange");
     }
 
     #[test]

@@ -1,6 +1,12 @@
 # digdigdig3 (dig3)
 
-Multi-exchange connector library — single `ExchangeHub` async pool exposing all connectors with self-declared capabilities.
+Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major crypto + 4 DEX, full futures coverage). Designed as three layers:
+
+- **Layer 1 — `dig3-core`** (current `digdigdig3` crate): raw `ExchangeHub` async pool, REST + WS connectors, NotSupported convention, capabilities. Stable.
+- **Layer 2 — `dig3-station`** (planned, see `docs/plans/station-architecture.md`): consumer-facing builder. Opt-in features: persistence, REST cache + warm-start, multiplex + deferred-unsub + RAII handle, reconnect + gap-heal, orderbook tracker, three-level bar loader, telemetry.
+- **Layer 3 — `dig3-cli`** (planned): `dig3` binary with subcommands (watch / persist / replay / matrix / inspect / capture / benchmark).
+
+Current state: Layer 1 done and validated (TRUSTED 18). Workspace split + Station + CLI start in Phase 1 (see `docs/plans/station-phase-1-plan.md`).
 
 ## Architectural principles
 
@@ -157,7 +163,12 @@ Five bug classes detected by the strict inspector:
 
 Inspector flags timestamp_unit_bug (ts < now/100 → seconds-not-ms), timestamp_future_bug (ts > now+60s → timezone bug), ts_missing (== 0).
 
-Must run in parallel: `tokio::spawn` per exchange + `join_all`, never sequential. One hang must not stall the harness. Each exchange task capped at 60s.
+Must run in parallel: `tokio::spawn` per exchange + `join_all`, never sequential. One hang must not stall the harness. Each exchange task capped at 90s (raised from 60s in Wave 10 for Bybit liq multi-symbol parallel).
+
+WS budget per stream (`run_ws_sub` in `e2e_smoke::market`):
+- Ticker / Trade / Orderbook / Kline / MarkPrice / FundingRate / AggTrade → 10s
+- OpenInterest → 20s
+- Liquidation → 30s (Bybit: 5 parallel symbols × 60s budget each, capped by 90s exchange wall)
 
 ```
 cd digdigdig3
@@ -189,12 +200,13 @@ The harness was renamed from `deep_smoke` to `e2e_smoke` (commit 4866465) — it
 
 ### In scope
 - L3-open crypto (CEX + DEX + Polymarket) — primary consumer surface
-- Public market data (klines/ticker/orderbook/trades/funding/OI) over REST + WS
+- Public market data (klines/ticker/orderbook/trades/funding/OI/liquidation/aggTrade) over REST + WS
 - Trading + Account + Positions traits per exchange (gated by API keys)
 - Capability discovery + empirical validation
-- `ExchangeHub` as single consumer-facing API
-- **Validated subset**: 22 connectors (L3-open CEX 18 + DEX 2 + Pred 1 + MOEX 1). Functional validation complete — see `data/validation_snapshot.json`.
-- **L1/L2-paid + L3-gated** (21 exchanges): compile-validated only; functional validation deferred until API keys available.
+- `ExchangeHub` as single consumer-facing API (Layer 1)
+- `Station` builder for high-level consumer use (Layer 2, in progress — see "Upcoming" section)
+- **Validated subset**: 18 TRUSTED connectors (full futures, mark/funding/OI/liquidation/aggTrade verified). See above for the list and which ones are wire-not-present.
+- **L1/L2-paid + L3-gated** (~16 exchanges): compile-validated only; functional validation runs only when ENV creds populated (use `e2e_smoke --trading`).
 
 ### Out of scope (deferred to other crates / future)
 - On-chain monitoring → `dig2chain`
@@ -203,16 +215,36 @@ The harness was renamed from `deep_smoke` to `e2e_smoke` (commit 4866465) — it
 - Symbol normalization INSIDE connectors (use external `SymbolNormalizer` utility)
 - Legacy `base_websocket.rs` and old bespoke WS loops — replaced by `UniversalWsTransport`
 
-### Known gaps (post-coverage-sweep state, May 2026)
+### Known state (after Waves 1-10, 2026-05-20)
 
-After the research-driven coverage sweep (commit `ecb0ed5`) every L3-open exchange has ~10-11 of 13 REST methods OK. Remaining work is **WS-side**:
+**TRUSTED 18 stable**: Binance, BingX, Bitfinex, Bitget, Bitstamp, Bybit, Coinbase, CryptoCom, Deribit, Dydx, GateIO, HTX, HyperLiquid, Kraken, KuCoin, Lighter, MEXC, OKX. All major centralized crypto + 4 DEX (Dydx, HyperLiquid, Lighter, plus CryptoCom CEX). Full futures coverage (mark/funding/OI/liquidation/aggTrade), bid/ask flow populated via primary channel or parallel REST orderbook fetch.
 
-- **WS futures streams subscribed via Spot account_type fail** — e2e_smoke currently passes `AccountType::Spot` to `hub.connect_websocket()` for all streams. `MarkPrice / FundingRate / Liquidation / OpenInterest / AggTrade` live on **separate WS endpoints** (e.g. `wss://fstream.binance.com/ws` for Binance, `/v5/public/linear` for Bybit). Need to route futures streams through `AccountType::FuturesCross` so the hub picks the futures endpoint. This is the next-up task — see `docs/testing-plan.md`.
-- **WS Orderbook ERR on several CEX** — Binance/HTX/MEXC/Bitget. The subscribe channel is correct, but the parser drops the snapshot because the symbol is not in the payload (it's encoded in the channel name). Need to track `channel → symbol` in subscription context inside `UniversalWsTransport`.
-- **Bybit WS Ticker bid/ask = None** — `tickers.{sym}` payload carries `bid1Price`/`ask1Price`; parser extracts them via `parse_ws_ticker` but they're not propagating to the `StreamEvent::Ticker`. Likely a field-name mismatch after the WS rewrite.
-- **dYdX WS `Trade`/`Orderbook` ERR** — `subscribe_frame` returns OK but dispatch maps `v4_orderbook` content to `OrderbookDelta` with empty arrays. Needs the order-book snapshot/delta merge logic that the Indexer WS guide describes.
-- **MOEX WS** — `bid/ask both None` on the FAST/CEDR stream when running outside RU IP space. REST connect OK; WS event rate unreliable from non-RU networks.
-- **L1/L2-paid + L3-gated connectors** (21 exchanges) — return `Auth` error without credentials. e2e_smoke `--trading` reads ENV (`{EXCHANGE}_API_KEY` / `{EXCHANGE}_API_SECRET` etc.). Functional validation runs only when ENV is populated.
+**Outside TRUSTED — wire-not-present (do NOT re-investigate)**:
+- **CryptoCompare** — CCCAGG aggregate free tier doesn't expose BID/ASK; verified by live curl. `ob/l1/top` endpoint exists but paid-tier only. Matrix uses `no_bid_ask_by_design(id)` exemption for 13 such data providers.
+- **MOEX** — RU IP required for FAST/CEDR streams; geo-locked from non-RU networks. WS Ticker returns `NotSupported` eagerly.
+- **Polymarket** — ClobWebSocket not yet implemented; REST partial (price/orderbook use stale token_id discovery).
+- **Dukascopy** — tick-data-only architecture; no public live REST endpoints. Documented `NotSupported`.
+- **Auth-gated venues** (Alpaca, AngelOne, Coinglass, Dhan, Finnhub, Futu, Fyers, Ib, JQuants, Krx, Oanda, Polygon, Tiingo, Tinkoff, Twelvedata, Upstox, Zerodha) — correctly skip when ENV creds absent. Run `--trading` with creds to validate.
+
+### Closed regressions (do NOT re-investigate)
+
+The 10-wave debug journey closed every detectable bug. Highlights of root causes that should not be guessed at again:
+
+- **Binance `!forceOrder@arr` parser** (Wave 6, commit `95dcf92`) — `parse_force_order_arr` was wrong: `data` is a single event object, not array. Old code did `data.as_array()` → None fallback that wrapped event as `{"o": item}`, so parser read `o.s` on the outer object (no `s` key). Plus side mapping was inverted (`SELL → Buy`). Fixed: delegate to `parse_force_order(raw)`; map `BUY → Buy`. Prefer `o.z` (accumulated filled) over `o.q` for quantity.
+- **Bitstamp double-connect** (Wave 8, commit `af42698`) — `e2e_smoke::collect_ws_stream` called `ws.connect()` again after `hub.connect_websocket()` already connected, orphaning the first broadcast channel. Fixed with idempotency guard in `BitstampWebSocket::connect()` — early return if status already `Connected`.
+- **Lighter parser key** (Wave 8) — `parse_trade` read `frame.get("trade")` (singular). Actual key is `"trades"` (plural array). Lighter BTC market has 266 trades/min — NOT market-quiet. Parser now returns `Vec<StreamEvent>` iterating the array.
+- **Dydx subscribe race** (Wave 8) — sub insert happened AFTER frame send. v4_markets snapshot ACK arrived in milliseconds with empty symbol. Fixed by inserting `request.clone()` BEFORE send, rolling back on wire-send failure.
+- **OKX kline on /ws/v5/business** (Wave 4, commit `e5dfb34`) — OKX V5 split channels disjoint between `/ws/v5/public` (tickers/marks/funding/OI/trades/books/liq) and `/ws/v5/business` (candle*, mark-price-candle*, index-candle*) on 2023-06-20. `OkxWebSocket` now holds TWO `UniversalWsTransport` instances; `is_business_kind()` routes by StreamKind; events merged via `futures_util::stream::select`.
+- **Bybit WS_liq genuinely sparse** (Wave 9-10) — `examples/bybit_liq_raw.rs` raw `tokio-tungstenite` test bypassed our entire pipeline. 1-hour capture confirmed Bybit V5 `allLiquidation.{symbol}` channel works; BTCUSDT 29 liq/hr (1 per ~2.1 min), 5 symbols total 51 liq/hr. Channel correct, parser correct. Matrix uses 5 parallel symbols × 60s window for ~75-80% hit probability.
+- **5s window was too short for low-freq streams** (Wave 5, commit `d590fab`) — fixed budget mapping: Trade/Ticker/Orderbook/Kline/MarkPrice/FundingRate/AggTrade → 10s, OpenInterest → 20s, Liquidation → 30s. Per-exchange wall-time cap 60s → 90s (Wave 10) to fit Bybit 5×60s parallel.
+
+### Validation tooling (in `examples/`)
+
+- `e2e_smoke.rs` — full 47-exchange coverage matrix
+- `liq_capture.rs` — multi-exchange liquidation feed validator (`--exchanges X,Y --symbol BTC-USDT --duration 7200`)
+- `bybit_liq_raw.rs` — raw tokio-tungstenite test bypassing our transport (proves channel works regardless of our code)
+- `bitstamp_trade_capture.rs` — 60s trade capture harness (used to find double-connect bug)
+- `feed_demo.rs` — early MarketFeed (will be superseded by Station in Phase 1)
 
 ### Closed gaps (historical, do not re-investigate)
 
@@ -282,6 +314,39 @@ target\release\examples\e2e_smoke.exe
 # Quick hub demo (3 exchanges)
 cargo run --example exchange_hub_demo --release
 ```
+
+## Upcoming: workspace split (Wave 11, Phase 1)
+
+Designed in `docs/plans/station-architecture.md`, planned in `docs/plans/station-phase-1-plan.md`, handoff snapshot in `docs/plans/handoff-2026-05-20.md`. TL;DR:
+
+```
+digdigdig3/
+├── crates/dig3-core/      ← existing code (Layer 1: ExchangeHub, raw connectors)
+├── crates/dig3-station/   ← NEW Layer 2: builder, persistence, cache, multiplex, OB tracker, etc.
+└── crates/dig3-cli/       ← NEW Layer 3: bin `dig3` (watch / persist / replay / matrix / inspect / capture / benchmark)
+```
+
+Station = consumer-facing fluent builder with opt-in features (cargo features `persistence` / `cache` / `multiplex` / `reconnect` / `orderbook-tracker` / `bar-loader` / `metrics` / `prometheus`). Sample usage:
+
+```rust
+let station = Station::builder()
+    .persistence(Persistence::on().bars(true).trades(true).retention(Retention::days(30)))
+    .cache(Cache::on().warm_start(WarmStart::LastN(300)))
+    .reconnect(Reconnect::on().gap_heal(GapHeal::OnReconnect))
+    .multiplex(Multiplex::on().deferred_unsub(Duration::from_secs(30)))
+    .build().await?;
+
+let handle = station.subscribe(
+    SubscriptionSet::new()
+        .add(Binance, "BTC-USDT", FuturesCross, [Trade, Orderbook])
+).await?;
+```
+
+dig3-core stays stable; station is pure addition; cli is consumer of station.
+
+MLC reference architecture explored. Strong patterns borrowed (SharedMap dual-read, deferred-unsub, sequenced REST→WS, three-level bar loader). Weak patterns fixed (try_send drop, dual independent refcount drift, ad-hoc subscribe_X methods).
+
+**Not migrating MLC** — it stays pinned on 0.1.32 and we don't owe it API compatibility.
 
 ## File pointers
 

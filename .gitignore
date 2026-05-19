@@ -19,3 +19,36 @@ ROADMAP.md
 deep_smoke_*.txt
 smoke_*.txt
 *.log
+
+# e2e_smoke / matrix run artefacts (parallel runs, dropped at repo root)
+e2e_*.txt
+e2e_trace*/
+e2e_test_data/
+smoke_full_report.txt
+catcher_e2e.toml
+catcher_e2e.log
+
+# Live capture probe dumps (ad-hoc; live data, not source)
+liq_*.log
+liq_*.txt
+liq_capture/
+liq_trace_new/
+bybit_liq_*.log
+bybit_raw_*.log
+bybit_raw_*_stderr.log
+
+# Exchange JSON snapshot dumps (curl probes saved at root during waves)
+gateio.json
+htx*.json
+kucoin*.json
+mexc_geo.json
+mexc_geo_trace/
+upbit_trace*/
+okx.json
+
+# Generated screenshots / scratch images (charts/UI investigations)
+dash.png
+dash_legacy.png
+
+# dig3_storage default persistence root (Phase 1 step 4 output)
+dig3_storage/

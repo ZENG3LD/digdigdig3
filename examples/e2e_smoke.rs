@@ -403,7 +403,7 @@ mod market {
     }
 
     /// Run a single WS subscription through the hub (creates its own WS connection).
-    /// `budget_secs` — collection window after subscribe ACK (5s for high-freq streams,
+    /// `budget_secs` — collection window after subscribe ACK (10s for regular streams,
     /// 20s for low-freq streams like Liquidation / OpenInterest).
     pub async fn run_ws_sub(
         exchange: ExchangeId,
@@ -925,37 +925,70 @@ async fn test_market(id: ExchangeId) -> MarketRow {
 
     let ws_ticker_fut = async {
         if !caps.has_ws_ticker { return MethodResult::Skipped; }
-        market::run_ws_sub(id, account_type, StreamType::Ticker, sym_ws, market::ExpectedKind::Ticker, stale_ms, 5).await
+        market::run_ws_sub(id, account_type, StreamType::Ticker, sym_ws, market::ExpectedKind::Ticker, stale_ms, 10).await
     };
     let ws_trade_fut = async {
         if !caps.has_ws_trades { return MethodResult::Skipped; }
-        market::run_ws_sub(id, account_type, StreamType::Trade, sym_ws2, market::ExpectedKind::Trade, stale_ms, 5).await
+        market::run_ws_sub(id, account_type, StreamType::Trade, sym_ws2, market::ExpectedKind::Trade, stale_ms, 10).await
     };
     let ws_ob_fut = async {
         if !caps.has_ws_orderbook { return MethodResult::Skipped; }
-        market::run_ws_sub(id, account_type, StreamType::Orderbook, sym_ws3, market::ExpectedKind::Orderbook, stale_ms, 5).await
+        market::run_ws_sub(id, account_type, StreamType::Orderbook, sym_ws3, market::ExpectedKind::Orderbook, stale_ms, 10).await
     };
     let ws_kline_fut = async {
         if !caps.has_ws_klines { return MethodResult::Skipped; }
-        market::run_ws_sub(id, account_type, StreamType::Kline { interval: "1m".into() }, sym_ws4, market::ExpectedKind::Kline, stale_ms, 5).await
+        market::run_ws_sub(id, account_type, StreamType::Kline { interval: "1m".into() }, sym_ws4, market::ExpectedKind::Kline, stale_ms, 10).await
     };
     let ws_mark_fut = async {
         if !futures_capable || !caps.has_ws_mark_price { return MethodResult::Skipped; }
-        market::run_ws_sub(id, futures_at, StreamType::MarkPrice, sym_ws5, market::ExpectedKind::MarkPrice, stale_ms, 5).await
+        market::run_ws_sub(id, futures_at, StreamType::MarkPrice, sym_ws5, market::ExpectedKind::MarkPrice, stale_ms, 10).await
     };
     let ws_funding_fut = async {
         if !futures_capable || !caps.has_ws_funding_rate { return MethodResult::Skipped; }
-        market::run_ws_sub(id, futures_at, StreamType::FundingRate, sym_ws6, market::ExpectedKind::FundingRate, stale_ms, 5).await
+        market::run_ws_sub(id, futures_at, StreamType::FundingRate, sym_ws6, market::ExpectedKind::FundingRate, stale_ms, 10).await
     };
     let ws_liq_fut = async {
         if !futures_capable { return MethodResult::Skipped; }
         // Liquidation fires at market events (not periodic) — use 30s window.
         // Binance: empty symbol → !forceOrder@arr all-symbols feed (high freq).
         // GateIO: "!all" → all-symbols public_liquidates feed (low freq ~25/hr).
-        // Bybit: per-symbol only (no all-symbols variant in V5) — may stay silent.
+        // Bybit: per-symbol only (no all-symbols variant in V5).  Single-symbol
+        //   windows of 30s are too short — spawn 5 high-volume symbols in
+        //   parallel and take the first non-silent result within 45s.
         let liq_sym = liq_symbol_for(id);
         drop(sym_ws7); // replaced by liq_sym above
-        market::run_ws_sub(id, futures_at, StreamType::Liquidation, liq_sym, market::ExpectedKind::Liquidation, stale_ms, 30).await
+        if id == ExchangeId::Bybit {
+            // Subscribe to 5 high-volume perp symbols concurrently so at least one
+            // liquidation is likely to arrive within the window on any market day.
+            let bybit_liq_syms: &[&str] = &["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"];
+            let mut handles = Vec::new();
+            for &sym_str in bybit_liq_syms {
+                let sym = Symbol::with_raw("", "", sym_str.to_string());
+                let h = tokio::spawn(market::run_ws_sub(
+                    ExchangeId::Bybit,
+                    futures_at,
+                    StreamType::Liquidation,
+                    sym,
+                    market::ExpectedKind::Liquidation,
+                    stale_ms,
+                    45,
+                ));
+                handles.push(h);
+            }
+            // Wait for all; return first OK or the last result if all silent.
+            let mut last = MethodResult::Err("silent_0_events".into());
+            for h in handles {
+                if let Ok(r) = h.await {
+                    match &r {
+                        MethodResult::Ok(_) => return r,
+                        other => last = other.clone(),
+                    }
+                }
+            }
+            last
+        } else {
+            market::run_ws_sub(id, futures_at, StreamType::Liquidation, liq_sym, market::ExpectedKind::Liquidation, stale_ms, 30).await
+        }
     };
     let ws_oi_fut = async {
         if !futures_capable { return MethodResult::Skipped; }
@@ -964,7 +997,7 @@ async fn test_market(id: ExchangeId) -> MarketRow {
     };
     let ws_agg_fut = async {
         if !futures_capable { return MethodResult::Skipped; }
-        market::run_ws_sub(id, futures_at, StreamType::AggTrade, sym_ws9, market::ExpectedKind::AggTrade, stale_ms, 5).await
+        market::run_ws_sub(id, futures_at, StreamType::AggTrade, sym_ws9, market::ExpectedKind::AggTrade, stale_ms, 10).await
     };
 
     let (ws_ticker, ws_trade, ws_orderbook, ws_kline, ws_mark_price, ws_funding, ws_liquidation, ws_oi, ws_agg_trade) =

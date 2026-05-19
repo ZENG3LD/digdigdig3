@@ -962,30 +962,43 @@ impl WebSocketConnector for DydxWebSocket {
         let symbol_str = request.symbol.to_string();
         let norm = normalize_symbol(&symbol_str);
 
-        match &request.stream_type {
+        // Insert subscription BEFORE sending the subscribe frame so that the message
+        // loop can resolve ticker_sym before the server's snapshot ACK arrives.
+        // v4_markets snapshots arrive within milliseconds of the subscribe frame —
+        // without pre-insertion the symbol lookup races and the snapshot is silently dropped.
+        self.subscriptions.lock().await.insert(request.clone());
+
+        let send_result = match &request.stream_type {
             StreamType::Ticker => {
-                self.send_subscribe_no_id("v4_markets").await?;
+                self.send_subscribe_no_id("v4_markets").await
             }
             StreamType::Orderbook => {
-                self.send_subscribe_with_id("v4_orderbook", &norm).await?;
+                self.send_subscribe_with_id("v4_orderbook", &norm).await
             }
             StreamType::Trade => {
-                self.send_subscribe_with_id("v4_trades", &norm).await?;
+                self.send_subscribe_with_id("v4_trades", &norm).await
             }
             StreamType::Kline { interval } => {
                 // dYdX v4_candles id format: "{SYMBOL}/{RESOLUTION}" e.g. "BTC-USD/1MIN"
                 let resolution = map_kline_interval_to_dydx(interval);
                 let id = format!("{}/{}", norm, resolution);
-                self.send_subscribe_with_id("v4_candles", &id).await?;
+                self.send_subscribe_with_id("v4_candles", &id).await
             }
             other => {
+                // Unsupported — remove the speculatively inserted entry and bail.
+                self.subscriptions.lock().await.remove(&request);
                 return Err(WebSocketError::ProtocolError(
                     format!("Stream type {:?} not supported", other)
                 ));
             }
+        };
+
+        if let Err(e) = send_result {
+            // Wire send failed — roll back the speculative insertion.
+            self.subscriptions.lock().await.remove(&request);
+            return Err(e);
         }
 
-        self.subscriptions.lock().await.insert(request);
         Ok(())
     }
 

@@ -503,7 +503,7 @@ impl LighterWebSocket {
 
             // ── Trade update ─────────────────────────────────────────
             "update/trade" => {
-                if let Some(event) = Self::parse_trade(&msg, channel) {
+                for event in Self::parse_trade(&msg, channel) {
                     let _ = event_tx.send(Ok(event));
                 }
             }
@@ -703,55 +703,74 @@ impl LighterWebSocket {
 
     /// Parse trade update into StreamEvent::Trade.
     ///
-    /// Expected format:
+    /// Live Lighter format (plural array):
+    /// ```json
+    /// {"type":"update/trade","channel":"trade:1","nonce":12345,
+    ///  "trades":[{"trade_id":1,"size":"0.1","price":"76500","side":"buy","timestamp":1700000000}],
+    ///  "liquidation_trades":[]}
+    /// ```
+    ///
+    /// Legacy singular format (some server versions):
     /// ```json
     /// {"channel":"trade:0","type":"update/trade","trade":{"trade_id":...,"price":"...","size":"...","side":"buy","is_maker_ask":true},"timestamp":...}
     /// ```
-    fn parse_trade(msg: &IncomingMessage, channel: &str) -> Option<StreamEvent> {
-        // Try nested "trade" object first, then fall back to top level
-        let data = msg.data_object("trade").unwrap_or(&msg.raw);
-
-        let price = Self::val_f64(data, "price")?;
-        let quantity = Self::val_f64(data, "size")?;
-        let timestamp_raw = Self::val_i64(&msg.raw, "timestamp")
-            .or_else(|| Self::val_i64(data, "timestamp"))
-            .unwrap_or(0);
-        // Lighter timestamp is in seconds for trade events — same heuristic as orderbook.
-        let timestamp = if timestamp_raw > 0 && timestamp_raw < 1_000_000_000_000 {
-            timestamp_raw * 1000
-        } else {
-            timestamp_raw
-        };
-        let trade_id = Self::val_u64(data, "trade_id").unwrap_or(0);
+    fn parse_trade(msg: &IncomingMessage, channel: &str) -> Vec<StreamEvent> {
         let market_id = Self::extract_market_id(channel);
 
-        // Determine side from "side" field or "is_maker_ask"
-        let side = if let Some(side_str) = Self::val_str(data, "side") {
-            match side_str {
-                "buy" => TradeSide::Buy,
-                "sell" => TradeSide::Sell,
-                _ => {
-                    if Self::val_bool(data, "is_maker_ask").unwrap_or(false) {
-                        TradeSide::Buy
-                    } else {
-                        TradeSide::Sell
+        // Helper to parse a single trade entry from a Value.
+        let parse_one = |entry: &Value| -> Option<StreamEvent> {
+            let price = Self::val_f64(entry, "price")?;
+            let quantity = Self::val_f64(entry, "size")?;
+            let timestamp_raw = Self::val_i64(entry, "timestamp")
+                .or_else(|| Self::val_i64(&msg.raw, "timestamp"))
+                .unwrap_or(0);
+            // Lighter timestamps are seconds for trade events — same heuristic as orderbook.
+            let timestamp = if timestamp_raw > 0 && timestamp_raw < 1_000_000_000_000 {
+                timestamp_raw * 1000
+            } else {
+                timestamp_raw
+            };
+            let trade_id = Self::val_u64(entry, "trade_id").unwrap_or(0);
+
+            let side = if let Some(side_str) = Self::val_str(entry, "side") {
+                match side_str {
+                    "buy" => TradeSide::Buy,
+                    "sell" => TradeSide::Sell,
+                    _ => {
+                        if Self::val_bool(entry, "is_maker_ask").unwrap_or(false) {
+                            TradeSide::Buy
+                        } else {
+                            TradeSide::Sell
+                        }
                     }
                 }
-            }
-        } else if Self::val_bool(data, "is_maker_ask").unwrap_or(false) {
-            TradeSide::Buy
-        } else {
-            TradeSide::Sell
+            } else if Self::val_bool(entry, "is_maker_ask").unwrap_or(false) {
+                TradeSide::Buy
+            } else {
+                TradeSide::Sell
+            };
+
+            Some(StreamEvent::Trade(PublicTrade {
+                id: trade_id.to_string(),
+                symbol: market_id.to_string(),
+                price,
+                quantity,
+                side,
+                timestamp,
+            }))
         };
 
-        Some(StreamEvent::Trade(PublicTrade {
-            id: trade_id.to_string(),
-            symbol: market_id.to_string(),
-            price,
-            quantity,
-            side,
-            timestamp,
-        }))
+        // Primary path: "trades" array (live Lighter WS format).
+        if let Some(arr) = msg.raw.get("trades").and_then(|v| v.as_array()) {
+            return arr.iter().filter_map(parse_one).collect();
+        }
+
+        // Fallback: singular "trade" object (some older server versions).
+        if let Some(entry) = msg.data_object("trade") {
+            return parse_one(entry).into_iter().collect();
+        }
+
+        Vec::new()
     }
 
     /// Parse market stats update into StreamEvent::Ticker.

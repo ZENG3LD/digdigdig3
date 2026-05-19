@@ -655,7 +655,13 @@ fn parse_liquidation(raw: &Value) -> WebSocketResult<StreamEvent> {
         .and_then(|v| v.as_bool())
         .map(|is_short| if is_short { TradeSide::Buy } else { TradeSide::Sell })
         .unwrap_or(TradeSide::Sell);
-    let timestamp = item.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
+    // GateIO public_liquidates frame uses `time` (seconds) or `time_ms` (ms),
+    // with optional fallback to envelope-level time_ms. Older code wrongly read `ts`.
+    let timestamp = item.get("time_ms").and_then(|v| v.as_i64())
+        .or_else(|| item.get("time").and_then(|v| v.as_i64()).map(|s| s * 1000))
+        .or_else(|| raw.get("time_ms").and_then(|v| v.as_i64()))
+        .or_else(|| raw.get("time").and_then(|v| v.as_i64()).map(|s| s * 1000))
+        .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
     Ok(StreamEvent::Liquidation { symbol, side, price, quantity, value: None, timestamp })
 }
 

@@ -590,6 +590,13 @@ impl BitstampWebSocket {
 #[async_trait]
 impl WebSocketConnector for BitstampWebSocket {
     async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
+        // Idempotency guard: if already connected, skip re-initialization.
+        // A second connect() call (e.g. from collect_ws_stream after hub.connect_websocket)
+        // would orphan the message handler → events routed to old broadcast nobody reads.
+        if *self.status.lock().await == ConnectionStatus::Connected {
+            return Ok(());
+        }
+
         *self.status.lock().await = ConnectionStatus::Connecting;
 
         let url = BitstampUrls::ws_url();

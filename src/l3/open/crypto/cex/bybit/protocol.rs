@@ -1025,4 +1025,90 @@ mod tests {
             _ => panic!("expected Some(Text(...))"),
         }
     }
+
+    /// Verify that `parse_all_liquidation` correctly decodes the Bybit V5 wire frame.
+    /// Frame shape per docs: data is an object (not array) with fields T/s/S/v/p.
+    #[test]
+    fn test_parse_all_liquidation_object_data() {
+        let frame = serde_json::json!({
+            "topic": "allLiquidation.BTCUSDT",
+            "type": "snapshot",
+            "ts": 1700000000000_i64,
+            "data": {
+                "T": 1700000000000_i64,
+                "s": "BTCUSDT",
+                "S": "Buy",
+                "v": "0.123",
+                "p": "30000.50"
+            }
+        });
+        let event = parse_all_liquidation(&frame).expect("should parse");
+        match event {
+            StreamEvent::Liquidation { symbol, price, quantity, timestamp, .. } => {
+                assert_eq!(symbol, "BTCUSDT");
+                assert!((price - 30000.50).abs() < 0.01, "price={}", price);
+                assert!((quantity - 0.123).abs() < 0.001, "quantity={}", quantity);
+                assert_eq!(timestamp, 1700000000000);
+            }
+            other => panic!("expected Liquidation, got {:?}", other),
+        }
+    }
+
+    /// Verify parser handles array-wrapped data (alternative Bybit format).
+    #[test]
+    fn test_parse_all_liquidation_array_data() {
+        let frame = serde_json::json!({
+            "topic": "allLiquidation.ETHUSDT",
+            "type": "snapshot",
+            "ts": 1700000001000_i64,
+            "data": [{
+                "T": 1700000001000_i64,
+                "s": "ETHUSDT",
+                "S": "Sell",
+                "v": "2.5",
+                "p": "2000.00"
+            }]
+        });
+        let event = parse_all_liquidation(&frame).expect("should parse array-wrapped");
+        match event {
+            StreamEvent::Liquidation { symbol, price, quantity, timestamp, .. } => {
+                assert_eq!(symbol, "ETHUSDT");
+                assert!((price - 2000.0).abs() < 0.01);
+                assert!((quantity - 2.5).abs() < 0.001);
+                assert_eq!(timestamp, 1700000001000);
+            }
+            other => panic!("expected Liquidation, got {:?}", other),
+        }
+    }
+
+    /// Verify subscribe frame for allLiquidation channel.
+    #[test]
+    fn test_subscribe_frame_liquidation() {
+        let proto = spot_proto();
+        let spec = StreamSpec {
+            kind: StreamKind::Liquidation,
+            symbol: crate::core::types::OwnedSymbolInput::Raw("BTCUSDT".to_string()),
+            account_type: AccountType::Spot,
+            depth: None,
+            speed_ms: None,
+        };
+        let msg = proto.subscribe_frame(&spec).expect("must build subscribe frame");
+        let text = match msg {
+            Message::Text(t) => t,
+            _ => panic!("expected text"),
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).expect("valid json");
+        assert_eq!(v["op"], "subscribe");
+        assert_eq!(v["args"][0], "allLiquidation.BTCUSDT");
+    }
+
+    /// Verify topic_registry dispatches allLiquidation topic.
+    #[test]
+    fn test_registry_dispatches_all_liquidation() {
+        let proto = linear_proto();
+        let reg = proto.topic_registry(AccountType::FuturesCross);
+        let key = crate::core::websocket::TopicKey::new("allLiquidation.BTCUSDT");
+        let parsers = reg.dispatch_all(&key);
+        assert!(!parsers.is_empty(), "allLiquidation.BTCUSDT must match a registered parser");
+    }
 }

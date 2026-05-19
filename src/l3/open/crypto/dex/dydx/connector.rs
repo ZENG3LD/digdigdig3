@@ -2305,7 +2305,7 @@ impl crate::core::traits::HasCapabilities for DydxConnector {
             has_transfers: false, has_deposit_withdraw: false, has_sub_accounts: false,
             has_funding_payments: true, has_ledger: false,
             has_websocket: true, has_ws_klines: true, has_ws_trades: true,
-            has_ws_orderbook: true, has_ws_ticker: false,
+            has_ws_orderbook: true, has_ws_ticker: true,
             has_ws_mark_price: false, has_ws_funding_rate: false,
             validation: self.validation_status(),
         }

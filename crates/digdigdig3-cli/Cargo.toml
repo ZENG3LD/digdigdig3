@@ -1,0 +1,40 @@
+[package]
+name = "digdigdig3-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "`dig3` CLI binary on top of digdigdig3-station: watch / persist / replay / matrix / inspect / capture / benchmark."
+readme = "../../README.md"
+
+[[bin]]
+name = "dig3"
+path = "src/main.rs"
+
+[[bin]]
+name = "dig3-catcher"
+path = "src/bin/dig3_catcher.rs"
+
+[[bin]]
+name = "dig3-cure"
+path = "src/bin/dig3_cure.rs"
+
+[dependencies]
+digdigdig3 = { workspace = true }
+digdigdig3-station = { workspace = true, features = ["full"] }
+
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# deps needed by dig3-catcher and dig3-cure bins
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures-util = "0.3"
+chrono = "0.4"
+toml = "0.8"

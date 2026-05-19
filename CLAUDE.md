@@ -1,10 +1,12 @@
 # digdigdig3 (dig3)
 
-Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major crypto + 4 DEX, full futures coverage). Three crates in one workspace:
+Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major crypto + 4 DEX, full futures coverage). Three crates in one workspace — single version pin (uzor-style), currently `0.3.0`:
 
-- **`digdigdig3-core`** (crate `digdigdig3_core`) — pure connector library. ONLY `ExchangeHub` + REST/WS connectors + capabilities + symbol normalization. No persistence, no replay, no cure/cache infrastructure.
+- **`digdigdig3`** (crate name `digdigdig3`, lib `digdigdig3`) — pure connector library. ONLY `ExchangeHub` + REST/WS connectors + capabilities + symbol normalization. No persistence, no replay, no cure/cache infrastructure. (This is the crate that lives on crates.io as `digdigdig3` 0.2.x → 0.3.0.)
 - **`digdigdig3-station`** (crate `digdigdig3_station`) — high-level builder layer over `ExchangeHub`. OWNS: `storage::*` (StorageManager + EventLog), `orderbook::*` (OrderBookTracker), `rest_cache::*` (LRU+TTL), `replay::*` (ReplayHub), `cure::*` (Integrity/Dedup/Gap/Repair), `persistence::TradeWriter`, `cache::*`, `Station` builder + `SubscriptionSet` + `SubscriptionHandle`.
 - **`digdigdig3-cli`** (binary `dig3`) — `dig3 watch trades` (wired Phase 1 step 6), plus `dig3-catcher` / `dig3-cure` bins. Other subcommands (persist / replay / matrix / inspect / capture / benchmark) are skeletons; will be folded into `dig3` in step 7+.
+
+Workspace layout follows the uzor pattern: every sub-crate's `[package]` block uses `version.workspace = true`, and `[workspace.dependencies]` provides `digdigdig3 = { workspace = true }` etc. so all three crates ALWAYS publish together at the same pin.
 
 **Phase 1 complete** (commits `bc50508` → `dd4223c`). Live `dig3 watch trades binance BTC-USDT` writes to `./dig3_storage/trades/binance/spot/btcusdt/<date>.dat` (binary append, 41 bytes/record + sparse `.idx`). Storage root resolves: `--storage-root` flag > `DIG3_STORAGE_ROOT` env > `./dig3_storage`. Harness artefacts (e2e_smoke JSON, WS frame trace) default to `target/harness_out/` when `--json-out auto` or `DIG3_WS_TRACE=1`. Full per-step status in `docs/plans/station-phase-1-plan.md`.
 
@@ -198,7 +200,7 @@ The harness was renamed from `deep_smoke` to `e2e_smoke` (commit 4866465) — it
 
 ## Scope of development
 
-### In scope (`digdigdig3-core`)
+### In scope (`digdigdig3`)
 - L3-open crypto (CEX + DEX + Polymarket) — primary consumer surface
 - Public market data (klines/ticker/orderbook/trades/funding/OI/liquidation/aggTrade) over REST + WS
 - Trading + Account + Positions traits per exchange (gated by API keys)
@@ -223,7 +225,7 @@ The harness was renamed from `deep_smoke` to `e2e_smoke` (commit 4866465) — it
 - Per-exchange UI / dashboard (consumer = `mylittlechart`)
 - Symbol normalization INSIDE connectors (use external `SymbolNormalizer` utility)
 - Legacy `base_websocket.rs` and old bespoke WS loops — replaced by `UniversalWsTransport`
-- Anything storage/replay/cure-related belongs in `digdigdig3-station`, NEVER in `digdigdig3-core`. Core is pure transport + connectors.
+- Anything storage/replay/cure-related belongs in `digdigdig3-station`, NEVER in `digdigdig3` (the core crate). Core is pure transport + connectors.
 
 ### Known state (after Waves 1-10, 2026-05-20)
 

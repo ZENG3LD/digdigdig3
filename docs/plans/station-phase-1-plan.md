@@ -40,7 +40,7 @@ Bonus delivered beyond original plan:
 
 | Step | Title | Status | Notes |
 |------|-------|--------|-------|
-| 1 | Workspace split | ✅ done | core/station/cli + symbol rename `digdigdig3::` → `digdigdig3_core::` everywhere |
+| 1 | Workspace split | ✅ done | core/station/cli; the core crate kept the published name `digdigdig3` (uzor-style workspace pin at `0.3.0`) |
 | 2 | dig3-station skeleton | ✅ done | All modules declared; persistence/cache/reconnect features wired |
 | 3 | SubscriptionSet + SubscriptionHandle | ✅ done | Typed core enums (ExchangeId, AccountType, Stream); RAII via oneshot+mpsc |
 | 4 | TradeWriter persistence | ✅ done | 41 B/record, sparse `.idx` every 1024, UTC day rotation. Unit test green |

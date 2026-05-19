@@ -1,13 +1,21 @@
 [workspace]
 members = [
-    "crates/dig3-core",
-    "crates/dig3-station",
-    "crates/dig3-cli",
+    "crates/digdigdig3",
+    "crates/digdigdig3-station",
+    "crates/digdigdig3-cli",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.3"
+version = "0.3.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ZENG3LD/digdigdig3"
+homepage = "https://github.com/ZENG3LD/digdigdig3"
+keywords = ["exchange", "trading", "crypto", "websocket", "connector"]
+categories = ["api-bindings", "asynchronous", "web-programming"]
+
+[workspace.dependencies]
+digdigdig3 = { version = "0.3.0", path = "./crates/digdigdig3" }
+digdigdig3-station = { version = "0.3.0", path = "./crates/digdigdig3-station", default-features = true }
+digdigdig3-cli = { version = "0.3.0", path = "./crates/digdigdig3-cli" }

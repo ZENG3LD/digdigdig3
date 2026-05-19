@@ -720,8 +720,8 @@ mod tests {
     fn test_futures_registry_has_liquidation() {
         let proto = GateIoProtocol::new(AccountType::FuturesCross, false);
         let reg = proto.topic_registry(AccountType::FuturesCross);
-        assert!(reg.supports(&StreamKind::Liquidation, AccountType::Spot));
-        assert!(reg.supports(&StreamKind::FundingRate, AccountType::Spot));
-        assert!(reg.supports(&StreamKind::MarkPrice, AccountType::Spot));
+        assert!(reg.supports(&StreamKind::Liquidation, AccountType::FuturesCross));
+        assert!(reg.supports(&StreamKind::FundingRate, AccountType::FuturesCross));
+        assert!(reg.supports(&StreamKind::MarkPrice, AccountType::FuturesCross));
     }
 }

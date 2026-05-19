@@ -716,36 +716,47 @@ impl<P: WsProtocol> DriverTask<P> {
 
         let topic_str = topic_key.to_string();
 
-        // Look up parser
+        // Look up parsers — dispatch_all returns all matching parsers (multiple for
+        // fan-out topics like Bybit linear tickers.* that carry Ticker+MarkPrice+...).
         let registry = self.protocol.topic_registry(self.account_type);
-        match registry.dispatch(&topic_key) {
-            Some(parser) => match parser(&raw) {
-                Ok(event) => {
-                    let n_receivers = self.event_tx.receiver_count();
-                    if n_receivers > 0 {
-                        // Warn if receivers are lagging (heuristic: buffer > 512 behind)
-                        let _ = self.event_tx.send(Ok(event));
+        let parsers = registry.dispatch_all(&topic_key);
+        if parsers.is_empty() {
+            // Invariant: unmatched topic → warn, NEVER silent drop
+            warn!(
+                target: "dig3::ws::unmatched",
+                exchange,
+                topic = %topic_str,
+                "no registered parser"
+            );
+        } else {
+            let n_receivers = self.event_tx.receiver_count();
+            for parser in parsers {
+                match parser(&raw) {
+                    Ok(event) => {
+                        if n_receivers > 0 {
+                            let _ = self.event_tx.send(Ok(event));
+                        }
+                    }
+                    Err(crate::core::types::WebSocketError::FieldAbsent(_)) => {
+                        // Delta frame did not carry this particular field — silent skip.
+                        trace!(
+                            target: "dig3::ws::parse",
+                            exchange,
+                            topic = %topic_str,
+                            "field absent in delta frame — parser skipped"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            target: "dig3::ws::parse",
+                            exchange,
+                            topic = %topic_str,
+                            error = %e,
+                            "parser failed"
+                        );
+                        let _ = self.event_tx.send(Err(e));
                     }
                 }
-                Err(e) => {
-                    warn!(
-                        target: "dig3::ws::parse",
-                        exchange,
-                        topic = %topic_str,
-                        error = %e,
-                        "parser failed"
-                    );
-                    let _ = self.event_tx.send(Err(e));
-                }
-            },
-            None => {
-                // Invariant: unmatched topic → warn, NEVER silent drop
-                warn!(
-                    target: "dig3::ws::unmatched",
-                    exchange,
-                    topic = %topic_str,
-                    "no registered parser"
-                );
             }
         }
 

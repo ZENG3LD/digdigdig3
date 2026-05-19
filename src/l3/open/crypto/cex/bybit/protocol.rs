@@ -103,7 +103,7 @@ impl BybitProtocol {
             StreamKind::Kline { interval } => {
                 format!("kline.{}.{}", bybit_kline_wire(interval), sym)
             }
-            StreamKind::Liquidation => format!("liquidation.{}", sym),
+            StreamKind::Liquidation => format!("allLiquidation.{}", sym),
             StreamKind::OrderUpdate => "order".to_string(),
             StreamKind::BalanceUpdate => "wallet".to_string(),
             StreamKind::PositionUpdate => "position".to_string(),
@@ -337,10 +337,10 @@ fn build_registry(account_type: AccountType) -> TopicRegistry {
 
     // Futures-only streams (also registered on spot for completeness — silently unused)
     b = b
-        .register(StreamKind::Liquidation,   account_type, "liquidation.*",  parse_liquidation)
-        .register(StreamKind::InsuranceFund, account_type, "insurance.*",    parse_insurance)
-        .register(StreamKind::RiskLimit,     account_type, "adlAlert.*",     parse_adl_alert)
-        .register(StreamKind::Ticker,        account_type, "tickers_lt.*",   parse_ticker_lt);
+        .register(StreamKind::Liquidation,   account_type, "allLiquidation.*", parse_all_liquidation)
+        .register(StreamKind::InsuranceFund, account_type, "insurance.*",      parse_insurance)
+        .register(StreamKind::RiskLimit,     account_type, "adlAlert.*",       parse_adl_alert)
+        .register(StreamKind::Ticker,        account_type, "tickers_lt.*",     parse_ticker_lt);
 
     // Private streams
     b = b
@@ -365,9 +365,49 @@ fn build_registry_inverse() -> TopicRegistry {
 
 fn parse_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw)?;
-    let ticker = bybit_parse_ticker_ws(data)
-        .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    Ok(StreamEvent::Ticker(ticker))
+    let d = unwrap_array_or_self(data);
+    let ts = raw.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
+
+    let parse_f64_str = |v: &Value| -> Option<f64> {
+        v.as_str()
+            .filter(|s| !s.is_empty())
+            .and_then(|s| s.parse().ok())
+            .or_else(|| v.as_f64())
+    };
+
+    // Require lastPrice — absent on deltas that don't update the price.
+    let last_price = d.get("lastPrice")
+        .and_then(parse_f64_str)
+        .ok_or_else(|| WebSocketError::FieldAbsent("lastPrice".into()))?;
+
+    let symbol = d["symbol"].as_str().unwrap_or("").to_string();
+    let bid_price = d.get("bid1Price").and_then(parse_f64_str);
+    let ask_price = d.get("ask1Price").and_then(parse_f64_str);
+    let high_24h = d.get("highPrice24h").and_then(parse_f64_str);
+    let low_24h = d.get("lowPrice24h").and_then(parse_f64_str);
+    let volume_24h = d.get("volume24h").and_then(parse_f64_str);
+    let quote_volume_24h = d.get("turnover24h").and_then(parse_f64_str);
+    let price_change_percent_24h = d.get("price24hPcnt")
+        .and_then(parse_f64_str)
+        .map(|v| v * 100.0);
+    let price_change_24h = {
+        let prev = d.get("prevPrice24h").and_then(parse_f64_str);
+        prev.map(|p| last_price - p)
+    };
+
+    Ok(StreamEvent::Ticker(crate::core::Ticker {
+        symbol,
+        last_price,
+        bid_price,
+        ask_price,
+        high_24h,
+        low_24h,
+        volume_24h,
+        quote_volume_24h,
+        price_change_24h,
+        price_change_percent_24h,
+        timestamp: ts,
+    }))
 }
 
 fn parse_mark_price(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -383,7 +423,7 @@ fn parse_mark_price(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     let mark_price = ticker_data.get("markPrice")
         .and_then(parse_f64_str)
-        .ok_or_else(|| WebSocketError::Parse("tickers: markPrice missing or zero".into()))?;
+        .ok_or_else(|| WebSocketError::FieldAbsent("markPrice".into()))?;
 
     let index_price = ticker_data.get("indexPrice").and_then(parse_f64_str);
 
@@ -398,12 +438,17 @@ fn parse_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent> {
     let ts = raw.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
 
     let parse_f64_str = |v: &Value| -> Option<f64> {
-        v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
+        // Guard against empty string — Bybit sends "" for fundingRate on dated futures.
+        v.as_str()
+            .filter(|s| !s.is_empty())
+            .and_then(|s| s.parse().ok())
+            .or_else(|| v.as_f64())
     };
 
+    // fundingRate absent or empty string → delta without funding update → skip silently.
     let rate = ticker_data.get("fundingRate")
         .and_then(parse_f64_str)
-        .ok_or_else(|| WebSocketError::Parse("tickers: fundingRate missing".into()))?;
+        .ok_or_else(|| WebSocketError::FieldAbsent("fundingRate".into()))?;
 
     let next_funding_time = ticker_data.get("nextFundingTime")
         .and_then(parse_f64_str)
@@ -425,7 +470,7 @@ fn parse_open_interest(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     let open_interest = ticker_data.get("openInterest")
         .and_then(parse_f64_str)
-        .ok_or_else(|| WebSocketError::Parse("tickers: openInterest missing".into()))?;
+        .ok_or_else(|| WebSocketError::FieldAbsent("openInterest".into()))?;
 
     let open_interest_value = ticker_data.get("openInterestValue").and_then(parse_f64_str);
 
@@ -554,40 +599,46 @@ fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
     }))
 }
 
-fn parse_liquidation(raw: &Value) -> WebSocketResult<StreamEvent> {
+/// Parser for the `allLiquidation.{sym}` channel (replaces deprecated `liquidation.{sym}`).
+///
+/// Frame data is an array of objects with fields:
+///   T: timestamp ms, s: symbol, S: "Buy"|"Sell", v: qty (base), p: bankruptcy price.
+///
+/// `S="Buy"` means a long position was liquidated (exchange sold it).
+/// `S="Sell"` means a short position was liquidated (exchange bought it).
+fn parse_all_liquidation(raw: &Value) -> WebSocketResult<StreamEvent> {
     use crate::core::types::TradeSide;
 
     let data = frame_data(raw)?;
     let item = if let Some(arr) = data.as_array() {
         match arr.first() {
             Some(v) => v,
-            None => return Ok(StreamEvent::Liquidation {
-                symbol: String::new(), side: TradeSide::Buy,
-                price: 0.0, quantity: 0.0, value: None, timestamp: 0,
-            }),
+            None => return Err(WebSocketError::FieldAbsent("allLiquidation: empty data array".into())),
         }
     } else {
         data
     };
 
-    let symbol = item["symbol"].as_str()
-        .ok_or_else(|| WebSocketError::Parse("liquidation: missing symbol".into()))?
+    let symbol = item["s"].as_str()
+        .ok_or_else(|| WebSocketError::Parse("allLiquidation: missing s".into()))?
         .to_string();
-    let side_str = item["side"].as_str()
-        .ok_or_else(|| WebSocketError::Parse("liquidation: missing side".into()))?;
+    let side_str = item["S"].as_str()
+        .ok_or_else(|| WebSocketError::Parse("allLiquidation: missing S".into()))?;
+    // S="Buy" → long was liquidated; S="Sell" → short was liquidated.
+    // We report the side of the position that got liquidated.
     let side = match side_str {
-        "Buy"  => TradeSide::Sell, // forced Buy closes a Short
-        "Sell" => TradeSide::Buy,  // forced Sell closes a Long
-        other  => return Err(WebSocketError::Parse(format!("liquidation: unknown side: {}", other))),
+        "Buy"  => TradeSide::Buy,
+        "Sell" => TradeSide::Sell,
+        other  => return Err(WebSocketError::Parse(format!("allLiquidation: unknown S: {}", other))),
     };
-    let price = item["price"].as_str()
+    let price = item["p"].as_str()
         .and_then(|s| s.parse::<f64>().ok())
-        .ok_or_else(|| WebSocketError::Parse("liquidation: invalid price".into()))?;
-    let quantity = item["size"].as_str()
+        .ok_or_else(|| WebSocketError::Parse("allLiquidation: invalid p".into()))?;
+    let quantity = item["v"].as_str()
         .and_then(|s| s.parse::<f64>().ok())
-        .ok_or_else(|| WebSocketError::Parse("liquidation: invalid size".into()))?;
-    let timestamp = item["updatedTime"].as_i64()
-        .ok_or_else(|| WebSocketError::Parse("liquidation: invalid updatedTime".into()))?;
+        .ok_or_else(|| WebSocketError::Parse("allLiquidation: invalid v".into()))?;
+    let timestamp = item["T"].as_i64()
+        .ok_or_else(|| WebSocketError::Parse("allLiquidation: invalid T".into()))?;
 
     Ok(StreamEvent::Liquidation {
         symbol, side, price, quantity,
@@ -785,17 +836,6 @@ fn unwrap_array_or_self(data: &Value) -> &Value {
     } else {
         data
     }
-}
-
-/// Parse a Bybit WS ticker payload using the REST parser (wrapped in envelope).
-fn bybit_parse_ticker_ws(data: &Value) -> crate::core::ExchangeResult<crate::core::Ticker> {
-    let ticker_data = unwrap_array_or_self(data);
-    let wrapper = json!({
-        "retCode": 0,
-        "result": { "list": [ticker_data] },
-        "time": crate::core::timestamp_millis()
-    });
-    BybitParser::parse_ticker(&wrapper)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

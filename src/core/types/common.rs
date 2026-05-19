@@ -484,6 +484,12 @@ pub enum WebSocketError {
 
     #[error("Timeout")]
     Timeout,
+
+    /// A required field was absent in this particular frame (e.g. a delta update
+    /// that does not carry markPrice when subscribed to MarkPrice stream).
+    /// Transport silently skips this — no warn, no broadcast.
+    #[error("field absent: {0}")]
+    FieldAbsent(String),
 }
 
 /// Результат WebSocket операции

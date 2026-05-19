@@ -158,6 +158,26 @@ impl TopicRegistry {
         None
     }
 
+    /// Look up ALL parsers whose pattern matches the topic key.
+    ///
+    /// Used when multiple StreamKind entries share the same wire topic
+    /// (e.g. Bybit linear `tickers.*` carries Ticker + MarkPrice + FundingRate + OpenInterest).
+    /// Returns parsers in registration order (de-duplicated by pointer identity).
+    pub fn dispatch_all(&self, key: &TopicKey) -> Vec<ParserFn> {
+        let mut out: Vec<ParserFn> = Vec::new();
+        for (pattern, parser) in &self.dispatch {
+            if pattern.matches(key) {
+                // De-duplicate by function pointer (avoids calling same fn twice when
+                // the same parser is registered under multiple StreamKind keys).
+                let ptr = *parser as usize;
+                if !out.iter().any(|p| *p as usize == ptr) {
+                    out.push(*parser);
+                }
+            }
+        }
+        out
+    }
+
     /// Returns true if (kind, account) has a registered parser.
     pub fn supports(&self, kind: &StreamKind, account: AccountType) -> bool {
         let key = RegistryKey {

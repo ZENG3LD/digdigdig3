@@ -26,10 +26,15 @@ use super::parser::OkxParser;
 // Registry cache (one registry covers all OKX account types)
 // ─────────────────────────────────────────────────────────────────────────────
 
-static REGISTRY: OnceLock<TopicRegistry> = OnceLock::new();
+static SPOT_REGISTRY: OnceLock<TopicRegistry> = OnceLock::new();
+static FUTURES_REGISTRY: OnceLock<TopicRegistry> = OnceLock::new();
 
-fn registry() -> &'static TopicRegistry {
-    REGISTRY.get_or_init(build_registry)
+fn spot_registry() -> &'static TopicRegistry {
+    SPOT_REGISTRY.get_or_init(build_spot_registry)
+}
+
+fn futures_registry() -> &'static TopicRegistry {
+    FUTURES_REGISTRY.get_or_init(build_futures_registry)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -38,24 +43,21 @@ fn registry() -> &'static TopicRegistry {
 
 /// Declarative OKX WS protocol shim.
 pub struct OkxProtocol {
-    _account_type: AccountType,
     testnet: bool,
     /// Connect to business endpoint (mark-price-candle*, index-candle*).
     pub is_business: bool,
 }
 
 impl OkxProtocol {
-    pub fn new(account_type: AccountType, testnet: bool) -> Self {
+    pub fn new(_account_type: AccountType, testnet: bool) -> Self {
         Self {
-            _account_type: account_type,
             testnet,
             is_business: false,
         }
     }
 
-    pub fn new_business(account_type: AccountType, testnet: bool) -> Self {
+    pub fn new_business(_account_type: AccountType, testnet: bool) -> Self {
         Self {
-            _account_type: account_type,
             testnet,
             is_business: true,
         }
@@ -85,13 +87,39 @@ impl OkxProtocol {
     }
 
     /// Build subscribe/unsubscribe frame for standard channels (channel + instId).
-    fn build_instid_frame(op: &str, channel: &str, spec: &StreamSpec) -> Message {
-        let inst_id = spec.symbol.as_str();
+    fn build_instid_frame(op: &str, channel: &str, inst_id: &str) -> Message {
         let frame = json!({
             "op": op,
             "args": [{ "channel": channel, "instId": inst_id }]
         });
         Message::Text(frame.to_string())
+    }
+
+    /// Rewrite a spot-format instId to SWAP form for futures channels.
+    /// `"BTC-USDT"` → `"BTC-USDT-SWAP"`.
+    /// Already has suffix (`-SWAP`, `-USDT-xxxxxx`) → unchanged.
+    fn to_swap_instid(raw: &str) -> String {
+        let parts: Vec<&str> = raw.split('-').collect();
+        if parts.len() == 2 {
+            // "BTC-USDT" → "BTC-USDT-SWAP"
+            format!("{}-SWAP", raw)
+        } else {
+            // Already "BTC-USDT-SWAP" or delivery like "BTC-USD-260925"
+            raw.to_string()
+        }
+    }
+
+    /// Returns true if the StreamKind is a futures-only channel on OKX
+    /// (requires SWAP instId or special instType frame).
+    fn is_futures_only_kind(kind: &StreamKind) -> bool {
+        matches!(
+            kind,
+            StreamKind::MarkPrice
+                | StreamKind::FundingRate
+                | StreamKind::OpenInterest
+                | StreamKind::Liquidation
+                | StreamKind::AggTrade
+        )
     }
 
     /// Extract the OKX instFamily from a raw instrument ID.
@@ -114,6 +142,8 @@ impl OkxProtocol {
         let name = match kind {
             StreamKind::Ticker => "tickers".to_string(),
             StreamKind::Trade => "trades".to_string(),
+            // OKX has no separate aggTrade channel — maps to "trades"
+            StreamKind::AggTrade => "trades".to_string(),
             StreamKind::Orderbook => "books5".to_string(),
             StreamKind::OrderbookDelta => "books-l2-tbt".to_string(),
             StreamKind::MarkPrice => "mark-price".to_string(),
@@ -211,7 +241,18 @@ impl WsProtocol for OkxProtocol {
                 spec.kind
             ))
         })?;
-        Ok(Self::build_instid_frame("subscribe", &channel, spec))
+
+        // For futures-only channels on a FuturesCross connection, rewrite the
+        // instId to the SWAP form (e.g. "BTC-USDT" → "BTC-USDT-SWAP").
+        let inst_id = if spec.account_type == AccountType::FuturesCross
+            && Self::is_futures_only_kind(&spec.kind)
+        {
+            Self::to_swap_instid(spec.symbol.as_str())
+        } else {
+            spec.symbol.as_str().to_string()
+        };
+
+        Ok(Self::build_instid_frame("subscribe", &channel, &inst_id))
     }
 
     fn unsubscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
@@ -255,7 +296,16 @@ impl WsProtocol for OkxProtocol {
                 spec.kind
             ))
         })?;
-        Ok(Self::build_instid_frame("unsubscribe", &channel, spec))
+
+        let inst_id = if spec.account_type == AccountType::FuturesCross
+            && Self::is_futures_only_kind(&spec.kind)
+        {
+            Self::to_swap_instid(spec.symbol.as_str())
+        } else {
+            spec.symbol.as_str().to_string()
+        };
+
+        Ok(Self::build_instid_frame("unsubscribe", &channel, &inst_id))
     }
 
     fn auth_frame(&self, credentials: &Credentials) -> Option<Result<Message, WebSocketError>> {
@@ -316,8 +366,11 @@ impl WsProtocol for OkxProtocol {
         Some(TopicKey::new(channel))
     }
 
-    fn topic_registry(&self, _account_type: AccountType) -> &TopicRegistry {
-        registry()
+    fn topic_registry(&self, account_type: AccountType) -> &TopicRegistry {
+        match account_type {
+            AccountType::FuturesCross | AccountType::FuturesIsolated => futures_registry(),
+            _ => spot_registry(),
+        }
     }
 
     fn unsupported_by_exchange(&self, _account_type: AccountType) -> &'static [StreamKind] {
@@ -337,11 +390,11 @@ impl WsProtocol for OkxProtocol {
 // Registry builder
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn build_registry() -> TopicRegistry {
+/// Spot registry — spot/margin channels under AccountType::Spot.
+fn build_spot_registry() -> TopicRegistry {
     let mut b = TopicRegistry::builder();
-    let at = AccountType::Spot; // OKX uses single registry; account_type in key is Spot.
+    let at = AccountType::Spot;
 
-    // Standard channels.
     b = b
         .register(StreamKind::Ticker, at, "tickers", parse_tickers)
         .register(StreamKind::Trade, at, "trades", parse_trades)
@@ -351,11 +404,7 @@ fn build_registry() -> TopicRegistry {
         .register(StreamKind::Orderbook, at, "bbo-tbt", parse_books)
         .register(StreamKind::OrderbookDelta, at, "books-l2-tbt", parse_books)
         .register(StreamKind::OrderbookDelta, at, "books50-l2-tbt", parse_books)
-        .register(StreamKind::MarkPrice, at, "mark-price", parse_mark_price)
-        .register(StreamKind::FundingRate, at, "funding-rate", parse_funding_rate)
-        .register(StreamKind::Liquidation, at, "liquidation-orders", parse_liquidation_orders)
         .register(StreamKind::IndexPrice, at, "index-tickers", parse_index_tickers)
-        .register(StreamKind::OpenInterest, at, "open-interest", parse_open_interest)
         .register(StreamKind::BlockTrade, at, "public-block-trades", parse_block_trades)
         .register(StreamKind::BlockTrade, at, "block-trades", parse_block_trades)
         .register(StreamKind::SettlementEvent, at, "estimated-price", parse_estimated_price)
@@ -378,7 +427,71 @@ fn build_registry() -> TopicRegistry {
         b = b.register(kind, at, *wire, parse_kline);
     }
 
-    // Mark-price kline channels (business endpoint, same topic key).
+    // Mark-price kline channels (business endpoint).
+    for (wire, internal) in OKX_MARK_PRICE_KLINE_CHANNELS {
+        let kind = StreamKind::MarkPriceKline {
+            interval: KlineInterval::new(*internal),
+        };
+        b = b.register(kind, at, *wire, parse_mark_price_kline);
+    }
+
+    // Index kline channels.
+    for (wire, internal) in OKX_INDEX_KLINE_CHANNELS {
+        let kind = StreamKind::IndexPriceKline {
+            interval: KlineInterval::new(*internal),
+        };
+        b = b.register(kind, at, *wire, parse_index_kline);
+    }
+
+    b.build()
+}
+
+/// Futures registry — perpetual/futures-only channels under AccountType::FuturesCross.
+/// The OKX public WS endpoint is the same (`wss://ws.okx.com:8443/ws/v5/public`); channels
+/// are differentiated by the SWAP instId and the channel name.
+fn build_futures_registry() -> TopicRegistry {
+    let mut b = TopicRegistry::builder();
+    let at = AccountType::FuturesCross;
+
+    b = b
+        // Spot-like channels that also work on SWAP instId.
+        .register(StreamKind::Ticker, at, "tickers", parse_tickers)
+        .register(StreamKind::Trade, at, "trades", parse_trades)
+        .register(StreamKind::Trade, at, "trades-all", parse_trades)
+        // AggTrade maps to the same "trades" channel (OKX has no separate aggTrade).
+        .register(StreamKind::AggTrade, at, "trades", parse_trades)
+        .register(StreamKind::Orderbook, at, "books", parse_books)
+        .register(StreamKind::Orderbook, at, "books5", parse_books)
+        .register(StreamKind::Orderbook, at, "bbo-tbt", parse_books)
+        .register(StreamKind::OrderbookDelta, at, "books-l2-tbt", parse_books)
+        .register(StreamKind::OrderbookDelta, at, "books50-l2-tbt", parse_books)
+        // Futures-only channels.
+        .register(StreamKind::MarkPrice, at, "mark-price", parse_mark_price)
+        .register(StreamKind::FundingRate, at, "funding-rate", parse_funding_rate)
+        .register(StreamKind::OpenInterest, at, "open-interest", parse_open_interest)
+        .register(StreamKind::Liquidation, at, "liquidation-orders", parse_liquidation_orders)
+        // Shared informational / private channels.
+        .register(StreamKind::IndexPrice, at, "index-tickers", parse_index_tickers)
+        .register(StreamKind::BlockTrade, at, "public-block-trades", parse_block_trades)
+        .register(StreamKind::BlockTrade, at, "block-trades", parse_block_trades)
+        .register(StreamKind::SettlementEvent, at, "estimated-price", parse_estimated_price)
+        .register(StreamKind::OptionGreeks, at, "opt-summary", parse_opt_summary)
+        .register(StreamKind::Orderbook, at, "price-limit", parse_price_limit)
+        .register(StreamKind::Ticker, at, "instruments", parse_instruments)
+        .register(StreamKind::Ticker, at, "status", parse_status_channel)
+        .register(StreamKind::OrderUpdate, at, "orders", parse_orders)
+        .register(StreamKind::BalanceUpdate, at, "account", parse_account)
+        .register(StreamKind::PositionUpdate, at, "positions", parse_positions);
+
+    // Kline channels.
+    for (wire, internal) in OKX_KLINE_CHANNELS {
+        let kind = StreamKind::Kline {
+            interval: KlineInterval::new(*internal),
+        };
+        b = b.register(kind, at, *wire, parse_kline);
+    }
+
+    // Mark-price kline channels.
     for (wire, internal) in OKX_MARK_PRICE_KLINE_CHANNELS {
         let kind = StreamKind::MarkPriceKline {
             interval: KlineInterval::new(*internal),
@@ -851,12 +964,21 @@ mod tests {
         assert!(reg.supports(&StreamKind::Ticker, AccountType::Spot));
         assert!(reg.supports(&StreamKind::Trade, AccountType::Spot));
         assert!(reg.supports(&StreamKind::Orderbook, AccountType::Spot));
-        assert!(reg.supports(&StreamKind::FundingRate, AccountType::Spot));
-        assert!(reg.supports(&StreamKind::MarkPrice, AccountType::Spot));
         assert!(reg.supports(
             &StreamKind::Kline { interval: KlineInterval::new("1h") },
             AccountType::Spot
         ));
+    }
+
+    #[test]
+    fn test_futures_registry_has_futures_streams() {
+        let proto = OkxProtocol::new(AccountType::FuturesCross, false);
+        let reg = proto.topic_registry(AccountType::FuturesCross);
+        assert!(reg.supports(&StreamKind::MarkPrice, AccountType::FuturesCross));
+        assert!(reg.supports(&StreamKind::FundingRate, AccountType::FuturesCross));
+        assert!(reg.supports(&StreamKind::OpenInterest, AccountType::FuturesCross));
+        assert!(reg.supports(&StreamKind::Liquidation, AccountType::FuturesCross));
+        assert!(reg.supports(&StreamKind::AggTrade, AccountType::FuturesCross));
     }
 
     #[test]
@@ -901,5 +1023,58 @@ mod tests {
             "arg": { "channel": "trades", "instId": "BTC-USDT" }
         });
         assert!(proto.extract_topic(&frame).is_none());
+    }
+
+    #[test]
+    fn test_subscribe_futures_mark_price_rewrites_symbol() {
+        let proto = OkxProtocol::new(AccountType::FuturesCross, false);
+        let spec = StreamSpec {
+            kind: StreamKind::MarkPrice,
+            symbol: crate::core::types::OwnedSymbolInput::Raw("BTC-USDT".to_string()),
+            account_type: AccountType::FuturesCross,
+            depth: None,
+            speed_ms: None,
+        };
+        let msg = proto.subscribe_frame(&spec).expect("subscribe_frame ok");
+        let text = match msg {
+            Message::Text(t) => t,
+            _ => panic!("expected text frame"),
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert_eq!(v["op"], "subscribe");
+        let arg = &v["args"][0];
+        assert_eq!(arg["channel"], "mark-price");
+        // Symbol must be rewritten to SWAP form
+        assert_eq!(arg["instId"], "BTC-USDT-SWAP");
+    }
+
+    #[test]
+    fn test_subscribe_futures_liquidation_uses_inst_type() {
+        let proto = OkxProtocol::new(AccountType::FuturesCross, false);
+        let spec = StreamSpec {
+            kind: StreamKind::Liquidation,
+            symbol: crate::core::types::OwnedSymbolInput::Raw("BTC-USDT".to_string()),
+            account_type: AccountType::FuturesCross,
+            depth: None,
+            speed_ms: None,
+        };
+        let msg = proto.subscribe_frame(&spec).expect("subscribe_frame ok");
+        let text = match msg {
+            Message::Text(t) => t,
+            _ => panic!("expected text frame"),
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        let arg = &v["args"][0];
+        assert_eq!(arg["channel"], "liquidation-orders");
+        assert_eq!(arg["instType"], "SWAP");
+        // No instId for liquidation-orders
+        assert!(arg.get("instId").is_none() || arg["instId"].is_null());
+    }
+
+    #[test]
+    fn test_to_swap_instid() {
+        assert_eq!(OkxProtocol::to_swap_instid("BTC-USDT"), "BTC-USDT-SWAP");
+        assert_eq!(OkxProtocol::to_swap_instid("BTC-USDT-SWAP"), "BTC-USDT-SWAP");
+        assert_eq!(OkxProtocol::to_swap_instid("BTC-USD-260925"), "BTC-USD-260925");
     }
 }

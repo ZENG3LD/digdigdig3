@@ -1,23 +1,58 @@
 # dig3 Station — Phase 1 MVP Implementation Plan
 
-**Status**: planning / pending start
+**Status**: ✅ COMPLETE (commits `bc50508` → `dd4223c`, May 2026)
 **Predecessor**: `station-architecture.md` (architecture design)
 **Goal**: end-to-end working `dig3 watch trades binance btc-usdt` via the new Station layer, with persistence + REST cache + RAII subscription handle.
 
-## Outcome
+## Outcome — DONE
 
-After Phase 1, this single command works:
+This single command works:
 
 ```
-dig3 watch trades binance btc-usdt --duration 30
+dig3 watch trades binance BTC-USDT --duration 30
 ```
 
-It must:
-1. Boot a Station with default features.
-2. Subscribe via the new SubscriptionSet API.
-3. Print live Trade events to stdout.
-4. Persist each Trade to `./dig3_storage/trades/binance/spot/btcusdt/2026-05-20.dat`.
-5. On Ctrl-C or duration timeout: clean shutdown (handle.drop → multiplexer unsub → hub disconnect).
+Verified live:
+1. ✅ Boots a Station with default features + ring CryptoProvider.
+2. ✅ Subscribes via SubscriptionSet API.
+3. ✅ Prints live Trade events to stdout (`<ts> <Exch> <symbol> <side> px=<n> qty=<n>`).
+4. ✅ Persists each Trade to `./dig3_storage/trades/binance/spot/btcusdt/<YYYY-MM-DD>.dat` (41-byte fixed record + sparse `.idx` every 1024).
+5. ✅ Duration timeout exits cleanly; handle drop closes the forwarder task.
+
+Bonus delivered beyond original plan:
+- `--storage-root <path>` + `DIG3_STORAGE_ROOT` env override.
+- `DIG3_WS_TRACE=1` → `target/harness_out/ws_trace/<exch>.jsonl` default.
+- `--json-out auto` → `target/harness_out/e2e_smoke_<ts>.json`.
+
+## Commit chain
+
+| Commit  | Step  | What landed |
+|---------|-------|-------------|
+| `bc50508` | Wave 11B | Architecture + Phase 1 plan + handoff snapshot docs |
+| `6cefa7c` | Step 1 | Workspace split into 3 crates (core/station/cli) |
+| `2fde113` | Step 6 | Station::subscribe wired; `dig3 watch trades` prints live trades |
+| `5215371` | gitignore | Exclude e2e/liq/matrix run artefacts |
+| `6605071` | Steps 4+5 | StationBuilder.storage_root + TradeWriter (binary append + sparse idx + day rotation) + RestCache wrapper |
+| `66f3709` | refactor | Core = connectors only; station owns storage/cache/replay/cure/orderbook; bins moved to cli; tests moved to station |
+| `dd4223c` | Step D | Harness artefact paths default to `target/harness_out/` |
+
+## Per-step status
+
+| Step | Title | Status | Notes |
+|------|-------|--------|-------|
+| 1 | Workspace split | ✅ done | core/station/cli + symbol rename `digdigdig3::` → `digdigdig3_core::` everywhere |
+| 2 | dig3-station skeleton | ✅ done | All modules declared; persistence/cache/reconnect features wired |
+| 3 | SubscriptionSet + SubscriptionHandle | ✅ done | Typed core enums (ExchangeId, AccountType, Stream); RAII via oneshot+mpsc |
+| 4 | TradeWriter persistence | ✅ done | 41 B/record, sparse `.idx` every 1024, UTC day rotation. Unit test green |
+| 5 | RestCache LRU + TTL | ✅ done as wrapper | `station::cache::ticker_cache(ttl)` over the (now-station-owned) `RestCache<K,V>`. Builder hook deferred to Phase 2 |
+| 6 | Station::builder + .subscribe() | ✅ done | Lazy single mux per (exchange, account); writer per-entry; trade-only in Phase 1 |
+| 7 | dig3-cli `watch trades` | ✅ done | `dig3 watch trades <exch> <sym> [--account] [--duration] [--persist] [--storage-root]` operational |
+| 8 | Verify + commit | ✅ done | `cargo check --workspace --all-targets --all-features` clean; core 818/1 + station 50/0 |
+
+Beyond plan:
+- Step A — `storage_root` config trio (`.storage_root()` / `--storage-root` / `DIG3_STORAGE_ROOT`)
+- Refactor — moved storage/orderbook/rest_cache/replay/cure from core to station (user directive: core = pure connectors)
+- Step D — harness artefact defaults under `target/harness_out/`
 
 ## Step-by-step plan
 
@@ -229,18 +264,25 @@ Gate: `cargo build --bin dig3 --release && target/release/dig3 watch trades bina
 4. **doc-tests**: `cargo test --doc` may fail if any rustdoc examples use `digdigdig3::...` paths. Update or `#[doc(hidden)]`.
 5. **Cargo.lock**: regenerate. Probably big diff. OK.
 
-## What's explicitly NOT in Phase 1
+## What's explicitly NOT in Phase 1 — backlog for Phase 2+
 
-- No multiplexing (one consumer per StreamKey can spawn its own mux; sharing comes Phase 2)
-- No deferred-unsub grace (drop = immediate unsub for now)
-- No reconnect override (transport's internal backoff is canonical)
-- No warm-start / gap-heal
-- No orderbook tracker / snapshots persistence
-- No bar three-level loader
-- No telemetry (just basic tracing logs)
-- No retention / cleanup
-- No Prometheus
-- No `dig3 replay`, `dig3 matrix`, `dig3 inspect`, `dig3 capture`, `dig3 benchmark` (these are skeletons-only with "not implemented" message)
+| Item | Now in | Target phase |
+|------|--------|-------|
+| WS multiplexing — one connection per `StreamKey`, N consumers share | `station::Station` (one mux per (exchange, account) but no consumer sharing) | Phase 2 |
+| Deferred-unsub grace (drop = sleep N s, then unsub if no resubscribe) | not present (drop = immediate close on next iter) | Phase 2 |
+| Reconnect override (custom backoff per Station, overrides transport default) | not present | Phase 3 |
+| Warm-start (`LastN` from disk into consumer's receiver before live stream) | not present | Phase 5 |
+| Gap-heal (REST backfill on reconnect to cover missed trades) | not present | Phase 3 |
+| Orderbook tracker for `Stream::Orderbook` | `station::orderbook::OrderBookTracker` exists; `Station.subscribe` doesn't wire it yet | Phase 4 |
+| Orderbook snapshot persistence (`.json.gz` per snapshot) | not present | Phase 4 |
+| Three-level bar loader (memory ↔ disk ↔ REST) | not present | Phase 5 |
+| Telemetry (counters per stream / dropped events / WS uptime) | basic `tracing` lines only | Phase 6 |
+| Retention / cleanup (cron-like rotation of old days) | `station::storage::Retention` exists as types; Station never invokes it | Phase 2 |
+| Prometheus exporter | not present (feature flag declared) | Phase 6 |
+| `dig3 replay` / `dig3 inspect` / `dig3 capture` / `dig3 benchmark` | skeletons only | Phase 3-6 |
+| `dig3 matrix` subcommand (port of `examples/e2e_smoke`) | skeleton; existing harness still works as `cargo run --example e2e_smoke` | Phase 3 |
+| `dig3 persist` daemon (TOML-driven multi-stream capture) | `dig3-catcher` bin exists in cli (older API) | Phase 2 |
+| `dig3 cure` (integrity / dedup / gap fix) | `dig3-cure` bin exists in cli (older API) | Phase 2 |
 
 ## Order of operations summary
 

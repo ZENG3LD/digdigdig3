@@ -46,6 +46,27 @@ use crate::core::utils::timestamp_millis;
 use super::endpoints::{DydxUrls, normalize_symbol};
 use super::parser::DydxParser;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Kline interval mapping
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Map a common interval string to dYdX v4 candle resolution format.
+///
+/// dYdX v4 `v4_candles` uses `{SYMBOL}/{RESOLUTION}` as the subscription id.
+/// Resolutions: `1MIN`, `5MINS`, `15MINS`, `30MINS`, `1HOUR`, `4HOURS`, `1DAY`.
+fn map_kline_interval_to_dydx(interval: &str) -> &'static str {
+    match interval {
+        "1m" | "1min" | "1MIN" => "1MIN",
+        "5m" | "5min" | "5MINS" => "5MINS",
+        "15m" | "15min" | "15MINS" => "15MINS",
+        "30m" | "30min" | "30MINS" => "30MINS",
+        "1h" | "1hour" | "1HOUR" | "60m" => "1HOUR",
+        "4h" | "4hour" | "4HOURS" => "4HOURS",
+        "1d" | "1day" | "1DAY" => "1DAY",
+        _ => "1MIN", // default to 1 minute
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // WEBSOCKET MESSAGES
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -721,12 +742,6 @@ impl DydxWebSocket {
         });
     }
 
-    /// Check if a channel requires an id parameter
-    fn channel_requires_id(channel: &str) -> bool {
-        // v4_markets and v4_blockheight do not require an id
-        !matches!(channel, "v4_markets" | "v4_blockheight")
-    }
-
     /// Extract FundingRate and IndexPrice events from a raw `v4_markets` message.
     ///
     /// `v4_markets` pushes `nextFundingRate` and `oraclePrice` per market.
@@ -944,24 +959,30 @@ impl WebSocketConnector for DydxWebSocket {
     }
 
     async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
-        let channel = match &request.stream_type {
-            StreamType::Ticker => "v4_markets",
-            StreamType::Orderbook => "v4_orderbook",
-            StreamType::Trade => "v4_trades",
-            StreamType::Kline { .. } => "v4_candles",
-            _ => {
+        let symbol_str = request.symbol.to_string();
+        let norm = normalize_symbol(&symbol_str);
+
+        match &request.stream_type {
+            StreamType::Ticker => {
+                self.send_subscribe_no_id("v4_markets").await?;
+            }
+            StreamType::Orderbook => {
+                self.send_subscribe_with_id("v4_orderbook", &norm).await?;
+            }
+            StreamType::Trade => {
+                self.send_subscribe_with_id("v4_trades", &norm).await?;
+            }
+            StreamType::Kline { interval } => {
+                // dYdX v4_candles id format: "{SYMBOL}/{RESOLUTION}" e.g. "BTC-USD/1MIN"
+                let resolution = map_kline_interval_to_dydx(interval);
+                let id = format!("{}/{}", norm, resolution);
+                self.send_subscribe_with_id("v4_candles", &id).await?;
+            }
+            other => {
                 return Err(WebSocketError::ProtocolError(
-                    format!("Stream type {:?} not supported", request.stream_type)
+                    format!("Stream type {:?} not supported", other)
                 ));
             }
-        };
-
-        if Self::channel_requires_id(channel) {
-            let symbol_str = request.symbol.to_string();
-            self.send_subscribe_with_id(channel, &normalize_symbol(&symbol_str)).await?;
-        } else {
-            // v4_markets does not take an id parameter
-            self.send_subscribe_no_id(channel).await?;
         }
 
         self.subscriptions.lock().await.insert(request);
@@ -969,19 +990,25 @@ impl WebSocketConnector for DydxWebSocket {
     }
 
     async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
-        let channel = match &request.stream_type {
-            StreamType::Ticker => "v4_markets",
-            StreamType::Orderbook => "v4_orderbook",
-            StreamType::Trade => "v4_trades",
-            StreamType::Kline { .. } => "v4_candles",
-            _ => return Ok(()),
-        };
+        let symbol_str = request.symbol.to_string();
+        let norm = normalize_symbol(&symbol_str);
 
-        if Self::channel_requires_id(channel) {
-            let symbol_str = request.symbol.to_string();
-            self.send_unsubscribe_with_id(channel, &normalize_symbol(&symbol_str)).await?;
-        } else {
-            self.send_unsubscribe_no_id(channel).await?;
+        match &request.stream_type {
+            StreamType::Ticker => {
+                self.send_unsubscribe_no_id("v4_markets").await?;
+            }
+            StreamType::Orderbook => {
+                self.send_unsubscribe_with_id("v4_orderbook", &norm).await?;
+            }
+            StreamType::Trade => {
+                self.send_unsubscribe_with_id("v4_trades", &norm).await?;
+            }
+            StreamType::Kline { interval } => {
+                let resolution = map_kline_interval_to_dydx(interval);
+                let id = format!("{}/{}", norm, resolution);
+                self.send_unsubscribe_with_id("v4_candles", &id).await?;
+            }
+            _ => {}
         }
 
         self.subscriptions.lock().await.remove(&request);

@@ -1,20 +1,19 @@
-//! OkxWebSocket — thin wrapper around UniversalWsTransport<OkxProtocol>.
+//! OkxWebSocket — dual-transport wrapper around two UniversalWsTransport<OkxProtocol>
+//! instances, one for /ws/v5/public and one for /ws/v5/business.
 //!
-//! Replaces the bespoke connect/ping/reconnect/dispatch loop.  The framework
-//! owns all connection lifecycle, ping scheduling (30s "ping" text frame),
-//! subscription replay on reconnect, and frame dispatch.
+//! ## OKX WS endpoint split (migration 2023-06-20)
+//! - `/ws/v5/public`   — tickers, mark-price, funding-rate, open-interest, books,
+//!                       trades, liquidation-orders, index-tickers, etc.
+//! - `/ws/v5/business` — `candle*`, `mark-price-candle*`, `index-candle*`
 //!
-//! ## Endpoints
-//! - Public:   `wss://ws.okx.com:8443/ws/v5/public`
-//! - Testnet:  `wss://wspap.okx.com:8443/ws/v5/public`
-//! - Business: `wss://ws.okx.com:8443/ws/v5/business`
-//!   (mark-price-candle*, index-candle* channels live here)
+//! Subscribing kline channels on the public endpoint returns error 60018.
+//! This connector keeps both connections open and routes by `StreamKind`.
 
 use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures_util::Stream;
+use futures_util::{stream::select, Stream};
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::core::traits::{Credentials, WebSocketConnector};
@@ -22,25 +21,42 @@ use crate::core::types::{
     AccountType, ChecksumAlgorithm, ChecksumInfo, ConnectionStatus, ExchangeResult,
     OrderbookCapabilities, StreamEvent, SubscriptionRequest, WebSocketResult, WsBookChannel,
 };
-use crate::core::websocket::{StreamSpec, UniversalWsTransport};
+use crate::core::websocket::{StreamKind, StreamSpec, UniversalWsTransport};
 
 use super::protocol::OkxProtocol;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Routing helper
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Returns true if the stream kind belongs to the /ws/v5/business endpoint.
+fn is_business_kind(kind: &StreamKind) -> bool {
+    matches!(
+        kind,
+        StreamKind::Kline { .. }
+            | StreamKind::MarkPriceKline { .. }
+            | StreamKind::IndexPriceKline { .. }
+    )
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // OkxWebSocket
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// OKX WebSocket connector backed by UniversalWsTransport.
+/// OKX WebSocket connector backed by two UniversalWsTransports:
+/// - `public`   → `/ws/v5/public`  (tickers, marks, funding, OI, trades, books, liq, …)
+/// - `business` → `/ws/v5/business` (candle*, mark-price-candle*, index-candle*)
 ///
-/// Construct via `OkxWebSocket::new` or `OkxWebSocket::new_business`.
-/// Call `connect()` before subscribing.
+/// Both connections open eagerly on `connect()`. `subscribe()` / `unsubscribe()`
+/// route to the correct transport by `StreamKind`. `event_stream()` merges both.
 pub struct OkxWebSocket {
-    inner: UniversalWsTransport<OkxProtocol>,
+    public: UniversalWsTransport<OkxProtocol>,
+    business: UniversalWsTransport<OkxProtocol>,
     _account_type: AccountType,
 }
 
 impl OkxWebSocket {
-    /// Create a public connector.
+    /// Create public + business connector pair.
     ///
     /// `credentials` — `None` for public streams.
     /// `testnet`     — `true` to use wspap endpoint.
@@ -50,23 +66,15 @@ impl OkxWebSocket {
         testnet: bool,
         account_type: AccountType,
     ) -> ExchangeResult<Self> {
-        let protocol = OkxProtocol::new(account_type, testnet);
-        let inner = UniversalWsTransport::new(protocol, account_type, testnet, credentials);
-        Ok(Self { inner, _account_type: account_type })
-    }
+        let public_proto = OkxProtocol::new(account_type, testnet);
+        let business_proto = OkxProtocol::new_business(account_type, testnet);
 
-    /// Create a **business** endpoint connector.
-    ///
-    /// Use for channels that OKX serves on `.../ws/v5/business`:
-    /// `mark-price-candle*`, `index-candle*`, `funding-rate-candle*`.
-    pub async fn new_business(
-        credentials: Option<Credentials>,
-        testnet: bool,
-        account_type: AccountType,
-    ) -> ExchangeResult<Self> {
-        let protocol = OkxProtocol::new_business(account_type, testnet);
-        let inner = UniversalWsTransport::new(protocol, account_type, testnet, credentials);
-        Ok(Self { inner, _account_type: account_type })
+        let public =
+            UniversalWsTransport::new(public_proto, account_type, testnet, credentials.clone());
+        let business =
+            UniversalWsTransport::new(business_proto, account_type, testnet, credentials);
+
+        Ok(Self { public, business, _account_type: account_type })
     }
 }
 
@@ -77,37 +85,74 @@ impl OkxWebSocket {
 #[async_trait]
 impl WebSocketConnector for OkxWebSocket {
     async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
-        self.inner.connect().await
+        // Connect both eagerly; return first error encountered.
+        self.public.connect().await?;
+        self.business.connect().await?;
+        Ok(())
     }
 
     async fn disconnect(&self) -> WebSocketResult<()> {
-        self.inner.disconnect().await
+        self.public.disconnect().await?;
+        self.business.disconnect().await?;
+        Ok(())
     }
 
     fn connection_status(&self) -> ConnectionStatus {
-        self.inner.connection_status()
+        let pub_status = self.public.connection_status();
+        let biz_status = self.business.connection_status();
+        // Both must be Connected for overall Connected.
+        // Any Connecting → Connecting.
+        // Any Disconnected → Disconnected.
+        match (pub_status, biz_status) {
+            (ConnectionStatus::Connected, ConnectionStatus::Connected) => {
+                ConnectionStatus::Connected
+            }
+            (ConnectionStatus::Disconnected, _) | (_, ConnectionStatus::Disconnected) => {
+                ConnectionStatus::Disconnected
+            }
+            _ => ConnectionStatus::Connecting,
+        }
     }
 
     async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let spec = StreamSpec::try_from(request)?;
-        self.inner.subscribe(spec).await
+        if is_business_kind(&spec.kind) {
+            self.business.subscribe(spec).await
+        } else {
+            self.public.subscribe(spec).await
+        }
     }
 
     async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let spec = StreamSpec::try_from(request)?;
-        self.inner.unsubscribe(spec).await
+        if is_business_kind(&spec.kind) {
+            self.business.unsubscribe(spec).await
+        } else {
+            self.public.unsubscribe(spec).await
+        }
     }
 
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        Box::pin(self.inner.event_stream())
+        let pub_stream = self.public.event_stream();
+        let biz_stream = self.business.event_stream();
+        Box::pin(select(pub_stream, biz_stream))
     }
 
     fn active_subscriptions(&self) -> Vec<SubscriptionRequest> {
-        self.inner
+        let mut subs: Vec<SubscriptionRequest> = self
+            .public
             .active_subscriptions()
             .into_iter()
             .map(SubscriptionRequest::from)
-            .collect()
+            .collect();
+        let biz_subs: Vec<SubscriptionRequest> = self
+            .business
+            .active_subscriptions()
+            .into_iter()
+            .map(SubscriptionRequest::from)
+            .collect();
+        subs.extend(biz_subs);
+        subs
     }
 
     fn ping_rtt_handle(&self) -> Option<Arc<TokioMutex<u64>>> {

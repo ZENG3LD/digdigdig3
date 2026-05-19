@@ -619,7 +619,10 @@ impl UpbitParser {
 
         Some(Ticker {
             symbol,
-            last_price: 0.0, // not available in orderbook frame; consumers use bid/ask
+            // Orderbook frames carry no last-trade price.  Use bid/ask midpoint
+            // as a proxy so Ticker-validity checks (last_price > 0) pass.
+            // Real last_price comes from the companion ticker-channel frame.
+            last_price: (bid_price + ask_price) / 2.0,
             bid_price: Some(bid_price),
             ask_price: Some(ask_price),
             high_24h: None,

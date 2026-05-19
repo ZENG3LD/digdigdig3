@@ -1437,17 +1437,6 @@ impl Positions for GateioConnector {
         symbol: &str,
         account_type: AccountType,
     ) -> ExchangeResult<FundingRate> {
-        // Parse symbol string into Symbol struct
-        let symbol_str = symbol;
-        let symbol = {
-            let parts: Vec<&str> = symbol_str.split('/').collect();
-            if parts.len() == 2 {
-                crate::core::Symbol::new(parts[0], parts[1])
-            } else {
-                crate::core::Symbol { base: symbol_str.to_string(), quote: String::new(), raw: Some(symbol_str.to_string()) }
-            }
-        };
-
         match account_type {
             AccountType::Spot | AccountType::Margin => {
                 return Err(ExchangeError::UnsupportedOperation(
@@ -1458,14 +1447,13 @@ impl Positions for GateioConnector {
         }
 
         let mut params = HashMap::new();
-        params.insert("contract".to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
+        params.insert("contract".to_string(), symbol.to_uppercase());
         params.insert("limit".to_string(), "1".to_string());
 
         let response = self.get(GateioEndpoint::FundingRate, params, account_type).await?;
         let mut rate = GateioParser::parse_funding_rate(&response)?;
         rate.symbol = symbol.to_string();
         Ok(rate)
-
     }
 
     async fn get_mark_price(

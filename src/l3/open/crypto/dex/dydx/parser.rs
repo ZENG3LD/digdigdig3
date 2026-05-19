@@ -465,25 +465,50 @@ impl DydxParser {
         })
     }
 
-    /// Parse WebSocket trade message
+    /// Parse WebSocket trade message from `v4_trades` channel.
+    ///
+    /// dYdX v4 Indexer `channel_data` format:
+    /// ```json
+    /// {
+    ///   "type": "channel_data",
+    ///   "channel": "v4_trades",
+    ///   "id": "BTC-USD",
+    ///   "contents": {
+    ///     "trades": [
+    ///       {"id":"abc","side":"BUY","price":"50000","size":"0.1","createdAt":"2024-01-01T00:00:00.000Z"}
+    ///     ]
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// The initial `subscribed` snapshot uses the same shape under `contents.trades`.
     pub fn parse_ws_trade(data: &Value) -> ExchangeResult<PublicTrade> {
         let contents = data.get("contents")
-            .ok_or_else(|| ExchangeError::Parse("Missing 'contents' field".to_string()))?;
+            .ok_or_else(|| ExchangeError::Parse("v4_trades: missing 'contents' field".to_string()))?;
 
-        let side = match Self::get_str(contents, "side").unwrap_or("BUY") {
+        // dYdX v4 wraps trades in a "trades" array inside contents.
+        let trade = contents
+            .get("trades")
+            .and_then(|t| t.as_array())
+            .and_then(|arr| arr.first())
+            .ok_or_else(|| ExchangeError::Parse(
+                "v4_trades: 'contents.trades' is missing or empty".to_string()
+            ))?;
+
+        let side = match Self::get_str(trade, "side").unwrap_or("BUY") {
             "SELL" => TradeSide::Sell,
             _ => TradeSide::Buy,
         };
 
-        let created_at = Self::get_str(contents, "createdAt")
+        let created_at = Self::get_str(trade, "createdAt")
             .and_then(Self::parse_iso_timestamp)
             .unwrap_or(0);
 
         Ok(PublicTrade {
-            id: Self::get_str(contents, "id").unwrap_or("").to_string(),
+            id: Self::get_str(trade, "id").unwrap_or("").to_string(),
             symbol: data.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            price: Self::require_f64(contents, "price")?,
-            quantity: Self::get_f64(contents, "size").unwrap_or(0.0),
+            price: Self::require_f64(trade, "price")?,
+            quantity: Self::get_f64(trade, "size").unwrap_or(0.0),
             side,
             timestamp: created_at,
         })

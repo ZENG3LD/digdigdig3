@@ -10,6 +10,7 @@
 
 use std::collections::HashSet;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -74,6 +75,21 @@ pub struct UpbitWebSocket {
     last_ping: Arc<Mutex<Instant>>,
     /// WebSocket ping round-trip time in milliseconds (0 = not measured yet).
     ws_ping_rtt_ms: Arc<Mutex<u64>>,
+    /// Set to true when a Ticker subscription is active.
+    ///
+    /// When true, orderbook frames emit an additional synthetic Ticker event
+    /// (bid/ask from top-of-book) in addition to the normal OrderbookSnapshot.
+    /// This is the only way to surface bid/ask to Ticker subscribers because
+    /// Upbit's `ticker` WS channel does not carry top-of-book quotes.
+    ticker_subscribed: Arc<AtomicBool>,
+    /// Fused Ticker state: (last_trade_price, bid, ask).
+    ///
+    /// `last_trade_price` is updated from ticker-channel frames.
+    /// `bid` / `ask` are updated from orderbook frames.
+    /// The synthetic Ticker emitted from orderbook frames injects all three so
+    /// consumers get a complete Ticker even though Upbit's channels are split.
+    last_bid_ask: Arc<StdMutex<Option<(f64, f64)>>>,
+    last_trade_price: Arc<StdMutex<f64>>,
 }
 
 impl UpbitWebSocket {
@@ -105,6 +121,9 @@ impl UpbitWebSocket {
             ws_writer: Arc::new(Mutex::new(None)),
             last_ping: Arc::new(Mutex::new(Instant::now())),
             ws_ping_rtt_ms: Arc::new(Mutex::new(0)),
+            ticker_subscribed: Arc::new(AtomicBool::new(false)),
+            last_bid_ask: Arc::new(StdMutex::new(None)),
+            last_trade_price: Arc::new(StdMutex::new(0.0)),
         })
     }
 
@@ -128,32 +147,112 @@ impl UpbitWebSocket {
         Message::Text(payload.to_string())
     }
 
-    /// Parse a raw frame text (binary decoded or text) into a StreamEvent.
-    fn parse_frame(text: &str) -> Option<StreamEvent> {
-        let value: Value = serde_json::from_str(text).ok()?;
+    /// Parse a raw frame text into zero or more StreamEvents.
+    ///
+    /// ## Fused Ticker design
+    ///
+    /// Upbit WS channels are split:
+    /// - `ticker` channel → last trade price, 24h stats; NO bid/ask
+    /// - `orderbook` channel → bid/ask levels; NO last trade price
+    ///
+    /// Strategy: ticker-channel frames update `last_trade_price` state but do
+    /// NOT emit events.  Orderbook frames update `last_bid_ask` state and, when
+    /// `ticker_subscribed` is true, emit a fused `Ticker` event that combines
+    /// the bid/ask from the orderbook frame with the most recent trade price.
+    /// This guarantees every emitted Ticker has both `last_price > 0` and
+    /// `bid/ask` populated.
+    ///
+    /// Parameters:
+    /// - `ticker_subscribed` — when true, orderbook frames also emit a fused Ticker.
+    /// - `last_bid_ask` — updated on each orderbook frame; best (bid, ask).
+    /// - `last_trade_price` — updated on each ticker frame; last trade price.
+    fn parse_frames(
+        text: &str,
+        ticker_subscribed: bool,
+        last_bid_ask: &StdMutex<Option<(f64, f64)>>,
+        last_trade_price: &StdMutex<f64>,
+    ) -> Vec<StreamEvent> {
+        let value: Value = match serde_json::from_str(text) {
+            Ok(v) => v,
+            Err(_) => return vec![],
+        };
 
         // Server status ping response — ignore
-        if let Some(status) = value.get("status") {
-            if status == "UP" {
-                return None;
-            }
+        if value.get("status").map(|s| s == "UP").unwrap_or(false) {
+            return vec![];
         }
 
-        let msg_type = value.get("type")
+        let msg_type = match value.get("type")
             .or_else(|| value.get("ty"))
-            .and_then(|t| t.as_str())?;
+            .and_then(|t| t.as_str())
+        {
+            Some(t) => t,
+            None => return vec![],
+        };
 
         match msg_type {
             "ticker" => {
-                UpbitParser::parse_ws_ticker(&value).ok().map(StreamEvent::Ticker)
+                // Update last trade price for injection into orderbook-derived Tickers.
+                if let Ok(parsed) = UpbitParser::parse_ws_ticker(&value) {
+                    if parsed.last_price > 0.0 {
+                        if let Ok(mut guard) = last_trade_price.lock() {
+                            *guard = parsed.last_price;
+                        }
+                    }
+                }
+                // Do NOT emit a StreamEvent here — ticker channel has no bid/ask.
+                // The fused Ticker is emitted on orderbook frames instead.
+                vec![]
             }
             "trade" => {
-                UpbitParser::parse_ws_trade(&value).ok().map(StreamEvent::Trade)
+                UpbitParser::parse_ws_trade(&value)
+                    .ok()
+                    .map(StreamEvent::Trade)
+                    .into_iter()
+                    .collect()
             }
             "orderbook" => {
-                UpbitParser::parse_ws_orderbook(&value).ok().map(StreamEvent::OrderbookSnapshot)
+                // Always emit OrderbookSnapshot for orderbook subscribers.
+                let ob_event = UpbitParser::parse_ws_orderbook(&value)
+                    .ok()
+                    .map(StreamEvent::OrderbookSnapshot);
+
+                // When Ticker subscribed, emit a fused Ticker fusing bid/ask from
+                // this orderbook frame with the last known trade price.
+                let ticker_event = if ticker_subscribed {
+                    UpbitParser::parse_ws_orderbook_as_ticker(&value).map(|mut t| {
+                        // Inject stored trade price so last_price > 0.
+                        if let Ok(guard) = last_trade_price.lock() {
+                            if *guard > 0.0 {
+                                t.last_price = *guard;
+                            }
+                        }
+                        // Update last_bid_ask state.
+                        if let (Some(bid), Some(ask)) = (t.bid_price, t.ask_price) {
+                            if let Ok(mut guard) = last_bid_ask.lock() {
+                                *guard = Some((bid, ask));
+                            }
+                        }
+                        StreamEvent::Ticker(t)
+                    })
+                } else {
+                    // Still update last_bid_ask so future ticker frames can read it.
+                    if let Some(synthetic) = UpbitParser::parse_ws_orderbook_as_ticker(&value) {
+                        if let (Some(bid), Some(ask)) = (synthetic.bid_price, synthetic.ask_price) {
+                            if let Ok(mut guard) = last_bid_ask.lock() {
+                                *guard = Some((bid, ask));
+                            }
+                        }
+                    }
+                    None
+                };
+
+                let mut events = Vec::with_capacity(2);
+                if let Some(e) = ob_event { events.push(e); }
+                if let Some(e) = ticker_event { events.push(e); }
+                events
             }
-            _ => None,
+            _ => vec![],
         }
     }
 
@@ -161,6 +260,13 @@ impl UpbitWebSocket {
     ///
     /// Reads from `ws_reader` and broadcasts parsed events. Returns the write
     /// channel sender so callers can push frames without locking the reader.
+    ///
+    /// - `ticker_subscribed`: when true, orderbook frames also emit a synthetic
+    ///   Ticker event so bid/ask reach Ticker subscribers.
+    /// - `last_bid_ask`: shared bid/ask state updated from orderbook frames and
+    ///   injected into synthetic Ticker events.
+    /// - `last_trade_price`: updated from ticker-channel frames and injected into
+    ///   synthetic Tickers emitted by orderbook frames.
     fn start_tasks(
         ws_writer: Arc<Mutex<Option<WsWriter>>>,
         ws_reader: WsReader,
@@ -168,6 +274,9 @@ impl UpbitWebSocket {
         status: Arc<Mutex<ConnectionStatus>>,
         last_ping: Arc<Mutex<Instant>>,
         ws_ping_rtt_ms: Arc<Mutex<u64>>,
+        ticker_subscribed: Arc<AtomicBool>,
+        last_bid_ask: Arc<StdMutex<Option<(f64, f64)>>>,
+        last_trade_price: Arc<StdMutex<f64>>,
     ) -> mpsc::UnboundedSender<Message> {
         let (write_tx, mut write_rx) = mpsc::unbounded_channel::<Message>();
 
@@ -192,9 +301,10 @@ impl UpbitWebSocket {
         tokio::spawn(async move {
             let mut reader = ws_reader;
             while let Some(msg_result) = reader.next().await {
+                let is_ticker_sub = ticker_subscribed.load(Ordering::Relaxed);
                 match msg_result {
                     Ok(Message::Text(text)) => {
-                        if let Some(event) = Self::parse_frame(&text) {
+                        for event in Self::parse_frames(&text, is_ticker_sub, &last_bid_ask, &last_trade_price) {
                             if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
                                 let _ = tx.send(Ok(event));
                             }
@@ -203,7 +313,7 @@ impl UpbitWebSocket {
                     Ok(Message::Binary(data)) => {
                         // Upbit DEFAULT format sends binary frames with raw UTF-8 JSON.
                         if let Ok(text) = String::from_utf8(data) {
-                            if let Some(event) = Self::parse_frame(&text) {
+                            for event in Self::parse_frames(&text, is_ticker_sub, &last_bid_ask, &last_trade_price) {
                                 if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
                                     let _ = tx.send(Ok(event));
                                 }
@@ -282,6 +392,9 @@ impl WebSocketConnector for UpbitWebSocket {
             self.status.clone(),
             self.last_ping.clone(),
             self.ws_ping_rtt_ms.clone(),
+            self.ticker_subscribed.clone(),
+            self.last_bid_ask.clone(),
+            self.last_trade_price.clone(),
         );
         *self.write_tx.lock().await = Some(write_tx);
 
@@ -323,6 +436,8 @@ impl WebSocketConnector for UpbitWebSocket {
 
         match request.stream_type {
             StreamType::Ticker => {
+                // Signal the read task to emit synthetic Ticker from orderbook frames.
+                self.ticker_subscribed.store(true, Ordering::Relaxed);
                 tx.send(Self::build_sub_message("ticker", &[upbit_symbol.clone()]))
                     .map_err(|e| WebSocketError::SendError(e.to_string()))?;
                 // Also subscribe orderbook so bid/ask can flow via synthetic Ticker.

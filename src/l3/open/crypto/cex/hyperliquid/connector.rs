@@ -1358,6 +1358,73 @@ impl Positions for HyperliquidConnector {
         HyperliquidParser::parse_funding_rate_for_symbol(&meta_response, symbol)
     }
 
+    /// Get the current mark price for a perpetual symbol.
+    ///
+    /// Uses `metaAndAssetCtxs` — the same endpoint as `get_funding_rate` — and
+    /// extracts `markPx` and `oraclePx` from the asset context at the symbol index.
+    ///
+    /// `metaAndAssetCtxs` response: `[{universe:[{name,szDecimals,...}]}, [{markPx,oraclePx,funding,...},...]]`
+    async fn get_mark_price(
+        &self,
+        symbol: &str,
+    ) -> ExchangeResult<crate::core::types::MarkPrice> {
+        let meta_response = self.info_request(
+            InfoType::MetaAndAssetCtxs,
+            serde_json::json!({}),
+        ).await?;
+
+        let arr = meta_response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("metaAndAssetCtxs: expected array".into()))?;
+
+        if arr.len() < 2 {
+            return Err(ExchangeError::Parse("metaAndAssetCtxs: response too short".into()));
+        }
+
+        let universe = arr[0].get("universe")
+            .and_then(|u| u.as_array())
+            .ok_or_else(|| ExchangeError::Parse("metaAndAssetCtxs: missing universe".into()))?;
+
+        let idx = universe.iter().position(|item| {
+            item.get("name")
+                .and_then(|v| v.as_str())
+                .map(|n| n.eq_ignore_ascii_case(symbol))
+                .unwrap_or(false)
+        }).ok_or_else(|| ExchangeError::Parse(
+            format!("metaAndAssetCtxs: symbol '{}' not found in universe", symbol)
+        ))?;
+
+        let ctxs = arr[1].as_array()
+            .ok_or_else(|| ExchangeError::Parse("metaAndAssetCtxs: ctx array missing".into()))?;
+
+        if idx >= ctxs.len() {
+            return Err(ExchangeError::Parse(format!(
+                "metaAndAssetCtxs: ctx index {} out of bounds (len={})", idx, ctxs.len()
+            )));
+        }
+
+        let ctx = &ctxs[idx];
+
+        let mark_price = ctx.get("markPx")
+            .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| v.as_f64()))
+            .ok_or_else(|| ExchangeError::Parse("metaAndAssetCtxs: missing markPx".into()))?;
+
+        let index_price = ctx.get("oraclePx")
+            .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| v.as_f64()));
+
+        let funding_rate = ctx.get("funding")
+            .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| v.as_f64()));
+
+        let now = crate::core::utils::timestamp_millis() as i64;
+
+        Ok(crate::core::types::MarkPrice {
+            symbol: symbol.to_uppercase(),
+            mark_price,
+            index_price,
+            funding_rate,
+            timestamp: now,
+        })
+    }
+
     /// Modify a position — leverage, margin mode, add/remove margin, or close.
     ///
     /// Supported modifications:

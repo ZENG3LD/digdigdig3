@@ -200,23 +200,6 @@ impl WsProtocol for OkxProtocol {
     fn subscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
         // Special cases first.
         match &spec.kind {
-            StreamKind::Kline { .. }
-            | StreamKind::MarkPriceKline { .. }
-            | StreamKind::IndexPriceKline { .. } => {
-                // OKX V5 moved candle/kline channels to the /ws/v5/business endpoint.
-                // Our factory currently connects only to /ws/v5/public (which serves
-                // tickers, mark/funding/OI, trades, books, liquidation). Subscribing
-                // to candle* on /ws/v5/public returns error 60018 "Wrong URL or
-                // channel". Multi-endpoint per connector is a Wave-4 architecture
-                // change. Until then we honestly report this as not supported.
-                //
-                // Docs: https://www.okx.com/docs-v5/en/#overview-websocket-overview
-                return Err(WebSocketError::NotSupported(
-                    "OKX candle/kline channels live on /ws/v5/business endpoint; \
-                     current OkxWebSocket connects to /ws/v5/public — subscribe via \
-                     a separate business connection or use REST GET /api/v5/market/candles".into(),
-                ));
-            }
             StreamKind::Liquidation => {
                 let frame = json!({
                     "op": "subscribe",

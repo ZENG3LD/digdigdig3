@@ -1152,7 +1152,7 @@ async fn test_okx_ws() -> WsTally {
     // Channel 4: mark-price-candle1m BTC-USDT-SWAP (business WS endpoint)
     {
         tally.channels += 1;
-        let ws = match OkxWebSocket::new_business(None, false, AccountType::Spot).await {
+        let ws = match OkxWebSocket::new(None, false, AccountType::Spot).await {
             Ok(w) => w,
             Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
         };

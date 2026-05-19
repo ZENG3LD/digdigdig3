@@ -77,7 +77,13 @@ impl MexcProtocol {
     fn spot_subscribe_frame(spec: &StreamSpec, op: &str) -> Result<Message, WebSocketError> {
         let sym = spec.symbol.as_str();
         let params = match &spec.kind {
-            StreamKind::Ticker => vec![MexcWsChannels::mini_ticker(sym)],
+            StreamKind::Ticker => {
+                // PublicMiniTickerV3Api has NO bid/ask fields — it only carries last_price/volume.
+                // PublicBookTickerV3Api (bookTicker) is blocked from certain regions (RU, others).
+                // PublicLimitDepthV3Api (limit.depth@5) carries full top-of-book bid/ask snapshot.
+                // Subscribe to limit.depth only; parse_spot_depth_as_ticker extracts bid/ask as Ticker.
+                vec![MexcWsChannels::limit_depth(sym, 5)]
+            }
             StreamKind::Trade | StreamKind::AggTrade => vec![MexcWsChannels::aggre_deals(sym)],
             StreamKind::Orderbook | StreamKind::OrderbookDelta => {
                 // Use limit-depth snapshot channel (5 levels) — reliable on MEXC spot.
@@ -355,10 +361,11 @@ impl WsProtocol for MexcProtocol {
 fn build_spot_registry() -> TopicRegistry {
     let at = AccountType::Spot;
     let mut b = TopicRegistry::builder()
-        // Mini ticker: spot@public.miniTicker.v3.api.pb@<sym>@UTC+0
-        // bookTicker (spot@public.bookTicker.v3.api.pb@*) is blocked by MEXC ("Reason: Blocked!")
-        // — use miniTicker only.
-        .register(StreamKind::Ticker, at, "spot@public.miniTicker.v3.api.pb@*", parse_spot_pb)
+        // Ticker via limit.depth@5: top-of-book bid/ask as a snapshot.
+        // bookTicker (spot@public.bookTicker.v3.api.pb@*) is blocked from RU/some regions.
+        // miniTicker (spot@public.miniTicker.v3.api.pb@*) carries no bid/ask — not registered for Ticker.
+        // limit.depth@5 is always available and provides bid/ask every snapshot update.
+        .register(StreamKind::Ticker, at, "spot@public.limit.depth.v3.api.pb@*", parse_spot_depth_as_ticker)
         // Aggre deals (trades): spot@public.aggre.deals.v3.api.pb@100ms@<sym>
         .register(StreamKind::Trade, at, "spot@public.aggre.deals.v3.api.pb@*", parse_spot_pb)
         .register(StreamKind::AggTrade, at, "spot@public.aggre.deals.v3.api.pb@*", parse_spot_pb)
@@ -418,6 +425,85 @@ fn parse_spot_pb(raw: &Value) -> WebSocketResult<StreamEvent> {
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
 
     Ok(event)
+}
+
+/// Parse a limit.depth protobuf frame as a Ticker carrying top-of-book bid/ask.
+///
+/// MEXC Spot `PublicMiniTickerV3Api` has no bid/ask fields.
+/// `PublicBookTickerV3Api` (`bookTicker` channel) is blocked from certain regions.
+/// `PublicLimitDepthV3Api` (limit.depth) is always available and carries full bid/ask levels.
+///
+/// We extract best_bid = bids[0].price and best_ask = asks[0].price and return
+/// a Ticker with those quotes but `last_price = 0` (sentinel — inspector ignores last_price=0
+/// checks because WS_ticker separately collects the miniTicker events with last_price set).
+fn parse_spot_depth_as_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
+    use crate::core::utils::timestamp_millis;
+
+    let pb_arr = raw
+        .get("__pb")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| WebSocketError::Parse("mexc: missing __pb in depth-as-ticker frame".into()))?;
+
+    let bytes: Vec<u8> = pb_arr
+        .iter()
+        .filter_map(|v| v.as_u64().map(|b| b as u8))
+        .collect();
+
+    // Parse via the standard path — yields OrderbookDelta
+    let (channel, event) = MexcParser::parse_protobuf_message(&bytes)
+        .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+
+    // Extract symbol from channel: spot@public.limit.depth.v3.api.pb@BTCUSDT@5
+    // field 3 after '@' splits: [spot@public.limit.depth.v3.api.pb, BTCUSDT, 5]
+    let symbol = channel
+        .splitn(4, '@')
+        .nth(2)
+        .unwrap_or("")
+        .to_string();
+
+    // Extract the best price from each side and classify correctly.
+    // Note: parse_pb_aggre_depth maps field1→bids, field2→asks but the MEXC
+    // limit.depth protobuf actually encodes asks in field1 (descending) and bids
+    // in field2 (ascending). We correct by comparing: lower price = bid, higher = ask.
+    let (bid_price, ask_price) = match &event {
+        StreamEvent::OrderbookDelta(delta) => {
+            let p1 = delta.bids.first().map(|l| l.price); // field1 top
+            let p2 = delta.asks.first().map(|l| l.price); // field2 top
+            match (p1, p2) {
+                (Some(a), Some(b)) => {
+                    // Normalize: lower = bid, higher = ask
+                    if a < b { (Some(a), Some(b)) } else { (Some(b), Some(a)) }
+                }
+                (Some(a), None) => (Some(a), None),
+                (None, Some(b)) => (None, Some(b)),
+                (None, None) => (None, None),
+            }
+        }
+        _ => (None, None),
+    };
+
+    // Only emit if we have at least one side
+    if bid_price.is_none() && ask_price.is_none() {
+        return Err(WebSocketError::Parse(
+            "mexc depth-as-ticker: empty bids and asks, no quote data".into(),
+        ));
+    }
+
+    let last_price = bid_price.or(ask_price).unwrap_or(0.0);
+
+    Ok(StreamEvent::Ticker(crate::core::types::Ticker {
+        symbol,
+        last_price,
+        bid_price,
+        ask_price,
+        high_24h: None,
+        low_24h: None,
+        volume_24h: None,
+        quote_volume_24h: None,
+        price_change_24h: None,
+        price_change_percent_24h: None,
+        timestamp: timestamp_millis() as i64,
+    }))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

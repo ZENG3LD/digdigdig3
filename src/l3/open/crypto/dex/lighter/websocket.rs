@@ -686,9 +686,15 @@ impl LighterWebSocket {
 
         let price = Self::val_f64(data, "price")?;
         let quantity = Self::val_f64(data, "size")?;
-        let timestamp = Self::val_i64(&msg.raw, "timestamp")
+        let timestamp_raw = Self::val_i64(&msg.raw, "timestamp")
             .or_else(|| Self::val_i64(data, "timestamp"))
             .unwrap_or(0);
+        // Lighter timestamp is in seconds for trade events — same heuristic as orderbook.
+        let timestamp = if timestamp_raw > 0 && timestamp_raw < 1_000_000_000_000 {
+            timestamp_raw * 1000
+        } else {
+            timestamp_raw
+        };
         let trade_id = Self::val_u64(data, "trade_id").unwrap_or(0);
         let market_id = Self::extract_market_id(channel);
 

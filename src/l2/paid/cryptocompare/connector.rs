@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use reqwest::Client;
 use std::collections::HashMap;
+use std::time::Duration;
 
 use crate::core::types::{
     Symbol, AccountType, Price, Ticker, Kline, OrderBook, FundingRate,
@@ -44,6 +45,25 @@ impl CryptoCompareConnector {
     /// Create connector without API key (public endpoints only, low rate limits)
     pub fn public() -> Self {
         Self::new(CryptoCompareAuth::public())
+    }
+
+    /// Internal: Make GET request with single retry on rate-limit (Type 99).
+    ///
+    /// CryptoCompare's /data/all/coinlist endpoint has a tighter per-second quota
+    /// than price/ticker endpoints. When the harness fires all REST methods back-to-back,
+    /// the CoinList call often hits the limit. One 1 s sleep + retry is enough.
+    async fn get_with_rate_limit_retry(
+        &self,
+        endpoint: CryptoCompareEndpoint,
+        params: HashMap<String, String>,
+    ) -> ExchangeResult<serde_json::Value> {
+        match self.get(endpoint.clone(), params.clone()).await {
+            Err(ExchangeError::RateLimitExceeded { .. }) => {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                self.get(endpoint, params).await
+            }
+            other => other,
+        }
     }
 
     /// Internal: Make GET request
@@ -214,7 +234,7 @@ impl MarketData for CryptoCompareConnector {
 
     /// Get all coins listed on CryptoCompare
     async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
-        let response = self.get(CryptoCompareEndpoint::CoinList, HashMap::new()).await?;
+        let response = self.get_with_rate_limit_retry(CryptoCompareEndpoint::CoinList, HashMap::new()).await?;
         let symbols = CryptoCompareParser::parse_symbols(&response)?;
 
         let infos = symbols

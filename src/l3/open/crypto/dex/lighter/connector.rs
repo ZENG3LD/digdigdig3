@@ -375,11 +375,45 @@ impl MarketData for LighterConnector {
         let symbol = symbol.resolve(ExchangeId::Lighter, account_type)?;
         let market_id = self.resolve_market_id(&symbol)?;
 
-        let mut params = HashMap::new();
-        params.insert("market_id".to_string(), market_id.to_string());
+        let mut details_params = HashMap::new();
+        details_params.insert("market_id".to_string(), market_id.to_string());
 
-        let response = self.get(LighterEndpoint::OrderBookDetails, params, 300).await?;
-        LighterParser::parse_ticker(&response)
+        let mut ob_params = HashMap::new();
+        ob_params.insert("market_id".to_string(), market_id.to_string());
+        ob_params.insert("limit".to_string(), "1".to_string());
+
+        // Fire both requests in parallel: orderBookDetails for price/volume stats,
+        // orderBookOrders?limit=1 for top-of-book bid/ask.
+        let (details_result, ob_result) = tokio::join!(
+            self.get(LighterEndpoint::OrderBookDetails, details_params, 300),
+            self.get(LighterEndpoint::OrderBookOrders, ob_params, 300),
+        );
+
+        let details_response = details_result?;
+        let mut ticker = LighterParser::parse_ticker(&details_response)?;
+
+        // Merge top-of-book bid/ask from orderBookOrders when available.
+        // Response shape: {"asks":[{"price":"...","remaining_base_amount":"..."}],"bids":[...]}
+        if let Ok(ob_response) = ob_result {
+            let bid_price = ob_response
+                .get("bids")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|entry| entry.get("price"))
+                .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| v.as_f64()));
+
+            let ask_price = ob_response
+                .get("asks")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|entry| entry.get("price"))
+                .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| v.as_f64()));
+
+            ticker.bid_price = bid_price;
+            ticker.ask_price = ask_price;
+        }
+
+        Ok(ticker)
     }
 
     async fn get_orderbook(&self, symbol: SymbolInput<'_>, depth: Option<u16>, account_type: AccountType) -> ExchangeResult<OrderBook> {

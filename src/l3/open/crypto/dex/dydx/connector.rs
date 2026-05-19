@@ -533,8 +533,26 @@ impl MarketData for DydxConnector {
 
     async fn get_ticker(&self, symbol: SymbolInput<'_>, account_type: AccountType) -> ExchangeResult<Ticker> {
         let symbol = symbol.resolve(ExchangeId::Dydx, account_type)?;
-        let response = self.get(DydxEndpoint::PerpetualMarkets, HashMap::new()).await?;
-        DydxParser::parse_ticker(&response, &symbol)
+
+        let mut ob_params = HashMap::new();
+        ob_params.insert("market".to_string(), symbol.to_string());
+
+        let (markets_resp, ob_resp) = tokio::try_join!(
+            self.get(DydxEndpoint::PerpetualMarkets, HashMap::new()),
+            self.get(DydxEndpoint::Orderbook, ob_params),
+        )?;
+
+        let mut ticker = DydxParser::parse_ticker(&markets_resp, &symbol)?;
+
+        let ob = DydxParser::parse_orderbook(&ob_resp)?;
+        if let Some(best_bid) = ob.bids.first() {
+            ticker.bid_price = Some(best_bid.price);
+        }
+        if let Some(best_ask) = ob.asks.first() {
+            ticker.ask_price = Some(best_ask.price);
+        }
+
+        Ok(ticker)
     }
 
     async fn get_orderbook(&self, symbol: SymbolInput<'_>, _depth: Option<u16>, account_type: AccountType) -> ExchangeResult<OrderBook> {

@@ -494,6 +494,23 @@ fn raw_symbol_for(id: ExchangeId) -> (Symbol, String, AccountType) {
     }
 }
 
+/// Symbol to use for WS Liquidation subscription.
+///
+/// Binance: empty raw symbol → `!forceOrder@arr` all-symbols stream.
+/// GateIO:  raw `"!all"` → `!all` all-symbols liquidation stream.
+/// All others: same as the per-exchange BTC perp symbol from `raw_symbol_for`.
+fn liq_symbol_for(id: ExchangeId) -> Symbol {
+    match id {
+        ExchangeId::Binance => Symbol::with_raw("", "", "".to_string()),
+        ExchangeId::GateIO  => Symbol::with_raw("", "", "!all".to_string()),
+        _ => {
+            // Use the standard BTC perp symbol for this exchange.
+            let (sym, ..) = raw_symbol_for(id);
+            sym
+        }
+    }
+}
+
 /// Is this exchange account_type futures-capable (perps/perpetuals)?
 fn is_futures(id: ExchangeId, at: AccountType) -> bool {
     matches!(at, AccountType::FuturesCross | AccountType::FuturesIsolated)
@@ -932,8 +949,13 @@ async fn test_market(id: ExchangeId) -> MarketRow {
     };
     let ws_liq_fut = async {
         if !futures_capable { return MethodResult::Skipped; }
-        // Liquidation fires at market events (not periodic) — use 20s window.
-        market::run_ws_sub(id, futures_at, StreamType::Liquidation, sym_ws7, market::ExpectedKind::Liquidation, stale_ms, 20).await
+        // Liquidation fires at market events (not periodic) — use 30s window.
+        // Binance: empty symbol → !forceOrder@arr all-symbols feed (high freq).
+        // GateIO: "!all" → all-symbols public_liquidates feed (low freq ~25/hr).
+        // Bybit: per-symbol only (no all-symbols variant in V5) — may stay silent.
+        let liq_sym = liq_symbol_for(id);
+        drop(sym_ws7); // replaced by liq_sym above
+        market::run_ws_sub(id, futures_at, StreamType::Liquidation, liq_sym, market::ExpectedKind::Liquidation, stale_ms, 30).await
     };
     let ws_oi_fut = async {
         if !futures_capable { return MethodResult::Skipped; }

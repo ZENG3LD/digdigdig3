@@ -1,0 +1,22 @@
+[package]
+name = "digdigdig3-cli"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Layer 3 of digdigdig3 — `dig3` CLI binary (watch / persist / replay / matrix / inspect / capture / benchmark)."
+repository = "https://github.com/ZENG3LD/digdigdig3"
+readme = "../../README.md"
+
+[[bin]]
+name = "dig3"
+path = "src/main.rs"
+
+[dependencies]
+digdigdig3-station = { path = "../dig3-station", default-features = false, features = ["full"] }
+digdigdig3-core = { path = "../dig3-core" }
+
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"

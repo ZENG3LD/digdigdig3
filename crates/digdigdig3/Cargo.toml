@@ -10,7 +10,25 @@ categories.workspace = true
 description = "Unified async Rust API for 47 exchange connectors (REST + WebSocket). The core layer — pure ExchangeHub + connectors. Higher-level builder, persistence, replay, OB tracker live in `digdigdig3-station`."
 documentation = "https://docs.rs/digdigdig3"
 readme = "../../README.md"
-exclude = ["**/research/**", "contributing/**", "e2e_smoke_*.txt", "deep_smoke_*.txt", "smoke_*.txt", "*.log"]
+exclude = [
+    # Internal research / workflow / audit notes — never ship to crates.io
+    "**/research/**",
+    "contributing/**",
+    "**/AUDIT*.md",
+    "**/ARCHITECTURE_AUDIT.md",
+    "**/IMPLEMENTATION*.md",
+    "**/FIX_SUMMARY.md",
+    "**/PROBLEM_ANALYSIS.md",
+    "**/API_TESTING_REPORT.md",
+    "**/AUTHENTICATION_SETUP.md",
+    "**/CRYPTO_NO_AUTH.md",
+    "**/QUICK_START.md",
+    "**/integration_test_guide.md",
+    # Local harness artefacts — already gitignored, defence in depth
+    "e2e_smoke_*.txt", "deep_smoke_*.txt", "smoke_*.txt", "*.log",
+    "e2e_trace*/", "liq_capture/", "liq_trace_new/",
+    "dig3_storage/", "target/",
+]
 
 [lib]
 name = "digdigdig3"

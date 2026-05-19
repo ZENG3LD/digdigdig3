@@ -11,9 +11,28 @@ Cargo.lock
 # Ralph test artifacts
 ralph-test/
 
-# Internal research docs (keep locally, not in repo)
-docs/research/
+# Internal docs — kept locally only, never tracked in git or published.
+# Includes architecture notes, research, plans, handoff snapshots, audit
+# logs. Treat docs/ as a private workbench.
+docs/
 ROADMAP.md
+
+# Per-connector research notes (live API exploration before code).
+# Already excluded from crates.io tarball via `exclude` in Cargo.toml.
+# Untracked here so they don't sit on GitHub either.
+**/research/
+
+# Per-connector internal audit / implementation notes (never to GH/crates.io).
+**/AUDIT*.md
+**/ARCHITECTURE_AUDIT.md
+**/IMPLEMENTATION*.md
+**/FIX_SUMMARY.md
+**/PROBLEM_ANALYSIS.md
+**/API_TESTING_REPORT.md
+**/AUTHENTICATION_SETUP.md
+**/CRYPTO_NO_AUTH.md
+**/QUICK_START.md
+**/integration_test_guide.md
 
 # deep_smoke + smoke harness output files
 deep_smoke_*.txt

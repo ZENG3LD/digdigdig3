@@ -16,7 +16,7 @@
 //! Server replies `{"jsonrpc":"2.0","id":N,"result":{"version":"..."}}`.
 
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use chrono::Utc;
@@ -50,6 +50,11 @@ pub struct DeribitProtocol {
     _account_type: AccountType,
     _testnet: bool,
     next_id: AtomicU64,
+    /// Whether `public/set_heartbeat` has been sent on the current connection.
+    /// Reset to false on reconnect (transport re-creates protocol on reconnect? No —
+    /// protocol is Arc-shared and reused. We track globally: if server kills us,
+    /// we'll reconnect and the first ping will re-send set_heartbeat.)
+    heartbeat_registered: AtomicBool,
 }
 
 impl DeribitProtocol {
@@ -58,6 +63,7 @@ impl DeribitProtocol {
             _account_type: account_type,
             _testnet: testnet,
             next_id: AtomicU64::new(1),
+            heartbeat_registered: AtomicBool::new(false),
         }
     }
 
@@ -109,6 +115,10 @@ impl DeribitProtocol {
             }
             StreamKind::PositionUpdate => "user.changes.any.any.raw".to_string(),
             StreamKind::BlockTrade => "block_trade_confirmations".to_string(),
+            // AggTrade: Deribit's 100ms batched trade channel IS the aggregated form.
+            StreamKind::AggTrade => format!("trades.{}.100ms", instrument),
+            // OpenInterest: no standalone OI WS channel; data is in the ticker channel.
+            StreamKind::OpenInterest => format!("ticker.{}.100ms", instrument),
             // Liquidation: Deribit removed the public WS liquidation feed in October 2023.
             // No public replacement exists — historical data only via REST.
             StreamKind::Liquidation => return None,
@@ -177,7 +187,21 @@ impl WsProtocol for DeribitProtocol {
     }
 
     fn ping_frame(&self) -> Option<Message> {
-        // JSON-RPC public/test ping
+        // First call after construction: send public/set_heartbeat so the server
+        // knows to send test_request frames every 30s.  Subsequent calls: public/test.
+        // The transport sends ping_frame on its timer (every ping_interval()); the
+        // first tick fires ~30s after connect, which is fine — our activity from
+        // subscribe frames keeps the connection alive in the meantime.
+        if !self.heartbeat_registered.swap(true, Ordering::Relaxed) {
+            let id = self.next_id();
+            let frame = json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "public/set_heartbeat",
+                "params": { "interval": 30 }
+            });
+            return Some(Message::Text(frame.to_string()));
+        }
         let id = self.next_id();
         let frame = json!({
             "jsonrpc": "2.0",
@@ -228,11 +252,14 @@ impl WsProtocol for DeribitProtocol {
 
     fn is_pong(&self, raw: &Value) -> bool {
         // Deribit ping response: {"jsonrpc":"2.0","id":N,"result":{"version":"X.Y.Z"}}
-        // Also heartbeat test_request reply goes here as response
         if raw.get("id").is_some() {
             if let Some(result) = raw.get("result") {
                 // public/test response has "version" field
                 if result.get("version").is_some() {
+                    return true;
+                }
+                // set_heartbeat ack: {"id":N,"result":"ok"}
+                if result.as_str() == Some("ok") {
                     return true;
                 }
                 // subscribe ack: result is an array of channel strings
@@ -240,6 +267,14 @@ impl WsProtocol for DeribitProtocol {
                     return false; // let is_subscribe_ack handle it
                 }
             }
+        }
+        // Server-initiated heartbeat frames — both types are handled here:
+        // {"method":"heartbeat","params":{"type":"test_request"}} — requires public/test reply
+        // {"method":"heartbeat","params":{"type":"heartbeat"}}    — informational, no reply
+        // The transport ping loop sends public/test every 30s, satisfying the test_request.
+        // Return true so transport doesn't warn about unmatched topic.
+        if raw.get("method").and_then(|m| m.as_str()) == Some("heartbeat") {
+            return true;
         }
         false
     }
@@ -313,17 +348,29 @@ fn build_registry() -> TopicRegistry {
         .register(StreamKind::OrderbookDelta, at, "book.*.raw",    parse_orderbook)
         .register(StreamKind::OrderbookDelta, at, "book.*.100ms",  parse_orderbook);
 
-    // Trades
+    // Trades (public — each trade in the array)
     b = b
-        .register(StreamKind::Trade, at, "trades.*.raw",   parse_trade)
-        .register(StreamKind::Trade, at, "trades.*.100ms", parse_trade);
+        .register(StreamKind::Trade,    at, "trades.*.raw",   parse_trade)
+        .register(StreamKind::Trade,    at, "trades.*.100ms", parse_trade)
+        // AggTrade: same 100ms batched channel; emits StreamEvent::AggTrade per item.
+        .register(StreamKind::AggTrade, at, "trades.*.100ms", parse_agg_trade)
+        .register(StreamKind::AggTrade, at, "trades.*.raw",   parse_agg_trade);
 
-    // Ticker (also sources OptionGreeks + MarkPrice + FundingRate)
+    // Ticker — fan-out: Ticker + MarkPrice + FundingRate + OpenInterest + OptionGreeks
     b = b
-        .register(StreamKind::Ticker,       at, "ticker.*.raw",   parse_ticker)
-        .register(StreamKind::Ticker,       at, "ticker.*.100ms", parse_ticker)
-        .register(StreamKind::OptionGreeks, at, "ticker.*.raw",   parse_ticker)
-        .register(StreamKind::OptionGreeks, at, "ticker.*.100ms", parse_ticker);
+        .register(StreamKind::Ticker,        at, "ticker.*.raw",   parse_ticker)
+        .register(StreamKind::Ticker,        at, "ticker.*.100ms", parse_ticker)
+        .register(StreamKind::OptionGreeks,  at, "ticker.*.raw",   parse_ticker)
+        .register(StreamKind::OptionGreeks,  at, "ticker.*.100ms", parse_ticker)
+        // MarkPrice fan-out from ticker (mark_price field in every ticker update)
+        .register(StreamKind::MarkPrice,     at, "ticker.*.100ms", parse_mark_price_from_ticker)
+        .register(StreamKind::MarkPrice,     at, "ticker.*.raw",   parse_mark_price_from_ticker)
+        // FundingRate fan-out from ticker (current_funding + funding_8h)
+        .register(StreamKind::FundingRate,   at, "ticker.*.100ms", parse_funding_from_ticker)
+        .register(StreamKind::FundingRate,   at, "ticker.*.raw",   parse_funding_from_ticker)
+        // OpenInterest fan-out from ticker (open_interest field)
+        .register(StreamKind::OpenInterest,  at, "ticker.*.100ms", parse_oi_from_ticker)
+        .register(StreamKind::OpenInterest,  at, "ticker.*.raw",   parse_oi_from_ticker);
 
     // Quote (best bid/ask — high frequency)
     b = b.register(StreamKind::Ticker, at, "quote.*", parse_quote);
@@ -481,6 +528,37 @@ fn parse_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
     Ok(StreamEvent::Trade(trade))
 }
 
+// ── AggTrade (same 100ms channel, emits AggTrade variant) ───────────────────
+
+fn parse_agg_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
+    let (data, _channel) = frame_data(raw)?;
+    // trades.*.100ms data is an array; take the last item (most recent in batch).
+    let item = if let Some(arr) = data.as_array() {
+        arr.last().ok_or_else(|| WebSocketError::FieldAbsent("trades array empty".into()))?
+    } else {
+        data
+    };
+    let symbol = get_str(item, "instrument_name").unwrap_or("").to_string();
+    let price = get_f64(item, "price").unwrap_or(0.0);
+    let quantity = get_f64(item, "amount").unwrap_or(0.0);
+    let timestamp = get_i64(item, "timestamp").unwrap_or(0);
+    let side = match get_str(item, "direction") {
+        Some("buy") => TradeSide::Buy,
+        _ => TradeSide::Sell,
+    };
+    // Deribit 100ms batch doesn't expose aggregate_id / first_last_trade_id — use 0.
+    Ok(StreamEvent::AggTrade {
+        symbol,
+        aggregate_id: 0,
+        price,
+        quantity,
+        first_trade_id: 0,
+        last_trade_id: 0,
+        side,
+        timestamp,
+    })
+}
+
 // ── Ticker ───────────────────────────────────────────────────────────────────
 
 fn parse_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -513,6 +591,41 @@ fn parse_quote(raw: &Value) -> WebSocketResult<StreamEvent> {
         timestamp,
     };
     Ok(StreamEvent::Ticker(ticker))
+}
+
+// ── MarkPrice from ticker fan-out ────────────────────────────────────────────
+
+fn parse_mark_price_from_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
+    let (data, _channel) = frame_data(raw)?;
+    let symbol = get_str(data, "instrument_name").unwrap_or("").to_string();
+    let mark_price = get_f64(data, "mark_price")
+        .ok_or_else(|| WebSocketError::FieldAbsent("mark_price absent in ticker".into()))?;
+    let index_price = get_f64(data, "index_price");
+    let timestamp = get_i64(data, "timestamp").unwrap_or(0);
+    Ok(StreamEvent::MarkPrice { symbol, mark_price, index_price, timestamp })
+}
+
+// ── FundingRate from ticker fan-out ─────────────────────────────────────────
+
+fn parse_funding_from_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
+    let (data, _channel) = frame_data(raw)?;
+    let symbol = get_str(data, "instrument_name").unwrap_or("").to_string();
+    // current_funding is absent on dated futures and options — use FieldAbsent to skip.
+    let rate = get_f64(data, "current_funding")
+        .ok_or_else(|| WebSocketError::FieldAbsent("current_funding absent in ticker".into()))?;
+    let timestamp = get_i64(data, "timestamp").unwrap_or(0);
+    Ok(StreamEvent::FundingRate { symbol, rate, next_funding_time: None, timestamp })
+}
+
+// ── OpenInterest from ticker fan-out ─────────────────────────────────────────
+
+fn parse_oi_from_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
+    let (data, _channel) = frame_data(raw)?;
+    let symbol = get_str(data, "instrument_name").unwrap_or("").to_string();
+    let open_interest = get_f64(data, "open_interest")
+        .ok_or_else(|| WebSocketError::FieldAbsent("open_interest absent in ticker".into()))?;
+    let timestamp = get_i64(data, "timestamp").unwrap_or(0);
+    Ok(StreamEvent::OpenInterestUpdate { symbol, open_interest, open_interest_value: None, timestamp })
 }
 
 // ── Kline ────────────────────────────────────────────────────────────────────

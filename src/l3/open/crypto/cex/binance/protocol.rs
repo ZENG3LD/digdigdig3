@@ -107,10 +107,18 @@ impl BinanceProtocol {
                 if spec.symbol.is_empty() {
                     "!markPrice@arr@1s".to_string()
                 } else {
-                    format!("{}@markPrice", symbol)
+                    // @1s suffix is the post-2026-04-23 required wire name on /market path.
+                    format!("{}@markPrice@1s", symbol)
                 }
             }
-            StreamKind::FundingRate => format!("{}@markPrice", symbol),
+            // FundingRate piggybacks the markPrice@1s frame (field "r" = funding rate).
+            StreamKind::FundingRate => {
+                if spec.symbol.is_empty() {
+                    "!markPrice@arr@1s".to_string()
+                } else {
+                    format!("{}@markPrice@1s", symbol)
+                }
+            }
 
             StreamKind::Liquidation => {
                 if spec.symbol.is_empty() {
@@ -313,7 +321,11 @@ fn build_registry(account_type: AccountType) -> TopicRegistry {
             .register(StreamKind::MarkPrice, account_type, "*@markPrice", parse_mark_price)
             .register(StreamKind::MarkPrice, account_type, "*@markPrice@1s", parse_mark_price)
             .register(StreamKind::MarkPrice, account_type, "!markPrice@arr", parse_mark_price_arr)
-            .register(StreamKind::FundingRate, account_type, "*@markPrice", parse_mark_price)
+            // FundingRate: same markPrice@1s frame, field "r" carries the rate.
+            // Registered on both patterns so the topic key always matches.
+            .register(StreamKind::FundingRate, account_type, "*@markPrice", parse_funding_rate)
+            .register(StreamKind::FundingRate, account_type, "*@markPrice@1s", parse_funding_rate)
+            .register(StreamKind::FundingRate, account_type, "!markPrice@arr", parse_funding_rate_arr)
             .register(StreamKind::Liquidation, account_type, "*@forceOrder", parse_force_order)
             .register(StreamKind::Liquidation, account_type, "!forceOrder@arr", parse_force_order_arr)
             .register(StreamKind::CompositeIndex, account_type, "*@compositeIndex", parse_composite_index)
@@ -591,6 +603,43 @@ fn parse_mark_price_arr(raw: &Value) -> WebSocketResult<StreamEvent> {
         index_price: parse_f64("i"),
         timestamp: item.get("E").and_then(|e| e.as_i64()).unwrap_or(0),
     })
+}
+
+/// Parse a markPrice@1s frame and emit `StreamEvent::FundingRate`.
+/// The "r" field carries the funding rate; "T" is next funding time ms.
+/// Returns `WebSocketError::Parse` if "r" is absent (stream has no funding for this symbol).
+fn parse_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent> {
+    let data = frame_data(raw);
+    let parse_f64 = |key: &str| -> Option<f64> {
+        data.get(key)
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse().ok())
+            .or_else(|| data.get(key).and_then(|v| v.as_f64()))
+    };
+
+    let rate = parse_f64("r").ok_or_else(|| {
+        WebSocketError::Parse("markPrice frame: 'r' (funding rate) field absent".into())
+    })?;
+
+    Ok(StreamEvent::FundingRate {
+        symbol: data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+        rate,
+        next_funding_time: data.get("T").and_then(|t| t.as_i64()),
+        timestamp: data.get("E").and_then(|e| e.as_i64()).unwrap_or(0),
+    })
+}
+
+/// Parse !markPrice@arr frame and emit FundingRate from first element.
+fn parse_funding_rate_arr(raw: &Value) -> WebSocketResult<StreamEvent> {
+    let data = frame_data(raw);
+    let item = if let Some(arr) = data.as_array() {
+        arr.first().unwrap_or(data)
+    } else {
+        data
+    };
+    // Wrap as combined frame so parse_funding_rate's frame_data call works correctly.
+    let wrapped = serde_json::json!({"data": item});
+    parse_funding_rate(&wrapped)
 }
 
 fn parse_force_order(raw: &Value) -> WebSocketResult<StreamEvent> {

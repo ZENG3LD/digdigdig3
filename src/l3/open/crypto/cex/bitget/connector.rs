@@ -1607,24 +1607,35 @@ impl Positions for BitgetConnector {
         account_type: AccountType,
     ) -> ExchangeResult<OpenInterest> {
         let parts: Vec<&str> = symbol.split('/').collect();
+        // productType MUST be lowercase for the open-interest endpoint:
+        // "USDT-FUTURES" returns empty list; "usdt-futures" returns data.
         let (raw_symbol, product_type) = if parts.len() == 2 {
             let sym = crate::core::Symbol::new(parts[0], parts[1]);
             let formatted = format_symbol(&sym.base, &sym.quote, account_type);
-            let pt = get_product_type(&sym.quote);
-            (formatted, pt.to_string())
+            let pt = get_product_type(&sym.quote).to_lowercase();
+            (formatted, pt)
         } else {
-            (symbol.to_uppercase(), "USDT-FUTURES".to_string())
+            (symbol.to_uppercase(), "usdt-futures".to_string())
         };
 
         let response = self.get_futures_open_interest(&raw_symbol, &product_type).await?;
 
+        // Response shape: {"code":"00000","data":{"openInterestList":[{"symbol":"BTCUSDT","size":"..."}],"ts":"..."}}
         let data = response.get("data")
             .ok_or_else(|| ExchangeError::Parse("Bitget OI: missing data".to_string()))?;
 
-        let oi = data.get("openInterest")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
-            .or_else(|| data.get("openInterest").and_then(|v| v.as_f64()))
+        // Extract OI from openInterestList[0].size
+        let oi = data
+            .get("openInterestList")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|item| item.get("size"))
+            .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| v.as_f64()))
+            // Fallback: some responses use flat "openInterest" field
+            .or_else(|| {
+                data.get("openInterest")
+                    .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| v.as_f64()))
+            })
             .unwrap_or(0.0);
 
         let ts = data.get("ts")

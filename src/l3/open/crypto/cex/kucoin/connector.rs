@@ -1740,9 +1740,9 @@ impl Positions for KuCoinConnector {
             .ok_or_else(|| ExchangeError::Parse("Missing data".to_string()))?;
 
         let mark_price = data
-            .get("value")
+            .get("markPrice")
             .and_then(|v| v.as_f64())
-            .ok_or_else(|| ExchangeError::Parse("Missing value (mark price)".to_string()))?;
+            .ok_or_else(|| ExchangeError::Parse("Missing markPrice field".to_string()))?;
 
         Ok(MarkPrice {
             symbol: symbol.to_string(),

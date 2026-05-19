@@ -77,7 +77,13 @@ impl HtxProtocol {
         // "BTC-USDT" for futures). HTX topics use lowercase for spot and mixed-case
         // for futures — normalizer guarantees the correct casing.
         let sym = spec.symbol.as_str();
+        let is_futures = matches!(
+            spec.account_type,
+            AccountType::FuturesCross | AccountType::FuturesIsolated
+        );
         match &spec.kind {
+            // For futures, subscribe to .bbo (has bid/ask); for spot, .detail has bid/ask inline.
+            StreamKind::Ticker if is_futures => Ok(format!("market.{sym}.bbo")),
             StreamKind::Ticker => Ok(format!("market.{sym}.detail")),
             StreamKind::Trade => Ok(format!("market.{sym}.trade.detail")),
             StreamKind::Orderbook => Ok(format!("market.{sym}.depth.step0")),
@@ -87,15 +93,19 @@ impl HtxProtocol {
             }
             StreamKind::FundingRate => Ok(format!("public.{sym}.funding_rate")),
             StreamKind::Liquidation => Ok(format!("public.{sym}.liquidation_orders")),
+            StreamKind::AggTrade => Err(WebSocketError::NotSupported(
+                "HTX has no aggregated trade WS channel — \
+                 subscribe StreamKind::Trade for raw fills via market.{sym}.trade.detail".to_string(),
+            )),
             StreamKind::MarkPrice => Err(WebSocketError::NotSupported(
                 "HTX does not have a direct WS mark price channel — \
                  use kline market.{sym}.mark_price.1min or REST mark_price endpoint".to_string(),
             )),
             StreamKind::OpenInterest => Err(WebSocketError::NotSupported(
                 "HTX does not expose a realtime WS open interest feed — \
-                 use REST GET /linear-swap-ex/market/open_interest".to_string(),
+                 use REST GET /linear-swap-api/v1/swap_open_interest".to_string(),
             )),
-            StreamKind::IndexPriceKline { .. } => Err(WebSocketError::UnsupportedOperation(
+            StreamKind::IndexPriceKline { .. } => Err(WebSocketError::NotSupported(
                 "HTX: IndexPriceKline not available via WebSocket — use REST".into(),
             )),
             other => Err(WebSocketError::UnsupportedOperation(format!(
@@ -237,6 +247,9 @@ fn build_registry(account_type: AccountType) -> TopicRegistry {
     // Standard channels
     b = b
         .register(StreamKind::Ticker, account_type, "market.*.detail", parse_ticker)
+        // BBO channel provides bid/ask for futures (market.BTC-USDT.bbo).
+        // Spot .detail already carries bid/ask; futures .detail does NOT.
+        .register(StreamKind::Ticker, account_type, "market.*.bbo", parse_bbo)
         .register(StreamKind::Trade, account_type, "market.*.trade.detail", parse_trade)
         .register(StreamKind::Orderbook, account_type, "market.*.depth.step0", parse_orderbook)
         .register(StreamKind::Orderbook, account_type, "market.*.depth.step1", parse_orderbook)
@@ -365,6 +378,54 @@ fn parse_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
             }
         },
         timestamp: raw.get("ts").and_then(|v| v.as_i64()).unwrap_or_else(|| timestamp_millis() as i64),
+    }))
+}
+
+/// Parse HTX BBO frame: `{"ch":"market.BTC-USDT.bbo","ts":...,"tick":{"bid":[price,size],"ask":[price,size],...}}`
+fn parse_bbo(raw: &Value) -> WebSocketResult<StreamEvent> {
+    use crate::core::types::Ticker;
+    use crate::core::timestamp_millis;
+
+    let channel = raw
+        .get("ch")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let parts: Vec<&str> = channel.split('.').collect();
+    let symbol = parts.get(1).copied().unwrap_or("").to_uppercase();
+
+    let data = tick_data(raw)?;
+
+    let bid_price = data
+        .get("bid")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(parse_f64_field);
+
+    let ask_price = data
+        .get("ask")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(parse_f64_field);
+
+    // BBO frames have no last price — use bid as a proxy so downstream has a non-zero value.
+    let last_price = bid_price
+        .ok_or_else(|| WebSocketError::Parse("htx bbo: missing bid".into()))?;
+
+    Ok(StreamEvent::Ticker(Ticker {
+        symbol,
+        last_price,
+        bid_price,
+        ask_price,
+        high_24h: None,
+        low_24h: None,
+        volume_24h: None,
+        quote_volume_24h: None,
+        price_change_24h: None,
+        price_change_percent_24h: None,
+        timestamp: raw
+            .get("ts")
+            .and_then(|v| v.as_i64())
+            .unwrap_or_else(|| timestamp_millis() as i64),
     }))
 }
 

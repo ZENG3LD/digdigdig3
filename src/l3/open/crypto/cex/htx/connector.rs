@@ -51,6 +51,39 @@ use super::endpoints::{HtxUrls, HtxEndpoint, map_kline_interval};
 use super::auth::HtxAuth;
 use super::parser::HtxParser;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Symbol helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Convert any HTX symbol representation to the linear-swap contract code format `BASE-QUOTE`.
+///
+/// HTX linear swap endpoints require `BTC-USDT` (uppercase, hyphen separator).
+/// The e2e harness may pass a spot-concat symbol (`btcusdt`) when HTX is configured
+/// as Spot for REST. This helper normalises the three common input forms:
+/// - Already correct: `BTC-USDT` → returned as-is (uppercased)
+/// - Slash-separated: `BTC/USDT` → `BTC-USDT`
+/// - Spot concat: `btcusdt` → tries common quote suffixes (USDT, BTC, ETH, BNB)
+///   to split; falls back to upcased passthrough if no match.
+fn to_linear_swap_code(symbol: &str) -> String {
+    let upper = symbol.to_uppercase();
+    if upper.contains('-') {
+        return upper;
+    }
+    if let Some(pos) = symbol.find('/') {
+        let (base, quote) = symbol.split_at(pos);
+        return format!("{}-{}", base.to_uppercase(), quote[1..].to_uppercase());
+    }
+    // Spot-concat: attempt to split on common quote assets (longest first to avoid ambiguity).
+    for quote in &["USDT", "BUSD", "USDC", "BTC", "ETH", "BNB"] {
+        if let Some(base) = upper.strip_suffix(quote) {
+            if !base.is_empty() {
+                return format!("{}-{}", base, quote);
+            }
+        }
+    }
+    upper
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // RATE LIMIT CAPABILITIES (static — embedded in binary, no allocation)
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1339,10 +1372,11 @@ impl Positions for HtxConnector {
         &self,
         symbol: &str,
     ) -> ExchangeResult<MarkPrice> {
-        // GET /linear-swap-ex/market/history/mark_price_kline?contract_code=BTC-USDT&period=1min&size=1
+        // GET /index/market/history/linear_swap_mark_price_kline?contract_code=BTC-USDT&period=1min&size=1
         // Response: {status, data: [{id, open, close, high, low, vol, ...}]}
         // Use close price of latest kline as mark price
-        let response = self.get_mark_price_kline(symbol, "1min", Some(1)).await?;
+        let contract_code = to_linear_swap_code(symbol);
+        let response = self.get_mark_price_kline(&contract_code, "1min", Some(1)).await?;
 
         let data = response
             .get("data")
@@ -1359,7 +1393,7 @@ impl Positions for HtxConnector {
             .ok_or_else(|| ExchangeError::Parse("Missing close in mark price kline".to_string()))?;
 
         Ok(MarkPrice {
-            symbol: symbol.to_string(),
+            symbol: contract_code,
             mark_price,
             index_price: None,
             funding_rate: None,
@@ -1387,12 +1421,7 @@ impl Positions for HtxConnector {
         symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<OpenInterest> {
-        let contract_code = if symbol.contains('/') {
-            let parts: Vec<&str> = symbol.split('/').collect();
-            format!("{}-{}", parts[0].to_uppercase(), parts.get(1).copied().unwrap_or("USDT").to_uppercase())
-        } else {
-            symbol.to_uppercase()
-        };
+        let contract_code = to_linear_swap_code(symbol);
 
         let response = self.get_open_interest(Some(&contract_code)).await?;
 

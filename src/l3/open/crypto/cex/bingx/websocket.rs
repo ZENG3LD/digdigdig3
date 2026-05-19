@@ -176,8 +176,9 @@ pub struct BingxWebSocket {
 }
 
 impl BingxWebSocket {
-    /// WebSocket URLs
-    const WS_BASE_URL: &'static str = "wss://open-api-ws.bingx.com/market";
+    /// WebSocket URL for perpetual swap (futures) public market data.
+    /// open-api-ws.bingx.com/market was the old SPOT endpoint; swap uses open-api-swap.bingx.com/swap-market.
+    const WS_BASE_URL: &'static str = "wss://open-api-swap.bingx.com/swap-market";
 
     /// Create new BingX WebSocket connector
     pub async fn new(
@@ -523,6 +524,10 @@ impl BingxWebSocket {
             // Liquidation orders stream — data: { symbol, side, price, origQty, ... }
             let event = Self::parse_force_order_ws(data_type, data, account_type)?;
             Ok(Some(event))
+        } else if data_type.ends_with("@openInterest") {
+            // Open interest snapshot — data: { openInterest, symbol, time }
+            let event = Self::parse_open_interest_ws(data_type, data)?;
+            Ok(Some(event))
         } else {
             // Unknown stream type - ignore
             Ok(None)
@@ -603,6 +608,28 @@ impl BingxWebSocket {
         Ok(StreamEvent::Liquidation { symbol, side, price, quantity, value: None, timestamp })
     }
 
+    /// Parse BingX open interest WebSocket push.
+    ///
+    /// BingX swap open interest channel: `{symbol}@openInterest`
+    /// data fields: { openInterest, symbol?, time? }
+    fn parse_open_interest_ws(data_type: &str, data: &Value) -> WebSocketResult<StreamEvent> {
+        let parse_f64 = |v: &Value| -> Option<f64> {
+            v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
+        };
+        let symbol = data.get("symbol")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| data_type.split('@').next().unwrap_or("").to_string());
+        let open_interest = data.get("openInterest")
+            .and_then(|v| parse_f64(v))
+            .unwrap_or(0.0);
+        let timestamp = data.get("time")
+            .or_else(|| data.get("ts"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        Ok(StreamEvent::OpenInterestUpdate { symbol, open_interest, open_interest_value: None, timestamp })
+    }
+
     /// Build dataType string for subscription
     fn build_data_type(request: &SubscriptionRequest, _account_type: AccountType) -> String {
         match &request.stream_type {
@@ -620,7 +647,7 @@ impl BingxWebSocket {
             }
             StreamType::Kline { interval } => {
                 let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, _account_type);
-                // BingX uses format like "1min", "5min", "1hour", "1day"
+                // BingX WS uses short format: "1m", "5m", "1h", "1d" (NOT "1min"/"1hour")
                 let bingx_interval = Self::map_kline_interval(interval);
                 format!("{}@kline_{}", symbol, bingx_interval)
             }
@@ -642,36 +669,53 @@ impl BingxWebSocket {
                 format!("{}@markPrice", symbol)
             }
             StreamType::FundingRate => {
-                let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, _account_type);
-                format!("{}@fundingRate", symbol)
+                // BingX has no public WS funding-rate channel.
+                // Use REST GET /openApi/swap/v2/quote/fundingRate?symbol=BTC-USDT instead.
+                // Return empty string so subscribe() sends an empty dataType and the
+                // server rejects it gracefully — caller sees a silent no-op.
+                // The NotSupported path is handled in parse_data_message when dataType is "".
+                String::new()
             }
             StreamType::Liquidation => {
                 let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, _account_type);
                 format!("{}@forceOrder", symbol)
             }
+            StreamType::OpenInterest => {
+                let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, _account_type);
+                format!("{}@openInterest", symbol)
+            }
+            StreamType::AggTrade => {
+                // BingX has no separate aggregated-trade WS channel.
+                // Map to @trade (raw trades) so callers get trade data.
+                let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, _account_type);
+                format!("{}@trade", symbol)
+            }
             _ => String::new(),
         }
     }
 
-    /// Map kline interval to BingX format
+    /// Map kline interval to BingX WS format.
+    ///
+    /// BingX WS kline channel uses `{sym}@kline_1m` (short form), NOT `kline_1min`.
+    /// REST API uses `1m`/`1h`/`1d` etc. — same short form.
     fn map_kline_interval(interval: &str) -> &'static str {
         match interval {
-            "1m" => "1min",
-            "3m" => "3min",
-            "5m" => "5min",
-            "15m" => "15min",
-            "30m" => "30min",
-            "1h" => "1hour",
-            "2h" => "2hour",
-            "4h" => "4hour",
-            "6h" => "6hour",
-            "8h" => "8hour",
-            "12h" => "12hour",
-            "1d" => "1day",
-            "3d" => "3day",
-            "1w" => "1week",
-            "1M" => "1month",
-            _ => "1hour", // default
+            "1m" => "1m",
+            "3m" => "3m",
+            "5m" => "5m",
+            "15m" => "15m",
+            "30m" => "30m",
+            "1h" => "1h",
+            "2h" => "2h",
+            "4h" => "4h",
+            "6h" => "6h",
+            "8h" => "8h",
+            "12h" => "12h",
+            "1d" => "1d",
+            "3d" => "3d",
+            "1w" => "1w",
+            "1M" => "1M",
+            _ => "1h",
         }
     }
 

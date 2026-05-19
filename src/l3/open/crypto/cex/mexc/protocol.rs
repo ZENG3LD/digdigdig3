@@ -183,16 +183,31 @@ impl WsProtocol for MexcProtocol {
     }
 
     fn subscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
-        // Liquidation: MEXC does not expose a public WS liquidation feed.
+        // Liquidation: MEXC has no public liquidation WS channel on either Spot or Futures.
         if matches!(spec.kind, StreamKind::Liquidation) {
             return Err(WebSocketError::NotSupported(
-                "MEXC does not expose a public WS liquidation feed — \
-                 no REST alternative available publicly".to_string(),
+                "MEXC Futures has no public WS liquidation channel — \
+                 no public REST alternative either".to_string(),
             ));
         }
+
         if Self::is_futures(spec.account_type) {
+            // OpenInterest WS: MEXC Futures has no dedicated OI channel.
+            // OI is embedded as holdVol in push.ticker — subscribe to Ticker instead,
+            // or use REST GET /api/v1/contract/ticker?symbol=BTC_USDT and read holdVol.
+            if matches!(spec.kind, StreamKind::OpenInterest) {
+                return Err(WebSocketError::NotSupported(
+                    "MEXC Futures has no dedicated OI WS channel — \
+                     OI (holdVol) is embedded in push.ticker; subscribe to Ticker \
+                     or use REST GET /api/v1/contract/ticker?symbol=BTC_USDT".to_string(),
+                ));
+            }
             Self::futures_subscribe_frame(spec, "subscribe")
         } else {
+            // MEXC Spot WebSocket migrated to binary protobuf frames on 2025-08-04.
+            // All spot channels (ticker, trade, orderbook, kline) require protobuf decoding
+            // via the PushDataV3ApiWrapper schema from github.com/mexcdevelop/websocket-proto.
+            // Protobuf decoder is implemented in MexcParser::parse_protobuf_message.
             Self::spot_subscribe_frame(spec, "subscribe")
         }
     }
@@ -282,9 +297,14 @@ impl WsProtocol for MexcProtocol {
         }
     }
 
-    fn unsupported_by_exchange(&self, _account_type: AccountType) -> &'static [StreamKind] {
-        // MEXC has no public liquidation stream
-        &[StreamKind::Liquidation]
+    fn unsupported_by_exchange(&self, account_type: AccountType) -> &'static [StreamKind] {
+        if Self::is_futures(account_type) {
+            // MEXC Futures: no liquidation channel; no dedicated OI channel (only in ticker)
+            &[StreamKind::Liquidation, StreamKind::OpenInterest]
+        } else {
+            // MEXC Spot: no liquidation channel
+            &[StreamKind::Liquidation]
+        }
     }
 
     /// Override binary decode: MEXC spot sends protobuf binary frames.
@@ -345,7 +365,13 @@ fn build_spot_registry() -> TopicRegistry {
 fn build_futures_registry() -> TopicRegistry {
     let at = AccountType::FuturesCross;
     TopicRegistry::builder()
+        // Ticker carries Ticker + MarkPrice (fairPrice) + FundingRate + OpenInterest (holdVol) + IndexPrice
         .register(StreamKind::Ticker, at, "push.ticker", parse_futures_ticker)
+        .register(StreamKind::MarkPrice, at, "push.ticker", parse_futures_ticker_mark_price)
+        .register(StreamKind::FundingRate, at, "push.ticker", parse_futures_ticker_funding_rate)
+        .register(StreamKind::OpenInterest, at, "push.ticker", parse_futures_ticker_open_interest)
+        .register(StreamKind::IndexPrice, at, "push.ticker", parse_futures_ticker_index_price)
+        // Dedicated topic parsers (for when user subscribes to dedicated channels)
         .register(StreamKind::Trade, at, "push.deal", parse_futures_deal)
         .register(StreamKind::AggTrade, at, "push.deal", parse_futures_deal)
         .register(StreamKind::Orderbook, at, "push.depth", parse_futures_depth)
@@ -440,6 +466,104 @@ fn parse_futures_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
         price_change_percent_24h,
         timestamp,
     }))
+}
+
+/// Extract `fairPrice` (mark price) from `push.ticker` frame.
+fn parse_futures_ticker_mark_price(raw: &Value) -> WebSocketResult<StreamEvent> {
+    use crate::core::utils::timestamp_millis;
+    let data = futures_data(raw)?;
+    let symbol = futures_symbol(raw);
+
+    let mark_price = data
+        .get("fairPrice")
+        .and_then(parse_f64_field)
+        .ok_or_else(|| WebSocketError::Parse("futures ticker: missing fairPrice for MarkPrice fan-out".into()))?;
+
+    let index_price = data.get("indexPrice").and_then(parse_f64_field);
+
+    let timestamp = data
+        .get("timestamp")
+        .and_then(|t| t.as_i64())
+        .unwrap_or_else(|| timestamp_millis() as i64);
+
+    Ok(StreamEvent::MarkPrice {
+        symbol,
+        mark_price,
+        index_price,
+        timestamp,
+    })
+}
+
+/// Extract `fundingRate` from `push.ticker` frame.
+fn parse_futures_ticker_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent> {
+    use crate::core::utils::timestamp_millis;
+    let data = futures_data(raw)?;
+    let symbol = futures_symbol(raw);
+
+    let rate = data
+        .get("fundingRate")
+        .and_then(parse_f64_field)
+        .ok_or_else(|| WebSocketError::Parse("futures ticker: missing fundingRate for FundingRate fan-out".into()))?;
+
+    let timestamp = data
+        .get("timestamp")
+        .and_then(|t| t.as_i64())
+        .unwrap_or_else(|| timestamp_millis() as i64);
+
+    Ok(StreamEvent::FundingRate {
+        symbol,
+        rate,
+        next_funding_time: None,
+        timestamp,
+    })
+}
+
+/// Extract `holdVol` (open interest) from `push.ticker` frame.
+fn parse_futures_ticker_open_interest(raw: &Value) -> WebSocketResult<StreamEvent> {
+    use crate::core::utils::timestamp_millis;
+    let data = futures_data(raw)?;
+    let symbol = futures_symbol(raw);
+
+    let open_interest = data
+        .get("holdVol")
+        .and_then(parse_f64_field)
+        .ok_or_else(|| WebSocketError::Parse("futures ticker: missing holdVol for OpenInterest fan-out".into()))?;
+
+    let timestamp = data
+        .get("timestamp")
+        .and_then(|t| t.as_i64())
+        .unwrap_or_else(|| timestamp_millis() as i64);
+
+    Ok(StreamEvent::OpenInterestUpdate {
+        symbol,
+        open_interest,
+        open_interest_value: None,
+        timestamp,
+    })
+}
+
+/// Extract `indexPrice` from `push.ticker` frame.
+fn parse_futures_ticker_index_price(raw: &Value) -> WebSocketResult<StreamEvent> {
+    use crate::core::utils::timestamp_millis;
+    let data = futures_data(raw)?;
+    let symbol = futures_symbol(raw);
+
+    let index_price = data
+        .get("indexPrice")
+        .and_then(parse_f64_field)
+        .ok_or_else(|| WebSocketError::Parse("futures ticker: missing indexPrice for IndexPrice fan-out".into()))?;
+
+    let timestamp = data
+        .get("timestamp")
+        .and_then(|t| t.as_i64())
+        .unwrap_or_else(|| timestamp_millis() as i64);
+
+    Ok(StreamEvent::MarkPrice {
+        symbol,
+        mark_price: index_price,
+        index_price: Some(index_price),
+        timestamp,
+    })
 }
 
 fn parse_futures_deal(raw: &Value) -> WebSocketResult<StreamEvent> {

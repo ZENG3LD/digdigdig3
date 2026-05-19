@@ -299,12 +299,16 @@ fn channel_and_payload(
         }
         StreamKind::MarkPrice => ("tickers", vec![sym]),
         StreamKind::FundingRate => ("tickers", vec![sym]),
-        StreamKind::Liquidation => ("liquidates", vec![sym]),
+        // futures.public_liquidates — public market-wide liquidations (added 2025-02-10)
+        // futures.liquidates is PRIVATE (own account only, silent without auth)
+        StreamKind::Liquidation => ("public_liquidates", vec![sym]),
+        StreamKind::AggTrade => ("trades", vec![sym]),
         StreamKind::OrderUpdate => ("orders", vec![sym]),
         StreamKind::BalanceUpdate => ("balances", vec![]),
         StreamKind::PositionUpdate => ("positions", vec![sym]),
-        // Spec §3.3: register all known futures-only channels
-        StreamKind::OpenInterest => ("contract_stats", vec![sym]),
+        // contract_stats requires TWO payload args: [contract, interval]
+        // Valid intervals: "10s". Omitting interval silently yields no data.
+        StreamKind::OpenInterest => ("contract_stats", vec![sym, "10s".to_string()]),
         other => {
             return Err(WebSocketError::UnsupportedOperation(format!(
                 "gateio: unsupported stream kind {:?}",
@@ -349,7 +353,10 @@ fn build_registry(category: GateIoCategory) -> TopicRegistry {
             b = b
                 .register(StreamKind::MarkPrice,      AccountType::FuturesCross, format!("{}.mark_price", prefix), parse_mark_price)
                 .register(StreamKind::FundingRate,     AccountType::FuturesCross, format!("{}.funding_rate", prefix), parse_funding_rate)
-                .register(StreamKind::Liquidation,     AccountType::FuturesCross, format!("{}.liquidates", prefix), parse_liquidation)
+                // public_liquidates: market-wide liquidation feed (public, no auth).
+                // liquidates (without public_) is the private account-own feed — silent without auth.
+                .register(StreamKind::Liquidation,     AccountType::FuturesCross, format!("{}.public_liquidates", prefix), parse_liquidation)
+                .register(StreamKind::AggTrade,        AccountType::FuturesCross, format!("{}.trades", prefix), parse_trade)
                 .register(StreamKind::PositionUpdate,  AccountType::FuturesCross, format!("{}.positions", prefix), parse_position_update)
                 .register(StreamKind::OpenInterest,    AccountType::FuturesCross, format!("{}.contract_stats", prefix), parse_contract_stats);
         }

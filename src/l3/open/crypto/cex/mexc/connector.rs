@@ -1837,23 +1837,23 @@ impl MexcConnector {
         Ok(response)
     }
 
-    /// Get open interest for a futures contract.
+    /// Get open interest for a futures contract via the ticker endpoint.
     ///
-    /// `GET /api/v1/contract/open_interest/{symbol}` (MEXC futures domain)
-    ///
-    /// # TODO
-    /// Verify exact endpoint path against live MEXC contract API documentation.
-    pub async fn get_open_interest(&self, symbol: &str) -> ExchangeResult<Value> {
+    /// MEXC does not expose `/api/v1/contract/open_interest/{symbol}` — that path
+    /// returns 404. OI is embedded in the ticker response as `data.holdVol`.
+    /// See: `GET /api/v1/contract/ticker?symbol={symbol}` (MEXC futures domain)
+    pub async fn get_futures_ticker_raw(&self, symbol: &str) -> ExchangeResult<Value> {
         let base_url = MexcUrls::futures_base_url();
-        let path = format!("{}/{}", MexcEndpoint::FuturesOpenInterest.path(), symbol);
-        let url = format!("{}{}", base_url, path);
+        let url = format!("{}{}", base_url, MexcEndpoint::FuturesTicker.path());
         if !self.rate_limit_wait(1, false).await {
             return Err(ExchangeError::RateLimitExceeded {
                 retry_after: None,
                 message: "Rate limit budget >= 90% used; non-essential market data request dropped".to_string(),
             });
         }
-        let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        let (response, resp_headers) = self.http.get_with_response_headers(&url, &params, &HashMap::new()).await?;
         self.update_weight_from_headers(&resp_headers);
         Ok(response)
     }
@@ -1920,6 +1920,8 @@ impl crate::core::traits::Positions for MexcConnector {
         symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<crate::core::types::OpenInterest> {
+        // MEXC has no dedicated OI endpoint. OI lives in the futures ticker as `data.holdVol`.
+        // Reference: GET /api/v1/contract/ticker?symbol=BTC_USDT → data.holdVol
         let raw_symbol = if symbol.contains('/') {
             let parts: Vec<&str> = symbol.split('/').collect();
             format!(
@@ -1930,15 +1932,24 @@ impl crate::core::traits::Positions for MexcConnector {
         } else {
             symbol.to_uppercase().replace('-', "_")
         };
-        let response = self.get_open_interest(&raw_symbol).await?;
+        let response = self.get_futures_ticker_raw(&raw_symbol).await?;
         let data = response
             .get("data")
-            .ok_or_else(|| ExchangeError::Parse("MEXC OI: missing data".to_string()))?;
-        let oi = data
-            .get("openInterest")
+            .ok_or_else(|| ExchangeError::Parse("MEXC OI: missing 'data' in ticker response".to_string()))?;
+        // data is an array (ticker list) when no symbol filter is applied,
+        // but with ?symbol= it returns a single object.
+        let ticker_obj = if let Some(arr) = data.as_array() {
+            arr.iter()
+                .find(|t| t.get("symbol").and_then(|s| s.as_str()) == Some(raw_symbol.as_str()))
+                .ok_or_else(|| ExchangeError::Parse(format!("MEXC OI: symbol {} not found in ticker list", raw_symbol)))?
+        } else {
+            data
+        };
+        let oi = ticker_obj
+            .get("holdVol")
             .and_then(|v| v.as_f64())
             .or_else(|| {
-                data.get("openInterest")
+                ticker_obj.get("holdVol")
                     .and_then(|v| v.as_str())
                     .and_then(|s| s.parse::<f64>().ok())
             })

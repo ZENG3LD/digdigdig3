@@ -54,20 +54,31 @@ impl BitgetProtocol {
     }
 
     /// Map StreamKind → Bitget channel name string.
-    /// Returns None for unsupported/unknown kinds.
+    ///
+    /// For futures, MarkPrice / FundingRate / OpenInterest / IndexPrice are
+    /// fan-outs from the `ticker` channel (no dedicated channel on V2 Classic).
+    /// AggTrade maps to `trade` (Bitget has no aggregated-trade channel).
+    /// Liquidation has no public channel on V2 Classic — callers receive
+    /// `NotSupported` from `subscribe_frame`.
+    ///
+    /// Returns None for kinds that have no wire channel.
     fn channel_name(kind: &StreamKind) -> Option<String> {
         let name = match kind {
             StreamKind::Ticker => "ticker".to_string(),
-            StreamKind::Trade => "trade".to_string(),
+            StreamKind::Trade | StreamKind::AggTrade => "trade".to_string(),
             StreamKind::Orderbook => "books".to_string(),
             StreamKind::OrderbookDelta => "books15".to_string(),
             StreamKind::Kline { interval } => format!("candle{}", bitget_kline_interval(interval)),
-            StreamKind::MarkPrice => "mark-price".to_string(),
-            StreamKind::FundingRate => "funding-rate".to_string(),
-            StreamKind::Liquidation => "liq-order".to_string(),
+            // Fan-outs from ticker — subscribe to "ticker" channel, parser extracts field
+            StreamKind::MarkPrice
+            | StreamKind::FundingRate
+            | StreamKind::OpenInterest
+            | StreamKind::IndexPrice => "ticker".to_string(),
             StreamKind::OrderUpdate => "orders".to_string(),
             StreamKind::BalanceUpdate => "account".to_string(),
             StreamKind::PositionUpdate => "positions".to_string(),
+            // Liquidation has no public channel on Bitget V2 Classic futures
+            StreamKind::Liquidation => return None,
             _ => return None,
         };
         Some(name)
@@ -75,6 +86,13 @@ impl BitgetProtocol {
 
     /// Build subscribe/unsubscribe frame.
     fn build_frame(op: &str, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+        // Liquidation has no public channel on Bitget V2 Classic futures — UTA V3 only.
+        if matches!(spec.kind, StreamKind::Liquidation) {
+            return Err(WebSocketError::NotSupported(
+                "Bitget V2 Classic futures has no public liquidation WS channel — only UTA V3 supports it. Use REST polling for liquidation data.".into(),
+            ));
+        }
+
         let channel = Self::channel_name(&spec.kind)
             .ok_or_else(|| WebSocketError::UnsupportedOperation(
                 format!("bitget: unsupported stream kind {:?}", spec.kind),
@@ -210,19 +228,36 @@ impl WsProtocol for BitgetProtocol {
 fn build_registry(account_type: AccountType) -> TopicRegistry {
     let mut b = TopicRegistry::builder();
 
-    // Standard channels present on both spot and futures
+    // Channels present on both spot and futures
     b = b
         .register(StreamKind::Ticker, account_type, "ticker", parse_ticker)
         .register(StreamKind::Trade, account_type, "trade", parse_trade)
+        // AggTrade: Bitget has no aggregated-trade channel; map to "trade" (same wire data)
+        .register(StreamKind::AggTrade, account_type, "trade", parse_agg_trade)
         .register(StreamKind::Orderbook, account_type, "books", parse_orderbook)
         .register(StreamKind::OrderbookDelta, account_type, "books5", parse_orderbook)
         .register(StreamKind::OrderbookDelta, account_type, "books15", parse_orderbook)
-        .register(StreamKind::MarkPrice, account_type, "mark-price", parse_mark_price)
-        .register(StreamKind::FundingRate, account_type, "funding-rate", parse_funding_rate)
-        .register(StreamKind::Liquidation, account_type, "liq-order", parse_liquidation)
         .register(StreamKind::OrderUpdate, account_type, "orders", parse_order_update)
         .register(StreamKind::BalanceUpdate, account_type, "account", parse_balance_update)
         .register(StreamKind::PositionUpdate, account_type, "positions", parse_position_update);
+
+    // Futures-only: MarkPrice / FundingRate / OpenInterest / IndexPrice are fan-outs
+    // from the "ticker" channel.  No dedicated channels exist on Bitget V2 Classic.
+    // Liquidation is NOT registered — subscribe_frame returns NotSupported immediately.
+    if matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated | AccountType::Options) {
+        b = b
+            .register(StreamKind::MarkPrice, account_type, "ticker", parse_ticker_as_mark_price)
+            .register(StreamKind::FundingRate, account_type, "ticker", parse_ticker_as_funding_rate)
+            .register(StreamKind::OpenInterest, account_type, "ticker", parse_ticker_as_open_interest)
+            .register(StreamKind::IndexPrice, account_type, "ticker", parse_ticker_as_index_price);
+    } else {
+        // Spot: these channels don't carry futures fields; register stubs that return
+        // the parsed mark-price / funding-rate fields when present (graceful degradation).
+        b = b
+            .register(StreamKind::MarkPrice, account_type, "mark-price", parse_mark_price)
+            .register(StreamKind::FundingRate, account_type, "funding-rate", parse_funding_rate)
+            .register(StreamKind::Liquidation, account_type, "liq-order", parse_liquidation);
+    }
 
     // Kline channels — Bitget uses "candle<interval>" naming
     for interval in BITGET_KLINE_CHANNELS {
@@ -465,6 +500,216 @@ fn parse_liquidation(raw: &Value) -> WebSocketResult<StreamEvent> {
     })
 }
 
+/// Fan-out: extract MarkPrice from a `ticker` frame (`markPrice` field).
+/// Returns `Err(Parse("FieldAbsent: markPrice"))` when the delta omits the field.
+fn parse_ticker_as_mark_price(raw: &Value) -> WebSocketResult<StreamEvent> {
+    let data = frame_data(raw)?;
+    let inst_id = raw
+        .get("arg")
+        .and_then(|a| a.get("instId"))
+        .and_then(|v| v.as_str());
+
+    let item = first_item(data);
+    let parse_f64 = |v: &Value| -> Option<f64> {
+        v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
+    };
+
+    let mark_price = item
+        .get("markPrice")
+        .and_then(parse_f64)
+        .ok_or_else(|| WebSocketError::Parse("FieldAbsent: markPrice".into()))?;
+
+    let index_price = item.get("indexPrice").and_then(parse_f64);
+
+    let symbol = item
+        .get("instId")
+        .and_then(|v| v.as_str())
+        .or(inst_id)
+        .unwrap_or("")
+        .to_string();
+
+    let timestamp = item
+        .get("ts")
+        .and_then(parse_f64)
+        .map(|ms| ms as i64)
+        .unwrap_or(0);
+
+    Ok(StreamEvent::MarkPrice { symbol, mark_price, index_price, timestamp })
+}
+
+/// Fan-out: extract FundingRate from a `ticker` frame (`fundingRate` + `nextFundingTime` fields).
+fn parse_ticker_as_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent> {
+    let data = frame_data(raw)?;
+    let inst_id = raw
+        .get("arg")
+        .and_then(|a| a.get("instId"))
+        .and_then(|v| v.as_str());
+
+    let item = first_item(data);
+    let parse_f64 = |v: &Value| -> Option<f64> {
+        v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
+    };
+
+    let rate = item
+        .get("fundingRate")
+        .and_then(parse_f64)
+        .ok_or_else(|| WebSocketError::Parse("FieldAbsent: fundingRate".into()))?;
+
+    let symbol = item
+        .get("instId")
+        .and_then(|v| v.as_str())
+        .or(inst_id)
+        .unwrap_or("")
+        .to_string();
+
+    let next_funding_time = item
+        .get("nextFundingTime")
+        .and_then(parse_f64)
+        .map(|ms| ms as i64);
+
+    let timestamp = item
+        .get("ts")
+        .and_then(parse_f64)
+        .map(|ms| ms as i64)
+        .unwrap_or(0);
+
+    Ok(StreamEvent::FundingRate { symbol, rate, next_funding_time, timestamp })
+}
+
+/// Fan-out: extract OpenInterest from a `ticker` frame (`holdingAmount` field).
+fn parse_ticker_as_open_interest(raw: &Value) -> WebSocketResult<StreamEvent> {
+    let data = frame_data(raw)?;
+    let inst_id = raw
+        .get("arg")
+        .and_then(|a| a.get("instId"))
+        .and_then(|v| v.as_str());
+
+    let item = first_item(data);
+    let parse_f64 = |v: &Value| -> Option<f64> {
+        v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
+    };
+
+    let open_interest = item
+        .get("holdingAmount")
+        .and_then(parse_f64)
+        .ok_or_else(|| WebSocketError::Parse("FieldAbsent: holdingAmount".into()))?;
+
+    let symbol = item
+        .get("instId")
+        .and_then(|v| v.as_str())
+        .or(inst_id)
+        .unwrap_or("")
+        .to_string();
+
+    let timestamp = item
+        .get("ts")
+        .and_then(parse_f64)
+        .map(|ms| ms as i64)
+        .unwrap_or(0);
+
+    Ok(StreamEvent::OpenInterestUpdate {
+        symbol,
+        open_interest,
+        open_interest_value: None,
+        timestamp,
+    })
+}
+
+/// Fan-out: extract IndexPrice from a `ticker` frame (`indexPrice` field).
+fn parse_ticker_as_index_price(raw: &Value) -> WebSocketResult<StreamEvent> {
+    let data = frame_data(raw)?;
+    let inst_id = raw
+        .get("arg")
+        .and_then(|a| a.get("instId"))
+        .and_then(|v| v.as_str());
+
+    let item = first_item(data);
+    let parse_f64 = |v: &Value| -> Option<f64> {
+        v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
+    };
+
+    let price = item
+        .get("indexPrice")
+        .and_then(parse_f64)
+        .ok_or_else(|| WebSocketError::Parse("FieldAbsent: indexPrice".into()))?;
+
+    let symbol = item
+        .get("instId")
+        .and_then(|v| v.as_str())
+        .or(inst_id)
+        .unwrap_or("")
+        .to_string();
+
+    let timestamp = item
+        .get("ts")
+        .and_then(parse_f64)
+        .map(|ms| ms as i64)
+        .unwrap_or(0);
+
+    Ok(StreamEvent::IndexPrice { symbol, price, timestamp })
+}
+
+/// AggTrade fan-out: Bitget has no aggregated-trade channel; emit AggTrade from `trade` frame.
+fn parse_agg_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
+    let data = frame_data(raw)?;
+    let inst_id = raw
+        .get("arg")
+        .and_then(|a| a.get("instId"))
+        .and_then(|v| v.as_str());
+
+    let item = first_item(data);
+    let parse_f64 = |v: &Value| -> Option<f64> {
+        v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
+    };
+
+    let symbol = item
+        .get("instId")
+        .and_then(|v| v.as_str())
+        .or(inst_id)
+        .unwrap_or("")
+        .to_string();
+
+    let price = item
+        .get("price")
+        .and_then(parse_f64)
+        .ok_or_else(|| WebSocketError::Parse("agg_trade: missing price".into()))?;
+
+    let quantity = item.get("size").and_then(parse_f64).unwrap_or(0.0);
+
+    let side = item
+        .get("side")
+        .and_then(|v| v.as_str())
+        .map(|s| match s {
+            "buy" | "Buy" => crate::core::types::TradeSide::Buy,
+            _ => crate::core::types::TradeSide::Sell,
+        })
+        .unwrap_or(crate::core::types::TradeSide::Buy);
+
+    let trade_id = item
+        .get("tradeId")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<i64>().ok())
+        .or_else(|| item.get("tradeId").and_then(|v| v.as_i64()))
+        .unwrap_or(0);
+
+    let timestamp = item
+        .get("ts")
+        .and_then(parse_f64)
+        .map(|ms| ms as i64)
+        .unwrap_or(0);
+
+    Ok(StreamEvent::AggTrade {
+        symbol,
+        aggregate_id: trade_id,
+        price,
+        quantity,
+        first_trade_id: trade_id,
+        last_trade_id: trade_id,
+        side,
+        timestamp,
+    })
+}
+
 fn parse_order_update(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw)?;
     let event = BitgetParser::parse_ws_order_update(data)
@@ -619,6 +864,140 @@ mod tests {
         match proto.ping_frame() {
             Some(Message::Text(t)) => assert_eq!(t, "ping"),
             _ => panic!("expected Some(Text('ping'))"),
+        }
+    }
+
+    fn futures_spec(kind: StreamKind) -> StreamSpec {
+        StreamSpec {
+            kind,
+            symbol: crate::core::types::OwnedSymbolInput::Raw("BTCUSDT".to_string()),
+            account_type: AccountType::FuturesCross,
+            depth: None,
+            speed_ms: None,
+        }
+    }
+
+    #[test]
+    fn futures_registry_has_ticker_fanout() {
+        let proto = BitgetProtocol::new(AccountType::FuturesCross, false);
+        let reg = proto.topic_registry(AccountType::FuturesCross);
+        assert!(reg.supports(&StreamKind::Ticker, AccountType::FuturesCross));
+        assert!(reg.supports(&StreamKind::MarkPrice, AccountType::FuturesCross));
+        assert!(reg.supports(&StreamKind::FundingRate, AccountType::FuturesCross));
+        assert!(reg.supports(&StreamKind::OpenInterest, AccountType::FuturesCross));
+        assert!(reg.supports(&StreamKind::IndexPrice, AccountType::FuturesCross));
+        assert!(reg.supports(&StreamKind::AggTrade, AccountType::FuturesCross));
+        // Liquidation must NOT be registered (NotSupported at subscribe_frame level)
+        assert!(!reg.supports(&StreamKind::Liquidation, AccountType::FuturesCross));
+    }
+
+    #[test]
+    fn subscribe_frame_futures_mark_price_uses_ticker_channel() {
+        let proto = BitgetProtocol::new(AccountType::FuturesCross, false);
+        let spec = futures_spec(StreamKind::MarkPrice);
+        let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed");
+        let text = match msg {
+            Message::Text(t) => t,
+            _ => panic!("expected text frame"),
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        let arg = &v["args"][0];
+        assert_eq!(arg["instType"], "USDT-FUTURES");
+        assert_eq!(arg["channel"], "ticker", "MarkPrice must fan-out via ticker channel");
+    }
+
+    #[test]
+    fn subscribe_frame_futures_funding_rate_uses_ticker_channel() {
+        let proto = BitgetProtocol::new(AccountType::FuturesCross, false);
+        let spec = futures_spec(StreamKind::FundingRate);
+        let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed");
+        let text = match msg { Message::Text(t) => t, _ => panic!("expected text frame") };
+        let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert_eq!(v["args"][0]["channel"], "ticker", "FundingRate must fan-out via ticker channel");
+    }
+
+    #[test]
+    fn subscribe_frame_futures_open_interest_uses_ticker_channel() {
+        let proto = BitgetProtocol::new(AccountType::FuturesCross, false);
+        let spec = futures_spec(StreamKind::OpenInterest);
+        let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed");
+        let text = match msg { Message::Text(t) => t, _ => panic!("expected text frame") };
+        let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert_eq!(v["args"][0]["channel"], "ticker", "OpenInterest must fan-out via ticker channel");
+    }
+
+    #[test]
+    fn subscribe_frame_futures_agg_trade_uses_trade_channel() {
+        let proto = BitgetProtocol::new(AccountType::FuturesCross, false);
+        let spec = futures_spec(StreamKind::AggTrade);
+        let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed");
+        let text = match msg { Message::Text(t) => t, _ => panic!("expected text frame") };
+        let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert_eq!(v["args"][0]["channel"], "trade", "AggTrade maps to trade channel");
+    }
+
+    #[test]
+    fn subscribe_frame_futures_liquidation_returns_not_supported() {
+        let proto = BitgetProtocol::new(AccountType::FuturesCross, false);
+        let spec = futures_spec(StreamKind::Liquidation);
+        let err = proto.subscribe_frame(&spec).expect_err("Liquidation must return NotSupported");
+        assert!(
+            matches!(err, WebSocketError::NotSupported(_)),
+            "expected NotSupported, got {:?}", err
+        );
+    }
+
+    #[test]
+    fn ticker_fanout_dispatch_all_returns_multiple_parsers() {
+        let proto = BitgetProtocol::new(AccountType::FuturesCross, false);
+        let reg = proto.topic_registry(AccountType::FuturesCross);
+        let key = crate::core::websocket::TopicKey::new("ticker");
+        let parsers = reg.dispatch_all(&key);
+        // ticker key must match: Ticker, MarkPrice, FundingRate, OpenInterest, IndexPrice (>=5)
+        assert!(parsers.len() >= 5, "expected >=5 parsers for ticker fan-out, got {}", parsers.len());
+    }
+
+    #[test]
+    fn parse_ticker_as_funding_rate_extracts_fields() {
+        let frame = serde_json::json!({
+            "action": "snapshot",
+            "arg": { "instType": "USDT-FUTURES", "channel": "ticker", "instId": "BTCUSDT" },
+            "data": [{
+                "instId": "BTCUSDT",
+                "fundingRate": "0.00010",
+                "nextFundingTime": "1716192000000",
+                "ts": "1716191700000"
+            }]
+        });
+        let event = parse_ticker_as_funding_rate(&frame).expect("should parse funding rate");
+        match event {
+            StreamEvent::FundingRate { rate, symbol, next_funding_time, .. } => {
+                assert!((rate - 0.0001).abs() < 1e-9, "rate mismatch");
+                assert_eq!(symbol, "BTCUSDT");
+                assert_eq!(next_funding_time, Some(1_716_192_000_000i64));
+            }
+            other => panic!("expected FundingRate, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_ticker_as_open_interest_extracts_holding_amount() {
+        let frame = serde_json::json!({
+            "action": "snapshot",
+            "arg": { "instType": "USDT-FUTURES", "channel": "ticker", "instId": "BTCUSDT" },
+            "data": [{
+                "instId": "BTCUSDT",
+                "holdingAmount": "12345.678",
+                "ts": "1716191700000"
+            }]
+        });
+        let event = parse_ticker_as_open_interest(&frame).expect("should parse OI");
+        match event {
+            StreamEvent::OpenInterestUpdate { open_interest, symbol, .. } => {
+                assert!((open_interest - 12345.678).abs() < 1e-6);
+                assert_eq!(symbol, "BTCUSDT");
+            }
+            other => panic!("expected OpenInterestUpdate, got {:?}", other),
         }
     }
 }

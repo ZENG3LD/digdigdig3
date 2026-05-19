@@ -138,7 +138,7 @@ impl KuCoinProtocol {
             StreamKind::Kline { interval } => {
                 let wire = kucoin_kline_interval(interval);
                 if is_futures {
-                    format!("/contractMarket/candle:{}_{}", sym, wire)
+                    format!("/contractMarket/limitCandle:{}_{}", sym, wire)
                 } else {
                     format!("/market/candles:{}_{}", sym, wire)
                 }
@@ -169,8 +169,14 @@ impl KuCoinProtocol {
             }
             StreamKind::OpenInterest => {
                 return Err(WebSocketError::NotSupported(
-                    "KuCoin does not expose a realtime WS open interest feed — \
-                     use REST GET /api/v1/contracts/statistics".to_string(),
+                    "KuCoin Futures has no public OI WS channel — \
+                     use REST GET /api/v1/contracts/{symbol}".to_string(),
+                ));
+            }
+            StreamKind::AggTrade => {
+                return Err(WebSocketError::NotSupported(
+                    "KuCoin Futures has no aggregated trade WS channel — \
+                     use /contractMarket/execution for raw trades".to_string(),
                 ));
             }
             other => {
@@ -301,11 +307,16 @@ fn build_registry(account_type: AccountType) -> TopicRegistry {
 
     if is_futures {
         // Futures channels
+        // Orderbook (snapshot) subscribes to level2Depth5 — registry key must match incoming topic.
+        // OrderbookDelta (delta) subscribes to level2 — registry key must match.
+        // Both level2Depth5 and level2Depth50 push snapshots, mapped to OrderbookDelta for compat.
+        // /contract/instrument:* carries both mark.index.price (MarkPrice) and funding.rate (FundingRate)
+        // subjects — register both to the same topic key so the dispatcher routes them.
         b = b
             .register(StreamKind::Ticker,        account_type, "/contractMarket/tickerV2:*",        parse_ticker)
             .register(StreamKind::Trade,          account_type, "/contractMarket/execution:*",       parse_trade)
-            .register(StreamKind::Orderbook,      account_type, "/contractMarket/level2:*",          parse_orderbook_delta)
-            .register(StreamKind::OrderbookDelta, account_type, "/contractMarket/level2Depth5:*",    parse_orderbook_delta)
+            .register(StreamKind::Orderbook,      account_type, "/contractMarket/level2Depth5:*",    parse_orderbook_delta)
+            .register(StreamKind::OrderbookDelta, account_type, "/contractMarket/level2:*",          parse_orderbook_delta)
             .register(StreamKind::OrderbookDelta, account_type, "/contractMarket/level2Depth50:*",   parse_orderbook_delta)
             .register(StreamKind::MarkPrice,      account_type, "/contract/instrument:*",            parse_mark_price)
             .register(StreamKind::IndexPrice,     account_type, "/contractMarket/indexPrice:*",      parse_index_price)
@@ -319,23 +330,25 @@ fn build_registry(account_type: AccountType) -> TopicRegistry {
             b = b.register(
                 StreamKind::Kline { interval: KlineInterval::new(*internal) },
                 account_type,
-                format!("/contractMarket/candle:*_{}", wire),
+                format!("/contractMarket/limitCandle:*_{}", wire),
                 parse_kline,
             );
         }
     } else {
         // Spot channels
+        // Orderbook (snapshot) subscribes to spotMarket/level2Depth5 — registry key must match.
+        // OrderbookDelta (delta) subscribes to market/level2 — registry key must match.
         b = b
-            .register(StreamKind::Ticker,        account_type, "/market/ticker:*",          parse_ticker)
-            .register(StreamKind::Ticker,        account_type, "/market/snapshot:*",        parse_snapshot_ticker)
-            .register(StreamKind::Trade,          account_type, "/market/match:*",           parse_trade)
-            .register(StreamKind::Orderbook,      account_type, "/market/level2:*",          parse_orderbook_delta)
-            .register(StreamKind::OrderbookDelta, account_type, "/market/level2Depth5:*",    parse_orderbook_delta)
-            .register(StreamKind::OrderbookDelta, account_type, "/market/level2Depth50:*",   parse_orderbook_delta)
-            .register(StreamKind::MarkPrice,      account_type, "/indicator/markPrice:*",    parse_mark_price)
-            .register(StreamKind::IndexPrice,     account_type, "/indicator/index:*",        parse_index_price)
-            .register(StreamKind::OrderUpdate,    account_type, "/spotMarket/tradeOrdersV2", parse_order_update)
-            .register(StreamKind::BalanceUpdate,  account_type, "/account/balance",          parse_balance_update);
+            .register(StreamKind::Ticker,        account_type, "/market/ticker:*",               parse_ticker)
+            .register(StreamKind::Ticker,        account_type, "/market/snapshot:*",             parse_snapshot_ticker)
+            .register(StreamKind::Trade,          account_type, "/market/match:*",                parse_trade)
+            .register(StreamKind::Orderbook,      account_type, "/spotMarket/level2Depth5:*",     parse_orderbook_delta)
+            .register(StreamKind::OrderbookDelta, account_type, "/market/level2:*",               parse_orderbook_delta)
+            .register(StreamKind::OrderbookDelta, account_type, "/spotMarket/level2Depth50:*",    parse_orderbook_delta)
+            .register(StreamKind::MarkPrice,      account_type, "/indicator/markPrice:*",         parse_mark_price)
+            .register(StreamKind::IndexPrice,     account_type, "/indicator/index:*",             parse_index_price)
+            .register(StreamKind::OrderUpdate,    account_type, "/spotMarket/tradeOrdersV2",      parse_order_update)
+            .register(StreamKind::BalanceUpdate,  account_type, "/account/balance",               parse_balance_update);
 
         for (wire, internal) in SPOT_KLINE_CHANNELS {
             b = b.register(

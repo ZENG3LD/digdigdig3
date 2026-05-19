@@ -196,7 +196,7 @@ impl HtxEndpoint {
             Self::OpenInterest => "/linear-swap-api/v1/swap_open_interest",
             Self::FundingRateHistory => "/linear-swap-api/v3/swap-funding-rate-history",
             Self::MarkPrice => "/linear-swap-api/v1/swap_index",
-            Self::MarkPriceKline => "/linear-swap-ex/market/history/mark_price_kline",
+            Self::MarkPriceKline => "/index/market/history/linear_swap_mark_price_kline",
             Self::EliteAccountRatio => "/linear-swap-api/v1/swap_elite_account_ratio",
             Self::HistoricalFundingRate => "/linear-swap-api/v1/swap_historical_funding_rate",
 

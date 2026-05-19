@@ -26,7 +26,11 @@ impl BinanceUrls {
         futures_rest: "https://fapi.binance.com",
         coin_futures_rest: "https://dapi.binance.com",
         spot_ws: "wss://stream.binance.com:9443",
-        futures_ws: "wss://fstream.binance.com",
+        // Post-2026-04-23 routing: markPrice/aggTrade/forceOrder/kline/ticker streams
+        // were moved to the /market path. /ws/<stream> only serves /public streams now.
+        // Use /market as base so BinanceProtocol::endpoint() appends /stream →
+        // wss://fstream.binance.com/market/stream (combined-stream mode, SUBSCRIBE frames).
+        futures_ws: "wss://fstream.binance.com/market",
     };
 
     /// Testnet URLs

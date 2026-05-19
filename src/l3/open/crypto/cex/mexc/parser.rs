@@ -923,12 +923,12 @@ impl MexcParser {
             Ok((channel, StreamEvent::Ticker(ticker)))
         } else if channel.contains("aggre.deals") || channel.contains("public.deals") {
             // field 314: PublicAggreDealsV3Api (aggre deals)
-            // field 305: PublicDealsV3Api (non-aggre deals)
+            // field 301: PublicDealsV3Api (non-aggre raw deals)
             let body = Self::pb_bytes(data, 314)
-                .or_else(|| Self::pb_bytes(data, 305))
+                .or_else(|| Self::pb_bytes(data, 301))
                 .ok_or_else(|| ExchangeError::Parse("Missing deals body".into()))?;
-            let ticker = Self::parse_pb_aggre_deals(body, &symbol, timestamp)?;
-            Ok((channel, StreamEvent::Ticker(ticker)))
+            let event = Self::parse_pb_aggre_deals(body, &symbol, timestamp)?;
+            Ok((channel, event))
         } else if channel.contains("bookTicker") {
             // field 305: PublicBookTickerV3Api (PushDataV3ApiWrapper.publicBookTicker)
             let body = Self::pb_bytes(data, 305)
@@ -1003,40 +1003,48 @@ impl MexcParser {
         })
     }
 
-    /// Parse PublicAggreDealsV3Api protobuf body.
+    /// Parse PublicAggreDealsV3Api protobuf body into a `PublicTrade`.
     ///
     /// Fields: 1 (repeated)=deal items, 2=eventType
-    /// Each deal item: 1=price, 2=quantity, 3=tradeType(1=buy,2=sell), 4=time(ms)
-    fn parse_pb_aggre_deals(body: &[u8], symbol: &str, timestamp: i64) -> ExchangeResult<Ticker> {
+    /// Each deal item: 1=price(string), 2=quantity(string), 3=tradeType(varint 1=buy 2=sell), 4=time(varint ms)
+    ///
+    /// Returns the most recent (last) deal as a `StreamEvent::Trade`.
+    pub fn parse_pb_aggre_deals(body: &[u8], symbol: &str, timestamp: i64) -> ExchangeResult<StreamEvent> {
         let deals = Self::pb_repeated_bytes(body, 1);
 
         if deals.is_empty() {
             return Err(ExchangeError::Parse("No deals in aggre deals message".into()));
         }
 
-        // Use the last (most recent) deal as the price
-        let last_deal = deals.last().unwrap();
+        // Use the last (most recent) deal
+        let last_deal = deals.last().expect("non-empty checked above");
         let price_str = Self::pb_string(last_deal, 1)
-            .ok_or_else(|| ExchangeError::Parse("Missing price in deal".into()))?;
-        let last_price: f64 = price_str.parse()
-            .map_err(|_| ExchangeError::Parse(format!("Invalid deal price: {}", price_str)))?;
+            .ok_or_else(|| ExchangeError::Parse("Missing price in aggre deal".into()))?;
+        let price: f64 = price_str.parse()
+            .map_err(|_| ExchangeError::Parse(format!("Invalid aggre deal price: {}", price_str)))?;
+
+        let quantity = Self::pb_string(last_deal, 2)
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+
+        // tradeType: 1=buy, 2=sell
+        let side = match Self::pb_varint(last_deal, 3).unwrap_or(1) {
+            2 => TradeSide::Sell,
+            _ => TradeSide::Buy,
+        };
 
         let deal_time = Self::pb_varint(last_deal, 4)
-            .unwrap_or(timestamp as u64) as i64;
+            .map(|t| t as i64)
+            .unwrap_or(timestamp);
 
-        Ok(Ticker {
+        Ok(StreamEvent::Trade(PublicTrade {
+            id: String::new(),
             symbol: symbol.to_string(),
-            last_price,
-            bid_price: None, // MEXC PublicAggreDealsV3Api wire format does not carry top-of-book quotes — use PublicBookTickerV3Api (field 306)
-            ask_price: None, // MEXC PublicAggreDealsV3Api wire format does not carry top-of-book quotes — use PublicBookTickerV3Api (field 306)
-            high_24h: None,
-            low_24h: None,
-            volume_24h: None,
-            quote_volume_24h: None,
-            price_change_24h: None,
-            price_change_percent_24h: None,
+            price,
+            quantity,
+            side,
             timestamp: deal_time,
-        })
+        }))
     }
 
     /// Parse PublicBookTickerV3Api protobuf body.

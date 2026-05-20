@@ -1,4 +1,4 @@
-//! Pure-logic gap-heal helpers (no live network).
+//! Pure-logic auto-heal helpers (no live network).
 
 use std::time::Duration;
 
@@ -21,14 +21,10 @@ fn interval_parsing() {
 
 #[test]
 fn config_builder_chain() {
-    let cfg = GapHealConfig::on()
-        .trade_gap(Duration::from_secs(30))
-        .kline_intervals(5)
-        .max_records(200);
+    let cfg = GapHealConfig::on().default_limit(500).max_limit(2000);
     assert!(cfg.enabled);
-    assert_eq!(cfg.trade_gap, Duration::from_secs(30));
-    assert_eq!(cfg.kline_intervals, 5);
-    assert_eq!(cfg.max_records, 200);
+    assert_eq!(cfg.default_limit, 500);
+    assert_eq!(cfg.max_limit, 2000);
 }
 
 #[test]

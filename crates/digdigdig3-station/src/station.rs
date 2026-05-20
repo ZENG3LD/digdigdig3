@@ -275,7 +275,9 @@ fn spawn_forwarder<T: DataPoint + 'static>(
 
         // In-memory ring (warm capacity).
         let mut series = Series::<T>::new(warm);
-        let mut last_seen_ms: i64 = 0;
+        // Newest open_time emitted so far. Used to size disconnect heal and to
+        // skip already-delivered bars after REST returns overlapping window.
+        let mut last_emitted_ms: i64 = 0;
 
         // Warm-start. Priority: disk tail > REST seed.
         if warm > 0 {
@@ -290,7 +292,7 @@ fn spawn_forwarder<T: DataPoint + 'static>(
             };
             for p in &seed_points {
                 let _ = bcast_tx.send(Event::from_point(exchange, &symbol_label, &key.kind, p.clone()));
-                last_seen_ms = last_seen_ms.max(p.timestamp_ms());
+                last_emitted_ms = last_emitted_ms.max(p.timestamp_ms());
             }
             series.seed(seed_points);
         }
@@ -301,57 +303,43 @@ fn spawn_forwarder<T: DataPoint + 'static>(
             tokio::select! {
                 _ = &mut shutdown_rx => break,
                 item = stream.next() => {
-                    let Some(item) = item else { break };
+                    // Disconnect: stream ended (None) or yielded an error.
+                    // Both = "WS dropped". For Kline, run auto-heal: REST
+                    // get_klines, upsert into memory + disk (last-write-wins),
+                    // emit any new bars to consumer. Then re-attach the stream
+                    // — transport reconnects internally.
                     let ev = match item {
-                        Ok(ev) => ev,
-                        Err(e) => {
-                            tracing::warn!(?e, "ws event_stream yielded err");
+                        None => {
+                            tracing::info!(target: "dig3::gap_heal", ?key, "ws event_stream ended");
+                            run_kline_heal::<T>(
+                                &hub_for_heal, &key, &gap_cfg, &symbol_label,
+                                last_emitted_ms, exchange,
+                                &mut series, &mut disk, &bcast_tx,
+                            ).await;
+                            last_emitted_ms = last_emitted_ms.max(series.last().map(|p| p.timestamp_ms()).unwrap_or(0));
+                            stream = ws.event_stream();
                             continue;
                         }
+                        Some(Err(e)) => {
+                            tracing::warn!(target: "dig3::gap_heal", ?key, ?e, "ws event_stream err");
+                            run_kline_heal::<T>(
+                                &hub_for_heal, &key, &gap_cfg, &symbol_label,
+                                last_emitted_ms, exchange,
+                                &mut series, &mut disk, &bcast_tx,
+                            ).await;
+                            last_emitted_ms = last_emitted_ms.max(series.last().map(|p| p.timestamp_ms()).unwrap_or(0));
+                            stream = ws.event_stream();
+                            continue;
+                        }
+                        Some(Ok(ev)) => ev,
                     };
 
                     if !event_matches_key(&ev, &key) {
                         continue;
                     }
-
                     let Some(point) = T::from_stream_event(&ev) else {
                         continue;
                     };
-
-                    // Gap-heal: live event timestamp jumped past the threshold.
-                    // Insert recovered points BEFORE the current live event.
-                    let now_ts = point.timestamp_ms();
-                    if crate::gap_heal::should_heal(&key.kind, last_seen_ms, now_ts, &gap_cfg) {
-                        let pulled = heal_gap_for_kind::<T>(
-                            &hub_for_heal,
-                            &key,
-                            last_seen_ms,
-                            gap_cfg.max_records,
-                        )
-                        .await;
-                        let healed = crate::gap_heal::select_heal_window(pulled, last_seen_ms);
-                        let healed_count = healed.len();
-                        let pre_heal_last = last_seen_ms;
-                        for h in healed {
-                            if let Some(d) = disk.as_mut() {
-                                let _ = d.append(&h);
-                            }
-                            let h_ts = h.timestamp_ms();
-                            series.push(h.clone());
-                            let _ = bcast_tx.send(
-                                Event::from_point(exchange, &symbol_label, &key.kind, h),
-                            );
-                            last_seen_ms = last_seen_ms.max(h_ts);
-                        }
-                        if healed_count > 0 {
-                            tracing::info!(
-                                ?key,
-                                healed_count,
-                                gap_ms = now_ts - pre_heal_last,
-                                "gap-heal applied"
-                            );
-                        }
-                    }
 
                     if let Some(d) = disk.as_mut() {
                         if let Err(e) = d.append(&point) {
@@ -359,8 +347,15 @@ fn spawn_forwarder<T: DataPoint + 'static>(
                         }
                     }
                     let pt_ts = point.timestamp_ms();
-                    series.push(point.clone());
-                    last_seen_ms = last_seen_ms.max(pt_ts);
+                    // Klines: multiple in-flight updates share open_time —
+                    // upsert keeps the ring deduplicated. Other kinds are
+                    // monotonic; plain push.
+                    if matches!(&key.kind, Kind::Kline(_)) {
+                        series.upsert_by_ts(point.clone());
+                    } else {
+                        series.push(point.clone());
+                    }
+                    last_emitted_ms = last_emitted_ms.max(pt_ts);
 
                     let _ = bcast_tx.send(Event::from_point(exchange, &symbol_label, &key.kind, point));
                 }
@@ -372,35 +367,72 @@ fn spawn_forwarder<T: DataPoint + 'static>(
     });
 }
 
-/// Kind-specific REST gap-heal. Unsafe-feeling `transmute`-free dispatch:
-/// each branch knows the concrete point type at compile time AND returns
-/// `Vec<T>` because T is constrained by the surrounding monomorphization.
-/// For kinds without REST history, returns empty Vec.
-async fn heal_gap_for_kind<T: DataPoint>(
+/// Run a kline auto-heal triggered by WS disconnect. Called only for
+/// `Kind::Kline`; no-op for other kinds.
+async fn run_kline_heal<T: DataPoint + 'static>(
     hub: &Arc<ExchangeHub>,
     key: &SeriesKey,
-    last_seen_ms: i64,
-    max_records: usize,
-) -> Vec<T> {
-    use crate::gap_heal::{heal_klines, heal_trades};
-    match &key.kind {
-        Kind::Trade => {
-            let pulled = heal_trades(hub, key.exchange, key.account_type, &key.symbol, last_seen_ms, max_records).await;
-            // SAFETY: kind matches T. We're inside the per-kind spawn site.
-            cast_vec(pulled)
-        }
-        Kind::Kline(iv) => {
-            let pulled = heal_klines(hub, key.exchange, key.account_type, &key.symbol, iv, last_seen_ms, max_records).await;
-            cast_vec(pulled)
-        }
-        _ => Vec::new(),
+    cfg: &crate::GapHealConfig,
+    symbol_label: &str,
+    last_emitted_ms: i64,
+    exchange: digdigdig3::core::types::ExchangeId,
+    series: &mut Series<T>,
+    disk: &mut Option<DiskStore<T>>,
+    bcast_tx: &broadcast::Sender<Event>,
+) where
+    Event: EventFrom<T>,
+{
+    if !cfg.enabled {
+        return;
     }
+    let Kind::Kline(iv) = &key.kind else { return; };
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let limit = crate::gap_heal::heal_limit(cfg, iv, last_emitted_ms, now_ms);
+
+    tracing::info!(
+        target: "dig3::gap_heal",
+        ?key,
+        last_emitted_ms,
+        limit,
+        "kline heal: pulling REST"
+    );
+
+    let pulled: Vec<T> = cast_vec(
+        crate::gap_heal::heal_klines(hub, key.exchange, key.account_type, &key.symbol, iv, last_emitted_ms, limit).await
+    );
+    let pulled_count = pulled.len();
+
+    // ALL pulled bars get upserted (last-write-wins overwrites any in-flight
+    // broken live bar). Only bars strictly newer than last_emitted_ms are
+    // EMITTED to consumers (the older ones already reached them as live).
+    let new_to_emit = crate::gap_heal::select_heal_window(pulled.clone(), last_emitted_ms);
+    let emitted_count = new_to_emit.len();
+
+    for p in pulled {
+        if let Some(d) = disk.as_mut() {
+            let _ = d.append(&p);
+        }
+        series.upsert_by_ts(p);
+    }
+    for p in new_to_emit {
+        let _ = bcast_tx.send(Event::from_point(exchange, symbol_label, &key.kind, p));
+    }
+    if let Some(d) = disk.as_mut() { let _ = d.flush(); }
+
+    tracing::info!(
+        target: "dig3::gap_heal",
+        ?key,
+        pulled_count,
+        emitted_count,
+        "kline heal: applied"
+    );
 }
 
-/// Cast `Vec<A>` to `Vec<B>` when A == B. Used to bridge the kind-specific
-/// REST return types back to the generic forwarder. Panics if invoked with
-/// mismatched types — but the call sites are gated by kind match, so this is
-/// unreachable at runtime.
+/// Cast `Vec<A>` to `Vec<B>` when A == B at runtime via TypeId. Used to
+/// bridge the kind-specific REST return type (`Vec<BarPoint>`) back to the
+/// generic forwarder's `Vec<T>`. Safe when called at a site where the kind
+/// match arm guarantees A == B.
 fn cast_vec<A: 'static, B: 'static>(v: Vec<A>) -> Vec<B> {
     if std::any::TypeId::of::<A>() == std::any::TypeId::of::<B>() {
         // SAFETY: confirmed TypeId equality immediately above; memory layout

@@ -1,111 +1,93 @@
-//! Gap-heal — proactive REST backfill when live WS deltas show a timestamp
-//! jump larger than the configured threshold.
+//! Auto-heal on WS disconnect — klines only.
 //!
-//! Rationale: WebSocket transports already reconnect on their own with backoff,
-//! and `event_stream()` continues silently after a reconnect. The forwarder
-//! never sees a "reconnect event", but it CAN observe that the new live event
-//! timestamp is N seconds past the last one — that's the gap signature.
+//! Model (mirrors `mylittlechart::live_data::ws_manager` + `chart-app::tick`
+//! `ConnectorReady` handler):
 //!
-//! On gap detection the forwarder calls one of the kind-specific REST helpers
-//! to pull `[last_seen_ts, current_event_ts]`, emits the recovered points to
-//! consumers, and persists them to disk transparently. Consumer sees a
-//! continuous stream.
+//! 1. The Station forwarder reads `ws.event_stream().next()` in a loop.
+//! 2. When the underlying WS connection drops, the stream yields `Err(...)`
+//!    (transport error) or `None` (stream closed). Both = "disconnect".
+//! 3. On disconnect, IF the kind is `Kline(interval)`, the forwarder
+//!    immediately calls REST `get_klines(limit=N)` where
+//!    `N = max(default_limit, ceil(time_since_last_write / interval))`.
+//! 4. Returned bars are pushed via `Series::upsert_by_ts` —
+//!    last-write-wins by `open_time`. Any half-formed or corrupt live bar is
+//!    overwritten with the canonical REST value.
+//! 5. The disconnect itself triggers an internal reconnect inside
+//!    `UniversalWsTransport`. The forwarder re-attaches `ws.event_stream()`
+//!    after the heal and continues.
+//!
+//! Trade / OB / Ticker / Mark / Funding / OI / Liquidation are LIVE-ONLY:
+//! a disconnect causes a gap that no public REST endpoint can bridge. The
+//! forwarder still re-attaches the stream so future live events resume.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use digdigdig3::connector_manager::ExchangeHub;
 use digdigdig3::core::types::{AccountType, ExchangeId};
+use serde::{Deserialize, Serialize};
 
-use crate::data::{BarPoint, TradePoint};
+use crate::data::BarPoint;
 
-/// Default gap thresholds per kind. If a live event arrives whose
-/// `timestamp_ms - last_seen_ms` exceeds the threshold below, gap-heal runs.
-#[derive(Debug, Clone, Copy)]
+/// Auto-heal configuration. Active only for `Kind::Kline` streams.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct GapHealConfig {
     pub enabled: bool,
-    /// Trades: threshold beyond which we ask REST for missed prints (default 10s).
-    pub trade_gap: Duration,
-    /// Klines: threshold beyond N intervals (default 3 — i.e. 1m kline gap > 180s).
-    pub kline_intervals: u32,
-    /// Max records to pull per REST call (mirrors warm-start cap).
-    pub max_records: usize,
+    /// Minimum number of bars to pull on every disconnect-driven heal,
+    /// independent of how long the disconnect lasted. Default 300 — enough
+    /// to overwrite any in-flight broken bar plus comfortable history.
+    pub default_limit: usize,
+    /// Hard cap on heal size to avoid runaway REST calls on multi-hour
+    /// outages. Default 1000 (most exchanges' get_klines hard limit).
+    pub max_limit: usize,
 }
 
 impl Default for GapHealConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            trade_gap: Duration::from_secs(10),
-            kline_intervals: 3,
-            max_records: 500,
+            default_limit: parse_env_usize("DIG3_HEAL_DEFAULT_LIMIT").unwrap_or(300),
+            max_limit: parse_env_usize("DIG3_HEAL_MAX_LIMIT").unwrap_or(1000),
         }
     }
+}
+
+fn parse_env_usize(key: &str) -> Option<usize> {
+    std::env::var(key).ok().and_then(|s| s.parse().ok())
 }
 
 impl GapHealConfig {
     pub fn on() -> Self {
         Self { enabled: true, ..Self::default() }
     }
-    pub fn trade_gap(mut self, d: Duration) -> Self { self.trade_gap = d; self }
-    pub fn kline_intervals(mut self, n: u32) -> Self { self.kline_intervals = n; self }
-    pub fn max_records(mut self, n: usize) -> Self { self.max_records = n; self }
+    pub fn default_limit(mut self, n: usize) -> Self { self.default_limit = n; self }
+    pub fn max_limit(mut self, n: usize) -> Self { self.max_limit = n; self }
 }
 
-/// Pure decision: should we attempt gap-heal given (kind, last_seen_ms, now_ms)?
-///
-/// Returns false when:
-/// - config is off,
-/// - never-seen-yet (last_seen_ms == 0),
-/// - now_ms <= last_seen_ms (clock skew or duplicate),
-/// - kind has no REST history endpoint (anything other than Trade/Kline),
-/// - Kline interval string is malformed.
-///
-/// Returns true when:
-/// - Trade: gap > `cfg.trade_gap`,
-/// - Kline(iv): gap > `parse(iv) * cfg.kline_intervals`.
-pub fn should_heal(
-    kind: &crate::series::Kind,
-    last_seen_ms: i64,
-    now_ms: i64,
+/// Compute heal size given the time since the last written bar and the kline
+/// interval. Returns `max(default_limit, ceil(gap_ms / interval_ms))`, clipped
+/// to `max_limit`. Used by the forwarder when sizing the REST `get_klines`
+/// limit on disconnect.
+pub fn heal_limit(
     cfg: &GapHealConfig,
-) -> bool {
-    if !cfg.enabled || last_seen_ms <= 0 || now_ms <= last_seen_ms {
-        return false;
+    interval: &str,
+    last_written_ms: i64,
+    now_ms: i64,
+) -> usize {
+    let base = cfg.default_limit.max(1);
+    let capped = base.min(cfg.max_limit.max(1));
+    if last_written_ms <= 0 || now_ms <= last_written_ms {
+        return capped;
     }
-    let gap_ms = (now_ms - last_seen_ms) as u128;
-    match kind {
-        crate::series::Kind::Trade => gap_ms > cfg.trade_gap.as_millis(),
-        crate::series::Kind::Kline(iv) => {
-            let Some(d) = kline_interval_to_duration(iv) else { return false };
-            gap_ms > (d.as_millis() * cfg.kline_intervals as u128)
-        }
-        _ => false,
-    }
+    let Some(d) = kline_interval_to_duration(interval) else { return capped };
+    let interval_ms = d.as_millis().max(1) as u64;
+    let gap_ms = (now_ms - last_written_ms) as u64;
+    let need = ((gap_ms + interval_ms - 1) / interval_ms) as usize; // ceil
+    need.max(base).min(cfg.max_limit.max(1))
 }
 
-/// Filter recovered REST points to those that fill the gap `(last_seen_ms, now_ms]`
-/// inclusive of `now_ms`-edge tolerance. Returns oldest→newest.
-///
-/// `pulled` is whatever REST returned, possibly unsorted, possibly containing
-/// duplicates of already-seen points. We:
-/// - drop anything with ts <= last_seen_ms (already delivered),
-/// - sort ascending,
-/// - dedup by exact ts (kline backfill can return overlapping points).
-pub fn select_heal_window<T: crate::series::DataPoint>(
-    pulled: Vec<T>,
-    last_seen_ms: i64,
-) -> Vec<T> {
-    let mut filtered: Vec<T> = pulled.into_iter().filter(|p| p.timestamp_ms() > last_seen_ms).collect();
-    filtered.sort_by_key(|p| p.timestamp_ms());
-    // Dedup by ts (cheap & sufficient for trades+klines; trades may share ts).
-    filtered.dedup_by_key(|p| p.timestamp_ms());
-    filtered
-}
-
-/// Convert a kline interval string to a Duration. Supports the canonical
-/// Binance-style suffixes: s (seconds), m (minutes), h (hours), d (days),
-/// w (weeks). Returns None for malformed input.
+/// Convert a kline interval string to a Duration. Supports canonical
+/// Binance-style suffixes: s, m, h, d, w. Returns None for malformed input.
 pub fn kline_interval_to_duration(s: &str) -> Option<Duration> {
     let (n_str, unit) = s.split_at(s.len().saturating_sub(1));
     let n: u64 = n_str.parse().ok()?;
@@ -120,30 +102,32 @@ pub fn kline_interval_to_duration(s: &str) -> Option<Duration> {
     Some(Duration::from_secs(secs))
 }
 
-/// REST pull for gap-heal — returns raw recent trades (oldest→newest as
-/// returned by the exchange). The forwarder calls [`select_heal_window`] to
-/// filter to the missing window.
-pub async fn heal_trades(
-    hub: &Arc<ExchangeHub>,
-    exchange: ExchangeId,
-    account: AccountType,
-    symbol: &str,
-    _since_ms: i64,
-    max_records: usize,
-) -> Vec<TradePoint> {
-    crate::backfill::trades_recent(hub, exchange, account, symbol, max_records).await
-}
-
-/// REST pull for gap-heal — returns raw recent klines. Filter via
-/// [`select_heal_window`].
+/// REST pull for kline auto-heal. Returns latest N bars (sorted by exchange,
+/// generally oldest→newest). The forwarder upserts ALL of them and then emits
+/// only the ones strictly newer than `last_emitted_ms` via [`select_heal_window`].
 pub async fn heal_klines(
     hub: &Arc<ExchangeHub>,
     exchange: ExchangeId,
     account: AccountType,
     symbol: &str,
     interval: &str,
-    _since_open_time_ms: i64,
-    max_records: usize,
+    _last_emitted_ms: i64,
+    limit: usize,
 ) -> Vec<BarPoint> {
-    crate::backfill::klines_recent(hub, exchange, account, symbol, interval, max_records).await
+    crate::backfill::klines_recent(hub, exchange, account, symbol, interval, limit).await
+}
+
+/// Filter REST-returned bars to those strictly after `last_seen_ms`, sorted
+/// ascending, deduped by open_time. Used post-REST to decide which bars to
+/// emit to consumers as "new". (Bars at or before `last_seen_ms` are still
+/// upserted into memory + disk for last-write-wins canonicalization, but the
+/// consumer doesn't need a duplicate emit.)
+pub fn select_heal_window<T: crate::series::DataPoint>(
+    pulled: Vec<T>,
+    last_seen_ms: i64,
+) -> Vec<T> {
+    let mut filtered: Vec<T> = pulled.into_iter().filter(|p| p.timestamp_ms() > last_seen_ms).collect();
+    filtered.sort_by_key(|p| p.timestamp_ms());
+    filtered.dedup_by_key(|p| p.timestamp_ms());
+    filtered
 }

@@ -40,6 +40,23 @@ impl<T: DataPoint> Series<T> {
         }
     }
 
+    /// Insert-or-replace by timestamp. If a record with the same
+    /// `timestamp_ms()` already exists in the ring, it is replaced in place
+    /// (and `dirty` ticks). Otherwise behaves like [`push`].
+    ///
+    /// Used for kline gap-heal: REST may return a bar with the same
+    /// `open_time` as one we already have but with the canonical OHLC values;
+    /// the live half-formed copy must be overwritten.
+    pub fn upsert_by_ts(&mut self, point: T) {
+        let ts = point.timestamp_ms();
+        if let Some(pos) = self.ring.iter().rposition(|p| p.timestamp_ms() == ts) {
+            self.ring[pos] = point;
+            self.dirty = self.dirty.saturating_add(1);
+            return;
+        }
+        self.push(point);
+    }
+
     /// Last N points, oldest → newest (clone). For `Series::take_tail`.
     pub fn tail(&self, n: usize) -> Vec<T> {
         let take = n.min(self.ring.len());

@@ -22,6 +22,10 @@ path = "src/bin/dig3_catcher.rs"
 name = "dig3-cure"
 path = "src/bin/dig3_cure.rs"
 
+[[bin]]
+name = "dig3-inspect"
+path = "src/bin/dig3_inspect.rs"
+
 [dependencies]
 digdigdig3 = { workspace = true }
 digdigdig3-station = { workspace = true, features = ["full"] }

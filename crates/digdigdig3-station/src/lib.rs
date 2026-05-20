@@ -6,6 +6,7 @@
 //!
 //! Phase 1 scope (current): skeleton only. Modules below are stubs.
 
+pub mod backfill;
 pub mod builder;
 pub mod cache;
 pub mod data;
@@ -28,7 +29,7 @@ pub mod reconnect;
 pub use builder::StationBuilder;
 pub use cache::{ticker_cache, CacheConfig, TickerKey};
 pub use error::{Result, StationError};
-pub use persistence::{PersistenceConfig, TradeWriter};
+pub use persistence::PersistenceConfig;
 pub use series::{DataPoint, DiskStore, Kind, Series, SeriesKey, SharedSeriesMap};
 pub use station::Station;
 pub use subscription::{Event, Stream, SubscriptionHandle, SubscriptionSet};

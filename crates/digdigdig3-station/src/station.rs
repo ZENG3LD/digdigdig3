@@ -84,6 +84,17 @@ impl Station {
         let mut refs: Vec<MultiplexRef> = Vec::new();
 
         for entry in set.entries {
+            // REST connector — needed for warm-start backfill (`get_recent_trades` /
+            // `get_klines`). Hub memoizes internally; idempotent. Errors here are
+            // logged-and-continued: WS-only subscribe still works without REST.
+            if let Err(e) = self
+                .inner
+                .hub
+                .connect_public(entry.exchange, false)
+                .await
+            {
+                tracing::debug!(?e, ?entry.exchange, "connect_public failed; warm-start REST backfill will be skipped");
+            }
             self.inner
                 .hub
                 .connect_websocket(entry.exchange, entry.account_type, false)
@@ -164,17 +175,34 @@ impl Station {
 
         let _ = stream; // kept for future per-Stream parameter customizations
 
-        // Spawn one of 9 typed forwarder tasks via the macro.
+        // For each kind, compute the REST backfill seed (used when disk is
+        // empty), then spawn the typed forwarder. Backfill is best-effort —
+        // empty Vec on any failure or unsupported endpoint.
+        let warm_n = self.inner.warm_start_capacity;
+        let hub = self.inner.hub.clone();
+        let acct = entry.account_type;
+        let raw_s = raw_symbol.to_string();
+
         match &key.kind {
-            Kind::Trade => spawn_forwarder::<TradePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone()),
-            Kind::AggTrade => spawn_forwarder::<AggTradePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone()),
-            Kind::Kline(_) => spawn_forwarder::<BarPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone()),
-            Kind::Ticker => spawn_forwarder::<TickerPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone()),
-            Kind::Orderbook => spawn_forwarder::<ObSnapshotPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone()),
-            Kind::MarkPrice => spawn_forwarder::<MarkPricePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone()),
-            Kind::FundingRate => spawn_forwarder::<FundingRatePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone()),
-            Kind::OpenInterest => spawn_forwarder::<OpenInterestPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone()),
-            Kind::Liquidation => spawn_forwarder::<LiquidationPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone()),
+            Kind::Trade => {
+                let seed = if warm_n > 0 {
+                    crate::backfill::trades_recent(&hub, key.exchange, acct, &raw_s, warm_n).await
+                } else { Vec::new() };
+                spawn_forwarder::<TradePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), seed);
+            }
+            Kind::Kline(interval) => {
+                let seed = if warm_n > 0 {
+                    crate::backfill::klines_recent(&hub, key.exchange, acct, &raw_s, interval, warm_n).await
+                } else { Vec::new() };
+                spawn_forwarder::<BarPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), seed);
+            }
+            Kind::AggTrade => spawn_forwarder::<AggTradePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), Vec::new()),
+            Kind::Ticker => spawn_forwarder::<TickerPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), Vec::new()),
+            Kind::Orderbook => spawn_forwarder::<ObSnapshotPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), Vec::new()),
+            Kind::MarkPrice => spawn_forwarder::<MarkPricePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), Vec::new()),
+            Kind::FundingRate => spawn_forwarder::<FundingRatePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), Vec::new()),
+            Kind::OpenInterest => spawn_forwarder::<OpenInterestPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), Vec::new()),
+            Kind::Liquidation => spawn_forwarder::<LiquidationPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), Vec::new()),
         }
 
         self.inner.muxes.insert(
@@ -218,6 +246,9 @@ fn spawn_forwarder<T: DataPoint + 'static>(
     bcast_tx: broadcast::Sender<Event>,
     mut shutdown_rx: oneshot::Receiver<()>,
     symbol_label: String,
+    // REST-backfill seed used when on-disk history is empty. Empty Vec
+    // disables the REST fallback.
+    rest_seed: Vec<T>,
 ) where
     Event: EventFrom<T>,
 {
@@ -229,9 +260,9 @@ fn spawn_forwarder<T: DataPoint + 'static>(
     let exchange = key.exchange;
 
     tokio::spawn(async move {
-        // Open disk store if persistence is on.
+        // Open disk store if persistence is on for this kind.
         let mut disk: Option<DiskStore<T>> = None;
-        if persistence.enabled {
+        if persistence.is_enabled_for(&key.kind) {
             match DiskStore::<T>::new(&storage_root, key.clone()) {
                 Ok(store) => disk = Some(store),
                 Err(e) => tracing::warn!(?e, ?key, "disk store open failed"),
@@ -241,16 +272,21 @@ fn spawn_forwarder<T: DataPoint + 'static>(
         // In-memory ring (warm capacity).
         let mut series = Series::<T>::new(warm);
 
-        // Warm-start: seed from disk tail and emit to broadcast BEFORE live.
-        if let Some(d) = disk.as_ref() {
-            if warm > 0 {
-                if let Ok(tail) = d.read_tail(warm) {
-                    for p in &tail {
-                        let _ = bcast_tx.send(Event::from_point(exchange, &symbol_label, &key.kind, p.clone()));
-                    }
-                    series.seed(tail);
-                }
+        // Warm-start. Priority: disk tail > REST seed.
+        if warm > 0 {
+            let disk_tail: Vec<T> = disk
+                .as_ref()
+                .and_then(|d| d.read_tail(warm).ok())
+                .unwrap_or_default();
+            let seed_points: Vec<T> = if disk_tail.is_empty() && !rest_seed.is_empty() {
+                rest_seed
+            } else {
+                disk_tail
+            };
+            for p in &seed_points {
+                let _ = bcast_tx.send(Event::from_point(exchange, &symbol_label, &key.kind, p.clone()));
             }
+            series.seed(seed_points);
         }
 
         let mut stream = ws.event_stream();

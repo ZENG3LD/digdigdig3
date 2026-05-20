@@ -4,7 +4,8 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use digdigdig3_station::{
-    AccountType, Event, ExchangeId, PersistenceConfig, Station, Stream, SubscriptionSet,
+    AccountType, Event, ExchangeId, GapHealConfig, PersistenceConfig, Station, Stream,
+    SubscriptionSet,
 };
 
 #[derive(Parser, Debug)]
@@ -22,6 +23,12 @@ struct Cli {
     /// Persist each point to <storage-root>/<kind>/<exch>/<acct>/<sym>/<date>.dat
     #[arg(long, global = true, default_value_t = true, action = clap::ArgAction::Set)]
     persist: bool,
+
+    /// Proactive REST gap-heal when live timestamps jump past threshold.
+    /// Currently effective for `trades` and `kline` kinds (the only ones with
+    /// a sensible public REST history endpoint).
+    #[arg(long, global = true, default_value_t = false, action = clap::ArgAction::Set)]
+    gap_heal: bool,
 
     #[command(subcommand)]
     cmd: Cmd,
@@ -78,6 +85,7 @@ async fn main() -> Result<()> {
         storage_root: cli.storage_root,
         warm_start: cli.warm_start,
         persist: cli.persist,
+        gap_heal: cli.gap_heal,
     };
 
     match cli.cmd {
@@ -97,6 +105,7 @@ struct WatchOpts {
     storage_root: Option<PathBuf>,
     warm_start: usize,
     persist: bool,
+    gap_heal: bool,
 }
 
 async fn build_station(opts: &WatchOpts) -> Result<Station> {
@@ -104,6 +113,7 @@ async fn build_station(opts: &WatchOpts) -> Result<Station> {
     if let Some(root) = &opts.storage_root { b = b.storage_root(root.clone()); }
     if opts.warm_start > 0 { b = b.warm_start(opts.warm_start); }
     if opts.persist { b = b.persistence(PersistenceConfig::on()); }
+    if opts.gap_heal { b = b.gap_heal(GapHealConfig::on()); }
     b.build().await.context("Station::build")
 }
 
@@ -139,8 +149,8 @@ async fn watch_one(
     let mut handle = station.subscribe(set).await.context("Station::subscribe")?;
 
     eprintln!(
-        "dig3 watch {:?}: exchange={exchange} symbol={symbol} account={account} warm_start={} persist={} duration={duration:?} storage_root={}",
-        stream, opts.warm_start, opts.persist, station.storage_root().display()
+        "dig3 watch {:?}: exchange={exchange} symbol={symbol} account={account} warm_start={} persist={} gap_heal={} duration={duration:?} storage_root={}",
+        stream, opts.warm_start, opts.persist, opts.gap_heal, station.storage_root().display()
     );
 
     let deadline = duration.map(|d| tokio::time::Instant::now() + Duration::from_secs(d));

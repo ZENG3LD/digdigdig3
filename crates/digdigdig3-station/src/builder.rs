@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::{PersistenceConfig, Result, Station};
+use crate::{GapHealConfig, PersistenceConfig, Result, Station};
 
 /// Fluent builder for [`Station`].
 #[derive(Debug)]
@@ -8,17 +8,17 @@ pub struct StationBuilder {
     pub(crate) storage_root: PathBuf,
     pub(crate) persistence: PersistenceConfig,
     pub(crate) warm_start: usize,
+    pub(crate) gap_heal: GapHealConfig,
 }
 
 impl Default for StationBuilder {
     fn default() -> Self {
-        // Storage root resolution: explicit `.storage_root(...)` > DIG3_STORAGE_ROOT
-        // env > `./dig3_storage`. The CLI also honors the env explicitly.
         let env_root = std::env::var_os("DIG3_STORAGE_ROOT").map(PathBuf::from);
         Self {
             storage_root: env_root.unwrap_or_else(|| PathBuf::from("./dig3_storage")),
             persistence: PersistenceConfig::default(),
             warm_start: 0,
+            gap_heal: GapHealConfig::default(),
         }
     }
 }
@@ -44,6 +44,15 @@ impl StationBuilder {
     /// series capacity too.
     pub fn warm_start(mut self, n: usize) -> Self {
         self.warm_start = n;
+        self
+    }
+
+    /// Configure proactive gap-heal: when a live event arrives whose timestamp
+    /// jumps further than the configured threshold past the last seen event,
+    /// the station REST-backfills the missing window before emitting the live
+    /// event. Off by default.
+    pub fn gap_heal(mut self, cfg: GapHealConfig) -> Self {
+        self.gap_heal = cfg;
         self
     }
 

@@ -34,6 +34,7 @@ pub(crate) struct StationInner {
     pub(crate) persistence: PersistenceConfig,
     pub(crate) muxes: DashMap<SeriesKey, Multiplexer>,
     pub(crate) warm_start_capacity: usize,
+    pub(crate) gap_heal: crate::GapHealConfig,
 }
 
 /// One broadcast-fanout actor per `SeriesKey`. Each consumer increments
@@ -71,6 +72,7 @@ impl Station {
                 persistence: b.persistence,
                 muxes: DashMap::new(),
                 warm_start_capacity: b.warm_start.max(1),
+                gap_heal: b.gap_heal,
             }),
         })
     }
@@ -258,6 +260,8 @@ fn spawn_forwarder<T: DataPoint + 'static>(
     let persistence = inner.persistence.clone();
     let warm = inner.warm_start_capacity;
     let exchange = key.exchange;
+    let gap_cfg = inner.gap_heal;
+    let hub_for_heal = inner.hub.clone();
 
     tokio::spawn(async move {
         // Open disk store if persistence is on for this kind.
@@ -271,6 +275,7 @@ fn spawn_forwarder<T: DataPoint + 'static>(
 
         // In-memory ring (warm capacity).
         let mut series = Series::<T>::new(warm);
+        let mut last_seen_ms: i64 = 0;
 
         // Warm-start. Priority: disk tail > REST seed.
         if warm > 0 {
@@ -285,6 +290,7 @@ fn spawn_forwarder<T: DataPoint + 'static>(
             };
             for p in &seed_points {
                 let _ = bcast_tx.send(Event::from_point(exchange, &symbol_label, &key.kind, p.clone()));
+                last_seen_ms = last_seen_ms.max(p.timestamp_ms());
             }
             series.seed(seed_points);
         }
@@ -312,12 +318,44 @@ fn spawn_forwarder<T: DataPoint + 'static>(
                         continue;
                     };
 
+                    // Gap-heal: live event timestamp jumped past the threshold.
+                    // Insert recovered points BEFORE the current live event.
+                    if gap_cfg.enabled && last_seen_ms > 0 {
+                        let now_ts = point.timestamp_ms();
+                        if should_heal(&key.kind, last_seen_ms, now_ts, &gap_cfg) {
+                            let healed = heal_gap_for_kind::<T>(
+                                &hub_for_heal,
+                                &key,
+                                last_seen_ms,
+                                gap_cfg.max_records,
+                            )
+                            .await;
+                            let healed_count = healed.len();
+                            for h in healed {
+                                if let Some(d) = disk.as_mut() {
+                                    let _ = d.append(&h);
+                                }
+                                let h_ts = h.timestamp_ms();
+                                series.push(h.clone());
+                                let _ = bcast_tx.send(
+                                    Event::from_point(exchange, &symbol_label, &key.kind, h),
+                                );
+                                last_seen_ms = last_seen_ms.max(h_ts);
+                            }
+                            if healed_count > 0 {
+                                tracing::info!(?key, healed_count, gap_ms = now_ts - last_seen_ms, "gap-heal applied");
+                            }
+                        }
+                    }
+
                     if let Some(d) = disk.as_mut() {
                         if let Err(e) = d.append(&point) {
                             tracing::warn!(?e, "disk store append failed");
                         }
                     }
+                    let pt_ts = point.timestamp_ms();
                     series.push(point.clone());
+                    last_seen_ms = last_seen_ms.max(pt_ts);
 
                     let _ = bcast_tx.send(Event::from_point(exchange, &symbol_label, &key.kind, point));
                 }
@@ -327,6 +365,63 @@ fn spawn_forwarder<T: DataPoint + 'static>(
         if let Some(mut d) = disk { let _ = d.flush(); }
         let _ = series; // dropped
     });
+}
+
+fn should_heal(kind: &Kind, last_seen_ms: i64, now_ms: i64, cfg: &crate::GapHealConfig) -> bool {
+    if now_ms <= last_seen_ms {
+        return false;
+    }
+    let gap_ms = (now_ms - last_seen_ms) as u128;
+    match kind {
+        Kind::Trade => gap_ms > cfg.trade_gap.as_millis(),
+        Kind::Kline(iv) => {
+            let Some(d) = crate::gap_heal::kline_interval_to_duration(iv) else { return false };
+            gap_ms > (d.as_millis() * cfg.kline_intervals as u128)
+        }
+        // Other kinds have no REST history endpoint we can use.
+        _ => false,
+    }
+}
+
+/// Kind-specific REST gap-heal. Unsafe-feeling `transmute`-free dispatch:
+/// each branch knows the concrete point type at compile time AND returns
+/// `Vec<T>` because T is constrained by the surrounding monomorphization.
+/// For kinds without REST history, returns empty Vec.
+async fn heal_gap_for_kind<T: DataPoint>(
+    hub: &Arc<ExchangeHub>,
+    key: &SeriesKey,
+    last_seen_ms: i64,
+    max_records: usize,
+) -> Vec<T> {
+    use crate::gap_heal::{heal_klines, heal_trades};
+    match &key.kind {
+        Kind::Trade => {
+            let pulled = heal_trades(hub, key.exchange, key.account_type, &key.symbol, last_seen_ms, max_records).await;
+            // SAFETY: kind matches T. We're inside the per-kind spawn site.
+            cast_vec(pulled)
+        }
+        Kind::Kline(iv) => {
+            let pulled = heal_klines(hub, key.exchange, key.account_type, &key.symbol, iv, last_seen_ms, max_records).await;
+            cast_vec(pulled)
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Cast `Vec<A>` to `Vec<B>` when A == B. Used to bridge the kind-specific
+/// REST return types back to the generic forwarder. Panics if invoked with
+/// mismatched types — but the call sites are gated by kind match, so this is
+/// unreachable at runtime.
+fn cast_vec<A: 'static, B: 'static>(v: Vec<A>) -> Vec<B> {
+    if std::any::TypeId::of::<A>() == std::any::TypeId::of::<B>() {
+        // SAFETY: confirmed TypeId equality immediately above; memory layout
+        // and ownership are identical between `Vec<A>` and `Vec<B>`.
+        let mut v = std::mem::ManuallyDrop::new(v);
+        let (ptr, len, cap) = (v.as_mut_ptr() as *mut B, v.len(), v.capacity());
+        unsafe { Vec::from_raw_parts(ptr, len, cap) }
+    } else {
+        Vec::new()
+    }
 }
 
 /// Symbol-level routing: drop events whose `symbol` field doesn't match our key.

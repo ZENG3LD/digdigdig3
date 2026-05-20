@@ -167,7 +167,7 @@ impl Station {
             .hub
             .ws(entry.exchange, entry.account_type)
             .ok_or_else(|| StationError::Core("ws handle missing post-connect".into()))?;
-        ws.subscribe(req)
+        ws.subscribe(req.clone())
             .await
             .map_err(|e| StationError::Subscribe(format!("ws.subscribe: {e}")))?;
 
@@ -190,21 +190,21 @@ impl Station {
                 let seed = if warm_n > 0 {
                     crate::backfill::trades_recent(&hub, key.exchange, acct, &raw_s, warm_n).await
                 } else { Vec::new() };
-                spawn_forwarder::<TradePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), seed);
+                spawn_forwarder::<TradePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), seed, req.clone());
             }
             Kind::Kline(interval) => {
                 let seed = if warm_n > 0 {
                     crate::backfill::klines_recent(&hub, key.exchange, acct, &raw_s, interval, warm_n).await
                 } else { Vec::new() };
-                spawn_forwarder::<BarPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), seed);
+                spawn_forwarder::<BarPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), seed, req.clone());
             }
-            Kind::AggTrade => spawn_forwarder::<AggTradePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), Vec::new()),
-            Kind::Ticker => spawn_forwarder::<TickerPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), Vec::new()),
-            Kind::Orderbook => spawn_forwarder::<ObSnapshotPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), Vec::new()),
-            Kind::MarkPrice => spawn_forwarder::<MarkPricePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), Vec::new()),
-            Kind::FundingRate => spawn_forwarder::<FundingRatePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), Vec::new()),
-            Kind::OpenInterest => spawn_forwarder::<OpenInterestPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), Vec::new()),
-            Kind::Liquidation => spawn_forwarder::<LiquidationPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), Vec::new()),
+            Kind::AggTrade => spawn_forwarder::<AggTradePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), Vec::new(), req.clone()),
+            Kind::Ticker => spawn_forwarder::<TickerPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), Vec::new(), req.clone()),
+            Kind::Orderbook => spawn_forwarder::<ObSnapshotPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), Vec::new(), req.clone()),
+            Kind::MarkPrice => spawn_forwarder::<MarkPricePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), Vec::new(), req.clone()),
+            Kind::FundingRate => spawn_forwarder::<FundingRatePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), Vec::new(), req.clone()),
+            Kind::OpenInterest => spawn_forwarder::<OpenInterestPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), Vec::new(), req.clone()),
+            Kind::Liquidation => spawn_forwarder::<LiquidationPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), Vec::new(), req),
         }
 
         self.inner.muxes.insert(
@@ -251,6 +251,10 @@ fn spawn_forwarder<T: DataPoint + 'static>(
     // REST-backfill seed used when on-disk history is empty. Empty Vec
     // disables the REST fallback.
     rest_seed: Vec<T>,
+    // Original subscribe request. Held so the forwarder can issue
+    // unsubscribe + subscribe on disconnect to force a fresh subscription
+    // state at the exchange.
+    sub_req: SubscriptionRequest,
 ) where
     Event: EventFrom<T>,
 {
@@ -304,6 +308,13 @@ fn spawn_forwarder<T: DataPoint + 'static>(
         let silence_timeout = std::time::Duration::from_secs(
             std::env::var("DIG3_WS_SILENCE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(60),
         );
+        // Debug-only: artificially slow down the per-event loop. Used by e2e
+        // tests to force broadcast-channel overflow → `Lagged` error →
+        // `stream_err` branch. Production callers leave this unset (0 ms).
+        let debug_slow_ms: u64 = std::env::var("DIG3_DEBUG_SLOW_CONSUMER_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
 
         loop {
             // Single tokio::select! arm — exits via the shutdown branch or
@@ -321,7 +332,8 @@ fn spawn_forwarder<T: DataPoint + 'static>(
             };
 
             if let Some(reason) = trigger_heal_reason {
-                tracing::info!(target: "dig3::gap_heal", ?key, reason, "ws disconnect detected → heal");
+                tracing::info!(target: "dig3::gap_heal", ?key, reason, "ws disconnect detected → heal + resub");
+                // 1. REST heal (kline-only; no-op for other kinds).
                 run_kline_heal::<T>(
                     &hub_for_heal, &key, &gap_cfg, &symbol_label,
                     last_emitted_ms, exchange,
@@ -330,6 +342,26 @@ fn spawn_forwarder<T: DataPoint + 'static>(
                 last_emitted_ms = last_emitted_ms.max(
                     series.last().map(|p| p.timestamp_ms()).unwrap_or(0)
                 );
+                // 2. Force a fresh subscription state at the exchange.
+                //    Unsubscribe is best-effort (the server may have already
+                //    dropped us). Resubscribe must succeed or we log + retry
+                //    on the next disconnect cycle.
+                let unsub_res = ws.unsubscribe(sub_req.clone()).await;
+                let sub_res = ws.subscribe(sub_req.clone()).await;
+                tracing::info!(
+                    target: "dig3::gap_heal",
+                    ?key,
+                    unsub_ok = unsub_res.is_ok(),
+                    sub_ok = sub_res.is_ok(),
+                    "resub cycle complete"
+                );
+                if let Err(e) = unsub_res {
+                    tracing::debug!(target: "dig3::gap_heal", ?key, ?e, "unsubscribe failed (best-effort)");
+                }
+                if let Err(e) = sub_res {
+                    tracing::warn!(target: "dig3::gap_heal", ?key, ?e, "resubscribe failed");
+                }
+                // 3. Re-attach broadcast receiver — picks up post-resub events.
                 stream = ws.event_stream();
                 continue;
             }
@@ -362,6 +394,10 @@ fn spawn_forwarder<T: DataPoint + 'static>(
             last_emitted_ms = last_emitted_ms.max(pt_ts);
 
             let _ = bcast_tx.send(Event::from_point(exchange, &symbol_label, &key.kind, point));
+
+            if debug_slow_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(debug_slow_ms)).await;
+            }
         }
 
         if let Some(mut d) = disk { let _ = d.flush(); }

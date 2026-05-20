@@ -1,14 +1,21 @@
 # digdigdig3 (dig3)
 
-Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major crypto + 4 DEX, full futures coverage). Three crates in one workspace — single version pin (uzor-style), currently `0.3.0`:
+Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major crypto + 4 DEX, full futures coverage). Three crates in one workspace — single version pin (uzor-style), currently `0.3.3`:
 
-- **`digdigdig3`** (crate name `digdigdig3`, lib `digdigdig3`) — pure connector library. ONLY `ExchangeHub` + REST/WS connectors + capabilities + symbol normalization. No persistence, no replay, no cure/cache infrastructure. (This is the crate that lives on crates.io as `digdigdig3` 0.2.x → 0.3.0.)
-- **`digdigdig3-station`** (crate `digdigdig3_station`) — high-level builder layer over `ExchangeHub`. OWNS: `storage::*` (StorageManager + EventLog), `orderbook::*` (OrderBookTracker), `rest_cache::*` (LRU+TTL), `replay::*` (ReplayHub), `cure::*` (Integrity/Dedup/Gap/Repair), `persistence::TradeWriter`, `cache::*`, `Station` builder + `SubscriptionSet` + `SubscriptionHandle`.
-- **`digdigdig3-cli`** (binary `dig3`) — `dig3 watch trades` (wired Phase 1 step 6), plus `dig3-catcher` / `dig3-cure` bins. Other subcommands (persist / replay / matrix / inspect / capture / benchmark) are skeletons; will be folded into `dig3` in step 7+.
+- **`digdigdig3`** — pure connector library. ONLY `ExchangeHub` + REST/WS connectors + capabilities + symbol normalization. No persistence, no replay, no cure/cache infrastructure.
+- **`digdigdig3-station`** — high-level builder over `ExchangeHub`. OWNS: unified `Series<T>` / `DiskStore<T>` over 9 `DataPoint` impls (Trade/AggTrade/Bar/Ticker/ObSnapshot/MarkPrice/FundingRate/OpenInterest/Liquidation), `SeriesKey { exchange, account, symbol, kind }`, multiplexed `Station` (N consumers share one WS per StreamKey), warm-start, REST cache, replay, cure, **auto-heal on WS disconnect** (kline-only — see below).
+- **`digdigdig3-cli`** — `dig3` binary (watch trades/orderbook/kline/ticker/mark/funding/open-interest/liquidations/agg-trades) + `dig3-inspect` post-mortem analyzer + legacy `dig3-catcher` / `dig3-cure` bins.
 
-Workspace layout follows the uzor pattern: every sub-crate's `[package]` block uses `version.workspace = true`, and `[workspace.dependencies]` provides `digdigdig3 = { workspace = true }` etc. so all three crates ALWAYS publish together at the same pin.
+Workspace follows the uzor pattern: every sub-crate's `[package]` block uses `version.workspace = true`, `[workspace.dependencies]` declares `digdigdig3 = { workspace = true }` etc. — all three crates ALWAYS publish together at the same pin.
 
-**Phase 1 complete** (commits `bc50508` → `dd4223c`). Live `dig3 watch trades binance BTC-USDT` writes to `./dig3_storage/trades/binance/spot/btcusdt/<date>.dat` (binary append, 41 bytes/record + sparse `.idx`). Storage root resolves: `--storage-root` flag > `DIG3_STORAGE_ROOT` env > `./dig3_storage`. Harness artefacts (e2e_smoke JSON, WS frame trace) default to `target/harness_out/` when `--json-out auto` or `DIG3_WS_TRACE=1`. Full per-step status in `docs/plans/station-phase-1-plan.md`.
+**Phase 1 + 2 complete**:
+- `dig3 watch <kind> <exchange> <symbol>` works for all 9 data classes.
+- Persistence: `<storage_root>/<kind>/<exchange>/<account>/<symbol>/<YYYY-MM-DD>.dat` (binary, fixed record per class) + sparse `.idx`. Day rotation.
+- Warm-start: emit last-N from disk (or REST backfill if disk empty) before live.
+- Multiplex: per-`SeriesKey` broadcast, ref-counted consumer drop.
+- **Auto-heal on WS disconnect** (kline only, since trade/OB/etc. have no public REST endpoint to bridge live gaps). Three disconnect triggers (silence_timeout / stream_ended / stream_err), each runs full cycle: REST `get_klines` → `upsert_by_ts` (last-write-wins overwrite of broken in-flight bars) → `unsubscribe` + `subscribe` (force fresh sub state at exchange) → re-attach `event_stream()`. Pattern mirrors `mylittlechart::live_data::ws_manager`. Silence threshold default 60 s, env `DIG3_WS_SILENCE_SECS`.
+
+Storage root resolves: `--storage-root` flag > `DIG3_STORAGE_ROOT` env > `./dig3_storage`. Harness artefacts (e2e_smoke JSON, WS frame trace) default to `target/harness_out/` when `--json-out auto` / `DIG3_WS_TRACE=1`.
 
 ## Architectural principles
 

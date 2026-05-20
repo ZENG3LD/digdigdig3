@@ -1,15 +1,23 @@
 # digdigdig3
 
-Multi-exchange connector library — unified async Rust API for 22 production crypto exchanges
-+ stocks/forex/prediction (validated subset). Single `ExchangeHub` async pool exposing
-all connectors with self-declared, empirically-validated capabilities.
+Multi-exchange connector toolkit for Rust. **47 exchanges** covered (crypto CEX + DEX +
+forex + stocks + prediction + data providers), **18 TRUSTED** (all major CEX with full
+futures coverage). Single unified async API.
 
-**Version:** 0.2.3
-**Edition:** Rust 2021
-**License:** MIT OR Apache-2.0
+**Version:** 0.3.3 · **Edition:** Rust 2021 · **License:** MIT OR Apache-2.0
 **Repository:** https://github.com/ZENG3LD/digdigdig3
 
-## Quick start
+## Workspace layout
+
+Three crates, all on the same version pin (uzor-style):
+
+| Crate | Purpose |
+|---|---|
+| **`digdigdig3`** | Pure connector library. `ExchangeHub` + REST/WS connectors + symbol normalization + capabilities. No persistence, no caching. |
+| **`digdigdig3-station`** | High-level builder over `ExchangeHub`. Persistence (binary append + sparse idx), in-memory ring, REST cache, warm-start, **auto-heal on WS disconnect** (kline only), multiplex (N consumers share one WS), orderbook tracker, replay, cure. |
+| **`digdigdig3-cli`** | `dig3` binary — `watch trades/orderbook/kline/...` + `dig3-inspect` post-mortem analyzer. |
+
+## Quick start — connector library
 
 ```rust
 use digdigdig3::{ExchangeHub, ExchangeId, AccountType, Symbol, sym};
@@ -19,161 +27,165 @@ hub.connect_full(ExchangeId::Binance, &[AccountType::Spot], false).await?;
 let conn = hub.rest(ExchangeId::Binance).unwrap();
 
 // Three equivalent ways to pass a symbol:
-
-// Raw (zero allocation, exchange-native):
-let ticker = conn.get_ticker("BTCUSDT".into(), AccountType::Spot).await?;
-
-// Canonical (exchange-agnostic):
+let ticker = conn.get_ticker("BTCUSDT".into(), AccountType::Spot).await?;        // raw
 let sym = Symbol::new("BTC", "USDT");
-let ticker = conn.get_ticker((&sym).into(), AccountType::Spot).await?;
-
-// Macro:
-let ticker = conn.get_ticker(sym!("BTCUSDT"), AccountType::Spot).await?;
+let ticker = conn.get_ticker((&sym).into(), AccountType::Spot).await?;            // canonical
+let ticker = conn.get_ticker(sym!("BTCUSDT"), AccountType::Spot).await?;          // macro
 
 println!("BTC = {}", ticker.last_price);
 ```
+
+## Quick start — Station (high-level)
+
+```rust
+use digdigdig3_station::{Station, SubscriptionSet, Stream, ExchangeId, AccountType,
+                         PersistenceConfig, GapHealConfig};
+
+let station = Station::builder()
+    .storage_root("./dig3_storage")
+    .persistence(PersistenceConfig::on())   // binary append per kind
+    .warm_start(300)                          // emit last-300 from disk before live
+    .gap_heal(GapHealConfig::on())            // auto-heal kline on WS disconnect
+    .build().await?;
+
+let mut handle = station.subscribe(
+    SubscriptionSet::new()
+        .add(ExchangeId::Binance, "BTC-USDT", AccountType::Spot, [Stream::Kline("1m".into())])
+).await?;
+
+while let Some(event) = handle.recv().await {
+    println!("{event:?}");
+}
+```
+
+## Quick start — CLI
+
+```bash
+cargo install digdigdig3-cli       # binary: `dig3`
+
+# Live trade tape, persisted to ./dig3_storage/trades/...
+dig3 watch trades binance BTC-USDT --duration 30
+
+# Live L2 ladder, top-10
+dig3 watch orderbook binance BTC-USDT --depth 10
+
+# Live klines + auto-heal on WS disconnect (REST get_klines refresh)
+dig3 --gap-heal true watch kline binance BTC-USDT --interval 1m --duration 60
+
+# Warm-start: emit last 300 bars from disk before live stream
+dig3 --warm-start 300 watch kline binance BTC-USDT --interval 1m
+
+# Post-mortem analysis of a persisted .dat
+dig3-inspect kline ./dig3_storage/klines_1m/binance/spot/btcusdt/2026-05-20.dat
+```
+
+Global flags: `--storage-root <path>` (or `DIG3_STORAGE_ROOT`), `--warm-start N`, `--persist BOOL`, `--gap-heal BOOL`.
+
+## TRUSTED 18 (all major crypto CEX + 4 DEX)
+
+Binance, BingX, Bitfinex, Bitget, Bitstamp, Bybit, Coinbase, CryptoCom, Deribit, Dydx,
+GateIO, HTX, HyperLiquid, Kraken, KuCoin, Lighter, MEXC, OKX.
+
+Full futures coverage (mark/funding/OI/liquidation/aggTrade), bid/ask via primary
+channel or parallel REST orderbook fetch, WS reconnect + replay, dedicated multi-symbol
+liquidation capture.
+
+Outside TRUSTED — wire-not-present (documented, won't be patched):
+- CryptoCompare: CCCAGG free tier doesn't expose BID/ASK.
+- MOEX: RU IP required for FAST/CEDR streams.
+- Polymarket: ClobWebSocket not yet implemented.
+- Dukascopy: tick-data-only, no public live REST.
+- Auth-gated venues (Alpaca/Tinkoff/Polygon/IB/...): skip without ENV creds.
 
 ## Architecture
 
 ### Hub-first API
 
-`ExchangeHub` is THE entry point. Pool internals are `pub(crate)` — consumers cannot bypass.
+`ExchangeHub` is the sole public entry point for multi-connector operations.
+Pool internals are `pub(crate)` — consumers cannot bypass.
 
 | Method | Purpose |
 |---|---|
-| `connect_full(id, accounts, testnet)` | Wires REST + WS for an exchange |
-| `connect_full_validated(...)` | Same but rejects exchanges without validation stamp |
+| `connect_full(id, accounts, testnet)` | REST + WS for an exchange |
+| `connect_full_validated(...)` | Same but rejects exchanges without ValidationStamp |
+| `connect_public(id, testnet)` | REST only (warm-start, gap-heal) |
+| `connect_websocket(id, account, testnet)` | WS only |
 | `rest(id) -> Option<Arc<dyn CoreConnector>>` | Typed REST dispatch |
 | `ws(id, account) -> Option<Arc<dyn WebSocketConnector>>` | WS dispatch |
 | `capabilities(id) -> Option<ConnectorCapabilities>` | Discover what an exchange supports |
-| `list_connected() -> Vec<ExchangeId>` | Enumerate active connections |
 | `shutdown(id)` | Releases REST + WS |
 
-### SymbolInput — raw or canonical, per-call
+### SymbolInput — raw or canonical, per call
 
-Every per-symbol method accepts `SymbolInput<'_>`:
+Every per-symbol method accepts `SymbolInput<'_>`. Raw → zero-allocation passthrough.
+Canonical `Symbol{base, quote}` → normalized inside via `SymbolNormalizer::to_exchange`
+(22 per-exchange sub-modules: Binance `"BTCUSDT"`, OKX `"BTC-USDT"`, Gate.io `"BTC_USDT"`,
+Bitfinex `"tBTCUSD"`, Deribit `"BTC-PERPETUAL"`, etc.).
 
-```rust
-pub enum SymbolInput<'a> {
-    Raw(&'a str),          // "BTCUSDT" — passed as-is, zero allocation
-    Canonical(&'a Symbol), // Symbol::new("BTC","USDT") — normalized inside the call
-}
-```
+### WebSocket: `UniversalWsTransport`
 
-Both variants land in the same connector code path via `SymbolInput::resolve(exchange, account_type) -> Cow<str>`.
-Raw → `Cow::Borrowed` (no allocation). Canonical → `Cow::Owned` via `SymbolNormalizer::to_exchange`.
+All connectors share `UniversalWsTransport<P: WsProtocol>` — connect/reconnect/backoff,
+ping scheduler, subscription replay, frame dispatch with required `tracing::warn!` on
+unmatched topics (no silent drops).
 
-Per-call dispatch — caller can mix Raw and Canonical for different exchanges in a loop, no method rename needed.
-
-For long-lived storage (e.g. `StreamSpec.symbol`), use `OwnedSymbolInput` (same Raw/Canonical variants, owned data).
-
-Per-exchange normalization rules in `core::utils::symbol_normalizer` (22 sub-modules).
-Examples: `"BTCUSDT"` (Binance), `"BTC-USDT"` (OKX), `"BTC_USDT"` (Gate.io), `"tBTCUSD"` (Bitfinex), `"BTC-PERPETUAL"` (Deribit).
-
-### WebSocket: UniversalWsTransport
-
-All 9 migrated WS connectors share `UniversalWsTransport<P: WsProtocol>` framework owning:
-- connect/reconnect/backoff
-- ping scheduler + subscription replay
-- frame dispatch (no `_ => Ok(None)` catch-alls — unmatched topics warn)
-- tracing on every frame
-
-Each exchange implements thin `WsProtocol` (~6 methods, ~400-900 LOC) vs the old bespoke loops
+Each exchange implements thin `WsProtocol` (~400-900 LOC) vs the old bespoke loops
 (800-1500 LOC each).
+
+### Station: auto-heal on WS disconnect
+
+`digdigdig3-station` adds high-level concerns over the raw hub:
+
+- **Persistence** — binary append-only `.dat` + sparse `.idx`, fixed record size per
+  data class (trades 48 B, bars 64 B, ticker 72 B, OB snapshot 808 B, ...). UTC day
+  rotation. Layout: `<storage_root>/<kind>/<exchange>/<account>/<symbol>/<YYYY-MM-DD>.dat`.
+- **Warm-start** — emit last-N from disk (or REST if disk empty) before live stream.
+- **Auto-heal on WS disconnect** — three triggers (silence timeout, stream end, stream err),
+  each runs full cycle: REST `get_klines` → `upsert_by_ts` (last-write-wins overwrite of
+  broken in-flight bars) → `unsubscribe` + `subscribe` → re-attach broadcast receiver.
+  Mirrors `mylittlechart::live_data::ws_manager` pattern.
+- **Multiplex** — N consumers share one underlying WS subscription per `SeriesKey`.
+- **Orderbook tracker** + replay + cure (dedup/gap/integrity) modules.
 
 ### Capabilities = empirical truth
 
-`HasCapabilities::validation_status() -> Option<ValidationStamp>` exposes per-method/stream
+`HasCapabilities::validation_status() -> Option<ValidationStamp>` exposes per-method
 validation from the `e2e_smoke` harness, embedded as `data/validation_snapshot.json`.
 
-```rust
-let stamp = hub.capabilities(ExchangeId::Binance).and_then(|c| c.validation);
-match stamp.as_ref().and_then(|s| s.rest.get("get_ticker")) {
-    Some(FieldValidation::Validated { fields_populated }) => println!("validated: {fields_populated:?}"),
-    Some(FieldValidation::PopulatedButEmpty { missing_fields }) => println!("partial — missing: {missing_fields:?}"),
-    Some(FieldValidation::Failed { reason }) => println!("broken: {reason}"),
-    _ => println!("not tested"),
-}
-```
-
-## Validated coverage (e2e_smoke 2026-05-17)
-
-22 in-scope exchanges (no API keys needed for public data):
-
-| Group | Exchanges | REST OK | WS Connected | Real Data Flowing |
-|---|---|---|---|---|
-| L3-open CEX (18) | Binance, Bybit, OKX, KuCoin, Kraken, Coinbase, Gate.io, Gemini, MEXC, HTX, Bitget, BingX, Crypto.com, Upbit, Bitfinex, Bitstamp, Deribit, HyperLiquid | 15/18 | 17/18 | 13/17 |
-| L3-open DEX (2) | dYdX, Lighter | 1/2 | 2/2 | 2/2 |
-| L3-open Pred (1) | Polymarket | 0/1 | 0/1 | — |
-| L2-free (1) | MOEX | 1/1 | 0/1 | — |
-
-L1/L2-paid + L3-gated (21 exchanges) compile-validated only; functional validation deferred
-until API keys available.
-
-## Levels
-
-| Level | Description | Auth |
-|---|---|---|
-| L1 | OHLCV/ticker only — no orderbook | Often API key |
-| L2 | L1 + orderbook | Often API key |
-| L3 open | Full stack, public data | None for data; key for trading |
-| L3 gated | Full stack, all data | Required |
-
-43 connectors total across all levels.
-
-## Documentation
-
-- `CLAUDE.md` — architectural principles + test plan + scope (full detail)
-- `docs/plans/wave0-foundation.md` — UniversalWsTransport design
-- `docs/plans/phase-alpha-symbol-decoupling.md` — Symbol decoupling design
-- `docs/plans/smoke_v8_findings_spec.md` — original consumer feedback spec
-- `examples/exchange_hub_demo.rs` — minimal hub usage
-- `examples/e2e_smoke.rs` — full validation harness
-- `examples/full_smoke.rs` — parallel 48-exchange smoke
-
-## Validation harness
-
-```bash
-cargo build --example e2e_smoke --release
-./target/release/examples/e2e_smoke.exe   # Windows: e2e_smoke.exe
-```
-
-Generates `e2e_smoke_post_zeta.txt` and a regenerated `data/validation_snapshot.json`.
-
-## Feature flags
+## Feature flags (digdigdig3 core)
 
 | Feature | Default | Purpose |
 |---|---|---|
-| `onchain-evm` | yes | EVM provider (HyperLiquid signing) |
-| `onchain-cosmos` | no | Cosmos provider (dYdX) |
-| `onchain-starknet` | no | StarkNet provider (Lighter) |
+| `onchain-evm` | yes | k256 + sha3 for HyperLiquid EIP-712 signing |
+| `onchain-cosmos` | no | cosmrs for dYdX |
+| `onchain-starknet` | no | starknet-crypto for Lighter |
 | `grpc` | no | tonic transport (Tinkoff) |
 | `websocket` | yes | WS enablement |
+
+Removing `onchain-evm` cuts ~52 transitive deps (only needed for HyperLiquid private trading).
 
 ## Architecture invariants
 
 - **No `_ => Ok(None)` catch-alls** in WS dispatch. Unmatched topic → `tracing::warn!`.
-- **No `std::sync::Mutex` across `.await`**. Tokio sync only.
-- **Symbol normalization lives outside connectors**. Connectors take raw exchange-native strings.
-- **Capabilities are derived, not declared.** Topic registry determines stream support; ValidationStamp records observed reality.
+- **No `std::sync::Mutex` across `.await`** — tokio sync only.
+- **Symbol normalization lives outside connectors.** Connectors take raw exchange-native strings.
+- **Capabilities derived from `topic_registry`**, not free-form flags — cannot drift from reality.
+- **`UnsupportedOperation` vs `NotSupported`** are distinct: first = TODO, second = wire-not-present.
 
-## Levels of test coverage
+## Validation gate
 
-| Layer | What | Command |
-|---|---|---|
-| Compile gate | 0 errors, 0 warnings | `RUSTFLAGS="-D warnings" cargo check --all-targets --all-features` |
-| Unit tests | Fixture-based parser tests | `cargo test --lib --all-features` |
-| Live validation | Real API + content inspection | `./target/release/examples/e2e_smoke.exe` |
+```bash
+RUSTFLAGS="-D warnings" cargo check --workspace --all-targets --all-features
+cargo test -p digdigdig3 --lib --all-features          # 818 pass (1 pre-existing dYdX fail)
+cargo test -p digdigdig3-station --tests                # 75 pass
+cargo run --example e2e_smoke --release -p digdigdig3   # live API matrix
+```
 
-## Known limitations
+## Documentation
 
-- L3-gated connectors (Alpaca, Zerodha, OANDA, IB, ...) compile but are not functionally validated — requires API keys.
-- Some L3-open methods limited by exchange API access: HyperLiquid `get_ticker` needs asset_index → coin mapping (deferred).
-- Symbol normalizer assumes canonical `(base, quote)` model. Options (Deribit) require concrete instrument_name via `Symbol::with_raw`.
-- HTX server-pong reply hook not in framework yet — auto-reconnect compensates.
-- MOEX FAST WS may need RU ISP routing for events.
+- `CLAUDE.md` — architectural principles, scope, test plan
+- `examples/exchange_hub_demo.rs` — minimal hub usage
+- `examples/e2e_smoke.rs` — full 47-exchange validation matrix
 
-## Author / repository
+## License
 
-- Repo: https://github.com/ZENG3LD/digdigdig3
-- License: MIT OR Apache-2.0
+MIT OR Apache-2.0

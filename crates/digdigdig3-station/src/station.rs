@@ -298,68 +298,70 @@ fn spawn_forwarder<T: DataPoint + 'static>(
         }
 
         let mut stream = ws.event_stream();
+        // Silence threshold: if `event_stream().next()` produces no event for
+        // this long, the underlying WS is presumed dropped. Mirrors MLC
+        // `ws_manager` behaviour (60s). Tunable via env for tests.
+        let silence_timeout = std::time::Duration::from_secs(
+            std::env::var("DIG3_WS_SILENCE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(60),
+        );
 
         loop {
-            tokio::select! {
+            // Single tokio::select! arm — exits via the shutdown branch or
+            // detects (None / Err / silence). All three = disconnect = heal.
+            let item_opt = tokio::select! {
                 _ = &mut shutdown_rx => break,
-                item = stream.next() => {
-                    // Disconnect: stream ended (None) or yielded an error.
-                    // Both = "WS dropped". For Kline, run auto-heal: REST
-                    // get_klines, upsert into memory + disk (last-write-wins),
-                    // emit any new bars to consumer. Then re-attach the stream
-                    // — transport reconnects internally.
-                    let ev = match item {
-                        None => {
-                            tracing::info!(target: "dig3::gap_heal", ?key, "ws event_stream ended");
-                            run_kline_heal::<T>(
-                                &hub_for_heal, &key, &gap_cfg, &symbol_label,
-                                last_emitted_ms, exchange,
-                                &mut series, &mut disk, &bcast_tx,
-                            ).await;
-                            last_emitted_ms = last_emitted_ms.max(series.last().map(|p| p.timestamp_ms()).unwrap_or(0));
-                            stream = ws.event_stream();
-                            continue;
-                        }
-                        Some(Err(e)) => {
-                            tracing::warn!(target: "dig3::gap_heal", ?key, ?e, "ws event_stream err");
-                            run_kline_heal::<T>(
-                                &hub_for_heal, &key, &gap_cfg, &symbol_label,
-                                last_emitted_ms, exchange,
-                                &mut series, &mut disk, &bcast_tx,
-                            ).await;
-                            last_emitted_ms = last_emitted_ms.max(series.last().map(|p| p.timestamp_ms()).unwrap_or(0));
-                            stream = ws.event_stream();
-                            continue;
-                        }
-                        Some(Ok(ev)) => ev,
-                    };
+                res = tokio::time::timeout(silence_timeout, stream.next()) => res,
+            };
 
-                    if !event_matches_key(&ev, &key) {
-                        continue;
-                    }
-                    let Some(point) = T::from_stream_event(&ev) else {
-                        continue;
-                    };
+            let trigger_heal_reason: Option<&'static str> = match &item_opt {
+                Err(_) => Some("silence_timeout"),
+                Ok(None) => Some("stream_ended"),
+                Ok(Some(Err(_))) => Some("stream_err"),
+                Ok(Some(Ok(_))) => None,
+            };
 
-                    if let Some(d) = disk.as_mut() {
-                        if let Err(e) = d.append(&point) {
-                            tracing::warn!(?e, "disk store append failed");
-                        }
-                    }
-                    let pt_ts = point.timestamp_ms();
-                    // Klines: multiple in-flight updates share open_time —
-                    // upsert keeps the ring deduplicated. Other kinds are
-                    // monotonic; plain push.
-                    if matches!(&key.kind, Kind::Kline(_)) {
-                        series.upsert_by_ts(point.clone());
-                    } else {
-                        series.push(point.clone());
-                    }
-                    last_emitted_ms = last_emitted_ms.max(pt_ts);
+            if let Some(reason) = trigger_heal_reason {
+                tracing::info!(target: "dig3::gap_heal", ?key, reason, "ws disconnect detected → heal");
+                run_kline_heal::<T>(
+                    &hub_for_heal, &key, &gap_cfg, &symbol_label,
+                    last_emitted_ms, exchange,
+                    &mut series, &mut disk, &bcast_tx,
+                ).await;
+                last_emitted_ms = last_emitted_ms.max(
+                    series.last().map(|p| p.timestamp_ms()).unwrap_or(0)
+                );
+                stream = ws.event_stream();
+                continue;
+            }
 
-                    let _ = bcast_tx.send(Event::from_point(exchange, &symbol_label, &key.kind, point));
+            let ev = match item_opt {
+                Ok(Some(Ok(ev))) => ev,
+                _ => unreachable!(),
+            };
+
+            if !event_matches_key(&ev, &key) {
+                continue;
+            }
+            let Some(point) = T::from_stream_event(&ev) else {
+                continue;
+            };
+
+            if let Some(d) = disk.as_mut() {
+                if let Err(e) = d.append(&point) {
+                    tracing::warn!(?e, "disk store append failed");
                 }
             }
+            let pt_ts = point.timestamp_ms();
+            // Klines: multiple in-flight updates share open_time — upsert
+            // keeps the ring deduplicated. Other kinds are monotonic.
+            if matches!(&key.kind, Kind::Kline(_)) {
+                series.upsert_by_ts(point.clone());
+            } else {
+                series.push(point.clone());
+            }
+            last_emitted_ms = last_emitted_ms.max(pt_ts);
+
+            let _ = bcast_tx.send(Event::from_point(exchange, &symbol_label, &key.kind, point));
         }
 
         if let Some(mut d) = disk { let _ = d.flush(); }

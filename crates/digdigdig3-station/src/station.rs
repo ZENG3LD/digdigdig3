@@ -5,24 +5,25 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use digdigdig3::connector_manager::ExchangeHub;
 use digdigdig3::core::types::{
-    AccountType, ExchangeId, OrderBook, OrderBookLevel, StreamEvent, SubscriptionRequest, Symbol,
+    StreamEvent, StreamType, SubscriptionRequest, Symbol,
 };
 use digdigdig3::core::utils::SymbolNormalizer;
 use futures_util::StreamExt;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-use crate::orderbook::OrderBookTracker;
-use crate::persistence::TradeWriter;
-use crate::subscription::{Entry, Event, MultiplexRef, StreamKey, StreamKind};
+use crate::data::{
+    AggTradePoint, BarPoint, FundingRatePoint, LiquidationPoint, MarkPricePoint, ObSnapshotPoint,
+    OpenInterestPoint, TickerPoint, TradePoint,
+};
+use crate::series::{DataPoint, DiskStore, Kind, Series, SeriesKey};
+use crate::subscription::{Entry, Event, MultiplexRef, Stream};
 use crate::{
     PersistenceConfig, Result, StationBuilder, StationError, SubscriptionHandle, SubscriptionSet,
 };
 
-/// Phase 2 Station. Owns an `ExchangeHub` and a `DashMap<StreamKey, Multiplexer>`
-/// of shared per-(exchange, account, symbol, kind) actors. Each multiplexer
-/// runs one WS subscription on the exchange, and fans events out to N consumers
-/// via `broadcast::channel`. When the last consumer drops, the multiplexer
-/// shuts down.
+/// Phase 5 Station. Unified `Series<T>` + `DiskStore<T>` plumbing under all
+/// stream classes. One multiplexer actor per `SeriesKey` (= exchange × account
+/// × symbol × kind). N consumers share via `broadcast::channel`.
 pub struct Station {
     pub(crate) inner: Arc<StationInner>,
 }
@@ -31,11 +32,14 @@ pub(crate) struct StationInner {
     pub(crate) hub: Arc<ExchangeHub>,
     pub(crate) storage_root: PathBuf,
     pub(crate) persistence: PersistenceConfig,
-    pub(crate) muxes: DashMap<StreamKey, Multiplexer>,
+    pub(crate) muxes: DashMap<SeriesKey, Multiplexer>,
+    pub(crate) warm_start_capacity: usize,
 }
 
+/// One broadcast-fanout actor per `SeriesKey`. Each consumer increments
+/// `consumers`; on the last drop the actor shuts down.
 pub(crate) struct Multiplexer {
-    pub(crate) tx: broadcast::Sender<StreamEvent>,
+    pub(crate) tx: broadcast::Sender<Event>,
     pub(crate) consumers: Arc<AtomicUsize>,
     pub(crate) shutdown: Option<oneshot::Sender<()>>,
 }
@@ -51,13 +55,9 @@ impl std::fmt::Debug for Station {
 }
 
 impl Station {
-    pub fn builder() -> StationBuilder {
-        StationBuilder::new()
-    }
-
-    pub fn storage_root(&self) -> &std::path::Path {
-        &self.inner.storage_root
-    }
+    pub fn builder() -> StationBuilder { StationBuilder::new() }
+    pub fn storage_root(&self) -> &std::path::Path { &self.inner.storage_root }
+    pub fn active_streams(&self) -> usize { self.inner.muxes.len() }
 
     pub(crate) async fn from_builder(b: StationBuilder) -> Result<Self> {
         let _ = digdigdig3::core::install_default_crypto_provider();
@@ -70,18 +70,11 @@ impl Station {
                 storage_root: b.storage_root,
                 persistence: b.persistence,
                 muxes: DashMap::new(),
+                warm_start_capacity: b.warm_start.max(1),
             }),
         })
     }
 
-    /// Number of currently-live multiplexer actors. For tests + `dig3 inspect`.
-    pub fn active_streams(&self) -> usize {
-        self.inner.muxes.len()
-    }
-
-    /// Connect each entry's WS, share multiplexer if (exchange, account, symbol,
-    /// kind) already running, otherwise spawn a new one. Returns a single
-    /// `SubscriptionHandle` that merges all requested streams.
     pub async fn subscribe(&self, set: SubscriptionSet) -> Result<SubscriptionHandle> {
         if set.is_empty() {
             return Err(StationError::Subscribe("empty SubscriptionSet".into()));
@@ -106,41 +99,21 @@ impl Station {
             .map_err(|e| StationError::Subscribe(format!("symbol normalize: {e}")))?;
 
             for s in &entry.streams {
-                let Some(kind) = StreamKind::from_stream(s) else {
-                    tracing::warn!(stream = ?s, "stream kind not yet supported by Station phase 2");
-                    continue;
-                };
-                let key = StreamKey {
+                let kind = s.to_kind();
+                let key = SeriesKey {
                     exchange: entry.exchange,
                     account_type: entry.account_type,
-                    symbol_raw: raw.clone(),
+                    symbol: raw.clone(),
                     kind: kind.clone(),
                 };
 
-                let bcast_tx = self.acquire_or_spawn(&key, &entry, &canonical, &raw).await?;
+                let bcast_tx = self.acquire_or_spawn(&key, &entry, &canonical, &raw, s).await?;
 
                 let mut bcast_rx = bcast_tx.subscribe();
                 let tx_clone = tx.clone();
-                let exchange = entry.exchange;
-                let symbol_label = entry.symbol.clone();
-                let kind_clone = kind.clone();
                 tokio::spawn(async move {
                     while let Ok(ev) = bcast_rx.recv().await {
-                        let out = match (&kind_clone, ev) {
-                            (StreamKind::Trade, StreamEvent::Trade(t)) => Event::Trade {
-                                exchange,
-                                symbol: symbol_label.clone(),
-                                price: t.price,
-                                quantity: t.quantity,
-                                side: format!("{:?}", t.side),
-                                timestamp: t.timestamp,
-                            },
-                            (StreamKind::Orderbook, StreamEvent::OrderbookSnapshot(ob)) => {
-                                ob_event_from(exchange, &symbol_label, &ob)
-                            }
-                            _ => continue,
-                        };
-                        if tx_clone.send(out).is_err() {
+                        if tx_clone.send(ev).is_err() {
                             break;
                         }
                     }
@@ -156,31 +129,25 @@ impl Station {
         Ok(SubscriptionHandle { rx, _refs: refs })
     }
 
-    /// Get the broadcast sender for a `StreamKey`, spawning the multiplexer
-    /// actor if not yet running. Increments the consumer ref count.
+    /// Acquire (or spawn) the multiplexer for `key`. Spawn includes:
+    /// - opening DiskStore<T> if persistence is on,
+    /// - seeding broadcast with last-N (warm-start) before any live event,
+    /// - issuing WS subscribe + forwarder task that runs until shutdown.
     async fn acquire_or_spawn(
         &self,
-        key: &StreamKey,
+        key: &SeriesKey,
         entry: &Entry,
         canonical: &Symbol,
         raw_symbol: &str,
-    ) -> Result<broadcast::Sender<StreamEvent>> {
+        stream: &Stream,
+    ) -> Result<broadcast::Sender<Event>> {
         if let Some(mux) = self.inner.muxes.get(key) {
             mux.consumers.fetch_add(1, Ordering::SeqCst);
             return Ok(mux.tx.clone());
         }
 
         let sym = Symbol::with_raw(&canonical.base, &canonical.quote, raw_symbol.to_string());
-        let req = match key.kind {
-            StreamKind::Trade => SubscriptionRequest::trade_for(sym, entry.account_type),
-            StreamKind::Orderbook => SubscriptionRequest {
-                symbol: sym,
-                stream_type: digdigdig3::core::types::StreamType::Orderbook,
-                account_type: entry.account_type,
-                depth: None,
-                update_speed_ms: None,
-            },
-        };
+        let req = ws_request_for(&key.kind, sym, entry.account_type);
 
         let ws = self
             .inner
@@ -191,120 +158,28 @@ impl Station {
             .await
             .map_err(|e| StationError::Subscribe(format!("ws.subscribe: {e}")))?;
 
-        let (bcast_tx, _) = broadcast::channel::<StreamEvent>(1024);
+        let (bcast_tx, _) = broadcast::channel::<Event>(1024);
         let consumers = Arc::new(AtomicUsize::new(1));
-        let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
-        let mut stream = ws.event_stream();
-        let bcast_for_task = bcast_tx.clone();
-        let key_for_task = key.clone();
-        let symbol_for_task = entry.symbol.clone();
-        let exchange = entry.exchange;
-        let storage_root = self.inner.storage_root.clone();
-        let persist = self.inner.persistence.clone();
-        let account_label = account_key_str(entry.account_type).to_string();
-        let symbol_raw_for_task = raw_symbol.to_string();
+        let _ = stream; // kept for future per-Stream parameter customizations
 
-        tokio::spawn(async move {
-            let mut ob_tracker: Option<OrderBookTracker> = match key_for_task.kind {
-                StreamKind::Orderbook => Some(OrderBookTracker::new(symbol_for_task.clone())),
-                _ => None,
-            };
-            let mut trade_writer: Option<TradeWriter> = match key_for_task.kind {
-                StreamKind::Trade if persist.enabled && persist.trades => {
-                    match TradeWriter::new(
-                        &storage_root,
-                        &format!("{:?}", exchange).to_lowercase(),
-                        &account_label,
-                        &symbol_raw_for_task,
-                    ) {
-                        Ok(w) => Some(w),
-                        Err(e) => {
-                            tracing::warn!(?e, ?exchange, "trade writer open failed");
-                            None
-                        }
-                    }
-                }
-                _ => None,
-            };
-
-            loop {
-                tokio::select! {
-                    _ = &mut shutdown_rx => break,
-                    item = stream.next() => {
-                        let Some(item) = item else { break };
-                        let ev = match item {
-                            Ok(ev) => ev,
-                            Err(e) => {
-                                tracing::warn!(?e, "ws event_stream yielded err");
-                                continue;
-                            }
-                        };
-
-                        // Topic filter: route only events that belong to OUR
-                        // (key.symbol_raw, key.kind). Other consumers on the same
-                        // shared WS connection have their own muxes.
-                        let route = match (&key_for_task.kind, &ev) {
-                            (StreamKind::Trade, StreamEvent::Trade(t)) => {
-                                eq_symbol(&t.symbol, &key_for_task.symbol_raw)
-                            }
-                            (StreamKind::Orderbook, StreamEvent::OrderbookSnapshot(_ob)) => {
-                                // OrderBook struct lacks an inherent `symbol`. The
-                                // event_stream from a per-(exchange, account) WS
-                                // doesn't distinguish here in Phase 2; refine in
-                                // step 7+ when symbol-routing tightens. For now
-                                // we accept every snapshot.
-                                true
-                            }
-                            (StreamKind::Orderbook, StreamEvent::OrderbookDelta(_)) => true,
-                            _ => false,
-                        };
-                        if !route {
-                            continue;
-                        }
-
-                        // Side-effects + downstream broadcast.
-                        match (&key_for_task.kind, ev) {
-                            (StreamKind::Trade, StreamEvent::Trade(t)) => {
-                                if let Some(w) = trade_writer.as_mut() {
-                                    if let Err(e) = w.append(t.timestamp, t.price, t.quantity, t.side, &t.id) {
-                                        tracing::warn!(?e, "trade writer append failed");
-                                    }
-                                }
-                                let _ = bcast_for_task.send(StreamEvent::Trade(t));
-                            }
-                            (StreamKind::Orderbook, StreamEvent::OrderbookSnapshot(ob)) => {
-                                if let Some(tracker) = ob_tracker.as_mut() {
-                                    if let Err(e) = tracker.apply_snapshot(&ob) {
-                                        tracing::warn!(?e, "ob tracker snapshot apply failed");
-                                    }
-                                    let merged = build_ob_from_tracker(tracker);
-                                    let _ = bcast_for_task.send(StreamEvent::OrderbookSnapshot(merged));
-                                }
-                            }
-                            (StreamKind::Orderbook, StreamEvent::OrderbookDelta(d)) => {
-                                if let Some(tracker) = ob_tracker.as_mut() {
-                                    if let Err(e) = tracker.apply_delta(&d) {
-                                        tracing::warn!(?e, "ob tracker delta apply failed");
-                                    }
-                                    let merged = build_ob_from_tracker(tracker);
-                                    let _ = bcast_for_task.send(StreamEvent::OrderbookSnapshot(merged));
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-        });
+        // Spawn one of 9 typed forwarder tasks via the macro.
+        match &key.kind {
+            Kind::Trade => spawn_forwarder::<TradePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone()),
+            Kind::AggTrade => spawn_forwarder::<AggTradePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone()),
+            Kind::Kline(_) => spawn_forwarder::<BarPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone()),
+            Kind::Ticker => spawn_forwarder::<TickerPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone()),
+            Kind::Orderbook => spawn_forwarder::<ObSnapshotPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone()),
+            Kind::MarkPrice => spawn_forwarder::<MarkPricePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone()),
+            Kind::FundingRate => spawn_forwarder::<FundingRatePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone()),
+            Kind::OpenInterest => spawn_forwarder::<OpenInterestPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone()),
+            Kind::Liquidation => spawn_forwarder::<LiquidationPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone()),
+        }
 
         self.inner.muxes.insert(
             key.clone(),
-            Multiplexer {
-                tx: bcast_tx.clone(),
-                consumers,
-                shutdown: Some(shutdown_tx),
-            },
+            Multiplexer { tx: bcast_tx.clone(), consumers, shutdown: Some(shutdown_tx) },
         );
 
         Ok(bcast_tx)
@@ -312,13 +187,9 @@ impl Station {
 }
 
 impl StationInner {
-    /// Decrement the consumer count for `key`; if it hits zero, shut down the
-    /// multiplexer and remove the entry.
-    pub(crate) fn release_consumer(self: &Arc<Self>, key: &StreamKey) {
+    pub(crate) fn release_consumer(self: &Arc<Self>, key: &SeriesKey) {
         let should_remove = {
-            let Some(mux) = self.muxes.get(key) else {
-                return;
-            };
+            let Some(mux) = self.muxes.get(key) else { return; };
             let prev = mux.consumers.fetch_sub(1, Ordering::SeqCst);
             prev <= 1
         };
@@ -329,6 +200,202 @@ impl StationInner {
                 }
             }
         }
+    }
+}
+
+/// Generic per-kind forwarder. Owns:
+/// - DiskStore<T> (Option; on if persistence enabled),
+/// - in-memory Series<T> (capacity = warm_start_capacity, kept as scratch),
+/// - WS event stream.
+///
+/// On spawn: emits warm-start tail from DiskStore (if any) as `Event`s to
+/// broadcast. Then transitions to live mode: each StreamEvent → DataPoint::from
+/// → write disk → push memory → emit broadcast Event.
+fn spawn_forwarder<T: DataPoint + 'static>(
+    station: &Station,
+    key: &SeriesKey,
+    ws: Arc<dyn digdigdig3::core::traits::WebSocketConnector>,
+    bcast_tx: broadcast::Sender<Event>,
+    mut shutdown_rx: oneshot::Receiver<()>,
+    symbol_label: String,
+) where
+    Event: EventFrom<T>,
+{
+    let inner = station.inner.clone();
+    let key = key.clone();
+    let storage_root = inner.storage_root.clone();
+    let persistence = inner.persistence.clone();
+    let warm = inner.warm_start_capacity;
+    let exchange = key.exchange;
+
+    tokio::spawn(async move {
+        // Open disk store if persistence is on.
+        let mut disk: Option<DiskStore<T>> = None;
+        if persistence.enabled {
+            match DiskStore::<T>::new(&storage_root, key.clone()) {
+                Ok(store) => disk = Some(store),
+                Err(e) => tracing::warn!(?e, ?key, "disk store open failed"),
+            }
+        }
+
+        // In-memory ring (warm capacity).
+        let mut series = Series::<T>::new(warm);
+
+        // Warm-start: seed from disk tail and emit to broadcast BEFORE live.
+        if let Some(d) = disk.as_ref() {
+            if warm > 0 {
+                if let Ok(tail) = d.read_tail(warm) {
+                    for p in &tail {
+                        let _ = bcast_tx.send(Event::from_point(exchange, &symbol_label, &key.kind, p.clone()));
+                    }
+                    series.seed(tail);
+                }
+            }
+        }
+
+        let mut stream = ws.event_stream();
+
+        loop {
+            tokio::select! {
+                _ = &mut shutdown_rx => break,
+                item = stream.next() => {
+                    let Some(item) = item else { break };
+                    let ev = match item {
+                        Ok(ev) => ev,
+                        Err(e) => {
+                            tracing::warn!(?e, "ws event_stream yielded err");
+                            continue;
+                        }
+                    };
+
+                    if !event_matches_key(&ev, &key) {
+                        continue;
+                    }
+
+                    let Some(point) = T::from_stream_event(&ev) else {
+                        continue;
+                    };
+
+                    if let Some(d) = disk.as_mut() {
+                        if let Err(e) = d.append(&point) {
+                            tracing::warn!(?e, "disk store append failed");
+                        }
+                    }
+                    series.push(point.clone());
+
+                    let _ = bcast_tx.send(Event::from_point(exchange, &symbol_label, &key.kind, point));
+                }
+            }
+        }
+
+        if let Some(mut d) = disk { let _ = d.flush(); }
+        let _ = series; // dropped
+    });
+}
+
+/// Symbol-level routing: drop events whose `symbol` field doesn't match our key.
+/// For events without a `symbol` field (OB), accept unconditionally — refine in
+/// a later phase when per-symbol routing tightens (Phase 3+).
+fn event_matches_key(ev: &StreamEvent, key: &SeriesKey) -> bool {
+    let want = key.symbol.as_str();
+    let got: Option<&str> = match ev {
+        StreamEvent::Trade(t) => Some(&t.symbol),
+        StreamEvent::AggTrade { symbol, .. } => Some(symbol),
+        StreamEvent::Ticker(t) => Some(&t.symbol),
+        StreamEvent::Kline(k) => k_symbol(k),
+        StreamEvent::MarkPrice { symbol, .. } => Some(symbol),
+        StreamEvent::FundingRate { symbol, .. } => Some(symbol),
+        StreamEvent::OpenInterestUpdate { symbol, .. } => Some(symbol),
+        StreamEvent::Liquidation { symbol, .. } => Some(symbol),
+        StreamEvent::OrderbookSnapshot(_) | StreamEvent::OrderbookDelta(_) => None,
+        _ => None,
+    };
+    match got {
+        Some(s) => s.eq_ignore_ascii_case(want),
+        None => true,
+    }
+}
+
+fn k_symbol(_k: &digdigdig3::core::types::Kline) -> Option<&str> {
+    // Kline struct lacks a `symbol` field; per-WS routing matches by topic upstream.
+    None
+}
+
+/// Trait wired by each `DataPoint` so the forwarder can build the right Event
+/// variant. Implemented below for all 9 types.
+trait EventFrom<T> {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, kind: &Kind, p: T) -> Self;
+}
+
+impl EventFrom<TradePoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: TradePoint) -> Self {
+        Event::Trade { exchange, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<AggTradePoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: AggTradePoint) -> Self {
+        Event::AggTrade { exchange, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<BarPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, kind: &Kind, point: BarPoint) -> Self {
+        let timeframe = match kind { Kind::Kline(iv) => iv.clone(), _ => String::new() };
+        Event::Bar { exchange, symbol: symbol.to_string(), timeframe, point }
+    }
+}
+impl EventFrom<TickerPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: TickerPoint) -> Self {
+        Event::Ticker { exchange, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<ObSnapshotPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: ObSnapshotPoint) -> Self {
+        Event::OrderbookSnapshot { exchange, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<MarkPricePoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: MarkPricePoint) -> Self {
+        Event::MarkPrice { exchange, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<FundingRatePoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: FundingRatePoint) -> Self {
+        Event::FundingRate { exchange, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<OpenInterestPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: OpenInterestPoint) -> Self {
+        Event::OpenInterest { exchange, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<LiquidationPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: LiquidationPoint) -> Self {
+        Event::Liquidation { exchange, symbol: symbol.to_string(), point }
+    }
+}
+
+fn ws_request_for(
+    kind: &Kind,
+    sym: Symbol,
+    account: digdigdig3::core::types::AccountType,
+) -> SubscriptionRequest {
+    let stream_type = match kind {
+        Kind::Trade => StreamType::Trade,
+        Kind::AggTrade => StreamType::AggTrade,
+        Kind::Kline(iv) => StreamType::Kline { interval: iv.clone() },
+        Kind::Ticker => StreamType::Ticker,
+        Kind::Orderbook => StreamType::Orderbook,
+        Kind::MarkPrice => StreamType::MarkPrice,
+        Kind::FundingRate => StreamType::FundingRate,
+        Kind::OpenInterest => StreamType::OpenInterest,
+        Kind::Liquidation => StreamType::Liquidation,
+    };
+    SubscriptionRequest {
+        symbol: sym,
+        stream_type,
+        account_type: account,
+        depth: None,
+        update_speed_ms: None,
     }
 }
 
@@ -345,71 +412,4 @@ fn parse_symbol(s: &str) -> Symbol {
         }
     }
     Symbol::new(&upper, "")
-}
-
-fn eq_symbol(a: &str, b: &str) -> bool {
-    a.eq_ignore_ascii_case(b)
-}
-
-fn ob_event_from(exchange: ExchangeId, label: &str, ob: &OrderBook) -> Event {
-    let bids = ob.bids.iter().map(|l| (l.price, l.size)).collect();
-    let asks = ob.asks.iter().map(|l| (l.price, l.size)).collect();
-    Event::OrderbookSnapshot {
-        exchange,
-        symbol: label.to_string(),
-        bids,
-        asks,
-        timestamp: ob.timestamp,
-    }
-}
-
-fn build_ob_from_tracker(t: &OrderBookTracker) -> OrderBook {
-    let bids = t
-        .top_bids(50)
-        .into_iter()
-        .map(|(p, q)| OrderBookLevel {
-            price: dec_to_f64(p),
-            size: dec_to_f64(q),
-            order_count: None,
-        })
-        .collect();
-    let asks = t
-        .top_asks(50)
-        .into_iter()
-        .map(|(p, q)| OrderBookLevel {
-            price: dec_to_f64(p),
-            size: dec_to_f64(q),
-            order_count: None,
-        })
-        .collect();
-    OrderBook {
-        bids,
-        asks,
-        timestamp: t.last_timestamp_ms(),
-        sequence: None,
-        last_update_id: t.last_update_id(),
-        first_update_id: None,
-        prev_update_id: None,
-        event_time: None,
-        transaction_time: None,
-        checksum: None,
-    }
-}
-
-fn dec_to_f64(d: rust_decimal::Decimal) -> f64 {
-    use rust_decimal::prelude::ToPrimitive;
-    d.to_f64().unwrap_or(0.0)
-}
-
-fn account_key_str(a: AccountType) -> &'static str {
-    match a {
-        AccountType::Spot => "spot",
-        AccountType::Margin => "margin",
-        AccountType::FuturesCross => "futures_cross",
-        AccountType::FuturesIsolated => "futures_isolated",
-        AccountType::Earn => "earn",
-        AccountType::Lending => "lending",
-        AccountType::Options => "options",
-        AccountType::Convert => "convert",
-    }
 }

@@ -8,8 +8,10 @@
 
 pub mod builder;
 pub mod cache;
+pub mod data;
 pub mod error;
 pub mod persistence;
+pub mod series;
 pub mod station;
 pub mod subscription;
 
@@ -27,6 +29,7 @@ pub use builder::StationBuilder;
 pub use cache::{ticker_cache, CacheConfig, TickerKey};
 pub use error::{Result, StationError};
 pub use persistence::{PersistenceConfig, TradeWriter};
+pub use series::{DataPoint, DiskStore, Kind, Series, SeriesKey, SharedSeriesMap};
 pub use station::Station;
 pub use subscription::{Event, Stream, SubscriptionHandle, SubscriptionSet};
 

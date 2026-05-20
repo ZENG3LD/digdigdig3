@@ -1,9 +1,15 @@
 use digdigdig3::core::types::{AccountType, ExchangeId};
 
-/// Streams a `SubscriptionSet` entry may request.
+use crate::data::{
+    AggTradePoint, BarPoint, FundingRatePoint, LiquidationPoint, MarkPricePoint, ObSnapshotPoint,
+    OpenInterestPoint, TickerPoint, TradePoint,
+};
+use crate::series::{Kind, SeriesKey};
+
+/// User-facing stream class to request in a `SubscriptionSet`.
 ///
-/// Phase 1: `Trade`. Phase 2 adds `Orderbook` end-to-end. Other variants are
-/// reserved for Phase 3+.
+/// `Kline` takes a timeframe string ("1m", "5m", "1h", "1d"). All other
+/// variants are parameterless.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Stream {
     Ticker,
@@ -17,6 +23,22 @@ pub enum Stream {
     AggTrade,
 }
 
+impl Stream {
+    pub(crate) fn to_kind(&self) -> Kind {
+        match self {
+            Stream::Trade => Kind::Trade,
+            Stream::AggTrade => Kind::AggTrade,
+            Stream::Kline(iv) => Kind::Kline(iv.clone()),
+            Stream::Ticker => Kind::Ticker,
+            Stream::Orderbook => Kind::Orderbook,
+            Stream::MarkPrice => Kind::MarkPrice,
+            Stream::FundingRate => Kind::FundingRate,
+            Stream::OpenInterest => Kind::OpenInterest,
+            Stream::Liquidation => Kind::Liquidation,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct Entry {
     pub(crate) exchange: ExchangeId,
@@ -25,16 +47,15 @@ pub(crate) struct Entry {
     pub(crate) streams: Vec<Stream>,
 }
 
-/// Declarative subscription request — built up fluently, consumed by [`crate::Station::subscribe`].
+/// Declarative subscription request — built up fluently, consumed by
+/// [`crate::Station::subscribe`].
 #[derive(Debug, Default, Clone)]
 pub struct SubscriptionSet {
     pub(crate) entries: Vec<Entry>,
 }
 
 impl SubscriptionSet {
-    pub fn new() -> Self {
-        Self::default()
-    }
+    pub fn new() -> Self { Self::default() }
 
     pub fn add(
         mut self,
@@ -52,72 +73,101 @@ impl SubscriptionSet {
         self
     }
 
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
+    pub fn len(&self) -> usize { self.entries.len() }
+    pub fn is_empty(&self) -> bool { self.entries.is_empty() }
 }
 
-/// Events forwarded to consumers.
+/// Events forwarded to consumers. One variant per market-data class.
 #[derive(Debug, Clone)]
 pub enum Event {
     Trade {
         exchange: ExchangeId,
         symbol: String,
-        price: f64,
-        quantity: f64,
-        side: String,
-        timestamp: i64,
+        point: TradePoint,
+    },
+    AggTrade {
+        exchange: ExchangeId,
+        symbol: String,
+        point: AggTradePoint,
+    },
+    Bar {
+        exchange: ExchangeId,
+        symbol: String,
+        timeframe: String,
+        point: BarPoint,
+    },
+    Ticker {
+        exchange: ExchangeId,
+        symbol: String,
+        point: TickerPoint,
     },
     OrderbookSnapshot {
         exchange: ExchangeId,
         symbol: String,
-        /// Sorted descending by price (best bid first).
-        bids: Vec<(f64, f64)>,
-        /// Sorted ascending by price (best ask first).
-        asks: Vec<(f64, f64)>,
-        timestamp: i64,
+        point: ObSnapshotPoint,
+    },
+    MarkPrice {
+        exchange: ExchangeId,
+        symbol: String,
+        point: MarkPricePoint,
+    },
+    FundingRate {
+        exchange: ExchangeId,
+        symbol: String,
+        point: FundingRatePoint,
+    },
+    OpenInterest {
+        exchange: ExchangeId,
+        symbol: String,
+        point: OpenInterestPoint,
+    },
+    Liquidation {
+        exchange: ExchangeId,
+        symbol: String,
+        point: LiquidationPoint,
     },
 }
 
-/// Key uniquely identifying a multiplexed wire subscription. N consumers can
-/// share one WS subscription on the same `StreamKey`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct StreamKey {
-    pub exchange: ExchangeId,
-    pub account_type: AccountType,
-    /// Exchange-native raw symbol (already normalized).
-    pub symbol_raw: String,
-    pub kind: StreamKind,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum StreamKind {
-    Trade,
-    Orderbook,
-}
-
-impl StreamKind {
-    pub(crate) fn from_stream(s: &Stream) -> Option<Self> {
-        match s {
-            Stream::Trade => Some(Self::Trade),
-            Stream::Orderbook => Some(Self::Orderbook),
-            _ => None,
+impl Event {
+    pub fn exchange(&self) -> ExchangeId {
+        match self {
+            Event::Trade { exchange, .. } | Event::AggTrade { exchange, .. } |
+            Event::Bar { exchange, .. } | Event::Ticker { exchange, .. } |
+            Event::OrderbookSnapshot { exchange, .. } | Event::MarkPrice { exchange, .. } |
+            Event::FundingRate { exchange, .. } | Event::OpenInterest { exchange, .. } |
+            Event::Liquidation { exchange, .. } => *exchange,
+        }
+    }
+    pub fn symbol(&self) -> &str {
+        match self {
+            Event::Trade { symbol, .. } | Event::AggTrade { symbol, .. } |
+            Event::Bar { symbol, .. } | Event::Ticker { symbol, .. } |
+            Event::OrderbookSnapshot { symbol, .. } | Event::MarkPrice { symbol, .. } |
+            Event::FundingRate { symbol, .. } | Event::OpenInterest { symbol, .. } |
+            Event::Liquidation { symbol, .. } => symbol,
+        }
+    }
+    pub fn timestamp_ms(&self) -> i64 {
+        use crate::series::DataPoint;
+        match self {
+            Event::Trade { point, .. } => point.timestamp_ms(),
+            Event::AggTrade { point, .. } => point.timestamp_ms(),
+            Event::Bar { point, .. } => point.timestamp_ms(),
+            Event::Ticker { point, .. } => point.timestamp_ms(),
+            Event::OrderbookSnapshot { point, .. } => point.timestamp_ms(),
+            Event::MarkPrice { point, .. } => point.timestamp_ms(),
+            Event::FundingRate { point, .. } => point.timestamp_ms(),
+            Event::OpenInterest { point, .. } => point.timestamp_ms(),
+            Event::Liquidation { point, .. } => point.timestamp_ms(),
         }
     }
 }
 
-/// RAII handle returned from `Station::subscribe`.
-///
-/// Dropping releases this handle's reference on each shared multiplexer. When
-/// the last consumer of a `StreamKey` drops, the mux closes its WS subscription
-/// and exits.
+/// RAII handle returned from `Station::subscribe`. Dropping releases the
+/// per-StreamKey consumer ref count; when count hits zero the multiplexer
+/// shuts down.
 pub struct SubscriptionHandle {
     pub(crate) rx: tokio::sync::mpsc::UnboundedReceiver<Event>,
-    /// Held to keep multiplexer ref-counts alive. On Drop, each releases.
     pub(crate) _refs: Vec<MultiplexRef>,
 }
 
@@ -133,11 +183,9 @@ impl SubscriptionHandle {
     }
 }
 
-/// Drop-anchor: every consumer holds one `MultiplexRef` per StreamKey it
-/// subscribed to. When the ref count drops to zero the multiplexer shuts down.
 pub(crate) struct MultiplexRef {
     pub(crate) station: std::sync::Weak<crate::station::StationInner>,
-    pub(crate) key: StreamKey,
+    pub(crate) key: SeriesKey,
 }
 
 impl Drop for MultiplexRef {

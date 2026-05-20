@@ -320,31 +320,36 @@ fn spawn_forwarder<T: DataPoint + 'static>(
 
                     // Gap-heal: live event timestamp jumped past the threshold.
                     // Insert recovered points BEFORE the current live event.
-                    if gap_cfg.enabled && last_seen_ms > 0 {
-                        let now_ts = point.timestamp_ms();
-                        if should_heal(&key.kind, last_seen_ms, now_ts, &gap_cfg) {
-                            let healed = heal_gap_for_kind::<T>(
-                                &hub_for_heal,
-                                &key,
-                                last_seen_ms,
-                                gap_cfg.max_records,
-                            )
-                            .await;
-                            let healed_count = healed.len();
-                            for h in healed {
-                                if let Some(d) = disk.as_mut() {
-                                    let _ = d.append(&h);
-                                }
-                                let h_ts = h.timestamp_ms();
-                                series.push(h.clone());
-                                let _ = bcast_tx.send(
-                                    Event::from_point(exchange, &symbol_label, &key.kind, h),
-                                );
-                                last_seen_ms = last_seen_ms.max(h_ts);
+                    let now_ts = point.timestamp_ms();
+                    if crate::gap_heal::should_heal(&key.kind, last_seen_ms, now_ts, &gap_cfg) {
+                        let pulled = heal_gap_for_kind::<T>(
+                            &hub_for_heal,
+                            &key,
+                            last_seen_ms,
+                            gap_cfg.max_records,
+                        )
+                        .await;
+                        let healed = crate::gap_heal::select_heal_window(pulled, last_seen_ms);
+                        let healed_count = healed.len();
+                        let pre_heal_last = last_seen_ms;
+                        for h in healed {
+                            if let Some(d) = disk.as_mut() {
+                                let _ = d.append(&h);
                             }
-                            if healed_count > 0 {
-                                tracing::info!(?key, healed_count, gap_ms = now_ts - last_seen_ms, "gap-heal applied");
-                            }
+                            let h_ts = h.timestamp_ms();
+                            series.push(h.clone());
+                            let _ = bcast_tx.send(
+                                Event::from_point(exchange, &symbol_label, &key.kind, h),
+                            );
+                            last_seen_ms = last_seen_ms.max(h_ts);
+                        }
+                        if healed_count > 0 {
+                            tracing::info!(
+                                ?key,
+                                healed_count,
+                                gap_ms = now_ts - pre_heal_last,
+                                "gap-heal applied"
+                            );
                         }
                     }
 
@@ -365,22 +370,6 @@ fn spawn_forwarder<T: DataPoint + 'static>(
         if let Some(mut d) = disk { let _ = d.flush(); }
         let _ = series; // dropped
     });
-}
-
-fn should_heal(kind: &Kind, last_seen_ms: i64, now_ms: i64, cfg: &crate::GapHealConfig) -> bool {
-    if now_ms <= last_seen_ms {
-        return false;
-    }
-    let gap_ms = (now_ms - last_seen_ms) as u128;
-    match kind {
-        Kind::Trade => gap_ms > cfg.trade_gap.as_millis(),
-        Kind::Kline(iv) => {
-            let Some(d) = crate::gap_heal::kline_interval_to_duration(iv) else { return false };
-            gap_ms > (d.as_millis() * cfg.kline_intervals as u128)
-        }
-        // Other kinds have no REST history endpoint we can use.
-        _ => false,
-    }
 }
 
 /// Kind-specific REST gap-heal. Unsafe-feeling `transmute`-free dispatch:

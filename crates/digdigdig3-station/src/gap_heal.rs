@@ -52,6 +52,57 @@ impl GapHealConfig {
     pub fn max_records(mut self, n: usize) -> Self { self.max_records = n; self }
 }
 
+/// Pure decision: should we attempt gap-heal given (kind, last_seen_ms, now_ms)?
+///
+/// Returns false when:
+/// - config is off,
+/// - never-seen-yet (last_seen_ms == 0),
+/// - now_ms <= last_seen_ms (clock skew or duplicate),
+/// - kind has no REST history endpoint (anything other than Trade/Kline),
+/// - Kline interval string is malformed.
+///
+/// Returns true when:
+/// - Trade: gap > `cfg.trade_gap`,
+/// - Kline(iv): gap > `parse(iv) * cfg.kline_intervals`.
+pub fn should_heal(
+    kind: &crate::series::Kind,
+    last_seen_ms: i64,
+    now_ms: i64,
+    cfg: &GapHealConfig,
+) -> bool {
+    if !cfg.enabled || last_seen_ms <= 0 || now_ms <= last_seen_ms {
+        return false;
+    }
+    let gap_ms = (now_ms - last_seen_ms) as u128;
+    match kind {
+        crate::series::Kind::Trade => gap_ms > cfg.trade_gap.as_millis(),
+        crate::series::Kind::Kline(iv) => {
+            let Some(d) = kline_interval_to_duration(iv) else { return false };
+            gap_ms > (d.as_millis() * cfg.kline_intervals as u128)
+        }
+        _ => false,
+    }
+}
+
+/// Filter recovered REST points to those that fill the gap `(last_seen_ms, now_ms]`
+/// inclusive of `now_ms`-edge tolerance. Returns oldest→newest.
+///
+/// `pulled` is whatever REST returned, possibly unsorted, possibly containing
+/// duplicates of already-seen points. We:
+/// - drop anything with ts <= last_seen_ms (already delivered),
+/// - sort ascending,
+/// - dedup by exact ts (kline backfill can return overlapping points).
+pub fn select_heal_window<T: crate::series::DataPoint>(
+    pulled: Vec<T>,
+    last_seen_ms: i64,
+) -> Vec<T> {
+    let mut filtered: Vec<T> = pulled.into_iter().filter(|p| p.timestamp_ms() > last_seen_ms).collect();
+    filtered.sort_by_key(|p| p.timestamp_ms());
+    // Dedup by ts (cheap & sufficient for trades+klines; trades may share ts).
+    filtered.dedup_by_key(|p| p.timestamp_ms());
+    filtered
+}
+
 /// Convert a kline interval string to a Duration. Supports the canonical
 /// Binance-style suffixes: s (seconds), m (minutes), h (hours), d (days),
 /// w (weeks). Returns None for malformed input.
@@ -69,33 +120,30 @@ pub fn kline_interval_to_duration(s: &str) -> Option<Duration> {
     Some(Duration::from_secs(secs))
 }
 
-/// REST helper: pull recent trades after `since_ms` (best-effort — exchange
-/// REST `get_recent_trades` returns the most recent N, not a timestamp window,
-/// so the caller filters by `ts > since_ms`).
+/// REST pull for gap-heal — returns raw recent trades (oldest→newest as
+/// returned by the exchange). The forwarder calls [`select_heal_window`] to
+/// filter to the missing window.
 pub async fn heal_trades(
     hub: &Arc<ExchangeHub>,
     exchange: ExchangeId,
     account: AccountType,
     symbol: &str,
-    since_ms: i64,
+    _since_ms: i64,
     max_records: usize,
 ) -> Vec<TradePoint> {
-    let pulled = crate::backfill::trades_recent(hub, exchange, account, symbol, max_records).await;
-    pulled.into_iter().filter(|p| p.ts_ms > since_ms).collect()
+    crate::backfill::trades_recent(hub, exchange, account, symbol, max_records).await
 }
 
-/// REST helper: pull klines covering `since_open_time_ms .. now`. Filters out
-/// bars we've already seen.
+/// REST pull for gap-heal — returns raw recent klines. Filter via
+/// [`select_heal_window`].
 pub async fn heal_klines(
     hub: &Arc<ExchangeHub>,
     exchange: ExchangeId,
     account: AccountType,
     symbol: &str,
     interval: &str,
-    since_open_time_ms: i64,
+    _since_open_time_ms: i64,
     max_records: usize,
 ) -> Vec<BarPoint> {
-    let pulled =
-        crate::backfill::klines_recent(hub, exchange, account, symbol, interval, max_records).await;
-    pulled.into_iter().filter(|p| p.open_time > since_open_time_ms).collect()
+    crate::backfill::klines_recent(hub, exchange, account, symbol, interval, max_records).await
 }

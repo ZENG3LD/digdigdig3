@@ -229,13 +229,13 @@ impl PolygonParser {
                 }
                 "AM" => {
                     // Minute aggregate
-                    if let Ok(kline_event) = Self::parse_ws_aggregate(event) {
+                    if let Ok(kline_event) = Self::parse_ws_aggregate(event, "1m") {
                         stream_events.push(kline_event);
                     }
                 }
                 "AS" => {
                     // Second aggregate
-                    if let Ok(kline_event) = Self::parse_ws_aggregate(event) {
+                    if let Ok(kline_event) = Self::parse_ws_aggregate(event, "1s") {
                         stream_events.push(kline_event);
                     }
                 }
@@ -261,8 +261,9 @@ impl PolygonParser {
         Ok(stream_events)
     }
 
-    /// Parse WebSocket aggregate (minute/second bar)
-    fn parse_ws_aggregate(event: &Value) -> ExchangeResult<StreamEvent> {
+    /// Parse WebSocket aggregate (minute/second bar). `interval` is implied
+    /// by the `ev` event type (AM = 1m, AS = 1s); caller passes it in.
+    fn parse_ws_aggregate(event: &Value, interval: &str) -> ExchangeResult<StreamEvent> {
         let symbol = Self::get_str(event, "sym")
             .ok_or_else(|| ExchangeError::Parse("Missing 'sym' field".to_string()))?
             .to_string();
@@ -278,7 +279,7 @@ impl PolygonParser {
 
         Ok(StreamEvent::Kline {
             symbol,
-            interval: String::new(), // Polygon aggregate event has no interval suffix; subscriber knows from sub spec
+            interval: interval.to_string(),
             kline: Kline {
                 open_time,
                 open,

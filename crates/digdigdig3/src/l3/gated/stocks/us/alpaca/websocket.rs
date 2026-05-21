@@ -417,7 +417,9 @@ impl AlpacaWebSocket {
 
                 Some(StreamEvent::Kline {
                     symbol: symbol.to_string(),
-                    interval: String::new(), // Alpaca "b" bar has no interval field; consumer knows from sub spec
+                    // Alpaca "b" channel emits minute bars only — fixed cadence on the wire.
+                    // (Daily bars would arrive on "d", which we don't subscribe to here.)
+                    interval: "1m".to_string(),
                     kline: bar,
                 })
             }

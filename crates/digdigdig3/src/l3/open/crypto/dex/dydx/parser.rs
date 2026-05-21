@@ -13,6 +13,7 @@ use crate::core::types::{
     OrderbookDelta as OrderbookDeltaData,
     UserTrade, FundingPayment,
 };
+use crate::core::websocket::KlineInterval;
 
 /// Парсер ответов dYdX v4 Indexer API
 pub struct DydxParser;
@@ -677,7 +678,7 @@ impl DydxParser {
         let id_str = data.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let mut id_parts = id_str.splitn(2, '/');
         let kl_symbol = id_parts.next().unwrap_or("").to_string();
-        let kl_interval = id_parts.next().unwrap_or("").to_string();
+        let kl_interval = KlineInterval::new(id_parts.next().unwrap_or(""));
 
         Ok(StreamEvent::Kline { symbol: kl_symbol, interval: kl_interval, kline })
     }

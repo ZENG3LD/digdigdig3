@@ -582,10 +582,11 @@ fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
     let kline = parse_kline_data(result)?;
 
     // Split off the interval prefix (everything up to the first '_').
-    let (interval, rest) = match n.split_once('_') {
-        Some((iv, rest)) => (iv.to_string(), rest),
-        None => (String::new(), n),
+    let (interval_str, rest) = match n.split_once('_') {
+        Some((iv, rest)) => (iv, rest),
+        None => ("", n),
     };
+    let interval = KlineInterval::new(interval_str);
 
     if let Some(sym) = rest.strip_prefix("mark_") {
         Ok(StreamEvent::MarkPriceKline {
@@ -865,7 +866,7 @@ mod tests {
         let ev = parse_kline(&frame).expect("parse_kline ok");
         match ev {
             StreamEvent::Kline { symbol, interval, .. } => {
-                assert_eq!(interval, "1m");
+                assert_eq!(interval, KlineInterval::new("1m"));
                 assert_eq!(symbol, "BTC_USDT");
             }
             other => panic!("expected Kline, got {:?}", other),
@@ -878,7 +879,7 @@ mod tests {
         let ev = parse_kline(&frame).expect("parse_kline ok");
         match ev {
             StreamEvent::Kline { symbol, interval, .. } => {
-                assert_eq!(interval, "4h");
+                assert_eq!(interval, KlineInterval::new("4h"));
                 assert_eq!(symbol, "ETH_USDT");
             }
             other => panic!("expected Kline, got {:?}", other),
@@ -891,7 +892,7 @@ mod tests {
         let ev = parse_kline(&frame).expect("parse_kline ok");
         match ev {
             StreamEvent::MarkPriceKline { symbol, interval, .. } => {
-                assert_eq!(interval, "1m");
+                assert_eq!(interval, KlineInterval::new("1m"));
                 assert_eq!(symbol, "BTC_USDT");
             }
             other => panic!("expected MarkPriceKline, got {:?}", other),
@@ -904,7 +905,7 @@ mod tests {
         let ev = parse_kline(&frame).expect("parse_kline ok");
         match ev {
             StreamEvent::IndexPriceKline { symbol, interval, .. } => {
-                assert_eq!(interval, "5m");
+                assert_eq!(interval, KlineInterval::new("5m"));
                 assert_eq!(symbol, "BTC_USDT");
             }
             other => panic!("expected IndexPriceKline, got {:?}", other),
@@ -918,7 +919,7 @@ mod tests {
         let ev = parse_kline(&frame).expect("parse_kline ok");
         match ev {
             StreamEvent::Kline { symbol, interval, .. } => {
-                assert_eq!(interval, "");
+                assert_eq!(interval, KlineInterval::new(""));
                 assert_eq!(symbol, "BTCUSDT");
             }
             other => panic!("expected Kline, got {:?}", other),

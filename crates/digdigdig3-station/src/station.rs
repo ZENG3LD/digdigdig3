@@ -7,6 +7,7 @@ use digdigdig3::connector_manager::ExchangeHub;
 use digdigdig3::core::types::{
     StreamEvent, StreamType, SubscriptionRequest, Symbol,
 };
+use digdigdig3::core::websocket::KlineInterval;
 use digdigdig3::core::utils::SymbolNormalizer;
 use futures_util::StreamExt;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -201,7 +202,7 @@ impl Station {
             }
             Kind::Kline(interval) => {
                 let seed = if warm_n > 0 {
-                    crate::backfill::klines_recent(&hub, key.exchange, acct, &raw_s, interval, warm_n).await
+                    crate::backfill::klines_recent(&hub, key.exchange, acct, &raw_s, interval.as_str(), warm_n).await
                 } else { Vec::new() };
                 spawn_forwarder::<BarPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), seed, req.clone());
             }
@@ -433,7 +434,7 @@ async fn run_kline_heal<T: DataPoint + 'static>(
     let Kind::Kline(iv) = &key.kind else { return; };
 
     let now_ms = chrono::Utc::now().timestamp_millis();
-    let limit = crate::gap_heal::heal_limit(cfg, iv, last_emitted_ms, now_ms);
+    let limit = crate::gap_heal::heal_limit(cfg, iv.as_str(), last_emitted_ms, now_ms);
 
     tracing::info!(
         target: "dig3::gap_heal",
@@ -444,7 +445,7 @@ async fn run_kline_heal<T: DataPoint + 'static>(
     );
 
     let pulled: Vec<T> = cast_vec(
-        crate::gap_heal::heal_klines(hub, key.exchange, key.account_type, &key.symbol, iv, last_emitted_ms, limit).await
+        crate::gap_heal::heal_klines(hub, key.exchange, key.account_type, &key.symbol, iv.as_str(), last_emitted_ms, limit).await
     );
     let pulled_count = pulled.len();
 
@@ -561,7 +562,7 @@ impl EventFrom<AggTradePoint> for Event {
 }
 impl EventFrom<BarPoint> for Event {
     fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, kind: &Kind, point: BarPoint) -> Self {
-        let timeframe = match kind { Kind::Kline(iv) => iv.clone(), _ => String::new() };
+        let timeframe = match kind { Kind::Kline(iv) => iv.clone(), _ => KlineInterval::new("") };
         Event::Bar { exchange, symbol: symbol.to_string(), timeframe, point }
     }
 }
@@ -604,7 +605,7 @@ fn ws_request_for(
     let stream_type = match kind {
         Kind::Trade => StreamType::Trade,
         Kind::AggTrade => StreamType::AggTrade,
-        Kind::Kline(iv) => StreamType::Kline { interval: iv.clone() },
+        Kind::Kline(iv) => StreamType::Kline { interval: iv.as_str().to_string() },
         Kind::Ticker => StreamType::Ticker,
         Kind::Orderbook => StreamType::Orderbook,
         Kind::MarkPrice => StreamType::MarkPrice,

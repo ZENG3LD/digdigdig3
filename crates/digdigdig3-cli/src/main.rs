@@ -7,6 +7,7 @@ use digdigdig3_station::{
     AccountType, Event, ExchangeId, GapHealConfig, PersistenceConfig, Station, Stream,
     SubscriptionSet,
 };
+use digdigdig3::core::websocket::KlineInterval;
 
 #[derive(Parser, Debug)]
 #[command(name = "dig3", version, about = "digdigdig3 unified CLI")]
@@ -123,7 +124,7 @@ async fn run_watch(kind: WatchKind, opts: WatchOpts) -> Result<()> {
         Trades { exchange, symbol, account, duration } => watch_one(&exchange, &symbol, &account, duration, Stream::Trade, &opts, 0).await,
         AggTrades { exchange, symbol, account, duration } => watch_one(&exchange, &symbol, &account, duration, Stream::AggTrade, &opts, 0).await,
         Orderbook { exchange, symbol, account, duration, depth } => watch_one(&exchange, &symbol, &account, duration, Stream::Orderbook, &opts, depth).await,
-        Kline { exchange, symbol, account, interval, duration } => watch_one(&exchange, &symbol, &account, duration, Stream::Kline(interval), &opts, 0).await,
+        Kline { exchange, symbol, account, interval, duration } => watch_one(&exchange, &symbol, &account, duration, Stream::Kline(KlineInterval::new(interval)), &opts, 0).await,
         Ticker { exchange, symbol, account, duration } => watch_one(&exchange, &symbol, &account, duration, Stream::Ticker, &opts, 0).await,
         Mark { exchange, symbol, account, duration } => watch_one(&exchange, &symbol, &account, duration, Stream::MarkPrice, &opts, 0).await,
         Funding { exchange, symbol, account, duration } => watch_one(&exchange, &symbol, &account, duration, Stream::FundingRate, &opts, 0).await,

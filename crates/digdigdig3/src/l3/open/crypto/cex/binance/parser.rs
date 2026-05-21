@@ -19,6 +19,7 @@ use crate::core::types::{
     LongShortRatio, OpenInterest,
     StreamEvent,
 };
+use crate::core::websocket::KlineInterval;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PREMIUM INDEX DATA
@@ -1618,7 +1619,7 @@ impl BinanceParser {
 
         Ok(StreamEvent::MarkPriceKline {
             symbol: data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string(),
-            interval: k.get("i").and_then(|i| i.as_str()).unwrap_or("").to_string(),
+            interval: KlineInterval::new(k.get("i").and_then(|i| i.as_str()).unwrap_or("")),
             kline: Kline {
                 open_time: k.get("t").and_then(|t| t.as_i64()).unwrap_or(0),
                 open: parse_f64("o").unwrap_or(0.0),
@@ -1648,7 +1649,7 @@ impl BinanceParser {
 
         Ok(StreamEvent::IndexPriceKline {
             symbol: data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string(),
-            interval: k.get("i").and_then(|i| i.as_str()).unwrap_or("").to_string(),
+            interval: KlineInterval::new(k.get("i").and_then(|i| i.as_str()).unwrap_or("")),
             kline: Kline {
                 open_time: k.get("t").and_then(|t| t.as_i64()).unwrap_or(0),
                 open: parse_f64("o").unwrap_or(0.0),
@@ -1678,7 +1679,7 @@ impl BinanceParser {
 
         Ok(StreamEvent::PremiumIndexKline {
             symbol: data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string(),
-            interval: k.get("i").and_then(|i| i.as_str()).unwrap_or("").to_string(),
+            interval: KlineInterval::new(k.get("i").and_then(|i| i.as_str()).unwrap_or("")),
             kline: Kline {
                 open_time: k.get("t").and_then(|t| t.as_i64()).unwrap_or(0),
                 open: parse_f64("o").unwrap_or(0.0),

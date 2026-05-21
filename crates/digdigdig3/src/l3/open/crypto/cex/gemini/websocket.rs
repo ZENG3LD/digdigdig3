@@ -52,6 +52,7 @@ use crate::core::{
 };
 use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities, WsBookChannel};
 use crate::core::traits::WebSocketConnector;
+use crate::core::websocket::KlineInterval;
 
 use super::auth::GeminiAuth;
 use super::endpoints::{GeminiUrls, normalize_symbol, format_symbol};
@@ -477,7 +478,7 @@ impl GeminiWebSocket {
             (WebSocketType::MarketData, Some(t)) if t.starts_with("candles_") => {
                 // Candle update — type is "candles_{interval}" e.g. "candles_1m"
                 let kl_symbol = value.get("symbol").and_then(|s| s.as_str()).unwrap_or("").to_string();
-                let kl_interval = t.strip_prefix("candles_").unwrap_or("").to_string();
+                let kl_interval = KlineInterval::new(t.strip_prefix("candles_").unwrap_or(""));
                 let kline = GeminiParser::parse_ws_candle(&value)?;
                 Ok(vec![StreamEvent::Kline { symbol: kl_symbol, interval: kl_interval, kline }])
             }

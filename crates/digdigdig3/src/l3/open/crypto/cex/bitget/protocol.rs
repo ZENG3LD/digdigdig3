@@ -377,12 +377,14 @@ fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let kl_interval = raw.get("arg")
-        .and_then(|a| a.get("channel"))
-        .and_then(|v| v.as_str())
-        // channel is e.g. "candle1m" — strip "candle" prefix for interval
-        .map(|ch| ch.strip_prefix("candle").unwrap_or(ch).to_string())
-        .unwrap_or_default();
+    let kl_interval = KlineInterval::new(
+        raw.get("arg")
+            .and_then(|a| a.get("channel"))
+            .and_then(|v| v.as_str())
+            // channel is e.g. "candle1m" — strip "candle" prefix for interval
+            .map(|ch| ch.strip_prefix("candle").unwrap_or(ch))
+            .unwrap_or(""),
+    );
     let kline = BitgetParser::parse_ws_kline(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
     Ok(StreamEvent::Kline { symbol: kl_symbol, interval: kl_interval, kline })

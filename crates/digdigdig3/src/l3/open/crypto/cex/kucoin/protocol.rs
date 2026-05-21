@@ -508,9 +508,9 @@ fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
     // topic: "/market/candles:BTC-USDT_1hour" → symbol="BTC-USDT", interval="1hour"
     let sym_interval = topic_symbol(raw);
     let (symbol, interval) = if let Some(pos) = sym_interval.find('_') {
-        (sym_interval[..pos].to_string(), sym_interval[pos + 1..].to_string())
+        (sym_interval[..pos].to_string(), KlineInterval::new(&sym_interval[pos + 1..]))
     } else {
-        (sym_interval, String::new())
+        (sym_interval, KlineInterval::new(""))
     };
     Ok(StreamEvent::Kline { symbol, interval, kline })
 }

@@ -672,7 +672,7 @@ fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
     let kline_channel = raw.get("ch").and_then(|v| v.as_str()).unwrap_or("");
     let kline_parts: Vec<&str> = kline_channel.split('.').collect();
     let kline_symbol = kline_parts.get(1).copied().unwrap_or("").to_uppercase();
-    let kline_interval = kline_parts.get(3).copied().unwrap_or("").to_string();
+    let kline_interval = KlineInterval::new(kline_parts.get(3).copied().unwrap_or(""));
 
     let data = tick_data(raw)?;
 

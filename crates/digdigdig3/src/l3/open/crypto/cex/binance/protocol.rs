@@ -586,12 +586,12 @@ fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
     let kline = BinanceParser::parse_ws_kline(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
     let symbol = data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string();
-    let interval = data
-        .get("k")
-        .and_then(|k| k.get("i"))
-        .and_then(|i| i.as_str())
-        .unwrap_or("")
-        .to_string();
+    let interval = KlineInterval::new(
+        data.get("k")
+            .and_then(|k| k.get("i"))
+            .and_then(|i| i.as_str())
+            .unwrap_or(""),
+    );
     Ok(StreamEvent::Kline { symbol, interval, kline })
 }
 

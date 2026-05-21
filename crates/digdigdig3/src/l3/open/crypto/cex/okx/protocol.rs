@@ -715,7 +715,7 @@ fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
     let symbol = arg_inst_id(raw).to_string();
     // channel is "candle1m", "candle5m", etc. — strip "candle" prefix for interval
-    let interval = arg_channel(raw).strip_prefix("candle").unwrap_or("").to_string();
+    let interval = KlineInterval::new(arg_channel(raw).strip_prefix("candle").unwrap_or(""));
     Ok(StreamEvent::Kline { symbol, interval, kline })
 }
 
@@ -911,7 +911,7 @@ fn parse_mark_price_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
     let kline = OkxParser::parse_ws_price_candle(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
     let channel = arg_channel(raw);
-    let interval = channel.trim_start_matches("mark-price-candle").to_string();
+    let interval = KlineInterval::new(channel.trim_start_matches("mark-price-candle"));
     let symbol = arg_inst_id(raw).to_string();
     Ok(StreamEvent::MarkPriceKline { symbol, interval, kline })
 }
@@ -921,7 +921,7 @@ fn parse_index_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
     let kline = OkxParser::parse_ws_price_candle(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
     let channel = arg_channel(raw);
-    let interval = channel.trim_start_matches("index-candle").to_string();
+    let interval = KlineInterval::new(channel.trim_start_matches("index-candle"));
     let symbol = arg_inst_id(raw).to_string();
     Ok(StreamEvent::IndexPriceKline { symbol, interval, kline })
 }

@@ -457,7 +457,7 @@ fn parse_candle(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw)?;
     // HyperLiquid candle data carries "coin" and "interval" fields
     let kl_symbol = data.get("coin").and_then(|c| c.as_str()).unwrap_or("").to_string();
-    let kl_interval = data.get("interval").and_then(|i| i.as_str()).unwrap_or("").to_string();
+    let kl_interval = KlineInterval::new(data.get("interval").and_then(|i| i.as_str()).unwrap_or(""));
     let klines = HyperliquidParser::parse_klines(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
     let kline = klines

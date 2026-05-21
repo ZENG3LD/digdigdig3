@@ -1,4 +1,5 @@
 use digdigdig3::core::types::{AccountType, ExchangeId};
+use digdigdig3::core::websocket::KlineInterval;
 
 use crate::data::{
     AggTradePoint, BarPoint, FundingRatePoint, LiquidationPoint, MarkPricePoint, ObSnapshotPoint,
@@ -8,14 +9,14 @@ use crate::series::{Kind, SeriesKey};
 
 /// User-facing stream class to request in a `SubscriptionSet`.
 ///
-/// `Kline` takes a timeframe string ("1m", "5m", "1h", "1d"). All other
-/// variants are parameterless.
+/// `Kline` carries a typed `KlineInterval` (e.g. `KlineInterval::new("1m")`).
+/// All other variants are parameterless.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Stream {
     Ticker,
     Trade,
     Orderbook,
-    Kline(String),
+    Kline(KlineInterval),
     MarkPrice,
     FundingRate,
     OpenInterest,
@@ -93,7 +94,7 @@ pub enum Event {
     Bar {
         exchange: ExchangeId,
         symbol: String,
-        timeframe: String,
+        timeframe: KlineInterval,
         point: BarPoint,
     },
     Ticker {

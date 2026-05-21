@@ -28,6 +28,7 @@ use crate::core::types::{
     OrderBook, OrderbookDelta as OrderbookDeltaData, PublicTrade, Ticker, TradeSide,
 };
 use crate::core::types::{Kline, StreamEvent};
+use crate::core::websocket::stream_kind::KlineInterval;
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -117,8 +118,8 @@ pub struct CanonicalKline {
     pub open_time_ms: i64,
     /// Close time — UTC milliseconds.
     pub close_time_ms: i64,
-    /// Interval string as emitted by the exchange or stream spec (e.g. "1m", "5m", "1h").
-    pub interval: String,
+    /// Typed kline interval (e.g. `KlineInterval::new("1m")`).
+    pub interval: KlineInterval,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -290,7 +291,7 @@ fn orderbook_delta_to_canonical(
 fn kline_to_canonical(
     payload: &Kline,
     symbol: String,
-    interval: String,
+    interval: KlineInterval,
 ) -> Option<CanonicalKline> {
     Some(CanonicalKline {
         symbol,
@@ -486,10 +487,10 @@ mod tests {
             trades: None,
         };
 
-        let c = kline_to_canonical(&kline, "BTCUSDT".to_string(), "1m".to_string())
+        let c = kline_to_canonical(&kline, "BTCUSDT".to_string(), KlineInterval::new("1m"))
             .expect("should canonicalize");
         assert_eq!(c.symbol, "BTCUSDT");
-        assert_eq!(c.interval, "1m");
+        assert_eq!(c.interval, KlineInterval::new("1m"));
         assert_eq!(c.open, Decimal::try_from(64000.0_f64).unwrap());
         assert_eq!(c.high, Decimal::try_from(65000.0_f64).unwrap());
         assert_eq!(c.low, Decimal::try_from(63500.0_f64).unwrap());
@@ -646,7 +647,7 @@ mod tests {
     fn stream_event_kline_carries_symbol_and_interval() {
         let event = StreamEvent::Kline {
             symbol: "BTCUSDT".to_string(),
-            interval: "1m".to_string(),
+            interval: KlineInterval::new("1m"),
             kline: crate::core::types::Kline {
                 open_time: 1_700_000_000_000,
                 open: 50000.0,
@@ -662,7 +663,7 @@ mod tests {
         match event.canonicalize() {
             Some(CanonicalEvent::Kline(k)) => {
                 assert_eq!(k.symbol, "BTCUSDT");
-                assert_eq!(k.interval, "1m");
+                assert_eq!(k.interval, KlineInterval::new("1m"));
             }
             other => panic!("expected Kline, got {:?}", other),
         }
@@ -672,7 +673,7 @@ mod tests {
     fn stream_event_mark_price_kline_carries_symbol_and_interval() {
         let event = StreamEvent::MarkPriceKline {
             symbol: "BTCUSDT".to_string(),
-            interval: "5m".to_string(),
+            interval: KlineInterval::new("5m"),
             kline: crate::core::types::Kline {
                 open_time: 1_700_000_000_000,
                 open: 50000.0,
@@ -688,7 +689,7 @@ mod tests {
         match event.canonicalize() {
             Some(CanonicalEvent::Kline(k)) => {
                 assert_eq!(k.symbol, "BTCUSDT");
-                assert_eq!(k.interval, "5m");
+                assert_eq!(k.interval, KlineInterval::new("5m"));
             }
             other => panic!("expected Kline, got {:?}", other),
         }

@@ -57,6 +57,7 @@ use crate::core::{
 use crate::core::types::{WebSocketError, WebSocketResult, OrderbookCapabilities, WsBookChannel};
 use crate::core::traits::WebSocketConnector;
 use crate::core::utils::SimpleRateLimiter;
+use crate::core::websocket::KlineInterval;
 use std::sync::OnceLock;
 
 /// Global rate limiter for BingX WebSocket connections
@@ -532,7 +533,7 @@ impl BingxWebSocket {
         } else if data_type.contains("@kline_") {
             // Kline stream — extract interval from data_type: "BTC-USDT@kline_1m"
             let symbol = data_type.split('@').next().unwrap_or("").to_string();
-            let interval = data_type.split("@kline_").nth(1).unwrap_or("").to_string();
+            let interval = KlineInterval::new(data_type.split("@kline_").nth(1).unwrap_or(""));
             let kline = BingxParser::parse_ws_kline(data)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
             Ok(Some(StreamEvent::Kline { symbol, interval, kline }))

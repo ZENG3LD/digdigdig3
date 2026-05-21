@@ -623,7 +623,7 @@ fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
     // topic: "kline.1.BTCUSDT" → parts[2]=symbol, parts[1]=interval
     let topic = raw.get("topic").and_then(|v| v.as_str()).unwrap_or("");
     let mut topic_parts = topic.splitn(3, '.');
-    let interval = topic_parts.nth(1).unwrap_or("").to_string();
+    let interval = KlineInterval::new(topic_parts.nth(1).unwrap_or(""));
     let symbol = topic_parts.next().unwrap_or("").to_string();
 
     Ok(StreamEvent::Kline {

@@ -8,6 +8,7 @@ use crate::core::types::{
     ExchangeError, ExchangeResult,
     Kline, OrderBook, OrderBookLevel, Ticker, StreamEvent,
 };
+use crate::core::websocket::KlineInterval;
 
 /// Parser for Polygon.io API responses
 pub struct PolygonParser;
@@ -279,7 +280,7 @@ impl PolygonParser {
 
         Ok(StreamEvent::Kline {
             symbol,
-            interval: interval.to_string(),
+            interval: KlineInterval::new(interval),
             kline: Kline {
                 open_time,
                 open,

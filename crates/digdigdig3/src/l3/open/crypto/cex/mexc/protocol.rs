@@ -874,10 +874,9 @@ fn parse_futures_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     let futures_kline_symbol = futures_symbol(raw);
     // MEXC futures kline channel: "push.kline" — interval in data "interval" field or raw channel suffix
-    let futures_kline_interval = data.get("interval")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+    let futures_kline_interval = KlineInterval::new(
+        data.get("interval").and_then(|v| v.as_str()).unwrap_or(""),
+    );
     Ok(StreamEvent::Kline {
         symbol: futures_kline_symbol,
         interval: futures_kline_interval,

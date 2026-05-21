@@ -54,6 +54,7 @@ use crate::core::{
 use crate::core::types::{WebSocketResult, WebSocketError, OrderSide, OrderbookCapabilities, WsBookChannel, ChecksumInfo, ChecksumAlgorithm};
 use crate::core::traits::WebSocketConnector;
 use crate::core::utils::SimpleRateLimiter;
+use crate::core::websocket::KlineInterval;
 
 use super::auth::BitfinexAuth;
 use super::endpoints::{BitfinexUrls, format_symbol};
@@ -792,7 +793,7 @@ impl BitfinexWebSocket {
                         account_type,
                     )
                 };
-                let kl_interval = interval.as_str().to_string();
+                let kl_interval = KlineInterval::new(interval.as_str());
                 if let Some(data) = arr[1].as_array() {
                     // If the first element is an array → snapshot (many candles). Take the
                     // most-recent candle (index 0, Bitfinex newest-first) and parse it.

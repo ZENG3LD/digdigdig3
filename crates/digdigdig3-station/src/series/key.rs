@@ -1,15 +1,15 @@
 use digdigdig3::core::types::{AccountType, ExchangeId};
+use digdigdig3::core::websocket::KlineInterval;
 
 /// What kind of stream this series carries.
 ///
-/// `Kline` carries the timeframe ("1m", "5m", "1h", "1d") so different
-/// timeframes of the same symbol get their own series. All other kinds
-/// have no extra parameter.
+/// `Kline` carries a typed `KlineInterval` so different timeframes of the
+/// same symbol get their own series. All other kinds have no extra parameter.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Kind {
     Trade,
     AggTrade,
-    Kline(String),
+    Kline(KlineInterval),
     Ticker,
     Orderbook,
     MarkPrice,
@@ -24,7 +24,7 @@ impl Kind {
         match self {
             Kind::Trade => "trades".to_string(),
             Kind::AggTrade => "agg_trades".to_string(),
-            Kind::Kline(iv) => format!("klines_{}", iv),
+            Kind::Kline(iv) => format!("klines_{}", iv.as_str()),
             Kind::Ticker => "tickers".to_string(),
             Kind::Orderbook => "orderbook_snapshots".to_string(),
             Kind::MarkPrice => "mark_price".to_string(),

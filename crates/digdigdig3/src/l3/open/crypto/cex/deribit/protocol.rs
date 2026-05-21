@@ -654,7 +654,7 @@ fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
     let parts: Vec<&str> = channel.split('.').collect();
     // chart.trades.BTC-PERPETUAL.1 → parts[2]=symbol, parts[3]=resolution
     let kl_symbol = parts.get(2).copied().unwrap_or("").to_string();
-    let kl_interval = parts.get(3).copied().unwrap_or("").to_string();
+    let kl_interval = KlineInterval::new(parts.get(3).copied().unwrap_or(""));
     let open_time = get_i64(data, "tick").unwrap_or(0);
     let kline = Kline {
         open_time,

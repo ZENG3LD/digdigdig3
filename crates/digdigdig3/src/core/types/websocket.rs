@@ -17,6 +17,7 @@ use super::{
     OrderbookDelta as OrderbookDeltaData, PositionSide, Price, PublicTrade, Quantity, Symbol,
     Ticker, Timestamp, TradeSide,
 };
+use crate::core::websocket::stream_kind::KlineInterval;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTION STATUS
@@ -233,7 +234,7 @@ pub enum StreamEvent {
     OrderbookDelta { symbol: String, delta: OrderbookDeltaData },
 
     /// Обновление свечи
-    Kline { symbol: String, interval: String, kline: Kline },
+    Kline { symbol: String, interval: KlineInterval, kline: Kline },
 
     /// Mark price
     MarkPrice {
@@ -299,13 +300,13 @@ pub enum StreamEvent {
     },
 
     /// Mark price kline update (futures)
-    MarkPriceKline { symbol: String, interval: String, kline: Kline },
+    MarkPriceKline { symbol: String, interval: KlineInterval, kline: Kline },
 
     /// Index price kline update (futures)
-    IndexPriceKline { symbol: String, interval: String, kline: Kline },
+    IndexPriceKline { symbol: String, interval: KlineInterval, kline: Kline },
 
     /// Premium index kline update (futures)
-    PremiumIndexKline { symbol: String, interval: String, kline: Kline },
+    PremiumIndexKline { symbol: String, interval: KlineInterval, kline: Kline },
 
     /// Index price update
     IndexPrice { symbol: String, price: f64, timestamp: i64 },

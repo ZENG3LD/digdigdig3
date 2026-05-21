@@ -47,6 +47,7 @@ use crate::core::{
     ConnectionStatus, StreamEvent, StreamType, SubscriptionRequest,
     timestamp_millis,
 };
+use crate::core::websocket::KlineInterval;
 use crate::core::types::{WebSocketResult, WebSocketError, TradeSide, OrderSide, OrderType, OrderStatus, OrderBookLevel, OrderbookDelta as OrderbookDeltaData, OrderbookCapabilities, WsBookChannel, ChecksumInfo, ChecksumAlgorithm};
 use crate::core::traits::WebSocketConnector;
 use crate::core::utils::WeightRateLimiter;
@@ -378,7 +379,7 @@ impl KrakenWebSocket {
                 let arr = data.as_array();
                 let first = arr.and_then(|a| a.first());
                 let kl_symbol = first.and_then(|d| d.get("symbol")).and_then(|s| s.as_str()).unwrap_or("").to_string();
-                let kl_interval = first.and_then(|d| d.get("interval")).and_then(|i| i.as_str()).unwrap_or("").to_string();
+                let kl_interval = KlineInterval::new(first.and_then(|d| d.get("interval")).and_then(|i| i.as_str()).unwrap_or(""));
                 let kline = Self::parse_kline_ws(data)
                     .map_err(|e| WebSocketError::Parse(e.to_string()))?;
                 Ok(Some(StreamEvent::Kline { symbol: kl_symbol, interval: kl_interval, kline }))

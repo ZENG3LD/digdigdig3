@@ -30,6 +30,7 @@ use crate::core::{
 };
 use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities, WsBookChannel};
 use crate::core::traits::WebSocketConnector;
+use crate::core::websocket::KlineInterval;
 
 use super::auth::CoinbaseAuth;
 use super::endpoints::CoinbaseUrls;
@@ -243,7 +244,7 @@ impl CoinbaseWebSocket {
                                             .unwrap_or("")
                                             .to_string();
                                         // granularity carries interval info but no string form; use empty for now
-                                        let kl_interval = String::new();
+                                        let kl_interval = KlineInterval::new("");
                                         CoinbaseParser::parse_ws_candles(&json)
                                             .ok()
                                             .map(|kline| StreamEvent::Kline { symbol: kl_symbol, interval: kl_interval, kline })

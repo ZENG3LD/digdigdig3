@@ -36,6 +36,7 @@
 use serde_json::Value;
 use crate::core::types::*;
 use crate::core::types::{ExchangeResult, ExchangeError};
+use crate::core::websocket::KlineInterval;
 
 pub struct MexcParser;
 
@@ -1001,7 +1002,7 @@ impl MexcParser {
         let close_time = Self::pb_varint(body, 9).map(|t| t as i64 * 1000);
 
         // interval stored in body field 1 (string)
-        let interval = Self::pb_string(body, 1).unwrap_or_default();
+        let interval = KlineInterval::new(Self::pb_string(body, 1).unwrap_or_default());
         Ok(StreamEvent::Kline {
             symbol: symbol.to_string(),
             interval,

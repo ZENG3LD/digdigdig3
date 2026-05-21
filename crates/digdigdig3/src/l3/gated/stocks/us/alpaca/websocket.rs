@@ -28,6 +28,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::core::types::*;
 use crate::core::traits::WebSocketConnector;
+use crate::core::websocket::KlineInterval;
 
 use super::auth::AlpacaAuth;
 
@@ -419,7 +420,7 @@ impl AlpacaWebSocket {
                     symbol: symbol.to_string(),
                     // Alpaca "b" channel emits minute bars only — fixed cadence on the wire.
                     // (Daily bars would arrive on "d", which we don't subscribe to here.)
-                    interval: "1m".to_string(),
+                    interval: KlineInterval::new("1m"),
                     kline: bar,
                 })
             }

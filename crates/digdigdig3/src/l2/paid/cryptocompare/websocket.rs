@@ -57,6 +57,7 @@ use crate::core::types::{
 };
 use crate::core::{AccountType, ConnectionStatus, StreamEvent, SubscriptionRequest};
 use crate::core::traits::WebSocketConnector;
+use crate::core::websocket::KlineInterval;
 
 use super::auth::CryptoCompareAuth;
 
@@ -586,13 +587,13 @@ impl CryptoCompareWebSocket {
         // A subscription like "17~CCCAGG~BTC~USD~5m" produces frames with UNIT="m" only —
         // the "5" is lost on the wire. Best we can do here is map to "1m"/"1h"/"1D".
         // For multi-minute intervals, consumer must track the original sub spec.
-        let interval = match json.get("UNIT").and_then(|v| v.as_str()) {
-            Some("m") => "1m".to_string(),
-            Some("h") => "1h".to_string(),
-            Some("D") => "1d".to_string(),
-            Some(other) => other.to_string(),
-            None => String::new(),
-        };
+        let interval = KlineInterval::new(match json.get("UNIT").and_then(|v| v.as_str()) {
+            Some("m") => "1m",
+            Some("h") => "1h",
+            Some("D") => "1d",
+            Some(other) => other,
+            None => "",
+        });
 
         Some(StreamEvent::Kline {
             symbol,

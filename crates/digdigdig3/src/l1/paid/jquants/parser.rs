@@ -110,7 +110,7 @@ impl JQuantsParser {
     }
 
     /// Parse daily quote to ticker
-    pub fn parse_ticker(response: &Value, symbol: &str) -> ExchangeResult<Ticker> {
+    pub fn parse_ticker(response: &Value, _symbol: &str) -> ExchangeResult<Ticker> {
         let quotes = response
             .get("daily_quotes")
             .and_then(|v| v.as_array())
@@ -129,7 +129,6 @@ impl JQuantsParser {
         let volume = Self::get_f64(latest, "Volume");
 
         Ok(Ticker {
-            symbol: symbol.to_string(),
             last_price: close,
             bid_price: None, // JQuants doesn't provide bid/ask
             ask_price: None,

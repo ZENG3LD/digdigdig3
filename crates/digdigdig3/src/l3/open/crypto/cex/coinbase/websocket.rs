@@ -168,9 +168,20 @@ impl CoinbaseWebSocket {
                             if let Some(channel) = json.get("channel").and_then(|c| c.as_str()) {
                                 let event = match channel {
                                     "ticker" | "ticker_batch" => {
-                                        CoinbaseParser::parse_ws_ticker(&json)
-                                            .ok()
-                                            .map(StreamEvent::Ticker)
+                                        CoinbaseParser::parse_ws_ticker(&json).ok().map(|ticker| {
+                                            let symbol = json
+                                                .get("events")
+                                                .and_then(|e| e.as_array())
+                                                .and_then(|arr| arr.first())
+                                                .and_then(|ev| ev.get("tickers"))
+                                                .and_then(|t| t.as_array())
+                                                .and_then(|arr| arr.first())
+                                                .and_then(|t| t.get("product_id"))
+                                                .and_then(|p| p.as_str())
+                                                .unwrap_or("")
+                                                .to_string();
+                                            StreamEvent::Ticker { symbol, ticker }
+                                        })
                                     },
                                     // Coinbase subscribes with channel="level2" but the server
                                     // sends back messages with channel="l2_data".
@@ -185,26 +196,57 @@ impl CoinbaseWebSocket {
                                             .and_then(|ev| ev.get("type"))
                                             .and_then(|t| t.as_str())
                                             .unwrap_or("snapshot");
+                                        // product_id lives in events[0].product_id
+                                        let ob_symbol = json
+                                            .get("events")
+                                            .and_then(|e| e.as_array())
+                                            .and_then(|arr| arr.first())
+                                            .and_then(|ev| ev.get("product_id"))
+                                            .and_then(|p| p.as_str())
+                                            .unwrap_or("")
+                                            .to_string();
 
                                         if event_type == "update" {
                                             CoinbaseParser::parse_ws_orderbook_delta(&json)
                                                 .ok()
-                                                .map(StreamEvent::OrderbookDelta)
+                                                .map(|delta| StreamEvent::OrderbookDelta { symbol: ob_symbol, delta })
                                         } else {
                                             CoinbaseParser::parse_ws_orderbook(&json)
                                                 .ok()
-                                                .map(StreamEvent::OrderbookSnapshot)
+                                                .map(|book| StreamEvent::OrderbookSnapshot { symbol: ob_symbol, book })
                                         }
                                     },
                                     "market_trades" => {
-                                        CoinbaseParser::parse_ws_trades(&json)
-                                            .ok()
-                                            .map(StreamEvent::Trade)
+                                        CoinbaseParser::parse_ws_trades(&json).ok().map(|trade| {
+                                            let symbol = json
+                                                .get("events")
+                                                .and_then(|e| e.as_array())
+                                                .and_then(|arr| arr.first())
+                                                .and_then(|ev| ev.get("trades"))
+                                                .and_then(|t| t.as_array())
+                                                .and_then(|arr| arr.first())
+                                                .and_then(|t| t.get("product_id"))
+                                                .and_then(|p| p.as_str())
+                                                .unwrap_or("")
+                                                .to_string();
+                                            StreamEvent::Trade { symbol, trade }
+                                        })
                                     },
                                     "candles" => {
+                                        // product_id lives in events[0].product_id
+                                        let kl_symbol = json
+                                            .get("events")
+                                            .and_then(|e| e.as_array())
+                                            .and_then(|arr| arr.first())
+                                            .and_then(|ev| ev.get("product_id"))
+                                            .and_then(|p| p.as_str())
+                                            .unwrap_or("")
+                                            .to_string();
+                                        // granularity carries interval info but no string form; use empty for now
+                                        let kl_interval = String::new();
                                         CoinbaseParser::parse_ws_candles(&json)
                                             .ok()
-                                            .map(StreamEvent::Kline)
+                                            .map(|kline| StreamEvent::Kline { symbol: kl_symbol, interval: kl_interval, kline })
                                     },
                                     // RFQ matches — publicly visible block-trade executions.
                                     // Shape: {"channel":"rfq_matches","events":[{

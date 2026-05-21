@@ -330,7 +330,6 @@ impl BybitConnector {
                 .map(|v| v * 100.0);
 
             Ticker {
-                symbol: data.get("symbol").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                 last_price,
                 bid_price: parse_str_f64("bid1Price"),
                 ask_price: parse_str_f64("ask1Price"),

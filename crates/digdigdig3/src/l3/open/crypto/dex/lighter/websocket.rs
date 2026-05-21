@@ -687,18 +687,23 @@ impl LighterWebSocket {
             .or_else(|| Self::val_i64(&msg.raw, "nonce"))
             .map(|n| n.to_string());
 
-        Some(StreamEvent::OrderbookSnapshot(OrderBook {
-            bids,
-            asks,
-            timestamp,
-            sequence,
-            last_update_id: None,
-            first_update_id: None,
-            prev_update_id: None,
-            event_time: None,
-            transaction_time: None,
-            checksum: None,
-        }))
+        // market_id_to_symbol reverse lookup not available here; dispatch level has symbol context
+        let ob_symbol = String::new();
+        Some(StreamEvent::OrderbookSnapshot {
+            symbol: ob_symbol,
+            book: OrderBook {
+                bids,
+                asks,
+                timestamp,
+                sequence,
+                last_update_id: None,
+                first_update_id: None,
+                prev_update_id: None,
+                event_time: None,
+                transaction_time: None,
+                checksum: None,
+            },
+        })
     }
 
     /// Parse trade update into StreamEvent::Trade.
@@ -750,14 +755,15 @@ impl LighterWebSocket {
                 TradeSide::Sell
             };
 
-            Some(StreamEvent::Trade(PublicTrade {
+            let trade_symbol = market_id.to_string();
+            let trade = PublicTrade {
                 id: trade_id.to_string(),
-                symbol: market_id.to_string(),
                 price,
                 quantity,
                 side,
                 timestamp,
-            }))
+            };
+            Some(StreamEvent::Trade { symbol: trade_symbol, trade })
         };
 
         // Primary path: "trades" array (live Lighter WS format).
@@ -827,8 +833,8 @@ impl LighterWebSocket {
             }
         });
 
-        Some(StreamEvent::Ticker(Ticker {
-            symbol: symbol_name.to_string(),
+        let ticker_symbol = symbol_name.to_string();
+        let ticker = Ticker {
             last_price,
             bid_price: None, // Lighter market_stats WS channel does not carry top-of-book quotes — use ticker channel for bid/ask
             ask_price: None, // Lighter market_stats WS channel does not carry top-of-book quotes — use ticker channel for bid/ask
@@ -839,7 +845,8 @@ impl LighterWebSocket {
             price_change_24h,
             price_change_percent_24h,
             timestamp,
-        }))
+        };
+        Some(StreamEvent::Ticker { symbol: ticker_symbol, ticker })
     }
 
     /// Parse `update/market_stats_all` — array of market_stats objects, one Ticker per market.
@@ -873,8 +880,8 @@ impl LighterWebSocket {
                 let open = last_price - change;
                 if open.abs() > 1e-10 { Some((change / open) * 100.0) } else { None }
             });
-            Some(StreamEvent::Ticker(Ticker {
-                symbol: symbol_name.to_string(),
+            let t_symbol = symbol_name.to_string();
+            let ticker = Ticker {
                 last_price,
                 bid_price: None,
                 ask_price: None,
@@ -885,7 +892,8 @@ impl LighterWebSocket {
                 price_change_24h,
                 price_change_percent_24h,
                 timestamp,
-            }))
+            };
+            Some(StreamEvent::Ticker { symbol: t_symbol, ticker })
         }).collect()
     }
 
@@ -1090,19 +1098,21 @@ impl LighterWebSocket {
             .map(|us| us / 1000)
             .unwrap_or(0);
 
-        Some(StreamEvent::Ticker(Ticker {
+        Some(StreamEvent::Ticker {
             symbol: symbol_name.to_string(),
-            last_price,
-            bid_price,
-            ask_price,
-            high_24h: None,
-            low_24h: None,
-            volume_24h: None,
-            quote_volume_24h: None,
-            price_change_24h: None,
-            price_change_percent_24h: None,
-            timestamp,
-        }))
+            ticker: Ticker {
+                last_price,
+                bid_price,
+                ask_price,
+                high_24h: None,
+                low_24h: None,
+                volume_24h: None,
+                quote_volume_24h: None,
+                price_change_24h: None,
+                price_change_percent_24h: None,
+                timestamp,
+            },
+        })
     }
 }
 
@@ -1335,8 +1345,8 @@ mod tests {
         let event = LighterWebSocket::parse_ticker_channel(&msg, "ticker:0")
             .expect("should parse ticker");
 
-        if let StreamEvent::Ticker(t) = event {
-            assert_eq!(t.symbol, "ETH-PERP");
+        if let StreamEvent::Ticker { symbol, ticker: t, .. } = event {
+            assert_eq!(symbol, "ETH-PERP");
             assert!((t.bid_price.unwrap() - 3500.00).abs() < 1e-6);
             assert!((t.ask_price.unwrap() - 3500.50).abs() < 1e-6);
             // midpoint = (3500.00 + 3500.50) / 2
@@ -1366,8 +1376,8 @@ mod tests {
         let event = LighterWebSocket::parse_ticker_channel(&msg, "ticker:1")
             .expect("should parse btc ticker");
 
-        if let StreamEvent::Ticker(t) = event {
-            assert_eq!(t.symbol, "BTC-USD");
+        if let StreamEvent::Ticker { symbol, ticker: t, .. } = event {
+            assert_eq!(symbol, "BTC-USD");
             assert!((t.bid_price.unwrap() - 67990.0).abs() < 1e-3);
             assert!((t.ask_price.unwrap() - 68000.0).abs() < 1e-3);
             assert!((t.last_price - 67995.0).abs() < 1e-3);

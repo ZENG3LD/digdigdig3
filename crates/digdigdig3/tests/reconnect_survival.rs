@@ -190,7 +190,7 @@ async fn reconnect_trade_events_are_trades() {
     while tokio::time::Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         match timeout(remaining.max(Duration::from_millis(100)), stream.next()).await {
-            Ok(Some(Ok(StreamEvent::Trade(_)))) => trade_count += 1,
+            Ok(Some(Ok(StreamEvent::Trade { .. }))) => trade_count += 1,
             Ok(Some(Ok(_))) => other_count += 1,
             Ok(Some(Err(_))) | Ok(None) | Err(_) => {}
         }

@@ -215,7 +215,6 @@ impl BingxParser {
             .unwrap_or(0.0);
 
         Ok(Ticker {
-            symbol: Self::get_str(ticker_data, "symbol").unwrap_or("").to_string(),
             last_price,
             bid_price,
             ask_price,
@@ -466,7 +465,6 @@ impl BingxParser {
 
     /// Parse WebSocket ticker
     pub fn parse_ws_ticker(data: &Value, _account_type: crate::core::AccountType) -> ExchangeResult<Ticker> {
-        let symbol = Self::require_str(data, "s")?.to_string();
         let last_price = Self::require_f64(data, "c")?;
         let timestamp = data.get("C").and_then(|v| v.as_i64()).unwrap_or(0);
 
@@ -484,7 +482,6 @@ impl BingxParser {
         });
 
         Ok(Ticker {
-            symbol,
             last_price,
             bid_price: None, // BingX @ticker stream does not carry top-of-book quotes — subscribe to @bookTicker for bid/ask
             ask_price: None, // BingX @ticker stream does not carry top-of-book quotes — subscribe to @bookTicker for bid/ask
@@ -509,13 +506,7 @@ impl BingxParser {
     /// Emits a `Ticker` with `last_price` = midpoint of bid/ask and
     /// `bid_price`/`ask_price` populated. High/low/volume fields are absent
     /// in bookTicker and left as `None`.
-    pub fn parse_ws_book_ticker(data_type: &str, data: &Value) -> ExchangeResult<Ticker> {
-        // Symbol from payload field `s`, fallback to dataType prefix
-        let symbol = data.get("s")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| data_type.split('@').next().unwrap_or("").to_string());
-
+    pub fn parse_ws_book_ticker(_data_type: &str, data: &Value) -> ExchangeResult<Ticker> {
         // BingX swap bookTicker uses short field names: b=bid, a=ask
         let bid_price = Self::get_f64(data, "b")
             .ok_or_else(|| ExchangeError::Parse("Missing bid (b) in bookTicker".to_string()))?;
@@ -530,7 +521,6 @@ impl BingxParser {
             .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
 
         Ok(Ticker {
-            symbol,
             last_price,
             bid_price: Some(bid_price),
             ask_price: Some(ask_price),
@@ -562,7 +552,6 @@ impl BingxParser {
             data
         };
 
-        let symbol = Self::require_str(trade, "s")?.to_string();
         let price = Self::require_f64(trade, "p")?;
         let quantity = Self::require_f64(trade, "q")?;
         // Timestamp field is capital T in BingX swap WS (milliseconds)
@@ -580,7 +569,6 @@ impl BingxParser {
 
         Ok(crate::core::PublicTrade {
             id: trade_id,
-            symbol,
             price,
             quantity,
             side,
@@ -619,16 +607,20 @@ impl BingxParser {
 
         let timestamp = crate::core::timestamp_millis() as i64;
 
-        Ok(crate::core::StreamEvent::OrderbookDelta(OrderbookDeltaData {
-            bids,
-            asks,
-            timestamp,
-            first_update_id: None,
-            last_update_id: None,
-            prev_update_id: None,
-            event_time: None,
-            checksum: None,
-        }))
+        Ok(crate::core::StreamEvent::OrderbookDelta {
+            // symbol not available in parse_ws_orderbook scope — caller in websocket.rs extracts from data_type
+            symbol: String::new(),
+            delta: OrderbookDeltaData {
+                bids,
+                asks,
+                timestamp,
+                first_update_id: None,
+                last_update_id: None,
+                prev_update_id: None,
+                event_time: None,
+                checksum: None,
+            },
+        })
     }
 
     /// Parse WebSocket kline.
@@ -1118,7 +1110,6 @@ mod tests {
         });
 
         let ticker = BingxParser::parse_ticker(&response).unwrap();
-        assert_eq!(ticker.symbol, "BTC-USDT");
         assert!((ticker.last_price - 43302.50).abs() < f64::EPSILON);
         assert!(ticker.bid_price.unwrap() < ticker.ask_price.unwrap());
     }
@@ -1159,7 +1150,6 @@ mod tests {
             "T": 1779148957000_i64
         });
         let ticker = BingxParser::parse_ws_book_ticker("BTC-USDT@bookTicker", &data).unwrap();
-        assert_eq!(ticker.symbol, "BTC-USDT");
         assert!((ticker.bid_price.unwrap() - 67432.10).abs() < 0.001);
         assert!((ticker.ask_price.unwrap() - 67433.50).abs() < 0.001);
         let expected_mid = (67432.10 + 67433.50) / 2.0;

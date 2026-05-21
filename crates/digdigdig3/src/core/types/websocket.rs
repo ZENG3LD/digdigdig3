@@ -221,19 +221,19 @@ pub enum StreamEvent {
     // ═══════════════════════════════════════════════════════════════════════════
 
     /// Обновление тикера
-    Ticker(Ticker),
+    Ticker { symbol: String, ticker: Ticker },
 
     /// Новая публичная сделка
-    Trade(PublicTrade),
+    Trade { symbol: String, trade: PublicTrade },
 
     /// Снепшот стакана
-    OrderbookSnapshot(OrderBook),
+    OrderbookSnapshot { symbol: String, book: OrderBook },
 
     /// Инкрементальное обновление стакана
-    OrderbookDelta(OrderbookDeltaData),
+    OrderbookDelta { symbol: String, delta: OrderbookDeltaData },
 
     /// Обновление свечи
-    Kline(Kline),
+    Kline { symbol: String, interval: String, kline: Kline },
 
     /// Mark price
     MarkPrice {

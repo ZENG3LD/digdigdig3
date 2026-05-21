@@ -79,7 +79,7 @@ async fn orderbook_delta_no_gaps() {
                 let remaining =
                     deadline.saturating_duration_since(tokio::time::Instant::now());
                 match timeout(remaining.max(Duration::from_millis(100)), stream.next()).await {
-                    Ok(Some(Ok(StreamEvent::OrderbookDelta(d)))) => {
+                    Ok(Some(Ok(StreamEvent::OrderbookDelta { delta: d, .. }))) => {
                         total += 1;
                         // last_update_id is the canonical sequence field populated by
                         // parsers for Binance (U/u fields), OKX (seqId), Bybit (u).

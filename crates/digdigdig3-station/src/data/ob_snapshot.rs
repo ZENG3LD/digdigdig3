@@ -62,8 +62,8 @@ impl DataPoint for ObSnapshotPoint {
     fn timestamp_ms(&self) -> i64 { self.ts_ms }
 
     fn from_stream_event(ev: &StreamEvent) -> Option<Self> {
-        if let StreamEvent::OrderbookSnapshot(ob) = ev {
-            Some(Self::from_orderbook(ob))
+        if let StreamEvent::OrderbookSnapshot { book, .. } = ev {
+            Some(Self::from_orderbook(book))
         } else {
             None
         }

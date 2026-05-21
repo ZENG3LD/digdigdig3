@@ -131,10 +131,6 @@ impl PolygonParser {
         let ticker_obj = response.get("ticker")
             .ok_or_else(|| ExchangeError::Parse("Missing 'ticker' field".to_string()))?;
 
-        let symbol = Self::get_str(ticker_obj, "ticker")
-            .ok_or_else(|| ExchangeError::Parse("Missing 'ticker' symbol".to_string()))?
-            .to_string();
-
         // Get last price from day data or last trade
         let last_price = if let Some(day) = ticker_obj.get("day") {
             Self::get_f64(day, "c").unwrap_or(0.0)
@@ -167,7 +163,6 @@ impl PolygonParser {
         let _ask_size = last_quote.and_then(|q| Self::get_f64(q, "S"));
 
         Ok(Ticker {
-            symbol,
             last_price,
             bid_price: bid,
             ask_price: ask,
@@ -268,7 +263,7 @@ impl PolygonParser {
 
     /// Parse WebSocket aggregate (minute/second bar)
     fn parse_ws_aggregate(event: &Value) -> ExchangeResult<StreamEvent> {
-        let _symbol = Self::get_str(event, "sym")
+        let symbol = Self::get_str(event, "sym")
             .ok_or_else(|| ExchangeError::Parse("Missing 'sym' field".to_string()))?
             .to_string();
 
@@ -281,17 +276,21 @@ impl PolygonParser {
         let volume = Self::get_f64(event, "v").unwrap_or(0.0);
         let vwap = Self::get_f64(event, "a");
 
-        Ok(StreamEvent::Kline(Kline {
-            open_time,
-            open,
-            high,
-            low,
-            close,
-            volume,
-            close_time,
-            quote_volume: vwap,
-            trades: None,
-        }))
+        Ok(StreamEvent::Kline {
+            symbol,
+            interval: String::new(), // Polygon aggregate event has no interval suffix; subscriber knows from sub spec
+            kline: Kline {
+                open_time,
+                open,
+                high,
+                low,
+                close,
+                volume,
+                close_time,
+                quote_volume: vwap,
+                trades: None,
+            },
+        })
     }
 
     /// Parse WebSocket trade
@@ -305,19 +304,21 @@ impl PolygonParser {
         let timestamp = Self::get_i64(event, "t").unwrap_or(0);
 
         // Create a ticker event from trade data
-        Ok(StreamEvent::Ticker(Ticker {
+        Ok(StreamEvent::Ticker {
             symbol,
-            last_price: price,
-            bid_price: None,
-            ask_price: None,
-            high_24h: None,
-            low_24h: None,
-            volume_24h: Some(size),
-            quote_volume_24h: None,
-            price_change_24h: None,
-            price_change_percent_24h: None,
-            timestamp,
-        }))
+            ticker: Ticker {
+                last_price: price,
+                bid_price: None,
+                ask_price: None,
+                high_24h: None,
+                low_24h: None,
+                volume_24h: Some(size),
+                quote_volume_24h: None,
+                price_change_24h: None,
+                price_change_percent_24h: None,
+                timestamp,
+            },
+        })
     }
 
     /// Parse WebSocket quote
@@ -334,19 +335,21 @@ impl PolygonParser {
 
         let last_price = ask.or(bid).unwrap_or(0.0);
 
-        Ok(StreamEvent::Ticker(Ticker {
+        Ok(StreamEvent::Ticker {
             symbol,
-            last_price,
-            bid_price: bid,
-            ask_price: ask,
-            high_24h: None,
-            low_24h: None,
-            volume_24h: None,
-            quote_volume_24h: None,
-            price_change_24h: None,
-            price_change_percent_24h: None,
-            timestamp,
-        }))
+            ticker: Ticker {
+                last_price,
+                bid_price: bid,
+                ask_price: ask,
+                high_24h: None,
+                low_24h: None,
+                volume_24h: None,
+                quote_volume_24h: None,
+                price_change_24h: None,
+                price_change_percent_24h: None,
+                timestamp,
+            },
+        })
     }
 }
 

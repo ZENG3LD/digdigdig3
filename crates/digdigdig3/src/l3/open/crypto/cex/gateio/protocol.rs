@@ -396,7 +396,12 @@ fn parse_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
         .or_else(|| raw.get("time").and_then(|v| v.as_i64()).map(|s| s * 1000))
         .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
     ticker.timestamp = frame_ts;
-    Ok(StreamEvent::Ticker(ticker))
+    let symbol = result.get("currency_pair")
+        .or_else(|| result.get("s"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    Ok(StreamEvent::Ticker { symbol, ticker })
 }
 
 fn parse_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -417,7 +422,12 @@ fn parse_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
             trade.quantity = size.abs();
         }
     }
-    Ok(StreamEvent::Trade(trade))
+    let symbol = item.get("currency_pair")
+        .or_else(|| item.get("contract"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    Ok(StreamEvent::Trade { symbol, trade })
 }
 
 fn parse_agg_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -491,21 +501,29 @@ fn parse_orderbook(raw: &Value) -> WebSocketResult<StreamEvent> {
             .unwrap_or_default()
     };
 
-    Ok(StreamEvent::OrderbookSnapshot(crate::core::OrderBook {
-        timestamp: result.get("t").and_then(|t| t.as_i64()).unwrap_or(0),
-        bids: parse_levels("bids"),
-        asks: parse_levels("asks"),
-        sequence: result
-            .get("lastUpdateId")
-            .and_then(|s| s.as_i64())
-            .map(|n| n.to_string()),
-        last_update_id: None,
-        first_update_id: None,
-        prev_update_id: None,
-        event_time: None,
-        transaction_time: None,
-        checksum: None,
-    }))
+    let ob_symbol = result.get("currency_pair")
+        .or_else(|| result.get("s"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    Ok(StreamEvent::OrderbookSnapshot {
+        symbol: ob_symbol,
+        book: crate::core::OrderBook {
+            timestamp: result.get("t").and_then(|t| t.as_i64()).unwrap_or(0),
+            bids: parse_levels("bids"),
+            asks: parse_levels("asks"),
+            sequence: result
+                .get("lastUpdateId")
+                .and_then(|s| s.as_i64())
+                .map(|n| n.to_string()),
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
+        },
+    })
 }
 
 fn parse_orderbook_delta(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -542,7 +560,12 @@ fn parse_orderbook_delta(raw: &Value) -> WebSocketResult<StreamEvent> {
         event_time: None,
         checksum: None,
     };
-    Ok(StreamEvent::OrderbookDelta(delta))
+    let delta_symbol = result.get("currency_pair")
+        .or_else(|| result.get("s"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    Ok(StreamEvent::OrderbookDelta { symbol: delta_symbol, delta })
 }
 
 fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -571,7 +594,16 @@ fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
             kline,
         })
     } else {
-        Ok(StreamEvent::Kline(kline))
+        let kline_symbol = symbol_name.to_string();
+        // Gate.io kline channel: "spot.candlesticks" — interval in frame "n" field like "1m_BTC_USDT"
+        // The interval part is before the first '_' in symbol_name for futures, or from channel header.
+        // Use the raw channel name from frame for interval extraction.
+        let kline_interval = raw.get("channel")
+            .and_then(|v| v.as_str())
+            .and_then(|ch| ch.strip_prefix("spot.candlesticks_").or_else(|| ch.strip_prefix("futures.candlesticks_")))
+            .unwrap_or("")
+            .to_string();
+        Ok(StreamEvent::Kline { symbol: kline_symbol, interval: kline_interval, kline })
     }
 }
 

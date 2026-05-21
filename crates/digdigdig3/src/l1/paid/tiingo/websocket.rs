@@ -234,7 +234,6 @@ impl TiingoWebSocket {
                         let volume = arr.get(4).and_then(|v| v.as_f64()).unwrap_or_default();
 
                         let ticker_data = Ticker {
-                            symbol: ticker.to_string(),
                             last_price,
                             bid_price: Some(bid_price),
                             ask_price: Some(ask_price),
@@ -247,7 +246,10 @@ impl TiingoWebSocket {
                             timestamp: crate::core::utils::timestamp_millis() as i64,
                         };
 
-                        Some(vec![StreamEvent::Ticker(ticker_data)])
+                        Some(vec![StreamEvent::Ticker {
+                            symbol: ticker.to_string(),
+                            ticker: ticker_data,
+                        }])
                     }
 
                     TiingoFeed::Crypto => {
@@ -261,7 +263,6 @@ impl TiingoWebSocket {
                         let volume = arr.get(6).and_then(|v| v.as_f64()).unwrap_or_default();
 
                         let ticker_data = Ticker {
-                            symbol: ticker.to_string(),
                             last_price,
                             bid_price: Some(bid_price),
                             ask_price: Some(ask_price),
@@ -274,7 +275,10 @@ impl TiingoWebSocket {
                             timestamp: crate::core::utils::timestamp_millis() as i64,
                         };
 
-                        Some(vec![StreamEvent::Ticker(ticker_data)])
+                        Some(vec![StreamEvent::Ticker {
+                            symbol: ticker.to_string(),
+                            ticker: ticker_data,
+                        }])
                     }
                 }
             }
@@ -427,8 +431,8 @@ mod tests {
 
         let events = TiingoWebSocket::parse_message(&msg, TiingoFeed::Iex).unwrap();
         assert_eq!(events.len(), 1);
-        if let StreamEvent::Ticker(t) = &events[0] {
-            assert_eq!(t.symbol, "AAPL");
+        if let StreamEvent::Ticker { symbol, ticker: t, .. } = &events[0] {
+            assert_eq!(symbol, "AAPL");
             assert_eq!(t.last_price, 185.50);
             assert_eq!(t.bid_price, Some(185.40));
             assert_eq!(t.ask_price, Some(185.60));

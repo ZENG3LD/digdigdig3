@@ -406,7 +406,8 @@ fn parse_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw);
     let ticker = BinanceParser::parse_ticker(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    Ok(StreamEvent::Ticker(ticker))
+    let symbol = data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string();
+    Ok(StreamEvent::Ticker { symbol, ticker })
 }
 
 fn parse_mini_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -420,19 +421,22 @@ fn parse_mini_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
             .or_else(|| data.get(key).and_then(|v| v.as_f64()))
     };
 
-    Ok(StreamEvent::Ticker(Ticker {
-        symbol: data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string(),
-        last_price: parse_f64("c").unwrap_or(0.0),
-        bid_price: None,
-        ask_price: None,
-        high_24h: parse_f64("h"),
-        low_24h: parse_f64("l"),
-        volume_24h: parse_f64("v"),
-        quote_volume_24h: parse_f64("q"),
-        price_change_24h: None,
-        price_change_percent_24h: None,
-        timestamp: data.get("E").and_then(|t| t.as_i64()).unwrap_or(0),
-    }))
+    let symbol = data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string();
+    Ok(StreamEvent::Ticker {
+        symbol,
+        ticker: Ticker {
+            last_price: parse_f64("c").unwrap_or(0.0),
+            bid_price: None,
+            ask_price: None,
+            high_24h: parse_f64("h"),
+            low_24h: parse_f64("l"),
+            volume_24h: parse_f64("v"),
+            quote_volume_24h: parse_f64("q"),
+            price_change_24h: None,
+            price_change_percent_24h: None,
+            timestamp: data.get("E").and_then(|t| t.as_i64()).unwrap_or(0),
+        },
+    })
 }
 
 fn parse_book_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -450,26 +454,30 @@ fn parse_book_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
     let ask = parse_f64("a");
     let last_price = bid.unwrap_or(0.0);
 
-    Ok(StreamEvent::Ticker(Ticker {
-        symbol: data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string(),
-        last_price,
-        bid_price: bid,
-        ask_price: ask,
-        high_24h: None,
-        low_24h: None,
-        volume_24h: None,
-        quote_volume_24h: None,
-        price_change_24h: None,
-        price_change_percent_24h: None,
-        timestamp: data.get("T").and_then(|t| t.as_i64()).unwrap_or(0),
-    }))
+    let symbol = data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string();
+    Ok(StreamEvent::Ticker {
+        symbol,
+        ticker: Ticker {
+            last_price,
+            bid_price: bid,
+            ask_price: ask,
+            high_24h: None,
+            low_24h: None,
+            volume_24h: None,
+            quote_volume_24h: None,
+            price_change_24h: None,
+            price_change_percent_24h: None,
+            timestamp: data.get("T").and_then(|t| t.as_i64()).unwrap_or(0),
+        },
+    })
 }
 
 fn parse_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw);
     let trade = BinanceParser::parse_ws_trade(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    Ok(StreamEvent::Trade(trade))
+    let symbol = data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string();
+    Ok(StreamEvent::Trade { symbol, trade })
 }
 
 fn parse_agg_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -516,53 +524,75 @@ fn parse_levels(data: &Value, key: &str) -> Vec<OrderBookLevel> {
 fn parse_depth_update(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw);
     let event_time = data.get("E").and_then(|e| e.as_i64());
+    let symbol = data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string();
 
-    Ok(StreamEvent::OrderbookDelta(OrderbookDeltaData {
-        bids: parse_levels(data, "b"),
-        asks: parse_levels(data, "a"),
-        timestamp: event_time.unwrap_or(0),
-        first_update_id: data.get("U").and_then(|v| v.as_u64()),
-        last_update_id: data.get("u").and_then(|v| v.as_u64()),
-        prev_update_id: data.get("pu").and_then(|v| v.as_u64()),
-        event_time,
-        checksum: None,
-    }))
+    Ok(StreamEvent::OrderbookDelta {
+        symbol,
+        delta: OrderbookDeltaData {
+            bids: parse_levels(data, "b"),
+            asks: parse_levels(data, "a"),
+            timestamp: event_time.unwrap_or(0),
+            first_update_id: data.get("U").and_then(|v| v.as_u64()),
+            last_update_id: data.get("u").and_then(|v| v.as_u64()),
+            prev_update_id: data.get("pu").and_then(|v| v.as_u64()),
+            event_time,
+            checksum: None,
+        },
+    })
 }
 
 fn parse_partial_depth(raw: &Value) -> WebSocketResult<StreamEvent> {
     // Combined-stream partial depth: {"stream":"btcusdt@depth20@100ms","data":{...}}
     // data has "lastUpdateId", "bids", "asks" — no "e" event type.
+    // Symbol comes from the stream name, not from data.
+    let symbol = raw
+        .get("stream")
+        .and_then(|s| s.as_str())
+        .and_then(|s| s.split('@').next())
+        .map(|s| s.to_ascii_uppercase())
+        .unwrap_or_default();
     let data = frame_data(raw);
-    parse_partial_depth_inner(data)
+    parse_partial_depth_inner(data, symbol)
 }
 
 fn parse_partial_depth_raw(raw: &Value) -> WebSocketResult<StreamEvent> {
     // Raw-mode partial depth (single-stream URL): the frame IS the data.
-    parse_partial_depth_inner(raw)
+    // No symbol embedded; StreamSpec carries it at dispatch level.
+    parse_partial_depth_inner(raw, String::new())
 }
 
-fn parse_partial_depth_inner(data: &Value) -> WebSocketResult<StreamEvent> {
+fn parse_partial_depth_inner(data: &Value, symbol: String) -> WebSocketResult<StreamEvent> {
     let event_time = data.get("E").and_then(|e| e.as_i64());
 
-    Ok(StreamEvent::OrderbookSnapshot(crate::core::OrderBook {
-        bids: parse_levels(data, "bids"),
-        asks: parse_levels(data, "asks"),
-        timestamp: event_time.unwrap_or(0),
-        sequence: None,
-        last_update_id: data.get("lastUpdateId").and_then(|v| v.as_u64()),
-        first_update_id: None,
-        prev_update_id: None,
-        event_time,
-        transaction_time: None,
-        checksum: None,
-    }))
+    Ok(StreamEvent::OrderbookSnapshot {
+        symbol,
+        book: crate::core::OrderBook {
+            bids: parse_levels(data, "bids"),
+            asks: parse_levels(data, "asks"),
+            timestamp: event_time.unwrap_or(0),
+            sequence: None,
+            last_update_id: data.get("lastUpdateId").and_then(|v| v.as_u64()),
+            first_update_id: None,
+            prev_update_id: None,
+            event_time,
+            transaction_time: None,
+            checksum: None,
+        },
+    })
 }
 
 fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw);
     let kline = BinanceParser::parse_ws_kline(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    Ok(StreamEvent::Kline(kline))
+    let symbol = data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string();
+    let interval = data
+        .get("k")
+        .and_then(|k| k.get("i"))
+        .and_then(|i| i.as_str())
+        .unwrap_or("")
+        .to_string();
+    Ok(StreamEvent::Kline { symbol, interval, kline })
 }
 
 fn parse_mark_price(raw: &Value) -> WebSocketResult<StreamEvent> {

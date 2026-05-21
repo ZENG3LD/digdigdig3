@@ -92,7 +92,7 @@ impl HtxParser {
     ///
     /// Endpoint: GET /market/detail/merged
     /// Response: tick = { close, open, high, low, amount, vol, count, bid, ask }
-    pub fn parse_ticker(json: &Value, symbol: &str) -> ExchangeResult<Ticker> {
+    pub fn parse_ticker(json: &Value, _symbol: &str) -> ExchangeResult<Ticker> {
         let tick = Self::extract_result_v1(json)?;
 
         // HTX futures (linear-swap) returns last_px instead of close.
@@ -122,7 +122,6 @@ impl HtxParser {
         let timestamp = json["ts"].as_i64().unwrap_or(0);
 
         Ok(Ticker {
-            symbol: symbol.to_string(),
             last_price,
             bid_price,
             ask_price,
@@ -654,7 +653,6 @@ mod tests {
         });
 
         let ticker = HtxParser::parse_ticker(&json, "BTCUSDT").unwrap();
-        assert_eq!(ticker.symbol, "BTCUSDT");
         assert_eq!(ticker.last_price, 49500.0);
         assert_eq!(ticker.bid_price, Some(49499.0));
         assert_eq!(ticker.ask_price, Some(49500.0));

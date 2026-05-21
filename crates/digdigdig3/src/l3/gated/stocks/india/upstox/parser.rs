@@ -228,7 +228,6 @@ impl UpstoxParser {
             .unwrap_or(0);
 
         Ok(Ticker {
-            symbol: Self::get_str(quote, "instrument_token").unwrap_or("").to_string(),
             last_price,
             bid_price: None,
             ask_price: None,

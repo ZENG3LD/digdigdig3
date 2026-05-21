@@ -130,7 +130,6 @@ impl OkxParser {
         let data = Self::extract_first_data(response)?;
 
         Ok(Ticker {
-            symbol: Self::get_str(data, "instId").unwrap_or("").to_string(),
             last_price: Self::get_f64(data, "last").unwrap_or(0.0),
             bid_price: Self::get_f64(data, "bidPx"),
             ask_price: Self::get_f64(data, "askPx"),
@@ -478,7 +477,6 @@ impl OkxParser {
     /// Парсить WebSocket ticker update
     pub fn parse_ws_ticker(data: &Value) -> ExchangeResult<Ticker> {
         Ok(Ticker {
-            symbol: Self::get_str(data, "instId").unwrap_or("").to_string(),
             last_price: Self::get_f64(data, "last").unwrap_or(0.0),
             bid_price: Self::get_f64(data, "bidPx"),
             ask_price: Self::get_f64(data, "askPx"),
@@ -541,7 +539,6 @@ impl OkxParser {
         };
 
         Ok(PublicTrade {
-            symbol: Self::get_str(data, "instId").unwrap_or("").to_string(),
             id: Self::get_str(data, "tradeId").unwrap_or("").to_string(),
             price: Self::require_f64(data, "px")?,
             quantity: Self::require_f64(data, "sz")?,
@@ -1540,7 +1537,6 @@ mod tests {
         });
 
         let ticker = OkxParser::parse_ticker(&response).unwrap();
-        assert_eq!(ticker.symbol, "BTC-USDT");
         assert_eq!(ticker.last_price, 43250.5);
     }
 

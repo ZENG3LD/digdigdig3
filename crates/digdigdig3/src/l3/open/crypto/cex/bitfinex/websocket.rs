@@ -646,10 +646,9 @@ impl BitfinexWebSocket {
                 // for F0 derivative pairs. Those come from the `status` channel with
                 // key `deriv:<symbol>`, handled via StreamType::FundingRate subscription.
                 // Class C fix: fill symbol field from subscription (parse_ws_ticker returns symbol="")
-                let mut ticker = BitfinexParser::parse_ws_ticker(data)
+                let ticker = BitfinexParser::parse_ws_ticker(data)
                     .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-                ticker.symbol = symbol;
-                Ok(vec![StreamEvent::Ticker(ticker)])
+                Ok(vec![StreamEvent::Ticker { symbol, ticker }])
             }
             StreamType::Trade => {
                 // Trades: [CHANNEL_ID, "te", [ID, MTS, AMOUNT, PRICE]]
@@ -665,10 +664,9 @@ impl BitfinexWebSocket {
                 };
                 if arr.len() >= 3 && arr[1].as_str() == Some("te") {
                     if let Some(data) = arr[2].as_array() {
-                        let mut trade = BitfinexParser::parse_ws_trade(data)
+                        let trade = BitfinexParser::parse_ws_trade(data)
                             .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-                        trade.symbol = trade_symbol;
-                        Ok(vec![StreamEvent::Trade(trade)])
+                        Ok(vec![StreamEvent::Trade { symbol: trade_symbol, trade }])
                     } else {
                         Ok(vec![])
                     }
@@ -681,9 +679,8 @@ impl BitfinexWebSocket {
                             // (same format as live "te" frames).
                             if let Some(inner) = first.as_array() {
                                 match BitfinexParser::parse_ws_trade(inner) {
-                                    Ok(mut trade) => {
-                                        trade.symbol = trade_symbol;
-                                        Ok(vec![StreamEvent::Trade(trade)])
+                                    Ok(trade) => {
+                                        Ok(vec![StreamEvent::Trade { symbol: trade_symbol, trade }])
                                     }
                                     Err(_) => Ok(vec![]),
                                 }
@@ -691,10 +688,9 @@ impl BitfinexWebSocket {
                                 Ok(vec![])
                             }
                         } else {
-                            let mut trade = BitfinexParser::parse_ws_trade(data)
+                            let trade = BitfinexParser::parse_ws_trade(data)
                                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-                            trade.symbol = trade_symbol;
-                            Ok(vec![StreamEvent::Trade(trade)])
+                            Ok(vec![StreamEvent::Trade { symbol: trade_symbol, trade }])
                         }
                     } else {
                         Ok(vec![])
@@ -711,16 +707,30 @@ impl BitfinexWebSocket {
                 // Skip emitting in that case — the remove is a valid no-op for listeners
                 // that maintain their own book state.
                 if let Some(data) = arr[1].as_array() {
+                    let ob_symbol = if subscription.symbol.raw().is_some() {
+                        subscription.symbol.raw().unwrap_or("").to_string()
+                    } else {
+                        format_symbol(
+                            &subscription.symbol.base,
+                            &subscription.symbol.quote,
+                            account_type,
+                        )
+                    };
                     let event = BitfinexParser::parse_ws_orderbook_delta(data)
                         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
                     // Suppress pure-remove deltas (bids=[] AND asks=[]) to avoid
                     // false "orderbook delta empty" inspector failures.
-                    if let crate::core::StreamEvent::OrderbookDelta(ref od) = event {
-                        if od.bids.is_empty() && od.asks.is_empty() {
+                    if let crate::core::StreamEvent::OrderbookDelta { ref delta, .. } = event {
+                        if delta.bids.is_empty() && delta.asks.is_empty() {
                             return Ok(vec![]);
                         }
                     }
-                    Ok(vec![event])
+                    // Re-wrap with symbol
+                    if let crate::core::StreamEvent::OrderbookDelta { delta, .. } = event {
+                        Ok(vec![StreamEvent::OrderbookDelta { symbol: ob_symbol, delta }])
+                    } else {
+                        Ok(vec![event])
+                    }
                 } else {
                     Ok(vec![])
                 }
@@ -774,12 +784,22 @@ impl BitfinexWebSocket {
                     Ok(vec![])
                 }
             }
-            StreamType::Kline { .. } => {
+            StreamType::Kline { interval } => {
                 // Candles: [CHANNEL_ID, [MTS, OPEN, CLOSE, HIGH, LOW, VOLUME]]  (single update)
                 //       or [CHANNEL_ID, [[MTS, O, C, H, L, V], ...]]             (snapshot, newest first)
                 // On snapshot, arr[1] is an array of arrays. parse_ws_kline fails because
                 // data[0] is an array, not an i64 timestamp. Detect snapshot vs single update
                 // by checking if data[0] is itself an array.
+                let kl_symbol = if subscription.symbol.raw().is_some() {
+                    subscription.symbol.raw().unwrap_or("").to_string()
+                } else {
+                    format_symbol(
+                        &subscription.symbol.base,
+                        &subscription.symbol.quote,
+                        account_type,
+                    )
+                };
+                let kl_interval = interval.as_str().to_string();
                 if let Some(data) = arr[1].as_array() {
                     // If the first element is an array → snapshot (many candles). Take the
                     // most-recent candle (index 0, Bitfinex newest-first) and parse it.
@@ -796,7 +816,7 @@ impl BitfinexWebSocket {
                         data
                     };
                     match BitfinexParser::parse_ws_kline(kline_data) {
-                        Ok(kline) => Ok(vec![StreamEvent::Kline(kline)]),
+                        Ok(kline) => Ok(vec![StreamEvent::Kline { symbol: kl_symbol, interval: kl_interval, kline }]),
                         Err(_) => Ok(vec![]),
                     }
                 } else {

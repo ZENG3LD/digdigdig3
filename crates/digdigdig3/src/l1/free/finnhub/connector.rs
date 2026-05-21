@@ -365,17 +365,16 @@ impl MarketData for FinnhubConnector {
         symbol: SymbolInput<'_>,
         _account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
-        let symbol: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
+        let symbol_str: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.clone());
+        params.insert("symbol".to_string(), symbol_str);
 
         let response = self.get(
             FinnhubEndpoint::Quote,
             params,
         ).await?;
 
-        let mut ticker = FinnhubParser::parse_ticker(&response)?;
-        ticker.symbol = symbol;
+        let ticker = FinnhubParser::parse_ticker(&response)?;
         Ok(ticker)
     }
 

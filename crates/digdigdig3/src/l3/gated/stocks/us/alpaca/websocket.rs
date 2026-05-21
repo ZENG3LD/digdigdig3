@@ -361,14 +361,13 @@ impl AlpacaWebSocket {
                         .and_then(|v| v.as_u64())
                         .map(|n| n.to_string())
                         .unwrap_or_default(),
-                    symbol: symbol.to_string(),
                     price,
                     quantity: size,
                     side: if taker_side == "S" { TradeSide::Sell } else { TradeSide::Buy },
                     timestamp: crate::core::utils::timestamp_millis() as i64,
                 };
 
-                Some(StreamEvent::Trade(trade))
+                Some(StreamEvent::Trade { symbol: symbol.to_string(), trade })
             }
 
             "q" => {
@@ -380,7 +379,6 @@ impl AlpacaWebSocket {
                 let ask_size = value.get("as").and_then(|v| v.as_f64()).unwrap_or_default();
 
                 let ticker = Ticker {
-                    symbol: symbol.to_string(),
                     last_price: (bid_price + ask_price) / 2.0,
                     bid_price: Some(bid_price),
                     ask_price: Some(ask_price),
@@ -393,7 +391,7 @@ impl AlpacaWebSocket {
                     timestamp: crate::core::utils::timestamp_millis() as i64,
                 };
 
-                Some(StreamEvent::Ticker(ticker))
+                Some(StreamEvent::Ticker { symbol: symbol.to_string(), ticker })
             }
 
             "b" => {
@@ -405,9 +403,6 @@ impl AlpacaWebSocket {
                 let close = value.get("c").and_then(|v| v.as_f64()).unwrap_or_default();
                 let volume = value.get("v").and_then(|v| v.as_f64()).unwrap_or_default();
 
-                // Kline does not carry a symbol field; the symbol is held by the
-                // subscription context. open_time approximated with current timestamp.
-                let _ = symbol; // symbol is captured by the surrounding match arm
                 let bar = Kline {
                     open,
                     high,
@@ -420,7 +415,11 @@ impl AlpacaWebSocket {
                     trades: None,
                 };
 
-                Some(StreamEvent::Kline(bar))
+                Some(StreamEvent::Kline {
+                    symbol: symbol.to_string(),
+                    interval: String::new(), // Alpaca "b" bar has no interval field; consumer knows from sub spec
+                    kline: bar,
+                })
             }
 
             // Trading status / halt messages ("s"), LULD bands ("l"), and
@@ -607,8 +606,8 @@ mod tests {
         });
         let event = AlpacaWebSocket::parse_event(&raw);
         assert!(event.is_some());
-        if let Some(StreamEvent::Trade(trade)) = event {
-            assert_eq!(trade.symbol, "AAPL");
+        if let Some(StreamEvent::Trade { symbol, trade, .. }) = event {
+            assert_eq!(symbol, "AAPL");
             assert_eq!(trade.price, 185.50);
             assert_eq!(trade.quantity, 100.0);
             assert!(matches!(trade.side, TradeSide::Buy));

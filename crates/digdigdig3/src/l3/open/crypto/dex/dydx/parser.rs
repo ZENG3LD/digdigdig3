@@ -148,7 +148,6 @@ impl DydxParser {
             .ok_or_else(|| ExchangeError::Parse(format!("Market '{}' not found", symbol)))?;
 
         Ok(Ticker {
-            symbol: Self::get_str(market, "ticker").unwrap_or(symbol).to_string(),
             last_price: Self::get_f64(market, "oraclePrice").unwrap_or(0.0),
             bid_price: None, // Not provided in markets endpoint
             ask_price: None, // Not provided in markets endpoint
@@ -203,7 +202,6 @@ impl DydxParser {
 
                 Ok(PublicTrade {
                     id: Self::get_str(trade, "id").unwrap_or("").to_string(),
-                    symbol: "".to_string(), // Market symbol not included in trade data
                     price: Self::require_f64(trade, "price")?,
                     quantity: Self::get_f64(trade, "size").unwrap_or(0.0),
                     side,
@@ -447,7 +445,6 @@ impl DydxParser {
             )))?;
 
         Ok(Ticker {
-            symbol: Self::get_str(market, "ticker").unwrap_or(target_symbol).to_string(),
             last_price: Self::get_f64(market, "oraclePrice").unwrap_or(0.0),
             bid_price: None, // Not provided in v4_markets
             ask_price: None, // Not provided in v4_markets
@@ -506,7 +503,6 @@ impl DydxParser {
 
         Ok(PublicTrade {
             id: Self::get_str(trade, "id").unwrap_or("").to_string(),
-            symbol: data.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             price: Self::require_f64(trade, "price")?,
             quantity: Self::get_f64(trade, "size").unwrap_or(0.0),
             side,
@@ -572,31 +568,39 @@ impl DydxParser {
         let bids = parse_levels("bids");
         let asks = parse_levels("asks");
         let ts = chrono::Utc::now().timestamp_millis();
+        // "id" field carries the market symbol e.g. "BTC-USD"
+        let ob_symbol = data.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
         if is_snapshot {
-            Ok(StreamEvent::OrderbookSnapshot(OrderBook {
-                bids,
-                asks,
-                timestamp: ts,
-                sequence: None,
-                last_update_id: None,
-                first_update_id: None,
-                prev_update_id: None,
-                event_time: None,
-                transaction_time: None,
-                checksum: None,
-            }))
+            Ok(StreamEvent::OrderbookSnapshot {
+                symbol: ob_symbol,
+                book: OrderBook {
+                    bids,
+                    asks,
+                    timestamp: ts,
+                    sequence: None,
+                    last_update_id: None,
+                    first_update_id: None,
+                    prev_update_id: None,
+                    event_time: None,
+                    transaction_time: None,
+                    checksum: None,
+                },
+            })
         } else {
-            Ok(StreamEvent::OrderbookDelta(OrderbookDeltaData {
-                bids,
-                asks,
-                timestamp: ts,
-                first_update_id: None,
-                last_update_id: None,
-                prev_update_id: None,
-                event_time: None,
-                checksum: None,
-            }))
+            Ok(StreamEvent::OrderbookDelta {
+                symbol: ob_symbol,
+                delta: OrderbookDeltaData {
+                    bids,
+                    asks,
+                    timestamp: ts,
+                    first_update_id: None,
+                    last_update_id: None,
+                    prev_update_id: None,
+                    event_time: None,
+                    checksum: None,
+                },
+            })
         }
     }
 
@@ -670,7 +674,13 @@ impl DydxParser {
             trades,
         };
 
-        Ok(StreamEvent::Kline(kline))
+        // "id" field carries "{SYMBOL}/{RESOLUTION}" e.g. "BTC-USD/1MIN"
+        let id_str = data.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let mut id_parts = id_str.splitn(2, '/');
+        let kl_symbol = id_parts.next().unwrap_or("").to_string();
+        let kl_interval = id_parts.next().unwrap_or("").to_string();
+
+        Ok(StreamEvent::Kline { symbol: kl_symbol, interval: kl_interval, kline })
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -821,7 +831,6 @@ mod tests {
         });
 
         let ticker = DydxParser::parse_ticker(&response, "BTC-USD").unwrap();
-        assert_eq!(ticker.symbol, "BTC-USD");
         assert!((ticker.last_price - 50000.5).abs() < f64::EPSILON);
     }
 

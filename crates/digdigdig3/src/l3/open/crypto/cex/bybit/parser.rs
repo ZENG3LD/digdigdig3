@@ -66,7 +66,7 @@ impl BybitParser {
         let data = list.first()
             .ok_or_else(|| ExchangeError::Parse("Empty result.list".into()))?;
 
-        let symbol = data["symbol"].as_str()
+        let _symbol = data["symbol"].as_str()
             .ok_or_else(|| ExchangeError::Parse("Missing symbol".into()))?;
 
         let last_price = data["lastPrice"].as_str()
@@ -94,7 +94,6 @@ impl BybitParser {
         let timestamp = json["time"].as_i64().unwrap_or(0);
 
         Ok(Ticker {
-            symbol: symbol.to_string(),
             last_price,
             bid_price,
             ask_price,
@@ -1223,7 +1222,6 @@ mod tests {
         });
 
         let ticker = BybitParser::parse_ticker(&json).unwrap();
-        assert_eq!(ticker.symbol, "BTCUSDT");
         assert_eq!(ticker.last_price, 40000.0);
         assert_eq!(ticker.bid_price, Some(39999.0));
         assert_eq!(ticker.ask_price, Some(40001.0));

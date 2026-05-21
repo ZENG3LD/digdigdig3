@@ -45,7 +45,7 @@ impl AlpacaParser {
     /// - minuteBar: {t, o, h, l, c, v, n, vw}
     /// - dailyBar: {t, o, h, l, c, v, n, vw}
     /// - prevDailyBar: {t, o, h, l, c, v, n, vw}
-    pub fn parse_ticker(response: &Value, symbol: &str) -> ExchangeResult<Ticker> {
+    pub fn parse_ticker(response: &Value, _symbol: &str) -> ExchangeResult<Ticker> {
         let latest_trade = response.get("latestTrade");
         let latest_quote = response.get("latestQuote");
         let daily_bar = response.get("dailyBar");
@@ -83,7 +83,6 @@ impl AlpacaParser {
             .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
 
         Ok(Ticker {
-            symbol: symbol.to_string(),
             last_price,
             bid_price,
             ask_price,

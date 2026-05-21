@@ -85,7 +85,7 @@ impl TinkoffParser {
     /// Parse GetOrderBook response to Ticker
     ///
     /// Order book includes lastPrice, bids, asks which we can use for ticker data
-    pub fn parse_ticker(response: &Value, symbol: &str) -> ExchangeResult<Ticker> {
+    pub fn parse_ticker(response: &Value, _symbol: &str) -> ExchangeResult<Ticker> {
         let last_price = response
             .get("lastPrice")
             .map(Self::parse_quotation)
@@ -126,7 +126,6 @@ impl TinkoffParser {
         };
 
         Ok(Ticker {
-            symbol: symbol.to_string(),
             last_price,
             bid_price,
             ask_price,

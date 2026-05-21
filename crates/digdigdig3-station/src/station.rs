@@ -484,31 +484,56 @@ fn cast_vec<A: 'static, B: 'static>(v: Vec<A>) -> Vec<B> {
 }
 
 /// Symbol-level routing: drop events whose `symbol` field doesn't match our key.
-/// For events without a `symbol` field (OB), accept unconditionally — refine in
-/// a later phase when per-symbol routing tightens (Phase 3+).
+/// Every public-data variant now carries `symbol: String` on the variant itself.
 fn event_matches_key(ev: &StreamEvent, key: &SeriesKey) -> bool {
     let want = key.symbol.as_str();
-    let got: Option<&str> = match ev {
-        StreamEvent::Trade(t) => Some(&t.symbol),
-        StreamEvent::AggTrade { symbol, .. } => Some(symbol),
-        StreamEvent::Ticker(t) => Some(&t.symbol),
-        StreamEvent::Kline(k) => k_symbol(k),
-        StreamEvent::MarkPrice { symbol, .. } => Some(symbol),
-        StreamEvent::FundingRate { symbol, .. } => Some(symbol),
-        StreamEvent::OpenInterestUpdate { symbol, .. } => Some(symbol),
-        StreamEvent::Liquidation { symbol, .. } => Some(symbol),
-        StreamEvent::OrderbookSnapshot(_) | StreamEvent::OrderbookDelta(_) => None,
-        _ => None,
-    };
+    let got: Option<&str> = event_raw_symbol(ev);
     match got {
+        // Empty string = parser couldn't extract; let event through (dispatch is by SeriesKey at the channel level).
+        Some("") => true,
         Some(s) => s.eq_ignore_ascii_case(want),
         None => true,
     }
 }
 
-fn k_symbol(_k: &digdigdig3::core::types::Kline) -> Option<&str> {
-    // Kline struct lacks a `symbol` field; per-WS routing matches by topic upstream.
-    None
+/// Extract the raw exchange-native symbol carried on a `StreamEvent` variant,
+/// or `None` for private events that don't carry one in this dispatch model.
+fn event_raw_symbol(ev: &StreamEvent) -> Option<&str> {
+    match ev {
+        StreamEvent::Trade { symbol, .. } => Some(symbol),
+        StreamEvent::AggTrade { symbol, .. } => Some(symbol),
+        StreamEvent::Ticker { symbol, .. } => Some(symbol),
+        StreamEvent::Kline { symbol, .. } => Some(symbol),
+        StreamEvent::OrderbookSnapshot { symbol, .. } => Some(symbol),
+        StreamEvent::OrderbookDelta { symbol, .. } => Some(symbol),
+        StreamEvent::MarkPrice { symbol, .. } => Some(symbol),
+        StreamEvent::FundingRate { symbol, .. } => Some(symbol),
+        StreamEvent::OpenInterestUpdate { symbol, .. } => Some(symbol),
+        StreamEvent::Liquidation { symbol, .. } => Some(symbol),
+        StreamEvent::LongShortRatio { symbol, .. } => Some(symbol),
+        StreamEvent::MarkPriceKline { symbol, .. } => Some(symbol),
+        StreamEvent::IndexPriceKline { symbol, .. } => Some(symbol),
+        StreamEvent::PremiumIndexKline { symbol, .. } => Some(symbol),
+        StreamEvent::IndexPrice { symbol, .. } => Some(symbol),
+        StreamEvent::HistoricalVolatility { symbol, .. } => Some(symbol),
+        StreamEvent::InsuranceFund { symbol, .. } => Some(symbol),
+        StreamEvent::Basis { symbol, .. } => Some(symbol),
+        StreamEvent::OptionGreeks { symbol, .. } => Some(symbol),
+        StreamEvent::VolatilityIndex { symbol, .. } => Some(symbol),
+        StreamEvent::BlockTrade { symbol, .. } => Some(symbol),
+        StreamEvent::AuctionEvent { symbol, .. } => Some(symbol),
+        StreamEvent::MarketWarning { symbol, .. } => Some(symbol),
+        StreamEvent::OrderbookL3 { symbol, .. } => Some(symbol),
+        StreamEvent::SettlementEvent { symbol, .. } => Some(symbol),
+        StreamEvent::RiskLimit { symbol, .. } => Some(symbol),
+        StreamEvent::PredictedFunding { symbol, .. } => Some(symbol),
+        StreamEvent::FundingSettlement { symbol, .. } => Some(symbol),
+        StreamEvent::CompositeIndex { symbol, .. } => Some(symbol),
+        // Private events — private dispatch isn't symbol-routed at the SeriesKey level.
+        StreamEvent::OrderUpdate(_)
+        | StreamEvent::BalanceUpdate(_)
+        | StreamEvent::PositionUpdate(_) => None,
+    }
 }
 
 /// Trait wired by each `DataPoint` so the forwarder can build the right Event

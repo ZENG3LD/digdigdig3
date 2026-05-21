@@ -42,7 +42,7 @@ impl YahooFinanceParser {
     /// Parse ticker from /v8/finance/chart/{symbol} response
     ///
     /// Note: Changed from quote endpoint to chart endpoint (quote returns 401 as of Jan 2026)
-    pub fn parse_ticker(response: &Value, symbol: &str) -> ExchangeResult<Ticker> {
+    pub fn parse_ticker(response: &Value, _symbol: &str) -> ExchangeResult<Ticker> {
         let result = Self::get_chart_result(response)?;
         let first = result
             .first()
@@ -53,7 +53,6 @@ impl YahooFinanceParser {
             .ok_or_else(|| ExchangeError::Parse("Missing meta field in chart response".to_string()))?;
 
         Ok(Ticker {
-            symbol: symbol.to_string(),
             last_price: Self::require_f64(meta, "regularMarketPrice")?,
             // Chart endpoint carries no bid/ask. Even /v7/finance/quote omits
             // bid/ask for crypto symbols (Yahoo does not expose live bid/ask for
@@ -173,18 +172,13 @@ impl YahooFinanceParser {
     /// ```
     ///
     /// `regularMarketTime` is Unix **seconds**; converted to ms on the way out.
-    pub fn parse_quote_ticker(response: &Value, symbol: &str) -> ExchangeResult<Ticker> {
+    pub fn parse_quote_ticker(response: &Value, _symbol: &str) -> ExchangeResult<Ticker> {
         let result = Self::get_quote_response_result(response)?;
         let first = result
             .first()
             .ok_or_else(|| ExchangeError::Parse("quoteResponse.result is empty".to_string()))?;
 
         Ok(Ticker {
-            symbol: first
-                .get("symbol")
-                .and_then(|v| v.as_str())
-                .unwrap_or(symbol)
-                .to_string(),
             last_price: Self::require_f64(first, "regularMarketPrice")?,
             bid_price: Self::get_f64(first, "bid"),
             ask_price: Self::get_f64(first, "ask"),
@@ -422,7 +416,6 @@ mod tests {
         });
 
         let ticker = YahooFinanceParser::parse_quote_ticker(&response, "AAPL").unwrap();
-        assert_eq!(ticker.symbol, "AAPL");
         assert!((ticker.last_price - 189.51).abs() < 1e-4);
         assert_eq!(ticker.bid_price, Some(189.50));
         assert_eq!(ticker.ask_price, Some(189.52));
@@ -444,7 +437,6 @@ mod tests {
         });
 
         let ticker = YahooFinanceParser::parse_quote_ticker(&response, "BTC-USD").unwrap();
-        assert_eq!(ticker.symbol, "BTC-USD");
         assert!(ticker.bid_price.is_none());
         assert!(ticker.ask_price.is_none());
     }
@@ -470,7 +462,6 @@ mod tests {
         });
 
         let ticker = YahooFinanceParser::parse_ticker(&response, "AAPL").unwrap();
-        assert_eq!(ticker.symbol, "AAPL");
         assert_eq!(ticker.last_price, 150.25);
         assert_eq!(ticker.bid_price, None); // Chart endpoint doesn't provide bid/ask
         assert_eq!(ticker.ask_price, None); // Chart endpoint doesn't provide bid/ask

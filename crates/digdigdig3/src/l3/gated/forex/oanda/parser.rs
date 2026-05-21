@@ -291,7 +291,6 @@ impl OandaParser {
         let timestamp = Self::parse_timestamp(time_str).unwrap_or(0);
 
         Ok(Ticker {
-            symbol: Self::get_str(price_obj, "instrument").unwrap_or("").to_string(),
             last_price: last,
             bid_price: Some(bid),
             ask_price: Some(ask),

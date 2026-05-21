@@ -259,7 +259,6 @@ impl MarketData for TiingoConnector {
         let volume: f64 = klines.iter().map(|k| k.volume).sum();
 
         Ok(Ticker {
-            symbol: sym_str,
             last_price: latest.close,
             bid_price: None,
             ask_price: None,

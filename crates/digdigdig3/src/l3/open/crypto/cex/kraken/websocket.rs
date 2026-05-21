@@ -344,15 +344,27 @@ impl KrakenWebSocket {
         match channel {
             "ticker" => {
                 // Ticker update
+                let symbol = data.as_array()
+                    .and_then(|a| a.first())
+                    .and_then(|d| d.get("symbol"))
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let ticker = Self::parse_ticker_ws(data)
                     .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-                Ok(Some(StreamEvent::Ticker(ticker)))
+                Ok(Some(StreamEvent::Ticker { symbol, ticker }))
             }
             "trade" => {
                 // Trade update
+                let symbol = data.as_array()
+                    .and_then(|a| a.first())
+                    .and_then(|d| d.get("symbol"))
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let trade = Self::parse_trade_ws(data)
                     .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-                Ok(Some(StreamEvent::Trade(trade)))
+                Ok(Some(StreamEvent::Trade { symbol, trade }))
             }
             "book" => {
                 // Orderbook update
@@ -362,10 +374,14 @@ impl KrakenWebSocket {
                 Ok(Some(event))
             }
             "ohlc" => {
-                // Kline update
+                // Kline update — symbol is in data[0].symbol, interval in data[0].interval
+                let arr = data.as_array();
+                let first = arr.and_then(|a| a.first());
+                let kl_symbol = first.and_then(|d| d.get("symbol")).and_then(|s| s.as_str()).unwrap_or("").to_string();
+                let kl_interval = first.and_then(|d| d.get("interval")).and_then(|i| i.as_str()).unwrap_or("").to_string();
                 let kline = Self::parse_kline_ws(data)
                     .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-                Ok(Some(StreamEvent::Kline(kline)))
+                Ok(Some(StreamEvent::Kline { symbol: kl_symbol, interval: kl_interval, kline }))
             }
             "executions" => {
                 // Order/execution update
@@ -560,10 +576,6 @@ impl KrakenWebSocket {
         let ticker_data = arr.first()
             .ok_or_else(|| ExchangeError::Parse("Empty ticker array".to_string()))?;
 
-        let symbol = ticker_data.get("symbol")
-            .and_then(|s| s.as_str())
-            .ok_or_else(|| ExchangeError::Parse("Missing symbol".to_string()))?;
-
         let last_price = ticker_data.get("last")
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
@@ -587,7 +599,6 @@ impl KrakenWebSocket {
             .and_then(|v| v.as_f64());
 
         Ok(crate::core::Ticker {
-            symbol: symbol.to_string(),
             last_price,
             bid_price,
             ask_price,
@@ -608,10 +619,6 @@ impl KrakenWebSocket {
 
         let trade_data = arr.first()
             .ok_or_else(|| ExchangeError::Parse("Empty trade array".to_string()))?;
-
-        let symbol = trade_data.get("symbol")
-            .and_then(|s| s.as_str())
-            .ok_or_else(|| ExchangeError::Parse("Missing symbol".to_string()))?;
 
         let price = trade_data.get("price")
             .and_then(|p| p.as_f64())
@@ -646,7 +653,6 @@ impl KrakenWebSocket {
 
         Ok(crate::core::PublicTrade {
             id,
-            symbol: symbol.to_string(),
             price,
             quantity,
             side,
@@ -679,31 +685,38 @@ impl KrakenWebSocket {
 
         let bids = parse_levels("bids");
         let asks = parse_levels("asks");
+        let ob_symbol = book_data.get("symbol").and_then(|s| s.as_str()).unwrap_or("").to_string();
 
         if is_snapshot {
-            Ok(StreamEvent::OrderbookSnapshot(crate::core::OrderBook {
-                timestamp: timestamp_millis() as i64,
-                bids,
-                asks,
-                sequence: None,
-                last_update_id: None,
-                first_update_id: None,
-                prev_update_id: None,
-                event_time: None,
-                transaction_time: None,
-                checksum: None,
-            }))
+            Ok(StreamEvent::OrderbookSnapshot {
+                symbol: ob_symbol,
+                book: crate::core::OrderBook {
+                    timestamp: timestamp_millis() as i64,
+                    bids,
+                    asks,
+                    sequence: None,
+                    last_update_id: None,
+                    first_update_id: None,
+                    prev_update_id: None,
+                    event_time: None,
+                    transaction_time: None,
+                    checksum: None,
+                },
+            })
         } else {
-            Ok(StreamEvent::OrderbookDelta(OrderbookDeltaData {
-                bids,
-                asks,
-                timestamp: timestamp_millis() as i64,
-                first_update_id: None,
-                last_update_id: None,
-                prev_update_id: None,
-                event_time: None,
-                checksum: None,
-            }))
+            Ok(StreamEvent::OrderbookDelta {
+                symbol: ob_symbol,
+                delta: OrderbookDeltaData {
+                    bids,
+                    asks,
+                    timestamp: timestamp_millis() as i64,
+                    first_update_id: None,
+                    last_update_id: None,
+                    prev_update_id: None,
+                    event_time: None,
+                    checksum: None,
+                },
+            })
         }
     }
 

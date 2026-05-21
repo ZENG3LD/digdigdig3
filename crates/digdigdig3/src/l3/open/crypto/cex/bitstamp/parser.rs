@@ -86,12 +86,6 @@ impl BitstampParser {
     pub fn parse_ticker(json: &Value) -> ExchangeResult<Ticker> {
         Self::check_error(json)?;
 
-        let symbol = json.get("pair")
-            .or_else(|| json.get("market"))
-            .and_then(|s| s.as_str())
-            .unwrap_or("")
-            .to_string();
-
         let last_price = json.get("last")
             .and_then(Self::parse_f64)
             .ok_or_else(|| ExchangeError::Parse("Missing last price".into()))?;
@@ -113,7 +107,6 @@ impl BitstampParser {
             .and_then(Self::parse_f64);
 
         Ok(Ticker {
-            symbol,
             last_price,
             bid_price,
             ask_price,
@@ -402,15 +395,8 @@ impl BitstampParser {
             .map(|t| if t == 0 { TradeSide::Buy } else { TradeSide::Sell })
             .unwrap_or(TradeSide::Buy);
 
-        let symbol = json.get("channel")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.strip_prefix("live_trades_"))
-            .unwrap_or("")
-            .to_string();
-
         Ok(PublicTrade {
             id,
-            symbol,
             price,
             quantity,
             side,

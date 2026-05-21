@@ -391,7 +391,6 @@ impl KuCoinConnector {
             let change_rate = get_f64("changeRate").map(|r| r * 100.0);
 
             Ticker {
-                symbol: item.get("symbol").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                 last_price: last,
                 bid_price: get_f64("buy").or_else(|| get_f64("bestBidPrice")),
                 ask_price: get_f64("sell").or_else(|| get_f64("bestAskPrice")),

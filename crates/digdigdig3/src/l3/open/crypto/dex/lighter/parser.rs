@@ -57,12 +57,6 @@ impl LighterParser {
         data.get(key).and_then(|v| v.as_str())
     }
 
-    /// Parse required string
-    fn require_str<'a>(data: &'a Value, key: &str) -> ExchangeResult<&'a str> {
-        Self::get_str(data, key)
-            .ok_or_else(|| ExchangeError::Parse(format!("Missing '{}'", key)))
-    }
-
     /// Parse integer from field
     fn get_i64(data: &Value, key: &str) -> Option<i64> {
         data.get(key).and_then(|v| v.as_i64())
@@ -120,11 +114,9 @@ impl LighterParser {
             return Err(ExchangeError::Parse("No ticker data found".to_string()));
         };
 
-        let symbol = Self::require_str(data, "symbol")?;
         let last_price = Self::require_f64(data, "last_trade_price")?;
 
         Ok(Ticker {
-            symbol: symbol.to_string(),
             last_price,
             bid_price: None, // Lighter orderBookDetails REST response does not carry top-of-book quotes — use orderBookOrders or ticker WS channel
             ask_price: None, // Lighter orderBookDetails REST response does not carry top-of-book quotes — use orderBookOrders or ticker WS channel
@@ -293,7 +285,6 @@ impl LighterParser {
 
             result.push(PublicTrade {
                 id: id.to_string(),
-                symbol: String::new(), // Will be set by caller
                 price,
                 quantity: qty,
                 side: if is_maker_ask {

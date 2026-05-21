@@ -224,7 +224,7 @@ impl Canonicalize for PublicTrade {
 
     fn canonicalize(&self) -> Option<CanonicalTrade> {
         Some(CanonicalTrade {
-            symbol: self.symbol.clone(),
+            symbol: String::new(),
             price: f64_to_decimal(self.price)?,
             quantity: f64_to_decimal(self.quantity)?,
             side: self.side,
@@ -243,7 +243,7 @@ impl Canonicalize for Ticker {
 
     fn canonicalize(&self) -> Option<CanonicalTicker> {
         Some(CanonicalTicker {
-            symbol: self.symbol.clone(),
+            symbol: String::new(),
             last_price: f64_to_decimal(self.last_price)?,
             bid_price: f64_to_decimal_opt(self.bid_price),
             ask_price: f64_to_decimal_opt(self.ask_price),
@@ -340,20 +340,26 @@ impl Canonicalize for StreamEvent {
 
     fn canonicalize(&self) -> Option<CanonicalEvent> {
         match self {
-            StreamEvent::Trade(t) => t.canonicalize().map(CanonicalEvent::Trade),
+            StreamEvent::Trade { symbol, trade: t } => t.canonicalize().map(|mut c| {
+                c.symbol = symbol.clone();
+                CanonicalEvent::Trade(c)
+            }),
 
-            StreamEvent::Ticker(t) => t.canonicalize().map(CanonicalEvent::Ticker),
+            StreamEvent::Ticker { symbol, ticker: t } => t.canonicalize().map(|mut c| {
+                c.symbol = symbol.clone();
+                CanonicalEvent::Ticker(c)
+            }),
 
-            StreamEvent::OrderbookSnapshot(ob) => {
+            StreamEvent::OrderbookSnapshot { book: ob, .. } => {
                 // OrderBook has no symbol — symbol stays empty string at this layer.
                 ob.canonicalize().map(CanonicalEvent::Orderbook)
             }
 
-            StreamEvent::OrderbookDelta(delta) => {
+            StreamEvent::OrderbookDelta { delta, .. } => {
                 delta.canonicalize().map(CanonicalEvent::OrderbookDelta)
             }
 
-            StreamEvent::Kline(k) => {
+            StreamEvent::Kline { kline: k, .. } => {
                 // Kline has no symbol or interval at this layer.
                 k.canonicalize().map(CanonicalEvent::Kline)
             }
@@ -421,7 +427,6 @@ mod tests {
     fn trade_canonicalize_basic() {
         let trade = PublicTrade {
             id: "12345".to_string(),
-            symbol: "BTCUSDT".to_string(),
             price: 65432.1,
             quantity: 0.5,
             side: TradeSide::Buy,
@@ -429,7 +434,7 @@ mod tests {
         };
 
         let c = trade.canonicalize().expect("should canonicalize");
-        assert_eq!(c.symbol, "BTCUSDT");
+        assert_eq!(c.symbol, "");
         assert_eq!(c.price, Decimal::try_from(65432.1_f64).unwrap());
         assert_eq!(c.quantity, Decimal::try_from(0.5_f64).unwrap());
         assert_eq!(c.side, TradeSide::Buy);
@@ -441,7 +446,6 @@ mod tests {
     fn trade_canonicalize_sell_side() {
         let trade = PublicTrade {
             id: "99".to_string(),
-            symbol: "ETHUSDT".to_string(),
             price: 3200.0,
             quantity: 1.0,
             side: TradeSide::Sell,
@@ -456,7 +460,6 @@ mod tests {
     #[test]
     fn ticker_canonicalize_missing_bid_ask() {
         let ticker = Ticker {
-            symbol: "SOLUSDT".to_string(),
             last_price: 180.0,
             bid_price: None,
             ask_price: None,
@@ -470,7 +473,7 @@ mod tests {
         };
 
         let c = ticker.canonicalize().expect("should canonicalize");
-        assert_eq!(c.symbol, "SOLUSDT");
+        assert_eq!(c.symbol, "");
         assert_eq!(c.last_price, Decimal::try_from(180.0_f64).unwrap());
         assert!(c.bid_price.is_none());
         assert!(c.ask_price.is_none());
@@ -480,7 +483,6 @@ mod tests {
     #[test]
     fn ticker_canonicalize_with_bid_ask() {
         let ticker = Ticker {
-            symbol: "BTCUSDT".to_string(),
             last_price: 65000.0,
             bid_price: Some(64999.0),
             ask_price: Some(65001.0),
@@ -570,14 +572,16 @@ mod tests {
 
     #[test]
     fn stream_event_trade_canonicalize() {
-        let event = StreamEvent::Trade(PublicTrade {
-            id: "1".to_string(),
+        let event = StreamEvent::Trade {
             symbol: "BTCUSDT".to_string(),
-            price: 65000.0,
-            quantity: 0.1,
-            side: TradeSide::Buy,
-            timestamp: 1_700_000_000_000,
-        });
+            trade: PublicTrade {
+                id: "1".to_string(),
+                price: 65000.0,
+                quantity: 0.1,
+                side: TradeSide::Buy,
+                timestamp: 1_700_000_000_000,
+            },
+        };
 
         match event.canonicalize() {
             Some(CanonicalEvent::Trade(t)) => {
@@ -589,19 +593,21 @@ mod tests {
 
     #[test]
     fn stream_event_ticker_canonicalize() {
-        let event = StreamEvent::Ticker(Ticker {
+        let event = StreamEvent::Ticker {
             symbol: "ETHUSDT".to_string(),
-            last_price: 3000.0,
-            bid_price: None,
-            ask_price: None,
-            high_24h: None,
-            low_24h: None,
-            volume_24h: None,
-            quote_volume_24h: None,
-            price_change_24h: None,
-            price_change_percent_24h: None,
-            timestamp: 1_700_000_000_000,
-        });
+            ticker: Ticker {
+                last_price: 3000.0,
+                bid_price: None,
+                ask_price: None,
+                high_24h: None,
+                low_24h: None,
+                volume_24h: None,
+                quote_volume_24h: None,
+                price_change_24h: None,
+                price_change_percent_24h: None,
+                timestamp: 1_700_000_000_000,
+            },
+        };
 
         match event.canonicalize() {
             Some(CanonicalEvent::Ticker(t)) => assert_eq!(t.symbol, "ETHUSDT"),

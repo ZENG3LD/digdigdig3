@@ -2254,7 +2254,6 @@ impl MarketDataPublic for DydxConnector {
         let trades = raw.get("trades")
             .and_then(|t| t.as_array())
             .ok_or_else(|| ExchangeError::Parse("get_recent_trades: expected trades array".into()))?;
-        let symbol_str = market.to_string();
         let mut result = Vec::with_capacity(trades.len());
         for item in trades {
             let parse_f64 = |key: &str| -> f64 {
@@ -2273,7 +2272,6 @@ impl MarketDataPublic for DydxConnector {
             };
             result.push(PublicTrade {
                 id: item.get("createdAtHeight").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                symbol: symbol_str.clone(),
                 price: parse_f64("price"),
                 quantity: parse_f64("size"),
                 side,

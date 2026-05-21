@@ -266,7 +266,6 @@ impl KrakenParser {
             .and_then(Self::parse_f64);
 
         Ok(Ticker {
-            symbol: symbol.to_string(),
             last_price,
             bid_price,
             ask_price,

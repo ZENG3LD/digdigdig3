@@ -53,7 +53,7 @@ impl IBParser {
     /// - 88: Bid size
     /// - 7219: Prior close
     /// - _updated: Timestamp (milliseconds)
-    pub fn parse_ticker(response: &Value, symbol: &str) -> ExchangeResult<Ticker> {
+    pub fn parse_ticker(response: &Value, _symbol: &str) -> ExchangeResult<Ticker> {
         // IB returns array of snapshots
         let snapshots = response
             .as_array()
@@ -88,7 +88,6 @@ impl IBParser {
         };
 
         Ok(Ticker {
-            symbol: symbol.to_string(),
             last_price,
             bid_price: Self::get_f64(snapshot, "84"),
             ask_price: Self::get_f64(snapshot, "86"),
@@ -434,7 +433,6 @@ mod tests {
         ]);
 
         let ticker = IBParser::parse_ticker(&response, "AAPL").unwrap();
-        assert_eq!(ticker.symbol, "AAPL");
         assert_eq!(ticker.last_price, 185.50);
         assert_eq!(ticker.bid_price, Some(185.48));
         assert_eq!(ticker.ask_price, Some(185.52));

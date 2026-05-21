@@ -940,7 +940,6 @@ pub fn clob_market_to_ticker(market: &ClobMarket) -> Option<Ticker> {
     let price = yes_token.price?;
 
     Some(Ticker {
-        symbol: market.condition_id.clone(),
         last_price: price,
         bid_price: None,
         ask_price: None,
@@ -956,19 +955,12 @@ pub fn clob_market_to_ticker(market: &ClobMarket) -> Option<Ticker> {
 
 /// Convert a PolyMarket (Gamma) to V5 Ticker
 pub fn poly_market_to_ticker(market: &PolyMarket) -> Ticker {
-    let condition_id = market
-        .condition_id
-        .as_deref()
-        .unwrap_or(&market.id)
-        .to_string();
-
     let last_price = market
         .last_trade_price
         .or_else(|| market.yes_price())
         .unwrap_or(0.0);
 
     Ticker {
-        symbol: condition_id,
         last_price,
         bid_price: market.best_bid,
         ask_price: market.best_ask,

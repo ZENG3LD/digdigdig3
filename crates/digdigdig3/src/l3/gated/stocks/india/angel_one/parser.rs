@@ -109,7 +109,7 @@ impl AngelOneParser {
     }
 
     /// Parse FULL quote response to Ticker
-    pub fn parse_ticker(response: &Value, symbol: &str) -> ExchangeResult<Ticker> {
+    pub fn parse_ticker(response: &Value, _symbol: &str) -> ExchangeResult<Ticker> {
         let data = Self::extract_data(response)?;
 
         let fetched = data.get("fetched")
@@ -123,7 +123,6 @@ impl AngelOneParser {
         let quote = &fetched[0];
 
         Ok(Ticker {
-            symbol: symbol.to_string(),
             last_price: Self::require_f64(quote, "ltp")?,
             bid_price: Self::get_f64(quote, "bidprice"),
             ask_price: Self::get_f64(quote, "askprice"),

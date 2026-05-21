@@ -469,45 +469,55 @@ fn topic_symbol(raw: &Value) -> String {
 
 fn parse_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw)?;
-    let mut ticker = KuCoinParser::parse_ws_ticker(data)
+    let ticker = KuCoinParser::parse_ws_ticker(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    // KuCoin /market/ticker data has no "symbol" field — extract from topic.
-    if ticker.symbol.is_empty() {
-        ticker.symbol = topic_symbol(raw);
-    }
-    Ok(StreamEvent::Ticker(ticker))
+    let symbol = topic_symbol(raw);
+    Ok(StreamEvent::Ticker { symbol, ticker })
 }
 
 fn parse_snapshot_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw)?;
     // Snapshot wraps stats one level deeper under "data"
     let inner = data.get("data").unwrap_or(data);
-    let mut ticker = KuCoinParser::parse_ws_snapshot_ticker(inner)
+    let ticker = KuCoinParser::parse_ws_snapshot_ticker(inner)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    if ticker.symbol.is_empty() {
-        ticker.symbol = topic_symbol(raw);
-    }
-    Ok(StreamEvent::Ticker(ticker))
+    let symbol = topic_symbol(raw);
+    Ok(StreamEvent::Ticker { symbol, ticker })
 }
 
 fn parse_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw)?;
     let trade = KuCoinParser::parse_ws_trade(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    Ok(StreamEvent::Trade(trade))
+    let symbol = topic_symbol(raw);
+    Ok(StreamEvent::Trade { symbol, trade })
 }
 
 fn parse_orderbook_delta(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw)?;
-    KuCoinParser::parse_ws_orderbook_delta(data)
-        .map_err(|e| WebSocketError::Parse(e.to_string()))
+    let event = KuCoinParser::parse_ws_orderbook_delta(data)
+        .map_err(|e| WebSocketError::Parse(e.to_string()))?;
+    // Wrap with symbol from topic; inner event is always OrderbookDelta
+    let symbol = topic_symbol(raw);
+    match event {
+        StreamEvent::OrderbookDelta { symbol: _, delta } => Ok(StreamEvent::OrderbookDelta { symbol, delta }),
+        StreamEvent::OrderbookSnapshot { symbol: _, book } => Ok(StreamEvent::OrderbookSnapshot { symbol, book }),
+        other => Ok(other),
+    }
 }
 
 fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw)?;
     let kline = KuCoinParser::parse_ws_kline(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    Ok(StreamEvent::Kline(kline))
+    // topic: "/market/candles:BTC-USDT_1hour" → symbol="BTC-USDT", interval="1hour"
+    let sym_interval = topic_symbol(raw);
+    let (symbol, interval) = if let Some(pos) = sym_interval.find('_') {
+        (sym_interval[..pos].to_string(), sym_interval[pos + 1..].to_string())
+    } else {
+        (sym_interval, String::new())
+    };
+    Ok(StreamEvent::Kline { symbol, interval, kline })
 }
 
 fn parse_mark_price(raw: &Value) -> WebSocketResult<StreamEvent> {

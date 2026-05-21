@@ -389,13 +389,13 @@ impl BitstampWebSocket {
 
         // Match channel to determine event type
         if channel.starts_with("live_trades_") {
+            let symbol = channel.trim_start_matches("live_trades_").to_uppercase();
             if as_ticker {
                 // Build a minimal Ticker from the trade price.
                 // Bitstamp has no WS ticker channel, so we use live trade price.
                 let trade = BitstampParser::parse_ws_trade(&json)
                     .map_err(|e| WebSocketError::Parse(e.to_string()))?;
                 let ticker = crate::core::types::Ticker {
-                    symbol: trade.symbol,
                     last_price: trade.price,
                     bid_price: None,
                     ask_price: None,
@@ -407,16 +407,17 @@ impl BitstampWebSocket {
                     price_change_percent_24h: None,
                     timestamp: trade.timestamp,
                 };
-                Ok(Some(StreamEvent::Ticker(ticker)))
+                Ok(Some(StreamEvent::Ticker { symbol, ticker }))
             } else {
                 let trade = BitstampParser::parse_ws_trade(&json)
                     .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-                Ok(Some(StreamEvent::Trade(trade)))
+                Ok(Some(StreamEvent::Trade { symbol, trade }))
             }
         } else if channel.starts_with("diff_order_book_") {
-            let orderbook = BitstampParser::parse_ws_orderbook(&json)
+            let symbol = channel.trim_start_matches("diff_order_book_").to_uppercase();
+            let book = BitstampParser::parse_ws_orderbook(&json)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(StreamEvent::OrderbookSnapshot(orderbook)))
+            Ok(Some(StreamEvent::OrderbookSnapshot { symbol, book }))
         } else if channel.starts_with("detail_order_book_") {
             // L3 full book: each bid/ask entry is [price, amount, order_id].
             // Bitstamp sends one snapshot on subscribe and incremental snapshots on change.
@@ -490,7 +491,6 @@ impl BitstampWebSocket {
                 };
                 let pair = channel.trim_start_matches("order_book_").to_uppercase();
                 let ticker = crate::core::types::Ticker {
-                    symbol: pair,
                     last_price,
                     bid_price: bid,
                     ask_price: ask,
@@ -502,11 +502,12 @@ impl BitstampWebSocket {
                     price_change_percent_24h: None,
                     timestamp: orderbook.timestamp,
                 };
-                Ok(Some(StreamEvent::Ticker(ticker)))
+                Ok(Some(StreamEvent::Ticker { symbol: pair, ticker }))
             } else {
-                let orderbook = BitstampParser::parse_ws_orderbook(&json)
+                let symbol = channel.trim_start_matches("order_book_").to_uppercase();
+                let book = BitstampParser::parse_ws_orderbook(&json)
                     .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-                Ok(Some(StreamEvent::OrderbookSnapshot(orderbook)))
+                Ok(Some(StreamEvent::OrderbookSnapshot { symbol, book }))
             }
         } else {
             // Unknown channel
@@ -579,7 +580,8 @@ impl BitstampWebSocket {
             checksum: None,
         };
 
-        Ok(Some(StreamEvent::OrderbookDelta(delta)))
+        // Symbol not available in parse_live_order_from_json scope — caller has channel context
+        Ok(Some(StreamEvent::OrderbookDelta { symbol: String::new(), delta }))
     }
 }
 

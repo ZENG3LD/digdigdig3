@@ -95,7 +95,7 @@ impl GeminiParser {
     }
 
     /// Парсить ticker (v1 или v2)
-    pub fn parse_ticker(response: &Value, symbol: &str) -> ExchangeResult<Ticker> {
+    pub fn parse_ticker(response: &Value, _symbol: &str) -> ExchangeResult<Ticker> {
         Self::check_error(response)?;
 
         // V2 format has "symbol" field, V1 doesn't
@@ -124,9 +124,6 @@ impl GeminiParser {
         };
 
         Ok(Ticker {
-            symbol: Self::get_str(response, "symbol")
-                .unwrap_or(symbol)
-                .to_string(),
             last_price: Self::get_f64(response, "last")
                 .or_else(|| Self::get_f64(response, "close"))
                 .unwrap_or(0.0),
@@ -198,7 +195,6 @@ impl GeminiParser {
                 id: Self::get_i64(item, "tid")
                     .map(|i| i.to_string())
                     .unwrap_or_default(),
-                symbol: String::new(), // Not provided in response
                 price: Self::require_f64(item, "price")?,
                 quantity: Self::get_f64(item, "amount").unwrap_or(0.0),
                 side,
@@ -494,16 +490,21 @@ impl GeminiParser {
             .and_then(|t| t.as_i64())
             .unwrap_or_else(|| timestamp_millis() as i64);
 
-        Ok(StreamEvent::OrderbookDelta(OrderbookDeltaData {
-            bids,
-            asks,
-            timestamp,
-            first_update_id: None,
-            last_update_id: None,
-            prev_update_id: None,
-            event_time: None,
-            checksum: None,
-        }))
+        // symbol is carried in the l2_updates frame as "symbol" field
+        let ob_symbol = data.get("symbol").and_then(|s| s.as_str()).unwrap_or("").to_string();
+        Ok(StreamEvent::OrderbookDelta {
+            symbol: ob_symbol,
+            delta: OrderbookDeltaData {
+                bids,
+                asks,
+                timestamp,
+                first_update_id: None,
+                last_update_id: None,
+                prev_update_id: None,
+                event_time: None,
+                checksum: None,
+            },
+        })
     }
 
     /// Build a synthetic Ticker from an l2_updates frame. Gemini has no
@@ -549,8 +550,7 @@ impl GeminiParser {
             .and_then(|t| t.as_i64())
             .unwrap_or_else(|| timestamp_millis() as i64);
 
-        Some(StreamEvent::Ticker(Ticker {
-            symbol: symbol.to_string(),
+        let ticker = Ticker {
             last_price: lp,
             bid_price: best_bid,
             ask_price: best_ask,
@@ -561,7 +561,8 @@ impl GeminiParser {
             price_change_24h: None,
             price_change_percent_24h: None,
             timestamp,
-        }))
+        };
+        Some(StreamEvent::Ticker { symbol: symbol.to_string(), ticker })
     }
 
     /// Extract the most recent trade from a WebSocket L2 update message.
@@ -608,14 +609,14 @@ impl GeminiParser {
             },
         };
 
-        Ok(StreamEvent::Trade(PublicTrade {
+        let trade = PublicTrade {
             id,
-            symbol,
             price,
             quantity,
             side,
             timestamp,
-        }))
+        };
+        Ok(StreamEvent::Trade { symbol, trade })
     }
 
     /// Parse WebSocket trade message
@@ -629,7 +630,6 @@ impl GeminiParser {
             id: Self::get_i64(data, "event_id")
                 .map(|i| i.to_string())
                 .unwrap_or_default(),
-            symbol: Self::get_str(data, "symbol").unwrap_or("").to_string(),
             price: Self::require_f64(data, "price")?,
             quantity: Self::get_f64(data, "quantity").unwrap_or(0.0),
             side,
@@ -1088,7 +1088,7 @@ mod tests {
         });
 
         let event = GeminiParser::parse_ws_l2_update(&data).unwrap();
-        if let crate::core::types::StreamEvent::OrderbookDelta(delta) = event {
+        if let crate::core::types::StreamEvent::OrderbookDelta { delta, .. } = event {
             // Timestamp must be non-zero (receive-time fallback, not hardcoded 0).
             assert!(delta.timestamp > 0, "timestamp must be non-zero; got {}", delta.timestamp);
             assert_eq!(delta.bids.len(), 1);
@@ -1110,7 +1110,7 @@ mod tests {
         });
 
         let event = GeminiParser::parse_ws_l2_update(&data).unwrap();
-        if let crate::core::types::StreamEvent::OrderbookDelta(delta) = event {
+        if let crate::core::types::StreamEvent::OrderbookDelta { delta, .. } = event {
             assert_eq!(delta.timestamp, ts);
         } else {
             panic!("Expected OrderbookDelta");

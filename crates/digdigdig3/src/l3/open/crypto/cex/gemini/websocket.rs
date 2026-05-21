@@ -475,9 +475,11 @@ impl GeminiWebSocket {
                 Ok(events)
             }
             (WebSocketType::MarketData, Some(t)) if t.starts_with("candles_") => {
-                // Candle update
+                // Candle update — type is "candles_{interval}" e.g. "candles_1m"
+                let kl_symbol = value.get("symbol").and_then(|s| s.as_str()).unwrap_or("").to_string();
+                let kl_interval = t.strip_prefix("candles_").unwrap_or("").to_string();
                 let kline = GeminiParser::parse_ws_candle(&value)?;
-                Ok(vec![StreamEvent::Kline(kline)])
+                Ok(vec![StreamEvent::Kline { symbol: kl_symbol, interval: kl_interval, kline }])
             }
             (WebSocketType::MarketData, Some(t)) if matches!(
                 t,

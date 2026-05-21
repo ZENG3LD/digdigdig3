@@ -746,7 +746,6 @@ impl MarketData for PolymarketConnector {
             .as_millis() as i64;
 
         Ok(Ticker {
-            symbol: token_id,
             last_price: mid,
             bid_price: if bid > 0.0 { Some(bid) } else { None },
             ask_price: if ask > 0.0 { Some(ask) } else { None },
@@ -959,7 +958,6 @@ impl MarketDataPublic for PolymarketConnector {
                 .to_string();
             result.push(PublicTrade {
                 id,
-                symbol: condition_id.clone(),
                 price: parse_f64("price"),
                 quantity: parse_f64("size"),
                 side,

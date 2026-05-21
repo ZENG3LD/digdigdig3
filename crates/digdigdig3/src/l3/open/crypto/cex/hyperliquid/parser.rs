@@ -268,7 +268,6 @@ impl HyperliquidParser {
         };
 
         Ok(Ticker {
-            symbol: String::new(), // Will be filled by connector using metadata
             last_price: mark_px,
             bid_price: None, // Hyperliquid metaAndAssetCtxs does not carry top-of-book quotes — use l2Book channel for bid/ask
             ask_price: None, // Hyperliquid metaAndAssetCtxs does not carry top-of-book quotes — use l2Book channel for bid/ask
@@ -336,7 +335,6 @@ impl HyperliquidParser {
                 id: Self::get_i64(trade, "tid")
                     .map(|t| t.to_string())
                     .unwrap_or_default(),
-                symbol: Self::get_str(trade, "coin").unwrap_or("").to_string(),
                 price: Self::require_f64(trade, "px")?,
                 quantity: Self::get_f64(trade, "sz").unwrap_or(0.0),
                 side,

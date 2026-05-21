@@ -99,7 +99,7 @@ impl BitfinexParser {
     /// Parse ticker (trading pair)
     ///
     /// Format: `[BID, BID_SIZE, ASK, ASK_SIZE, DAILY_CHANGE, DAILY_CHANGE_RELATIVE, LAST_PRICE, VOLUME, HIGH, LOW]`
-    pub fn parse_ticker(response: &Value, symbol: &str) -> ExchangeResult<Ticker> {
+    pub fn parse_ticker(response: &Value, _symbol: &str) -> ExchangeResult<Ticker> {
         Self::check_error(response)?;
 
         let arr = response.as_array()
@@ -110,7 +110,6 @@ impl BitfinexParser {
         }
 
         Ok(Ticker {
-            symbol: symbol.to_string(),
             last_price: Self::get_f64(arr, 6).unwrap_or(0.0),      // [6] LAST_PRICE
             bid_price: Self::get_f64(arr, 0),                       // [0] BID
             ask_price: Self::get_f64(arr, 2),                       // [2] ASK
@@ -521,7 +520,6 @@ impl BitfinexParser {
         }
 
         Ok(Ticker {
-            symbol: "".to_string(), // Symbol needs to be filled by caller
             last_price: Self::require_f64(data, 6)?,
             bid_price: Some(Self::require_f64(data, 0)?),
             ask_price: Some(Self::require_f64(data, 2)?),
@@ -551,7 +549,6 @@ impl BitfinexParser {
 
         Ok(PublicTrade {
             id: Self::get_i64(data, 0).map(|id| id.to_string()).unwrap_or_default(),
-            symbol: "".to_string(), // Symbol needs to be filled by caller
             price: Self::require_f64(data, 3)?,
             quantity: amount.abs(),
             side,
@@ -586,16 +583,20 @@ impl BitfinexParser {
             }
         }
 
-        Ok(crate::core::StreamEvent::OrderbookDelta(OrderbookDeltaData {
-            bids,
-            asks,
-            timestamp: crate::core::timestamp_millis() as i64,
-            first_update_id: None,
-            last_update_id: None,
-            prev_update_id: None,
-            event_time: None,
-            checksum: None,
-        }))
+        Ok(crate::core::StreamEvent::OrderbookDelta {
+            // symbol not available in parse_ws_orderbook_delta scope — caller in websocket.rs extracts from subscription
+            symbol: String::new(),
+            delta: OrderbookDeltaData {
+                bids,
+                asks,
+                timestamp: crate::core::timestamp_millis() as i64,
+                first_update_id: None,
+                last_update_id: None,
+                prev_update_id: None,
+                event_time: None,
+                checksum: None,
+            },
+        })
     }
 
     /// Parse WebSocket kline (candle)
@@ -727,7 +728,6 @@ mod tests {
 
         let ticker = BitfinexParser::parse_ticker(&response, "tBTCUSD").unwrap();
 
-        assert_eq!(ticker.symbol, "tBTCUSD");
         assert!((ticker.last_price - 10644.00645389).abs() < f64::EPSILON);
         assert!((ticker.bid_price.unwrap() - 10645.0).abs() < f64::EPSILON);
         assert!((ticker.ask_price.unwrap() - 10647.0).abs() < f64::EPSILON);

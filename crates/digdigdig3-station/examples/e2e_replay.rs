@@ -34,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     while tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_millis(500), stream.next()).await {
-            Ok(Some(Ok(StreamEvent::Trade(_)))) => count += 1,
+            Ok(Some(Ok(StreamEvent::Trade { .. }))) => count += 1,
             Ok(Some(Ok(_other))) => {}
             Ok(Some(Err(e))) => eprintln!("stream error: {e}"),
             Ok(None) => {

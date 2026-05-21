@@ -73,9 +73,6 @@ impl MexcParser {
     pub fn parse_ticker(json: &Value) -> ExchangeResult<Ticker> {
         Self::check_error(json)?;
 
-        let symbol = json["symbol"].as_str()
-            .ok_or_else(|| ExchangeError::Parse("Missing symbol".into()))?;
-
         let last_price = json["lastPrice"].as_str()
             .and_then(|s| s.parse::<f64>().ok())
             .ok_or_else(|| ExchangeError::Parse("Invalid lastPrice".into()))?;
@@ -109,7 +106,6 @@ impl MexcParser {
             .unwrap_or(0);
 
         Ok(Ticker {
-            symbol: symbol.to_string(),
             last_price,
             bid_price,
             ask_price,
@@ -348,9 +344,6 @@ impl MexcParser {
     /// Endpoint: GET /api/v1/contract/ticker
     /// Response: { "success": true, "code": 0, "data": [{ symbol, lastPrice, bid1, ask1, ... }] }
     pub fn parse_ticker_futures(json: &Value) -> ExchangeResult<Ticker> {
-        let symbol = json["symbol"].as_str()
-            .ok_or_else(|| ExchangeError::Parse("Missing symbol".into()))?;
-
         let last_price = json["lastPrice"].as_f64()
             .ok_or_else(|| ExchangeError::Parse("Invalid lastPrice".into()))?;
 
@@ -362,7 +355,6 @@ impl MexcParser {
         let price_change_24h = json["riseFallRate"].as_f64();
 
         Ok(Ticker {
-            symbol: symbol.to_string(),
             last_price,
             bid_price,
             ask_price,
@@ -662,10 +654,6 @@ impl MexcParser {
 
     /// Parse WebSocket ticker update (from book ticker stream)
     pub fn parse_ws_ticker(data: &Value) -> ExchangeResult<Ticker> {
-        let symbol = data.get("symbol")
-            .and_then(|s| s.as_str())
-            .ok_or_else(|| ExchangeError::Parse("Missing symbol".into()))?;
-
         let timestamp = data.get("sendtime")
             .and_then(|t| t.as_i64())
             .unwrap_or(0);
@@ -689,7 +677,6 @@ impl MexcParser {
             };
 
             return Ok(Ticker {
-                symbol: symbol.to_string(),
                 last_price,
                 bid_price,
                 ask_price,
@@ -713,7 +700,6 @@ impl MexcParser {
                         .ok_or_else(|| ExchangeError::Parse("Invalid price".into()))?;
 
                     return Ok(Ticker {
-                        symbol: symbol.to_string(),
                         last_price,
                         bid_price: None, // MEXC publicdeals (trade) stream does not carry top-of-book quotes — subscribe to publicbookticker for bid/ask
                         ask_price: None, // MEXC publicdeals (trade) stream does not carry top-of-book quotes — subscribe to publicbookticker for bid/ask
@@ -920,7 +906,7 @@ impl MexcParser {
             let body = Self::pb_bytes(data, 309)
                 .ok_or_else(|| ExchangeError::Parse("Missing miniTicker body (field 309)".into()))?;
             let ticker = Self::parse_pb_mini_ticker(body, &symbol, timestamp)?;
-            Ok((channel, StreamEvent::Ticker(ticker)))
+            Ok((channel, StreamEvent::Ticker { symbol, ticker }))
         } else if channel.contains("aggre.deals") || channel.contains("public.deals") {
             // field 314: PublicAggreDealsV3Api (aggre deals)
             // field 301: PublicDealsV3Api (non-aggre raw deals)
@@ -934,7 +920,7 @@ impl MexcParser {
             let body = Self::pb_bytes(data, 305)
                 .ok_or_else(|| ExchangeError::Parse("Missing bookTicker body (field 305)".into()))?;
             let ticker = Self::parse_pb_book_ticker(body, &symbol, timestamp)?;
-            Ok((channel, StreamEvent::Ticker(ticker)))
+            Ok((channel, StreamEvent::Ticker { symbol, ticker }))
         } else if channel.contains("aggre.depth") || channel.contains("public.depth") {
             // field 313: PublicAggreDepthV3Api (aggregated incremental depth updates)
             // Try field 313 first (aggre depth), fall back to nearby fields
@@ -953,7 +939,7 @@ impl MexcParser {
                 event_time: orderbook.event_time,
                 checksum: orderbook.checksum,
             };
-            Ok((channel, StreamEvent::OrderbookDelta(delta)))
+            Ok((channel, StreamEvent::OrderbookDelta { symbol, delta }))
         } else if channel.contains("limit.depth") {
             // field 303: PublicLimitDepthV3Api (N-level snapshot).
             // Same body layout as aggre.depth: field1=repeated bids, field2=repeated asks.
@@ -970,7 +956,7 @@ impl MexcParser {
                 event_time: orderbook.event_time,
                 checksum: orderbook.checksum,
             };
-            Ok((channel, StreamEvent::OrderbookDelta(delta)))
+            Ok((channel, StreamEvent::OrderbookDelta { symbol, delta }))
         } else if channel.contains("kline") {
             // field 308: PublicKlineV3Api
             // body: f1=interval(str), f2=openTime(sec varint), f3=open, f4=high, f5=low,
@@ -981,7 +967,7 @@ impl MexcParser {
                 .unwrap_or(0) as i64;
             let body = Self::pb_bytes(data, 308)
                 .ok_or_else(|| ExchangeError::Parse("Missing kline body (field 308)".into()))?;
-            let event = Self::parse_pb_kline(body, send_time)?;
+            let event = Self::parse_pb_kline(body, send_time, &symbol)?;
             Ok((channel, event))
         } else {
             Err(ExchangeError::Parse(format!("Unsupported protobuf channel: {}", channel)))
@@ -992,7 +978,7 @@ impl MexcParser {
     ///
     /// body fields: 1=interval(str), 2=openTime(varint sec), 3=open(str), 4=high(str),
     ///              5=low(str), 6=close(str), 7=vol(str), 8=quoteVol(str), 9=closeTime(varint sec)
-    fn parse_pb_kline(body: &[u8], _send_time: i64) -> ExchangeResult<StreamEvent> {
+    fn parse_pb_kline(body: &[u8], _send_time: i64, symbol: &str) -> ExchangeResult<StreamEvent> {
         let open_time = Self::pb_varint(body, 2).unwrap_or(0) as i64 * 1000;
 
         let open = Self::pb_string(body, 3)
@@ -1014,24 +1000,30 @@ impl MexcParser {
             .and_then(|s| s.parse::<f64>().ok());
         let close_time = Self::pb_varint(body, 9).map(|t| t as i64 * 1000);
 
-        Ok(StreamEvent::Kline(Kline {
-            open_time,
-            open,
-            high,
-            low,
-            close,
-            volume,
-            quote_volume,
-            close_time,
-            trades: None,
-        }))
+        // interval stored in body field 1 (string)
+        let interval = Self::pb_string(body, 1).unwrap_or_default();
+        Ok(StreamEvent::Kline {
+            symbol: symbol.to_string(),
+            interval,
+            kline: Kline {
+                open_time,
+                open,
+                high,
+                low,
+                close,
+                volume,
+                quote_volume,
+                close_time,
+                trades: None,
+            },
+        })
     }
 
     /// Parse PublicMiniTickerV3Api protobuf body.
     ///
     /// Fields: 1=symbol, 2=lastPrice, 3=priceChange%, 4=?, 5=high, 6=low,
     ///         7=volume, 8=quoteVolume, 9-12=alternate timezone variants
-    fn parse_pb_mini_ticker(body: &[u8], symbol: &str, timestamp: i64) -> ExchangeResult<Ticker> {
+    fn parse_pb_mini_ticker(body: &[u8], _symbol: &str, timestamp: i64) -> ExchangeResult<Ticker> {
         let last_price_str = Self::pb_string(body, 2)
             .ok_or_else(|| ExchangeError::Parse("Missing lastPrice in miniTicker".into()))?;
         let last_price: f64 = last_price_str.parse()
@@ -1052,12 +1044,7 @@ impl MexcParser {
         let quote_volume_24h = Self::pb_string(body, 8)
             .and_then(|s| s.parse::<f64>().ok());
 
-        // Use symbol from body if available, otherwise use wrapper symbol
-        let sym = Self::pb_string(body, 1)
-            .unwrap_or_else(|| symbol.to_string());
-
         Ok(Ticker {
-            symbol: sym,
             last_price,
             bid_price: None, // MEXC PublicMiniTickerV3Api wire format does not carry top-of-book quotes — use PublicBookTickerV3Api (field 306)
             ask_price: None, // MEXC PublicMiniTickerV3Api wire format does not carry top-of-book quotes — use PublicBookTickerV3Api (field 306)
@@ -1105,20 +1092,22 @@ impl MexcParser {
             .map(|t| t as i64)
             .unwrap_or(timestamp);
 
-        Ok(StreamEvent::Trade(PublicTrade {
-            id: String::new(),
+        Ok(StreamEvent::Trade {
             symbol: symbol.to_string(),
-            price,
-            quantity,
-            side,
-            timestamp: deal_time,
-        }))
+            trade: PublicTrade {
+                id: String::new(),
+                price,
+                quantity,
+                side,
+                timestamp: deal_time,
+            },
+        })
     }
 
     /// Parse PublicBookTickerV3Api protobuf body.
     ///
     /// Fields: 1=bidPrice, 2=bidQuantity, 3=askPrice, 4=askQuantity
-    fn parse_pb_book_ticker(body: &[u8], symbol: &str, timestamp: i64) -> ExchangeResult<Ticker> {
+    fn parse_pb_book_ticker(body: &[u8], _symbol: &str, timestamp: i64) -> ExchangeResult<Ticker> {
         let bid_price = Self::pb_string(body, 1)
             .and_then(|s| s.parse::<f64>().ok());
         let ask_price = Self::pb_string(body, 3)
@@ -1132,7 +1121,6 @@ impl MexcParser {
         };
 
         Ok(Ticker {
-            symbol: symbol.to_string(),
             last_price,
             bid_price,
             ask_price,
@@ -1303,7 +1291,6 @@ mod tests {
         });
 
         let ticker = MexcParser::parse_ticker(&json).unwrap();
-        assert_eq!(ticker.symbol, "BTCUSDT");
         assert_eq!(ticker.last_price, 93200.50);
         assert_eq!(ticker.bid_price, Some(93200.00));
         assert_eq!(ticker.ask_price, Some(93210.00));

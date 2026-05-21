@@ -41,7 +41,6 @@ impl ZerodhaParser {
         let depth = inst.get("depth");
 
         Ok(Ticker {
-            symbol: symbol_key.to_string(),
             last_price: Self::require_f64(inst, "last_price")?,
             bid_price: depth
                 .and_then(|d| d.get("buy"))

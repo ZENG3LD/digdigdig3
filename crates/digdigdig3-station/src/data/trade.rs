@@ -73,8 +73,8 @@ impl DataPoint for TradePoint {
     }
 
     fn from_stream_event(ev: &StreamEvent) -> Option<Self> {
-        if let StreamEvent::Trade(t) = ev {
-            Some(Self::from_public(t))
+        if let StreamEvent::Trade { trade, .. } = ev {
+            Some(Self::from_public(trade))
         } else {
             None
         }

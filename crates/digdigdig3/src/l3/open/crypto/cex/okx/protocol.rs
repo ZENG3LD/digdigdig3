@@ -617,14 +617,16 @@ fn parse_tickers(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = first_data_item(raw)?;
     let ticker = OkxParser::parse_ws_ticker(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    Ok(StreamEvent::Ticker(ticker))
+    let symbol = data.get("instId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    Ok(StreamEvent::Ticker { symbol, ticker })
 }
 
 fn parse_trades(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = first_data_item(raw)?;
     let trade = OkxParser::parse_ws_trade(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    Ok(StreamEvent::Trade(trade))
+    let symbol = data.get("instId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    Ok(StreamEvent::Trade { symbol, trade })
 }
 
 /// Parse `trades` channel frame as `StreamEvent::AggTrade`.
@@ -676,6 +678,7 @@ fn parse_books(raw: &Value) -> WebSocketResult<StreamEvent> {
     let seq_id = data.get("seqId").and_then(|v| v.as_u64());
     let prev_seq_id = data.get("prevSeqId").and_then(|v| v.as_u64());
     let checksum = data.get("checksum").and_then(|v| v.as_i64());
+    let symbol = arg_inst_id(raw).to_string();
 
     if action == Some("snapshot") {
         let ob = OrderBook {
@@ -690,7 +693,7 @@ fn parse_books(raw: &Value) -> WebSocketResult<StreamEvent> {
             transaction_time: None,
             checksum,
         };
-        Ok(StreamEvent::OrderbookSnapshot(ob))
+        Ok(StreamEvent::OrderbookSnapshot { symbol, book: ob })
     } else {
         let delta = OrderbookDeltaType {
             asks,
@@ -702,7 +705,7 @@ fn parse_books(raw: &Value) -> WebSocketResult<StreamEvent> {
             event_time: Some(timestamp),
             checksum,
         };
-        Ok(StreamEvent::OrderbookDelta(delta))
+        Ok(StreamEvent::OrderbookDelta { symbol, delta })
     }
 }
 
@@ -710,7 +713,10 @@ fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = first_data_item(raw)?;
     let kline = OkxParser::parse_ws_kline(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    Ok(StreamEvent::Kline(kline))
+    let symbol = arg_inst_id(raw).to_string();
+    // channel is "candle1m", "candle5m", etc. — strip "candle" prefix for interval
+    let interval = arg_channel(raw).strip_prefix("candle").unwrap_or("").to_string();
+    Ok(StreamEvent::Kline { symbol, interval, kline })
 }
 
 fn parse_mark_price(raw: &Value) -> WebSocketResult<StreamEvent> {

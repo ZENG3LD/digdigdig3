@@ -200,7 +200,6 @@ impl UpbitParser {
             .ok_or_else(|| ExchangeError::Parse("Empty ticker array".to_string()))?;
 
         Ok(Ticker {
-            symbol: Self::get_str(data, "market").unwrap_or("").to_string(),
             last_price: Self::get_f64(data, "trade_price").unwrap_or(0.0),
             bid_price: None, // Upbit ticker doesn't include bid/ask
             ask_price: None,
@@ -238,10 +237,6 @@ impl UpbitParser {
                     .and_then(|v| v.as_i64())
                     .map(|id| id.to_string())
                     .unwrap_or_default(),
-                symbol: Self::get_str(item, "market")
-                    .or_else(|| Self::get_str(item, "code"))
-                    .unwrap_or("")
-                    .to_string(),
                 price: Self::get_f64(item, "trade_price").unwrap_or(0.0),
                 quantity: Self::get_f64(item, "trade_volume").unwrap_or(0.0),
                 timestamp: item.get("timestamp")
@@ -537,8 +532,6 @@ impl UpbitParser {
     /// NOT carry top-of-book quotes. Callers that need bid/ask must
     /// subscribe to the orderbook channel.
     pub fn parse_ws_ticker(data: &Value) -> ExchangeResult<Ticker> {
-        let symbol = Self::get_str(data, "code").unwrap_or("").to_string();
-
         let timestamp = data.get("timestamp")
             .and_then(|t| t.as_i64())
             .or_else(|| data.get("trade_timestamp").and_then(|t| t.as_i64()))
@@ -550,7 +543,6 @@ impl UpbitParser {
             });
 
         Ok(Ticker {
-            symbol,
             last_price: Self::get_f64(data, "trade_price").unwrap_or(0.0),
             bid_price: None,
             ask_price: None,
@@ -579,10 +571,6 @@ impl UpbitParser {
                 .and_then(|v| v.as_i64())
                 .map(|id| id.to_string())
                 .unwrap_or_default(),
-            symbol: Self::get_str(data, "code")
-                .or_else(|| Self::get_str(data, "market"))
-                .unwrap_or("")
-                .to_string(),
             price: Self::get_f64(data, "trade_price").unwrap_or(0.0),
             quantity: Self::get_f64(data, "trade_volume").unwrap_or(0.0),
             timestamp: data.get("trade_timestamp")
@@ -607,7 +595,6 @@ impl UpbitParser {
 
         let bid_price = Self::get_f64(best, "bid_price")?;
         let ask_price = Self::get_f64(best, "ask_price")?;
-        let symbol = Self::get_str(data, "code").unwrap_or("").to_string();
         let timestamp = data.get("timestamp")
             .and_then(|t| t.as_i64())
             .unwrap_or_else(|| {
@@ -618,7 +605,6 @@ impl UpbitParser {
             });
 
         Some(Ticker {
-            symbol,
             // Orderbook frames carry no last-trade price.  Use bid/ask midpoint
             // as a proxy so Ticker-validity checks (last_price > 0) pass.
             // Real last_price comes from the companion ticker-channel frame.

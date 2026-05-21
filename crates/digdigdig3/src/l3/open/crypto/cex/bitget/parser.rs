@@ -200,7 +200,6 @@ impl BitgetParser {
             .unwrap_or(0);
 
         Ok(Ticker {
-            symbol: Self::get_str(ticker_data, "symbol").unwrap_or("").to_string(),
             last_price,
             bid_price,
             ask_price,
@@ -588,10 +587,6 @@ impl BitgetParser {
             .unwrap_or(0);
 
         Ok(Ticker {
-            symbol: Self::get_str(ticker_data, "instId")
-                .or_else(|| Self::get_str(ticker_data, "symbol"))
-                .unwrap_or("")
-                .to_string(),
             last_price,
             bid_price,
             ask_price,
@@ -615,7 +610,7 @@ impl BitgetParser {
     /// message. Bitget data-array items should contain `instId` themselves, but the fallback
     /// is used when it is absent (e.g. during format variations or unexpected server responses)
     /// so that the trade can still be surfaced without flooding stderr with parse errors.
-    pub fn parse_ws_trade(data: &Value, inst_id_fallback: Option<&str>) -> ExchangeResult<crate::core::PublicTrade> {
+    pub fn parse_ws_trade(data: &Value, _inst_id_fallback: Option<&str>) -> ExchangeResult<crate::core::PublicTrade> {
         use crate::core::PublicTrade;
         use crate::core::types::TradeSide;
 
@@ -629,14 +624,6 @@ impl BitgetParser {
         let id = Self::get_str(trade_data, "tradeId")
             .or_else(|| Self::get_str(trade_data, "id"))
             .unwrap_or("0")
-            .to_string();
-
-        // Prefer instId/symbol from the data item itself; fall back to the channel's instId from
-        // the outer arg so that non-standard responses do not produce spurious parse errors.
-        let symbol = Self::get_str(trade_data, "instId")
-            .or_else(|| Self::get_str(trade_data, "symbol"))
-            .or(inst_id_fallback)
-            .ok_or_else(|| ExchangeError::Parse("Missing 'instId' or 'symbol'".to_string()))?
             .to_string();
 
         // Bitget WS trade channel sends "price"/"size" (matching REST fills format).
@@ -659,7 +646,6 @@ impl BitgetParser {
 
         Ok(PublicTrade {
             id,
-            symbol,
             price,
             quantity,
             side,
@@ -696,7 +682,12 @@ impl BitgetParser {
                 .unwrap_or_default()
         };
 
-        let orderbook = OrderBook {
+        let ob_symbol = Self::get_str(ob_data, "instId")
+            .or_else(|| Self::get_str(ob_data, "symbol"))
+            .unwrap_or("")
+            .to_string();
+
+        let book = OrderBook {
             timestamp: Self::get_i64(ob_data, "ts").unwrap_or(0),
             bids: parse_levels("bids"),
             asks: parse_levels("asks"),
@@ -709,7 +700,7 @@ impl BitgetParser {
             checksum: None,
         };
 
-        Ok(StreamEvent::OrderbookSnapshot(orderbook))
+        Ok(StreamEvent::OrderbookSnapshot { symbol: ob_symbol, book })
     }
 
     /// Parse WebSocket kline data

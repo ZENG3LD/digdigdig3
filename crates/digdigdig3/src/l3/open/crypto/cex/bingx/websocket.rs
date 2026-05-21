@@ -507,29 +507,40 @@ impl BingxWebSocket {
 
         if data_type.ends_with("@bookTicker") {
             // Best bid/ask stream — preferred for real-time bid/ask quotes
+            let symbol = data_type.split('@').next().unwrap_or("").to_string();
             let ticker = BingxParser::parse_ws_book_ticker(data_type, data)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(StreamEvent::Ticker(ticker)))
+            Ok(Some(StreamEvent::Ticker { symbol, ticker }))
         } else if data_type.ends_with("@ticker") {
             // Full 24h stats stream (high/low/volume) — no bid/ask
+            let symbol = data_type.split('@').next().unwrap_or("").to_string();
             let ticker = BingxParser::parse_ws_ticker(data, account_type)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(StreamEvent::Ticker(ticker)))
+            Ok(Some(StreamEvent::Ticker { symbol, ticker }))
         } else if data_type.ends_with("@trade") {
             // Trade stream
+            let symbol = data.get("s").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let trade = BingxParser::parse_ws_trade(data)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(StreamEvent::Trade(trade)))
+            Ok(Some(StreamEvent::Trade { symbol, trade }))
         } else if data_type.ends_with("@depth5") || data_type.ends_with("@depth") || data_type.ends_with("@depth20") {
             // Orderbook stream
-            let event = BingxParser::parse_ws_orderbook(data)
+            let symbol = data_type.split('@').next().unwrap_or("").to_string();
+            let book = BingxParser::parse_ws_orderbook(data)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(event))
+            // parse_ws_orderbook returns StreamEvent::OrderbookDelta — re-wrap with symbol
+            if let StreamEvent::OrderbookDelta { delta, .. } = book {
+                Ok(Some(StreamEvent::OrderbookDelta { symbol, delta }))
+            } else {
+                Ok(Some(book))
+            }
         } else if data_type.contains("@kline_") {
-            // Kline stream
+            // Kline stream — extract interval from data_type: "BTC-USDT@kline_1m"
+            let symbol = data_type.split('@').next().unwrap_or("").to_string();
+            let interval = data_type.split("@kline_").nth(1).unwrap_or("").to_string();
             let kline = BingxParser::parse_ws_kline(data)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(StreamEvent::Kline(kline)))
+            Ok(Some(StreamEvent::Kline { symbol, interval, kline }))
         } else if data_type == "spot.executionReport" || data_type == "swap.order" {
             // Order update (private)
             let event = BingxParser::parse_ws_order_update(data, account_type)

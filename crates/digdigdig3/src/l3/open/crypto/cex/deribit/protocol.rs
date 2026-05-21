@@ -531,7 +531,16 @@ fn parse_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
     let (data, _channel) = frame_data(raw)?;
     let trade = DeribitParser::parse_ws_trade(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    Ok(StreamEvent::Trade(trade))
+    let symbol = if data.is_array() {
+        data.as_array().and_then(|a| a.last())
+            .and_then(|item| item.get("instrument_name"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    } else {
+        data.get("instrument_name").and_then(|v| v.as_str()).unwrap_or("").to_string()
+    };
+    Ok(StreamEvent::Trade { symbol, trade })
 }
 
 // ── AggTrade (same 100ms channel, emits AggTrade variant) ───────────────────
@@ -569,9 +578,10 @@ fn parse_agg_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
 
 fn parse_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
     let (data, _channel) = frame_data(raw)?;
+    let symbol = get_str(data, "instrument_name").unwrap_or("").to_string();
     let ticker = DeribitParser::parse_ws_ticker(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    Ok(StreamEvent::Ticker(ticker))
+    Ok(StreamEvent::Ticker { symbol, ticker })
 }
 
 // ── Quote (best bid/ask) ─────────────────────────────────────────────────────
@@ -583,8 +593,8 @@ fn parse_quote(raw: &Value) -> WebSocketResult<StreamEvent> {
     let timestamp = get_i64(data, "timestamp").unwrap_or(0);
     let bid_price = get_f64(data, "best_bid_price");
     let ask_price = get_f64(data, "best_ask_price");
+    let symbol = instrument.to_string();
     let ticker = Ticker {
-        symbol: instrument.to_string(),
         bid_price,
         ask_price,
         last_price: bid_price.unwrap_or(0.0),
@@ -596,7 +606,7 @@ fn parse_quote(raw: &Value) -> WebSocketResult<StreamEvent> {
         quote_volume_24h: None,
         timestamp,
     };
-    Ok(StreamEvent::Ticker(ticker))
+    Ok(StreamEvent::Ticker { symbol, ticker })
 }
 
 // ── MarkPrice from ticker fan-out ────────────────────────────────────────────
@@ -638,8 +648,13 @@ fn parse_oi_from_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
 
 fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
     // chart.trades frame data: {"tick":1234,"open":...,"high":...,"low":...,"close":...,"volume":...,"cost":...}
-    let (data, _channel) = frame_data(raw)?;
+    // Channel format: "chart.trades.{instrument_name}.{resolution}"
+    let (data, channel) = frame_data(raw)?;
     use crate::core::types::Kline;
+    let parts: Vec<&str> = channel.split('.').collect();
+    // chart.trades.BTC-PERPETUAL.1 → parts[2]=symbol, parts[3]=resolution
+    let kl_symbol = parts.get(2).copied().unwrap_or("").to_string();
+    let kl_interval = parts.get(3).copied().unwrap_or("").to_string();
     let open_time = get_i64(data, "tick").unwrap_or(0);
     let kline = Kline {
         open_time,
@@ -652,7 +667,7 @@ fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
         close_time: None,
         trades: None,
     };
-    Ok(StreamEvent::Kline(kline))
+    Ok(StreamEvent::Kline { symbol: kl_symbol, interval: kl_interval, kline })
 }
 
 // ── Mark price ───────────────────────────────────────────────────────────────

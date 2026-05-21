@@ -252,7 +252,6 @@ impl MarketData for KrxConnector {
             .first()
             .ok_or_else(|| ExchangeError::NotFound("No data returned for symbol".to_string()))?;
         Ok(Ticker {
-            symbol: sym_str,
             last_price: k.close,
             bid_price: None,
             ask_price: None,

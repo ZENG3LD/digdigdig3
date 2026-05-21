@@ -73,8 +73,8 @@ impl DataPoint for TickerPoint {
     fn timestamp_ms(&self) -> i64 { self.ts_ms }
 
     fn from_stream_event(ev: &StreamEvent) -> Option<Self> {
-        if let StreamEvent::Ticker(t) = ev {
-            Some(Self::from_ticker(t))
+        if let StreamEvent::Ticker { ticker, .. } = ev {
+            Some(Self::from_ticker(ticker))
         } else {
             None
         }

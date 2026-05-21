@@ -134,9 +134,6 @@ impl TiingoParser {
         let item = array.first()
             .ok_or_else(|| ExchangeError::Parse("Empty response".to_string()))?;
 
-        let ticker = Self::get_str(item, "ticker")
-            .ok_or_else(|| ExchangeError::Parse("Missing 'ticker' field".to_string()))?;
-
         let top_of_book = item.get("topOfBookData")
             .and_then(|v| v.as_array())
             .and_then(|arr| arr.first())
@@ -151,7 +148,6 @@ impl TiingoParser {
         let timestamp = Self::parse_iso8601_to_ms(timestamp_str)?;
 
         Ok(Ticker {
-            symbol: ticker.to_string(),
             last_price,
             bid_price,
             ask_price,
@@ -244,9 +240,6 @@ impl TiingoParser {
         let item = array.first()
             .ok_or_else(|| ExchangeError::Parse("Empty response".to_string()))?;
 
-        let ticker = Self::get_str(item, "ticker")
-            .ok_or_else(|| ExchangeError::Parse("Missing 'ticker' field".to_string()))?;
-
         let mid_price = Self::require_f64(item, "midPrice")?;
         let bid_price = Self::get_f64(item, "bidPrice");
         let ask_price = Self::get_f64(item, "askPrice");
@@ -256,7 +249,6 @@ impl TiingoParser {
         let timestamp = Self::parse_iso8601_to_ms(timestamp_str)?;
 
         Ok(Ticker {
-            symbol: ticker.to_string(),
             last_price: mid_price,
             bid_price,
             ask_price,
@@ -405,7 +397,6 @@ mod tests {
         ]);
 
         let ticker = TiingoParser::parse_crypto_top(&response).unwrap();
-        assert_eq!(ticker.symbol, "btcusd");
         assert_eq!(ticker.last_price, 45000.50);
         assert_eq!(ticker.bid_price, Some(45000.00));
         assert_eq!(ticker.ask_price, Some(45001.00));

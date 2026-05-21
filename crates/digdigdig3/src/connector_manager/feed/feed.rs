@@ -267,11 +267,11 @@ fn spawn_pump(
 fn matches_kind(event: &StreamEvent, kind: &StreamKind) -> bool {
     matches!(
         (event, kind),
-        (StreamEvent::Ticker(_), StreamKind::Ticker)
-            | (StreamEvent::Trade(_), StreamKind::Trade)
-            | (StreamEvent::OrderbookSnapshot(_), StreamKind::Orderbook)
-            | (StreamEvent::OrderbookDelta(_), StreamKind::Orderbook)
-            | (StreamEvent::Kline(_), StreamKind::Kline(_))
+        (StreamEvent::Ticker { .. }, StreamKind::Ticker)
+            | (StreamEvent::Trade { .. }, StreamKind::Trade)
+            | (StreamEvent::OrderbookSnapshot { .. }, StreamKind::Orderbook)
+            | (StreamEvent::OrderbookDelta { .. }, StreamKind::Orderbook)
+            | (StreamEvent::Kline { .. }, StreamKind::Kline(_))
     )
 }
 
@@ -282,8 +282,8 @@ fn matches_kind(event: &StreamEvent, kind: &StreamKind) -> bool {
 /// key.
 fn event_symbol(event: &StreamEvent) -> Option<String> {
     match event {
-        StreamEvent::Ticker(t) => Some(t.symbol.clone()),
-        StreamEvent::Trade(t) => Some(t.symbol.clone()),
+        StreamEvent::Ticker { symbol, .. } => Some(symbol.clone()),
+        StreamEvent::Trade { symbol, .. } => Some(symbol.clone()),
         _ => None,
     }
 }

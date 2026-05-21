@@ -253,7 +253,6 @@ impl DhanParser {
             )))?;
 
         Ok(Ticker {
-            symbol: security_id.to_string(),
             last_price: Self::require_f64(security_data, "LTP")?,
             bid_price: Self::get_f64(security_data, "bid0_price"),
             ask_price: Self::get_f64(security_data, "ask0_price"),

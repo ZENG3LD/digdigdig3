@@ -73,7 +73,7 @@ impl TwelvedataParser {
     /// - volume, average_volume
     /// - fifty_two_week: {low, high, low_change, high_change, ...}
     /// - extended_change, extended_percent_change
-    pub fn parse_ticker(response: &Value, symbol: &str) -> ExchangeResult<Ticker> {
+    pub fn parse_ticker(response: &Value, _symbol: &str) -> ExchangeResult<Ticker> {
         Self::check_error(response)?;
 
         // Get last price (required field)
@@ -104,7 +104,6 @@ impl TwelvedataParser {
             .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
 
         Ok(Ticker {
-            symbol: symbol.to_string(),
             last_price,
             bid_price,
             ask_price,
@@ -280,7 +279,6 @@ mod tests {
         });
 
         let ticker = TwelvedataParser::parse_ticker(&response, "AAPL").unwrap();
-        assert_eq!(ticker.symbol, "AAPL");
         assert_eq!(ticker.last_price, 150.25);
         assert_eq!(ticker.high_24h, Some(151.20));
         assert_eq!(ticker.low_24h, Some(148.80));

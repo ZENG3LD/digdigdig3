@@ -199,7 +199,6 @@ impl BinanceParser {
             // WebSocket format: uses short field names
             // Reference: https://binance-docs.github.io/apidocs/spot/en/#individual-symbol-ticker-streams
             Ok(Ticker {
-                symbol: Self::get_str(response, "s").unwrap_or("").to_string(),
                 last_price: Self::get_f64(response, "c").unwrap_or(0.0),
                 bid_price: Self::get_f64(response, "b"),
                 ask_price: Self::get_f64(response, "a"),
@@ -215,7 +214,6 @@ impl BinanceParser {
             // REST API format: uses long field names
             // Reference: https://binance-docs.github.io/apidocs/spot/en/#24hr-ticker-price-change-statistics
             Ok(Ticker {
-                symbol: Self::get_str(response, "symbol").unwrap_or("").to_string(),
                 last_price: Self::get_f64(response, "lastPrice").unwrap_or(0.0),
                 bid_price: Self::get_f64(response, "bidPrice"),
                 ask_price: Self::get_f64(response, "askPrice"),
@@ -1581,7 +1579,6 @@ impl BinanceParser {
 
         Ok(PublicTrade {
             id: data.get("t").and_then(|t| t.as_i64()).map(|t| t.to_string()).unwrap_or_default(),
-            symbol: data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string(),
             price: parse_f64("p").unwrap_or(0.0),
             quantity: parse_f64("q").unwrap_or(0.0),
             side,
@@ -1997,7 +1994,6 @@ mod tests {
         });
 
         let ticker = BinanceParser::parse_ticker(&response).unwrap();
-        assert_eq!(ticker.symbol, "BTCUSDT");
         assert!((ticker.last_price - 42000.50).abs() < f64::EPSILON);
         assert!((ticker.bid_price.unwrap() - 42000.0).abs() < f64::EPSILON);
         assert!((ticker.ask_price.unwrap() - 42001.0).abs() < f64::EPSILON);

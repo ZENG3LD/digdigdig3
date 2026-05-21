@@ -323,7 +323,16 @@ impl DydxWebSocket {
             }
             "v4_trades" => {
                 match DydxParser::parse_ws_trade(&data) {
-                    Ok(trade) => Some(Ok(StreamEvent::Trade(trade))),
+                    Ok(trade) => {
+                        let symbol = data.get("trades")
+                            .and_then(|t| t.as_array())
+                            .and_then(|arr| arr.first())
+                            .and_then(|item| item.get("market"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(target_ticker_symbol)
+                            .to_string();
+                        Some(Ok(StreamEvent::Trade { symbol, trade }))
+                    }
                     Err(e) => Some(Err(WebSocketError::Parse(e.to_string()))),
                 }
             }
@@ -334,7 +343,8 @@ impl DydxWebSocket {
                     Ok(ticker) => {
                         // Return only the primary Ticker event here.
                         // The caller (start_message_loop) handles multi-emit via parse_v4_markets_events.
-                        Some(Ok(StreamEvent::Ticker(ticker)))
+                        let symbol = target_ticker_symbol.to_string();
+                        Some(Ok(StreamEvent::Ticker { symbol, ticker }))
                     }
                     Err(_) => None, // Symbol not present in this update — skip silently.
                 }

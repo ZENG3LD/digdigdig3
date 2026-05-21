@@ -152,7 +152,6 @@ impl FinnhubParser {
 
         // Finnhub doesn't provide symbol in quote response, we'll add it from caller
         Ok(Ticker {
-            symbol: String::new(), // Will be filled by caller
             last_price,
             bid_price: None,
             ask_price: None,
@@ -248,19 +247,21 @@ impl FinnhubParser {
         let timestamp = Self::get_i64(trade, "t").unwrap_or(0);
 
         // Create a ticker event from trade data
-        Ok(StreamEvent::Ticker(Ticker {
+        Ok(StreamEvent::Ticker {
             symbol,
-            last_price: price,
-            bid_price: None,
-            ask_price: None,
-            high_24h: None,
-            low_24h: None,
-            volume_24h: Some(volume),
-            quote_volume_24h: None,
-            price_change_24h: None,
-            price_change_percent_24h: None,
-            timestamp,
-        }))
+            ticker: Ticker {
+                last_price: price,
+                bid_price: None,
+                ask_price: None,
+                high_24h: None,
+                low_24h: None,
+                volume_24h: Some(volume),
+                quote_volume_24h: None,
+                price_change_24h: None,
+                price_change_percent_24h: None,
+                timestamp,
+            },
+        })
     }
 }
 

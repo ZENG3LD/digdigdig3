@@ -45,19 +45,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for i in 0..n_events {
         let ts_ms = base_ms + (i as i64) * 100; // 100 ms apart → 20 s simulated
         let price = 50_000.0 + i as f64;
-        let ev = StreamEvent::Ticker(Ticker {
-            symbol: "BTCUSDT".into(),
-            last_price: price,
-            bid_price: Some(price - 1.0),
-            ask_price: Some(price + 1.0),
-            volume_24h: Some(1000.0),
-            quote_volume_24h: None,
-            price_change_24h: None,
-            price_change_percent_24h: None,
-            high_24h: None,
-            low_24h: None,
-            timestamp: ts_ms,
-        });
+        let ev = StreamEvent::Ticker {
+            symbol: "BTCUSDT".to_string(),
+            ticker: Ticker {
+                last_price: price,
+                bid_price: Some(price - 1.0),
+                ask_price: Some(price + 1.0),
+                volume_24h: Some(1000.0),
+                quote_volume_24h: None,
+                price_change_24h: None,
+                price_change_percent_24h: None,
+                high_24h: None,
+                low_24h: None,
+                timestamp: ts_ms,
+            },
+        };
         let payload = serde_json::to_vec(&ev)?;
         storage.append(&key, ts_ms, &payload).await?;
     }
@@ -90,7 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     while let Some(ev) = stream.next().await {
         match ev {
-            Ok(StreamEvent::Ticker(_t)) => {
+            Ok(StreamEvent::Ticker { .. }) => {
                 count += 1;
                 if count % 50 == 0 {
                     println!("  {count} events received…");

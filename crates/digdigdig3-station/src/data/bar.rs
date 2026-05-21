@@ -69,8 +69,8 @@ impl DataPoint for BarPoint {
     fn timestamp_ms(&self) -> i64 { self.open_time }
 
     fn from_stream_event(ev: &StreamEvent) -> Option<Self> {
-        if let StreamEvent::Kline(k) = ev {
-            Some(Self::from_kline(k))
+        if let StreamEvent::Kline { kline, .. } = ev {
+            Some(Self::from_kline(kline))
         } else {
             None
         }

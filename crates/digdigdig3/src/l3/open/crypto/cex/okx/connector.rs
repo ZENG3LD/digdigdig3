@@ -293,7 +293,6 @@ impl OkxConnector {
                 .unwrap_or(0);
 
             Ticker {
-                symbol: data.get("instId").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                 last_price,
                 bid_price: get_f64("bidPx"),
                 ask_price: get_f64("askPx"),

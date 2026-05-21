@@ -223,7 +223,7 @@ mod market {
         let mut issues: Vec<String> = Vec::new();
 
         let (s, valid) = match event {
-            StreamEvent::Ticker(t) => {
+            StreamEvent::Ticker { symbol, ticker: t } => {
                 if expected_kind != ExpectedKind::Ticker {
                     issues.push(format!("WRONG_TYPE: got Ticker, expected {:?}", expected_kind));
                 }
@@ -246,20 +246,20 @@ mod market {
                     && !timestamp_future_bug(t.timestamp)
                     && t.timestamp > stale_ms;
                 (format!("Ticker sym={} last={:.4} bid={} ask={} ts={}",
-                    t.symbol, t.last_price,
+                    symbol, t.last_price,
                     t.bid_price.map(|v| format!("{:.4}", v)).unwrap_or_else(|| "None".into()),
                     t.ask_price.map(|v| format!("{:.4}", v)).unwrap_or_else(|| "None".into()),
                     t.timestamp), valid)
             }
-            StreamEvent::Trade(t) => {
+            StreamEvent::Trade { symbol, trade: t } => {
                 if expected_kind != ExpectedKind::Trade {
                     issues.push(format!("WRONG_TYPE: got Trade, expected {:?}", expected_kind));
                 }
                 let valid = t.price > 0.0 && t.quantity > 0.0;
                 if !valid { issues.push("price<=0 or qty<=0".into()); }
-                (format!("Trade sym={} px={:.4} qty={:.6} ts={}", t.symbol, t.price, t.quantity, t.timestamp), valid)
+                (format!("Trade sym={} px={:.4} qty={:.6} ts={}", symbol, t.price, t.quantity, t.timestamp), valid)
             }
-            StreamEvent::OrderbookSnapshot(ob) => {
+            StreamEvent::OrderbookSnapshot { symbol, book: ob } => {
                 let top_bid = ob.bids.first().map(|l| l.price).unwrap_or(0.0);
                 let top_ask = ob.asks.first().map(|l| l.price).unwrap_or(0.0);
                 // Only flag empty/zero when BOTH sides are absent or both tops are zero.
@@ -268,21 +268,21 @@ mod market {
                     || (top_bid <= 0.0 && top_ask <= 0.0);
                 if truly_empty { issues.push("orderbook empty/zero".into()); }
                 let valid = !truly_empty;
-                (format!("OBSnapshot bids={} asks={} top_bid={:.4} top_ask={:.4}",
-                    ob.bids.len(), ob.asks.len(), top_bid, top_ask), valid)
+                (format!("OBSnapshot sym={} bids={} asks={} top_bid={:.4} top_ask={:.4}",
+                    symbol, ob.bids.len(), ob.asks.len(), top_bid, top_ask), valid)
             }
-            StreamEvent::OrderbookDelta(od) => {
+            StreamEvent::OrderbookDelta { symbol, delta: od } => {
                 // Empty deltas are normal (heartbeats / zero-qty level removals) — not an issue.
                 let has_data = !od.bids.is_empty() || !od.asks.is_empty();
                 let top_bid = od.bids.first().map(|l| l.price).unwrap_or(0.0);
-                (format!("OBDelta bids={} asks={} top_bid={:.4} ts={}",
-                    od.bids.len(), od.asks.len(), top_bid, od.timestamp), has_data)
+                (format!("OBDelta sym={} bids={} asks={} top_bid={:.4} ts={}",
+                    symbol, od.bids.len(), od.asks.len(), top_bid, od.timestamp), has_data)
             }
-            StreamEvent::Kline(k) => {
+            StreamEvent::Kline { symbol, interval, kline: k } => {
                 let valid = k.close > 0.0 && k.open > 0.0 && k.open_time > 0;
                 if !valid { issues.push("kline o/c<=0 or no open_time".into()); }
-                (format!("Kline o={:.4} h={:.4} l={:.4} c={:.4} vol={:.2} ts={}",
-                    k.open, k.high, k.low, k.close, k.volume, k.open_time), valid)
+                (format!("Kline sym={} iv={} o={:.4} h={:.4} l={:.4} c={:.4} vol={:.2} ts={}",
+                    symbol, interval, k.open, k.high, k.low, k.close, k.volume, k.open_time), valid)
             }
             StreamEvent::MarkPrice { symbol, mark_price, timestamp, .. } => {
                 if expected_kind != ExpectedKind::MarkPrice {
@@ -367,10 +367,10 @@ mod market {
                 Ok(Some(Ok(event))) => {
                     event_count += 1;
                     let is_expected = matches!((&event, expected_kind),
-                        (StreamEvent::Ticker(_), ExpectedKind::Ticker) |
-                        (StreamEvent::Trade(_), ExpectedKind::Trade) |
-                        (StreamEvent::OrderbookSnapshot(_) | StreamEvent::OrderbookDelta(_), ExpectedKind::Orderbook) |
-                        (StreamEvent::Kline(_), ExpectedKind::Kline) |
+                        (StreamEvent::Ticker { .. }, ExpectedKind::Ticker) |
+                        (StreamEvent::Trade { .. }, ExpectedKind::Trade) |
+                        (StreamEvent::OrderbookSnapshot { .. } | StreamEvent::OrderbookDelta { .. }, ExpectedKind::Orderbook) |
+                        (StreamEvent::Kline { .. }, ExpectedKind::Kline) |
                         (StreamEvent::MarkPrice { .. }, ExpectedKind::MarkPrice) |
                         (StreamEvent::FundingRate { .. }, ExpectedKind::FundingRate) |
                         (StreamEvent::Liquidation { .. }, ExpectedKind::Liquidation) |

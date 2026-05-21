@@ -426,7 +426,7 @@ impl FutuParser {
     }
 
     /// Parse ticker from Qot_GetSecuritySnapshot.S2C
-    pub fn parse_ticker(s2c: &Value, symbol: &str) -> ExchangeResult<Ticker> {
+    pub fn parse_ticker(s2c: &Value, _symbol: &str) -> ExchangeResult<Ticker> {
         let snapshot_list = s2c.get("snapshotList")
             .and_then(|v| v.as_array())
             .ok_or_else(|| ExchangeError::Parse("missing snapshotList".to_string()))?;
@@ -441,7 +441,6 @@ impl FutuParser {
             .unwrap_or(0);
 
         Ok(Ticker {
-            symbol: symbol.to_string(),
             last_price,
             bid_price: Self::get_f64(basic, "bidPrice"),
             ask_price: Self::get_f64(basic, "askPrice"),

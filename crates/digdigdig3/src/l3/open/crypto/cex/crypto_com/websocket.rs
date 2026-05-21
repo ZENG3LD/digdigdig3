@@ -352,13 +352,15 @@ impl CryptoComWebSocket {
                         .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok())
                             .or_else(|| v.as_f64()))
                         .filter(|&v| v != 0.0);
-                    events.push(StreamEvent::Ticker(ticker.clone()));
+                    let ticker_symbol = data.get("i").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let oi_ts = ticker.timestamp;
+                    events.push(StreamEvent::Ticker { symbol: ticker_symbol.clone(), ticker });
                     if let Some(open_interest) = oi {
                         events.push(StreamEvent::OpenInterestUpdate {
-                            symbol: ticker.symbol.clone(),
+                            symbol: ticker_symbol,
                             open_interest,
                             open_interest_value: None,
-                            timestamp: ticker.timestamp,
+                            timestamp: oi_ts,
                         });
                     }
                 }
@@ -387,20 +389,27 @@ impl CryptoComWebSocket {
                     })
                     .unwrap_or_default();
                 let timestamp = data.get("t").and_then(|t| t.as_i64()).unwrap_or(0);
-                vec![StreamEvent::OrderbookDelta(OrderbookDeltaData {
-                    bids,
-                    asks,
-                    timestamp,
-                    first_update_id: None,
-                    last_update_id: None,
-                    prev_update_id: None,
-                    event_time: None,
-                    checksum: None,
-                })]
+                let ob_symbol = data.get("i").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                vec![StreamEvent::OrderbookDelta {
+                    symbol: ob_symbol,
+                    delta: OrderbookDeltaData {
+                        bids,
+                        asks,
+                        timestamp,
+                        first_update_id: None,
+                        last_update_id: None,
+                        prev_update_id: None,
+                        event_time: None,
+                        checksum: None,
+                    },
+                }]
             }
             WsEvent::Trade(data) => {
                 match super::parser::CryptoComParser::parse_ws_trade(data) {
-                    Ok(trade) => vec![StreamEvent::Trade(trade)],
+                    Ok(trade) => {
+                        let symbol = data.get("i").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        vec![StreamEvent::Trade { symbol, trade }]
+                    }
                     Err(_) => vec![],
                 }
             }
@@ -1112,7 +1121,7 @@ mod tests {
         let events = CryptoComWebSocket::ws_event_to_stream_events(&event);
         assert!(events.len() >= 1, "Expected at least one event");
         assert!(
-            matches!(events[0], StreamEvent::Ticker(_)),
+            matches!(events[0], StreamEvent::Ticker { .. }),
             "First event must be Ticker, got: {:?}",
             events[0]
         );
@@ -1151,7 +1160,7 @@ mod tests {
         let event = WsEvent::Ticker(data);
         let events = CryptoComWebSocket::ws_event_to_stream_events(&event);
         assert_eq!(events.len(), 2);
-        assert!(matches!(events[0], StreamEvent::Ticker(_)));
+        assert!(matches!(events[0], StreamEvent::Ticker { .. }));
         assert!(matches!(events[1], StreamEvent::OpenInterestUpdate { .. }));
     }
 }

@@ -221,9 +221,8 @@ impl DukascopyParser {
     ///
     /// Note: This creates a minimal ticker from a single tick.
     /// For full 24h stats, you'd need to aggregate a full day of ticks.
-    pub fn tick_to_ticker(tick: &DukascopyTick, symbol: &str) -> Ticker {
+    pub fn tick_to_ticker(tick: &DukascopyTick, _symbol: &str) -> Ticker {
         Ticker {
-            symbol: symbol.to_string(),
             last_price: (tick.bid + tick.ask) / 2.0,
             bid_price: Some(tick.bid),
             ask_price: Some(tick.ask),
@@ -393,7 +392,6 @@ mod tests {
 
         let ticker = DukascopyParser::tick_to_ticker(&tick, "EURUSD");
 
-        assert_eq!(ticker.symbol, "EURUSD");
         assert!((ticker.last_price - 1.12346).abs() < 0.00001);
         assert_eq!(ticker.bid_price, Some(1.12345));
         assert_eq!(ticker.ask_price, Some(1.12347));

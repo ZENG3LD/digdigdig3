@@ -155,10 +155,6 @@ pub fn assert_kline_sane(kline: &Kline) -> Result<(), String> {
 /// - `volume_24h >= 0` if present
 /// - `symbol` is non-empty
 pub fn assert_ticker_sane(ticker: &Ticker) -> Result<(), String> {
-    if ticker.symbol.is_empty() {
-        return Err("ticker: symbol is empty".to_string());
-    }
-
     assert_price_sane(ticker.last_price, "ticker.last_price")?;
 
     if let Some(vol) = ticker.volume_24h {
@@ -387,7 +383,6 @@ mod tests {
     #[test]
     fn test_ticker_valid() {
         let t = Ticker {
-            symbol: "BTCUSDT".to_string(),
             last_price: 50_000.0,
             bid_price: Some(49_999.0),
             ask_price: Some(50_001.0),
@@ -400,24 +395,6 @@ mod tests {
             timestamp: MIN_TIMESTAMP_MS,
         };
         assert!(assert_ticker_sane(&t).is_ok());
-    }
-
-    #[test]
-    fn test_ticker_empty_symbol() {
-        let t = Ticker {
-            symbol: "".to_string(),
-            last_price: 50_000.0,
-            bid_price: None,
-            ask_price: None,
-            high_24h: None,
-            low_24h: None,
-            volume_24h: None,
-            quote_volume_24h: None,
-            price_change_24h: None,
-            price_change_percent_24h: None,
-            timestamp: MIN_TIMESTAMP_MS,
-        };
-        assert!(assert_ticker_sane(&t).is_err());
     }
 
     // ── assert_balance_sane ──────────────────────────────────────────────────

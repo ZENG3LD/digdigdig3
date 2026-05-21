@@ -207,15 +207,19 @@ impl UpbitWebSocket {
             "trade" => {
                 UpbitParser::parse_ws_trade(&value)
                     .ok()
-                    .map(StreamEvent::Trade)
+                    .map(|trade| {
+                        let symbol = value.get("code").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        StreamEvent::Trade { symbol, trade }
+                    })
                     .into_iter()
                     .collect()
             }
             "orderbook" => {
                 // Always emit OrderbookSnapshot for orderbook subscribers.
+                let ob_symbol = value.get("code").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 let ob_event = UpbitParser::parse_ws_orderbook(&value)
                     .ok()
-                    .map(StreamEvent::OrderbookSnapshot);
+                    .map(|book| StreamEvent::OrderbookSnapshot { symbol: ob_symbol, book });
 
                 // When Ticker subscribed, emit a fused Ticker fusing bid/ask from
                 // this orderbook frame with the last known trade price.
@@ -233,7 +237,8 @@ impl UpbitWebSocket {
                                 *guard = Some((bid, ask));
                             }
                         }
-                        StreamEvent::Ticker(t)
+                        let ticker_symbol = value.get("code").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        StreamEvent::Ticker { symbol: ticker_symbol, ticker: t }
                     })
                 } else {
                     // Still update last_bid_ask so future ticker frames can read it.

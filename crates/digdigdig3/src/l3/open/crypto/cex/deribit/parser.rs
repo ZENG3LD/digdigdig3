@@ -167,7 +167,6 @@ impl DeribitParser {
         let result = Self::extract_result(response)?;
 
         Ok(Ticker {
-            symbol: Self::get_str(result, "instrument_name").unwrap_or("").to_string(),
             last_price: Self::get_f64(result, "last_price").unwrap_or(0.0),
             bid_price: Self::get_f64(result, "best_bid_price"),
             ask_price: Self::get_f64(result, "best_ask_price"),
@@ -633,7 +632,6 @@ impl DeribitParser {
     pub fn parse_ws_ticker(data: &Value) -> ExchangeResult<Ticker> {
         let stats = data.get("stats");
         Ok(Ticker {
-            symbol: Self::get_str(data, "instrument_name").unwrap_or("").to_string(),
             last_price: Self::get_f64(data, "last_price").unwrap_or(0.0),
             bid_price: Self::get_f64(data, "best_bid_price"),
             ask_price: Self::get_f64(data, "best_ask_price"),
@@ -664,7 +662,6 @@ impl DeribitParser {
 
         Ok(PublicTrade {
             id: Self::get_str(item, "trade_id").unwrap_or("").to_string(),
-            symbol: Self::get_str(item, "instrument_name").unwrap_or("").to_string(),
             price: Self::require_f64(item, "price")?,
             quantity: Self::get_f64(item, "amount").unwrap_or(0.0),
             side,
@@ -675,14 +672,16 @@ impl DeribitParser {
     /// Parse WebSocket orderbook notification
     pub fn parse_ws_orderbook(data: &Value) -> ExchangeResult<StreamEvent> {
         let msg_type = Self::get_str(data, "type").unwrap_or("change");
+        // instrument_name is present in both snapshot and change frames
+        let ob_symbol = Self::get_str(data, "instrument_name").unwrap_or("").to_string();
 
         if msg_type == "snapshot" {
             // Full orderbook snapshot
-            let orderbook = Self::parse_orderbook(&serde_json::json!({
+            let book = Self::parse_orderbook(&serde_json::json!({
                 "result": data
             }))?;
 
-            Ok(StreamEvent::OrderbookSnapshot(orderbook))
+            Ok(StreamEvent::OrderbookSnapshot { symbol: ob_symbol, book })
         } else {
             // Delta update
             let parse_changes = |key: &str| -> Vec<OrderBookLevel> {
@@ -702,16 +701,19 @@ impl DeribitParser {
                     .unwrap_or_default()
             };
 
-            Ok(StreamEvent::OrderbookDelta(OrderbookDeltaData {
-                bids: parse_changes("bids"),
-                asks: parse_changes("asks"),
-                timestamp: Self::get_i64(data, "timestamp").unwrap_or(0),
-                first_update_id: None,
-                last_update_id: None,
-                prev_update_id: None,
-                event_time: None,
-                checksum: None,
-            }))
+            Ok(StreamEvent::OrderbookDelta {
+                symbol: ob_symbol,
+                delta: OrderbookDeltaData {
+                    bids: parse_changes("bids"),
+                    asks: parse_changes("asks"),
+                    timestamp: Self::get_i64(data, "timestamp").unwrap_or(0),
+                    first_update_id: None,
+                    last_update_id: None,
+                    prev_update_id: None,
+                    event_time: None,
+                    checksum: None,
+                },
+            })
         }
     }
 
@@ -893,7 +895,6 @@ mod tests {
         });
 
         let ticker = DeribitParser::parse_ticker(&response).unwrap();
-        assert_eq!(ticker.symbol, "BTC-PERPETUAL");
         assert!((ticker.last_price - 50000.5).abs() < f64::EPSILON);
         assert_eq!(ticker.bid_price, Some(50000.0));
         assert_eq!(ticker.ask_price, Some(50001.0));

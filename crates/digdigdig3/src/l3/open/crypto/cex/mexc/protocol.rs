@@ -466,7 +466,7 @@ fn parse_spot_depth_as_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
     // limit.depth protobuf actually encodes asks in field1 (descending) and bids
     // in field2 (ascending). We correct by comparing: lower price = bid, higher = ask.
     let (bid_price, ask_price) = match &event {
-        StreamEvent::OrderbookDelta(delta) => {
+        StreamEvent::OrderbookDelta { symbol: _, delta } => {
             let p1 = delta.bids.first().map(|l| l.price); // field1 top
             let p2 = delta.asks.first().map(|l| l.price); // field2 top
             match (p1, p2) {
@@ -491,19 +491,21 @@ fn parse_spot_depth_as_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     let last_price = bid_price.or(ask_price).unwrap_or(0.0);
 
-    Ok(StreamEvent::Ticker(crate::core::types::Ticker {
+    Ok(StreamEvent::Ticker {
         symbol,
-        last_price,
-        bid_price,
-        ask_price,
-        high_24h: None,
-        low_24h: None,
-        volume_24h: None,
-        quote_volume_24h: None,
-        price_change_24h: None,
-        price_change_percent_24h: None,
-        timestamp: timestamp_millis() as i64,
-    }))
+        ticker: crate::core::types::Ticker {
+            last_price,
+            bid_price,
+            ask_price,
+            high_24h: None,
+            low_24h: None,
+            volume_24h: None,
+            quote_volume_24h: None,
+            price_change_24h: None,
+            price_change_percent_24h: None,
+            timestamp: timestamp_millis() as i64,
+        },
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -554,19 +556,21 @@ fn parse_futures_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
     // We emit Ticker; FundingRate is emitted by push.funding.rate parser.
     let _ = (hold_vol, funding_rate); // used in start_futures_ws, not here
 
-    Ok(StreamEvent::Ticker(crate::core::types::Ticker {
+    Ok(StreamEvent::Ticker {
         symbol,
-        last_price,
-        bid_price,
-        ask_price,
-        high_24h,
-        low_24h,
-        volume_24h,
-        quote_volume_24h: None,
-        price_change_24h: None,
-        price_change_percent_24h,
-        timestamp,
-    }))
+        ticker: crate::core::types::Ticker {
+            last_price,
+            bid_price,
+            ask_price,
+            high_24h,
+            low_24h,
+            volume_24h,
+            quote_volume_24h: None,
+            price_change_24h: None,
+            price_change_percent_24h,
+            timestamp,
+        },
+    })
 }
 
 /// Extract `fairPrice` (mark price) from `push.ticker` frame.
@@ -724,14 +728,16 @@ fn parse_futures_deal(raw: &Value) -> WebSocketResult<StreamEvent> {
             .or_else(|| v.as_i64().map(|n| n.to_string())))
         .unwrap_or_default();
 
-    Ok(StreamEvent::Trade(PublicTrade {
-        id,
+    Ok(StreamEvent::Trade {
         symbol,
-        price,
-        quantity,
-        side,
-        timestamp,
-    }))
+        trade: PublicTrade {
+            id,
+            price,
+            quantity,
+            side,
+            timestamp,
+        },
+    })
 }
 
 /// Parse `push.deal` as `StreamEvent::AggTrade` (for AggTrade subscriptions).
@@ -822,16 +828,20 @@ fn parse_futures_depth(raw: &Value) -> WebSocketResult<StreamEvent> {
         .get("version")
         .and_then(|v| v.as_u64());
 
-    Ok(StreamEvent::OrderbookDelta(OrderbookDelta {
-        bids,
-        asks,
-        timestamp,
-        first_update_id: None,
-        last_update_id: seq,
-        prev_update_id: None,
-        event_time: Some(timestamp),
-        checksum: None,
-    }))
+    let depth_symbol = futures_symbol(raw);
+    Ok(StreamEvent::OrderbookDelta {
+        symbol: depth_symbol,
+        delta: OrderbookDelta {
+            bids,
+            asks,
+            timestamp,
+            first_update_id: None,
+            last_update_id: seq,
+            prev_update_id: None,
+            event_time: Some(timestamp),
+            checksum: None,
+        },
+    })
 }
 
 fn parse_futures_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -862,17 +872,27 @@ fn parse_futures_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
         .and_then(parse_f64_field)
         .unwrap_or(0.0);
 
-    Ok(StreamEvent::Kline(Kline {
-        open_time,
-        open,
-        high,
-        low,
-        close,
-        volume,
-        quote_volume: None,
-        close_time: None,
-        trades: None,
-    }))
+    let futures_kline_symbol = futures_symbol(raw);
+    // MEXC futures kline channel: "push.kline" — interval in data "interval" field or raw channel suffix
+    let futures_kline_interval = data.get("interval")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    Ok(StreamEvent::Kline {
+        symbol: futures_kline_symbol,
+        interval: futures_kline_interval,
+        kline: Kline {
+            open_time,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            quote_volume: None,
+            close_time: None,
+            trades: None,
+        },
+    })
 }
 
 fn parse_futures_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent> {

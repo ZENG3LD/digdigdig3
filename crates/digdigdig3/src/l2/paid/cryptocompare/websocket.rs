@@ -511,14 +511,17 @@ impl CryptoCompareWebSocket {
             TradeSide::Buy
         };
 
-        Some(StreamEvent::Trade(PublicTrade {
-            id: trade_id,
-            symbol: format!("{}{}", fsym, tsym),
-            price,
-            quantity,
-            side,
-            timestamp: timestamp * 1000, // Convert seconds to milliseconds
-        }))
+        let symbol = format!("{}{}", fsym, tsym);
+        Some(StreamEvent::Trade {
+            symbol,
+            trade: PublicTrade {
+                id: trade_id,
+                price,
+                quantity,
+                side,
+                timestamp: timestamp * 1000, // Convert seconds to milliseconds
+            },
+        })
     }
 
     /// Parse channel 2/5 (Ticker/Current) message to StreamEvent
@@ -536,31 +539,34 @@ impl CryptoCompareWebSocket {
         let price = Self::extract_f64(json, "PRICE")?;
         let timestamp = json.get("LASTUPDATE").and_then(|v| v.as_i64()).unwrap_or(0);
 
-        Some(StreamEvent::Ticker(Ticker {
-            symbol: format!("{}{}", fsym, tsym),
-            last_price: price,
-            bid_price: Self::extract_f64(json, "BID"),
-            ask_price: Self::extract_f64(json, "OFFER"),
-            high_24h: Self::extract_f64(json, "HIGH24HOUR")
-                .or_else(|| Self::extract_f64(json, "HIGHDAY")),
-            low_24h: Self::extract_f64(json, "LOW24HOUR")
-                .or_else(|| Self::extract_f64(json, "LOWDAY")),
-            volume_24h: Self::extract_f64(json, "VOLUME24HOUR")
-                .or_else(|| Self::extract_f64(json, "VOLUMEDAY")),
-            quote_volume_24h: Self::extract_f64(json, "VOLUME24HOURTO")
-                .or_else(|| Self::extract_f64(json, "VOLUMEDAYTO")),
-            price_change_24h: {
-                let open = Self::extract_f64(json, "OPEN24HOUR")
-                    .or_else(|| Self::extract_f64(json, "OPENDAY"));
-                open.map(|o| price - o)
+        let symbol = format!("{}{}", fsym, tsym);
+        Some(StreamEvent::Ticker {
+            symbol,
+            ticker: Ticker {
+                last_price: price,
+                bid_price: Self::extract_f64(json, "BID"),
+                ask_price: Self::extract_f64(json, "OFFER"),
+                high_24h: Self::extract_f64(json, "HIGH24HOUR")
+                    .or_else(|| Self::extract_f64(json, "HIGHDAY")),
+                low_24h: Self::extract_f64(json, "LOW24HOUR")
+                    .or_else(|| Self::extract_f64(json, "LOWDAY")),
+                volume_24h: Self::extract_f64(json, "VOLUME24HOUR")
+                    .or_else(|| Self::extract_f64(json, "VOLUMEDAY")),
+                quote_volume_24h: Self::extract_f64(json, "VOLUME24HOURTO")
+                    .or_else(|| Self::extract_f64(json, "VOLUMEDAYTO")),
+                price_change_24h: {
+                    let open = Self::extract_f64(json, "OPEN24HOUR")
+                        .or_else(|| Self::extract_f64(json, "OPENDAY"));
+                    open.map(|o| price - o)
+                },
+                price_change_percent_24h: {
+                    let open = Self::extract_f64(json, "OPEN24HOUR")
+                        .or_else(|| Self::extract_f64(json, "OPENDAY"));
+                    open.filter(|&o| o > 0.0).map(|o| ((price - o) / o) * 100.0)
+                },
+                timestamp: timestamp * 1000, // Convert seconds to milliseconds
             },
-            price_change_percent_24h: {
-                let open = Self::extract_f64(json, "OPEN24HOUR")
-                    .or_else(|| Self::extract_f64(json, "OPENDAY"));
-                open.filter(|&o| o > 0.0).map(|o| ((price - o) / o) * 100.0)
-            },
-            timestamp: timestamp * 1000, // Convert seconds to milliseconds
-        }))
+        })
     }
 
     /// Parse channel 17 (OHLC) message to StreamEvent
@@ -572,17 +578,25 @@ impl CryptoCompareWebSocket {
         let volume = Self::extract_f64(json, "VOLUME").unwrap_or(0.0);
         let timestamp = json.get("TS").and_then(|v| v.as_i64()).unwrap_or(0);
 
-        Some(StreamEvent::Kline(Kline {
-            open_time: timestamp * 1000,
-            open,
-            high,
-            low,
-            close,
-            volume,
-            close_time: None,
-            quote_volume: Self::extract_f64(json, "VOLUMETO"),
-            trades: None,
-        }))
+        let fsym = json.get("FSYM").or_else(|| json.get("FROMSYMBOL")).and_then(|v| v.as_str()).unwrap_or("");
+        let tsym = json.get("TSYM").or_else(|| json.get("TOSYMBOL")).and_then(|v| v.as_str()).unwrap_or("");
+        let symbol = if fsym.is_empty() && tsym.is_empty() { String::new() } else { format!("{}{}", fsym, tsym) };
+
+        Some(StreamEvent::Kline {
+            symbol,
+            interval: String::new(),
+            kline: Kline {
+                open_time: timestamp * 1000,
+                open,
+                high,
+                low,
+                close,
+                volume,
+                close_time: None,
+                quote_volume: Self::extract_f64(json, "VOLUMETO"),
+                trades: None,
+            },
+        })
     }
 
     /// Extract f64 value from JSON, handling both numeric and string representations
@@ -626,14 +640,17 @@ impl CryptoCompareWebSocket {
             TradeSide::Buy
         };
 
-        Some(StreamEvent::Trade(PublicTrade {
-            id: trade_id,
-            symbol: format!("{}{}", fsym, tsym),
-            price,
-            quantity,
-            side,
-            timestamp: timestamp * 1000, // Convert seconds to milliseconds
-        }))
+        let symbol = format!("{}{}", fsym, tsym);
+        Some(StreamEvent::Trade {
+            symbol,
+            trade: PublicTrade {
+                id: trade_id,
+                price,
+                quantity,
+                side,
+                timestamp: timestamp * 1000, // Convert seconds to milliseconds
+            },
+        })
     }
 
     /// Parse streamer format ticker message (Type 2 or 5) using bitmask field ordering.
@@ -786,21 +803,24 @@ impl CryptoCompareWebSocket {
         let last_price = price?;
         let ts_ms = timestamp.unwrap_or(0) * 1000;
 
-        Some(StreamEvent::Ticker(Ticker {
-            symbol: format!("{}{}", fsym, tsym),
-            last_price,
-            bid_price: bid,
-            ask_price: ask,
-            high_24h,
-            low_24h,
-            volume_24h,
-            quote_volume_24h: volume_24h_to,
-            price_change_24h: open_24h.map(|o| last_price - o),
-            price_change_percent_24h: open_24h
-                .filter(|&o| o > 0.0)
-                .map(|o| ((last_price - o) / o) * 100.0),
-            timestamp: ts_ms,
-        }))
+        let symbol = format!("{}{}", fsym, tsym);
+        Some(StreamEvent::Ticker {
+            symbol,
+            ticker: Ticker {
+                last_price,
+                bid_price: bid,
+                ask_price: ask,
+                high_24h,
+                low_24h,
+                volume_24h,
+                quote_volume_24h: volume_24h_to,
+                price_change_24h: open_24h.map(|o| last_price - o),
+                price_change_percent_24h: open_24h
+                    .filter(|&o| o > 0.0)
+                    .map(|o| ((last_price - o) / o) * 100.0),
+                timestamp: ts_ms,
+            },
+        })
     }
 }
 
@@ -992,8 +1012,7 @@ mod tests {
         let event = CryptoCompareWebSocket::parse_ticker(&json);
         assert!(event.is_some());
 
-        if let Some(StreamEvent::Ticker(ticker)) = event {
-            assert_eq!(ticker.symbol, "BTCUSD");
+        if let Some(StreamEvent::Ticker { ticker, .. }) = event {
             assert_eq!(ticker.last_price, 84023.50);
             assert_eq!(ticker.high_24h, Some(85000.0));
             assert_eq!(ticker.low_24h, Some(83000.0));
@@ -1022,8 +1041,7 @@ mod tests {
         let event = CryptoCompareWebSocket::parse_trade(&json);
         assert!(event.is_some());
 
-        if let Some(StreamEvent::Trade(trade)) = event {
-            assert_eq!(trade.symbol, "BTCUSDT");
+        if let Some(StreamEvent::Trade { trade, .. }) = event {
             assert_eq!(trade.price, 45000.50);
             assert_eq!(trade.quantity, 0.5);
             assert_eq!(trade.id, "123456");
@@ -1051,7 +1069,7 @@ mod tests {
         let event = CryptoCompareWebSocket::parse_ohlc(&json);
         assert!(event.is_some());
 
-        if let Some(StreamEvent::Kline(kline)) = event {
+        if let Some(StreamEvent::Kline { kline, .. }) = event {
             assert_eq!(kline.open, 45000.0);
             assert_eq!(kline.high, 45100.0);
             assert_eq!(kline.low, 44950.0);
@@ -1082,8 +1100,7 @@ mod tests {
         let event = CryptoCompareWebSocket::parse_trade_streamer(&parts);
         assert!(event.is_some());
 
-        if let Some(StreamEvent::Trade(trade)) = event {
-            assert_eq!(trade.symbol, "BTCUSD");
+        if let Some(StreamEvent::Trade { trade, .. }) = event {
             assert_eq!(trade.price, 78706.05);
             assert_eq!(trade.quantity, 0.00023);
             assert_eq!(trade.id, "947952988");
@@ -1117,8 +1134,7 @@ mod tests {
         let event = CryptoCompareWebSocket::parse_ticker_streamer(&parts);
         assert!(event.is_some());
 
-        if let Some(StreamEvent::Ticker(ticker)) = event {
-            assert_eq!(ticker.symbol, "BTCUSD");
+        if let Some(StreamEvent::Ticker { ticker, .. }) = event {
             assert_eq!(ticker.last_price, 78716.20);
             assert_eq!(ticker.high_24h, Some(79000.0));
             assert_eq!(ticker.low_24h, Some(77500.0));
@@ -1154,8 +1170,7 @@ mod tests {
         let event = CryptoCompareWebSocket::parse_ticker_streamer(&parts);
         assert!(event.is_some());
 
-        if let Some(StreamEvent::Ticker(ticker)) = event {
-            assert_eq!(ticker.symbol, "BTCUSDT");
+        if let Some(StreamEvent::Ticker { ticker, .. }) = event {
             assert_eq!(ticker.last_price, 67800.50);
             assert_eq!(ticker.bid_price, Some(67800.45));
             assert_eq!(ticker.ask_price, Some(67800.55));
@@ -1182,8 +1197,7 @@ mod tests {
         let event = CryptoCompareWebSocket::parse_ticker_streamer(&parts);
         assert!(event.is_some());
 
-        if let Some(StreamEvent::Ticker(ticker)) = event {
-            assert_eq!(ticker.symbol, "ETHUSD");
+        if let Some(StreamEvent::Ticker { ticker, .. }) = event {
             assert_eq!(ticker.last_price, 2850.50);
             assert!(ticker.bid_price.is_none());
             assert!(ticker.ask_price.is_none());

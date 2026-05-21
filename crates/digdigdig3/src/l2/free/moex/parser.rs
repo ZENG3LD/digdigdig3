@@ -143,7 +143,7 @@ impl MoexParser {
     /// Expected blocks:
     /// - "securities" - for symbol info
     /// - "marketdata" - for price and volume data
-    pub fn parse_ticker(response: &Value, symbol: &str) -> ParseResult<Ticker> {
+    pub fn parse_ticker(response: &Value, _symbol: &str) -> ParseResult<Ticker> {
         let marketdata = Self::get_block(response, "marketdata")?;
         let columns = Self::get_columns(marketdata)?;
         let data = Self::get_data(marketdata)?;
@@ -192,7 +192,6 @@ impl MoexParser {
             .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
 
         Ok(Ticker {
-            symbol: symbol.to_string(),
             last_price,
             bid_price,
             ask_price,
@@ -383,7 +382,6 @@ mod tests {
         });
 
         let ticker = MoexParser::parse_ticker(&response, "SBER").unwrap();
-        assert_eq!(ticker.symbol, "SBER");
         assert_eq!(ticker.last_price, 306.75);
         assert_eq!(ticker.bid_price, Some(306.74));
         assert_eq!(ticker.ask_price, Some(306.76));

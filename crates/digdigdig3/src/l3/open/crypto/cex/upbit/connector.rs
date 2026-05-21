@@ -1442,7 +1442,6 @@ impl MarketDataPublic for UpbitConnector {
         let arr = raw.as_array().ok_or_else(|| {
             ExchangeError::Parse("get_recent_trades: expected array".into())
         })?;
-        let symbol_str = sym.to_string();
         let mut result = Vec::with_capacity(arr.len());
         for item in arr {
             let parse_f64 = |key: &str| -> f64 {
@@ -1463,7 +1462,6 @@ impl MarketDataPublic for UpbitConnector {
             let seq = item.get("sequential_id").and_then(|v| v.as_i64()).map(|id| id.to_string()).unwrap_or_default();
             result.push(PublicTrade {
                 id: seq,
-                symbol: symbol_str.clone(),
                 price: parse_f64("trade_price"),
                 quantity: parse_f64("trade_volume"),
                 side,

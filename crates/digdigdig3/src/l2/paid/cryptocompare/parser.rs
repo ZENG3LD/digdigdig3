@@ -112,7 +112,6 @@ impl CryptoCompareParser {
             .ok_or_else(|| ExchangeError::Parse(format!("Missing quote '{}'", tsym)))?;
 
         Ok(Ticker {
-            symbol: format!("{}{}", fsym, tsym),
             last_price: Self::require_f64(ticker_data, "PRICE")?,
             bid_price: Self::get_f64(ticker_data, "BID"),
             ask_price: Self::get_f64(ticker_data, "ASK"),

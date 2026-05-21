@@ -244,8 +244,7 @@ fn parse_all_mids(raw: &Value) -> WebSocketResult<StreamEvent> {
     if let Some((symbol, price_val)) = mids.iter().next() {
         let price = parse_f64_val(price_val)
             .ok_or_else(|| WebSocketError::Parse("allMids: invalid price".into()))?;
-        return Ok(StreamEvent::Ticker(crate::core::Ticker {
-            symbol: symbol.clone(),
+        let ticker = crate::core::Ticker {
             last_price: price,
             bid_price: None,
             ask_price: None,
@@ -256,7 +255,8 @@ fn parse_all_mids(raw: &Value) -> WebSocketResult<StreamEvent> {
             price_change_24h: None,
             price_change_percent_24h: None,
             timestamp: now,
-        }));
+        };
+        return Ok(StreamEvent::Ticker { symbol: symbol.clone(), ticker });
     }
 
     Err(WebSocketError::Parse("allMids: empty mids object".into()))
@@ -362,8 +362,8 @@ fn parse_ticker_from_ctx(raw: &Value) -> WebSocketResult<StreamEvent> {
         _ => None,
     };
     let now = crate::core::utils::timestamp_millis() as i64;
-    Ok(StreamEvent::Ticker(crate::core::Ticker {
-        symbol: coin.to_string(),
+    let symbol = coin.to_string();
+    let ticker = crate::core::Ticker {
         last_price: mid_px,
         bid_price: None,
         ask_price: None,
@@ -374,7 +374,8 @@ fn parse_ticker_from_ctx(raw: &Value) -> WebSocketResult<StreamEvent> {
         price_change_24h,
         price_change_percent_24h: price_change_24h.map(|c| c * 100.0),
         timestamp: now,
-    }))
+    };
+    Ok(StreamEvent::Ticker { symbol, ticker })
 }
 
 fn parse_trades(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -390,18 +391,21 @@ fn parse_trades(raw: &Value) -> WebSocketResult<StreamEvent> {
     let parsed = HyperliquidParser::parse_recent_trades(&serde_json::json!([trade_data]))
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
 
-    parsed
+    let trade = parsed
         .into_iter()
         .next()
-        .map(StreamEvent::Trade)
-        .ok_or_else(|| WebSocketError::Parse("trades: no trade parsed".into()))
+        .ok_or_else(|| WebSocketError::Parse("trades: no trade parsed".into()))?;
+    let symbol = trade_data.get("coin").and_then(|c| c.as_str()).unwrap_or("").to_string();
+    Ok(StreamEvent::Trade { symbol, trade })
 }
 
 fn parse_l2_book(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw)?;
-    let ob = HyperliquidParser::parse_orderbook(data)
+    // HyperLiquid l2Book data carries "coin" field
+    let ob_symbol = data.get("coin").and_then(|c| c.as_str()).unwrap_or("").to_string();
+    let book = HyperliquidParser::parse_orderbook(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    Ok(StreamEvent::OrderbookSnapshot(ob))
+    Ok(StreamEvent::OrderbookSnapshot { symbol: ob_symbol, book })
 }
 
 fn parse_bbo(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -433,8 +437,8 @@ fn parse_bbo(raw: &Value) -> WebSocketResult<StreamEvent> {
     };
 
     let now = crate::core::utils::timestamp_millis() as i64;
-    Ok(StreamEvent::Ticker(crate::core::Ticker {
-        symbol: coin.to_string(),
+    let symbol = coin.to_string();
+    let ticker = crate::core::Ticker {
         last_price,
         bid_price,
         ask_price,
@@ -445,18 +449,22 @@ fn parse_bbo(raw: &Value) -> WebSocketResult<StreamEvent> {
         price_change_24h: None,
         price_change_percent_24h: None,
         timestamp: now,
-    }))
+    };
+    Ok(StreamEvent::Ticker { symbol, ticker })
 }
 
 fn parse_candle(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw)?;
+    // HyperLiquid candle data carries "coin" and "interval" fields
+    let kl_symbol = data.get("coin").and_then(|c| c.as_str()).unwrap_or("").to_string();
+    let kl_interval = data.get("interval").and_then(|i| i.as_str()).unwrap_or("").to_string();
     let klines = HyperliquidParser::parse_klines(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    klines
+    let kline = klines
         .into_iter()
         .next()
-        .map(StreamEvent::Kline)
-        .ok_or_else(|| WebSocketError::Parse("candle: no kline parsed".into()))
+        .ok_or_else(|| WebSocketError::Parse("candle: no kline parsed".into()))?;
+    Ok(StreamEvent::Kline { symbol: kl_symbol, interval: kl_interval, kline })
 }
 
 fn parse_clearinghouse(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -626,8 +634,7 @@ fn parse_web_data2(raw: &Value) -> WebSocketResult<StreamEvent> {
     if let Some((symbol, price_val)) = mids.iter().next() {
         let price = parse_f64_val(price_val)
             .ok_or_else(|| WebSocketError::Parse("webData2: invalid price".into()))?;
-        return Ok(StreamEvent::Ticker(crate::core::Ticker {
-            symbol: symbol.clone(),
+        let ticker = crate::core::Ticker {
             last_price: price,
             bid_price: None,
             ask_price: None,
@@ -638,7 +645,8 @@ fn parse_web_data2(raw: &Value) -> WebSocketResult<StreamEvent> {
             price_change_24h: None,
             price_change_percent_24h: None,
             timestamp: now,
-        }));
+        };
+        return Ok(StreamEvent::Ticker { symbol: symbol.clone(), ticker });
     }
     Err(WebSocketError::Parse("webData2: no mids entry".into()))
 }
@@ -887,8 +895,8 @@ mod tests {
         });
         let event = parse_bbo(&frame).expect("parse_bbo must succeed");
         match event {
-            crate::core::types::StreamEvent::Ticker(t) => {
-                assert_eq!(t.symbol, "BTC");
+            crate::core::types::StreamEvent::Ticker { ticker: t, symbol, .. } => {
+                assert_eq!(symbol, "BTC");
                 assert!((t.bid_price.unwrap() - 67100.0).abs() < f64::EPSILON);
                 assert!((t.ask_price.unwrap() - 67110.0).abs() < f64::EPSILON);
                 assert!((t.last_price - 67105.0).abs() < f64::EPSILON);
@@ -952,8 +960,8 @@ mod tests {
         });
         let event = parse_ticker_from_ctx(&frame).expect("parse_ticker_from_ctx must succeed");
         match event {
-            crate::core::types::StreamEvent::Ticker(t) => {
-                assert_eq!(t.symbol, "ETH");
+            crate::core::types::StreamEvent::Ticker { symbol, ticker: t, .. } => {
+                assert_eq!(symbol, "ETH");
                 assert!((t.last_price - 3200.0).abs() < f64::EPSILON);
                 assert!(t.bid_price.is_none());
                 assert!(t.ask_price.is_none());

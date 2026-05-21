@@ -249,19 +249,21 @@ fn parse_protobuf(data: &[u8]) -> Option<PricingData> {
 fn pricing_data_to_ticker(data: &PricingData) -> StreamEvent {
     let symbol = data.id.clone().unwrap_or_default();
 
-    StreamEvent::Ticker(Ticker {
+    StreamEvent::Ticker {
         symbol,
-        last_price: data.price.unwrap_or(0.0) as f64,
-        bid_price: data.bid.map(|v| v as f64),
-        ask_price: data.ask.map(|v| v as f64),
-        high_24h: data.day_high.map(|v| v as f64),
-        low_24h: data.day_low.map(|v| v as f64),
-        volume_24h: data.volume.map(|v| v as f64),
-        quote_volume_24h: None,
-        price_change_24h: data.change.map(|v| v as f64),
-        price_change_percent_24h: data.change_percent.map(|v| v as f64),
-        timestamp: data.time.unwrap_or_else(|| chrono::Utc::now().timestamp()),
-    })
+        ticker: Ticker {
+            last_price: data.price.unwrap_or(0.0) as f64,
+            bid_price: data.bid.map(|v| v as f64),
+            ask_price: data.ask.map(|v| v as f64),
+            high_24h: data.day_high.map(|v| v as f64),
+            low_24h: data.day_low.map(|v| v as f64),
+            volume_24h: data.volume.map(|v| v as f64),
+            quote_volume_24h: None,
+            price_change_24h: data.change.map(|v| v as f64),
+            price_change_percent_24h: data.change_percent.map(|v| v as f64),
+            timestamp: data.time.unwrap_or_else(|| chrono::Utc::now().timestamp()),
+        },
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -746,8 +748,8 @@ mod tests {
 
         let event = pricing_data_to_ticker(&data);
         match event {
-            StreamEvent::Ticker(ticker) => {
-                assert_eq!(ticker.symbol, "AAPL");
+            StreamEvent::Ticker { symbol, ticker, .. } => {
+                assert_eq!(symbol, "AAPL");
                 assert!((ticker.last_price - 150.25).abs() < 0.01);
                 // f32 -> f64 widening loses precision near the 4th decimal —
                 // compare with tolerance instead of bit-exact equality, which

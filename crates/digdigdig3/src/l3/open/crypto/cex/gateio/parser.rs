@@ -108,13 +108,7 @@ impl GateioParser {
         // Spot fields: currency_pair, last, lowest_ask, highest_bid
         // Futures fields: contract, last, lowest_ask, highest_bid, mark_price, index_price
 
-        let symbol = Self::get_str(data, "currency_pair")
-            .or_else(|| Self::get_str(data, "contract"))
-            .unwrap_or("")
-            .to_string();
-
         Ok(Ticker {
-            symbol,
             last_price: Self::get_f64(data, "last").unwrap_or(0.0),
             bid_price: Self::get_f64(data, "highest_bid"),
             ask_price: Self::get_f64(data, "lowest_ask"),
@@ -718,10 +712,6 @@ impl GateioParser {
 
         Ok(PublicTrade {
             id: Self::get_str(data, "id").unwrap_or("").to_string(),
-            symbol: Self::get_str(data, "currency_pair")
-                .or_else(|| Self::get_str(data, "contract"))
-                .unwrap_or("")
-                .to_string(),
             price: Self::require_f64(data, "price")?,
             quantity: Self::get_f64(data, "amount").unwrap_or(0.0),
             side,
@@ -1032,7 +1022,6 @@ mod tests {
         ]);
 
         let ticker = GateioParser::parse_ticker(&response).unwrap();
-        assert_eq!(ticker.symbol, "BTC_USDT");
         assert!((ticker.last_price - 48600.5).abs() < f64::EPSILON);
         assert!((ticker.bid_price.unwrap() - 48600.0).abs() < f64::EPSILON);
         assert!((ticker.ask_price.unwrap() - 48601.0).abs() < f64::EPSILON);

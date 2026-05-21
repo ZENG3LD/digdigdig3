@@ -50,19 +50,21 @@ fn btc_sub() -> SubscriptionRequest {
 }
 
 fn make_ticker(price: f64, ts_ms: i64) -> StreamEvent {
-    StreamEvent::Ticker(Ticker {
-        symbol: "BTCUSDT".into(),
-        last_price: price,
-        bid_price: Some(price - 1.0),
-        ask_price: Some(price + 1.0),
-        volume_24h: Some(1000.0),
-        quote_volume_24h: None,
-        price_change_24h: None,
-        price_change_percent_24h: None,
-        high_24h: None,
-        low_24h: None,
-        timestamp: ts_ms,
-    })
+    StreamEvent::Ticker {
+        symbol: "BTCUSDT".to_string(),
+        ticker: Ticker {
+            last_price: price,
+            bid_price: Some(price - 1.0),
+            ask_price: Some(price + 1.0),
+            volume_24h: Some(1000.0),
+            quote_volume_24h: None,
+            price_change_24h: None,
+            price_change_percent_24h: None,
+            high_24h: None,
+            low_24h: None,
+            timestamp: ts_ms,
+        },
+    }
 }
 
 async fn write_events(dir: &PathBuf, key: &StreamKey, events: &[(i64, StreamEvent)]) {
@@ -135,7 +137,7 @@ async fn replay_emits_stored_events_in_order() {
 
     // Check ordering via price field (each event has a unique price).
     for (i, ev) in received.iter().enumerate() {
-        if let StreamEvent::Ticker(t) = ev {
+        if let StreamEvent::Ticker { ticker: t, .. } = ev {
             let expected = 50000.0 + i as f64;
             assert!(
                 (t.last_price - expected).abs() < 0.001,

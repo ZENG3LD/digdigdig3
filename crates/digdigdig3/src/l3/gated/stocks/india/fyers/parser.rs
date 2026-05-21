@@ -124,7 +124,6 @@ impl FyersParser {
                     let v = &item["v"];
 
                     return Ok(Ticker {
-                        symbol: symbol.to_string(),
                         last_price: v["lp"].as_f64().unwrap_or(0.0),
                         bid_price: v["bid"].as_f64(),
                         ask_price: v["ask"].as_f64(),

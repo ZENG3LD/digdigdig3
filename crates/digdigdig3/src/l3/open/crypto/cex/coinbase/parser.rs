@@ -85,7 +85,7 @@ impl CoinbaseParser {
             .and_then(|arr| arr.first())
             .ok_or_else(|| ExchangeError::Parse("Missing pricebooks array".into()))?;
 
-        let symbol = pricebook.get("product_id")
+        let _symbol = pricebook.get("product_id")
             .and_then(|s| s.as_str())
             .ok_or_else(|| ExchangeError::Parse("Missing product_id".into()))?;
 
@@ -119,7 +119,6 @@ impl CoinbaseParser {
             .unwrap_or(0);
 
         Ok(Ticker {
-            symbol: symbol.to_string(),
             last_price,
             bid_price,
             ask_price,
@@ -464,7 +463,7 @@ impl CoinbaseParser {
             .and_then(|arr| arr.first())
             .ok_or_else(|| ExchangeError::Parse("Missing tickers array in event".into()))?;
 
-        let symbol = ticker_data.get("product_id")
+        let _symbol = ticker_data.get("product_id")
             .and_then(|p| p.as_str())
             .ok_or_else(|| ExchangeError::Parse("Missing product_id".into()))?;
 
@@ -503,7 +502,6 @@ impl CoinbaseParser {
             .and_then(|s| s.parse::<f64>().ok());
 
         Ok(Ticker {
-            symbol: symbol.to_string(),
             last_price,
             bid_price,
             ask_price,
@@ -655,10 +653,6 @@ impl CoinbaseParser {
             .and_then(|arr| arr.first())
             .ok_or_else(|| ExchangeError::Parse("Missing trades array in event".into()))?;
 
-        let symbol = trade_data.get("product_id")
-            .and_then(|p| p.as_str())
-            .ok_or_else(|| ExchangeError::Parse("Missing product_id".into()))?;
-
         let price = trade_data.get("price")
             .and_then(|p| p.as_str())
             .and_then(|s| s.parse::<f64>().ok())
@@ -691,7 +685,6 @@ impl CoinbaseParser {
 
         Ok(PublicTrade {
             id: trade_id,
-            symbol: symbol.to_string(),
             price,
             quantity,
             side,

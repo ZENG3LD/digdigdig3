@@ -394,19 +394,21 @@ impl MoexWebSocket {
 
         let timestamp = chrono::Utc::now().timestamp_millis();
 
-        Ok(StreamEvent::Ticker(Ticker {
+        Ok(StreamEvent::Ticker {
             symbol: symbol.to_string(),
-            last_price,
-            bid_price: bid,
-            ask_price: ask,
-            high_24h: high,
-            low_24h: low,
-            volume_24h: volume,
-            quote_volume_24h: None,
-            price_change_24h: change,
-            price_change_percent_24h: change_pct,
-            timestamp,
-        }))
+            ticker: Ticker {
+                last_price,
+                bid_price: bid,
+                ask_price: ask,
+                high_24h: high,
+                low_24h: low,
+                volume_24h: volume,
+                quote_volume_24h: None,
+                price_change_24h: change,
+                price_change_percent_24h: change_pct,
+                timestamp,
+            },
+        })
     }
 
     /// Parse ticker from MOEX columns+data format (same as REST response)
@@ -454,19 +456,21 @@ impl MoexWebSocket {
 
         let timestamp = chrono::Utc::now().timestamp_millis();
 
-        Ok(StreamEvent::Ticker(Ticker {
+        Ok(StreamEvent::Ticker {
             symbol: symbol.to_string(),
-            last_price,
-            bid_price: get_f64("BID").or_else(|| get_f64("OFFER")),  // MOEX uses OFFER instead of ASK sometimes
-            ask_price: get_f64("ASK").or_else(|| get_f64("OFFER")),
-            high_24h: get_f64("HIGH"),
-            low_24h: get_f64("LOW"),
-            volume_24h: get_volume("VOLTODAY").or_else(|| get_volume("VOLUME")),
-            quote_volume_24h: get_f64("VALTODAY").or_else(|| get_f64("VALUE")),
-            price_change_24h: get_f64("CHANGE").or_else(|| get_f64("LASTCHANGE")),
-            price_change_percent_24h: get_f64("LASTCHANGEPRCNT"),
-            timestamp,
-        }))
+            ticker: Ticker {
+                last_price,
+                bid_price: get_f64("BID").or_else(|| get_f64("OFFER")),  // MOEX uses OFFER instead of ASK sometimes
+                ask_price: get_f64("ASK").or_else(|| get_f64("OFFER")),
+                high_24h: get_f64("HIGH"),
+                low_24h: get_f64("LOW"),
+                volume_24h: get_volume("VOLTODAY").or_else(|| get_volume("VOLUME")),
+                quote_volume_24h: get_f64("VALTODAY").or_else(|| get_f64("VALUE")),
+                price_change_24h: get_f64("CHANGE").or_else(|| get_f64("LASTCHANGE")),
+                price_change_percent_24h: get_f64("LASTCHANGEPRCNT"),
+                timestamp,
+            },
+        })
     }
 
     /// Parse trade event from MOEX STOMP message
@@ -493,29 +497,38 @@ impl MoexWebSocket {
 
         // Use Ticker event as a carrier for trade data since PublicTrade
         // may require additional fields
-        Ok(StreamEvent::Ticker(Ticker {
+        Ok(StreamEvent::Ticker {
             symbol: symbol.to_string(),
-            last_price: price,
-            bid_price: None,
-            ask_price: None,
-            high_24h: None,
-            low_24h: None,
-            volume_24h: Some(quantity),
-            quote_volume_24h: None,
-            price_change_24h: None,
-            price_change_percent_24h: None,
-            timestamp,
-        }))
+            ticker: Ticker {
+                last_price: price,
+                bid_price: None,
+                ask_price: None,
+                high_24h: None,
+                low_24h: None,
+                volume_24h: Some(quantity),
+                quote_volume_24h: None,
+                price_change_24h: None,
+                price_change_percent_24h: None,
+                timestamp,
+            },
+        })
     }
 
     /// Parse orderbook event from MOEX STOMP message
-    fn parse_orderbook_event(_json: &Value, _destination: &str) -> Result<StreamEvent, String> {
+    fn parse_orderbook_event(_json: &Value, destination: &str) -> Result<StreamEvent, String> {
         // Placeholder: orderbook parsing from STOMP
         // MOEX orderbook data may come as full snapshots
         let timestamp = chrono::Utc::now().timestamp_millis();
+        let symbol = destination
+            .split("/securities/")
+            .nth(1)
+            .and_then(|s| s.split('/').next())
+            .unwrap_or("")
+            .to_string();
 
-        Ok(StreamEvent::OrderbookSnapshot(
-            crate::core::types::OrderBook {
+        Ok(StreamEvent::OrderbookSnapshot {
+            symbol,
+            book: crate::core::types::OrderBook {
                 bids: Vec::new(),
                 asks: Vec::new(),
                 timestamp,
@@ -527,7 +540,7 @@ impl MoexWebSocket {
                 transaction_time: None,
                 checksum: None,
             },
-        ))
+        })
     }
 
     /// Handle a parsed STOMP frame (common logic for text and binary messages)
@@ -1330,8 +1343,8 @@ mod tests {
         let dest = "/topic/engines/stock/markets/shares/boards/TQBR/securities/SBER";
         let event = MoexWebSocket::parse_ticker_event(&json, dest).unwrap();
 
-        if let StreamEvent::Ticker(ticker) = event {
-            assert_eq!(ticker.symbol, "SBER");
+        if let StreamEvent::Ticker { ticker, symbol, .. } = event {
+            assert_eq!(symbol, "SBER");
             assert_eq!(ticker.last_price, 308.31);
             assert_eq!(ticker.bid_price, Some(308.26));
             assert_eq!(ticker.ask_price, Some(308.35));

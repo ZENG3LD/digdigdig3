@@ -3059,7 +3059,6 @@ impl MarketDataPublic for BinanceConnector {
                     .and_then(|v| v.as_i64())
                     .map(|id| id.to_string())
                     .unwrap_or_default(),
-                symbol: symbol.to_string(),
                 price: parse_f64("price"),
                 quantity: parse_f64("qty"),
                 side: if is_buyer_maker { TradeSide::Sell } else { TradeSide::Buy },

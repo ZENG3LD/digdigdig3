@@ -339,20 +339,28 @@ fn bitget_kline_interval(interval: &KlineInterval) -> &str {
 
 fn parse_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw)?;
+    let symbol = raw
+        .get("arg")
+        .and_then(|a| a.get("instId"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     let ticker = BitgetParser::parse_ws_ticker(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    Ok(StreamEvent::Ticker(ticker))
+    Ok(StreamEvent::Ticker { symbol, ticker })
 }
 
 fn parse_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw)?;
-    let inst_id = raw
+    let symbol = raw
         .get("arg")
         .and_then(|a| a.get("instId"))
-        .and_then(|v| v.as_str());
-    let trade = BitgetParser::parse_ws_trade(data, inst_id)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let trade = BitgetParser::parse_ws_trade(data, None)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    Ok(StreamEvent::Trade(trade))
+    Ok(StreamEvent::Trade { symbol, trade })
 }
 
 fn parse_orderbook(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -363,9 +371,21 @@ fn parse_orderbook(raw: &Value) -> WebSocketResult<StreamEvent> {
 
 fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw)?;
+    // Extract symbol and interval from "arg" metadata
+    let kl_symbol = raw.get("arg")
+        .and_then(|a| a.get("instId"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let kl_interval = raw.get("arg")
+        .and_then(|a| a.get("channel"))
+        .and_then(|v| v.as_str())
+        // channel is e.g. "candle1m" — strip "candle" prefix for interval
+        .map(|ch| ch.strip_prefix("candle").unwrap_or(ch).to_string())
+        .unwrap_or_default();
     let kline = BitgetParser::parse_ws_kline(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    Ok(StreamEvent::Kline(kline))
+    Ok(StreamEvent::Kline { symbol: kl_symbol, interval: kl_interval, kline })
 }
 
 fn parse_mark_price(raw: &Value) -> WebSocketResult<StreamEvent> {

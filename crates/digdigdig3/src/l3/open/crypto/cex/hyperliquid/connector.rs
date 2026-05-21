@@ -680,7 +680,6 @@ impl MarketData for HyperliquidConnector {
             ))?;
 
         let mut ticker = HyperliquidParser::parse_ticker(&arr[1], asset_index)?;
-        ticker.symbol = coin.clone();
 
         // If markPx was 0, fall back to allMids for the last price
         if ticker.last_price == 0.0 {

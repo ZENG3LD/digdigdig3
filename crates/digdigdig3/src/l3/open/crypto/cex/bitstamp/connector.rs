@@ -1205,7 +1205,6 @@ impl MarketDataPublic for BitstampConnector {
         let arr = raw.as_array().ok_or_else(|| {
             ExchangeError::Parse("get_recent_trades: expected array".into())
         })?;
-        let symbol_str = pair.to_string();
         let mut result = Vec::with_capacity(arr.len());
         for item in arr {
             let parse_f64 = |key: &str| -> f64 {
@@ -1226,7 +1225,6 @@ impl MarketDataPublic for BitstampConnector {
                     .and_then(|v| v.as_i64())
                     .map(|id| id.to_string())
                     .unwrap_or_default(),
-                symbol: symbol_str.clone(),
                 price: parse_f64("price"),
                 quantity: parse_f64("amount"),
                 side,

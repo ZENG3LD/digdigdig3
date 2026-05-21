@@ -529,7 +529,6 @@ impl MarketData for CoinbaseConnector {
                 })
                 .unwrap_or(0.0);
             Ok(Ticker {
-                symbol: product_id,
                 last_price,
                 bid_price,
                 ask_price,
@@ -1646,7 +1645,6 @@ impl MarketDataPublic for CoinbaseConnector {
         let trades_arr = raw.get("trades")
             .and_then(|v| v.as_array())
             .ok_or_else(|| ExchangeError::Parse("get_recent_trades: expected trades array".into()))?;
-        let symbol_str = product_id.to_string();
         let mut result = Vec::with_capacity(trades_arr.len());
         for item in trades_arr {
             let parse_f64 = |key: &str| -> f64 {
@@ -1662,7 +1660,6 @@ impl MarketDataPublic for CoinbaseConnector {
                 .unwrap_or(0);
             result.push(PublicTrade {
                 id: item.get("trade_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                symbol: symbol_str.clone(),
                 price: parse_f64("price"),
                 quantity: parse_f64("size"),
                 side,

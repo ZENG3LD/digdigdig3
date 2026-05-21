@@ -176,7 +176,6 @@ impl KuCoinParser {
             .unwrap_or(0);
 
         Ok(Ticker {
-            symbol: Self::get_str(data, "symbol").unwrap_or("").to_string(),
             last_price,
             bid_price,
             ask_price,
@@ -520,7 +519,6 @@ impl KuCoinParser {
     /// For full 24h stats, see `parse_ws_snapshot_ticker`.
     pub fn parse_ws_ticker(data: &Value) -> ExchangeResult<Ticker> {
         Ok(Ticker {
-            symbol: Self::get_str(data, "symbol").unwrap_or("").to_string(),
             last_price: Self::get_f64(data, "price").unwrap_or(0.0),
             bid_price: Self::get_f64(data, "bestBid")
                 .or_else(|| Self::get_f64(data, "bestBidPrice")),
@@ -561,7 +559,6 @@ impl KuCoinParser {
             .unwrap_or(0);
 
         Ok(Ticker {
-            symbol: Self::get_str(data, "symbol").unwrap_or("").to_string(),
             last_price,
             bid_price,
             ask_price,
@@ -584,7 +581,6 @@ impl KuCoinParser {
 
         Ok(PublicTrade {
             id: Self::get_str(data, "tradeId").unwrap_or("").to_string(),
-            symbol: Self::get_str(data, "symbol").unwrap_or("").to_string(),
             price: Self::require_f64(data, "price")?,
             quantity: Self::get_f64(data, "size").unwrap_or(0.0),
             side,
@@ -624,16 +620,19 @@ impl KuCoinParser {
                     (vec![], vec![OrderBookLevel::new(price, size)])
                 };
 
-                return Ok(StreamEvent::OrderbookDelta(OrderbookDeltaData {
-                    bids,
-                    asks,
-                    timestamp: data.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0),
-                    first_update_id: None,
-                    last_update_id: None,
-                    prev_update_id: None,
-                    event_time: None,
-                    checksum: None,
-                }));
+                return Ok(StreamEvent::OrderbookDelta {
+                    symbol: String::new(),
+                    delta: OrderbookDeltaData {
+                        bids,
+                        asks,
+                        timestamp: data.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0),
+                        first_update_id: None,
+                        last_update_id: None,
+                        prev_update_id: None,
+                        event_time: None,
+                        checksum: None,
+                    },
+                });
             }
         }
 
@@ -656,16 +655,19 @@ impl KuCoinParser {
                     .unwrap_or_default()
             };
 
-            return Ok(StreamEvent::OrderbookDelta(OrderbookDeltaData {
-                bids: parse_levels("bids"),
-                asks: parse_levels("asks"),
-                timestamp: data.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0),
-                first_update_id: None,
-                last_update_id: None,
-                prev_update_id: None,
-                event_time: None,
-                checksum: None,
-            }));
+            return Ok(StreamEvent::OrderbookDelta {
+                symbol: String::new(),
+                delta: OrderbookDeltaData {
+                    bids: parse_levels("bids"),
+                    asks: parse_levels("asks"),
+                    timestamp: data.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0),
+                    first_update_id: None,
+                    last_update_id: None,
+                    prev_update_id: None,
+                    event_time: None,
+                    checksum: None,
+                },
+            });
         }
 
         // ── Format 2: Spot delta — changes object ─────────────────────────────
@@ -687,16 +689,19 @@ impl KuCoinParser {
                 .unwrap_or_default()
         };
 
-        Ok(StreamEvent::OrderbookDelta(OrderbookDeltaData {
-            bids: parse_changes("bids"),
-            asks: parse_changes("asks"),
-            timestamp: data.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0),
-            first_update_id: None,
-            last_update_id: None,
-            prev_update_id: None,
-            event_time: None,
-            checksum: None,
-        }))
+        Ok(StreamEvent::OrderbookDelta {
+            symbol: String::new(),
+            delta: OrderbookDeltaData {
+                bids: parse_changes("bids"),
+                asks: parse_changes("asks"),
+                timestamp: data.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0),
+                first_update_id: None,
+                last_update_id: None,
+                prev_update_id: None,
+                event_time: None,
+                checksum: None,
+            },
+        })
     }
 
     /// Parse WebSocket kline message
@@ -1242,7 +1247,6 @@ mod tests {
             "bid_price must be less than ask_price");
 
         // Verify other fields
-        assert_eq!(ticker.symbol, "BTC-USDT");
         assert!((ticker.last_price - 11328.9).abs() < f64::EPSILON);
         assert_eq!(ticker.timestamp, 1602832092060i64);
     }

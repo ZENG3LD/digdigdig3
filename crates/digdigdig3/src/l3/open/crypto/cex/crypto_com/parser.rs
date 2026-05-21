@@ -191,7 +191,6 @@ impl CryptoComParser {
             .ok_or_else(|| ExchangeError::Parse("No ticker data".to_string()))?;
 
         Ok(Ticker {
-            symbol: Self::get_str(data, "i").unwrap_or("").to_string(),
             last_price: Self::get_f64(data, "a").unwrap_or(0.0),
             bid_price: Self::get_f64(data, "b"),
             ask_price: Self::get_f64(data, "k"),
@@ -463,7 +462,6 @@ impl CryptoComParser {
     /// Parse WebSocket ticker message
     pub fn parse_ws_ticker(data: &Value) -> ExchangeResult<Ticker> {
         Ok(Ticker {
-            symbol: Self::get_str(data, "i").unwrap_or("").to_string(),
             last_price: Self::get_f64(data, "a").unwrap_or(0.0),
             bid_price: Self::get_f64(data, "b"),
             ask_price: Self::get_f64(data, "k"),
@@ -486,7 +484,6 @@ impl CryptoComParser {
 
         Ok(PublicTrade {
             id: Self::get_str(data, "d").unwrap_or("").to_string(),
-            symbol: Self::get_str(data, "i").unwrap_or("").to_string(),
             price: Self::require_f64(data, "p")?,
             quantity: Self::get_f64(data, "q").unwrap_or(0.0),
             side,
@@ -832,7 +829,6 @@ mod tests {
         });
 
         let ticker = CryptoComParser::parse_ticker(&response).unwrap();
-        assert_eq!(ticker.symbol, "BTCUSD-PERP");
         assert!((ticker.last_price - 50000.50).abs() < f64::EPSILON);
         assert_eq!(ticker.timestamp, 1234567890);
     }

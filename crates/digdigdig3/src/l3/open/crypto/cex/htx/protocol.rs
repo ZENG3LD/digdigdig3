@@ -399,33 +399,35 @@ fn parse_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
         .and_then(|arr| arr.first())
         .and_then(parse_f64_field);
 
-    Ok(StreamEvent::Ticker(Ticker {
+    Ok(StreamEvent::Ticker {
         symbol,
-        last_price,
-        bid_price,
-        ask_price,
-        high_24h: data.get("high").and_then(parse_f64_field),
-        low_24h: data.get("low").and_then(parse_f64_field),
-        volume_24h: data.get("amount").and_then(parse_f64_field),
-        quote_volume_24h: data.get("vol").and_then(parse_f64_field),
-        price_change_24h: {
-            let close = data.get("close").or_else(|| data.get("last_px")).and_then(parse_f64_field);
-            let open = data.get("open").and_then(parse_f64_field);
-            match (close, open) {
-                (Some(c), Some(o)) => Some(c - o),
-                _ => None,
-            }
+        ticker: Ticker {
+            last_price,
+            bid_price,
+            ask_price,
+            high_24h: data.get("high").and_then(parse_f64_field),
+            low_24h: data.get("low").and_then(parse_f64_field),
+            volume_24h: data.get("amount").and_then(parse_f64_field),
+            quote_volume_24h: data.get("vol").and_then(parse_f64_field),
+            price_change_24h: {
+                let close = data.get("close").or_else(|| data.get("last_px")).and_then(parse_f64_field);
+                let open = data.get("open").and_then(parse_f64_field);
+                match (close, open) {
+                    (Some(c), Some(o)) => Some(c - o),
+                    _ => None,
+                }
+            },
+            price_change_percent_24h: {
+                let close = data.get("close").or_else(|| data.get("last_px")).and_then(parse_f64_field);
+                let open = data.get("open").and_then(parse_f64_field);
+                match (close, open) {
+                    (Some(c), Some(o)) if o != 0.0 => Some(((c - o) / o) * 100.0),
+                    _ => None,
+                }
+            },
+            timestamp: raw.get("ts").and_then(|v| v.as_i64()).unwrap_or_else(|| timestamp_millis() as i64),
         },
-        price_change_percent_24h: {
-            let close = data.get("close").or_else(|| data.get("last_px")).and_then(parse_f64_field);
-            let open = data.get("open").and_then(parse_f64_field);
-            match (close, open) {
-                (Some(c), Some(o)) if o != 0.0 => Some(((c - o) / o) * 100.0),
-                _ => None,
-            }
-        },
-        timestamp: raw.get("ts").and_then(|v| v.as_i64()).unwrap_or_else(|| timestamp_millis() as i64),
-    }))
+    })
 }
 
 /// Parse HTX BBO frame.
@@ -469,22 +471,24 @@ fn parse_bbo(raw: &Value) -> WebSocketResult<StreamEvent> {
     let last_price = bid_price
         .ok_or_else(|| WebSocketError::Parse("htx bbo: missing bid".into()))?;
 
-    Ok(StreamEvent::Ticker(Ticker {
+    Ok(StreamEvent::Ticker {
         symbol,
-        last_price,
-        bid_price,
-        ask_price,
-        high_24h: None,
-        low_24h: None,
-        volume_24h: None,
-        quote_volume_24h: None,
-        price_change_24h: None,
-        price_change_percent_24h: None,
-        timestamp: raw
-            .get("ts")
-            .and_then(|v| v.as_i64())
-            .unwrap_or_else(|| timestamp_millis() as i64),
-    }))
+        ticker: Ticker {
+            last_price,
+            bid_price,
+            ask_price,
+            high_24h: None,
+            low_24h: None,
+            volume_24h: None,
+            quote_volume_24h: None,
+            price_change_24h: None,
+            price_change_percent_24h: None,
+            timestamp: raw
+                .get("ts")
+                .and_then(|v| v.as_i64())
+                .unwrap_or_else(|| timestamp_millis() as i64),
+        },
+    })
 }
 
 fn parse_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -531,19 +535,24 @@ fn parse_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
         .map(|id| id.to_string())
         .unwrap_or_default();
 
-    Ok(StreamEvent::Trade(PublicTrade {
-        id: trade_id,
+    Ok(StreamEvent::Trade {
         symbol,
-        price,
-        quantity,
-        side,
-        timestamp,
-    }))
+        trade: PublicTrade {
+            id: trade_id,
+            price,
+            quantity,
+            side,
+            timestamp,
+        },
+    })
 }
 
 fn parse_orderbook(raw: &Value) -> WebSocketResult<StreamEvent> {
     use crate::core::types::{OrderBook, OrderBookLevel};
     use crate::core::timestamp_millis;
+
+    let channel = raw.get("ch").and_then(|v| v.as_str()).unwrap_or("");
+    let ob_symbol = channel.split('.').nth(1).unwrap_or("").to_uppercase();
 
     let data = tick_data(raw)?;
 
@@ -579,24 +588,30 @@ fn parse_orderbook(raw: &Value) -> WebSocketResult<StreamEvent> {
         .unwrap_or_else(|| timestamp_millis() as i64);
     let sequence = data.get("version").and_then(|v| v.as_i64()).map(|v| v.to_string());
 
-    Ok(StreamEvent::OrderbookSnapshot(OrderBook {
-        bids,
-        asks,
-        timestamp,
-        sequence,
-        last_update_id: None,
-        first_update_id: None,
-        prev_update_id: None,
-        event_time: None,
-        transaction_time: None,
-        checksum: None,
-    }))
+    Ok(StreamEvent::OrderbookSnapshot {
+        symbol: ob_symbol,
+        book: OrderBook {
+            bids,
+            asks,
+            timestamp,
+            sequence,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
+        },
+    })
 }
 
 fn parse_orderbook_delta(raw: &Value) -> WebSocketResult<StreamEvent> {
     // HTX MBP deltas — emit OrderbookDelta
     use crate::core::types::{OrderBookLevel, OrderbookDelta};
     use crate::core::timestamp_millis;
+
+    let delta_channel = raw.get("ch").and_then(|v| v.as_str()).unwrap_or("");
+    let delta_symbol = delta_channel.split('.').nth(1).unwrap_or("").to_uppercase();
 
     let data = tick_data(raw)?;
 
@@ -635,20 +650,29 @@ fn parse_orderbook_delta(raw: &Value) -> WebSocketResult<StreamEvent> {
         .and_then(|v| v.as_i64())
         .unwrap_or_else(|| timestamp_millis() as i64);
 
-    Ok(StreamEvent::OrderbookDelta(OrderbookDelta {
-        bids,
-        asks,
-        timestamp,
-        first_update_id: None,
-        last_update_id: None,
-        prev_update_id: None,
-        event_time: None,
-        checksum: None,
-    }))
+    Ok(StreamEvent::OrderbookDelta {
+        symbol: delta_symbol,
+        delta: OrderbookDelta {
+            bids,
+            asks,
+            timestamp,
+            first_update_id: None,
+            last_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            checksum: None,
+        },
+    })
 }
 
 fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
     use crate::core::types::Kline;
+
+    // channel: "market.btcusdt.kline.1min" → symbol=parts[1], interval=parts[3]
+    let kline_channel = raw.get("ch").and_then(|v| v.as_str()).unwrap_or("");
+    let kline_parts: Vec<&str> = kline_channel.split('.').collect();
+    let kline_symbol = kline_parts.get(1).copied().unwrap_or("").to_uppercase();
+    let kline_interval = kline_parts.get(3).copied().unwrap_or("").to_string();
 
     let data = tick_data(raw)?;
 
@@ -677,17 +701,21 @@ fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
     let quote_volume = data.get("vol").and_then(parse_f64_field);
     let trades = data.get("count").and_then(|v| v.as_i64()).map(|c| c as u64);
 
-    Ok(StreamEvent::Kline(Kline {
-        open_time,
-        open,
-        high,
-        low,
-        close,
-        volume,
-        quote_volume,
-        close_time: None,
-        trades,
-    }))
+    Ok(StreamEvent::Kline {
+        symbol: kline_symbol,
+        interval: kline_interval,
+        kline: Kline {
+            open_time,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            quote_volume,
+            close_time: None,
+            trades,
+        },
+    })
 }
 
 fn parse_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -884,7 +912,7 @@ mod tests {
         assert!(!parsers.is_empty(), "bbo topic must have a registered parser");
         let event = parsers[0](&frame).expect("parse must succeed");
         match event {
-            crate::core::types::StreamEvent::Ticker(t) => {
+            crate::core::types::StreamEvent::Ticker { ticker: t, .. } => {
                 assert!(t.bid_price.is_some(), "bid must be present");
                 assert!(t.ask_price.is_some(), "ask must be present");
                 assert!((t.bid_price.unwrap() - 49490.0).abs() < 0.01);
@@ -915,7 +943,7 @@ mod tests {
         assert!(!parsers.is_empty());
         let event = parsers[0](&frame).expect("parse must succeed for array format too");
         match event {
-            crate::core::types::StreamEvent::Ticker(t) => {
+            crate::core::types::StreamEvent::Ticker { ticker: t, .. } => {
                 assert!(t.bid_price.is_some());
                 assert!(t.ask_price.is_some());
             }

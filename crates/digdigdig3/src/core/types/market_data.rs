@@ -38,8 +38,6 @@ pub struct Kline {
 /// Тикер (24h статистика)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ticker {
-    /// Символ
-    pub symbol: String,
     /// Последняя цена
     pub last_price: f64,
     /// Лучший bid
@@ -298,8 +296,6 @@ pub struct OpenInterest {
 pub struct PublicTrade {
     /// ID сделки
     pub id: String,
-    /// Символ
-    pub symbol: String,
     /// Цена
     pub price: f64,
     /// Количество

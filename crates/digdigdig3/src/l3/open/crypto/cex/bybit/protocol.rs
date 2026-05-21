@@ -419,19 +419,21 @@ fn parse_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
         prev.map(|p| last_price - p)
     };
 
-    Ok(StreamEvent::Ticker(crate::core::Ticker {
+    Ok(StreamEvent::Ticker {
         symbol,
-        last_price,
-        bid_price,
-        ask_price,
-        high_24h,
-        low_24h,
-        volume_24h,
-        quote_volume_24h,
-        price_change_24h,
-        price_change_percent_24h,
-        timestamp: ts,
-    }))
+        ticker: crate::core::Ticker {
+            last_price,
+            bid_price,
+            ask_price,
+            high_24h,
+            low_24h,
+            volume_24h,
+            quote_volume_24h,
+            price_change_24h,
+            price_change_percent_24h,
+            timestamp: ts,
+        },
+    })
 }
 
 fn parse_mark_price(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -560,9 +562,12 @@ fn parse_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
         .unwrap_or(TradeSide::Buy);
     let id = item["i"].as_str().unwrap_or("0").to_string();
 
-    Ok(StreamEvent::Trade(crate::core::PublicTrade {
-        id, symbol, price, quantity, side, timestamp,
-    }))
+    Ok(StreamEvent::Trade {
+        symbol,
+        trade: crate::core::PublicTrade {
+            id, price, quantity, side, timestamp,
+        },
+    })
 }
 
 fn parse_orderbook(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -570,6 +575,7 @@ fn parse_orderbook(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     let data = frame_data(raw)?;
     let msg_type = raw.get("type").and_then(|v| v.as_str());
+    let symbol = data.get("s").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
     let wrapper = serde_json::json!({ "retCode": 0, "result": data });
     let orderbook = BybitParser::parse_orderbook(&wrapper)
@@ -586,9 +592,9 @@ fn parse_orderbook(raw: &Value) -> WebSocketResult<StreamEvent> {
             event_time: orderbook.event_time,
             checksum: orderbook.checksum,
         };
-        Ok(StreamEvent::OrderbookDelta(delta))
+        Ok(StreamEvent::OrderbookDelta { symbol, delta })
     } else {
-        Ok(StreamEvent::OrderbookSnapshot(orderbook))
+        Ok(StreamEvent::OrderbookSnapshot { symbol, book: orderbook })
     }
 }
 
@@ -614,13 +620,23 @@ fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
     let close  = parse_str_f64("close")?;
     let volume = parse_str_f64("volume")?;
 
-    Ok(StreamEvent::Kline(crate::core::Kline {
-        open_time: start,
-        open, high, low, close, volume,
-        quote_volume: None,
-        close_time: None,
-        trades: None,
-    }))
+    // topic: "kline.1.BTCUSDT" → parts[2]=symbol, parts[1]=interval
+    let topic = raw.get("topic").and_then(|v| v.as_str()).unwrap_or("");
+    let mut topic_parts = topic.splitn(3, '.');
+    let interval = topic_parts.nth(1).unwrap_or("").to_string();
+    let symbol = topic_parts.next().unwrap_or("").to_string();
+
+    Ok(StreamEvent::Kline {
+        symbol,
+        interval,
+        kline: crate::core::Kline {
+            open_time: start,
+            open, high, low, close, volume,
+            quote_volume: None,
+            close_time: None,
+            trades: None,
+        },
+    })
 }
 
 /// Parser for the `allLiquidation.{sym}` channel (replaces deprecated `liquidation.{sym}`).
@@ -739,15 +755,18 @@ fn parse_ticker_lt(raw: &Value) -> WebSocketResult<StreamEvent> {
         .unwrap_or(0.0);
     let timestamp = data["navTime"].as_i64().unwrap_or(0);
 
-    Ok(StreamEvent::Ticker(crate::core::Ticker {
-        symbol, last_price,
-        bid_price: None, // Bybit tickers_lt (leveraged token NAV) channel does not carry top-of-book quotes
-        ask_price: None, // Bybit tickers_lt (leveraged token NAV) channel does not carry top-of-book quotes
-        high_24h: None, low_24h: None,
-        volume_24h: None, quote_volume_24h: None,
-        price_change_24h: None, price_change_percent_24h: None,
-        timestamp,
-    }))
+    Ok(StreamEvent::Ticker {
+        symbol,
+        ticker: crate::core::Ticker {
+            last_price,
+            bid_price: None, // Bybit tickers_lt (leveraged token NAV) channel does not carry top-of-book quotes
+            ask_price: None, // Bybit tickers_lt (leveraged token NAV) channel does not carry top-of-book quotes
+            high_24h: None, low_24h: None,
+            volume_24h: None, quote_volume_24h: None,
+            price_change_24h: None, price_change_percent_24h: None,
+            timestamp,
+        },
+    })
 }
 
 fn parse_order_update(raw: &Value) -> WebSocketResult<StreamEvent> {

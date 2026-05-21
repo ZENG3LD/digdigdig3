@@ -473,6 +473,16 @@ mod inner {
     /// let signing_key = signing_key_from_bytes(&key_bytes)?;
     /// ```
     pub fn signing_key_from_bytes(key_bytes: &[u8]) -> Result<SigningKey, ExchangeError> {
+        // k256's SigningKey::from_slice accepts any length up to 32 bytes (left-pads
+        // with zeros). For a public signing-key constructor we want strict 32-byte
+        // input — otherwise a 31-byte slice silently becomes a different but still
+        // valid key, which is an auth correctness bug. Validate explicitly.
+        if key_bytes.len() != 32 {
+            return Err(ExchangeError::Auth(format!(
+                "DydxTxBuilder: signing key must be exactly 32 bytes, got {}",
+                key_bytes.len()
+            )));
+        }
         SigningKey::from_slice(key_bytes).map_err(|e| {
             ExchangeError::Auth(format!(
                 "DydxTxBuilder: invalid signing key bytes: {}",

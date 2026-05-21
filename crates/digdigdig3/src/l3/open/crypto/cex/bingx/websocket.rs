@@ -526,14 +526,9 @@ impl BingxWebSocket {
         } else if data_type.ends_with("@depth5") || data_type.ends_with("@depth") || data_type.ends_with("@depth20") {
             // Orderbook stream
             let symbol = data_type.split('@').next().unwrap_or("").to_string();
-            let book = BingxParser::parse_ws_orderbook(data)
+            let delta = BingxParser::parse_ws_orderbook(data)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            // parse_ws_orderbook returns StreamEvent::OrderbookDelta — re-wrap with symbol
-            if let StreamEvent::OrderbookDelta { delta, .. } = book {
-                Ok(Some(StreamEvent::OrderbookDelta { symbol, delta }))
-            } else {
-                Ok(Some(book))
-            }
+            Ok(Some(StreamEvent::OrderbookDelta { symbol, delta }))
         } else if data_type.contains("@kline_") {
             // Kline stream — extract interval from data_type: "BTC-USDT@kline_1m"
             let symbol = data_type.split('@').next().unwrap_or("").to_string();
@@ -543,9 +538,10 @@ impl BingxWebSocket {
             Ok(Some(StreamEvent::Kline { symbol, interval, kline }))
         } else if data_type == "spot.executionReport" || data_type == "swap.order" {
             // Order update (private)
+            let symbol = data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string();
             let event = BingxParser::parse_ws_order_update(data, account_type)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(StreamEvent::OrderUpdate(event)))
+            Ok(Some(StreamEvent::OrderUpdate { symbol, event }))
         } else if data_type == "spot.account" || data_type == "swap.account" {
             // Balance update (private)
             let event = BingxParser::parse_ws_balance_update(data)
@@ -553,9 +549,10 @@ impl BingxWebSocket {
             Ok(Some(StreamEvent::BalanceUpdate(event)))
         } else if data_type == "swap.position" {
             // Position update (private, futures only)
+            let symbol = data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string();
             let event = BingxParser::parse_ws_position_update(data)
                 .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(StreamEvent::PositionUpdate(event)))
+            Ok(Some(StreamEvent::PositionUpdate { symbol, event }))
         } else if data_type.ends_with("@markPrice") {
             // Mark price stream — data: { symbol, markPrice, indexPrice, ts }
             let event = Self::parse_mark_price_ws(data_type, data)?;

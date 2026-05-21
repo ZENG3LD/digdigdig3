@@ -576,8 +576,10 @@ impl BingxParser {
         })
     }
 
-    /// Parse WebSocket orderbook
-    pub fn parse_ws_orderbook(data: &Value) -> ExchangeResult<crate::core::StreamEvent> {
+    /// Parse WebSocket orderbook into a raw `OrderbookDeltaData` payload.
+    /// The caller wraps it into a `StreamEvent::OrderbookDelta { symbol, delta }`
+    /// with the symbol extracted from the BingX `dataType` channel name.
+    pub fn parse_ws_orderbook(data: &Value) -> ExchangeResult<OrderbookDeltaData> {
         let bids_arr = data.get("bids").and_then(|v| v.as_array())
             .ok_or_else(|| ExchangeError::Parse("Missing bids".to_string()))?;
         let asks_arr = data.get("asks").and_then(|v| v.as_array())
@@ -607,19 +609,15 @@ impl BingxParser {
 
         let timestamp = crate::core::timestamp_millis() as i64;
 
-        Ok(crate::core::StreamEvent::OrderbookDelta {
-            // symbol not available in parse_ws_orderbook scope — caller in websocket.rs extracts from data_type
-            symbol: String::new(),
-            delta: OrderbookDeltaData {
-                bids,
-                asks,
-                timestamp,
-                first_update_id: None,
-                last_update_id: None,
-                prev_update_id: None,
-                event_time: None,
-                checksum: None,
-            },
+        Ok(OrderbookDeltaData {
+            bids,
+            asks,
+            timestamp,
+            first_update_id: None,
+            last_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            checksum: None,
         })
     }
 
@@ -668,7 +666,6 @@ impl BingxParser {
     ) -> ExchangeResult<crate::core::OrderUpdateEvent> {
         let order_id = Self::require_str(data, "i")?.to_string();
         let client_order_id = Self::get_str(data, "c").map(|s| s.to_string());
-        let symbol = Self::require_str(data, "s")?.to_string();
 
         let side_str = Self::require_str(data, "S")?;
         let side = match side_str.to_uppercase().as_str() {
@@ -711,7 +708,6 @@ impl BingxParser {
         Ok(crate::core::OrderUpdateEvent {
             order_id,
             client_order_id,
-            symbol,
             side,
             order_type,
             status,
@@ -762,7 +758,6 @@ impl BingxParser {
 
     /// Parse WebSocket position update
     pub fn parse_ws_position_update(data: &Value) -> ExchangeResult<crate::core::PositionUpdateEvent> {
-        let symbol = Self::require_str(data, "s")?.to_string();
         let position_amt = Self::require_f64(data, "pa")?;
 
         let side = if position_amt > 0.0 {
@@ -782,7 +777,6 @@ impl BingxParser {
         let timestamp = crate::core::timestamp_millis() as i64;
 
         Ok(crate::core::PositionUpdateEvent {
-            symbol,
             side,
             quantity,
             entry_price,

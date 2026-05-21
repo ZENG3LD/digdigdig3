@@ -529,7 +529,7 @@ fn event_raw_symbol(ev: &StreamEvent) -> Option<&str> {
         StreamEvent::VolatilityIndex { symbol, .. } => Some(symbol),
         StreamEvent::BlockTrade { symbol, .. } => Some(symbol),
         StreamEvent::AuctionEvent { symbol, .. } => Some(symbol),
-        StreamEvent::MarketWarning { symbol, .. } => Some(symbol),
+        StreamEvent::MarketWarning { symbol, .. } => symbol.as_deref(),
         StreamEvent::OrderbookL3 { symbol, .. } => Some(symbol),
         StreamEvent::SettlementEvent { symbol, .. } => Some(symbol),
         StreamEvent::RiskLimit { symbol, .. } => Some(symbol),
@@ -537,9 +537,9 @@ fn event_raw_symbol(ev: &StreamEvent) -> Option<&str> {
         StreamEvent::FundingSettlement { symbol, .. } => Some(symbol),
         StreamEvent::CompositeIndex { symbol, .. } => Some(symbol),
         // Private events — private dispatch isn't symbol-routed at the SeriesKey level.
-        StreamEvent::OrderUpdate(_)
+        StreamEvent::OrderUpdate { symbol: _, event: _ }
         | StreamEvent::BalanceUpdate(_)
-        | StreamEvent::PositionUpdate(_) => None,
+        | StreamEvent::PositionUpdate { symbol: _, event: _ } => None,
     }
 }
 

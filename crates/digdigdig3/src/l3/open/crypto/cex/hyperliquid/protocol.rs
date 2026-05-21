@@ -519,24 +519,26 @@ fn parse_clearinghouse_position(raw: &Value) -> WebSocketResult<StreamEvent> {
             crate::core::PositionSide::Short
         };
 
-        return Ok(StreamEvent::PositionUpdate(crate::core::PositionUpdateEvent {
+        return Ok(StreamEvent::PositionUpdate {
             symbol: coin.to_string(),
-            side,
-            quantity: size.abs(),
-            entry_price,
-            mark_price: None,
-            unrealized_pnl,
-            realized_pnl: None,
-            liquidation_price: parse_f64_field(pos, "liquidationPx"),
-            leverage: pos
-                .get("leverage")
-                .and_then(|v| v.get("value"))
-                .and_then(|v| v.as_f64())
-                .map(|v| v as u32),
-            margin_type: None,
-            reason: None,
-            timestamp: now,
-        }));
+            event: crate::core::PositionUpdateEvent {
+                side,
+                quantity: size.abs(),
+                entry_price,
+                mark_price: None,
+                unrealized_pnl,
+                realized_pnl: None,
+                liquidation_price: parse_f64_field(pos, "liquidationPx"),
+                leverage: pos
+                    .get("leverage")
+                    .and_then(|v| v.get("value"))
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v as u32),
+                margin_type: None,
+                reason: None,
+                timestamp: now,
+            },
+        });
     }
 
     Err(WebSocketError::Parse(
@@ -727,24 +729,26 @@ fn parse_order_update(raw: &Value) -> WebSocketResult<StreamEvent> {
         .and_then(|v| v.as_i64())
         .unwrap_or_else(|| crate::core::utils::timestamp_millis() as i64);
 
-    Ok(StreamEvent::OrderUpdate(OrderUpdateEvent {
-        order_id,
-        client_order_id,
+    Ok(StreamEvent::OrderUpdate {
         symbol,
-        side,
-        order_type: OrderType::Limit { price: price.unwrap_or(0.0) },
-        status,
-        price,
-        quantity: orig_sz,
-        filled_quantity,
-        average_price: None,
-        last_fill_price: None,
-        last_fill_quantity: None,
-        last_fill_commission: None,
-        commission_asset: None,
-        trade_id: None,
-        timestamp,
-    }))
+        event: OrderUpdateEvent {
+            order_id,
+            client_order_id,
+            side,
+            order_type: OrderType::Limit { price: price.unwrap_or(0.0) },
+            status,
+            price,
+            quantity: orig_sz,
+            filled_quantity,
+            average_price: None,
+            last_fill_price: None,
+            last_fill_quantity: None,
+            last_fill_commission: None,
+            commission_asset: None,
+            trade_id: None,
+            timestamp,
+        },
+    })
 }
 
 fn parse_notification(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -758,7 +762,7 @@ fn parse_notification(raw: &Value) -> WebSocketResult<StreamEvent> {
         .to_string();
     let now = crate::core::utils::timestamp_millis() as i64;
     Ok(StreamEvent::MarketWarning {
-        symbol: String::new(),
+        symbol: None,
         warning_kind: "notification".to_string(),
         message: msg,
         timestamp: now,

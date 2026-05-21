@@ -495,15 +495,10 @@ fn parse_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
 
 fn parse_orderbook_delta(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw)?;
-    let event = KuCoinParser::parse_ws_orderbook_delta(data)
+    let delta = KuCoinParser::parse_ws_orderbook_delta(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    // Wrap with symbol from topic; inner event is always OrderbookDelta
     let symbol = topic_symbol(raw);
-    match event {
-        StreamEvent::OrderbookDelta { symbol: _, delta } => Ok(StreamEvent::OrderbookDelta { symbol, delta }),
-        StreamEvent::OrderbookSnapshot { symbol: _, book } => Ok(StreamEvent::OrderbookSnapshot { symbol, book }),
-        other => Ok(other),
-    }
+    Ok(StreamEvent::OrderbookDelta { symbol, delta })
 }
 
 fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -552,9 +547,10 @@ fn parse_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent> {
 
 fn parse_order_update(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw)?;
+    let symbol = data.get("symbol").and_then(|s| s.as_str()).unwrap_or("").to_string();
     let event = KuCoinParser::parse_ws_order_update(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    Ok(StreamEvent::OrderUpdate(event))
+    Ok(StreamEvent::OrderUpdate { symbol, event })
 }
 
 fn parse_balance_update(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -566,9 +562,10 @@ fn parse_balance_update(raw: &Value) -> WebSocketResult<StreamEvent> {
 
 fn parse_position_update(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw)?;
+    let symbol = data.get("symbol").and_then(|s| s.as_str()).unwrap_or("").to_string();
     let event = KuCoinParser::parse_ws_position_update(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    Ok(StreamEvent::PositionUpdate(event))
+    Ok(StreamEvent::PositionUpdate { symbol, event })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

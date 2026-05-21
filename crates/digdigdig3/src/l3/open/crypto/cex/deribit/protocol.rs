@@ -777,9 +777,10 @@ fn parse_markprice_options(raw: &Value) -> WebSocketResult<StreamEvent> {
 
 fn parse_order_update(raw: &Value) -> WebSocketResult<StreamEvent> {
     let (data, _channel) = frame_data(raw)?;
+    let symbol = get_str(data, "instrument_name").unwrap_or("").to_string();
     let event = DeribitParser::parse_ws_order_update(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    Ok(StreamEvent::OrderUpdate(event))
+    Ok(StreamEvent::OrderUpdate { symbol, event })
 }
 
 // ── Private: portfolio / balance ─────────────────────────────────────────────
@@ -827,7 +828,6 @@ fn parse_position_update(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     use crate::core::types::{MarginType, PositionUpdateEvent};
     let event = PositionUpdateEvent {
-        symbol,
         side,
         quantity: size.abs(),
         entry_price: get_f64(pos_data, "average_price").unwrap_or(0.0),
@@ -840,7 +840,7 @@ fn parse_position_update(raw: &Value) -> WebSocketResult<StreamEvent> {
         reason: None,
         timestamp: get_i64(pos_data, "last_update_timestamp").unwrap_or(0),
     };
-    Ok(StreamEvent::PositionUpdate(event))
+    Ok(StreamEvent::PositionUpdate { symbol, event })
 }
 
 // ── Block trade ──────────────────────────────────────────────────────────────

@@ -604,7 +604,7 @@ impl KuCoinParser {
     ///
     /// 3. Futures delta (`/contractMarket/level2:*`):
     ///    `{"change":"price,side,size", "timestamp":…}` — single-entry string.
-    pub fn parse_ws_orderbook_delta(data: &Value) -> ExchangeResult<StreamEvent> {
+    pub fn parse_ws_orderbook_delta(data: &Value) -> ExchangeResult<OrderbookDeltaData> {
         // ── Format 3: Futures single-change string ────────────────────────────
         if let Some(change_str) = Self::get_str(data, "change") {
             let parts: Vec<&str> = change_str.split(',').collect();
@@ -619,18 +619,15 @@ impl KuCoinParser {
                     (vec![], vec![OrderBookLevel::new(price, size)])
                 };
 
-                return Ok(StreamEvent::OrderbookDelta {
-                    symbol: String::new(),
-                    delta: OrderbookDeltaData {
-                        bids,
-                        asks,
-                        timestamp: data.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0),
-                        first_update_id: None,
-                        last_update_id: None,
-                        prev_update_id: None,
-                        event_time: None,
-                        checksum: None,
-                    },
+                return Ok(OrderbookDeltaData {
+                    bids,
+                    asks,
+                    timestamp: data.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0),
+                    first_update_id: None,
+                    last_update_id: None,
+                    prev_update_id: None,
+                    event_time: None,
+                    checksum: None,
                 });
             }
         }
@@ -654,18 +651,15 @@ impl KuCoinParser {
                     .unwrap_or_default()
             };
 
-            return Ok(StreamEvent::OrderbookDelta {
-                symbol: String::new(),
-                delta: OrderbookDeltaData {
-                    bids: parse_levels("bids"),
-                    asks: parse_levels("asks"),
-                    timestamp: data.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0),
-                    first_update_id: None,
-                    last_update_id: None,
-                    prev_update_id: None,
-                    event_time: None,
-                    checksum: None,
-                },
+            return Ok(OrderbookDeltaData {
+                bids: parse_levels("bids"),
+                asks: parse_levels("asks"),
+                timestamp: data.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0),
+                first_update_id: None,
+                last_update_id: None,
+                prev_update_id: None,
+                event_time: None,
+                checksum: None,
             });
         }
 
@@ -688,18 +682,15 @@ impl KuCoinParser {
                 .unwrap_or_default()
         };
 
-        Ok(StreamEvent::OrderbookDelta {
-            symbol: String::new(),
-            delta: OrderbookDeltaData {
-                bids: parse_changes("bids"),
-                asks: parse_changes("asks"),
-                timestamp: data.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0),
-                first_update_id: None,
-                last_update_id: None,
-                prev_update_id: None,
-                event_time: None,
-                checksum: None,
-            },
+        Ok(OrderbookDeltaData {
+            bids: parse_changes("bids"),
+            asks: parse_changes("asks"),
+            timestamp: data.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0),
+            first_update_id: None,
+            last_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            checksum: None,
         })
     }
 
@@ -773,7 +764,6 @@ impl KuCoinParser {
         Ok(OrderUpdateEvent {
             order_id: Self::get_str(data, "orderId").unwrap_or("").to_string(),
             client_order_id: Self::get_str(data, "clientOid").map(String::from),
-            symbol: Self::get_str(data, "symbol").unwrap_or("").to_string(),
             side,
             order_type,
             status,
@@ -852,7 +842,6 @@ impl KuCoinParser {
         };
 
         Ok(PositionUpdateEvent {
-            symbol: Self::get_str(data, "symbol").unwrap_or("").to_string(),
             side,
             quantity: quantity.abs(),
             entry_price: Self::get_f64(data, "avgEntryPrice").unwrap_or(0.0),

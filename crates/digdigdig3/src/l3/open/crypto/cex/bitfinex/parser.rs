@@ -556,11 +556,11 @@ impl BitfinexParser {
         })
     }
 
-    /// Parse WebSocket orderbook delta
-    /// Format: [[PRICE, COUNT, AMOUNT], ...]
-    pub fn parse_ws_orderbook_delta(data: &[Value]) -> ExchangeResult<crate::core::StreamEvent> {
-        // For now, return a simple orderbook update
-        // In a full implementation, this would handle incremental updates
+    /// Parse WebSocket orderbook delta into a raw `OrderbookDeltaData` payload.
+    /// Format: [[PRICE, COUNT, AMOUNT], ...].
+    /// Caller (websocket.rs) wraps it into `StreamEvent::OrderbookDelta { symbol, delta }`
+    /// with the symbol extracted from the channel-id → subscription map.
+    pub fn parse_ws_orderbook_delta(data: &[Value]) -> ExchangeResult<OrderbookDeltaData> {
         let mut bids = Vec::new();
         let mut asks = Vec::new();
 
@@ -583,19 +583,15 @@ impl BitfinexParser {
             }
         }
 
-        Ok(crate::core::StreamEvent::OrderbookDelta {
-            // symbol not available in parse_ws_orderbook_delta scope — caller in websocket.rs extracts from subscription
-            symbol: String::new(),
-            delta: OrderbookDeltaData {
-                bids,
-                asks,
-                timestamp: crate::core::timestamp_millis() as i64,
-                first_update_id: None,
-                last_update_id: None,
-                prev_update_id: None,
-                event_time: None,
-                checksum: None,
-            },
+        Ok(OrderbookDeltaData {
+            bids,
+            asks,
+            timestamp: crate::core::timestamp_millis() as i64,
+            first_update_id: None,
+            last_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            checksum: None,
         })
     }
 

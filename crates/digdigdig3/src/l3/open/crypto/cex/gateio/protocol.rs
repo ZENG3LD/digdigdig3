@@ -700,9 +700,14 @@ fn parse_liquidation(raw: &Value) -> WebSocketResult<StreamEvent> {
 
 fn parse_order_update(raw: &Value) -> WebSocketResult<StreamEvent> {
     let result = frame_result(raw)?;
+    let symbol = result.get("currency_pair")
+        .or_else(|| result.get("contract"))
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
     let event = GateioParser::parse_ws_order_update(result)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    Ok(StreamEvent::OrderUpdate(event))
+    Ok(StreamEvent::OrderUpdate { symbol, event })
 }
 
 fn parse_balance_update(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -714,9 +719,13 @@ fn parse_balance_update(raw: &Value) -> WebSocketResult<StreamEvent> {
 
 fn parse_position_update(raw: &Value) -> WebSocketResult<StreamEvent> {
     let result = frame_result(raw)?;
+    let symbol = result.get("contract")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
     let event = GateioParser::parse_ws_position_update(result)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    Ok(StreamEvent::PositionUpdate(event))
+    Ok(StreamEvent::PositionUpdate { symbol, event })
 }
 
 

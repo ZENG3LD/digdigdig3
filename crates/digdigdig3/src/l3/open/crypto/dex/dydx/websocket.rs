@@ -457,24 +457,26 @@ impl DydxWebSocket {
                     .map(|dt| dt.timestamp_millis())
                     .unwrap_or(now);
 
-                events.push(StreamEvent::OrderUpdate(OrderUpdateEvent {
-                    order_id,
-                    client_order_id,
+                events.push(StreamEvent::OrderUpdate {
                     symbol,
-                    side,
-                    order_type,
-                    status,
-                    price,
-                    quantity,
-                    filled_quantity: 0.0,
-                    average_price: None,
-                    last_fill_price: None,
-                    last_fill_quantity: None,
-                    last_fill_commission: None,
-                    commission_asset: None,
-                    trade_id: None,
-                    timestamp,
-                }));
+                    event: OrderUpdateEvent {
+                        order_id,
+                        client_order_id,
+                        side,
+                        order_type,
+                        status,
+                        price,
+                        quantity,
+                        filled_quantity: 0.0,
+                        average_price: None,
+                        last_fill_price: None,
+                        last_fill_quantity: None,
+                        last_fill_commission: None,
+                        commission_asset: None,
+                        trade_id: None,
+                        timestamp,
+                    },
+                });
             }
         }
 
@@ -518,24 +520,26 @@ impl DydxWebSocket {
                 let liquidity = fill.get("liquidity").and_then(|v| v.as_str()).unwrap_or("");
 
                 // Represent fill as an OrderUpdate with filled_quantity set
-                events.push(StreamEvent::OrderUpdate(OrderUpdateEvent {
-                    order_id: order_id.clone(),
-                    client_order_id: None,
+                events.push(StreamEvent::OrderUpdate {
                     symbol: symbol.clone(),
-                    side,
-                    order_type: OrderType::Market,
-                    status: OrderStatus::Filled,
-                    price,
-                    quantity: fill_qty,
-                    filled_quantity: fill_qty,
-                    average_price: price,
-                    last_fill_price: price,
-                    last_fill_quantity: Some(fill_qty),
-                    last_fill_commission: fee,
-                    commission_asset: Some("USDC".to_string()),
-                    trade_id: fill_id,
-                    timestamp,
-                }));
+                    event: OrderUpdateEvent {
+                        order_id: order_id.clone(),
+                        client_order_id: None,
+                        side,
+                        order_type: OrderType::Market,
+                        status: OrderStatus::Filled,
+                        price,
+                        quantity: fill_qty,
+                        filled_quantity: fill_qty,
+                        average_price: price,
+                        last_fill_price: price,
+                        last_fill_quantity: Some(fill_qty),
+                        last_fill_commission: fee,
+                        commission_asset: Some("USDC".to_string()),
+                        trade_id: fill_id,
+                        timestamp,
+                    },
+                });
 
                 // Detect liquidation: fill where liquidity field == "LIQUIDATED"
                 // (verified from dYdX v4 Indexer API docs — not based on fill `type`).
@@ -593,20 +597,22 @@ impl DydxWebSocket {
                     .and_then(|_| None) // block height, not a timestamp — use now
                     .unwrap_or(now);
 
-                events.push(StreamEvent::PositionUpdate(PositionUpdateEvent {
+                events.push(StreamEvent::PositionUpdate {
                     symbol,
-                    side: pos_side,
-                    quantity,
-                    entry_price,
-                    mark_price: None,
-                    unrealized_pnl,
-                    realized_pnl,
-                    liquidation_price: None,
-                    leverage: None,
-                    margin_type: None,
-                    reason: None,
-                    timestamp,
-                }));
+                    event: PositionUpdateEvent {
+                        side: pos_side,
+                        quantity,
+                        entry_price,
+                        mark_price: None,
+                        unrealized_pnl,
+                        realized_pnl,
+                        liquidation_price: None,
+                        leverage: None,
+                        margin_type: None,
+                        reason: None,
+                        timestamp,
+                    },
+                });
             }
         }
 

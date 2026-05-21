@@ -727,7 +727,6 @@ impl GateioParser {
         Ok(OrderUpdateEvent {
             order_id: order.id,
             client_order_id: order.client_order_id,
-            symbol: order.symbol,
             side: order.side,
             order_type: order.order_type,
             status: order.status,
@@ -770,7 +769,6 @@ impl GateioParser {
             .ok_or_else(|| ExchangeError::Parse("Invalid position data".to_string()))?;
 
         Ok(PositionUpdateEvent {
-            symbol: pos.symbol,
             side: pos.side,
             quantity: pos.quantity,
             entry_price: pos.entry_price,

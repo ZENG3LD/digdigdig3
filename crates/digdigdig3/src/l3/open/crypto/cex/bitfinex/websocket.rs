@@ -716,21 +716,14 @@ impl BitfinexWebSocket {
                             account_type,
                         )
                     };
-                    let event = BitfinexParser::parse_ws_orderbook_delta(data)
+                    let delta = BitfinexParser::parse_ws_orderbook_delta(data)
                         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
                     // Suppress pure-remove deltas (bids=[] AND asks=[]) to avoid
                     // false "orderbook delta empty" inspector failures.
-                    if let crate::core::StreamEvent::OrderbookDelta { ref delta, .. } = event {
-                        if delta.bids.is_empty() && delta.asks.is_empty() {
-                            return Ok(vec![]);
-                        }
+                    if delta.bids.is_empty() && delta.asks.is_empty() {
+                        return Ok(vec![]);
                     }
-                    // Re-wrap with symbol
-                    if let crate::core::StreamEvent::OrderbookDelta { delta, .. } = event {
-                        Ok(vec![StreamEvent::OrderbookDelta { symbol: ob_symbol, delta }])
-                    } else {
-                        Ok(vec![event])
-                    }
+                    Ok(vec![StreamEvent::OrderbookDelta { symbol: ob_symbol, delta }])
                 } else {
                     Ok(vec![])
                 }

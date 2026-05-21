@@ -1734,7 +1734,6 @@ impl BinanceParser {
         Ok(OrderUpdateEvent {
             order_id: data.get("i").and_then(|i| i.as_i64()).map(|i| i.to_string()).unwrap_or_default(),
             client_order_id: data.get("c").and_then(|c| c.as_str()).map(String::from),
-            symbol: data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string(),
             side,
             order_type,
             status,
@@ -1789,7 +1788,6 @@ impl BinanceParser {
         Ok(OrderUpdateEvent {
             order_id: order.get("i").and_then(|i| i.as_i64()).map(|i| i.to_string()).unwrap_or_default(),
             client_order_id: order.get("c").and_then(|c| c.as_str()).map(String::from),
-            symbol: order.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string(),
             side,
             order_type,
             status,

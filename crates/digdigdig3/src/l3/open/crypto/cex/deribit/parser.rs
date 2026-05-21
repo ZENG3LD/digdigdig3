@@ -735,7 +735,6 @@ impl DeribitParser {
         Ok(OrderUpdateEvent {
             order_id: Self::get_str(data, "order_id").unwrap_or("").to_string(),
             client_order_id: Self::get_str(data, "label").map(String::from),
-            symbol: Self::get_str(data, "instrument_name").unwrap_or("").to_string(),
             side,
             order_type,
             status,

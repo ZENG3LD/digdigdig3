@@ -417,7 +417,7 @@ impl KrakenWebSocket {
                             other          => other,
                         };
                         return Ok(Some(StreamEvent::MarketWarning {
-                            symbol: sym,
+                            symbol: Some(sym),
                             warning_kind: warning_kind.to_string(),
                             message: format!("Kraken instrument status: {}", status),
                             timestamp: timestamp_millis() as i64,
@@ -858,24 +858,26 @@ impl KrakenWebSocket {
             .map(|dt| dt.timestamp_millis())
             .unwrap_or(timestamp_millis() as i64);
 
-        Ok(StreamEvent::OrderUpdate(crate::core::OrderUpdateEvent {
-            order_id: order_id.to_string(),
-            client_order_id,
+        Ok(StreamEvent::OrderUpdate {
             symbol: symbol.to_string(),
-            side,
-            order_type,
-            status,
-            price,
-            quantity,
-            filled_quantity,
-            average_price,
-            last_fill_price: None,
-            last_fill_quantity: None,
-            last_fill_commission: None,
-            commission_asset,
-            trade_id: None,
-            timestamp,
-        }))
+            event: crate::core::OrderUpdateEvent {
+                order_id: order_id.to_string(),
+                client_order_id,
+                side,
+                order_type,
+                status,
+                price,
+                quantity,
+                filled_quantity,
+                average_price,
+                last_fill_price: None,
+                last_fill_quantity: None,
+                last_fill_commission: None,
+                commission_asset,
+                trade_id: None,
+                timestamp,
+            },
+        })
     }
 
     fn parse_trade_execution(data: &Value) -> ExchangeResult<StreamEvent> {
@@ -945,24 +947,26 @@ impl KrakenWebSocket {
             .and_then(|v| v.as_str())
             .map(String::from);
 
-        Ok(StreamEvent::OrderUpdate(crate::core::OrderUpdateEvent {
-            order_id: order_id.to_string(),
-            client_order_id: None,
+        Ok(StreamEvent::OrderUpdate {
             symbol: symbol.to_string(),
-            side,
-            order_type: OrderType::Limit { price: 0.0 },
-            status: OrderStatus::PartiallyFilled,
-            price: last_price,
-            quantity: last_qty,
-            filled_quantity: last_qty,
-            average_price: last_price,
-            last_fill_price: last_price,
-            last_fill_quantity: Some(last_qty),
-            last_fill_commission: fee,
-            commission_asset: None,
-            trade_id,
-            timestamp,
-        }))
+            event: crate::core::OrderUpdateEvent {
+                order_id: order_id.to_string(),
+                client_order_id: None,
+                side,
+                order_type: OrderType::Limit { price: 0.0 },
+                status: OrderStatus::PartiallyFilled,
+                price: last_price,
+                quantity: last_qty,
+                filled_quantity: last_qty,
+                average_price: last_price,
+                last_fill_price: last_price,
+                last_fill_quantity: Some(last_qty),
+                last_fill_commission: fee,
+                commission_asset: None,
+                trade_id,
+                timestamp,
+            },
+        })
     }
 
     fn parse_balance_ws(data: &Value) -> ExchangeResult<StreamEvent> {

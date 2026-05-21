@@ -474,7 +474,7 @@ impl UpbitConnector {
 
             if has_warning {
                 events.push(StreamEvent::MarketWarning {
-                    symbol: market_code.clone(),
+                    symbol: Some(market_code.clone()),
                     warning_kind: "market_warning".to_string(),
                     message: "Upbit market warning flag active".to_string(),
                     timestamp: now_ms,
@@ -483,7 +483,7 @@ impl UpbitConnector {
 
             for caution in active_cautions {
                 events.push(StreamEvent::MarketWarning {
-                    symbol: market_code.clone(),
+                    symbol: Some(market_code.clone()),
                     warning_kind: caution.to_lowercase(),
                     message: format!("Upbit caution: {}", caution),
                     timestamp: now_ms,

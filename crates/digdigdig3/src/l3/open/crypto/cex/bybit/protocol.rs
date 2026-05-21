@@ -780,24 +780,26 @@ fn parse_order_update(raw: &Value) -> WebSocketResult<StreamEvent> {
     let order = BybitParser::parse_order(&wrapper)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
 
-    Ok(StreamEvent::OrderUpdate(crate::core::OrderUpdateEvent {
-        order_id: order.id,
-        client_order_id: order.client_order_id,
+    Ok(StreamEvent::OrderUpdate {
         symbol: order.symbol,
-        side: order.side,
-        order_type: order.order_type,
-        status: order.status,
-        price: order.price,
-        quantity: order.quantity,
-        filled_quantity: order.filled_quantity,
-        average_price: order.average_price,
-        last_fill_price: None,
-        last_fill_quantity: None,
-        last_fill_commission: None,
-        commission_asset: order.commission_asset,
-        trade_id: None,
-        timestamp: order.updated_at.unwrap_or(order.created_at),
-    }))
+        event: crate::core::OrderUpdateEvent {
+            order_id: order.id,
+            client_order_id: order.client_order_id,
+            side: order.side,
+            order_type: order.order_type,
+            status: order.status,
+            price: order.price,
+            quantity: order.quantity,
+            filled_quantity: order.filled_quantity,
+            average_price: order.average_price,
+            last_fill_price: None,
+            last_fill_quantity: None,
+            last_fill_commission: None,
+            commission_asset: order.commission_asset,
+            trade_id: None,
+            timestamp: order.updated_at.unwrap_or(order.created_at),
+        },
+    })
 }
 
 fn parse_balance_update(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -854,12 +856,15 @@ fn parse_position_update(raw: &Value) -> WebSocketResult<StreamEvent> {
     let liquidation_price = item["liqPrice"].as_str().and_then(|s| s.parse::<f64>().ok());
     let leverage = item["leverage"].as_str().and_then(|s| s.parse::<u32>().ok());
 
-    Ok(StreamEvent::PositionUpdate(crate::core::PositionUpdateEvent {
-        symbol, side, quantity, entry_price, mark_price,
-        unrealized_pnl, realized_pnl: None,
-        liquidation_price, leverage, margin_type: None, reason: None,
-        timestamp: crate::core::timestamp_millis() as i64,
-    }))
+    Ok(StreamEvent::PositionUpdate {
+        symbol,
+        event: crate::core::PositionUpdateEvent {
+            side, quantity, entry_price, mark_price,
+            unrealized_pnl, realized_pnl: None,
+            liquidation_price, leverage, margin_type: None, reason: None,
+            timestamp: crate::core::timestamp_millis() as i64,
+        },
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

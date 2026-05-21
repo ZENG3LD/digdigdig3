@@ -937,20 +937,22 @@ impl LighterWebSocket {
                     Some("short") => PositionSide::Short,
                     _ => PositionSide::Long,
                 };
-                events.push(StreamEvent::PositionUpdate(PositionUpdateEvent {
+                events.push(StreamEvent::PositionUpdate {
                     symbol: symbol.to_string(),
-                    side,
-                    quantity,
-                    entry_price,
-                    mark_price,
-                    unrealized_pnl,
-                    realized_pnl,
-                    liquidation_price: None,
-                    leverage: None,
-                    margin_type: None,
-                    reason: Some(PositionChangeReason::Other),
-                    timestamp,
-                }));
+                    event: PositionUpdateEvent {
+                        side,
+                        quantity,
+                        entry_price,
+                        mark_price,
+                        unrealized_pnl,
+                        realized_pnl,
+                        liquidation_price: None,
+                        leverage: None,
+                        margin_type: None,
+                        reason: Some(PositionChangeReason::Other),
+                        timestamp,
+                    },
+                });
             }
         }
 
@@ -984,20 +986,22 @@ impl LighterWebSocket {
             let unrealized_pnl = Self::val_f64(&msg.raw, "unrealized_pnl").unwrap_or(0.0);
             let realized_pnl = Self::val_f64(&msg.raw, "realized_pnl");
             let side = if quantity >= 0.0 { PositionSide::Long } else { PositionSide::Short };
-            events.push(StreamEvent::PositionUpdate(PositionUpdateEvent {
+            events.push(StreamEvent::PositionUpdate {
                 symbol: symbol.clone(),
-                side,
-                quantity: quantity.abs(),
-                entry_price,
-                mark_price: None,
-                unrealized_pnl,
-                realized_pnl,
-                liquidation_price: None,
-                leverage: None,
-                margin_type: None,
-                reason: Some(PositionChangeReason::Other),
-                timestamp,
-            }));
+                event: PositionUpdateEvent {
+                    side,
+                    quantity: quantity.abs(),
+                    entry_price,
+                    mark_price: None,
+                    unrealized_pnl,
+                    realized_pnl,
+                    liquidation_price: None,
+                    leverage: None,
+                    margin_type: None,
+                    reason: Some(PositionChangeReason::Other),
+                    timestamp,
+                },
+            });
         }
 
         // Open orders
@@ -1024,24 +1028,26 @@ impl LighterWebSocket {
                 } else {
                     OrderType::Market
                 };
-                events.push(StreamEvent::OrderUpdate(OrderUpdateEvent {
-                    order_id,
-                    client_order_id: None,
+                events.push(StreamEvent::OrderUpdate {
                     symbol: symbol.clone(),
-                    side,
-                    order_type,
-                    status,
-                    price,
-                    quantity,
-                    filled_quantity: 0.0,
-                    average_price: None,
-                    last_fill_price: None,
-                    last_fill_quantity: None,
-                    last_fill_commission: None,
-                    commission_asset: None,
-                    trade_id: None,
-                    timestamp,
-                }));
+                    event: OrderUpdateEvent {
+                        order_id,
+                        client_order_id: None,
+                        side,
+                        order_type,
+                        status,
+                        price,
+                        quantity,
+                        filled_quantity: 0.0,
+                        average_price: None,
+                        last_fill_price: None,
+                        last_fill_quantity: None,
+                        last_fill_commission: None,
+                        commission_asset: None,
+                        trade_id: None,
+                        timestamp,
+                    },
+                });
             }
         }
 

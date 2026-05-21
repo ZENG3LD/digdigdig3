@@ -603,8 +603,6 @@ impl OkxParser {
             .ok_or_else(|| ExchangeError::Parse("Missing 'ordId'".to_string()))?
             .to_string();
 
-        let symbol = Self::get_str(data, "instId").unwrap_or("").to_string();
-
         let side = match Self::get_str(data, "side").unwrap_or("buy").to_lowercase().as_str() {
             "sell" => OrderSide::Sell,
             _ => OrderSide::Buy,
@@ -628,7 +626,6 @@ impl OkxParser {
             client_order_id: Self::get_str(data, "clOrdId")
                 .filter(|s| !s.is_empty())
                 .map(String::from),
-            symbol,
             side,
             order_type,
             status,
@@ -690,8 +687,6 @@ impl OkxParser {
     /// `{"instId":"BTC-USDT","posSide":"long","pos":"0.1","avgPx":"67000",
     ///   "upl":"100","liqPx":"60000","markPx":"67100","lever":"10","mgnMode":"cross","uTime":"1234"}`
     pub fn parse_ws_position_update(data: &Value) -> ExchangeResult<PositionUpdateEvent> {
-        let symbol = Self::get_str(data, "instId").unwrap_or("").to_string();
-
         let pos_qty = Self::get_f64(data, "pos").unwrap_or(0.0);
         let pos_side_str = Self::get_str(data, "posSide").unwrap_or("net");
         let side = match pos_side_str {
@@ -710,7 +705,6 @@ impl OkxParser {
         let timestamp = Self::get_i64(data, "uTime").unwrap_or(0);
 
         Ok(PositionUpdateEvent {
-            symbol,
             side,
             quantity: pos_qty.abs(),
             entry_price: Self::get_f64(data, "avgPx").unwrap_or(0.0),

@@ -361,9 +361,13 @@ pub enum StreamEvent {
         timestamp: i64,
     },
 
-    /// Market warning / halt notification
+    /// Market warning / halt notification.
+    ///
+    /// `symbol` is `None` for venue-wide notifications (e.g. Hyperliquid
+    /// global `notifications` channel); `Some(s)` for per-instrument
+    /// warnings (halts, margin calls).
     MarketWarning {
-        symbol: String,
+        symbol: Option<String>,
         warning_kind: String,
         message: String,
         timestamp: i64,
@@ -420,13 +424,13 @@ pub enum StreamEvent {
     // ═══════════════════════════════════════════════════════════════════════════
 
     /// Обновление ордера
-    OrderUpdate(OrderUpdateEvent),
+    OrderUpdate { symbol: String, event: OrderUpdateEvent },
 
     /// Обновление баланса
     BalanceUpdate(BalanceUpdateEvent),
 
     /// Обновление позиции (Futures)
-    PositionUpdate(PositionUpdateEvent),
+    PositionUpdate { symbol: String, event: PositionUpdateEvent },
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -447,8 +451,6 @@ pub struct OrderUpdateEvent {
     pub order_id: String,
     /// Client Order ID
     pub client_order_id: Option<String>,
-    /// Символ
-    pub symbol: String,
     /// Направление
     pub side: OrderSide,
     /// Тип ордера
@@ -523,8 +525,6 @@ pub enum BalanceChangeReason {
 /// Событие обновления позиции (Futures)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PositionUpdateEvent {
-    /// Символ
-    pub symbol: String,
     /// Сторона позиции
     pub side: PositionSide,
     /// Размер позиции

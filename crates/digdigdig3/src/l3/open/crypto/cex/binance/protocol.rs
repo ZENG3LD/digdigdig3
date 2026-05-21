@@ -809,16 +809,22 @@ fn parse_premium_index_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
 
 fn parse_execution_report(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw);
+    let symbol = data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string();
     let event = BinanceParser::parse_ws_execution_report(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    Ok(StreamEvent::OrderUpdate(event))
+    Ok(StreamEvent::OrderUpdate { symbol, event })
 }
 
 fn parse_futures_order_update(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw);
+    let symbol = data.get("o")
+        .and_then(|o| o.get("s"))
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
     let event = BinanceParser::parse_ws_futures_order_update(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    Ok(StreamEvent::OrderUpdate(event))
+    Ok(StreamEvent::OrderUpdate { symbol, event })
 }
 
 fn parse_account_position(raw: &Value) -> WebSocketResult<StreamEvent> {

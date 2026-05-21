@@ -770,7 +770,6 @@ impl BitgetParser {
         };
 
         let order_id = Self::require_str(order_data, "ordId")?.to_string();
-        let symbol = Self::require_str(order_data, "instId")?.to_string();
         let status = Self::require_str(order_data, "state")?;
         let side_str = Self::require_str(order_data, "side")?;
         let order_type_str = Self::require_str(order_data, "ordType")?;
@@ -801,7 +800,6 @@ impl BitgetParser {
         Ok(OrderUpdateEvent {
             order_id,
             client_order_id: Self::get_str(order_data, "clOrdId").map(|s| s.to_string()),
-            symbol,
             side,
             order_type,
             status: order_status,
@@ -864,7 +862,6 @@ impl BitgetParser {
             data
         };
 
-        let symbol = Self::require_str(pos_data, "instId")?.to_string();
         let side_str = Self::require_str(pos_data, "posSide")?;
 
         let side = match side_str {
@@ -878,7 +875,6 @@ impl BitgetParser {
         let unrealized_pnl = Self::get_f64(pos_data, "upl").unwrap_or(0.0);
 
         Ok(PositionUpdateEvent {
-            symbol,
             side,
             quantity,
             entry_price,

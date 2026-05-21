@@ -732,9 +732,11 @@ fn parse_agg_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
 
 fn parse_order_update(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw)?;
+    let first = if let Some(arr) = data.as_array() { arr.first().unwrap_or(data) } else { data };
+    let symbol = first.get("instId").and_then(|s| s.as_str()).unwrap_or("").to_string();
     let event = BitgetParser::parse_ws_order_update(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    Ok(StreamEvent::OrderUpdate(event))
+    Ok(StreamEvent::OrderUpdate { symbol, event })
 }
 
 fn parse_balance_update(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -746,9 +748,11 @@ fn parse_balance_update(raw: &Value) -> WebSocketResult<StreamEvent> {
 
 fn parse_position_update(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw)?;
+    let first = if let Some(arr) = data.as_array() { arr.first().unwrap_or(data) } else { data };
+    let symbol = first.get("instId").and_then(|s| s.as_str()).unwrap_or("").to_string();
     let event = BitgetParser::parse_ws_position_update(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    Ok(StreamEvent::PositionUpdate(event))
+    Ok(StreamEvent::PositionUpdate { symbol, event })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

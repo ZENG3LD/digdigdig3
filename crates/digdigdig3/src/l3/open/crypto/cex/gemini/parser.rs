@@ -709,7 +709,6 @@ impl GeminiParser {
         Ok(OrderUpdateEvent {
             order_id: Self::get_str(data, "order_id").unwrap_or("").to_string(),
             client_order_id: Self::get_str(data, "client_order_id").map(String::from),
-            symbol: Self::get_str(data, "symbol").unwrap_or("").to_string(),
             side,
             order_type,
             status,

@@ -551,8 +551,9 @@ impl GeminiWebSocket {
             }
             (WebSocketType::OrderEvents, Some("initial" | "accepted" | "booked" | "fill" | "cancelled" | "rejected" | "closed")) => {
                 // Order event
-                let order_event = GeminiParser::parse_ws_order_event(&value)?;
-                Ok(vec![StreamEvent::OrderUpdate(order_event)])
+                let symbol = value.get("symbol").and_then(|s| s.as_str()).unwrap_or("").to_string();
+                let event = GeminiParser::parse_ws_order_event(&value)?;
+                Ok(vec![StreamEvent::OrderUpdate { symbol, event }])
             }
 
             _ => Ok(vec![]),

@@ -957,9 +957,10 @@ fn parse_status_channel(_raw: &Value) -> WebSocketResult<StreamEvent> {
 
 fn parse_orders(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = first_data_item(raw)?;
-    let ev = OkxParser::parse_ws_order_update(data)
+    let symbol = OkxParser::get_str(data, "instId").unwrap_or("").to_string();
+    let event = OkxParser::parse_ws_order_update(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    Ok(StreamEvent::OrderUpdate(ev))
+    Ok(StreamEvent::OrderUpdate { symbol, event })
 }
 
 fn parse_account(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -979,9 +980,10 @@ fn parse_account(raw: &Value) -> WebSocketResult<StreamEvent> {
 
 fn parse_positions(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = first_data_item(raw)?;
-    let ev = OkxParser::parse_ws_position_update(data)
+    let symbol = OkxParser::get_str(data, "instId").unwrap_or("").to_string();
+    let event = OkxParser::parse_ws_position_update(data)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-    Ok(StreamEvent::PositionUpdate(ev))
+    Ok(StreamEvent::PositionUpdate { symbol, event })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

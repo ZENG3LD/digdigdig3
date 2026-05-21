@@ -580,8 +580,14 @@ impl BitstampWebSocket {
             checksum: None,
         };
 
-        // Symbol not available in parse_live_order_from_json scope — caller has channel context
-        Ok(Some(StreamEvent::OrderbookDelta { symbol: String::new(), delta }))
+        // Extract symbol from the Bitstamp channel name: "live_orders_btcusd" → "BTCUSD".
+        let symbol = json
+            .get("channel")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.rsplit_once('_'))
+            .map(|(_, pair)| pair.to_ascii_uppercase())
+            .unwrap_or_default();
+        Ok(Some(StreamEvent::OrderbookDelta { symbol, delta }))
     }
 }
 
@@ -798,5 +804,83 @@ mod tests {
         let established = r#"{"event":"pusher:connection_established","data":"{\"socket_id\":\"123\",\"activity_timeout\":120}"}"#;
         let parsed: IncomingMessage = serde_json::from_str(established).unwrap();
         assert_eq!(parsed.event, "pusher:connection_established");
+    }
+
+    /// `live_orders_<pair>` events must carry the symbol on the StreamEvent
+    /// variant; the symbol is extracted from the channel name.
+    /// Cross-pair routing on the same Station depends on this — empty symbol
+    /// would cause accept-all in station::event_matches_key.
+    #[test]
+    fn live_order_emits_symbol_from_channel() {
+        let json = serde_json::json!({
+            "channel": "live_orders_btcusd",
+            "event": "order_created",
+            "data": {
+                "id": 42,
+                "price": "50000.0",
+                "amount": "0.5",
+                "order_type": "0",
+                "microtimestamp": "1700000000000000",
+            }
+        });
+        let ev = BitstampWebSocket::parse_live_order_from_json(&json, "order_created")
+            .expect("parse")
+            .expect("Some event");
+        match ev {
+            StreamEvent::OrderbookDelta { symbol, delta } => {
+                assert_eq!(symbol, "BTCUSD");
+                assert_eq!(delta.bids.len(), 1);
+                assert_eq!(delta.bids[0].price, 50000.0);
+            }
+            other => panic!("expected OrderbookDelta, got {:?}", other),
+        }
+    }
+
+    /// Other Bitstamp pairs must produce their own symbol — XRPUSD here.
+    #[test]
+    fn live_order_extracts_xrpusd_from_channel() {
+        let json = serde_json::json!({
+            "channel": "live_orders_xrpusd",
+            "event": "order_changed",
+            "data": {
+                "id": 7,
+                "price": "0.5",
+                "amount": "1000.0",
+                "order_type": "1",
+                "microtimestamp": "1700000000000000",
+            }
+        });
+        let ev = BitstampWebSocket::parse_live_order_from_json(&json, "order_changed")
+            .expect("parse")
+            .expect("Some event");
+        match ev {
+            StreamEvent::OrderbookDelta { symbol, .. } => assert_eq!(symbol, "XRPUSD"),
+            other => panic!("expected OrderbookDelta, got {:?}", other),
+        }
+    }
+
+    /// Missing or malformed channel falls back to empty string. Routing
+    /// downstream treats empty symbol as accept-all, which is fine here:
+    /// the upstream sub registry will never deliver a misconfigured channel.
+    #[test]
+    fn live_order_empty_channel_falls_back_to_empty_symbol() {
+        let json = serde_json::json!({
+            "channel": "",
+            "event": "order_created",
+            "data": {
+                "id": 1,
+                "price": "1.0",
+                "amount": "1.0",
+                "order_type": "0",
+                "microtimestamp": "0",
+            }
+        });
+        let ev = BitstampWebSocket::parse_live_order_from_json(&json, "order_created")
+            .expect("parse")
+            .expect("Some event");
+        match ev {
+            StreamEvent::OrderbookDelta { symbol, .. } => assert_eq!(symbol, ""),
+            other => panic!("expected OrderbookDelta, got {:?}", other),
+        }
     }
 }

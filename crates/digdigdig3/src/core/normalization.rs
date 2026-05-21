@@ -350,26 +350,36 @@ impl Canonicalize for StreamEvent {
                 CanonicalEvent::Ticker(c)
             }),
 
-            StreamEvent::OrderbookSnapshot { book: ob, .. } => {
-                // OrderBook has no symbol — symbol stays empty string at this layer.
-                ob.canonicalize().map(CanonicalEvent::Orderbook)
+            StreamEvent::OrderbookSnapshot { symbol, book: ob } => {
+                ob.canonicalize().map(|mut c| {
+                    c.symbol = symbol.clone();
+                    CanonicalEvent::Orderbook(c)
+                })
             }
 
-            StreamEvent::OrderbookDelta { delta, .. } => {
-                delta.canonicalize().map(CanonicalEvent::OrderbookDelta)
+            StreamEvent::OrderbookDelta { symbol, delta } => {
+                delta.canonicalize().map(|mut c| {
+                    c.symbol = symbol.clone();
+                    CanonicalEvent::OrderbookDelta(c)
+                })
             }
 
-            StreamEvent::Kline { kline: k, .. } => {
-                // Kline has no symbol or interval at this layer.
-                k.canonicalize().map(CanonicalEvent::Kline)
+            StreamEvent::Kline { symbol, interval, kline: k } => {
+                k.canonicalize().map(|mut c| {
+                    c.symbol = symbol.clone();
+                    c.interval = interval.clone();
+                    CanonicalEvent::Kline(c)
+                })
             }
 
-            StreamEvent::MarkPriceKline { kline, .. }
-            | StreamEvent::IndexPriceKline { kline, .. }
-            | StreamEvent::PremiumIndexKline { kline, .. } => {
-                // Lift kline sub-fields; symbol/interval available but we keep Other for now.
-                let _ = kline;
-                Some(CanonicalEvent::Other)
+            StreamEvent::MarkPriceKline { symbol, interval, kline }
+            | StreamEvent::IndexPriceKline { symbol, interval, kline }
+            | StreamEvent::PremiumIndexKline { symbol, interval, kline } => {
+                kline.canonicalize().map(|mut c| {
+                    c.symbol = symbol.clone();
+                    c.interval = interval.clone();
+                    CanonicalEvent::Kline(c)
+                })
             }
 
             // All other variants (private events, mark price, funding, etc.)
@@ -624,5 +634,101 @@ mod tests {
             timestamp: 1_700_000_000_000,
         };
         assert!(matches!(event.canonicalize(), Some(CanonicalEvent::Other)));
+    }
+
+    #[test]
+    fn stream_event_orderbook_snapshot_carries_symbol() {
+        let event = StreamEvent::OrderbookSnapshot {
+            symbol: "BTCUSDT".to_string(),
+            book: crate::core::types::OrderBook {
+                bids: vec![],
+                asks: vec![],
+                timestamp: 1_700_000_000_000,
+                sequence: None,
+                last_update_id: None,
+                first_update_id: None,
+                prev_update_id: None,
+                event_time: None,
+                transaction_time: None,
+                checksum: None,
+            },
+        };
+        match event.canonicalize() {
+            Some(CanonicalEvent::Orderbook(ob)) => assert_eq!(ob.symbol, "BTCUSDT"),
+            other => panic!("expected Orderbook, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn stream_event_orderbook_delta_carries_symbol() {
+        let event = StreamEvent::OrderbookDelta {
+            symbol: "ETHUSDT".to_string(),
+            delta: crate::core::types::OrderbookDelta {
+                bids: vec![],
+                asks: vec![],
+                timestamp: 1_700_000_000_000,
+                first_update_id: None,
+                last_update_id: None,
+                prev_update_id: None,
+                event_time: None,
+                checksum: None,
+            },
+        };
+        match event.canonicalize() {
+            Some(CanonicalEvent::OrderbookDelta(od)) => assert_eq!(od.symbol, "ETHUSDT"),
+            other => panic!("expected OrderbookDelta, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn stream_event_kline_carries_symbol_and_interval() {
+        let event = StreamEvent::Kline {
+            symbol: "BTCUSDT".to_string(),
+            interval: "1m".to_string(),
+            kline: crate::core::types::Kline {
+                open_time: 1_700_000_000_000,
+                open: 50000.0,
+                high: 50100.0,
+                low: 49900.0,
+                close: 50050.0,
+                volume: 10.0,
+                close_time: Some(1_700_000_060_000),
+                quote_volume: None,
+                trades: None,
+            },
+        };
+        match event.canonicalize() {
+            Some(CanonicalEvent::Kline(k)) => {
+                assert_eq!(k.symbol, "BTCUSDT");
+                assert_eq!(k.interval, "1m");
+            }
+            other => panic!("expected Kline, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn stream_event_mark_price_kline_carries_symbol_and_interval() {
+        let event = StreamEvent::MarkPriceKline {
+            symbol: "BTCUSDT".to_string(),
+            interval: "5m".to_string(),
+            kline: crate::core::types::Kline {
+                open_time: 1_700_000_000_000,
+                open: 50000.0,
+                high: 50100.0,
+                low: 49900.0,
+                close: 50050.0,
+                volume: 0.0,
+                close_time: None,
+                quote_volume: None,
+                trades: None,
+            },
+        };
+        match event.canonicalize() {
+            Some(CanonicalEvent::Kline(k)) => {
+                assert_eq!(k.symbol, "BTCUSDT");
+                assert_eq!(k.interval, "5m");
+            }
+            other => panic!("expected Kline, got {:?}", other),
+        }
     }
 }

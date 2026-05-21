@@ -403,10 +403,10 @@ impl GateioParser {
                 .unwrap_or("")
                 .to_string(),
             client_order_id: Self::get_str(data, "text").map(String::from),
-            symbol: Self::get_str(data, "currency_pair")
+            symbol: Some(Self::get_str(data, "currency_pair")
                 .or_else(|| Self::get_str(data, "contract"))
                 .unwrap_or(symbol)
-                .to_string(),
+                .to_string()),
             side,
             order_type,
             status,

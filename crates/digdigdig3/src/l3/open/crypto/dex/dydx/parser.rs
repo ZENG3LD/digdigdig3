@@ -251,7 +251,7 @@ impl DydxParser {
             client_order_id: data.get("clientId")
                 .and_then(|v| v.as_u64())
                 .map(|id| id.to_string()),
-            symbol: Self::get_str(data, "ticker").unwrap_or("").to_string(),
+            symbol: Self::get_str(data, "ticker").map(String::from),
             side,
             order_type,
             status,

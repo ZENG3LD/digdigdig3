@@ -495,7 +495,7 @@ impl Trading for CryptoComConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: None,
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::Market,
                     status: crate::core::OrderStatus::New,
@@ -528,7 +528,7 @@ impl Trading for CryptoComConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: None,
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::Limit { price },
                     status: crate::core::OrderStatus::New,
@@ -563,7 +563,7 @@ impl Trading for CryptoComConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: None,
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::StopMarket { stop_price },
                     status: crate::core::OrderStatus::New,
@@ -599,7 +599,7 @@ impl Trading for CryptoComConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: None,
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::StopLimit { stop_price, limit_price },
                     status: crate::core::OrderStatus::New,
@@ -634,7 +634,7 @@ impl Trading for CryptoComConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: None,
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::PostOnly { price },
                     status: crate::core::OrderStatus::New,
@@ -676,7 +676,7 @@ impl Trading for CryptoComConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: None,
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::Ioc { price },
                     status: crate::core::OrderStatus::New,
@@ -710,7 +710,7 @@ impl Trading for CryptoComConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: None,
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::Fok { price },
                     status: crate::core::OrderStatus::New,
@@ -777,7 +777,7 @@ impl Trading for CryptoComConnector {
                 let make_leg = |otype: OrderType, px: Option<Price>, sp: Option<Price>| Order {
                     id: String::new(),
                     client_order_id: None,
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: otype,
                     status: crate::core::OrderStatus::New,
@@ -849,7 +849,7 @@ impl Trading for CryptoComConnector {
                 Ok(Order {
                     id: order_id.to_string(),
                     client_order_id: None,
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side: OrderSide::Buy, // Unknown from cancel response
                     order_type: OrderType::Limit { price: 0.0 },
                     status: crate::core::OrderStatus::Canceled,
@@ -882,7 +882,7 @@ impl Trading for CryptoComConnector {
                 Ok(Order {
                     id: "cancel_all".to_string(),
                     client_order_id: None,
-                    symbol: symbol.as_ref().map(|s| s.to_string()).unwrap_or_default(),
+                    symbol: symbol.as_ref().map(|s| s.to_string()),
                     side: OrderSide::Buy,
                     order_type: OrderType::Market,
                     status: crate::core::OrderStatus::Canceled,
@@ -914,7 +914,7 @@ impl Trading for CryptoComConnector {
                 Ok(Order {
                     id: "cancel_by_symbol".to_string(),
                     client_order_id: None,
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side: OrderSide::Buy,
                     order_type: OrderType::Market,
                     status: crate::core::OrderStatus::Canceled,
@@ -1553,7 +1553,7 @@ impl BatchOrders for CryptoComConnector {
                     order: if success { order_id.map(|id| Order {
                         id,
                         client_order_id: None,
-                        symbol: req.map(|o| o.symbol.to_string()).unwrap_or_default(),
+                        symbol: req.map(|o| o.symbol.to_string()),
                         side: req.map(|o| o.side).unwrap_or(OrderSide::Buy),
                         order_type: req.map(|o| o.order_type.clone()).unwrap_or(OrderType::Market),
                         status: crate::core::OrderStatus::New,

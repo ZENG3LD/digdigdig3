@@ -253,7 +253,7 @@ impl BitfinexParser {
         Ok(Order {
             id,
             client_order_id: Self::get_i64(data, 2).map(|i| i.to_string()), // [2] CID
-            symbol,
+            symbol: Some(symbol),
             side,
             order_type,
             status,

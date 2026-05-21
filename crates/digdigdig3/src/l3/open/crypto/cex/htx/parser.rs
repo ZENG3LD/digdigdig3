@@ -310,7 +310,7 @@ impl HtxParser {
             return Ok(Order {
                 id,
                 client_order_id: None,
-                symbol: String::new(),
+                symbol: None,
                 side: OrderSide::Buy, // Unknown at this point
                 order_type: OrderType::Limit { price: 0.0 },
                 status: OrderStatus::New,
@@ -369,7 +369,7 @@ impl HtxParser {
         Ok(Order {
             id,
             client_order_id: data["client-order-id"].as_str().map(String::from),
-            symbol,
+            symbol: Some(symbol),
             side,
             order_type,
             status,

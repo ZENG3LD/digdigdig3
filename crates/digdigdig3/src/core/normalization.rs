@@ -216,119 +216,96 @@ fn levels_from_book_levels(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// IMPL: PublicTrade → CanonicalTrade
+// INTERNAL HELPERS: payload → Canonical*
 // ═══════════════════════════════════════════════════════════════════════════════
+//
+// These are crate-private free functions, not `impl Canonicalize for Payload`.
+// Symbol (and interval, for klines) is taken as a parameter from the caller —
+// the only correct caller is `<StreamEvent as Canonicalize>::canonicalize()`
+// which destructures the variant and supplies the routing key.
+//
+// Keeping these as free fns (not trait impls) prevents external callers from
+// invoking `payload.canonicalize()` and getting back a struct with
+// `symbol: String::new()` placeholder.
 
-impl Canonicalize for PublicTrade {
-    type Output = CanonicalTrade;
-
-    fn canonicalize(&self) -> Option<CanonicalTrade> {
-        Some(CanonicalTrade {
-            symbol: String::new(),
-            price: f64_to_decimal(self.price)?,
-            quantity: f64_to_decimal(self.quantity)?,
-            side: self.side,
-            timestamp_ms: normalize_ts_to_ms(self.timestamp),
-            trade_id: Some(self.id.clone()),
-        })
-    }
+fn trade_to_canonical(payload: &PublicTrade, symbol: String) -> Option<CanonicalTrade> {
+    Some(CanonicalTrade {
+        symbol,
+        price: f64_to_decimal(payload.price)?,
+        quantity: f64_to_decimal(payload.quantity)?,
+        side: payload.side,
+        timestamp_ms: normalize_ts_to_ms(payload.timestamp),
+        trade_id: Some(payload.id.clone()),
+    })
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// IMPL: Ticker → CanonicalTicker
-// ═══════════════════════════════════════════════════════════════════════════════
-
-impl Canonicalize for Ticker {
-    type Output = CanonicalTicker;
-
-    fn canonicalize(&self) -> Option<CanonicalTicker> {
-        Some(CanonicalTicker {
-            symbol: String::new(),
-            last_price: f64_to_decimal(self.last_price)?,
-            bid_price: f64_to_decimal_opt(self.bid_price),
-            ask_price: f64_to_decimal_opt(self.ask_price),
-            volume_24h: f64_to_decimal_opt(self.volume_24h),
-            timestamp_ms: normalize_ts_to_ms(self.timestamp),
-        })
-    }
+fn ticker_to_canonical(payload: &Ticker, symbol: String) -> Option<CanonicalTicker> {
+    Some(CanonicalTicker {
+        symbol,
+        last_price: f64_to_decimal(payload.last_price)?,
+        bid_price: f64_to_decimal_opt(payload.bid_price),
+        ask_price: f64_to_decimal_opt(payload.ask_price),
+        volume_24h: f64_to_decimal_opt(payload.volume_24h),
+        timestamp_ms: normalize_ts_to_ms(payload.timestamp),
+    })
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// IMPL: OrderBook → CanonicalOrderbook
-// ═══════════════════════════════════════════════════════════════════════════════
+fn orderbook_to_canonical(payload: &OrderBook, symbol: String) -> Option<CanonicalOrderbook> {
+    let mut bids = levels_from_book_levels(&payload.bids);
+    let mut asks = levels_from_book_levels(&payload.asks);
 
-impl Canonicalize for OrderBook {
-    type Output = CanonicalOrderbook;
+    bids.sort_by(|a, b| b.price.cmp(&a.price)); // descending
+    asks.sort_by(|a, b| a.price.cmp(&b.price)); // ascending
 
-    fn canonicalize(&self) -> Option<CanonicalOrderbook> {
-        let mut bids = levels_from_book_levels(&self.bids);
-        let mut asks = levels_from_book_levels(&self.asks);
+    let sequence = payload
+        .sequence
+        .as_deref()
+        .and_then(|s| s.parse::<u64>().ok())
+        .or(payload.last_update_id);
 
-        // Enforce sort invariants regardless of source order.
-        bids.sort_by(|a, b| b.price.cmp(&a.price)); // descending
-        asks.sort_by(|a, b| a.price.cmp(&b.price)); // ascending
-
-        // Parse sequence — stored as Option<String> in OrderBook.
-        let sequence = self
-            .sequence
-            .as_deref()
-            .and_then(|s| s.parse::<u64>().ok())
-            .or(self.last_update_id);
-
-        Some(CanonicalOrderbook {
-            // OrderBook has no symbol field — caller must provide via StreamEvent wrapper.
-            symbol: String::new(),
-            bids,
-            asks,
-            sequence,
-            timestamp_ms: normalize_ts_to_ms(self.timestamp),
-        })
-    }
+    Some(CanonicalOrderbook {
+        symbol,
+        bids,
+        asks,
+        sequence,
+        timestamp_ms: normalize_ts_to_ms(payload.timestamp),
+    })
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// IMPL: OrderbookDeltaData → CanonicalOrderbookDelta
-// ═══════════════════════════════════════════════════════════════════════════════
-
-impl Canonicalize for OrderbookDeltaData {
-    type Output = CanonicalOrderbookDelta;
-
-    fn canonicalize(&self) -> Option<CanonicalOrderbookDelta> {
-        Some(CanonicalOrderbookDelta {
-            symbol: String::new(),
-            bid_updates: levels_from_book_levels(&self.bids),
-            ask_updates: levels_from_book_levels(&self.asks),
-            first_update_id: self.first_update_id,
-            last_update_id: self.last_update_id,
-            prev_update_id: self.prev_update_id,
-            timestamp_ms: normalize_ts_to_ms(self.timestamp),
-        })
-    }
+fn orderbook_delta_to_canonical(
+    payload: &OrderbookDeltaData,
+    symbol: String,
+) -> Option<CanonicalOrderbookDelta> {
+    Some(CanonicalOrderbookDelta {
+        symbol,
+        bid_updates: levels_from_book_levels(&payload.bids),
+        ask_updates: levels_from_book_levels(&payload.asks),
+        first_update_id: payload.first_update_id,
+        last_update_id: payload.last_update_id,
+        prev_update_id: payload.prev_update_id,
+        timestamp_ms: normalize_ts_to_ms(payload.timestamp),
+    })
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// IMPL: Kline → CanonicalKline
-// ═══════════════════════════════════════════════════════════════════════════════
-
-impl Canonicalize for Kline {
-    type Output = CanonicalKline;
-
-    fn canonicalize(&self) -> Option<CanonicalKline> {
-        Some(CanonicalKline {
-            symbol: String::new(),
-            open: f64_to_decimal(self.open)?,
-            high: f64_to_decimal(self.high)?,
-            low: f64_to_decimal(self.low)?,
-            close: f64_to_decimal(self.close)?,
-            volume: f64_to_decimal(self.volume)?,
-            open_time_ms: normalize_ts_to_ms(self.open_time),
-            close_time_ms: self
-                .close_time
-                .map(normalize_ts_to_ms)
-                .unwrap_or_else(|| normalize_ts_to_ms(self.open_time)),
-            interval: String::new(),
-        })
-    }
+fn kline_to_canonical(
+    payload: &Kline,
+    symbol: String,
+    interval: String,
+) -> Option<CanonicalKline> {
+    Some(CanonicalKline {
+        symbol,
+        open: f64_to_decimal(payload.open)?,
+        high: f64_to_decimal(payload.high)?,
+        low: f64_to_decimal(payload.low)?,
+        close: f64_to_decimal(payload.close)?,
+        volume: f64_to_decimal(payload.volume)?,
+        open_time_ms: normalize_ts_to_ms(payload.open_time),
+        close_time_ms: payload
+            .close_time
+            .map(normalize_ts_to_ms)
+            .unwrap_or_else(|| normalize_ts_to_ms(payload.open_time)),
+        interval,
+    })
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -340,48 +317,29 @@ impl Canonicalize for StreamEvent {
 
     fn canonicalize(&self) -> Option<CanonicalEvent> {
         match self {
-            StreamEvent::Trade { symbol, trade: t } => t.canonicalize().map(|mut c| {
-                c.symbol = symbol.clone();
-                CanonicalEvent::Trade(c)
-            }),
-
-            StreamEvent::Ticker { symbol, ticker: t } => t.canonicalize().map(|mut c| {
-                c.symbol = symbol.clone();
-                CanonicalEvent::Ticker(c)
-            }),
-
-            StreamEvent::OrderbookSnapshot { symbol, book: ob } => {
-                ob.canonicalize().map(|mut c| {
-                    c.symbol = symbol.clone();
-                    CanonicalEvent::Orderbook(c)
-                })
+            StreamEvent::Trade { symbol, trade } => {
+                trade_to_canonical(trade, symbol.clone()).map(CanonicalEvent::Trade)
             }
-
+            StreamEvent::Ticker { symbol, ticker } => {
+                ticker_to_canonical(ticker, symbol.clone()).map(CanonicalEvent::Ticker)
+            }
+            StreamEvent::OrderbookSnapshot { symbol, book } => {
+                orderbook_to_canonical(book, symbol.clone()).map(CanonicalEvent::Orderbook)
+            }
             StreamEvent::OrderbookDelta { symbol, delta } => {
-                delta.canonicalize().map(|mut c| {
-                    c.symbol = symbol.clone();
-                    CanonicalEvent::OrderbookDelta(c)
-                })
+                orderbook_delta_to_canonical(delta, symbol.clone())
+                    .map(CanonicalEvent::OrderbookDelta)
             }
-
-            StreamEvent::Kline { symbol, interval, kline: k } => {
-                k.canonicalize().map(|mut c| {
-                    c.symbol = symbol.clone();
-                    c.interval = interval.clone();
-                    CanonicalEvent::Kline(c)
-                })
+            StreamEvent::Kline { symbol, interval, kline } => {
+                kline_to_canonical(kline, symbol.clone(), interval.clone())
+                    .map(CanonicalEvent::Kline)
             }
-
             StreamEvent::MarkPriceKline { symbol, interval, kline }
             | StreamEvent::IndexPriceKline { symbol, interval, kline }
             | StreamEvent::PremiumIndexKline { symbol, interval, kline } => {
-                kline.canonicalize().map(|mut c| {
-                    c.symbol = symbol.clone();
-                    c.interval = interval.clone();
-                    CanonicalEvent::Kline(c)
-                })
+                kline_to_canonical(kline, symbol.clone(), interval.clone())
+                    .map(CanonicalEvent::Kline)
             }
-
             // All other variants (private events, mark price, funding, etc.)
             _ => Some(CanonicalEvent::Other),
         }
@@ -443,8 +401,8 @@ mod tests {
             timestamp: 1_700_000_000_000,
         };
 
-        let c = trade.canonicalize().expect("should canonicalize");
-        assert_eq!(c.symbol, "");
+        let c = trade_to_canonical(&trade, "BTCUSDT".to_string()).expect("should canonicalize");
+        assert_eq!(c.symbol, "BTCUSDT");
         assert_eq!(c.price, Decimal::try_from(65432.1_f64).unwrap());
         assert_eq!(c.quantity, Decimal::try_from(0.5_f64).unwrap());
         assert_eq!(c.side, TradeSide::Buy);
@@ -461,7 +419,8 @@ mod tests {
             side: TradeSide::Sell,
             timestamp: 1_700_000_001_000,
         };
-        let c = trade.canonicalize().expect("should canonicalize");
+        let c = trade_to_canonical(&trade, "ETHUSDT".to_string()).expect("should canonicalize");
+        assert_eq!(c.symbol, "ETHUSDT");
         assert_eq!(c.side, TradeSide::Sell);
     }
 
@@ -482,8 +441,8 @@ mod tests {
             timestamp: 1_700_000_000_000,
         };
 
-        let c = ticker.canonicalize().expect("should canonicalize");
-        assert_eq!(c.symbol, "");
+        let c = ticker_to_canonical(&ticker, "AAPL".to_string()).expect("should canonicalize");
+        assert_eq!(c.symbol, "AAPL");
         assert_eq!(c.last_price, Decimal::try_from(180.0_f64).unwrap());
         assert!(c.bid_price.is_none());
         assert!(c.ask_price.is_none());
@@ -505,7 +464,7 @@ mod tests {
             timestamp: 1_700_000_000_000,
         };
 
-        let c = ticker.canonicalize().expect("should canonicalize");
+        let c = ticker_to_canonical(&ticker, "BTCUSDT".to_string()).expect("should canonicalize");
         assert!(c.bid_price.is_some());
         assert!(c.ask_price.is_some());
         assert!(c.volume_24h.is_some());
@@ -527,7 +486,10 @@ mod tests {
             trades: None,
         };
 
-        let c = kline.canonicalize().expect("should canonicalize");
+        let c = kline_to_canonical(&kline, "BTCUSDT".to_string(), "1m".to_string())
+            .expect("should canonicalize");
+        assert_eq!(c.symbol, "BTCUSDT");
+        assert_eq!(c.interval, "1m");
         assert_eq!(c.open, Decimal::try_from(64000.0_f64).unwrap());
         assert_eq!(c.high, Decimal::try_from(65000.0_f64).unwrap());
         assert_eq!(c.low, Decimal::try_from(63500.0_f64).unwrap());
@@ -565,7 +527,7 @@ mod tests {
             checksum: None,
         };
 
-        let c = ob.canonicalize().expect("should canonicalize");
+        let c = orderbook_to_canonical(&ob, "BTCUSDT".to_string()).expect("should canonicalize");
 
         // Bids: descending
         assert_eq!(c.bids[0].price, Decimal::from_str("102").unwrap());

@@ -336,7 +336,7 @@ impl OkxParser {
         Ok(Order {
             id: Self::get_str(data, "ordId").unwrap_or("").to_string(),
             client_order_id: Self::get_str(data, "clOrdId").map(String::from),
-            symbol: Self::get_str(data, "instId").unwrap_or("").to_string(),
+            symbol: Self::get_str(data, "instId").map(String::from),
             side,
             order_type,
             status,
@@ -816,7 +816,7 @@ impl OkxParser {
         Ok(Order {
             id,
             client_order_id: Self::get_str(data, "clOrdId").map(String::from),
-            symbol: String::new(),
+            symbol: None,
             side: OrderSide::Buy,
             order_type: OrderType::Limit { price: 0.0 },
             status: OrderStatus::Open,

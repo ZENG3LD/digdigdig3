@@ -703,7 +703,7 @@ impl Trading for MexcConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: Some(client_order_id),
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::Market,
                     status: crate::core::OrderStatus::New,
@@ -738,7 +738,7 @@ impl Trading for MexcConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: Some(client_order_id),
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::Limit { price: 0.0 },
                     status: crate::core::OrderStatus::New,
@@ -774,7 +774,7 @@ impl Trading for MexcConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: Some(client_order_id),
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::PostOnly { price },
                     status: crate::core::OrderStatus::New,
@@ -812,7 +812,7 @@ impl Trading for MexcConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: Some(client_order_id),
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::Ioc { price },
                     status: crate::core::OrderStatus::New,
@@ -849,7 +849,7 @@ impl Trading for MexcConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: Some(client_order_id),
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::Fok { price },
                     status: crate::core::OrderStatus::New,
@@ -1299,7 +1299,7 @@ impl BatchOrders for MexcConnector {
                     order: order_id.map(|id| Order {
                         id,
                         client_order_id: None,
-                        symbol: String::new(),
+                        symbol: None,
                         side: OrderSide::Buy,
                         order_type: OrderType::Market,
                         status: crate::core::OrderStatus::New,

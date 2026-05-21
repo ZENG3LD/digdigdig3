@@ -489,7 +489,7 @@ impl Trading for TinkoffConnector {
 
                 let response = self.post(TinkoffEndpoint::PostOrder, body).await?;
                 let mut result = TinkoffParser::parse_order_result(&response)?;
-                result.symbol = ticker;
+                result.symbol = Some(ticker);
                 Ok(PlaceOrderResponse::Simple(result))
             }
 
@@ -518,7 +518,7 @@ impl Trading for TinkoffConnector {
 
                 let response = self.post(TinkoffEndpoint::PostOrder, body).await?;
                 let mut result = TinkoffParser::parse_order_result(&response)?;
-                result.symbol = ticker;
+                result.symbol = Some(ticker);
                 Ok(PlaceOrderResponse::Simple(result))
             }
 
@@ -548,7 +548,7 @@ impl Trading for TinkoffConnector {
 
                 let response = self.post(TinkoffEndpoint::PostStopOrder, body).await?;
                 let mut result = TinkoffParser::parse_stop_order_result(&response)?;
-                result.symbol = ticker;
+                result.symbol = Some(ticker);
                 result.stop_price = Some(stop_price);
                 Ok(PlaceOrderResponse::Simple(result))
             }
@@ -581,7 +581,7 @@ impl Trading for TinkoffConnector {
 
                 let response = self.post(TinkoffEndpoint::PostStopOrder, body).await?;
                 let mut result = TinkoffParser::parse_stop_order_result(&response)?;
-                result.symbol = ticker;
+                result.symbol = Some(ticker);
                 result.stop_price = Some(stop_price);
                 result.price = Some(limit_price);
                 Ok(PlaceOrderResponse::Simple(result))
@@ -917,7 +917,7 @@ impl AmendOrder for TinkoffConnector {
 
         let response = self.post(TinkoffEndpoint::ReplaceOrder, body).await?;
         let mut order = TinkoffParser::parse_order_result(&response)?;
-        order.symbol = format_ticker(&req.symbol);
+        order.symbol = Some(format_ticker(&req.symbol));
         Ok(order)
     }
 }

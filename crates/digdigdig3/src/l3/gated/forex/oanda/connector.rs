@@ -659,7 +659,7 @@ impl Trading for OandaConnector {
         Ok(PlaceOrderResponse::Simple(Order {
             id: order_id,
             client_order_id: req.client_order_id,
-            symbol: symbol.to_string(),
+            symbol: Some(symbol.to_string()),
             side,
             order_type: result_order_type,
             status: crate::core::OrderStatus::New,
@@ -697,10 +697,7 @@ impl Trading for OandaConnector {
                 Ok(Order {
                     id: order_id.to_string(),
                     client_order_id: None,
-                    symbol: req.symbol
-                        .as_ref()
-                        .map(|s| s.to_string())
-                        .unwrap_or_default(),
+                    symbol: req.symbol.as_ref().map(|s| s.to_string()),
                     side: OrderSide::Buy,
                     order_type: OrderType::Limit { price: 0.0 },
                     status: crate::core::OrderStatus::Canceled,

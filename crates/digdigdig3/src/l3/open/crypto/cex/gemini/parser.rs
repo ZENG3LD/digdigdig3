@@ -284,7 +284,7 @@ impl GeminiParser {
                 .unwrap_or("")
                 .to_string(),
             client_order_id: Self::get_str(data, "client_order_id").map(String::from),
-            symbol: Self::get_str(data, "symbol").unwrap_or("").to_string(),
+            symbol: Self::get_str(data, "symbol").map(String::from),
             side,
             order_type,
             status,
@@ -843,7 +843,7 @@ impl GeminiParser {
                     .unwrap_or_else(|| Self::get_str(item, "tid").unwrap_or(""))
                     .to_string(),
                 client_order_id: None,
-                symbol: Self::get_str(item, "symbol").unwrap_or("").to_string(),
+                symbol: Self::get_str(item, "symbol").map(String::from),
                 side,
                 order_type: OrderType::Limit { price: price.unwrap_or(0.0) },
                 status: OrderStatus::Filled,
@@ -1042,7 +1042,7 @@ mod tests {
 
         let order = GeminiParser::parse_order(&response).unwrap();
         assert_eq!(order.id, "987654321");
-        assert_eq!(order.symbol, "btcusd");
+        assert_eq!(order.symbol.as_deref(), Some("btcusd"));
         assert_eq!(order.side, OrderSide::Buy);
         assert!(matches!(order.order_type, OrderType::Limit { .. }));
         assert_eq!(order.status, OrderStatus::PartiallyFilled);

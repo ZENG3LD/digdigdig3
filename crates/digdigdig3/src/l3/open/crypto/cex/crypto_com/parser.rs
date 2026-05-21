@@ -273,7 +273,7 @@ impl CryptoComParser {
         Ok(Order {
             id: Self::get_str(data, "order_id").unwrap_or("").to_string(),
             client_order_id: Self::get_str(data, "client_oid").map(String::from),
-            symbol: Self::get_str(data, "instrument_name").unwrap_or("").to_string(),
+            symbol: Self::get_str(data, "instrument_name").map(String::from),
             side,
             order_type,
             status,

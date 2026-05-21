@@ -299,7 +299,7 @@ impl AlpacaParser {
         Ok(Order {
             id,
             client_order_id,
-            symbol,
+            symbol: Some(symbol),
             side,
             order_type,
             status,

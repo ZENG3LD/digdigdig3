@@ -384,7 +384,7 @@ impl BitgetConnector {
         Order {
             id: order_id,
             client_order_id: Some(client_oid),
-            symbol: symbol.to_string(),
+            symbol: Some(symbol.to_string()),
             side,
             order_type,
             status: crate::core::OrderStatus::New,
@@ -1129,7 +1129,7 @@ impl Trading for BitgetConnector {
                 Ok(Order {
                     id: order_id.to_string(),
                     client_order_id: None,
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side: OrderSide::Buy,
                     order_type: OrderType::Limit { price: 0.0 },
                     status: crate::core::OrderStatus::Canceled,
@@ -1180,7 +1180,7 @@ impl Trading for BitgetConnector {
                 Ok(Order {
                     id: order_ids.first().cloned().unwrap_or_default(),
                     client_order_id: None,
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side: OrderSide::Buy,
                     order_type: OrderType::Limit { price: 0.0 },
                     status: crate::core::OrderStatus::Canceled,

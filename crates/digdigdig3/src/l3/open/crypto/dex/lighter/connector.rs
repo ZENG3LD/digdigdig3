@@ -1284,7 +1284,7 @@ impl LighterConnector {
         let order = crate::core::Order {
             id: order_index.to_string(),
             client_order_id: req.client_order_id.clone(),
-            symbol: symbol_str,
+            symbol: Some(symbol_str),
             side: req.side,
             order_type: order_type_parsed,
             status: crate::core::types::OrderStatus::New,
@@ -1400,15 +1400,14 @@ impl LighterConnector {
 
         let _response = self.post(LighterEndpoint::SendTx, body, 100).await?;
 
-        let symbol_str = req.symbol
+        let symbol_opt = req.symbol
             .as_ref()
-            .map(|s| s.base.to_uppercase())
-            .unwrap_or_default();
+            .map(|s| s.base.to_uppercase());
 
         Ok(crate::core::Order {
             id: order_id_str,
             client_order_id: None,
-            symbol: symbol_str,
+            symbol: symbol_opt,
             side: crate::core::types::OrderSide::Buy, // Unknown at cancel time
             order_type: crate::core::OrderType::Limit { price: 0.0 },
             status: crate::core::types::OrderStatus::Canceled,

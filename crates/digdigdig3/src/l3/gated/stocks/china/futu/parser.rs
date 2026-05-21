@@ -217,7 +217,7 @@ impl FutuParser {
         Ok(Order {
             id: order_id,
             client_order_id,
-            symbol,
+            symbol: Some(symbol),
             side,
             order_type,
             status,
@@ -281,7 +281,7 @@ impl FutuParser {
         Ok(Order {
             id: order_id,
             client_order_id: None,
-            symbol: request_symbol.to_string(),
+            symbol: Some(request_symbol.to_string()),
             side: OrderSide::Buy, // placeholder; caller should refresh
             order_type: OrderType::Market,
             status: OrderStatus::New,

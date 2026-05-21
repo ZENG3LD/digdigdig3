@@ -593,7 +593,7 @@ impl Trading for ZerodhaConnector {
                     let sym_str = format_symbol(sym);
                     let parts: Vec<&str> = sym_str.split(':').collect();
                     let trading_sym = if parts.len() == 2 { parts[1] } else { sym_str.as_str() };
-                    o.symbol == trading_sym || o.symbol == sym_str
+                    o.symbol.as_deref() == Some(trading_sym) || o.symbol.as_deref() == Some(sym_str.as_str())
                 } else {
                     true
                 }
@@ -619,7 +619,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
             Ok(Order {
                 id: order_id.to_string(),
                 client_order_id: None,
-                symbol: String::new(),
+                symbol: None,
                 side: OrderSide::Buy,
                 order_type: OrderType::Market,
                 status: OrderStatus::Canceled,

@@ -517,7 +517,7 @@ impl HyperliquidParser {
                 .map(|id| id.to_string())
                 .unwrap_or_default(),
             client_order_id: Self::get_str(data, "cloid").map(String::from),
-            symbol: Self::get_str(data, "coin").unwrap_or("").to_string(),
+            symbol: Self::get_str(data, "coin").map(String::from),
             side,
             order_type,
             status,
@@ -566,7 +566,7 @@ impl HyperliquidParser {
                 .map(|id| id.to_string())
                 .unwrap_or_default(),
             client_order_id: Self::get_str(order_data, "cloid").map(String::from),
-            symbol: Self::get_str(order_data, "coin").unwrap_or("").to_string(),
+            symbol: Self::get_str(order_data, "coin").map(String::from),
             side,
             order_type: OrderType::Limit {
                 price: Self::get_f64(order_data, "limitPx").unwrap_or(0.0),
@@ -619,7 +619,7 @@ impl HyperliquidParser {
                             .map(|id| id.to_string())
                             .unwrap_or_default(),
                         client_order_id: Self::get_str(order_data, "cloid").map(String::from),
-                        symbol: Self::get_str(order_data, "coin").unwrap_or("").to_string(),
+                        symbol: Self::get_str(order_data, "coin").map(String::from),
                         side,
                         order_type: OrderType::Limit {
                             price: Self::get_f64(order_data, "limitPx").unwrap_or(0.0),
@@ -658,7 +658,7 @@ impl HyperliquidParser {
                 .map(|id| id.to_string())
                 .unwrap_or_default(),
             client_order_id: Self::get_str(fill, "cloid").map(String::from),
-            symbol: Self::get_str(fill, "coin").unwrap_or("").to_string(),
+            symbol: Self::get_str(fill, "coin").map(String::from),
             side,
             order_type: OrderType::Limit { price: Self::get_f64(fill, "px").unwrap_or(0.0) },
             status: OrderStatus::Filled,

@@ -781,7 +781,7 @@ fn parse_order_update(raw: &Value) -> WebSocketResult<StreamEvent> {
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
 
     Ok(StreamEvent::OrderUpdate {
-        symbol: order.symbol,
+        symbol: order.symbol.unwrap_or_default(),
         event: crate::core::OrderUpdateEvent {
             order_id: order.id,
             client_order_id: order.client_order_id,

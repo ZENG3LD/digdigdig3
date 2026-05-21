@@ -317,7 +317,7 @@ impl UpbitParser {
         Ok(Order {
             id: Self::get_str(data, "uuid").unwrap_or("").to_string(),
             client_order_id: Self::get_str(data, "identifier").map(String::from),
-            symbol: Self::get_str(data, "market").unwrap_or(symbol).to_string(),
+            symbol: Some(Self::get_str(data, "market").unwrap_or(symbol).to_string()),
             side,
             order_type,
             status,

@@ -564,7 +564,7 @@ impl MexcParser {
         Ok(Order {
             id,
             client_order_id: json["clientOrderId"].as_str().map(String::from),
-            symbol,
+            symbol: Some(symbol),
             side,
             order_type,
             status,

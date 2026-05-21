@@ -318,7 +318,7 @@ impl DhanParser {
         Ok(Order {
             id: order_id.to_string(),
             client_order_id: None,
-            symbol: symbol.to_string(),
+            symbol: Some(symbol.to_string()),
             side: Self::parse_order_side(transaction_type),
             order_type: Self::parse_order_type(order_type),
             status: Self::parse_order_status(status),
@@ -362,7 +362,7 @@ impl DhanParser {
         Ok(Order {
             id: order_id.to_string(),
             client_order_id: None,
-            symbol: String::new(),
+            symbol: None,
             side: OrderSide::Buy,
             order_type: OrderType::Market,
             status: Self::parse_order_status(status),

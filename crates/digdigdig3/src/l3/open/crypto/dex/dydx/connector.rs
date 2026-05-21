@@ -1251,7 +1251,7 @@ impl Trading for DydxConnector {
                 let order = Order {
                     id: tx_hash,
                     client_order_id: req.client_order_id,
-                    symbol: format!("{}-{}", req.symbol.base, req.symbol.quote),
+                    symbol: Some(format!("{}-{}", req.symbol.base, req.symbol.quote)),
                     side: req.side,
                     order_type: req.order_type,
                     status: crate::core::OrderStatus::Open,
@@ -1404,7 +1404,7 @@ impl Trading for DydxConnector {
                 return Ok(Order {
                     id: order_id_str,
                     client_order_id: Some(tx_hash),
-                    symbol: symbol_str,
+                    symbol: Some(symbol_str),
                     side: crate::core::OrderSide::Buy, // unknown at cancel time
                     order_type: crate::core::OrderType::Limit { price: 0.0 },
                     status: crate::core::OrderStatus::Canceled,
@@ -1939,7 +1939,7 @@ impl DydxConnector {
                     tracing::warn!(
                         "cancel_all_orders: failed to cancel order {} for {}: {}",
                         order.id,
-                        order.symbol,
+                        order.symbol.as_deref().unwrap_or(""),
                         e
                     );
                 }

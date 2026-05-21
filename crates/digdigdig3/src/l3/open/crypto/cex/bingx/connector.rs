@@ -302,7 +302,7 @@ impl BingxConnector {
         Order {
             id: order_id,
             client_order_id,
-            symbol: symbol.to_string(),
+            symbol: Some(symbol.to_string()),
             side,
             order_type,
             status: crate::core::OrderStatus::New,
@@ -1492,7 +1492,7 @@ impl BatchOrders for BingxConnector {
                     order: order_id.map(|id| Order {
                         id,
                         client_order_id: None,
-                        symbol: req.map(|o| o.symbol.to_string()).unwrap_or_default(),
+                        symbol: req.map(|o| o.symbol.to_string()),
                         side: req.map(|o| o.side).unwrap_or(OrderSide::Buy),
                         order_type: req.map(|o| o.order_type.clone()).unwrap_or(OrderType::Market),
                         status: crate::core::OrderStatus::New,

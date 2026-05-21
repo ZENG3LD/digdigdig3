@@ -333,7 +333,7 @@ impl KuCoinParser {
                 .unwrap_or("")
                 .to_string(),
             client_order_id: Self::get_str(data, "clientOid").map(String::from),
-            symbol: Self::get_str(data, "symbol").unwrap_or(symbol).to_string(),
+            symbol: Some(Self::get_str(data, "symbol").unwrap_or(symbol).to_string()),
             side,
             order_type,
             status,
@@ -943,7 +943,7 @@ impl KuCoinParser {
                 Some(Order {
                     id: order_id,
                     client_order_id: client_oid.clone(),
-                    symbol: String::new(),
+                    symbol: None,
                     side: OrderSide::Buy,
                     order_type: OrderType::Limit { price: 0.0 },
                     status: OrderStatus::New,

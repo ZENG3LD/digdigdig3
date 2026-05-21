@@ -321,7 +321,7 @@ impl BitstampParser {
         Ok(Order {
             id,
             client_order_id: json.get("client_order_id").and_then(|v| v.as_str()).map(String::from),
-            symbol,
+            symbol: Some(symbol),
             side,
             order_type,
             status,
@@ -539,7 +539,7 @@ impl BitstampParser {
                 client_order_id: None,
                 symbol: item.get("market")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("").to_string(),
+                    .map(String::from),
                 side: crate::core::OrderSide::Buy, // Unknown without deeper parsing
                 order_type: crate::core::OrderType::Limit { price: 0.0 },
                 status: crate::core::OrderStatus::Filled,

@@ -232,7 +232,7 @@ impl FyersParser {
             return Ok(Order {
                 id: order_id.to_string(),
                 client_order_id: None,
-                symbol: String::new(),
+                symbol: None,
                 side: OrderSide::Buy,
                 order_type: OrderType::Market,
                 status: OrderStatus::Open,
@@ -263,7 +263,7 @@ impl FyersParser {
                 .unwrap_or("")
                 .to_string(),
             client_order_id: data["clientId"].as_str().map(|s| s.to_string()),
-            symbol: data["symbol"].as_str().unwrap_or("").to_string(),
+            symbol: data["symbol"].as_str().map(String::from),
             side: Self::parse_order_side(data["side"].as_i64().unwrap_or(1)),
             order_type: Self::parse_order_type(data["type"].as_i64().unwrap_or(2)),
             status: Self::parse_order_status(data["orderStatus"].as_i64().unwrap_or(6)),

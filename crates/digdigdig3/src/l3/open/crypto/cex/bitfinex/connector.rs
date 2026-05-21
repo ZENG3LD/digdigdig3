@@ -781,7 +781,7 @@ impl Trading for BitfinexConnector {
                 Ok(Order {
                     id: ids[0].to_string(),
                     client_order_id: None,
-                    symbol: req.symbol.as_ref().map(|s| s.to_string()).unwrap_or_default(),
+                    symbol: req.symbol.as_ref().map(|s| s.to_string()),
                     side: OrderSide::Buy,
                     order_type: OrderType::Market,
                     status: crate::core::OrderStatus::Canceled,
@@ -1287,7 +1287,7 @@ impl BatchOrders for BitfinexConnector {
                                 order: Some(Order {
                                     id: id.to_string(),
                                     client_order_id: None,
-                                    symbol: order.map(|o| o.symbol.to_string()).unwrap_or_default(),
+                                    symbol: order.map(|o| o.symbol.to_string()),
                                     side: order.map(|o| o.side).unwrap_or(OrderSide::Buy),
                                     order_type: order.map(|o| o.order_type.clone()).unwrap_or(OrderType::Market),
                                     status: crate::core::OrderStatus::New,

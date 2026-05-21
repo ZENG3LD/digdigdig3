@@ -290,7 +290,7 @@ impl BinanceParser {
                 .map(|id| id.to_string())
                 .unwrap_or_default(),
             client_order_id: Self::get_str(data, "clientOrderId").map(String::from),
-            symbol: Self::get_str(data, "symbol").unwrap_or("").to_string(),
+            symbol: Self::get_str(data, "symbol").map(String::from),
             side,
             order_type,
             status,

@@ -334,7 +334,7 @@ pub struct Order {
     /// Client Order ID
     pub client_order_id: Option<String>,
     /// Символ
-    pub symbol: String,
+    pub symbol: Option<String>,
     /// Направление
     pub side: OrderSide,
     /// Тип

@@ -567,7 +567,7 @@ impl Trading for FyersConnector {
             .filter(|o| {
                 if let Some(sym) = &filter.symbol {
                     let sym_str = format_symbol(&sym.base, &sym.quote, AccountType::Spot);
-                    o.symbol == sym_str || o.symbol.contains(&sym.base)
+                    o.symbol.as_deref() == Some(sym_str.as_str()) || o.symbol.as_deref().unwrap_or("").contains(&sym.base)
                 } else {
                     true
                 }
@@ -661,7 +661,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         // Filter by symbol if provided
         if let Some(sym) = symbol {
             let symbol_str = format_symbol(&sym.base, &sym.quote, account_type);
-            orders.retain(|o| o.symbol == symbol_str);
+            orders.retain(|o| o.symbol.as_deref() == Some(symbol_str.as_str()));
         }
 
         Ok(orders)
@@ -800,7 +800,7 @@ impl BatchOrders for FyersConnector {
                     Some(Order {
                         id: order_id,
                         client_order_id: req.client_order_id.clone(),
-                        symbol: format_symbol(&req.symbol.base, &req.symbol.quote, req.account_type),
+                        symbol: Some(format_symbol(&req.symbol.base, &req.symbol.quote, req.account_type)),
                         side: req.side,
                         order_type: req.order_type.clone(),
                         status: OrderStatus::New,

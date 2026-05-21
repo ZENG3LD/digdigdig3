@@ -366,7 +366,7 @@ impl BitgetParser {
             client_order_id: Self::get_str(data, "clientOrderId")
                 .or_else(|| Self::get_str(data, "clientOid"))
                 .map(String::from),
-            symbol: Self::get_str(data, "symbol").unwrap_or(symbol).to_string(),
+            symbol: Some(Self::get_str(data, "symbol").unwrap_or(symbol).to_string()),
             side,
             order_type,
             status,

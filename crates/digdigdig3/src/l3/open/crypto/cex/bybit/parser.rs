@@ -314,7 +314,7 @@ impl BybitParser {
         Ok(Order {
             id,
             client_order_id: data["orderLinkId"].as_str().map(String::from),
-            symbol,
+            symbol: Some(symbol),
             side,
             order_type,
             status,
@@ -526,7 +526,7 @@ impl BybitParser {
         Ok(Order {
             id,
             client_order_id: result["orderLinkId"].as_str().map(String::from),
-            symbol: String::new(),
+            symbol: None,
             side: OrderSide::Buy,
             order_type: OrderType::Limit { price: 0.0 },
             status: OrderStatus::Open,

@@ -717,7 +717,7 @@ impl Trading for KrakenConnector {
         Ok(PlaceOrderResponse::Simple(Order {
             id: order_id,
             client_order_id: req.client_order_id,
-            symbol: symbol.to_string(),
+            symbol: Some(symbol.to_string()),
             side,
             order_type: order_type_out,
             status: crate::core::OrderStatus::New,
@@ -785,7 +785,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
                 Ok(Order {
                     id: order_id.to_string(),
                     client_order_id: None,
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side: OrderSide::Buy,
                     order_type: OrderType::Limit { price: 0.0 },
                     status: crate::core::OrderStatus::Canceled,
@@ -817,7 +817,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
                 };
                 let response = self.post(cancel_all_endpoint, params, account_type).await?;
                 let _ = response;
-                let sym_str = symbol.as_ref().map(|s| s.to_string()).unwrap_or_default();
+                let sym_str = symbol.as_ref().map(|s| s.to_string());
                 Ok(Order {
                     id: format!("cancel_all_{}", crate::core::timestamp_millis()),
                     client_order_id: None,
@@ -853,7 +853,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
                 Ok(Order {
                     id: format!("cancel_all_{}", crate::core::timestamp_millis()),
                     client_order_id: None,
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side: OrderSide::Buy,
                     order_type: OrderType::Market,
                     status: crate::core::OrderStatus::Canceled,

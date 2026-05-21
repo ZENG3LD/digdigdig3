@@ -346,7 +346,7 @@ impl OkxConnector {
         Order {
             id: algo_id.to_string(),
             client_order_id: None,
-            symbol: inst_id.to_string(),
+            symbol: Some(inst_id.to_string()),
             side,
             order_type: OrderType::Market,
             status: OrderStatus::Open,

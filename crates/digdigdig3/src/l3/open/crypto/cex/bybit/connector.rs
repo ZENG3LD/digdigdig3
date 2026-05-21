@@ -949,7 +949,7 @@ impl Trading for BybitConnector {
                         Ok(PlaceOrderResponse::Simple(Order {
                             id: order_id,
                             client_order_id: Some(order_link_id),
-                            symbol: symbol.to_string(),
+                            symbol: Some(symbol.to_string()),
                             side,
                             order_type: OrderType::Market,
                             status: crate::core::OrderStatus::New,
@@ -1006,7 +1006,7 @@ impl Trading for BybitConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: Some(order_link_id),
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::Limit { price },
                     status: crate::core::OrderStatus::New,
@@ -1054,7 +1054,7 @@ impl Trading for BybitConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: Some(order_link_id),
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::StopMarket { stop_price },
                     status: crate::core::OrderStatus::New,
@@ -1103,7 +1103,7 @@ impl Trading for BybitConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: Some(order_link_id),
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::StopLimit { stop_price, limit_price },
                     status: crate::core::OrderStatus::New,
@@ -1163,7 +1163,7 @@ impl Trading for BybitConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: Some(order_link_id),
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::TrailingStop { callback_rate, activation_price },
                     status: crate::core::OrderStatus::New,
@@ -1208,7 +1208,7 @@ impl Trading for BybitConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: Some(order_link_id),
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::PostOnly { price },
                     status: crate::core::OrderStatus::New,
@@ -1253,7 +1253,7 @@ impl Trading for BybitConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: Some(order_link_id),
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::Ioc { price },
                     status: crate::core::OrderStatus::New,
@@ -1298,7 +1298,7 @@ impl Trading for BybitConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: Some(order_link_id),
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::Fok { price },
                     status: crate::core::OrderStatus::New,
@@ -1360,7 +1360,7 @@ impl Trading for BybitConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: Some(order_link_id),
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::ReduceOnly { price },
                     status: crate::core::OrderStatus::New,
@@ -1409,7 +1409,7 @@ impl Trading for BybitConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: Some(order_link_id),
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::Iceberg { price, display_quantity },
                     status: crate::core::OrderStatus::New,
@@ -1508,7 +1508,7 @@ impl Trading for BybitConnector {
                 Ok(Order {
                     id: order_id.to_string(),
                     client_order_id: None,
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side: OrderSide::Buy,
                     order_type: OrderType::Limit { price: 0.0 },
                     status: crate::core::OrderStatus::Canceled,
@@ -1541,7 +1541,7 @@ impl Trading for BybitConnector {
                 Ok(Order {
                     id: "cancel-all".to_string(),
                     client_order_id: None,
-                    symbol: sym.to_string(),
+                    symbol: Some(sym.to_string()),
                     side: OrderSide::Buy,
                     order_type: OrderType::Market,
                     status: crate::core::OrderStatus::Canceled,
@@ -1571,7 +1571,7 @@ impl Trading for BybitConnector {
                 Ok(Order {
                     id: "cancel-by-symbol".to_string(),
                     client_order_id: None,
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side: OrderSide::Buy,
                     order_type: OrderType::Market,
                     status: crate::core::OrderStatus::Canceled,

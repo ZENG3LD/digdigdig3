@@ -153,7 +153,7 @@ impl ZerodhaParser {
             return Ok(Order {
                 id: order_id_str.to_string(),
                 client_order_id: None,
-                symbol: String::new(),
+                symbol: None,
                 side: OrderSide::Buy,
                 order_type: OrderType::Market,
                 status: OrderStatus::Open,
@@ -181,7 +181,7 @@ impl ZerodhaParser {
         Ok(Order {
             id: order_id,
             client_order_id: Self::get_str(data, "tag").map(|s| s.to_string()),
-            symbol: Self::get_str(data, "tradingsymbol").unwrap_or("").to_string(),
+            symbol: Self::get_str(data, "tradingsymbol").map(String::from),
             side: if Self::get_str(data, "transaction_type") == Some("BUY") {
                 OrderSide::Buy
             } else {
@@ -235,7 +235,7 @@ impl ZerodhaParser {
             Ok(Order {
                 id: order_id,
                 client_order_id: Self::get_str(order, "tag").map(|s| s.to_string()),
-                symbol: Self::get_str(order, "tradingsymbol").unwrap_or("").to_string(),
+                symbol: Self::get_str(order, "tradingsymbol").map(String::from),
                 side: if Self::get_str(order, "transaction_type") == Some("BUY") {
                     OrderSide::Buy
                 } else {

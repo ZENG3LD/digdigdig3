@@ -415,7 +415,7 @@ fn build_order_response(
     let order = Order {
         id: order_id,
         client_order_id: req.client_order_id.clone(),
-        symbol: req.symbol.base.clone(),
+        symbol: Some(req.symbol.base.clone()),
         side: req.side,
         order_type: order_type_for_response,
         status: order_status,
@@ -869,18 +869,18 @@ impl Trading for HyperliquidConnector {
                 let mut pairs = Vec::new();
                 for o in &orders {
                     if let Some(ref s) = sym_opt {
-                        if !o.symbol.eq_ignore_ascii_case(&s.base) {
+                        if !o.symbol.as_deref().is_some_and(|sym| sym.eq_ignore_ascii_case(&s.base)) {
                             continue;
                         }
                     }
                     if let Ok(oid) = o.id.parse::<u64>() {
-                        let asset = self.symbol_to_asset_index(&o.symbol).await.unwrap_or(0);
+                        let asset = self.symbol_to_asset_index(o.symbol.as_deref().unwrap_or("")).await.unwrap_or(0);
                         pairs.push((asset, oid));
                     }
                 }
 
                 if pairs.is_empty() {
-                    let sym_str = sym_opt.as_ref().map(|s| s.base.clone()).unwrap_or_default();
+                    let sym_str = sym_opt.as_ref().map(|s| s.base.clone());
                     return Ok(Order {
                         id: "0".to_string(),
                         client_order_id: None,
@@ -919,11 +919,11 @@ impl Trading for HyperliquidConnector {
 
                 let mut pairs = Vec::new();
                 for o in &orders {
-                    if !o.symbol.eq_ignore_ascii_case(&sym.base) {
+                    if !o.symbol.as_deref().is_some_and(|s| s.eq_ignore_ascii_case(&sym.base)) {
                         continue;
                     }
                     if let Ok(oid) = o.id.parse::<u64>() {
-                        let asset = self.symbol_to_asset_index(&o.symbol).await.unwrap_or(0);
+                        let asset = self.symbol_to_asset_index(o.symbol.as_deref().unwrap_or("")).await.unwrap_or(0);
                         pairs.push((asset, oid));
                     }
                 }
@@ -932,7 +932,7 @@ impl Trading for HyperliquidConnector {
                     return Ok(Order {
                         id: "0".to_string(),
                         client_order_id: None,
-                        symbol: sym.base.clone(),
+                        symbol: Some(sym.base.clone()),
                         side: OrderSide::Buy,
                         order_type: OrderType::Limit { price: 0.0 },
                         status: OrderStatus::Canceled,
@@ -974,7 +974,7 @@ impl Trading for HyperliquidConnector {
         }
 
         // Return a synthetic cancelled order
-        let symbol = req.symbol.map(|s| s.base).unwrap_or_default();
+        let symbol = req.symbol.map(|s| s.base);
         let first_oid = cancels.first().map(|(_, oid)| oid.to_string()).unwrap_or_default();
 
         Ok(Order {
@@ -1044,7 +1044,7 @@ impl Trading for HyperliquidConnector {
 
         // Filter by symbol if requested
         if let Some(sym) = symbol {
-            orders.retain(|o| o.symbol.eq_ignore_ascii_case(sym));
+            orders.retain(|o| o.symbol.as_deref().is_some_and(|s| s.eq_ignore_ascii_case(sym)));
         }
 
         Ok(orders)
@@ -1084,7 +1084,7 @@ impl Trading for HyperliquidConnector {
 
         // Apply symbol filter
         if let Some(sym) = &filter.symbol {
-            orders.retain(|o| o.symbol.eq_ignore_ascii_case(&sym.base));
+            orders.retain(|o| o.symbol.as_deref().is_some_and(|s| s.eq_ignore_ascii_case(&sym.base)));
         }
 
         // Apply limit
@@ -1641,7 +1641,7 @@ impl AmendOrder for HyperliquidConnector {
         Ok(Order {
             id: req.order_id,
             client_order_id: current_order.client_order_id,
-            symbol: req.symbol.base.clone(),
+            symbol: Some(req.symbol.base.clone()),
             side: current_order.side,
             order_type: current_order.order_type,
             status: OrderStatus::Open,
@@ -1740,7 +1740,7 @@ impl BatchOrders for HyperliquidConnector {
             let order = Order {
                 id: order_id,
                 client_order_id: req.client_order_id.clone(),
-                symbol: req.symbol.base.clone(),
+                symbol: Some(req.symbol.base.clone()),
                 side: req.side,
                 order_type: req.order_type.clone(),
                 status: order_status,
@@ -1824,7 +1824,7 @@ impl BatchOrders for HyperliquidConnector {
                 order: Some(Order {
                     id: oid_str.clone(),
                     client_order_id: None,
-                    symbol: symbol.unwrap_or("").to_string(),
+                    symbol: symbol.map(String::from),
                     side: OrderSide::Buy, // Unknown from cancel response
                     order_type: OrderType::Limit { price: 0.0 },
                     status: OrderStatus::Canceled,
@@ -1956,12 +1956,12 @@ impl CancelAll for HyperliquidConnector {
         let mut cancels: Vec<(u32, u64)> = Vec::new();
         for order in &open_orders {
             if let Some(filter) = symbol_filter {
-                if !order.symbol.eq_ignore_ascii_case(filter) {
+                if !order.symbol.as_deref().is_some_and(|s| s.eq_ignore_ascii_case(filter)) {
                     continue;
                 }
             }
             if let Ok(oid) = order.id.parse::<u64>() {
-                let asset = self.symbol_to_asset_index(&order.symbol).await.unwrap_or(0);
+                let asset = self.symbol_to_asset_index(order.symbol.as_deref().unwrap_or("")).await.unwrap_or(0);
                 cancels.push((asset, oid));
             }
         }
@@ -2007,7 +2007,7 @@ impl CancelAll for HyperliquidConnector {
                     order: Some(Order {
                         id: oid.to_string(),
                         client_order_id: None,
-                        symbol: symbol_filter.unwrap_or("").to_string(),
+                        symbol: symbol_filter.map(String::from),
                         side: OrderSide::Buy,
                         order_type: OrderType::Limit { price: 0.0 },
                         status: OrderStatus::Canceled,

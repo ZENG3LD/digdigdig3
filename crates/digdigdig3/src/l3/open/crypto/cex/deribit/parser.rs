@@ -295,7 +295,7 @@ impl DeribitParser {
         Ok(Order {
             id: Self::get_str(data, "order_id").unwrap_or("").to_string(),
             client_order_id: Self::get_str(data, "label").map(String::from),
-            symbol: Self::get_str(data, "instrument_name").unwrap_or(symbol).to_string(),
+            symbol: Some(Self::get_str(data, "instrument_name").unwrap_or(symbol).to_string()),
             side,
             order_type,
             status,
@@ -449,7 +449,7 @@ impl DeribitParser {
             Order {
                 id: Self::get_str(leg, "order_id").unwrap_or("tp_pending").to_string(),
                 client_order_id: None,
-                symbol: symbol.to_string(),
+                symbol: Some(symbol.to_string()),
                 side: entry_order.side.opposite(),
                 order_type: OrderType::Limit { price: tp_price },
                 status: OrderStatus::New,
@@ -469,7 +469,7 @@ impl DeribitParser {
             Order {
                 id: "tp_pending".to_string(),
                 client_order_id: None,
-                symbol: symbol.to_string(),
+                symbol: Some(symbol.to_string()),
                 side: entry_order.side.opposite(),
                 order_type: OrderType::Market,
                 status: OrderStatus::New,
@@ -495,7 +495,7 @@ impl DeribitParser {
             Order {
                 id: Self::get_str(leg, "order_id").unwrap_or("sl_pending").to_string(),
                 client_order_id: None,
-                symbol: symbol.to_string(),
+                symbol: Some(symbol.to_string()),
                 side: entry_order.side.opposite(),
                 order_type: OrderType::StopMarket { stop_price: sl_price },
                 status: OrderStatus::New,
@@ -514,7 +514,7 @@ impl DeribitParser {
             Order {
                 id: "sl_pending".to_string(),
                 client_order_id: None,
-                symbol: symbol.to_string(),
+                symbol: Some(symbol.to_string()),
                 side: entry_order.side.opposite(),
                 order_type: OrderType::Market,
                 status: OrderStatus::New,

@@ -280,7 +280,7 @@ impl TinkoffParser {
         Ok(Order {
             id: order_id,
             client_order_id: None,
-            symbol: String::new(), // Will be filled by caller
+            symbol: None, // Will be filled by caller
             side,
             order_type,
             status,
@@ -413,7 +413,7 @@ impl TinkoffParser {
         Ok(Order {
             id: order_id,
             client_order_id: None,
-            symbol: String::new(), // filled by caller
+            symbol: None, // filled by caller
             side,
             order_type: OrderType::Market, // placeholder; caller sets correct type
             status: OrderStatus::New,
@@ -488,7 +488,7 @@ impl TinkoffParser {
                 Ok(Order {
                     id: order_id,
                     client_order_id: None,
-                    symbol,
+                    symbol: Some(symbol),
                     side,
                     order_type: OrderType::Market,
                     status,

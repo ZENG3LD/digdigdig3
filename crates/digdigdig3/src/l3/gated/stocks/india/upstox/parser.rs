@@ -290,7 +290,7 @@ impl UpstoxParser {
         Ok(Order {
             id: order_id,
             client_order_id: None,
-            symbol,
+            symbol: Some(symbol),
             side,
             order_type,
             status,

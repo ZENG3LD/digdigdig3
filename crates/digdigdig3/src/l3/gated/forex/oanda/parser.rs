@@ -360,7 +360,7 @@ impl OandaParser {
         Ok(Order {
             id,
             client_order_id: None,
-            symbol: instrument.to_string(),
+            symbol: Some(instrument.to_string()),
             side,
             order_type,
             status,

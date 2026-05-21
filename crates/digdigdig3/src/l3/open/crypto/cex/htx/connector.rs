@@ -741,7 +741,7 @@ impl Trading for HtxConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order.id,
                     client_order_id: Some(client_order_id),
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::Market,
                     status: crate::core::OrderStatus::New,
@@ -775,7 +775,7 @@ impl Trading for HtxConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order.id,
                     client_order_id: Some(client_order_id),
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::Limit { price: 0.0 },
                     status: crate::core::OrderStatus::New,
@@ -819,7 +819,7 @@ impl Trading for HtxConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order.id,
                     client_order_id: Some(client_order_id),
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::StopLimit { stop_price, limit_price },
                     status: crate::core::OrderStatus::New,
@@ -854,7 +854,7 @@ impl Trading for HtxConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order.id,
                     client_order_id: Some(client_order_id),
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::PostOnly { price },
                     status: crate::core::OrderStatus::New,
@@ -890,7 +890,7 @@ impl Trading for HtxConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order.id,
                     client_order_id: Some(client_order_id),
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::Ioc { price },
                     status: crate::core::OrderStatus::New,
@@ -925,7 +925,7 @@ impl Trading for HtxConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order.id,
                     client_order_id: Some(client_order_id),
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::Fok { price },
                     status: crate::core::OrderStatus::New,
@@ -974,7 +974,7 @@ impl Trading for HtxConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id_str,
                     client_order_id: Some(client_order_id),
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::TrailingStop { callback_rate, activation_price },
                     status: crate::core::OrderStatus::New,
@@ -1034,7 +1034,7 @@ impl Trading for HtxConnector {
                 Ok(Order {
                     id: order_ids.first().cloned().unwrap_or_default(),
                     client_order_id: None,
-                    symbol: req.symbol.as_ref().map(|s| s.to_string()).unwrap_or_default(),
+                    symbol: req.symbol.as_ref().map(|s| s.to_string()),
                     side: OrderSide::Buy,
                     order_type: OrderType::Market,
                     status: crate::core::OrderStatus::Canceled,

@@ -1029,7 +1029,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
                 let account_type = req.account_type;
                 let cancelled = self.cancel_all_orders(symbol.clone(), account_type).await?;
                 let count = cancelled.len();
-                let sym_str = symbol.as_ref().map(|s| s.to_string()).unwrap_or_default();
+                let sym_str = symbol.as_ref().map(|s| s.to_string());
                 Ok(Order {
                     id: format!("cancel_all_{}", crate::core::timestamp_millis()),
                     client_order_id: None,
@@ -1056,7 +1056,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
                 Ok(Order {
                     id: format!("cancel_all_{}", crate::core::timestamp_millis()),
                     client_order_id: None,
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side: OrderSide::Buy,
                     order_type: OrderType::Market,
                     status: crate::core::OrderStatus::Canceled,

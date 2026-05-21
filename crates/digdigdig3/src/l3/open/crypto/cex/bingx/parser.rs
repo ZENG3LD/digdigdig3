@@ -268,7 +268,7 @@ impl BingxParser {
         Ok(Order {
             id,
             client_order_id: Self::get_str(data, "clientOrderId").map(String::from),
-            symbol: Self::get_str(data, "symbol").unwrap_or(symbol).to_string(),
+            symbol: Some(Self::get_str(data, "symbol").unwrap_or(symbol).to_string()),
             side,
             order_type,
             status,

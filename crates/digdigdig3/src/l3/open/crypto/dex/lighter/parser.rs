@@ -537,7 +537,7 @@ impl LighterParser {
             crate::core::types::Order {
                 id: order_index.to_string(),
                 client_order_id: client_order_index.map(|i| i.to_string()),
-                symbol: market_index.to_string(), // market_index; caller can resolve
+                symbol: Some(market_index.to_string()), // market_index; caller can resolve
                 side,
                 order_type,
                 status,
@@ -664,7 +664,7 @@ impl LighterParser {
             crate::core::types::Order {
                 id: order_index.to_string(),
                 client_order_id: client_order_index.map(|i| i.to_string()),
-                symbol: market_id.to_string(), // market_id; caller can resolve
+                symbol: Some(market_id.to_string()), // market_id; caller can resolve
                 side,
                 order_type,
                 status,

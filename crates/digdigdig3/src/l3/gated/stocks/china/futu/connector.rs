@@ -469,9 +469,7 @@ impl Trading for FutuConnector {
         Ok(Order {
             id: order_id,
             client_order_id: None,
-            symbol: req.symbol
-                .map(|s| s.base)
-                .unwrap_or_default(),
+            symbol: req.symbol.map(|s| s.base),
             side: OrderSide::Buy,
             order_type: OrderType::Market,
             status: OrderStatus::Canceled,
@@ -813,7 +811,7 @@ impl AmendOrder for FutuConnector {
         Ok(Order {
             id: req.order_id,
             client_order_id: None,
-            symbol: req.symbol.base,
+            symbol: Some(req.symbol.base),
             side: OrderSide::Buy, // unknown without a separate query
             order_type: if price > 0.0 {
                 OrderType::Limit { price }

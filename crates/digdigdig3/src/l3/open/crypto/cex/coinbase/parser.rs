@@ -285,7 +285,7 @@ impl CoinbaseParser {
                 client_order_id: order_data.get("client_order_id")
                     .and_then(|c| c.as_str())
                     .map(|s| s.to_string()),
-                symbol: product_id.to_string(),
+                symbol: Some(product_id.to_string()),
                 side,
                 order_type: OrderType::Market,
                 status: OrderStatus::New,
@@ -379,7 +379,7 @@ impl CoinbaseParser {
             client_order_id: order_data.get("client_order_id")
                 .and_then(|c| c.as_str())
                 .map(|s| s.to_string()),
-            symbol: product_id.to_string(),
+            symbol: Some(product_id.to_string()),
             side,
             order_type,
             status,

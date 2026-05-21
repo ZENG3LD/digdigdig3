@@ -626,7 +626,7 @@ impl Trading for AngelOneConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: req.client_order_id,
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::Market,
                     status: OrderStatus::New,
@@ -661,7 +661,7 @@ impl Trading for AngelOneConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: req.client_order_id,
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::Limit { price },
                     status: OrderStatus::New,
@@ -704,7 +704,7 @@ impl Trading for AngelOneConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: req.client_order_id,
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: req.order_type,
                     status: OrderStatus::New,
@@ -740,7 +740,7 @@ impl Trading for AngelOneConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: req.client_order_id,
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::StopMarket { stop_price },
                     status: OrderStatus::New,
@@ -777,7 +777,7 @@ impl Trading for AngelOneConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: req.client_order_id,
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::StopLimit { stop_price, limit_price },
                     status: OrderStatus::New,
@@ -826,7 +826,7 @@ impl Trading for AngelOneConnector {
                 Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: req.client_order_id,
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::Bracket { price, take_profit, stop_loss },
                     status: OrderStatus::New,
@@ -916,7 +916,7 @@ impl Trading for AngelOneConnector {
                 Some(Order {
                     id: order_id,
                     client_order_id: None,
-                    symbol: symbol_str,
+                    symbol: Some(symbol_str),
                     side,
                     order_type,
                     status,
@@ -956,7 +956,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
             Ok(Order {
                 id: order_id.to_string(),
                 client_order_id: None,
-                symbol: symbol.to_string(),
+                symbol: Some(symbol.to_string()),
                 side: OrderSide::Buy,
                 order_type: OrderType::Limit { price: 0.0 },
                 status: OrderStatus::Canceled,
@@ -1002,7 +1002,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         Ok(Order {
             id: details.order_id,
             client_order_id: None,
-            symbol: details.symbol,
+            symbol: Some(details.symbol),
             side: details.side,
             order_type: details.order_type,
             status: details.status,
@@ -1072,7 +1072,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
                     Some(Order {
                         id: order_id,
                         client_order_id: None,
-                        symbol,
+                        symbol: Some(symbol),
                         side,
                         order_type,
                         status: OrderStatus::New,
@@ -1144,7 +1144,7 @@ impl AmendOrder for AngelOneConnector {
         Ok(Order {
             id: details.order_id,
             client_order_id: None,
-            symbol: details.symbol,
+            symbol: Some(details.symbol),
             side: details.side,
             order_type: details.order_type,
             status: details.status,

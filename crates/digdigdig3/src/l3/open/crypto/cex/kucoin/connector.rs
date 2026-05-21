@@ -1177,7 +1177,7 @@ impl Trading for KuCoinConnector {
                 return Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: Some(client_oid),
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::Oco { price, stop_price, stop_limit_price },
                     status: crate::core::OrderStatus::New,
@@ -1217,7 +1217,7 @@ impl Trading for KuCoinConnector {
                 return Ok(PlaceOrderResponse::Simple(Order {
                     id: order_id,
                     client_order_id: Some(client_oid),
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side,
                     order_type: OrderType::Iceberg { price, display_quantity },
                     status: crate::core::OrderStatus::New,
@@ -1251,7 +1251,7 @@ impl Trading for KuCoinConnector {
         Ok(PlaceOrderResponse::Simple(Order {
             id: order_id,
             client_order_id: Some(client_oid),
-            symbol: symbol.to_string(),
+            symbol: Some(symbol.to_string()),
             side,
             order_type: order_type_out,
             status: crate::core::OrderStatus::New,
@@ -1321,7 +1321,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
                 Ok(Order {
                     id: order_id.to_string(),
                     client_order_id: None,
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side: OrderSide::Buy,
                     order_type: OrderType::Limit { price: 0.0 },
                     status: crate::core::OrderStatus::Canceled,
@@ -1345,7 +1345,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
                 Ok(Order {
                     id: format!("batch_cancel_{}", crate::core::timestamp_millis()),
                     client_order_id: None,
-                    symbol: sym_str,
+                    symbol: Some(sym_str),
                     side: OrderSide::Buy,
                     order_type: OrderType::Market,
                     status: crate::core::OrderStatus::Canceled,
@@ -1368,7 +1368,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
                 Ok(Order {
                     id: format!("batch_cancel_{}", crate::core::timestamp_millis()),
                     client_order_id: None,
-                    symbol: symbol.to_string(),
+                    symbol: Some(symbol.to_string()),
                     side: OrderSide::Buy,
                     order_type: OrderType::Market,
                     status: crate::core::OrderStatus::Canceled,

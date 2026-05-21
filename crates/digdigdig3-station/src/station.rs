@@ -124,8 +124,15 @@ impl Station {
 
                 let mut bcast_rx = bcast_tx.subscribe();
                 let tx_clone = tx.clone();
+                // Per-handle symbol label: relay rewrites Event.symbol from the
+                // raw exchange-native form (carried on the broadcast) to the
+                // user-input form THIS handle subscribed with. Two handles on
+                // the same multiplex with different input forms each see their
+                // own label.
+                let label = entry.symbol.clone();
                 tokio::spawn(async move {
-                    while let Ok(ev) = bcast_rx.recv().await {
+                    while let Ok(mut ev) = bcast_rx.recv().await {
+                        ev.set_symbol(label.clone());
                         if tx_clone.send(ev).is_err() {
                             break;
                         }
@@ -190,21 +197,21 @@ impl Station {
                 let seed = if warm_n > 0 {
                     crate::backfill::trades_recent(&hub, key.exchange, acct, &raw_s, warm_n).await
                 } else { Vec::new() };
-                spawn_forwarder::<TradePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), seed, req.clone());
+                spawn_forwarder::<TradePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), seed, req.clone());
             }
             Kind::Kline(interval) => {
                 let seed = if warm_n > 0 {
                     crate::backfill::klines_recent(&hub, key.exchange, acct, &raw_s, interval, warm_n).await
                 } else { Vec::new() };
-                spawn_forwarder::<BarPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), seed, req.clone());
+                spawn_forwarder::<BarPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), seed, req.clone());
             }
-            Kind::AggTrade => spawn_forwarder::<AggTradePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), Vec::new(), req.clone()),
-            Kind::Ticker => spawn_forwarder::<TickerPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), Vec::new(), req.clone()),
-            Kind::Orderbook => spawn_forwarder::<ObSnapshotPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), Vec::new(), req.clone()),
-            Kind::MarkPrice => spawn_forwarder::<MarkPricePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), Vec::new(), req.clone()),
-            Kind::FundingRate => spawn_forwarder::<FundingRatePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), Vec::new(), req.clone()),
-            Kind::OpenInterest => spawn_forwarder::<OpenInterestPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), Vec::new(), req.clone()),
-            Kind::Liquidation => spawn_forwarder::<LiquidationPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, entry.symbol.clone(), Vec::new(), req),
+            Kind::AggTrade => spawn_forwarder::<AggTradePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::Ticker => spawn_forwarder::<TickerPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::Orderbook => spawn_forwarder::<ObSnapshotPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::MarkPrice => spawn_forwarder::<MarkPricePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::FundingRate => spawn_forwarder::<FundingRatePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::OpenInterest => spawn_forwarder::<OpenInterestPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::Liquidation => spawn_forwarder::<LiquidationPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req),
         }
 
         self.inner.muxes.insert(

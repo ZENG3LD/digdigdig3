@@ -147,6 +147,27 @@ impl Event {
             Event::Liquidation { symbol, .. } => symbol,
         }
     }
+
+    /// Replace the symbol label on this event in-place.
+    ///
+    /// Used by `Station::subscribe` so each `SubscriptionHandle` sees the
+    /// user-input symbol it passed in `SubscriptionSet::add(...)`, regardless
+    /// of which other consumer first established the underlying multiplex.
+    /// The routing key (raw exchange-native) is unaffected; this only changes
+    /// the cosmetic label that `Event.symbol()` returns to the consumer.
+    pub(crate) fn set_symbol(&mut self, new_symbol: String) {
+        match self {
+            Event::Trade { symbol, .. }
+            | Event::AggTrade { symbol, .. }
+            | Event::Bar { symbol, .. }
+            | Event::Ticker { symbol, .. }
+            | Event::OrderbookSnapshot { symbol, .. }
+            | Event::MarkPrice { symbol, .. }
+            | Event::FundingRate { symbol, .. }
+            | Event::OpenInterest { symbol, .. }
+            | Event::Liquidation { symbol, .. } => *symbol = new_symbol,
+        }
+    }
     pub fn timestamp_ms(&self) -> i64 {
         use crate::series::DataPoint;
         match self {

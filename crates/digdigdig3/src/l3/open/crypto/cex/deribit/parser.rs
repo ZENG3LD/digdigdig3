@@ -255,7 +255,6 @@ impl DeribitParser {
         let result = Self::extract_result(response)?;
 
         Ok(FundingRate {
-            symbol: Self::get_str(result, "instrument_name").unwrap_or("").to_string(),
             rate: Self::get_f64(result, "current_funding")
                 .or_else(|| Self::get_f64(result, "funding_8h"))
                 .unwrap_or(0.0),

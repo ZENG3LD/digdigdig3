@@ -222,7 +222,6 @@ impl BitgetParser {
         let data = Self::extract_data(response)?;
 
         Ok(FundingRate {
-            symbol: Self::get_str(data, "symbol").unwrap_or("").to_string(),
             rate: Self::require_f64(data, "fundingRate")?,
             next_funding_time: Self::get_i64(data, "fundingTime"),
             timestamp: Self::get_i64(data, "timestamp").unwrap_or(0),

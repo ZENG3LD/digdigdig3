@@ -176,7 +176,6 @@ impl DydxParser {
             .unwrap_or(0);
 
         Ok(FundingRate {
-            symbol: Self::get_str(funding, "ticker").unwrap_or("").to_string(),
             rate: Self::require_f64(funding, "rate")?,
             next_funding_time: None,
             timestamp: effective_at,
@@ -765,11 +764,6 @@ impl DydxParser {
 
         let mut rates = Vec::with_capacity(list.len());
         for item in list {
-            let symbol = item.get("ticker")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-
             let rate = item.get("rate")
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<f64>().ok())
@@ -782,7 +776,6 @@ impl DydxParser {
                 .unwrap_or(0);
 
             rates.push(FundingRate {
-                symbol,
                 rate,
                 next_funding_time: None,
                 timestamp,

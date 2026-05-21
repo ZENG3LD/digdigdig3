@@ -901,8 +901,7 @@ impl Positions for LighterConnector {
         params.insert("market_id".to_string(), market_id.to_string());
 
         let response = self.get(LighterEndpoint::Fundings, params, 300).await?;
-        let mut funding = LighterParser::parse_funding_rate(&response)?;
-        funding.symbol = coin.to_uppercase();
+        let funding = LighterParser::parse_funding_rate(&response)?;
         Ok(funding)
     }
 

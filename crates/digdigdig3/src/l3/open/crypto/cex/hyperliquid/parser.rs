@@ -290,7 +290,6 @@ impl HyperliquidParser {
                 .ok_or_else(|| ExchangeError::Parse("Empty funding history".to_string()))?;
 
             return Ok(FundingRate {
-                symbol: Self::get_str(item, "coin").unwrap_or("").to_string(),
                 rate: Self::require_f64(item, "fundingRate")?,
                 next_funding_time: None,
                 timestamp: Self::get_i64(item, "time").unwrap_or(0),
@@ -311,7 +310,6 @@ impl HyperliquidParser {
             .ok_or_else(|| ExchangeError::Parse("Missing 'ctx' field".to_string()))?;
 
         Ok(FundingRate {
-            symbol: String::new(), // Will be filled by connector
             rate: Self::require_f64(ctx, "funding")?,
             next_funding_time: None,
             timestamp: 0,
@@ -722,7 +720,6 @@ impl HyperliquidParser {
             .map_err(|_| ExchangeError::Parse(format!("Invalid funding rate: {}", funding_str)))?;
 
         Ok(FundingRate {
-            symbol: symbol.to_uppercase(),
             rate,
             next_funding_time: None, // Funding occurs every hour
             timestamp: 0,

@@ -539,7 +539,7 @@ impl KrakenParser {
     }
 
     /// Parse funding rate
-    pub fn parse_funding_rate(response: &Value, symbol: &str) -> ExchangeResult<FundingRate> {
+    pub fn parse_funding_rate(response: &Value) -> ExchangeResult<FundingRate> {
         let data = Self::extract_futures_data(response)?;
 
         let rates = data.get("rates")
@@ -550,7 +550,6 @@ impl KrakenParser {
             .ok_or_else(|| ExchangeError::Parse("No funding rate data".to_string()))?;
 
         Ok(FundingRate {
-            symbol: symbol.to_string(),
             rate: Self::require_f64(latest, "fundingRate")?,
             next_funding_time: None,
             timestamp: chrono::Utc::now().timestamp_millis(),

@@ -238,8 +238,6 @@ impl OrderbookDelta {
 /// Информация о funding rate
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FundingRate {
-    /// Символ
-    pub symbol: String,
     /// Текущий funding rate
     pub rate: f64,
     /// Время следующего funding
@@ -255,8 +253,6 @@ pub struct FundingRate {
 /// Mark price информация
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarkPrice {
-    /// Символ
-    pub symbol: String,
     /// Mark price
     pub mark_price: f64,
     /// Index price (опционально)
@@ -274,8 +270,6 @@ pub struct MarkPrice {
 /// Open Interest информация
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenInterest {
-    /// Символ
-    pub symbol: String,
     /// Open interest (в контрактах или базовом активе)
     pub open_interest: f64,
     /// Open interest в USDT (опционально)

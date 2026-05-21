@@ -194,7 +194,6 @@ impl KuCoinParser {
         let data = Self::extract_data(response)?;
 
         Ok(FundingRate {
-            symbol: Self::get_str(data, "symbol").unwrap_or("").to_string(),
             rate: Self::require_f64(data, "value")?,
             next_funding_time: None,
             timestamp: data.get("timePoint")

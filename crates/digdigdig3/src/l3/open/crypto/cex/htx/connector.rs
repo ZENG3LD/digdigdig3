@@ -1393,7 +1393,6 @@ impl Positions for HtxConnector {
             .ok_or_else(|| ExchangeError::Parse("Missing close in mark price kline".to_string()))?;
 
         Ok(MarkPrice {
-            symbol: contract_code,
             mark_price,
             index_price: None,
             funding_rate: None,
@@ -1440,7 +1439,6 @@ impl Positions for HtxConnector {
             .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
 
         Ok(OpenInterest {
-            symbol: contract_code,
             open_interest: oi,
             open_interest_value: None,
             timestamp: ts,

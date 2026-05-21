@@ -1201,7 +1201,7 @@ impl Positions for KrakenConnector {
             account_type,
         ).await?;
 
-        KrakenParser::parse_funding_rate(&response, &formatted)
+        KrakenParser::parse_funding_rate(&response)
     
     }
 

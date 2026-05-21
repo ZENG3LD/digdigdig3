@@ -1745,7 +1745,6 @@ impl Positions for KuCoinConnector {
             .ok_or_else(|| ExchangeError::Parse("Missing value field in mark-price response".to_string()))?;
 
         Ok(MarkPrice {
-            symbol: formatted,
             mark_price,
             index_price: data.get("indexPrice").and_then(|v| v.as_f64()),
             funding_rate: None,
@@ -1957,7 +1956,6 @@ impl Positions for KuCoinConnector {
             .filter(|&v| v != 0.0);
 
         Ok(OpenInterest {
-            symbol: raw_symbol,
             open_interest: oi,
             open_interest_value: oi_value,
             timestamp: crate::core::timestamp_millis() as i64,

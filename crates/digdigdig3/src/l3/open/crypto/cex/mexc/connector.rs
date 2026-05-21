@@ -1963,7 +1963,6 @@ impl crate::core::traits::Positions for MexcConnector {
             })
             .unwrap_or(0.0);
         Ok(crate::core::types::OpenInterest {
-            symbol: raw_symbol,
             open_interest: oi,
             open_interest_value: None,
             timestamp: crate::core::timestamp_millis() as i64,

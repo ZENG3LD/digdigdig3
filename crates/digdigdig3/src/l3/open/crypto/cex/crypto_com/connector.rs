@@ -1358,7 +1358,6 @@ impl Positions for CryptoComConnector {
             .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
 
         Ok(OpenInterest {
-            symbol: instrument_name,
             open_interest: oi,
             open_interest_value: None,
             timestamp: ts,

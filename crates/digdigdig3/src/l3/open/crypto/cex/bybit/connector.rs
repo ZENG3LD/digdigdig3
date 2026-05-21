@@ -417,7 +417,7 @@ impl BybitConnector {
             params.insert("endTime".to_string(), et.to_string());
         }
         let response = self.get(BybitEndpoint::OpenInterest, params).await?;
-        BybitParser::parse_open_interest_list(&response, symbol)
+        BybitParser::parse_open_interest_list(&response)
     }
 
     /// Get historical funding rates.
@@ -2029,7 +2029,6 @@ impl Positions for BybitConnector {
             .ok_or_else(|| ExchangeError::Parse("Missing markPrice".to_string()))?;
 
         Ok(MarkPrice {
-            symbol: symbol.to_string(),
             mark_price,
             index_price: data
                 .get("indexPrice")
@@ -2082,7 +2081,6 @@ impl Positions for BybitConnector {
             .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
 
         Ok(OpenInterest {
-            symbol: raw_symbol,
             open_interest: oi,
             open_interest_value: None,
             timestamp: ts,

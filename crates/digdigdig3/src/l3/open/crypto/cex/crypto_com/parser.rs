@@ -214,7 +214,6 @@ impl CryptoComParser {
             .ok_or_else(|| ExchangeError::Parse("No valuation data".to_string()))?;
 
         Ok(FundingRate {
-            symbol: Self::get_str(data, "instrument_name").unwrap_or("").to_string(),
             rate: Self::require_f64(data, "funding_rate")?,
             next_funding_time: Self::get_i64(data, "next_funding_time"),
             timestamp: 0,

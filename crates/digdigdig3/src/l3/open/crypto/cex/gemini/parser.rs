@@ -248,7 +248,6 @@ impl GeminiParser {
         Self::check_error(response)?;
 
         Ok(FundingRate {
-            symbol: Self::get_str(response, "symbol").unwrap_or("").to_string(),
             rate: Self::require_f64(response, "funding_amount")?,
             next_funding_time: Self::get_i64(response, "next_funding_time"),
             timestamp: Self::get_i64(response, "funding_time").unwrap_or(0),

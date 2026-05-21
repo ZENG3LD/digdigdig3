@@ -2252,7 +2252,6 @@ impl Positions for BinanceConnector {
             .ok_or_else(|| ExchangeError::Parse("Missing markPrice".to_string()))?;
 
         Ok(MarkPrice {
-            symbol: symbol.to_string(),
             mark_price,
             index_price: data
                 .get("indexPrice")
@@ -3111,7 +3110,6 @@ impl MarketDataPublic for BinanceConnector {
         let symbol = symbol.map(|s| s.resolve(ExchangeId::Binance, account_type)).transpose()?;
         let data = self.get_premium_index(symbol.as_deref()).await?;
         Ok(vec![MarkPrice {
-            symbol: data.symbol,
             mark_price: data.mark_price,
             index_price: Some(data.index_price),
             funding_rate: Some(data.last_funding_rate),

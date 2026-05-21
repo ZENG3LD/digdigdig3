@@ -1645,7 +1645,6 @@ impl Positions for BitgetConnector {
             .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
 
         Ok(OpenInterest {
-            symbol: raw_symbol,
             open_interest: oi,
             open_interest_value: None,
             timestamp: ts,
@@ -1693,7 +1692,6 @@ impl Positions for BitgetConnector {
             .ok_or_else(|| ExchangeError::Parse("Missing markPrice".to_string()))?;
 
         Ok(MarkPrice {
-            symbol: raw_symbol,
             mark_price,
             index_price: data
                 .get("indexPrice")

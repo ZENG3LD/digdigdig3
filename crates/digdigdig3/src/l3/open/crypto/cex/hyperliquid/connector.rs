@@ -1416,7 +1416,6 @@ impl Positions for HyperliquidConnector {
         let now = crate::core::utils::timestamp_millis() as i64;
 
         Ok(crate::core::types::MarkPrice {
-            symbol: symbol.to_uppercase(),
             mark_price,
             index_price,
             funding_rate,
@@ -1553,7 +1552,6 @@ impl Positions for HyperliquidConnector {
             .unwrap_or(0.0);
 
         Ok(crate::core::types::OpenInterest {
-            symbol: coin,
             open_interest: oi,
             open_interest_value: None,
             timestamp: crate::core::timestamp_millis() as i64,

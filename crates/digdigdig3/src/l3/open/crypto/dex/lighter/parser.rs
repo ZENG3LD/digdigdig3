@@ -314,7 +314,6 @@ impl LighterParser {
         let timestamp = Self::require_i64(first, "timestamp")?;
 
         Ok(FundingRate {
-            symbol: String::new(), // Symbol not in response, caller must set
             rate: funding_rate,
             next_funding_time: None,
             timestamp: timestamp * 1000, // seconds to milliseconds

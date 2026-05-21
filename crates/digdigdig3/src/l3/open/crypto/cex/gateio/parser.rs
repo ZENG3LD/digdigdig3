@@ -249,7 +249,6 @@ impl GateioParser {
         let data = &arr[0]; // Latest funding rate
 
         Ok(FundingRate {
-            symbol: String::new(), // Not included in response
             rate: Self::require_f64(data, "r")?,
             next_funding_time: None,
             timestamp: data.get("t")

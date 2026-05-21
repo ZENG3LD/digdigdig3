@@ -1151,7 +1151,6 @@ impl Positions for BingxConnector {
             .and_then(|v| v.as_i64());
 
         Ok(FundingRate {
-            symbol: symbol_str.to_string(),
             rate,
             next_funding_time: next_time,
             timestamp: crate::core::timestamp_millis() as i64,
@@ -1182,7 +1181,6 @@ impl Positions for BingxConnector {
             .ok_or_else(|| ExchangeError::Parse("Missing markPrice".to_string()))?;
 
         Ok(MarkPrice {
-            symbol: symbol.to_string(),
             mark_price,
             index_price: data
                 .get("indexPrice")
@@ -1308,7 +1306,6 @@ impl Positions for BingxConnector {
             .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
 
         Ok(crate::core::types::OpenInterest {
-            symbol: symbol.to_string(),
             open_interest,
             open_interest_value: None,
             timestamp,

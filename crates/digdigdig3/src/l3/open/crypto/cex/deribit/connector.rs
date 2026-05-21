@@ -1110,7 +1110,6 @@ impl Positions for DeribitConnector {
             .and_then(|v| v.as_i64());
 
         Ok(FundingRate {
-            symbol: instrument_name,
             rate,
             next_funding_time,
             timestamp: crate::core::timestamp_millis() as i64,
@@ -1154,7 +1153,6 @@ impl Positions for DeribitConnector {
             .ok_or_else(|| ExchangeError::Parse("Missing mark_price".to_string()))?;
 
         Ok(MarkPrice {
-            symbol: instrument_name,
             mark_price,
             index_price: result.get("index_price").and_then(|v| v.as_f64()),
             funding_rate: result
@@ -1195,7 +1193,6 @@ impl Positions for DeribitConnector {
             .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
 
         Ok(OpenInterest {
-            symbol: instrument_name,
             open_interest: oi,
             open_interest_value: None,
             timestamp: ts,

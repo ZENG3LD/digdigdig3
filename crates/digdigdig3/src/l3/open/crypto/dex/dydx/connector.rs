@@ -864,10 +864,7 @@ impl Positions for DydxConnector {
         params.insert("limit".to_string(), "1".to_string());
 
         let response = self.get(DydxEndpoint::HistoricalFunding, params).await?;
-        let mut funding = DydxParser::parse_funding_rate(&response)?;
-
-        // Override symbol with the normalized market ticker
-        funding.symbol = market;
+        let funding = DydxParser::parse_funding_rate(&response)?;
         Ok(funding)
     }
 
@@ -905,7 +902,6 @@ impl Positions for DydxConnector {
             .unwrap_or(0.0);
 
         Ok(OpenInterest {
-            symbol: market,
             open_interest: oi,
             open_interest_value: None,
             timestamp: crate::core::timestamp_millis() as i64,
@@ -943,7 +939,6 @@ impl Positions for DydxConnector {
             ))?;
 
         Ok(crate::core::types::MarkPrice {
-            symbol: market,
             mark_price: oracle_price,
             index_price: Some(oracle_price), // oracle IS the index on dYdX v4
             funding_rate: None,

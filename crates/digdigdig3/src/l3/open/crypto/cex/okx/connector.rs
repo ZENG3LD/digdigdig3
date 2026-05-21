@@ -1527,7 +1527,6 @@ impl Positions for OkxConnector {
             .ok_or_else(|| ExchangeError::Parse("Missing markPx".to_string()))?;
 
         Ok(MarkPrice {
-            symbol: symbol.to_string(),
             mark_price,
             index_price: None,
             funding_rate: None,

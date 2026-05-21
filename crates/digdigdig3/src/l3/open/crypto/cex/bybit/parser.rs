@@ -355,9 +355,6 @@ impl BybitParser {
         let data = list.first()
             .ok_or_else(|| ExchangeError::Parse("Empty result.list".into()))?;
 
-        let symbol = data["symbol"].as_str()
-            .ok_or_else(|| ExchangeError::Parse("Missing symbol".into()))?;
-
         let rate = data["fundingRate"].as_str()
             .and_then(|s| s.parse::<f64>().ok())
             .unwrap_or(0.0);
@@ -367,7 +364,6 @@ impl BybitParser {
             .unwrap_or(0);
 
         Ok(FundingRate {
-            symbol: symbol.to_string(),
             rate,
             next_funding_time: None,
             timestamp,
@@ -382,7 +378,6 @@ impl BybitParser {
         let list = result["list"].as_array()
             .ok_or_else(|| ExchangeError::Parse("Missing result.list".into()))?;
         let rates = list.iter().map(|item| FundingRate {
-            symbol: item["symbol"].as_str().unwrap_or("").to_string(),
             rate: item["fundingRate"].as_str().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0),
             next_funding_time: None,
             timestamp: item["fundingRateTimestamp"].as_str().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0),
@@ -1051,7 +1046,7 @@ impl BybitParser {
     /// Parse open interest list from `GET /v5/market/open-interest`.
     ///
     /// Response: `result.list = [{ openInterest, openInterestValue, timestamp }, ...]`
-    pub fn parse_open_interest_list(json: &Value, symbol: &str) -> ExchangeResult<Vec<crate::core::types::OpenInterest>> {
+    pub fn parse_open_interest_list(json: &Value) -> ExchangeResult<Vec<crate::core::types::OpenInterest>> {
         let result = Self::extract_result(json)?;
         let list = result["list"].as_array()
             .ok_or_else(|| ExchangeError::Parse("Missing result.list in open-interest".to_string()))?;
@@ -1067,7 +1062,6 @@ impl BybitParser {
                     .and_then(|s| s.parse::<i64>().ok())
                     .unwrap_or(0);
                 crate::core::types::OpenInterest {
-                    symbol: symbol.to_string(),
                     open_interest,
                     open_interest_value,
                     timestamp,
@@ -1194,7 +1188,6 @@ mod tests {
 
         let rates = BybitParser::parse_funding_rates(&json).unwrap();
         assert_eq!(rates.len(), 2);
-        assert_eq!(rates[0].symbol, "BTCUSDT");
         assert!((rates[0].rate - 0.0001).abs() < 1e-9);
         assert_eq!(rates[0].timestamp, 1672531200000);
         assert!((rates[1].rate - (-0.00005)).abs() < 1e-9);

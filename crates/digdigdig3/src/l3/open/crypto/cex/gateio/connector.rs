@@ -1451,8 +1451,7 @@ impl Positions for GateioConnector {
         params.insert("limit".to_string(), "1".to_string());
 
         let response = self.get(GateioEndpoint::FundingRate, params, account_type).await?;
-        let mut rate = GateioParser::parse_funding_rate(&response)?;
-        rate.symbol = symbol.to_string();
+        let rate = GateioParser::parse_funding_rate(&response)?;
         Ok(rate)
     }
 
@@ -1486,7 +1485,6 @@ impl Positions for GateioConnector {
             .ok_or_else(|| ExchangeError::Parse("Missing mark_price".to_string()))?;
 
         Ok(MarkPrice {
-            symbol: symbol.to_string(),
             mark_price,
             index_price: data
                 .get("index_price")
@@ -1733,7 +1731,6 @@ impl Positions for GateioConnector {
             .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
 
         Ok(OpenInterest {
-            symbol: raw_symbol,
             open_interest: oi,
             open_interest_value: None,
             timestamp: ts,

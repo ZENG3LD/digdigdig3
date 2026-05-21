@@ -240,7 +240,6 @@ impl BinanceParser {
         };
 
         Ok(FundingRate {
-            symbol: Self::get_str(data, "symbol").unwrap_or("").to_string(),
             rate: Self::require_f64(data, "fundingRate")?,
             next_funding_time: data.get("fundingTime").and_then(|t| t.as_i64()),
             timestamp: data.get("fundingTime").and_then(|t| t.as_i64()).unwrap_or(0),
@@ -254,7 +253,6 @@ impl BinanceParser {
         let arr = response.as_array()
             .ok_or_else(|| ExchangeError::Parse("Expected JSON array for funding rates".to_string()))?;
         let result = arr.iter().map(|item| FundingRate {
-            symbol: Self::get_str(item, "symbol").unwrap_or("").to_string(),
             rate: Self::get_f64(item, "fundingRate").unwrap_or(0.0),
             next_funding_time: item.get("fundingTime").and_then(|t| t.as_i64()),
             timestamp: item.get("fundingTime").and_then(|t| t.as_i64()).unwrap_or(0),
@@ -1411,13 +1409,11 @@ impl BinanceParser {
         let mut result = Vec::with_capacity(arr.len());
 
         for item in arr {
-            let symbol = Self::get_str(item, "symbol").unwrap_or("").to_string();
             let open_interest = Self::get_f64(item, "sumOpenInterest").unwrap_or(0.0);
             let open_interest_value = Self::get_f64(item, "sumOpenInterestValue");
             let timestamp = item.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0);
 
             result.push(OpenInterest {
-                symbol,
                 open_interest,
                 open_interest_value,
                 timestamp,
@@ -1437,10 +1433,6 @@ impl BinanceParser {
     pub fn parse_open_interest(value: &Value) -> ExchangeResult<OpenInterest> {
         Self::check_error(value)?;
 
-        let symbol = Self::get_str(value, "symbol")
-            .ok_or_else(|| ExchangeError::Parse("Missing 'symbol' in openInterest response".to_string()))?
-            .to_string();
-
         let open_interest = Self::get_f64(value, "openInterest")
             .ok_or_else(|| ExchangeError::Parse("Missing 'openInterest' in response".to_string()))?;
 
@@ -1449,7 +1441,6 @@ impl BinanceParser {
             .unwrap_or(0);
 
         Ok(OpenInterest {
-            symbol,
             open_interest,
             open_interest_value: None,
             timestamp,
@@ -1969,7 +1960,6 @@ mod tests {
 
         let rates = BinanceParser::parse_funding_rates(&response).unwrap();
         assert_eq!(rates.len(), 2);
-        assert_eq!(rates[0].symbol, "BTCUSDT");
         assert!((rates[0].rate - 0.0001).abs() < 1e-9);
         assert_eq!(rates[0].timestamp, 1601365200000);
         assert_eq!(rates[0].next_funding_time, Some(1601365200000));

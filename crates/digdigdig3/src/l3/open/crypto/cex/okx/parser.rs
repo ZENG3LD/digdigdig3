@@ -267,7 +267,6 @@ impl OkxParser {
         let data = Self::extract_first_data(response)?;
 
         Ok(FundingRate {
-            symbol: Self::get_str(data, "instId").unwrap_or("").to_string(),
             rate: Self::require_f64(data, "fundingRate")?,
             next_funding_time: Self::get_i64(data, "nextFundingTime"),
             timestamp: Self::get_i64(data, "fundingTime").unwrap_or(0),
@@ -282,7 +281,6 @@ impl OkxParser {
         let arr = data.as_array()
             .ok_or_else(|| ExchangeError::Parse("'data' is not an array".to_string()))?;
         let rates = arr.iter().map(|item| FundingRate {
-            symbol: Self::get_str(item, "instId").unwrap_or("").to_string(),
             rate: Self::get_f64(item, "fundingRate").unwrap_or(0.0),
             next_funding_time: None,
             timestamp: Self::get_i64(item, "fundingTime").unwrap_or(0),
@@ -1454,12 +1452,10 @@ impl OkxParser {
 
         let mut result = Vec::with_capacity(arr.len());
         for item in arr {
-            let symbol = Self::get_str(item, "instId").unwrap_or("").to_string();
             let open_interest = Self::get_f64(item, "oi").unwrap_or(0.0);
             let open_interest_value = Self::get_f64(item, "oiCcy").filter(|&v| v != 0.0);
             let timestamp = Self::get_i64(item, "ts").unwrap_or(0);
             result.push(OpenInterest {
-                symbol,
                 open_interest,
                 open_interest_value,
                 timestamp,
@@ -1553,7 +1549,6 @@ mod tests {
 
         let rates = OkxParser::parse_funding_rates(&response).unwrap();
         assert_eq!(rates.len(), 2);
-        assert_eq!(rates[0].symbol, "BTC-USDT-SWAP");
         assert!((rates[0].rate - 0.0001).abs() < 1e-9);
         assert_eq!(rates[0].timestamp, 1597026383085);
         assert_eq!(rates[0].next_funding_time, None);

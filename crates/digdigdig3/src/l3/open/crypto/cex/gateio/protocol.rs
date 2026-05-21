@@ -569,41 +569,42 @@ fn parse_orderbook_delta(raw: &Value) -> WebSocketResult<StreamEvent> {
 }
 
 fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
-    // Gate.io candlestick result: {"t":"ts","v":"vol","c":"close","h":"high","l":"low","o":"open","n":"symbol","a":"quote_vol"}
-    // Mark price candlestick: "n" field starts with "mark_"
+    // Gate.io candlestick result has field `n` formatted as `<interval>_<symbol>`:
+    //   normal:        "1m_BTC_USDT"
+    //   mark price:    "1m_mark_BTC_USDT"
+    //   premium index: "1m_premium_index_BTC_USDT"
+    //
+    // Channel is plain "spot.candlesticks" / "futures.candlesticks" (no interval suffix).
+    // So interval+symbol both must be extracted from `n`.
     let result = frame_result(raw)?;
 
-    let symbol_name = result.get("n").and_then(|v| v.as_str()).unwrap_or("");
+    let n = result.get("n").and_then(|v| v.as_str()).unwrap_or("");
     let kline = parse_kline_data(result)?;
 
-    if symbol_name.starts_with("mark_") {
-        let clean_symbol = symbol_name.strip_prefix("mark_").unwrap_or(symbol_name).to_string();
+    // Split off the interval prefix (everything up to the first '_').
+    let (interval, rest) = match n.split_once('_') {
+        Some((iv, rest)) => (iv.to_string(), rest),
+        None => (String::new(), n),
+    };
+
+    if let Some(sym) = rest.strip_prefix("mark_") {
         Ok(StreamEvent::MarkPriceKline {
-            symbol: clean_symbol,
-            interval: String::new(),
+            symbol: sym.to_string(),
+            interval,
             kline,
         })
-    } else if symbol_name.starts_with("premium_index_") {
-        let clean_symbol = symbol_name
-            .strip_prefix("premium_index_")
-            .unwrap_or(symbol_name)
-            .to_string();
+    } else if let Some(sym) = rest.strip_prefix("premium_index_") {
         Ok(StreamEvent::IndexPriceKline {
-            symbol: clean_symbol,
-            interval: String::new(),
+            symbol: sym.to_string(),
+            interval,
             kline,
         })
     } else {
-        let kline_symbol = symbol_name.to_string();
-        // Gate.io kline channel: "spot.candlesticks" — interval in frame "n" field like "1m_BTC_USDT"
-        // The interval part is before the first '_' in symbol_name for futures, or from channel header.
-        // Use the raw channel name from frame for interval extraction.
-        let kline_interval = raw.get("channel")
-            .and_then(|v| v.as_str())
-            .and_then(|ch| ch.strip_prefix("spot.candlesticks_").or_else(|| ch.strip_prefix("futures.candlesticks_")))
-            .unwrap_or("")
-            .to_string();
-        Ok(StreamEvent::Kline { symbol: kline_symbol, interval: kline_interval, kline })
+        Ok(StreamEvent::Kline {
+            symbol: rest.to_string(),
+            interval,
+            kline,
+        })
     }
 }
 
@@ -827,5 +828,91 @@ mod tests {
         assert!(reg.supports(&StreamKind::Liquidation, AccountType::FuturesCross));
         assert!(reg.supports(&StreamKind::FundingRate, AccountType::FuturesCross));
         assert!(reg.supports(&StreamKind::MarkPrice, AccountType::FuturesCross));
+    }
+
+    // ── parse_kline interval+symbol extraction (regression: was double-broken) ──
+
+    fn kline_frame_with_n(n: &str) -> serde_json::Value {
+        serde_json::json!({
+            "time": 1700000000,
+            "channel": "spot.candlesticks",
+            "event": "update",
+            "result": {
+                "t": "1700000000",
+                "v": "10.0",
+                "c": "100.0",
+                "h": "101.0",
+                "l": "99.0",
+                "o": "100.5",
+                "n": n,
+                "a": "1000.0",
+            }
+        })
+    }
+
+    #[test]
+    fn parse_kline_extracts_interval_and_symbol() {
+        let frame = kline_frame_with_n("1m_BTC_USDT");
+        let ev = parse_kline(&frame).expect("parse_kline ok");
+        match ev {
+            StreamEvent::Kline { symbol, interval, .. } => {
+                assert_eq!(interval, "1m");
+                assert_eq!(symbol, "BTC_USDT");
+            }
+            other => panic!("expected Kline, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_kline_extracts_4h_eth_pair() {
+        let frame = kline_frame_with_n("4h_ETH_USDT");
+        let ev = parse_kline(&frame).expect("parse_kline ok");
+        match ev {
+            StreamEvent::Kline { symbol, interval, .. } => {
+                assert_eq!(interval, "4h");
+                assert_eq!(symbol, "ETH_USDT");
+            }
+            other => panic!("expected Kline, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_kline_mark_price_variant() {
+        let frame = kline_frame_with_n("1m_mark_BTC_USDT");
+        let ev = parse_kline(&frame).expect("parse_kline ok");
+        match ev {
+            StreamEvent::MarkPriceKline { symbol, interval, .. } => {
+                assert_eq!(interval, "1m");
+                assert_eq!(symbol, "BTC_USDT");
+            }
+            other => panic!("expected MarkPriceKline, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_kline_premium_index_variant() {
+        let frame = kline_frame_with_n("5m_premium_index_BTC_USDT");
+        let ev = parse_kline(&frame).expect("parse_kline ok");
+        match ev {
+            StreamEvent::IndexPriceKline { symbol, interval, .. } => {
+                assert_eq!(interval, "5m");
+                assert_eq!(symbol, "BTC_USDT");
+            }
+            other => panic!("expected IndexPriceKline, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_kline_malformed_n_fallback() {
+        // No underscore at all — interval stays empty, symbol = whole `n`.
+        let frame = kline_frame_with_n("BTCUSDT");
+        let ev = parse_kline(&frame).expect("parse_kline ok");
+        match ev {
+            StreamEvent::Kline { symbol, interval, .. } => {
+                assert_eq!(interval, "");
+                assert_eq!(symbol, "BTCUSDT");
+            }
+            other => panic!("expected Kline, got {:?}", other),
+        }
     }
 }

@@ -81,6 +81,15 @@ impl PersistenceConfig {
             FundingRate => self.funding_rate,
             OpenInterest => self.open_interest,
             Liquidation => self.liquidations,
+            // Extended types — numeric variants persist if globally enabled;
+            // string-bearing variants always return false (variable-length records
+            // are not supported by DiskStore's fixed-size layout).
+            IndexPrice | CompositeIndex | VolatilityIndex | HistoricalVolatility
+            | Basis | InsuranceFund | SettlementEvent | PredictedFunding
+            | FundingSettlement | RiskLimit | OptionGreeks
+            | MarkPriceKline(_) | IndexPriceKline(_) | PremiumIndexKline(_) => self.enabled,
+            // String-bearing: no disk persistence.
+            BlockTrade | OrderbookL3 | AuctionEvent | MarketWarning => false,
         }
     }
 }

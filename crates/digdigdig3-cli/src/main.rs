@@ -212,6 +212,90 @@ fn print_event(event: &Event, ob_depth: usize, seq: u64) {
                 ts = point.ts_ms, ex = exchange, sym = symbol, side = side,
                 px = point.price, qty = point.quantity, v = point.value);
         }
+        Event::BlockTrade { exchange, symbol, point } => {
+            println!("{ts} {ex:?} {sym} BLOCK_TRADE px={px} qty={qty} id={id}",
+                ts = point.ts_ms, ex = exchange, sym = symbol,
+                px = point.price, qty = point.quantity, id = point.block_id);
+        }
+        Event::IndexPrice { exchange, symbol, point } => {
+            println!("{ts} {ex:?} {sym} INDEX_PRICE price={p}",
+                ts = point.ts_ms, ex = exchange, sym = symbol, p = point.price);
+        }
+        Event::CompositeIndex { exchange, symbol, point } => {
+            println!("{ts} {ex:?} {sym} COMPOSITE_INDEX price={p}",
+                ts = point.ts_ms, ex = exchange, sym = symbol, p = point.price);
+        }
+        Event::OptionGreeks { exchange, symbol, point } => {
+            println!("{ts} {ex:?} {sym} GREEKS delta={d} gamma={g} vega={v} theta={t}",
+                ts = point.ts_ms, ex = exchange, sym = symbol,
+                d = point.delta, g = point.gamma, v = point.vega, t = point.theta);
+        }
+        Event::VolatilityIndex { exchange, symbol, point } => {
+            println!("{ts} {ex:?} {sym} VOL_INDEX value={v}",
+                ts = point.ts_ms, ex = exchange, sym = symbol, v = point.value);
+        }
+        Event::HistoricalVolatility { exchange, symbol, point } => {
+            println!("{ts} {ex:?} {sym} HIST_VOL vol={v}",
+                ts = point.ts_ms, ex = exchange, sym = symbol, v = point.volatility);
+        }
+        Event::Basis { exchange, symbol, point } => {
+            println!("{ts} {ex:?} {sym} BASIS basis={b}",
+                ts = point.ts_ms, ex = exchange, sym = symbol, b = point.basis);
+        }
+        Event::InsuranceFund { exchange, symbol, point } => {
+            println!("{ts} {ex:?} {sym} INSURANCE balance={b}",
+                ts = point.ts_ms, ex = exchange, sym = symbol, b = point.balance);
+        }
+        Event::OrderbookL3 { exchange, symbol, point } => {
+            println!("{ts} {ex:?} {sym} OB_L3 {action} id={id} px={px} qty={qty}",
+                ts = point.ts_ms, ex = exchange, sym = symbol,
+                action = point.action, id = point.order_id, px = point.price, qty = point.quantity);
+        }
+        Event::SettlementEvent { exchange, symbol, point } => {
+            println!("{ts} {ex:?} {sym} SETTLEMENT px={px} settle_time={st}",
+                ts = point.ts_ms, ex = exchange, sym = symbol,
+                px = point.settlement_price, st = point.settlement_time);
+        }
+        Event::AuctionEvent { exchange, symbol, point } => {
+            println!("{ts} {ex:?} {sym} AUCTION id={id} state={state} px={px}",
+                ts = point.ts_ms, ex = exchange, sym = symbol,
+                id = point.auction_id, state = point.state, px = point.indicative_price);
+        }
+        Event::MarketWarning { exchange, symbol, point } => {
+            println!("{ts} {ex:?} {sym} WARNING kind={kind} msg={msg}",
+                ts = point.ts_ms, ex = exchange, sym = symbol,
+                kind = point.warning_kind, msg = point.message);
+        }
+        Event::RiskLimit { exchange, symbol, point } => {
+            println!("{ts} {ex:?} {sym} RISK_LIMIT tier={tier} max_lev={lev}",
+                ts = point.ts_ms, ex = exchange, sym = symbol,
+                tier = point.tier, lev = point.max_leverage);
+        }
+        Event::PredictedFunding { exchange, symbol, point } => {
+            println!("{ts} {ex:?} {sym} PRED_FUNDING rate={r} next={n}",
+                ts = point.ts_ms, ex = exchange, sym = symbol,
+                r = point.predicted_rate, n = point.next_funding_time);
+        }
+        Event::FundingSettlement { exchange, symbol, point } => {
+            println!("{ts} {ex:?} {sym} FUNDING_SETTLE rate={r} settle_time={st}",
+                ts = point.ts_ms, ex = exchange, sym = symbol,
+                r = point.settled_rate, st = point.settlement_time);
+        }
+        Event::MarkPriceKline { exchange, symbol, timeframe, point } => {
+            println!("{ts} {ex:?} {sym} MARK_KLINE [{tf}] O={o} H={h} L={l} C={c}",
+                ts = point.open_time, ex = exchange, sym = symbol, tf = timeframe,
+                o = point.open, h = point.high, l = point.low, c = point.close);
+        }
+        Event::IndexPriceKline { exchange, symbol, timeframe, point } => {
+            println!("{ts} {ex:?} {sym} IDX_KLINE [{tf}] O={o} H={h} L={l} C={c}",
+                ts = point.open_time, ex = exchange, sym = symbol, tf = timeframe,
+                o = point.open, h = point.high, l = point.low, c = point.close);
+        }
+        Event::PremiumIndexKline { exchange, symbol, timeframe, point } => {
+            println!("{ts} {ex:?} {sym} PREM_KLINE [{tf}] O={o} H={h} L={l} C={c}",
+                ts = point.open_time, ex = exchange, sym = symbol, tf = timeframe,
+                o = point.open, h = point.high, l = point.low, c = point.close);
+        }
     }
 }
 

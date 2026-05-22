@@ -13,8 +13,12 @@ use futures_util::StreamExt;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::data::{
-    AggTradePoint, BarPoint, FundingRatePoint, LiquidationPoint, MarkPricePoint, ObSnapshotPoint,
-    OpenInterestPoint, TickerPoint, TradePoint,
+    AggTradePoint, AuctionEventPoint, BarPoint, BasisPoint, BlockTradePoint, CompositeIndexPoint,
+    FundingRatePoint, FundingSettlementPoint, HistoricalVolatilityPoint, IndexPriceKlinePoint,
+    IndexPricePoint, InsuranceFundPoint, LiquidationPoint, MarkPriceKlinePoint, MarkPricePoint,
+    MarketWarningPoint, ObSnapshotPoint, OpenInterestPoint, OptionGreeksPoint, OrderbookL3Point,
+    PredictedFundingPoint, PremiumIndexKlinePoint, RiskLimitPoint, SettlementEventPoint,
+    TickerPoint, TradePoint, VolatilityIndexPoint,
 };
 use crate::series::{DataPoint, DiskStore, Kind, Series, SeriesKey};
 use crate::subscription::{Entry, Event, MultiplexRef, Stream};
@@ -212,7 +216,25 @@ impl Station {
             Kind::MarkPrice => spawn_forwarder::<MarkPricePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::FundingRate => spawn_forwarder::<FundingRatePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::OpenInterest => spawn_forwarder::<OpenInterestPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
-            Kind::Liquidation => spawn_forwarder::<LiquidationPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req),
+            Kind::Liquidation => spawn_forwarder::<LiquidationPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::BlockTrade => spawn_forwarder::<BlockTradePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::IndexPrice => spawn_forwarder::<IndexPricePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::CompositeIndex => spawn_forwarder::<CompositeIndexPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::OptionGreeks => spawn_forwarder::<OptionGreeksPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::VolatilityIndex => spawn_forwarder::<VolatilityIndexPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::HistoricalVolatility => spawn_forwarder::<HistoricalVolatilityPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::Basis => spawn_forwarder::<BasisPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::InsuranceFund => spawn_forwarder::<InsuranceFundPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::OrderbookL3 => spawn_forwarder::<OrderbookL3Point>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::SettlementEvent => spawn_forwarder::<SettlementEventPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::AuctionEvent => spawn_forwarder::<AuctionEventPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::MarketWarning => spawn_forwarder::<MarketWarningPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::RiskLimit => spawn_forwarder::<RiskLimitPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::PredictedFunding => spawn_forwarder::<PredictedFundingPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::FundingSettlement => spawn_forwarder::<FundingSettlementPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::MarkPriceKline(_) => spawn_forwarder::<MarkPriceKlinePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::IndexPriceKline(_) => spawn_forwarder::<IndexPriceKlinePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::PremiumIndexKline(_) => spawn_forwarder::<PremiumIndexKlinePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req),
         }
 
         self.inner.muxes.insert(
@@ -394,7 +416,7 @@ fn spawn_forwarder<T: DataPoint + 'static>(
             let pt_ts = point.timestamp_ms();
             // Klines: multiple in-flight updates share open_time — upsert
             // keeps the ring deduplicated. Other kinds are monotonic.
-            if matches!(&key.kind, Kind::Kline(_)) {
+            if matches!(&key.kind, Kind::Kline(_) | Kind::MarkPriceKline(_) | Kind::IndexPriceKline(_) | Kind::PremiumIndexKline(_)) {
                 series.upsert_by_ts(point.clone());
             } else {
                 series.push(point.clone());
@@ -596,6 +618,99 @@ impl EventFrom<LiquidationPoint> for Event {
         Event::Liquidation { exchange, symbol: symbol.to_string(), point }
     }
 }
+impl EventFrom<BlockTradePoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: BlockTradePoint) -> Self {
+        Event::BlockTrade { exchange, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<IndexPricePoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: IndexPricePoint) -> Self {
+        Event::IndexPrice { exchange, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<CompositeIndexPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: CompositeIndexPoint) -> Self {
+        Event::CompositeIndex { exchange, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<OptionGreeksPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: OptionGreeksPoint) -> Self {
+        Event::OptionGreeks { exchange, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<VolatilityIndexPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: VolatilityIndexPoint) -> Self {
+        Event::VolatilityIndex { exchange, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<HistoricalVolatilityPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: HistoricalVolatilityPoint) -> Self {
+        Event::HistoricalVolatility { exchange, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<BasisPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: BasisPoint) -> Self {
+        Event::Basis { exchange, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<InsuranceFundPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: InsuranceFundPoint) -> Self {
+        Event::InsuranceFund { exchange, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<OrderbookL3Point> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: OrderbookL3Point) -> Self {
+        Event::OrderbookL3 { exchange, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<SettlementEventPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: SettlementEventPoint) -> Self {
+        Event::SettlementEvent { exchange, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<AuctionEventPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: AuctionEventPoint) -> Self {
+        Event::AuctionEvent { exchange, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<MarketWarningPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: MarketWarningPoint) -> Self {
+        Event::MarketWarning { exchange, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<RiskLimitPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: RiskLimitPoint) -> Self {
+        Event::RiskLimit { exchange, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<PredictedFundingPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: PredictedFundingPoint) -> Self {
+        Event::PredictedFunding { exchange, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<FundingSettlementPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: FundingSettlementPoint) -> Self {
+        Event::FundingSettlement { exchange, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<MarkPriceKlinePoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, kind: &Kind, point: MarkPriceKlinePoint) -> Self {
+        let timeframe = match kind { Kind::MarkPriceKline(iv) => iv.clone(), _ => KlineInterval::new("") };
+        Event::MarkPriceKline { exchange, symbol: symbol.to_string(), timeframe, point }
+    }
+}
+impl EventFrom<IndexPriceKlinePoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, kind: &Kind, point: IndexPriceKlinePoint) -> Self {
+        let timeframe = match kind { Kind::IndexPriceKline(iv) => iv.clone(), _ => KlineInterval::new("") };
+        Event::IndexPriceKline { exchange, symbol: symbol.to_string(), timeframe, point }
+    }
+}
+impl EventFrom<PremiumIndexKlinePoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, kind: &Kind, point: PremiumIndexKlinePoint) -> Self {
+        let timeframe = match kind { Kind::PremiumIndexKline(iv) => iv.clone(), _ => KlineInterval::new("") };
+        Event::PremiumIndexKline { exchange, symbol: symbol.to_string(), timeframe, point }
+    }
+}
 
 fn ws_request_for(
     kind: &Kind,
@@ -612,6 +727,24 @@ fn ws_request_for(
         Kind::FundingRate => StreamType::FundingRate,
         Kind::OpenInterest => StreamType::OpenInterest,
         Kind::Liquidation => StreamType::Liquidation,
+        Kind::BlockTrade => StreamType::BlockTrade,
+        Kind::IndexPrice => StreamType::IndexPrice,
+        Kind::CompositeIndex => StreamType::CompositeIndex,
+        Kind::OptionGreeks => StreamType::OptionGreeks,
+        Kind::VolatilityIndex => StreamType::VolatilityIndex,
+        Kind::HistoricalVolatility => StreamType::HistoricalVolatility,
+        Kind::Basis => StreamType::Basis,
+        Kind::InsuranceFund => StreamType::InsuranceFund,
+        Kind::OrderbookL3 => StreamType::OrderbookL3,
+        Kind::SettlementEvent => StreamType::SettlementEvent,
+        Kind::AuctionEvent => StreamType::AuctionEvent,
+        Kind::MarketWarning => StreamType::MarketWarning,
+        Kind::RiskLimit => StreamType::RiskLimit,
+        Kind::PredictedFunding => StreamType::PredictedFunding,
+        Kind::FundingSettlement => StreamType::FundingSettlement,
+        Kind::MarkPriceKline(iv) => StreamType::MarkPriceKline { interval: iv.as_str().to_string() },
+        Kind::IndexPriceKline(iv) => StreamType::IndexPriceKline { interval: iv.as_str().to_string() },
+        Kind::PremiumIndexKline(iv) => StreamType::PremiumIndexKline { interval: iv.as_str().to_string() },
     };
     SubscriptionRequest {
         symbol: sym,

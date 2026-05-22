@@ -2,8 +2,12 @@ use digdigdig3::core::types::{AccountType, ExchangeId};
 use digdigdig3::core::websocket::KlineInterval;
 
 use crate::data::{
-    AggTradePoint, BarPoint, FundingRatePoint, LiquidationPoint, MarkPricePoint, ObSnapshotPoint,
-    OpenInterestPoint, TickerPoint, TradePoint,
+    AggTradePoint, AuctionEventPoint, BarPoint, BasisPoint, BlockTradePoint, CompositeIndexPoint,
+    FundingRatePoint, FundingSettlementPoint, HistoricalVolatilityPoint, IndexPriceKlinePoint,
+    IndexPricePoint, InsuranceFundPoint, LiquidationPoint, MarkPriceKlinePoint, MarkPricePoint,
+    MarketWarningPoint, ObSnapshotPoint, OpenInterestPoint, OptionGreeksPoint, OrderbookL3Point,
+    PredictedFundingPoint, PremiumIndexKlinePoint, RiskLimitPoint, SettlementEventPoint,
+    TickerPoint, TradePoint, VolatilityIndexPoint,
 };
 use crate::series::{Kind, SeriesKey};
 
@@ -22,6 +26,25 @@ pub enum Stream {
     OpenInterest,
     Liquidation,
     AggTrade,
+    // --- extended stream types ---
+    BlockTrade,
+    IndexPrice,
+    CompositeIndex,
+    OptionGreeks,
+    VolatilityIndex,
+    HistoricalVolatility,
+    Basis,
+    InsuranceFund,
+    OrderbookL3,
+    SettlementEvent,
+    AuctionEvent,
+    MarketWarning,
+    RiskLimit,
+    PredictedFunding,
+    FundingSettlement,
+    MarkPriceKline(KlineInterval),
+    IndexPriceKline(KlineInterval),
+    PremiumIndexKline(KlineInterval),
 }
 
 impl Stream {
@@ -36,6 +59,24 @@ impl Stream {
             Stream::FundingRate => Kind::FundingRate,
             Stream::OpenInterest => Kind::OpenInterest,
             Stream::Liquidation => Kind::Liquidation,
+            Stream::BlockTrade => Kind::BlockTrade,
+            Stream::IndexPrice => Kind::IndexPrice,
+            Stream::CompositeIndex => Kind::CompositeIndex,
+            Stream::OptionGreeks => Kind::OptionGreeks,
+            Stream::VolatilityIndex => Kind::VolatilityIndex,
+            Stream::HistoricalVolatility => Kind::HistoricalVolatility,
+            Stream::Basis => Kind::Basis,
+            Stream::InsuranceFund => Kind::InsuranceFund,
+            Stream::OrderbookL3 => Kind::OrderbookL3,
+            Stream::SettlementEvent => Kind::SettlementEvent,
+            Stream::AuctionEvent => Kind::AuctionEvent,
+            Stream::MarketWarning => Kind::MarketWarning,
+            Stream::RiskLimit => Kind::RiskLimit,
+            Stream::PredictedFunding => Kind::PredictedFunding,
+            Stream::FundingSettlement => Kind::FundingSettlement,
+            Stream::MarkPriceKline(iv) => Kind::MarkPriceKline(iv.clone()),
+            Stream::IndexPriceKline(iv) => Kind::IndexPriceKline(iv.clone()),
+            Stream::PremiumIndexKline(iv) => Kind::PremiumIndexKline(iv.clone()),
         }
     }
 }
@@ -127,6 +168,100 @@ pub enum Event {
         symbol: String,
         point: LiquidationPoint,
     },
+    // --- extended stream types ---
+    BlockTrade {
+        exchange: ExchangeId,
+        symbol: String,
+        point: BlockTradePoint,
+    },
+    IndexPrice {
+        exchange: ExchangeId,
+        symbol: String,
+        point: IndexPricePoint,
+    },
+    CompositeIndex {
+        exchange: ExchangeId,
+        symbol: String,
+        point: CompositeIndexPoint,
+    },
+    OptionGreeks {
+        exchange: ExchangeId,
+        symbol: String,
+        point: OptionGreeksPoint,
+    },
+    VolatilityIndex {
+        exchange: ExchangeId,
+        symbol: String,
+        point: VolatilityIndexPoint,
+    },
+    HistoricalVolatility {
+        exchange: ExchangeId,
+        symbol: String,
+        point: HistoricalVolatilityPoint,
+    },
+    Basis {
+        exchange: ExchangeId,
+        symbol: String,
+        point: BasisPoint,
+    },
+    InsuranceFund {
+        exchange: ExchangeId,
+        symbol: String,
+        point: InsuranceFundPoint,
+    },
+    OrderbookL3 {
+        exchange: ExchangeId,
+        symbol: String,
+        point: OrderbookL3Point,
+    },
+    SettlementEvent {
+        exchange: ExchangeId,
+        symbol: String,
+        point: SettlementEventPoint,
+    },
+    AuctionEvent {
+        exchange: ExchangeId,
+        symbol: String,
+        point: AuctionEventPoint,
+    },
+    MarketWarning {
+        exchange: ExchangeId,
+        symbol: String,
+        point: MarketWarningPoint,
+    },
+    RiskLimit {
+        exchange: ExchangeId,
+        symbol: String,
+        point: RiskLimitPoint,
+    },
+    PredictedFunding {
+        exchange: ExchangeId,
+        symbol: String,
+        point: PredictedFundingPoint,
+    },
+    FundingSettlement {
+        exchange: ExchangeId,
+        symbol: String,
+        point: FundingSettlementPoint,
+    },
+    MarkPriceKline {
+        exchange: ExchangeId,
+        symbol: String,
+        timeframe: KlineInterval,
+        point: MarkPriceKlinePoint,
+    },
+    IndexPriceKline {
+        exchange: ExchangeId,
+        symbol: String,
+        timeframe: KlineInterval,
+        point: IndexPriceKlinePoint,
+    },
+    PremiumIndexKline {
+        exchange: ExchangeId,
+        symbol: String,
+        timeframe: KlineInterval,
+        point: PremiumIndexKlinePoint,
+    },
 }
 
 impl Event {
@@ -136,7 +271,17 @@ impl Event {
             Event::Bar { exchange, .. } | Event::Ticker { exchange, .. } |
             Event::OrderbookSnapshot { exchange, .. } | Event::MarkPrice { exchange, .. } |
             Event::FundingRate { exchange, .. } | Event::OpenInterest { exchange, .. } |
-            Event::Liquidation { exchange, .. } => *exchange,
+            Event::Liquidation { exchange, .. } |
+            Event::BlockTrade { exchange, .. } | Event::IndexPrice { exchange, .. } |
+            Event::CompositeIndex { exchange, .. } | Event::OptionGreeks { exchange, .. } |
+            Event::VolatilityIndex { exchange, .. } | Event::HistoricalVolatility { exchange, .. } |
+            Event::Basis { exchange, .. } | Event::InsuranceFund { exchange, .. } |
+            Event::OrderbookL3 { exchange, .. } | Event::SettlementEvent { exchange, .. } |
+            Event::AuctionEvent { exchange, .. } | Event::MarketWarning { exchange, .. } |
+            Event::RiskLimit { exchange, .. } | Event::PredictedFunding { exchange, .. } |
+            Event::FundingSettlement { exchange, .. } |
+            Event::MarkPriceKline { exchange, .. } | Event::IndexPriceKline { exchange, .. } |
+            Event::PremiumIndexKline { exchange, .. } => *exchange,
         }
     }
     pub fn symbol(&self) -> &str {
@@ -145,7 +290,17 @@ impl Event {
             Event::Bar { symbol, .. } | Event::Ticker { symbol, .. } |
             Event::OrderbookSnapshot { symbol, .. } | Event::MarkPrice { symbol, .. } |
             Event::FundingRate { symbol, .. } | Event::OpenInterest { symbol, .. } |
-            Event::Liquidation { symbol, .. } => symbol,
+            Event::Liquidation { symbol, .. } |
+            Event::BlockTrade { symbol, .. } | Event::IndexPrice { symbol, .. } |
+            Event::CompositeIndex { symbol, .. } | Event::OptionGreeks { symbol, .. } |
+            Event::VolatilityIndex { symbol, .. } | Event::HistoricalVolatility { symbol, .. } |
+            Event::Basis { symbol, .. } | Event::InsuranceFund { symbol, .. } |
+            Event::OrderbookL3 { symbol, .. } | Event::SettlementEvent { symbol, .. } |
+            Event::AuctionEvent { symbol, .. } | Event::MarketWarning { symbol, .. } |
+            Event::RiskLimit { symbol, .. } | Event::PredictedFunding { symbol, .. } |
+            Event::FundingSettlement { symbol, .. } |
+            Event::MarkPriceKline { symbol, .. } | Event::IndexPriceKline { symbol, .. } |
+            Event::PremiumIndexKline { symbol, .. } => symbol,
         }
     }
 
@@ -166,7 +321,25 @@ impl Event {
             | Event::MarkPrice { symbol, .. }
             | Event::FundingRate { symbol, .. }
             | Event::OpenInterest { symbol, .. }
-            | Event::Liquidation { symbol, .. } => *symbol = new_symbol,
+            | Event::Liquidation { symbol, .. }
+            | Event::BlockTrade { symbol, .. }
+            | Event::IndexPrice { symbol, .. }
+            | Event::CompositeIndex { symbol, .. }
+            | Event::OptionGreeks { symbol, .. }
+            | Event::VolatilityIndex { symbol, .. }
+            | Event::HistoricalVolatility { symbol, .. }
+            | Event::Basis { symbol, .. }
+            | Event::InsuranceFund { symbol, .. }
+            | Event::OrderbookL3 { symbol, .. }
+            | Event::SettlementEvent { symbol, .. }
+            | Event::AuctionEvent { symbol, .. }
+            | Event::MarketWarning { symbol, .. }
+            | Event::RiskLimit { symbol, .. }
+            | Event::PredictedFunding { symbol, .. }
+            | Event::FundingSettlement { symbol, .. }
+            | Event::MarkPriceKline { symbol, .. }
+            | Event::IndexPriceKline { symbol, .. }
+            | Event::PremiumIndexKline { symbol, .. } => *symbol = new_symbol,
         }
     }
     pub fn timestamp_ms(&self) -> i64 {
@@ -181,6 +354,24 @@ impl Event {
             Event::FundingRate { point, .. } => point.timestamp_ms(),
             Event::OpenInterest { point, .. } => point.timestamp_ms(),
             Event::Liquidation { point, .. } => point.timestamp_ms(),
+            Event::BlockTrade { point, .. } => point.timestamp_ms(),
+            Event::IndexPrice { point, .. } => point.timestamp_ms(),
+            Event::CompositeIndex { point, .. } => point.timestamp_ms(),
+            Event::OptionGreeks { point, .. } => point.timestamp_ms(),
+            Event::VolatilityIndex { point, .. } => point.timestamp_ms(),
+            Event::HistoricalVolatility { point, .. } => point.timestamp_ms(),
+            Event::Basis { point, .. } => point.timestamp_ms(),
+            Event::InsuranceFund { point, .. } => point.timestamp_ms(),
+            Event::OrderbookL3 { point, .. } => point.timestamp_ms(),
+            Event::SettlementEvent { point, .. } => point.timestamp_ms(),
+            Event::AuctionEvent { point, .. } => point.timestamp_ms(),
+            Event::MarketWarning { point, .. } => point.timestamp_ms(),
+            Event::RiskLimit { point, .. } => point.timestamp_ms(),
+            Event::PredictedFunding { point, .. } => point.timestamp_ms(),
+            Event::FundingSettlement { point, .. } => point.timestamp_ms(),
+            Event::MarkPriceKline { point, .. } => point.timestamp_ms(),
+            Event::IndexPriceKline { point, .. } => point.timestamp_ms(),
+            Event::PremiumIndexKline { point, .. } => point.timestamp_ms(),
         }
     }
 }

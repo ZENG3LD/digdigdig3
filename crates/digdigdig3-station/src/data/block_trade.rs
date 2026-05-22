@@ -3,11 +3,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::series::DataPoint;
 
-/// In-memory only. Disk persistence is not supported for this type because
-/// `block_id` is a variable-length string. `RECORD_SIZE` encodes only the
-/// timestamp as an 8-byte stub so the type satisfies the `DataPoint` bound;
-/// `is_enabled_for(Kind::BlockTrade)` returns `false` so `DiskStore` is
-/// never opened for this kind.
+/// Block trade — large off-book print, identified by exchange-issued `block_id`.
+///
+/// Disk layout:
+/// - Header (44 B): `ts_ms (8) | price (8) | quantity (8) | side (1) | is_iv (1) | _pad (6) | blob_off (8) | blob_len (4)`.
+/// - Blob: `len(block_id):u16 | block_id_utf8`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockTradePoint {
     pub ts_ms: i64,
@@ -18,24 +18,31 @@ pub struct BlockTradePoint {
     pub is_iv: bool,
 }
 
+const TAIL_OFFSET: usize = 32;
+
 impl DataPoint for BlockTradePoint {
-    /// Stub size — encode/decode only carry the timestamp.
-    /// Persistence is disabled for this kind so this path is never taken.
-    const RECORD_SIZE: usize = 8;
+    const RECORD_SIZE: usize = 44;
 
     fn encode(&self, out: &mut [u8]) {
         out[0..8].copy_from_slice(&(self.ts_ms as u64).to_le_bytes());
+        out[8..16].copy_from_slice(&self.price.to_le_bytes());
+        out[16..24].copy_from_slice(&self.quantity.to_le_bytes());
+        out[24] = match self.side {
+            TradeSide::Buy => 0,
+            TradeSide::Sell => 1,
+        };
+        out[25] = u8::from(self.is_iv);
     }
 
     fn decode(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() != 8 { return None; }
+        if bytes.len() != Self::RECORD_SIZE { return None; }
         Some(Self {
             ts_ms: u64::from_le_bytes(bytes[0..8].try_into().ok()?) as i64,
             block_id: String::new(),
-            price: 0.0,
-            quantity: 0.0,
-            side: TradeSide::Buy,
-            is_iv: false,
+            price: f64::from_le_bytes(bytes[8..16].try_into().ok()?),
+            quantity: f64::from_le_bytes(bytes[16..24].try_into().ok()?),
+            side: match bytes[24] { 0 => TradeSide::Buy, _ => TradeSide::Sell },
+            is_iv: bytes[25] != 0,
         })
     }
 
@@ -63,4 +70,25 @@ impl DataPoint for BlockTradePoint {
             None
         }
     }
+
+    fn encode_blob(&self) -> Option<Vec<u8>> {
+        let bytes = self.block_id.as_bytes();
+        let mut out = Vec::with_capacity(2 + bytes.len());
+        out.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
+        out.extend_from_slice(bytes);
+        Some(out)
+    }
+
+    fn decode_blob(header: &[u8], blob: &[u8]) -> Option<Self> {
+        let mut p = Self::decode(header)?;
+        if blob.len() >= 2 {
+            let len = u16::from_le_bytes(blob[0..2].try_into().ok()?) as usize;
+            if blob.len() >= 2 + len {
+                p.block_id = String::from_utf8_lossy(&blob[2..2 + len]).into_owned();
+            }
+        }
+        Some(p)
+    }
+
+    fn blob_pointer_offset() -> Option<usize> { Some(TAIL_OFFSET) }
 }

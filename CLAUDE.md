@@ -1,12 +1,22 @@
 # digdigdig3 (dig3)
 
-Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major crypto + 4 DEX, full futures coverage). Three crates in one workspace — single version pin (uzor-style), currently `0.3.5`:
+Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major crypto + 4 DEX, full futures coverage). Three crates in one workspace — single version pin (uzor-style), currently `0.3.6`:
 
 - **`digdigdig3`** — pure connector library. ONLY `ExchangeHub` + REST/WS connectors + capabilities + symbol normalization. No persistence, no replay, no cure/cache infrastructure.
-- **`digdigdig3-station`** — high-level builder over `ExchangeHub`. OWNS: unified `Series<T>` / `DiskStore<T>` over 27 `DataPoint` impls (9 core + 18 extended for MLI), `SeriesKey { exchange, account, symbol, kind }`, multiplexed `Station` (N consumers share one WS per StreamKey), warm-start, REST cache, replay, cure, **auto-heal on WS disconnect** (kline-only — see below).
+- **`digdigdig3-station`** — high-level builder over `ExchangeHub`. OWNS: unified `Series<T>` / `DiskStore<T>` over 27 `DataPoint` impls (9 core + 18 extended for MLI), `SeriesKey { exchange, account, symbol, kind }`, multiplexed `Station` (N consumers share one WS per StreamKey), warm-start, REST cache, replay, cure, **auto-heal on WS disconnect** (kline-only — see below). String-bearing variants (BlockTrade, AuctionEvent, MarketWarning, OrderbookL3) persist via fixed header + companion `.blob` file.
 - **`digdigdig3-cli`** — `dig3` binary (watch trades/orderbook/kline/ticker/mark/funding/open-interest/liquidations/agg-trades) + `dig3-inspect` post-mortem analyzer + legacy `dig3-catcher` / `dig3-cure` bins.
 
-## Major refactors (0.3.4 + 0.3.5)
+## Major refactors (0.3.4 + 0.3.5 + 0.3.6)
+
+**0.3.6 (2026-05-22)** — fixed-header + companion blob-file persistence for the 4 string-bearing types:
+
+- `DataPoint` trait gains opt-in `encode_blob() -> Option<Vec<u8>>`, `decode_blob(header, blob) -> Option<Self>`, `blob_pointer_offset() -> Option<usize>` with `None` defaults. 23 numeric types inherit defaults and behave unchanged.
+- `DiskStore<T>` opens a companion `.blob` file alongside `.dat`+`.idx` ONLY when `T::blob_pointer_offset()` is `Some(_)`. Write order: blob bytes first, header (with patched `(offset:u64, len:u32)` tail) second. Read tail opens `.blob` read-only and reconstructs string fields via `decode_blob`. Bounds check on read: out-of-range blob pointers logged + skipped.
+- Layouts: `BlockTradePoint` 44 B (32 + 12 tail), `AuctionEventPoint` 36 B (24 + 12), `MarketWarningPoint` 20 B (8 + 12), `OrderbookL3Point` 44 B (32 + 12). Blob format: u16-length-prefix per string, UTF-8 bytes, no framing across records.
+- `persistence::is_enabled_for` no longer special-cases the 4 string types — they persist normally when global `enabled = true`.
+- 9 new integration tests in `tests/blob_persistence.rs` covering ASCII / UTF-8 / empty / 1KiB strings, full append+read_tail round-trip for BlockTrade + MarketWarning, regression that `TradePoint` does NOT create `.blob` files.
+
+
 
 **0.3.4 (2026-05-21)** — typed StreamEvent API, structured routing keys, cleanup of empty-symbol holes:
 
@@ -25,7 +35,7 @@ Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major cr
 
 - Numeric (11): `IndexPrice`, `CompositeIndex`, `OptionGreeks`, `VolatilityIndex`, `HistoricalVolatility`, `Basis`, `InsuranceFund`, `SettlementEvent`, `PredictedFunding`, `FundingSettlement`, `RiskLimit`.
 - Kline-family (3): `MarkPriceKline(KlineInterval)`, `IndexPriceKline(KlineInterval)`, `PremiumIndexKline(KlineInterval)`.
-- String-bearing (4): `BlockTrade`, `AuctionEvent`, `MarketWarning`, `OrderbookL3` — currently `RECORD_SIZE=8` stub, persistence disabled (`is_enabled_for` returns false). Events flow in-memory to consumers; disk write skipped. Header+blob persistence plan is the next priority.
+- String-bearing (4): `BlockTrade`, `AuctionEvent`, `MarketWarning`, `OrderbookL3` — initially stubbed `RECORD_SIZE=8` with persistence disabled; **real disk persistence shipped in 0.3.6** via header + companion `.blob` file. See 0.3.6 entry above.
 
 ## Commit chain since 0.3.3 (12 commits → 0.3.4, +2 → 0.3.5)
 
@@ -45,7 +55,9 @@ Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major cr
 | `da7029b` | | refactor: KlineInterval newtype across Station + StreamEvent |
 | `295752b` | v0.3.4 | release |
 | `c326732` | | feat: 18 additional Station Stream/Event variants for MLI |
-| (next) | v0.3.5 | release |
+| (released) | v0.3.5 | release |
+| (next) | | feat(station): fixed-header + companion `.blob` file persistence for 4 string-bearing types |
+| (next) | v0.3.6 | release |
 
 Test baseline: 830/0 core, 75/0 station + 4 ignored live integration tests (`dual_symbol_routing`, `label_per_subscriber`). Strict (`RUSTFLAGS=-D warnings`) clean.
 

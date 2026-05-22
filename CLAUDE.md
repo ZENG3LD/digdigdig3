@@ -1,12 +1,22 @@
 # digdigdig3 (dig3)
 
-Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major crypto + 4 DEX, full futures coverage). Three crates in one workspace — single version pin (uzor-style), currently `0.3.7`:
+Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major crypto + 4 DEX, full futures coverage). Three crates in one workspace — single version pin (uzor-style), currently `0.3.8`:
 
 - **`digdigdig3`** — pure connector library. ONLY `ExchangeHub` + REST/WS connectors + capabilities + symbol normalization. No persistence, no replay, no cure/cache infrastructure.
 - **`digdigdig3-station`** — high-level builder over `ExchangeHub`. OWNS: unified `Series<T>` / `DiskStore<T>` over 27 `DataPoint` impls (9 core + 18 extended for MLI), `SeriesKey { exchange, account, symbol, kind }`, multiplexed `Station` (N consumers share one WS per StreamKey), warm-start, REST cache, replay, cure, **auto-heal on WS disconnect** (kline-only — see below). String-bearing variants (BlockTrade, AuctionEvent, MarketWarning, OrderbookL3) persist via fixed header + companion `.blob` file.
 - **`digdigdig3-cli`** — `dig3` binary (watch trades/orderbook/kline/ticker/mark/funding/open-interest/liquidations/agg-trades) + `dig3-inspect` post-mortem analyzer + legacy `dig3-catcher` / `dig3-cure` bins.
 
-## Major refactors (0.3.4 + 0.3.5 + 0.3.6 + 0.3.7)
+## Major refactors (0.3.4 + 0.3.5 + 0.3.6 + 0.3.7 + 0.3.8)
+
+**0.3.8 (2026-05-22)** — `SubscriptionSet::add_raw` passthrough for exotic instrument IDs:
+
+- New `SubscriptionSet::add_raw(exchange, symbol, account, streams)`. The symbol is passed through to the WS connector verbatim — no `parse_symbol`, no `SymbolNormalizer::to_exchange`. Use for instrument IDs that don't fit the canonical BASE-QUOTE shape: Deribit options (`"BTC-23MAY26-86000-C"`), dated futures (`"BTCUSDT_240329"`), index symbols (`".DEFI"`, `"BTC-PERPETUAL"`).
+- Existing `.add()` is unchanged — still canonical-input, still normalizer-translated. `.add` and `.add_raw` can be freely mixed in one set; `Station::subscribe` branches per-entry on the internal `Entry.is_raw` flag.
+- For raw entries the internal canonical `Symbol` is built as `Symbol::with_raw("", "", raw)` (empty base/quote, raw = passthrough). Connector-side `SymbolInput::resolve` reads the raw field, so the wire format is whatever the caller passed.
+- 2 new unit tests in `tests/subscribe_report.rs` (`add_raw` accepts Deribit option ID; `.add` + `.add_raw` mix in same set).
+- Closes MLI ask 2026-05-22 — unblocks Deribit option subscriptions (OptionGreeks, VolatilityIndex, BlockTrade, IndexPrice) which all 4 require exotic instrument IDs the normalizer cannot translate.
+
+
 
 **0.3.7 (2026-05-22)** — fail-closed subscribe + heal kline-only (MLI 0.3.6 OOM fix):
 
@@ -71,7 +81,8 @@ Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major cr
 | `027b5dd` | | docs(claude): summarize 0.3.4 + 0.3.5 refactor scope + commit chain |
 | `6731d0e` | v0.3.6 | feat(station): fixed-header + companion `.blob` file persistence for 4 string-bearing types |
 | `8251ad0` | | docs(claude): record v0.3.6 in commit chain + link release report |
-| (next) | v0.3.7 | fix(station): fail-closed subscribe + heal kline-only (MLI 0.3.6 OOM fix) |
+| `ffe9c54` | v0.3.7 | fix(station): fail-closed subscribe + heal kline-only (MLI 0.3.6 OOM fix) |
+| (next) | v0.3.8 | feat(station): `SubscriptionSet::add_raw` passthrough for exotic instrument IDs |
 
 Test baseline: 830/0 core, 75/0 station + 4 ignored live integration tests (`dual_symbol_routing`, `label_per_subscriber`). Strict (`RUSTFLAGS=-D warnings`) clean.
 

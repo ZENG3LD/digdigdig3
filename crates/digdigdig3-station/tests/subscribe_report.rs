@@ -60,3 +60,39 @@ fn failed_stream_fields_are_public() {
         (f.exchange, f.account_type, f.symbol, f.stream, f.error)
     }
 }
+
+/// `add_raw` must accept an exotic instrument ID that would crash
+/// `parse_symbol` + `SymbolNormalizer::to_exchange`. The builder itself
+/// is normalizer-free; the only test we can run without a live
+/// connection is that the SubscriptionSet accepts the string and
+/// preserves it verbatim through .len(). The live-subscribe path is
+/// covered by tests/subscribe_not_supported_live.rs.
+#[test]
+fn add_raw_accepts_deribit_option_id() {
+    let set = SubscriptionSet::new().add_raw(
+        ExchangeId::Deribit,
+        "BTC-23MAY26-86000-C",
+        AccountType::Options,
+        [Stream::OptionGreeks],
+    );
+    assert_eq!(set.len(), 1);
+}
+
+#[test]
+fn add_and_add_raw_can_mix_in_same_set() {
+    let set = SubscriptionSet::new()
+        .add(ExchangeId::Binance, "BTC-USDT", AccountType::Spot, [Stream::Trade])
+        .add_raw(
+            ExchangeId::Deribit,
+            "BTC-23MAY26-86000-C",
+            AccountType::Options,
+            [Stream::OptionGreeks],
+        )
+        .add_raw(
+            ExchangeId::Deribit,
+            "BTC-PERPETUAL",
+            AccountType::FuturesCross,
+            [Stream::IndexPrice, Stream::VolatilityIndex],
+        );
+    assert_eq!(set.len(), 3);
+}

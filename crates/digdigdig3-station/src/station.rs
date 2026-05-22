@@ -140,25 +140,42 @@ impl Station {
                 continue;
             }
 
-            let canonical = parse_symbol(&entry.symbol);
-            let raw = match SymbolNormalizer::to_exchange(
-                entry.exchange,
-                &canonical,
-                entry.account_type,
-            ) {
-                Ok(r) => r,
-                Err(e) => {
-                    let err_msg = format!("symbol normalize: {e}");
-                    for s in &entry.streams {
-                        failed.push(FailedStream {
-                            exchange: entry.exchange,
-                            account_type: entry.account_type,
-                            symbol: entry.symbol.clone(),
-                            stream: s.clone(),
-                            error: StationError::Subscribe(err_msg.clone()),
-                        });
+            // Resolve to (canonical, raw exchange-native) pair.
+            //
+            // - `add_raw`: passthrough. `entry.symbol` is the wire format
+            //   already; canonical Symbol is built with empty base/quote +
+            //   the raw string as its `raw` field. This is the only path
+            //   that works for exotic instruments where BASE-QUOTE doesn't
+            //   apply (Deribit options "BTC-23MAY26-86000-C", dated
+            //   futures, index symbols, etc.).
+            // - `add` (canonical): parse "BTC-USDT"-style input, translate
+            //   to exchange-native via SymbolNormalizer.
+            let (canonical, raw) = if entry.is_raw {
+                (
+                    Symbol::with_raw("", "", entry.symbol.clone()),
+                    entry.symbol.clone(),
+                )
+            } else {
+                let canonical = parse_symbol(&entry.symbol);
+                match SymbolNormalizer::to_exchange(
+                    entry.exchange,
+                    &canonical,
+                    entry.account_type,
+                ) {
+                    Ok(r) => (canonical, r),
+                    Err(e) => {
+                        let err_msg = format!("symbol normalize: {e}");
+                        for s in &entry.streams {
+                            failed.push(FailedStream {
+                                exchange: entry.exchange,
+                                account_type: entry.account_type,
+                                symbol: entry.symbol.clone(),
+                                stream: s.clone(),
+                                error: StationError::Subscribe(err_msg.clone()),
+                            });
+                        }
+                        continue;
                     }
-                    continue;
                 }
             };
 

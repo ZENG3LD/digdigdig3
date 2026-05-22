@@ -87,6 +87,13 @@ pub(crate) struct Entry {
     pub(crate) symbol: String,
     pub(crate) account_type: AccountType,
     pub(crate) streams: Vec<Stream>,
+    /// If true, `symbol` is the raw exchange-native string and must be
+    /// passed through to the WS connector verbatim — no `SymbolNormalizer`
+    /// translation. Set by `SubscriptionSet::add_raw`. Used for exotic
+    /// instrument IDs that don't fit the canonical BASE-QUOTE shape
+    /// (Deribit options like `BTC-23MAY26-86000-C`, exchange-specific
+    /// suffixes, etc.).
+    pub(crate) is_raw: bool,
 }
 
 /// Declarative subscription request — built up fluently, consumed by
@@ -99,6 +106,12 @@ pub struct SubscriptionSet {
 impl SubscriptionSet {
     pub fn new() -> Self { Self::default() }
 
+    /// Add a subscription. `symbol` is canonical (e.g. `"BTC-USDT"`,
+    /// `"BTCUSDT"`, `"BTC/USDT"`) — it is parsed into a canonical
+    /// `Symbol` and translated to the exchange-native form via
+    /// `SymbolNormalizer`. Use [`Self::add_raw`] for instrument IDs that
+    /// don't fit the canonical BASE-QUOTE shape (Deribit options,
+    /// exchange-specific futures suffixes, etc.).
     pub fn add(
         mut self,
         exchange: ExchangeId,
@@ -111,6 +124,35 @@ impl SubscriptionSet {
             symbol: symbol.into(),
             account_type,
             streams: streams.into_iter().collect(),
+            is_raw: false,
+        });
+        self
+    }
+
+    /// Add a subscription with a raw exchange-native symbol. `symbol` is
+    /// passed through to the connector verbatim — no `SymbolNormalizer`
+    /// translation. Use for instrument IDs that don't fit the canonical
+    /// BASE-QUOTE shape:
+    /// - Deribit options: `"BTC-23MAY26-86000-C"`
+    /// - Futures with date suffix: `"BTCUSDT_240329"`
+    /// - Index symbols: `".DEFI"`, `"BTCUSD-PERP"`
+    ///
+    /// The caller is responsible for using the exact wire format the
+    /// exchange expects — `Event.symbol` on the handle will mirror the
+    /// raw string back.
+    pub fn add_raw(
+        mut self,
+        exchange: ExchangeId,
+        symbol: impl Into<String>,
+        account_type: AccountType,
+        streams: impl IntoIterator<Item = Stream>,
+    ) -> Self {
+        self.entries.push(Entry {
+            exchange,
+            symbol: symbol.into(),
+            account_type,
+            streams: streams.into_iter().collect(),
+            is_raw: true,
         });
         self
     }

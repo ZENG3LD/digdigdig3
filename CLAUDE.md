@@ -1,10 +1,53 @@
 # digdigdig3 (dig3)
 
-Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major crypto + 4 DEX, full futures coverage). Three crates in one workspace — single version pin (uzor-style), currently `0.3.3`:
+Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major crypto + 4 DEX, full futures coverage). Three crates in one workspace — single version pin (uzor-style), currently `0.3.5`:
 
 - **`digdigdig3`** — pure connector library. ONLY `ExchangeHub` + REST/WS connectors + capabilities + symbol normalization. No persistence, no replay, no cure/cache infrastructure.
-- **`digdigdig3-station`** — high-level builder over `ExchangeHub`. OWNS: unified `Series<T>` / `DiskStore<T>` over 9 `DataPoint` impls (Trade/AggTrade/Bar/Ticker/ObSnapshot/MarkPrice/FundingRate/OpenInterest/Liquidation), `SeriesKey { exchange, account, symbol, kind }`, multiplexed `Station` (N consumers share one WS per StreamKey), warm-start, REST cache, replay, cure, **auto-heal on WS disconnect** (kline-only — see below).
+- **`digdigdig3-station`** — high-level builder over `ExchangeHub`. OWNS: unified `Series<T>` / `DiskStore<T>` over 27 `DataPoint` impls (9 core + 18 extended for MLI), `SeriesKey { exchange, account, symbol, kind }`, multiplexed `Station` (N consumers share one WS per StreamKey), warm-start, REST cache, replay, cure, **auto-heal on WS disconnect** (kline-only — see below).
 - **`digdigdig3-cli`** — `dig3` binary (watch trades/orderbook/kline/ticker/mark/funding/open-interest/liquidations/agg-trades) + `dig3-inspect` post-mortem analyzer + legacy `dig3-catcher` / `dig3-cure` bins.
+
+## Major refactors (0.3.4 + 0.3.5)
+
+**0.3.4 (2026-05-21)** — typed StreamEvent API, structured routing keys, cleanup of empty-symbol holes:
+
+- Every public-data `StreamEvent` variant is struct-style with explicit `symbol: String` + (klines) `interval: KlineInterval`. No tuple variants for public events. No empty-string placeholders in production code (1 doc comment exception).
+- `Ticker`, `PublicTrade`, `FundingRate`, `MarkPrice`, `OpenInterest` payload structs no longer carry redundant `symbol: String`. Routing key is on the variant; payload is statistics only.
+- `Order.symbol: Option<String>` — cancel/amend responses without symbol payload model `None` explicitly.
+- `OrderUpdateEvent` / `PositionUpdateEvent` payload structs no longer carry `symbol`. `StreamEvent::OrderUpdate { symbol, event }` / `PositionUpdate { symbol, event }` are struct variants (BalanceUpdate stays tuple — wallet-wide).
+- `MarketWarning.symbol: Option<String>` — `None` for venue-wide notifications.
+- `Canonicalize` for payload structs replaced by `pub(crate)` free fns taking `symbol: String` as parameter. Public path is `StreamEvent::canonicalize()` only.
+- TF newtype: `KlineInterval` propagated through `Stream::Kline(KlineInterval)`, `Kind::Kline(KlineInterval)`, `Event::Bar { timeframe: KlineInterval }`, `StreamEvent::Kline { interval: KlineInterval }` (and 3 kline-family variants), `CanonicalKline.interval: KlineInterval`. REST `get_klines(interval: &str, ...)` left as exchange-native `&str`.
+- `station::event_matches_key` reads `symbol` from every public variant uniformly (was accept-all for OB before — closed cross-symbol pollination).
+- `Event.symbol` is per-handle: relay task overwrites with user-input format so two handles with different inputs (`"BTC-USDT"` vs `"BTCUSDT"`) each see their own label.
+- Bug fixes shipped together: GateIO `parse_kline` triple-bug (mainstream symbol/interval/mark-premium branches), Bitstamp OB symbol extraction from channel, Polygon/CryptoCompare/Alpaca empty interval, dydx signing key length validation.
+
+**0.3.5 (2026-05-22)** — 18 additional `Stream`/`Kind`/`Event` variants exposed in `digdigdig3-station` for MLI consumer:
+
+- Numeric (11): `IndexPrice`, `CompositeIndex`, `OptionGreeks`, `VolatilityIndex`, `HistoricalVolatility`, `Basis`, `InsuranceFund`, `SettlementEvent`, `PredictedFunding`, `FundingSettlement`, `RiskLimit`.
+- Kline-family (3): `MarkPriceKline(KlineInterval)`, `IndexPriceKline(KlineInterval)`, `PremiumIndexKline(KlineInterval)`.
+- String-bearing (4): `BlockTrade`, `AuctionEvent`, `MarketWarning`, `OrderbookL3` — currently `RECORD_SIZE=8` stub, persistence disabled (`is_enabled_for` returns false). Events flow in-memory to consumers; disk write skipped. Header+blob persistence plan is the next priority.
+
+## Commit chain since 0.3.3 (12 commits → 0.3.4, +2 → 0.3.5)
+
+| Commit | Tag | What |
+|---|---|---|
+| `bbcdb2b` | | refactor: typed StreamEvent + drop redundant symbol from Ticker/PublicTrade |
+| `60d40d3` | | test: dual-symbol routing live regression (Binance) |
+| `4744f43` | | fix: Event.symbol per-handle (relay overwrites label) |
+| `45eb36c` | | fix: Bitstamp live_orders OB symbol from channel name |
+| `2935b93` | | fix: GateIO parse_kline triple-bug |
+| `a71d949` | | fix: Polygon/CryptoCompare/Alpaca emit interval (not empty) |
+| `b2fad9b` | | fix: normalization propagates symbol+interval into CanonicalEvent |
+| `64471a5` | | fix: dydx signing key length validation (closes baseline test) |
+| `a1e3e5f` | | refactor: drop symbol from FundingRate/MarkPrice/OpenInterest payloads |
+| `beac7ed` | | refactor: MarketWarning Option + OrderUpdate struct variant + OB re-wrap cleanup |
+| `15098c5` | | refactor: Order.symbol Option + Canonicalize → pub(crate) fns |
+| `da7029b` | | refactor: KlineInterval newtype across Station + StreamEvent |
+| `295752b` | v0.3.4 | release |
+| `c326732` | | feat: 18 additional Station Stream/Event variants for MLI |
+| (next) | v0.3.5 | release |
+
+Test baseline: 830/0 core, 75/0 station + 4 ignored live integration tests (`dual_symbol_routing`, `label_per_subscriber`). Strict (`RUSTFLAGS=-D warnings`) clean.
 
 Workspace follows the uzor pattern: every sub-crate's `[package]` block uses `version.workspace = true`, `[workspace.dependencies]` declares `digdigdig3 = { workspace = true }` etc. — all three crates ALWAYS publish together at the same pin.
 

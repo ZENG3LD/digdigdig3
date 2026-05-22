@@ -42,8 +42,8 @@ async fn dual_format_each_handle_keeps_its_own_label() {
         [Stream::Trade],
     );
 
-    let mut h_a = station.subscribe(set_a).await.expect("subscribe a");
-    let mut h_b = station.subscribe(set_b).await.expect("subscribe b");
+    let mut h_a = station.subscribe(set_a).await.expect("subscribe a").handle;
+    let mut h_b = station.subscribe(set_b).await.expect("subscribe b").handle;
 
     // Only one underlying multiplex should exist — they share.
     assert_eq!(

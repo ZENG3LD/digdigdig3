@@ -1,12 +1,25 @@
 # digdigdig3 (dig3)
 
-Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major crypto + 4 DEX, full futures coverage). Three crates in one workspace — single version pin (uzor-style), currently `0.3.6`:
+Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major crypto + 4 DEX, full futures coverage). Three crates in one workspace — single version pin (uzor-style), currently `0.3.7`:
 
 - **`digdigdig3`** — pure connector library. ONLY `ExchangeHub` + REST/WS connectors + capabilities + symbol normalization. No persistence, no replay, no cure/cache infrastructure.
 - **`digdigdig3-station`** — high-level builder over `ExchangeHub`. OWNS: unified `Series<T>` / `DiskStore<T>` over 27 `DataPoint` impls (9 core + 18 extended for MLI), `SeriesKey { exchange, account, symbol, kind }`, multiplexed `Station` (N consumers share one WS per StreamKey), warm-start, REST cache, replay, cure, **auto-heal on WS disconnect** (kline-only — see below). String-bearing variants (BlockTrade, AuctionEvent, MarketWarning, OrderbookL3) persist via fixed header + companion `.blob` file.
 - **`digdigdig3-cli`** — `dig3` binary (watch trades/orderbook/kline/ticker/mark/funding/open-interest/liquidations/agg-trades) + `dig3-inspect` post-mortem analyzer + legacy `dig3-catcher` / `dig3-cure` bins.
 
-## Major refactors (0.3.4 + 0.3.5 + 0.3.6)
+## Major refactors (0.3.4 + 0.3.5 + 0.3.6 + 0.3.7)
+
+**0.3.7 (2026-05-22)** — fail-closed subscribe + heal kline-only (MLI 0.3.6 OOM fix):
+
+- `Station::subscribe(set) -> Result<SubscribeReport>`: continue-on-error. Per-stream failures (NotSupported, transport, normalize) are collected in `report.failed: Vec<FailedStream>`; `report.handle` always present for the streams that did succeed. Batch-level errors (empty set) still return `Err`.
+- New `StationError::StreamNotSupported(String)` variant with `.is_not_supported()` helper. Maps both `WebSocketError::NotSupported` and `WebSocketError::UnsupportedOperation` from `transport.rs::subscribe` (which now eagerly propagates EVERY frame-construction error before queuing the cmd — previously only `NotSupported` was eager, `UnsupportedOperation` slipped through and triggered the bug).
+- `acquire_or_spawn` returns `Err` BEFORE spawning the forwarder or registering the mux entry when subscribe fails. No more dead forwarders looping on heal/resub forever.
+- `spawn_forwarder` heal/resub is now **kline-family only** (`Kline | MarkPriceKline | IndexPriceKline | PremiumIndexKline`). Non-kline kinds on disconnect log INFO + exit the forwarder cleanly; the transport-level auto-reconnect inside `UniversalWsTransport` is enough for those (REST cannot bridge trade/OB/ticker/mark/funding/OI/liq gaps anyway).
+- On forwarder exit (kline silence-no-recovery or non-kline disconnect), mux entry is removed from `inner.muxes` if no consumers remain, so re-subscribe for the same key spawns a fresh forwarder.
+- Explicit `drop(stream)` before `ws.event_stream()` re-attach on kline heal — guarantees the old BroadcastStream receiver releases before the new one subscribes.
+- 4 new unit tests in `tests/subscribe_report.rs` (error variant identity, public field shape, empty-set error). 2 new live tests in `tests/subscribe_not_supported_live.rs` (Bybit MarketWarning → `failed`, mixed Trade + MarketWarning → ok=1 / failed=1, neither leaks a mux entry). Live tests gated `--ignored`; both pass in 210ms against real Bybit.
+- MLI workaround `DIG3_WS_SILENCE_SECS=999999` no longer needed — 36 NotSupported subscribes on the 53-stream validator now return cleanly in `report.failed` instead of leaking until OOM.
+
+
 
 **0.3.6 (2026-05-22)** — fixed-header + companion blob-file persistence for the 4 string-bearing types:
 
@@ -57,6 +70,8 @@ Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major cr
 | `c326732` | v0.3.5 | feat: 18 additional Station Stream/Event variants for MLI |
 | `027b5dd` | | docs(claude): summarize 0.3.4 + 0.3.5 refactor scope + commit chain |
 | `6731d0e` | v0.3.6 | feat(station): fixed-header + companion `.blob` file persistence for 4 string-bearing types |
+| `8251ad0` | | docs(claude): record v0.3.6 in commit chain + link release report |
+| (next) | v0.3.7 | fix(station): fail-closed subscribe + heal kline-only (MLI 0.3.6 OOM fix) |
 
 Test baseline: 830/0 core, 75/0 station + 4 ignored live integration tests (`dual_symbol_routing`, `label_per_subscriber`). Strict (`RUSTFLAGS=-D warnings`) clean.
 
@@ -442,8 +457,9 @@ MLC reference architecture explored. Strong patterns borrowed (SharedMap dual-re
 - Reference WS migration: `src/l3/open/crypto/cex/bitget/{protocol.rs, websocket.rs}`
 - Validation harness: `examples/e2e_smoke.rs` + `examples/exchange_hub_demo.rs`
 - Plans: `docs/plans/wave0-foundation.md`, `docs/plans/smoke_v8_findings_spec.md`, `docs/plans/ws-rest-inventory.md`
-- Release reports: `docs/plans/release-0.3.6-report.md` (blob persistence)
+- Release reports: `docs/plans/release-0.3.6-report.md` (blob persistence), `docs/plans/release-0.3.7-plan.md` (subscribe fail-closed + heal kline-only)
 - Persistence layout (0.3.6+): `docs/plans/fixed-header-blob-persistence.md`
+- MLI feedback log: `docs/plans/mli-0.3.6-findings.md` (motivated 0.3.7)
 
 ## Gotchas
 

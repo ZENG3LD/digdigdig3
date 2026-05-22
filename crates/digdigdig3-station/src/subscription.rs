@@ -396,6 +396,56 @@ impl SubscriptionHandle {
     }
 }
 
+/// Per-stream subscribe failure reported by [`crate::Station::subscribe`].
+///
+/// Carries everything a consumer needs to log + skip without forcing them
+/// to parse a `Display` string. `error.is_not_supported()` distinguishes
+/// venue-doesn't-expose-this-stream (architectural, quiet) from transient
+/// failures (worth surfacing).
+#[derive(Debug)]
+pub struct FailedStream {
+    pub exchange: ExchangeId,
+    pub account_type: AccountType,
+    /// User-input symbol form (NOT the normalized exchange-native form).
+    pub symbol: String,
+    pub stream: Stream,
+    pub error: crate::StationError,
+}
+
+/// Outcome of [`crate::Station::subscribe`] in continue-on-error mode.
+///
+/// `handle` always exists and carries events for every stream in `ok`.
+/// `failed` is a per-stream list of subscribes that did not produce a
+/// live forwarder. The most common entry there is
+/// `StationError::StreamNotSupported` — the venue genuinely does not
+/// expose the requested stream on the WS wire. Other errors (transport,
+/// REST, symbol normalize) also land here so the consumer can log them
+/// without aborting the whole subscribe batch.
+///
+/// `failed` is empty on success — callers that want fail-fast semantics
+/// can simply `if !report.failed.is_empty() { return Err(...) }`.
+pub struct SubscribeReport {
+    pub handle: SubscriptionHandle,
+    pub ok: Vec<SeriesKey>,
+    pub failed: Vec<FailedStream>,
+}
+
+impl SubscribeReport {
+    /// True if every requested stream produced a live forwarder.
+    pub fn is_fully_ok(&self) -> bool { self.failed.is_empty() }
+    /// Convenience: total streams requested (`ok.len() + failed.len()`).
+    pub fn total(&self) -> usize { self.ok.len() + self.failed.len() }
+}
+
+impl std::fmt::Debug for SubscribeReport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SubscribeReport")
+            .field("ok", &self.ok.len())
+            .field("failed", &self.failed.len())
+            .finish()
+    }
+}
+
 pub(crate) struct MultiplexRef {
     pub(crate) station: std::sync::Weak<crate::station::StationInner>,
     pub(crate) key: SeriesKey,

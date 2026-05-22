@@ -147,7 +147,15 @@ async fn watch_one(
     let station = build_station(opts).await?;
 
     let set = SubscriptionSet::new().add(exch, symbol, acct, [stream.clone()]);
-    let mut handle = station.subscribe(set).await.context("Station::subscribe")?;
+    let report = station.subscribe(set).await.context("Station::subscribe")?;
+    // CLI is a single-stream consumer — treat any per-stream failure as fatal.
+    if let Some(fail) = report.failed.first() {
+        return Err(anyhow!(
+            "Station::subscribe: {} on {:?} {:?} ({:?}): {}",
+            fail.symbol, fail.exchange, fail.stream, fail.account_type, fail.error
+        ));
+    }
+    let mut handle = report.handle;
 
     eprintln!(
         "dig3 watch {:?}: exchange={exchange} symbol={symbol} account={account} warm_start={} persist={} gap_heal={} duration={duration:?} storage_root={}",

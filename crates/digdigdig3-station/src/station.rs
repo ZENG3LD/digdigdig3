@@ -21,9 +21,10 @@ use crate::data::{
     TickerPoint, TradePoint, VolatilityIndexPoint,
 };
 use crate::series::{DataPoint, DiskStore, Kind, Series, SeriesKey};
-use crate::subscription::{Entry, Event, MultiplexRef, Stream};
+use crate::subscription::{Entry, Event, FailedStream, MultiplexRef, Stream};
 use crate::{
-    PersistenceConfig, Result, StationBuilder, StationError, SubscriptionHandle, SubscriptionSet,
+    PersistenceConfig, Result, StationBuilder, StationError, SubscribeReport, SubscriptionHandle,
+    SubscriptionSet,
 };
 
 /// Phase 5 Station. Unified `Series<T>` + `DiskStore<T>` plumbing under all
@@ -82,13 +83,26 @@ impl Station {
         })
     }
 
-    pub async fn subscribe(&self, set: SubscriptionSet) -> Result<SubscriptionHandle> {
+    /// Subscribe to every (exchange, symbol, account, stream) combination in
+    /// `set`. Continue-on-error: per-stream failures are collected in
+    /// [`SubscribeReport::failed`] and do not abort the rest of the batch.
+    ///
+    /// The returned `handle` carries events for every stream in `ok`. A
+    /// stream whose subscribe failed will simply not emit events through
+    /// the handle.
+    ///
+    /// The whole call returns `Err` ONLY for batch-level failures (empty
+    /// set). Per-stream failures (StreamNotSupported, connect_websocket,
+    /// symbol normalize) are reported via `report.failed`.
+    pub async fn subscribe(&self, set: SubscriptionSet) -> Result<SubscribeReport> {
         if set.is_empty() {
             return Err(StationError::Subscribe("empty SubscriptionSet".into()));
         }
 
         let (tx, rx) = mpsc::unbounded_channel::<Event>();
         let mut refs: Vec<MultiplexRef> = Vec::new();
+        let mut ok: Vec<SeriesKey> = Vec::new();
+        let mut failed: Vec<FailedStream> = Vec::new();
 
         for entry in set.entries {
             // REST connector — needed for warm-start backfill (`get_recent_trades` /
@@ -102,19 +116,51 @@ impl Station {
             {
                 tracing::debug!(?e, ?entry.exchange, "connect_public failed; warm-start REST backfill will be skipped");
             }
-            self.inner
+
+            // WS connect: per-entry failure aborts every stream in this entry
+            // (no point trying to subscribe through a connector that wouldn't
+            // come up). Push one FailedStream per requested stream so the
+            // consumer sees the full picture.
+            if let Err(e) = self
+                .inner
                 .hub
                 .connect_websocket(entry.exchange, entry.account_type, false)
                 .await
-                .map_err(|e| StationError::Core(format!("connect_websocket: {e}")))?;
+            {
+                let err_msg = format!("connect_websocket: {e}");
+                for s in &entry.streams {
+                    failed.push(FailedStream {
+                        exchange: entry.exchange,
+                        account_type: entry.account_type,
+                        symbol: entry.symbol.clone(),
+                        stream: s.clone(),
+                        error: StationError::Core(err_msg.clone()),
+                    });
+                }
+                continue;
+            }
 
             let canonical = parse_symbol(&entry.symbol);
-            let raw = SymbolNormalizer::to_exchange(
+            let raw = match SymbolNormalizer::to_exchange(
                 entry.exchange,
                 &canonical,
                 entry.account_type,
-            )
-            .map_err(|e| StationError::Subscribe(format!("symbol normalize: {e}")))?;
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    let err_msg = format!("symbol normalize: {e}");
+                    for s in &entry.streams {
+                        failed.push(FailedStream {
+                            exchange: entry.exchange,
+                            account_type: entry.account_type,
+                            symbol: entry.symbol.clone(),
+                            stream: s.clone(),
+                            error: StationError::Subscribe(err_msg.clone()),
+                        });
+                    }
+                    continue;
+                }
+            };
 
             for s in &entry.streams {
                 let kind = s.to_kind();
@@ -125,7 +171,30 @@ impl Station {
                     kind: kind.clone(),
                 };
 
-                let bcast_tx = self.acquire_or_spawn(&key, &entry, &canonical, &raw, s).await?;
+                let bcast_tx = match self
+                    .acquire_or_spawn(&key, &entry, &canonical, &raw, s)
+                    .await
+                {
+                    Ok(tx) => tx,
+                    Err(e) => {
+                        // NotSupported on a per-(exchange, kind) basis: log
+                        // at debug, record in `failed`, move on. Other errors
+                        // get an info-level log so they are not lost.
+                        if e.is_not_supported() {
+                            tracing::debug!(?key, ?e, "stream not supported; skipping");
+                        } else {
+                            tracing::info!(?key, ?e, "subscribe failed; skipping");
+                        }
+                        failed.push(FailedStream {
+                            exchange: entry.exchange,
+                            account_type: entry.account_type,
+                            symbol: entry.symbol.clone(),
+                            stream: s.clone(),
+                            error: e,
+                        });
+                        continue;
+                    }
+                };
 
                 let mut bcast_rx = bcast_tx.subscribe();
                 let tx_clone = tx.clone();
@@ -146,12 +215,17 @@ impl Station {
 
                 refs.push(MultiplexRef {
                     station: Arc::downgrade(&self.inner),
-                    key,
+                    key: key.clone(),
                 });
+                ok.push(key);
             }
         }
 
-        Ok(SubscriptionHandle { rx, _refs: refs })
+        Ok(SubscribeReport {
+            handle: SubscriptionHandle { rx, _refs: refs },
+            ok,
+            failed,
+        })
     }
 
     /// Acquire (or spawn) the multiplexer for `key`. Spawn includes:
@@ -179,9 +253,23 @@ impl Station {
             .hub
             .ws(entry.exchange, entry.account_type)
             .ok_or_else(|| StationError::Core("ws handle missing post-connect".into()))?;
-        ws.subscribe(req.clone())
-            .await
-            .map_err(|e| StationError::Subscribe(format!("ws.subscribe: {e}")))?;
+        // `transport.rs::subscribe` eagerly invokes `subscribe_frame` and
+        // propagates any frame-construction failure (NotSupported and
+        // UnsupportedOperation included). Map those to
+        // `StreamNotSupported` so `Station::subscribe(set)` can bucket
+        // them into `SubscribeReport::failed` without spawning a forwarder
+        // that would loop in heal/resub forever (this is what caused
+        // MLI's 0.3.6 OOM — see release-0.3.7-plan.md).
+        if let Err(e) = ws.subscribe(req.clone()).await {
+            use digdigdig3::core::types::WebSocketError;
+            return Err(match e {
+                WebSocketError::NotSupported(msg)
+                | WebSocketError::UnsupportedOperation(msg) => {
+                    StationError::StreamNotSupported(msg)
+                }
+                other => StationError::Subscribe(format!("ws.subscribe: {other}")),
+            });
+        }
 
         let (bcast_tx, _) = broadcast::channel::<Event>(1024);
         let consumers = Arc::new(AtomicUsize::new(1));
@@ -362,8 +450,35 @@ fn spawn_forwarder<T: DataPoint + 'static>(
             };
 
             if let Some(reason) = trigger_heal_reason {
+                // Heal + resub is kline-only. For non-kline kinds:
+                // - REST cannot bridge the gap (no public endpoint for
+                //   trade/OB/ticker/mark/funding/OI/liq history live-feed).
+                // - Resub spam on a NotSupported stream was the trigger for
+                //   MLI's 0.3.6 OOM — see release-0.3.7-plan.md.
+                // - The transport-level UniversalWsTransport auto-reconnects
+                //   internally; the forwarder does not need to resub manually.
+                //
+                // Non-kline behavior: log + exit the forwarder. The mux entry
+                // is removed below so a later subscribe for the same key can
+                // re-spawn cleanly.
+                let is_kline_family = matches!(
+                    &key.kind,
+                    Kind::Kline(_) | Kind::MarkPriceKline(_)
+                    | Kind::IndexPriceKline(_) | Kind::PremiumIndexKline(_)
+                );
+
+                if !is_kline_family {
+                    tracing::info!(
+                        target: "dig3::gap_heal",
+                        ?key, reason,
+                        "non-kline stream disconnect — forwarder exiting (no resub for non-kline kinds)"
+                    );
+                    break;
+                }
+
                 tracing::info!(target: "dig3::gap_heal", ?key, reason, "ws disconnect detected → heal + resub");
-                // 1. REST heal (kline-only; no-op for other kinds).
+                // 1. REST heal (kline-only; no-op for non-kline kinds, which
+                //    have already returned above).
                 run_kline_heal::<T>(
                     &hub_for_heal, &key, &gap_cfg, &symbol_label,
                     last_emitted_ms, exchange,
@@ -392,6 +507,12 @@ fn spawn_forwarder<T: DataPoint + 'static>(
                     tracing::warn!(target: "dig3::gap_heal", ?key, ?e, "resubscribe failed");
                 }
                 // 3. Re-attach broadcast receiver — picks up post-resub events.
+                //    Explicit drop of the old stream first: BroadcastStream
+                //    holds a Receiver whose internal ring buffer occupies
+                //    `event_tx` capacity until dropped. Letting the old one
+                //    go before subscribing a new one keeps receiver_count
+                //    minimal across heal cycles.
+                drop(stream);
                 stream = ws.event_stream();
                 continue;
             }
@@ -432,6 +553,24 @@ fn spawn_forwarder<T: DataPoint + 'static>(
 
         if let Some(mut d) = disk { let _ = d.flush(); }
         let _ = series; // dropped
+        // Remove the mux entry so a subsequent `subscribe` for the same key
+        // can re-spawn a fresh forwarder. Without this, the dead mux would
+        // sit in `inner.muxes`, and re-subscribe would attach to a broadcast
+        // tx whose forwarder has already exited (no events ever arrive).
+        //
+        // Only remove if no consumer is left attached — otherwise a still-
+        // alive consumer would think it has a working stream while we
+        // silently tore it down. (`release_consumer` already removes on
+        // refcount==0; here we cover the other path: forwarder ended on
+        // its own before all consumers dropped.)
+        let still_consumers = inner
+            .muxes
+            .get(&key)
+            .map(|m| m.consumers.load(Ordering::SeqCst))
+            .unwrap_or(0);
+        if still_consumers == 0 {
+            inner.muxes.remove(&key);
+        }
     });
 }
 

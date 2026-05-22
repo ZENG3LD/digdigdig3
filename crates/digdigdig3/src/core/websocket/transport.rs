@@ -235,14 +235,15 @@ impl<P: WsProtocol> UniversalWsTransport<P> {
 
     /// Subscribe to a stream.
     ///
-    /// Eagerly checks whether the protocol supports this stream kind via
-    /// `subscribe_frame`.  If `subscribe_frame` returns `NotSupported` the error
-    /// is propagated immediately so callers get a clean error instead of
-    /// `silent_0_events` after a timeout.
+    /// Eagerly probes `subscribe_frame` BEFORE queuing the subscribe command.
+    /// Any frame-construction error (`NotSupported`, `UnsupportedOperation`,
+    /// or any other variant the protocol returns) is propagated to the caller
+    /// immediately. Callers see the failure right away instead of
+    /// `silent_0_events` after a heal cycle timeout (this was the root cause
+    /// of MLI's OOM on 53-stream validator — see release-0.3.7-plan).
     pub async fn subscribe(&self, spec: StreamSpec) -> WebSocketResult<()> {
-        match self.protocol.subscribe_frame(&spec) {
-            Err(e @ WebSocketError::NotSupported(_)) => return Err(e),
-            _ => {}
+        if let Err(e) = self.protocol.subscribe_frame(&spec) {
+            return Err(e);
         }
         self.cmd_tx
             .send(TransportCmd::Subscribe(spec))

@@ -55,8 +55,8 @@ async fn trades_dual_symbol_no_cross_pollination() {
         [Stream::Trade],
     );
 
-    let mut btc_h = station.subscribe(btc_set).await.expect("btc subscribe");
-    let mut eth_h = station.subscribe(eth_set).await.expect("eth subscribe");
+    let mut btc_h = station.subscribe(btc_set).await.expect("btc subscribe").handle;
+    let mut eth_h = station.subscribe(eth_set).await.expect("eth subscribe").handle;
 
     let mut btc_counts: HashMap<String, u32> = HashMap::new();
     let mut eth_counts: HashMap<String, u32> = HashMap::new();
@@ -107,8 +107,8 @@ async fn orderbook_dual_symbol_no_cross_pollination() {
         [Stream::Orderbook],
     );
 
-    let mut btc_h = station.subscribe(btc_set).await.expect("btc subscribe");
-    let mut eth_h = station.subscribe(eth_set).await.expect("eth subscribe");
+    let mut btc_h = station.subscribe(btc_set).await.expect("btc subscribe").handle;
+    let mut eth_h = station.subscribe(eth_set).await.expect("eth subscribe").handle;
 
     let mut btc_counts: HashMap<String, u32> = HashMap::new();
     let mut eth_counts: HashMap<String, u32> = HashMap::new();

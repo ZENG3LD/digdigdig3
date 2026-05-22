@@ -34,7 +34,9 @@ pub use gap_heal::GapHealConfig;
 pub use persistence::PersistenceConfig;
 pub use series::{DataPoint, DiskStore, Kind, Series, SeriesKey, SharedSeriesMap};
 pub use station::Station;
-pub use subscription::{Event, Stream, SubscriptionHandle, SubscriptionSet};
+pub use subscription::{
+    Event, FailedStream, Stream, SubscribeReport, SubscriptionHandle, SubscriptionSet,
+};
 
 // Re-exports for moved modules (mirror what core used to expose)
 pub use storage::{EventLog, EventLogIter, EventRecord, StorageManager, StorageConfig, StreamKey};

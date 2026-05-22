@@ -27,8 +27,8 @@ async fn two_handles_share_one_multiplex_actor() {
         [Stream::Trade],
     );
 
-    let h1 = station.subscribe(s1).await.expect("subscribe 1");
-    let h2 = station.subscribe(s2).await.expect("subscribe 2");
+    let h1 = station.subscribe(s1).await.expect("subscribe 1").handle;
+    let h2 = station.subscribe(s2).await.expect("subscribe 2").handle;
 
     // Both consumers, one shared multiplex actor.
     assert_eq!(station.active_streams(), 1, "expected 1 shared mux after 2 subscribes");

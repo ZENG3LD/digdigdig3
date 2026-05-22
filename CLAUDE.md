@@ -54,10 +54,9 @@ Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major cr
 | `15098c5` | | refactor: Order.symbol Option + Canonicalize → pub(crate) fns |
 | `da7029b` | | refactor: KlineInterval newtype across Station + StreamEvent |
 | `295752b` | v0.3.4 | release |
-| `c326732` | | feat: 18 additional Station Stream/Event variants for MLI |
-| (released) | v0.3.5 | release |
-| (next) | | feat(station): fixed-header + companion `.blob` file persistence for 4 string-bearing types |
-| (next) | v0.3.6 | release |
+| `c326732` | v0.3.5 | feat: 18 additional Station Stream/Event variants for MLI |
+| `027b5dd` | | docs(claude): summarize 0.3.4 + 0.3.5 refactor scope + commit chain |
+| `6731d0e` | v0.3.6 | feat(station): fixed-header + companion `.blob` file persistence for 4 string-bearing types |
 
 Test baseline: 830/0 core, 75/0 station + 4 ignored live integration tests (`dual_symbol_routing`, `label_per_subscriber`). Strict (`RUSTFLAGS=-D warnings`) clean.
 
@@ -443,6 +442,8 @@ MLC reference architecture explored. Strong patterns borrowed (SharedMap dual-re
 - Reference WS migration: `src/l3/open/crypto/cex/bitget/{protocol.rs, websocket.rs}`
 - Validation harness: `examples/e2e_smoke.rs` + `examples/exchange_hub_demo.rs`
 - Plans: `docs/plans/wave0-foundation.md`, `docs/plans/smoke_v8_findings_spec.md`, `docs/plans/ws-rest-inventory.md`
+- Release reports: `docs/plans/release-0.3.6-report.md` (blob persistence)
+- Persistence layout (0.3.6+): `docs/plans/fixed-header-blob-persistence.md`
 
 ## Gotchas
 

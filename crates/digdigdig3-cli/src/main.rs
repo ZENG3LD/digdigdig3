@@ -202,6 +202,11 @@ fn print_event(event: &Event, ob_depth: usize, seq: u64) {
         Event::OrderbookSnapshot { exchange, symbol, point } => {
             print_ladder(*exchange, symbol, point.ts_ms, &point.bids, &point.asks, ob_depth.max(1), seq);
         }
+        Event::OrderbookDelta { exchange, symbol, point } => {
+            println!("{ts} {ex:?} {sym} OB_DELTA bid_changes={bc} ask_changes={ac}",
+                ts = point.ts_ms, ex = exchange, sym = symbol,
+                bc = point.bid_changes.len(), ac = point.ask_changes.len());
+        }
         Event::MarkPrice { exchange, symbol, point } => {
             println!("{ts} {ex:?} {sym} MARK mark={m} index={i}",
                 ts = point.ts_ms, ex = exchange, sym = symbol, m = point.mark, i = point.index);

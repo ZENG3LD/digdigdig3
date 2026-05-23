@@ -1,12 +1,24 @@
 # digdigdig3 (dig3)
 
-Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major crypto + 4 DEX, full futures coverage). Three crates in one workspace — single version pin (uzor-style), currently `0.3.8`:
+Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major crypto + 4 DEX, full futures coverage). Three crates in one workspace — single version pin (uzor-style), currently `0.3.9`:
 
 - **`digdigdig3`** — pure connector library. ONLY `ExchangeHub` + REST/WS connectors + capabilities + symbol normalization. No persistence, no replay, no cure/cache infrastructure.
 - **`digdigdig3-station`** — high-level builder over `ExchangeHub`. OWNS: unified `Series<T>` / `DiskStore<T>` over 27 `DataPoint` impls (9 core + 18 extended for MLI), `SeriesKey { exchange, account, symbol, kind }`, multiplexed `Station` (N consumers share one WS per StreamKey), warm-start, REST cache, replay, cure, **auto-heal on WS disconnect** (kline-only — see below). String-bearing variants (BlockTrade, AuctionEvent, MarketWarning, OrderbookL3) persist via fixed header + companion `.blob` file.
 - **`digdigdig3-cli`** — `dig3` binary (watch trades/orderbook/kline/ticker/mark/funding/open-interest/liquidations/agg-trades) + `dig3-inspect` post-mortem analyzer + legacy `dig3-catcher` / `dig3-cure` bins.
 
-## Major refactors (0.3.4 + 0.3.5 + 0.3.6 + 0.3.7 + 0.3.8)
+## Major refactors (0.3.4 + 0.3.5 + 0.3.6 + 0.3.7 + 0.3.8 + 0.3.9)
+
+**0.3.9 (2026-05-23)** — `Stream::OrderbookDelta` exposed in Station (MLI Ask 1):
+
+- New `Kind::OrderbookDelta` + `Stream::OrderbookDelta` + `Event::OrderbookDelta { exchange, symbol, point: ObDeltaPoint }`. dig3 core already parsed `StreamEvent::OrderbookDelta`; Station was the bottleneck — only the snapshot variant was exposed. Unblocks 11 book/cluster indicators (BookSlope, QueueImb, IcebergDetector, LiquiditySweep, BidAskBounceRate, MidPriceVelocity, BestLevelVolatility, LevelReplenishRate, BookChurnRate, BookDepthChange, ClQueueImb) that need delta-frequency events.
+- `ObDeltaPoint`: fixed 808 B record (mirrors `ObSnapshotPoint` layout — top 25 changes per side). `(price, 0.0)` distinguishes "remove level" from zero-padded tail by only treating `(0.0, 0.0)` as padding.
+- New persistence toggle `PersistenceConfig::orderbook_deltas` (default false; `on()` enables). Slug = `"orderbook_deltas"` for path layout.
+- 2 new round-trip unit tests in `tests/data_point_round_trip.rs` (with-removal + empty).
+- Pass-rate impact for MLI validator: 470/577 → ~481/577 (+11 indicators).
+
+MLI Ask 2 (subscription_label) and Ask 3 (deribit_pick_atm_option) rejected — see `docs/plans/mli-asks-decision.md` for rationale (both belong to the MLI app layer, not the connector library).
+
+
 
 **0.3.8 (2026-05-22)** — `SubscriptionSet::add_raw` passthrough for exotic instrument IDs:
 
@@ -82,7 +94,8 @@ Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major cr
 | `6731d0e` | v0.3.6 | feat(station): fixed-header + companion `.blob` file persistence for 4 string-bearing types |
 | `8251ad0` | | docs(claude): record v0.3.6 in commit chain + link release report |
 | `ffe9c54` | v0.3.7 | fix(station): fail-closed subscribe + heal kline-only (MLI 0.3.6 OOM fix) |
-| (next) | v0.3.8 | feat(station): `SubscriptionSet::add_raw` passthrough for exotic instrument IDs |
+| `d438a45` | v0.3.8 | feat(station): `SubscriptionSet::add_raw` passthrough for exotic instrument IDs |
+| (next) | v0.3.9 | feat(station): `Stream::OrderbookDelta` + `ObDeltaPoint` (MLI Ask 1) |
 
 Test baseline: 830/0 core, 75/0 station + 4 ignored live integration tests (`dual_symbol_routing`, `label_per_subscriber`). Strict (`RUSTFLAGS=-D warnings`) clean.
 
@@ -470,7 +483,7 @@ MLC reference architecture explored. Strong patterns borrowed (SharedMap dual-re
 - Plans: `docs/plans/wave0-foundation.md`, `docs/plans/smoke_v8_findings_spec.md`, `docs/plans/ws-rest-inventory.md`
 - Release reports: `docs/plans/release-0.3.6-report.md` (blob persistence), `docs/plans/release-0.3.7-plan.md` (subscribe fail-closed + heal kline-only)
 - Persistence layout (0.3.6+): `docs/plans/fixed-header-blob-persistence.md`
-- MLI feedback log: `docs/plans/mli-0.3.6-findings.md` (motivated 0.3.7)
+- MLI feedback log: `docs/plans/mli-0.3.6-findings.md` (motivated 0.3.7), `docs/plans/mli-station-asks.md` (motivated 0.3.9), `docs/plans/mli-asks-decision.md` (rationale for accept/reject)
 
 ## Gotchas
 

@@ -15,6 +15,7 @@ pub struct PersistenceConfig {
     pub klines: bool,
     pub tickers: bool,
     pub orderbook_snapshots: bool,
+    pub orderbook_deltas: bool,
     pub mark_price: bool,
     pub funding_rate: bool,
     pub open_interest: bool,
@@ -30,6 +31,7 @@ impl Default for PersistenceConfig {
             klines: false,
             tickers: false,
             orderbook_snapshots: false,
+            orderbook_deltas: false,
             mark_price: false,
             funding_rate: false,
             open_interest: false,
@@ -48,6 +50,7 @@ impl PersistenceConfig {
             klines: true,
             tickers: true,
             orderbook_snapshots: true,
+            orderbook_deltas: true,
             mark_price: true,
             funding_rate: true,
             open_interest: true,
@@ -60,6 +63,7 @@ impl PersistenceConfig {
     pub fn klines(mut self, on: bool) -> Self { self.klines = on; self }
     pub fn tickers(mut self, on: bool) -> Self { self.tickers = on; self }
     pub fn orderbook_snapshots(mut self, on: bool) -> Self { self.orderbook_snapshots = on; self }
+    pub fn orderbook_deltas(mut self, on: bool) -> Self { self.orderbook_deltas = on; self }
     pub fn mark_price(mut self, on: bool) -> Self { self.mark_price = on; self }
     pub fn funding_rate(mut self, on: bool) -> Self { self.funding_rate = on; self }
     pub fn open_interest(mut self, on: bool) -> Self { self.open_interest = on; self }
@@ -77,6 +81,7 @@ impl PersistenceConfig {
             Kline(_) => self.klines,
             Ticker => self.tickers,
             Orderbook => self.orderbook_snapshots,
+            OrderbookDelta => self.orderbook_deltas,
             MarkPrice => self.mark_price,
             FundingRate => self.funding_rate,
             OpenInterest => self.open_interest,

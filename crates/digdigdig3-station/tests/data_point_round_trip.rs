@@ -1,8 +1,8 @@
 //! Round-trip encode/decode for every DataPoint.
 
 use digdigdig3_station::data::{
-    AggTradePoint, BarPoint, FundingRatePoint, LiquidationPoint, MarkPricePoint, ObSnapshotPoint,
-    OpenInterestPoint, TickerPoint, TradePoint,
+    AggTradePoint, BarPoint, FundingRatePoint, LiquidationPoint, MarkPricePoint, ObDeltaPoint,
+    ObSnapshotPoint, OpenInterestPoint, TickerPoint, TradePoint,
 };
 use digdigdig3_station::DataPoint;
 
@@ -87,6 +87,42 @@ fn ob_snapshot_round_trip_top_3() {
     assert_eq!(back.asks.len(), 2);
     assert_eq!(back.bids[0], (70_000.0, 1.0));
     assert_eq!(back.asks[1], (70_002.0, 2.5));
+}
+
+#[test]
+fn ob_delta_round_trip_with_removal() {
+    // bid level (70_001.0, 0.0) means "remove 70_001.0 from bid side".
+    // ask level (70_002.0, 1.5) means "set ask 70_002.0 to size 1.5".
+    let p = ObDeltaPoint {
+        ts_ms: 1_700_000_000_321,
+        bid_changes: vec![(70_000.0, 2.5), (70_001.0, 0.0)],
+        ask_changes: vec![(70_002.0, 1.5)],
+    };
+    rt_bytes_stable(p.clone());
+    let mut buf = vec![0u8; ObDeltaPoint::RECORD_SIZE];
+    p.encode(&mut buf);
+    let back = ObDeltaPoint::decode(&buf).unwrap();
+    assert_eq!(back.ts_ms, p.ts_ms);
+    assert_eq!(back.bid_changes.len(), 2);
+    assert_eq!(back.bid_changes[0], (70_000.0, 2.5));
+    assert_eq!(back.bid_changes[1], (70_001.0, 0.0), "removal entry must survive round-trip");
+    assert_eq!(back.ask_changes.len(), 1);
+    assert_eq!(back.ask_changes[0], (70_002.0, 1.5));
+}
+
+#[test]
+fn ob_delta_empty_round_trip() {
+    let p = ObDeltaPoint {
+        ts_ms: 1_700_000_000_000,
+        bid_changes: vec![],
+        ask_changes: vec![],
+    };
+    let mut buf = vec![0u8; ObDeltaPoint::RECORD_SIZE];
+    p.encode(&mut buf);
+    let back = ObDeltaPoint::decode(&buf).unwrap();
+    assert_eq!(back.ts_ms, p.ts_ms);
+    assert!(back.bid_changes.is_empty());
+    assert!(back.ask_changes.is_empty());
 }
 
 #[test]

@@ -16,7 +16,8 @@ use crate::data::{
     AggTradePoint, AuctionEventPoint, BarPoint, BasisPoint, BlockTradePoint, CompositeIndexPoint,
     FundingRatePoint, FundingSettlementPoint, HistoricalVolatilityPoint, IndexPriceKlinePoint,
     IndexPricePoint, InsuranceFundPoint, LiquidationPoint, MarkPriceKlinePoint, MarkPricePoint,
-    MarketWarningPoint, ObSnapshotPoint, OpenInterestPoint, OptionGreeksPoint, OrderbookL3Point,
+    MarketWarningPoint, ObDeltaPoint, ObSnapshotPoint, OpenInterestPoint, OptionGreeksPoint,
+    OrderbookL3Point,
     PredictedFundingPoint, PremiumIndexKlinePoint, RiskLimitPoint, SettlementEventPoint,
     TickerPoint, TradePoint, VolatilityIndexPoint,
 };
@@ -318,6 +319,7 @@ impl Station {
             Kind::AggTrade => spawn_forwarder::<AggTradePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::Ticker => spawn_forwarder::<TickerPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::Orderbook => spawn_forwarder::<ObSnapshotPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::OrderbookDelta => spawn_forwarder::<ObDeltaPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::MarkPrice => spawn_forwarder::<MarkPricePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::FundingRate => spawn_forwarder::<FundingRatePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::OpenInterest => spawn_forwarder::<OpenInterestPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
@@ -754,6 +756,11 @@ impl EventFrom<ObSnapshotPoint> for Event {
         Event::OrderbookSnapshot { exchange, symbol: symbol.to_string(), point }
     }
 }
+impl EventFrom<ObDeltaPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: ObDeltaPoint) -> Self {
+        Event::OrderbookDelta { exchange, symbol: symbol.to_string(), point }
+    }
+}
 impl EventFrom<MarkPricePoint> for Event {
     fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: MarkPricePoint) -> Self {
         Event::MarkPrice { exchange, symbol: symbol.to_string(), point }
@@ -879,6 +886,7 @@ fn ws_request_for(
         Kind::Kline(iv) => StreamType::Kline { interval: iv.as_str().to_string() },
         Kind::Ticker => StreamType::Ticker,
         Kind::Orderbook => StreamType::Orderbook,
+        Kind::OrderbookDelta => StreamType::OrderbookDelta,
         Kind::MarkPrice => StreamType::MarkPrice,
         Kind::FundingRate => StreamType::FundingRate,
         Kind::OpenInterest => StreamType::OpenInterest,

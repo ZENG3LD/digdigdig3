@@ -5,9 +5,9 @@ use crate::data::{
     AggTradePoint, AuctionEventPoint, BarPoint, BasisPoint, BlockTradePoint, CompositeIndexPoint,
     FundingRatePoint, FundingSettlementPoint, HistoricalVolatilityPoint, IndexPriceKlinePoint,
     IndexPricePoint, InsuranceFundPoint, LiquidationPoint, MarkPriceKlinePoint, MarkPricePoint,
-    MarketWarningPoint, ObSnapshotPoint, OpenInterestPoint, OptionGreeksPoint, OrderbookL3Point,
-    PredictedFundingPoint, PremiumIndexKlinePoint, RiskLimitPoint, SettlementEventPoint,
-    TickerPoint, TradePoint, VolatilityIndexPoint,
+    MarketWarningPoint, ObDeltaPoint, ObSnapshotPoint, OpenInterestPoint, OptionGreeksPoint,
+    OrderbookL3Point, PredictedFundingPoint, PremiumIndexKlinePoint, RiskLimitPoint,
+    SettlementEventPoint, TickerPoint, TradePoint, VolatilityIndexPoint,
 };
 use crate::series::{Kind, SeriesKey};
 
@@ -20,6 +20,7 @@ pub enum Stream {
     Ticker,
     Trade,
     Orderbook,
+    OrderbookDelta,
     Kline(KlineInterval),
     MarkPrice,
     FundingRate,
@@ -55,6 +56,7 @@ impl Stream {
             Stream::Kline(iv) => Kind::Kline(iv.clone()),
             Stream::Ticker => Kind::Ticker,
             Stream::Orderbook => Kind::Orderbook,
+            Stream::OrderbookDelta => Kind::OrderbookDelta,
             Stream::MarkPrice => Kind::MarkPrice,
             Stream::FundingRate => Kind::FundingRate,
             Stream::OpenInterest => Kind::OpenInterest,
@@ -190,6 +192,11 @@ pub enum Event {
         symbol: String,
         point: ObSnapshotPoint,
     },
+    OrderbookDelta {
+        exchange: ExchangeId,
+        symbol: String,
+        point: ObDeltaPoint,
+    },
     MarkPrice {
         exchange: ExchangeId,
         symbol: String,
@@ -311,7 +318,8 @@ impl Event {
         match self {
             Event::Trade { exchange, .. } | Event::AggTrade { exchange, .. } |
             Event::Bar { exchange, .. } | Event::Ticker { exchange, .. } |
-            Event::OrderbookSnapshot { exchange, .. } | Event::MarkPrice { exchange, .. } |
+            Event::OrderbookSnapshot { exchange, .. } | Event::OrderbookDelta { exchange, .. } |
+            Event::MarkPrice { exchange, .. } |
             Event::FundingRate { exchange, .. } | Event::OpenInterest { exchange, .. } |
             Event::Liquidation { exchange, .. } |
             Event::BlockTrade { exchange, .. } | Event::IndexPrice { exchange, .. } |
@@ -330,7 +338,8 @@ impl Event {
         match self {
             Event::Trade { symbol, .. } | Event::AggTrade { symbol, .. } |
             Event::Bar { symbol, .. } | Event::Ticker { symbol, .. } |
-            Event::OrderbookSnapshot { symbol, .. } | Event::MarkPrice { symbol, .. } |
+            Event::OrderbookSnapshot { symbol, .. } | Event::OrderbookDelta { symbol, .. } |
+            Event::MarkPrice { symbol, .. } |
             Event::FundingRate { symbol, .. } | Event::OpenInterest { symbol, .. } |
             Event::Liquidation { symbol, .. } |
             Event::BlockTrade { symbol, .. } | Event::IndexPrice { symbol, .. } |
@@ -360,6 +369,7 @@ impl Event {
             | Event::Bar { symbol, .. }
             | Event::Ticker { symbol, .. }
             | Event::OrderbookSnapshot { symbol, .. }
+            | Event::OrderbookDelta { symbol, .. }
             | Event::MarkPrice { symbol, .. }
             | Event::FundingRate { symbol, .. }
             | Event::OpenInterest { symbol, .. }
@@ -392,6 +402,7 @@ impl Event {
             Event::Bar { point, .. } => point.timestamp_ms(),
             Event::Ticker { point, .. } => point.timestamp_ms(),
             Event::OrderbookSnapshot { point, .. } => point.timestamp_ms(),
+            Event::OrderbookDelta { point, .. } => point.timestamp_ms(),
             Event::MarkPrice { point, .. } => point.timestamp_ms(),
             Event::FundingRate { point, .. } => point.timestamp_ms(),
             Event::OpenInterest { point, .. } => point.timestamp_ms(),

@@ -1,8 +1,9 @@
 //! Round-trip encode/decode for every DataPoint.
 
 use digdigdig3_station::data::{
-    AggTradePoint, BarPoint, FundingRatePoint, LiquidationPoint, MarkPricePoint, ObDeltaPoint,
-    ObSnapshotPoint, OpenInterestPoint, TickerPoint, TradePoint,
+    AggTradePoint, BarPoint, BasisPoint, FundingRatePoint, FundingSettlementPoint,
+    LiquidationPoint, MarkPricePoint, ObDeltaPoint, ObSnapshotPoint, OpenInterestPoint,
+    TickerPoint, TradePoint,
 };
 use digdigdig3_station::DataPoint;
 
@@ -132,4 +133,56 @@ fn small_types_round_trip() {
     rt_bytes_stable(OpenInterestPoint { ts_ms: 300, open_interest: 12345.6, open_interest_value: 8.7e8 });
     rt_bytes_stable(LiquidationPoint { ts_ms: 400, price: 70_001.0, quantity: 0.5, value: 35_000.5, side: 1 });
     rt_bytes_stable(AggTradePoint { ts_ms: 500, price: 70_002.0, quantity: 0.25, side: 0, agg_id: 999 });
+}
+
+// --- BasisPoint (32 B — expanded schema) ---
+
+#[test]
+fn basis_point_round_trip_32b() {
+    assert_eq!(BasisPoint::RECORD_SIZE, 32, "BasisPoint must be 32 B");
+    let p = BasisPoint {
+        ts_ms: 1_700_000_000_000,
+        value: 10.5,
+        mark:  70_000.0,
+        index: 69_989.5,
+    };
+    rt_bytes_stable(p.clone());
+    let mut buf = vec![0u8; BasisPoint::RECORD_SIZE];
+    p.encode(&mut buf);
+    let back = BasisPoint::decode(&buf).unwrap();
+    assert_eq!(back.ts_ms, p.ts_ms);
+    assert!((back.value - p.value).abs() < 1e-9);
+    assert_eq!(back.mark, p.mark);
+    assert_eq!(back.index, p.index);
+}
+
+#[test]
+fn basis_point_nan_fields_survive_round_trip() {
+    // from_stream_event WS path: mark/index populated as NaN.
+    let p = BasisPoint { ts_ms: 42, value: 1.0, mark: f64::NAN, index: f64::NAN };
+    let mut buf = vec![0u8; BasisPoint::RECORD_SIZE];
+    p.encode(&mut buf);
+    let back = BasisPoint::decode(&buf).unwrap();
+    assert_eq!(back.ts_ms, 42);
+    assert!(back.mark.is_nan());
+    assert!(back.index.is_nan());
+}
+
+// --- FundingSettlementPoint round-trip (sanity, unchanged schema) ---
+
+#[test]
+fn funding_settlement_point_round_trip() {
+    assert_eq!(FundingSettlementPoint::RECORD_SIZE, 32);
+    let p = FundingSettlementPoint {
+        ts_ms: 1_700_000_001_000,
+        settled_rate: 0.0001,
+        settlement_time: 1_700_000_000_000,
+    };
+    rt_bytes_stable(p.clone());
+    let mut buf = vec![0u8; FundingSettlementPoint::RECORD_SIZE];
+    p.encode(&mut buf);
+    let back = FundingSettlementPoint::decode(&buf).unwrap();
+    assert_eq!(back.ts_ms, p.ts_ms);
+    assert!((back.settled_rate - p.settled_rate).abs() < 1e-12);
+    assert_eq!(back.settlement_time, p.settlement_time);
 }

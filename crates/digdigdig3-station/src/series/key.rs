@@ -38,6 +38,15 @@ pub enum Kind {
 }
 
 impl Kind {
+    /// True for stream kinds that are computed inside Station from upstream
+    /// WS-backed streams, rather than arriving directly from an exchange WS.
+    ///
+    /// Derived kinds bypass the `ws.subscribe(req)` path in `acquire_or_spawn`
+    /// and instead use `acquire_or_spawn_derived<D>(...)`.
+    pub(crate) fn is_derived(&self) -> bool {
+        matches!(self, Kind::Basis | Kind::FundingSettlement)
+    }
+
     /// Short kebab-case label for filesystem paths.
     pub fn slug(&self) -> String {
         match self {

@@ -252,8 +252,9 @@ fn print_event(event: &Event, ob_depth: usize, seq: u64) {
                 ts = point.ts_ms, ex = exchange, sym = symbol, v = point.volatility);
         }
         Event::Basis { exchange, symbol, point } => {
-            println!("{ts} {ex:?} {sym} BASIS basis={b}",
-                ts = point.ts_ms, ex = exchange, sym = symbol, b = point.basis);
+            println!("{ts} {ex:?} {sym} BASIS value={b} mark={mk} index={ix}",
+                ts = point.ts_ms, ex = exchange, sym = symbol,
+                b = point.value, mk = point.mark, ix = point.index);
         }
         Event::InsuranceFund { exchange, symbol, point } => {
             println!("{ts} {ex:?} {sym} INSURANCE balance={b}",

@@ -10,6 +10,7 @@ pub mod backfill;
 pub mod builder;
 pub mod cache;
 pub mod data;
+pub(crate) mod derived;
 pub mod error;
 pub mod gap_heal;
 pub mod persistence;

@@ -21,6 +21,7 @@ use crate::data::{
     PredictedFundingPoint, PremiumIndexKlinePoint, RiskLimitPoint, SettlementEventPoint,
     TickerPoint, TradePoint, VolatilityIndexPoint,
 };
+use crate::derived::{BasisDerived, DerivedStream, FundingSettlementDerived};
 use crate::series::{DataPoint, DiskStore, Kind, Series, SeriesKey};
 use crate::subscription::{Entry, Event, FailedStream, MultiplexRef, Stream};
 use crate::{
@@ -118,27 +119,42 @@ impl Station {
                 tracing::debug!(?e, ?entry.exchange, "connect_public failed; warm-start REST backfill will be skipped");
             }
 
-            // WS connect: per-entry failure aborts every stream in this entry
-            // (no point trying to subscribe through a connector that wouldn't
-            // come up). Push one FailedStream per requested stream so the
-            // consumer sees the full picture.
-            if let Err(e) = self
-                .inner
-                .hub
-                .connect_websocket(entry.exchange, entry.account_type, false)
-                .await
-            {
-                let err_msg = format!("connect_websocket: {e}");
-                for s in &entry.streams {
-                    failed.push(FailedStream {
-                        exchange: entry.exchange,
-                        account_type: entry.account_type,
-                        symbol: entry.symbol.clone(),
-                        stream: s.clone(),
-                        error: StationError::Core(err_msg.clone()),
-                    });
+            // WS connect: skip if ALL streams in this entry are derived
+            // (they never touch a WS connector). For mixed entries — e.g.
+            // [Stream::Basis, Stream::Trade] — the WS connect is still needed
+            // for the non-derived streams. Per-stream failures are reported in
+            // `failed`; derived streams are excluded from that push.
+            let needs_ws = entry.streams.iter().any(|s| !s.to_kind().is_derived());
+
+            if needs_ws {
+                if let Err(e) = self
+                    .inner
+                    .hub
+                    .connect_websocket(entry.exchange, entry.account_type, false)
+                    .await
+                {
+                    let err_msg = format!("connect_websocket: {e}");
+                    for s in &entry.streams {
+                        // Exclude derived streams from the WS-connect failure list —
+                        // they don't use WS and should not be marked as failed here.
+                        if s.to_kind().is_derived() {
+                            continue;
+                        }
+                        failed.push(FailedStream {
+                            exchange: entry.exchange,
+                            account_type: entry.account_type,
+                            symbol: entry.symbol.clone(),
+                            stream: s.clone(),
+                            error: StationError::Core(err_msg.clone()),
+                        });
+                    }
+                    // Only `continue` (skip remaining entry processing) if there
+                    // are no derived streams that can still be acquired.
+                    let has_derived = entry.streams.iter().any(|s| s.to_kind().is_derived());
+                    if !has_derived {
+                        continue;
+                    }
                 }
-                continue;
             }
 
             // Resolve to (canonical, raw exchange-native) pair.
@@ -263,6 +279,21 @@ impl Station {
             return Ok(mux.tx.clone());
         }
 
+        // --- Derived stream path (no WS, no REST) ---
+        // Must come BEFORE the ws handle resolution so we never call
+        // ws.subscribe() for a derived kind.
+        if key.kind.is_derived() {
+            return match &key.kind {
+                Kind::Basis => {
+                    self.acquire_or_spawn_derived::<BasisDerived>(key, entry, canonical, raw_symbol).await
+                }
+                Kind::FundingSettlement => {
+                    self.acquire_or_spawn_derived::<FundingSettlementDerived>(key, entry, canonical, raw_symbol).await
+                }
+                _ => unreachable!("is_derived() returned true for non-derived kind"),
+            };
+        }
+
         let sym = Symbol::with_raw(&canonical.base, &canonical.quote, raw_symbol.to_string());
         let req = ws_request_for(&key.kind, sym, entry.account_type);
 
@@ -352,6 +383,76 @@ impl Station {
     }
 }
 
+impl Station {
+    /// Acquire (or spawn) a derived-stream multiplexer for `key`.
+    ///
+    /// Recursively calls `acquire_or_spawn` for each upstream dep (which
+    /// follows the normal WS path), subscribes to each upstream broadcast,
+    /// then spawns `spawn_derived_forwarder<D>` to run the computation.
+    ///
+    /// Ref-counting: each upstream `acquire_or_spawn` call increments the
+    /// upstream `consumers` counter by 1 (for the derived forwarder's benefit).
+    /// When the derived forwarder exits it calls `inner.release_consumer` on
+    /// each upstream key, propagating shutdown upward if no other consumer
+    /// holds the upstream.
+    fn acquire_or_spawn_derived<'a, D: DerivedStream>(
+        &'a self,
+        key: &'a SeriesKey,
+        entry: &'a Entry,
+        canonical: &'a digdigdig3::core::types::Symbol,
+        raw_symbol: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<broadcast::Sender<Event>>> + Send + 'a>>
+    where
+        Event: EventFrom<D::Output>,
+    {
+        Box::pin(async move {
+        let mut upstream_rxs: Vec<broadcast::Receiver<Event>> = Vec::new();
+        let mut upstream_keys: Vec<SeriesKey> = Vec::new();
+
+        for dep_stream in D::deps() {
+            let dep_kind = dep_stream.to_kind();
+            debug_assert!(
+                !dep_kind.is_derived(),
+                "DerivedStream::deps() must not list derived kinds (no derived-of-derived)"
+            );
+            let dep_key = SeriesKey {
+                exchange: key.exchange,
+                account_type: key.account_type,
+                symbol: raw_symbol.to_string(),
+                kind: dep_kind,
+            };
+            // Recursive call — follows the normal WS path for each upstream kind.
+            let up_tx = self
+                .acquire_or_spawn(&dep_key, entry, canonical, raw_symbol, dep_stream)
+                .await?;
+            upstream_rxs.push(up_tx.subscribe());
+            upstream_keys.push(dep_key);
+        }
+
+        let (bcast_tx, _) = broadcast::channel::<Event>(512);
+        let consumers = Arc::new(AtomicUsize::new(1));
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+        spawn_derived_forwarder::<D>(
+            self,
+            key,
+            upstream_rxs,
+            upstream_keys,
+            bcast_tx.clone(),
+            shutdown_rx,
+            raw_symbol.to_string(),
+        );
+
+        self.inner.muxes.insert(
+            key.clone(),
+            Multiplexer { tx: bcast_tx.clone(), consumers, shutdown: Some(shutdown_tx) },
+        );
+
+        Ok(bcast_tx)
+        }) // end Box::pin(async move { ... })
+    }
+}
+
 impl StationInner {
     pub(crate) fn release_consumer(self: &Arc<Self>, key: &SeriesKey) {
         let should_remove = {
@@ -367,6 +468,114 @@ impl StationInner {
             }
         }
     }
+}
+
+/// Derived-stream actor. Consumes from N upstream broadcast channels via
+/// `futures_util::stream::select_all`, runs the `DerivedStream` state machine,
+/// and emits output to the derived stream's own broadcast channel.
+///
+/// On exit (shutdown signal or all upstreams closed):
+/// - flushes disk store
+/// - decrements consumer ref-count on each upstream key (RAII propagation)
+/// - removes own mux entry if no consumers remain
+fn spawn_derived_forwarder<D: DerivedStream + 'static>(
+    station: &Station,
+    key: &SeriesKey,
+    upstream_rxs: Vec<broadcast::Receiver<Event>>,
+    upstream_keys: Vec<SeriesKey>,
+    bcast_tx: broadcast::Sender<Event>,
+    mut shutdown_rx: oneshot::Receiver<()>,
+    symbol_label: String,
+) where
+    Event: EventFrom<D::Output>,
+{
+    let inner = station.inner.clone();
+    let key = key.clone();
+    let storage_root = inner.storage_root.clone();
+    let persistence = inner.persistence.clone();
+    let warm = inner.warm_start_capacity;
+    let exchange = key.exchange;
+
+    tokio::spawn(async move {
+        // Open disk store if persistence is on for this kind.
+        let mut disk: Option<DiskStore<D::Output>> = None;
+        if persistence.is_enabled_for(&key.kind) {
+            match DiskStore::<D::Output>::new(&storage_root, key.clone()) {
+                Ok(store) => disk = Some(store),
+                Err(e) => tracing::warn!(?e, ?key, "derived: disk store open failed"),
+            }
+        }
+
+        let mut series = Series::<D::Output>::new(warm);
+
+        // Derived streams start with no warm-start / backfill — see spec §11.
+        let mut state = D::new_for_key(&key);
+
+        // Convert each upstream Receiver into a tagged BroadcastStream so
+        // the state machine can branch by dep_idx cheaply.
+        let tagged: Vec<_> = upstream_rxs
+            .into_iter()
+            .enumerate()
+            .map(|(idx, rx)| {
+                tokio_stream::wrappers::BroadcastStream::new(rx)
+                    .filter_map(move |res| async move {
+                        match res {
+                            Ok(ev) => Some((idx, ev)),
+                            Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
+                                tracing::warn!(dep_idx = idx, lagged = n, "derived: upstream lagged — events dropped");
+                                None
+                            }
+                        }
+                    })
+                    // Box to make all stream types uniform for select_all.
+                    .boxed()
+            })
+            .collect();
+
+        let mut merged = futures_util::stream::select_all(tagged);
+
+        loop {
+            let item_opt = tokio::select! {
+                _ = &mut shutdown_rx => break,
+                item = merged.next() => item,
+            };
+
+            let Some((dep_idx, ev)) = item_opt else {
+                // All upstreams closed their senders — derived stream is done.
+                tracing::info!(?key, "derived: all upstreams closed — exiting");
+                break;
+            };
+
+            if let Some(point) = state.on_upstream_event(&ev, dep_idx) {
+                if let Some(d) = disk.as_mut() {
+                    if let Err(e) = d.append(&point) {
+                        tracing::warn!(?e, "derived: disk store append failed");
+                    }
+                }
+                series.push(point.clone());
+                let _ = bcast_tx.send(Event::from_point(exchange, &symbol_label, &key.kind, point));
+            }
+        }
+
+        if let Some(mut d) = disk { let _ = d.flush(); }
+        let _ = series;
+
+        // Release upstream consumer refs — propagates shutdown upward if the
+        // derived forwarder was the only consumer of its upstream muxes.
+        for up_key in &upstream_keys {
+            inner.release_consumer(up_key);
+        }
+
+        // Remove own mux entry if no consumers remain.
+        let still_consumers = inner
+            .muxes
+            .get(&key)
+            .map(|m| m.consumers.load(Ordering::SeqCst))
+            .unwrap_or(0);
+        if still_consumers == 0 {
+            inner.muxes.remove(&key);
+        }
+    });
 }
 
 /// Generic per-kind forwarder. Owns:

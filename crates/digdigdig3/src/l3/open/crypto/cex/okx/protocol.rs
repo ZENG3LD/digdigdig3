@@ -116,6 +116,7 @@ impl OkxProtocol {
             kind,
             StreamKind::MarkPrice
                 | StreamKind::FundingRate
+                | StreamKind::PredictedFunding
                 | StreamKind::OpenInterest
                 | StreamKind::Liquidation
                 | StreamKind::AggTrade
@@ -148,6 +149,10 @@ impl OkxProtocol {
             StreamKind::OrderbookDelta => "books-l2-tbt".to_string(),
             StreamKind::MarkPrice => "mark-price".to_string(),
             StreamKind::FundingRate => "funding-rate".to_string(),
+            // PredictedFunding shares the same OKX wire channel as FundingRate.
+            // The registry fires both parse_funding_rate and parse_predicted_funding
+            // per frame via dispatch_all.
+            StreamKind::PredictedFunding => "funding-rate".to_string(),
             StreamKind::IndexPrice => "index-tickers".to_string(),
             StreamKind::OrderUpdate => "orders".to_string(),
             StreamKind::BalanceUpdate => "account".to_string(),
@@ -470,6 +475,10 @@ fn build_futures_registry() -> TopicRegistry {
         // Futures-only channels.
         .register(StreamKind::MarkPrice, at, "mark-price", parse_mark_price)
         .register(StreamKind::FundingRate, at, "funding-rate", parse_funding_rate)
+        // Second entry on the same wire channel: emits StreamEvent::PredictedFunding
+        // when nextFundingRate is populated (coin-margined inverse SWAPs only).
+        // dispatch_all fires both parsers per frame.
+        .register(StreamKind::PredictedFunding, at, "funding-rate", parse_predicted_funding)
         .register(StreamKind::OpenInterest, at, "open-interest", parse_open_interest)
         .register(StreamKind::Liquidation, at, "liquidation-orders", parse_liquidation_orders)
         // Shared informational / private channels.
@@ -752,6 +761,43 @@ fn parse_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent> {
         .map(|ms| ms as i64)
         .unwrap_or(0);
     Ok(StreamEvent::FundingRate { symbol, rate, next_funding_time, timestamp })
+}
+
+/// Parse `funding-rate` channel frame as `StreamEvent::PredictedFunding`.
+///
+/// OKX populates `nextFundingRate` only for coin-margined inverse SWAPs that
+/// use `method: "next_period"` (e.g. BTC-USD-SWAP, ETH-USD-SWAP).  For linear
+/// USDT-margined SWAPs (`current_period`), the field is always `""` — this
+/// function returns `Err` in that case, which `dispatch_all` silently drops.
+///
+/// Called alongside `parse_funding_rate` via the dual-registration pattern:
+/// both functions are registered on `"funding-rate"` in `build_futures_registry`,
+/// mirroring how `parse_trades` and `parse_agg_trades` share the `"trades"` channel.
+fn parse_predicted_funding(raw: &Value) -> WebSocketResult<StreamEvent> {
+    let data = first_data_item(raw)?;
+    let symbol = data.get("instId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    // nextFundingRate is "" for current_period contracts (USDT SWAPs since 2024).
+    // Reject empty / missing values so the transport's dispatch_all drops the frame
+    // without emitting a PredictedFunding event for instruments that don't expose it.
+    let predicted_rate = data.get("nextFundingRate")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .and_then(|s| s.parse::<f64>().ok())
+        .ok_or_else(|| WebSocketError::Parse(
+            "predicted_funding: nextFundingRate absent or empty — current_period contract".into()
+        ))?;
+    let next_funding_time = data.get("nextFundingTime")
+        .and_then(parse_f64_field)
+        .map(|ms| ms as i64)
+        .unwrap_or(0);
+    let timestamp = data.get("ts")
+        .and_then(parse_f64_field)
+        .map(|ms| ms as i64)
+        .unwrap_or(0);
+    Ok(StreamEvent::PredictedFunding { symbol, predicted_rate, next_funding_time, timestamp })
 }
 
 fn parse_liquidation_orders(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -1126,5 +1172,121 @@ mod tests {
         assert_eq!(OkxProtocol::to_swap_instid("BTC-USDT"), "BTC-USDT-SWAP");
         assert_eq!(OkxProtocol::to_swap_instid("BTC-USDT-SWAP"), "BTC-USDT-SWAP");
         assert_eq!(OkxProtocol::to_swap_instid("BTC-USD-260925"), "BTC-USD-260925");
+    }
+
+    // ── parse_predicted_funding ───────────────────────────────────────────────
+
+    fn funding_rate_frame(next_funding_rate: &str, next_funding_time: &str) -> serde_json::Value {
+        serde_json::json!({
+            "arg": { "channel": "funding-rate", "instId": "BTC-USD-SWAP" },
+            "data": [{
+                "instType": "SWAP",
+                "instId": "BTC-USD-SWAP",
+                "method": "next_period",
+                "fundingRate": "0.0001",
+                "nextFundingRate": next_funding_rate,
+                "fundingTime": "1727011200000",
+                "nextFundingTime": next_funding_time,
+                "ts": "1727005000000"
+            }]
+        })
+    }
+
+    #[test]
+    fn test_parse_predicted_funding_populated() {
+        let frame = funding_rate_frame("0.000123", "1727040000000");
+        let ev = parse_predicted_funding(&frame).expect("should succeed for populated nextFundingRate");
+        match ev {
+            StreamEvent::PredictedFunding { symbol, predicted_rate, next_funding_time, timestamp } => {
+                assert_eq!(symbol, "BTC-USD-SWAP");
+                assert!((predicted_rate - 0.000123).abs() < 1e-10, "rate mismatch: {predicted_rate}");
+                assert_eq!(next_funding_time, 1727040000000_i64);
+                assert_eq!(timestamp, 1727005000000_i64);
+            }
+            other => panic!("expected PredictedFunding, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_predicted_funding_empty_string_returns_err() {
+        // nextFundingRate = "" for current_period USDT SWAPs — must produce Err
+        let frame = funding_rate_frame("", "1727040000000");
+        let result = parse_predicted_funding(&frame);
+        assert!(
+            result.is_err(),
+            "empty nextFundingRate must return Err, got Ok({:?})",
+            result.ok()
+        );
+    }
+
+    #[test]
+    fn test_parse_predicted_funding_missing_field_returns_err() {
+        // Frame where nextFundingRate field is entirely absent
+        let frame = serde_json::json!({
+            "arg": { "channel": "funding-rate", "instId": "BTC-USD-SWAP" },
+            "data": [{
+                "instType": "SWAP",
+                "instId": "BTC-USD-SWAP",
+                "fundingRate": "0.0001",
+                "fundingTime": "1727011200000",
+                "nextFundingTime": "1727040000000",
+                "ts": "1727005000000"
+            }]
+        });
+        let result = parse_predicted_funding(&frame);
+        assert!(
+            result.is_err(),
+            "missing nextFundingRate must return Err, got Ok({:?})",
+            result.ok()
+        );
+    }
+
+    #[test]
+    fn test_futures_registry_has_predicted_funding() {
+        let proto = OkxProtocol::new(AccountType::FuturesCross, false);
+        let reg = proto.topic_registry(AccountType::FuturesCross);
+        assert!(
+            reg.supports(&StreamKind::PredictedFunding, AccountType::FuturesCross),
+            "PredictedFunding must be in the futures registry"
+        );
+    }
+
+    #[test]
+    fn test_funding_rate_channel_dispatches_both_parsers() {
+        // Both FundingRate and PredictedFunding registered on "funding-rate";
+        // dispatch_all must return 2 distinct parsers.
+        use crate::core::websocket::TopicKey;
+        let proto = OkxProtocol::new(AccountType::FuturesCross, false);
+        let reg = proto.topic_registry(AccountType::FuturesCross);
+        let key = TopicKey::new("funding-rate");
+        let parsers = reg.dispatch_all(&key);
+        assert_eq!(
+            parsers.len(),
+            2,
+            "funding-rate channel must dispatch exactly 2 parsers (FundingRate + PredictedFunding)"
+        );
+    }
+
+    #[test]
+    fn test_subscribe_predicted_funding_rewrites_to_swap() {
+        let proto = OkxProtocol::new(AccountType::FuturesCross, false);
+        let spec = StreamSpec {
+            kind: StreamKind::PredictedFunding,
+            symbol: crate::core::types::OwnedSymbolInput::Raw("BTC-USD".to_string()),
+            account_type: AccountType::FuturesCross,
+            depth: None,
+            speed_ms: None,
+        };
+        let msg = proto.subscribe_frame(&spec).expect("subscribe_frame ok");
+        let text = match msg {
+            Message::Text(t) => t,
+            _ => panic!("expected text frame"),
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert_eq!(v["op"], "subscribe");
+        let arg = &v["args"][0];
+        assert_eq!(arg["channel"], "funding-rate");
+        // is_futures_only_kind returns true for PredictedFunding → symbol rewritten
+        assert_eq!(arg["instId"], "BTC-USD-SWAP");
     }
 }

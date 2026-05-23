@@ -27,7 +27,7 @@ pub mod series;
 pub mod store;
 
 pub use data_point::DataPoint;
-pub use key::{Kind, SeriesKey};
+pub use key::{Kind, PollSpec, SeriesKey};
 pub use map::SharedSeriesMap;
 pub use series::Series;
 pub use store::DiskStore;

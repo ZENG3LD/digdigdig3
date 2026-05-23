@@ -14,6 +14,7 @@ pub(crate) mod derived;
 pub mod error;
 pub mod gap_heal;
 pub mod persistence;
+pub(crate) mod polling;
 pub mod series;
 pub mod station;
 pub mod subscription;
@@ -33,7 +34,8 @@ pub use cache::{ticker_cache, CacheConfig, TickerKey};
 pub use error::{Result, StationError};
 pub use gap_heal::GapHealConfig;
 pub use persistence::PersistenceConfig;
-pub use series::{DataPoint, DiskStore, Kind, Series, SeriesKey, SharedSeriesMap};
+pub use polling::PollSource;
+pub use series::{DataPoint, DiskStore, Kind, PollSpec, Series, SeriesKey, SharedSeriesMap};
 pub use station::Station;
 pub use subscription::{
     Event, FailedStream, Stream, SubscribeReport, SubscriptionHandle, SubscriptionSet,

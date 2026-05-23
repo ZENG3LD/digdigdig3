@@ -4,7 +4,8 @@ use digdigdig3::core::websocket::KlineInterval;
 use crate::data::{
     AggTradePoint, BarPoint, BasisPoint, BlockTradePoint, CompositeIndexPoint,
     FundingRatePoint, FundingSettlementPoint, HistoricalVolatilityPoint, IndexPriceKlinePoint,
-    IndexPricePoint, InsuranceFundPoint, LiquidationPoint, MarkPriceKlinePoint, MarkPricePoint,
+    IndexPricePoint, InsuranceFundPoint, LiquidationPoint, LongShortRatioPoint,
+    MarkPriceKlinePoint, MarkPricePoint,
     MarketWarningPoint, ObDeltaPoint, ObSnapshotPoint, OpenInterestPoint, OptionGreeksPoint,
     OrderbookL3Point, PredictedFundingPoint, PremiumIndexKlinePoint, RiskLimitPoint,
     SettlementEventPoint, TickerPoint, TradePoint, VolatilityIndexPoint,
@@ -34,6 +35,7 @@ pub enum Stream {
     OptionGreeks,
     VolatilityIndex,
     HistoricalVolatility,
+    LongShortRatio,
     Basis,
     InsuranceFund,
     OrderbookL3,
@@ -66,6 +68,7 @@ impl Stream {
             Stream::OptionGreeks => Kind::OptionGreeks,
             Stream::VolatilityIndex => Kind::VolatilityIndex,
             Stream::HistoricalVolatility => Kind::HistoricalVolatility,
+            Stream::LongShortRatio => Kind::LongShortRatio,
             Stream::Basis => Kind::Basis,
             Stream::InsuranceFund => Kind::InsuranceFund,
             Stream::OrderbookL3 => Kind::OrderbookL3,
@@ -246,6 +249,11 @@ pub enum Event {
         symbol: String,
         point: HistoricalVolatilityPoint,
     },
+    LongShortRatio {
+        exchange: ExchangeId,
+        symbol: String,
+        point: LongShortRatioPoint,
+    },
     Basis {
         exchange: ExchangeId,
         symbol: String,
@@ -318,6 +326,7 @@ impl Event {
             Event::BlockTrade { exchange, .. } | Event::IndexPrice { exchange, .. } |
             Event::CompositeIndex { exchange, .. } | Event::OptionGreeks { exchange, .. } |
             Event::VolatilityIndex { exchange, .. } | Event::HistoricalVolatility { exchange, .. } |
+            Event::LongShortRatio { exchange, .. } |
             Event::Basis { exchange, .. } | Event::InsuranceFund { exchange, .. } |
             Event::OrderbookL3 { exchange, .. } | Event::SettlementEvent { exchange, .. } |
             Event::MarketWarning { exchange, .. } |
@@ -338,6 +347,7 @@ impl Event {
             Event::BlockTrade { symbol, .. } | Event::IndexPrice { symbol, .. } |
             Event::CompositeIndex { symbol, .. } | Event::OptionGreeks { symbol, .. } |
             Event::VolatilityIndex { symbol, .. } | Event::HistoricalVolatility { symbol, .. } |
+            Event::LongShortRatio { symbol, .. } |
             Event::Basis { symbol, .. } | Event::InsuranceFund { symbol, .. } |
             Event::OrderbookL3 { symbol, .. } | Event::SettlementEvent { symbol, .. } |
             Event::MarketWarning { symbol, .. } |
@@ -373,6 +383,7 @@ impl Event {
             | Event::OptionGreeks { symbol, .. }
             | Event::VolatilityIndex { symbol, .. }
             | Event::HistoricalVolatility { symbol, .. }
+            | Event::LongShortRatio { symbol, .. }
             | Event::Basis { symbol, .. }
             | Event::InsuranceFund { symbol, .. }
             | Event::OrderbookL3 { symbol, .. }
@@ -405,6 +416,7 @@ impl Event {
             Event::OptionGreeks { point, .. } => point.timestamp_ms(),
             Event::VolatilityIndex { point, .. } => point.timestamp_ms(),
             Event::HistoricalVolatility { point, .. } => point.timestamp_ms(),
+            Event::LongShortRatio { point, .. } => point.timestamp_ms(),
             Event::Basis { point, .. } => point.timestamp_ms(),
             Event::InsuranceFund { point, .. } => point.timestamp_ms(),
             Event::OrderbookL3 { point, .. } => point.timestamp_ms(),

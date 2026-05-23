@@ -251,6 +251,11 @@ fn print_event(event: &Event, ob_depth: usize, seq: u64) {
             println!("{ts} {ex:?} {sym} HIST_VOL vol={v}",
                 ts = point.ts_ms, ex = exchange, sym = symbol, v = point.volatility);
         }
+        Event::LongShortRatio { exchange, symbol, point } => {
+            println!("{ts} {ex:?} {sym} LSR ratio={r:.4} long={l:.4} short={s:.4}",
+                ts = point.ts_ms, ex = exchange, sym = symbol,
+                r = point.ratio, l = point.long_pct, s = point.short_pct);
+        }
         Event::Basis { exchange, symbol, point } => {
             println!("{ts} {ex:?} {sym} BASIS value={b} mark={mk} index={ix}",
                 ts = point.ts_ms, ex = exchange, sym = symbol,

@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use digdigdig3::core::types::{AccountType, ExchangeId};
 use digdigdig3::core::websocket::KlineInterval;
 
@@ -24,6 +26,7 @@ pub enum Kind {
     OptionGreeks,
     VolatilityIndex,
     HistoricalVolatility,
+    LongShortRatio,
     Basis,
     InsuranceFund,
     OrderbookL3,
@@ -37,6 +40,20 @@ pub enum Kind {
     PremiumIndexKline(KlineInterval),
 }
 
+/// Polling cadence + anti-alignment jitter for REST-only stream kinds.
+///
+/// Returned by [`Kind::is_poll_only`] for kinds that have no WS feed and
+/// must be driven by periodic REST calls.
+#[derive(Debug, Clone, Copy)]
+pub struct PollSpec {
+    /// How often to call the REST endpoint.
+    pub cadence: Duration,
+    /// Jitter applied to the FIRST tick only, expressed as percent of cadence.
+    /// Prevents N symbols × M exchanges all calling REST at the same wall-clock
+    /// second. Value 10 means first tick fires at `cadence ± (cadence * 10 / 100)`.
+    pub jitter_pct: u8,
+}
+
 impl Kind {
     /// True for stream kinds that are computed inside Station from upstream
     /// WS-backed streams, rather than arriving directly from an exchange WS.
@@ -45,6 +62,25 @@ impl Kind {
     /// and instead use `acquire_or_spawn_derived<D>(...)`.
     pub(crate) fn is_derived(&self) -> bool {
         matches!(self, Kind::Basis | Kind::FundingSettlement)
+    }
+
+    /// If this kind has no WS feed and must be driven by REST polling,
+    /// returns the default cadence + jitter spec.
+    ///
+    /// Poll-only kinds bypass `ws.subscribe` entirely in `acquire_or_spawn`
+    /// and instead use the `spawn_poller` actor path.
+    pub fn is_poll_only(&self) -> Option<PollSpec> {
+        match self {
+            Kind::LongShortRatio => Some(PollSpec {
+                cadence: Duration::from_secs(5 * 60), // 5 min bucket cadence
+                jitter_pct: 10,
+            }),
+            Kind::HistoricalVolatility => Some(PollSpec {
+                cadence: Duration::from_secs(60 * 60), // 1 h Deribit update cadence
+                jitter_pct: 5,
+            }),
+            _ => None,
+        }
     }
 
     /// Short kebab-case label for filesystem paths.
@@ -66,6 +102,7 @@ impl Kind {
             Kind::OptionGreeks => "option_greeks".to_string(),
             Kind::VolatilityIndex => "volatility_index".to_string(),
             Kind::HistoricalVolatility => "historical_volatility".to_string(),
+            Kind::LongShortRatio => "long_short_ratio".to_string(),
             Kind::Basis => "basis".to_string(),
             Kind::InsuranceFund => "insurance_fund".to_string(),
             Kind::OrderbookL3 => "orderbook_l3".to_string(),

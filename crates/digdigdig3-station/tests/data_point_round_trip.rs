@@ -2,8 +2,8 @@
 
 use digdigdig3_station::data::{
     AggTradePoint, BarPoint, BasisPoint, FundingRatePoint, FundingSettlementPoint,
-    LiquidationPoint, MarkPricePoint, ObDeltaPoint, ObSnapshotPoint, OpenInterestPoint,
-    TickerPoint, TradePoint,
+    LiquidationPoint, LongShortRatioPoint, MarkPricePoint, ObDeltaPoint, ObSnapshotPoint,
+    OpenInterestPoint, TickerPoint, TradePoint,
 };
 use digdigdig3_station::DataPoint;
 
@@ -166,6 +166,47 @@ fn basis_point_nan_fields_survive_round_trip() {
     assert_eq!(back.ts_ms, 42);
     assert!(back.mark.is_nan());
     assert!(back.index.is_nan());
+}
+
+// --- LongShortRatioPoint round-trip (32 B) ---
+
+#[test]
+fn long_short_ratio_point_round_trip_32b() {
+    assert_eq!(LongShortRatioPoint::RECORD_SIZE, 32, "LongShortRatioPoint must be 32 B");
+    let p = LongShortRatioPoint {
+        ts_ms: 1_700_000_000_000,
+        ratio: 1.2774,
+        long_pct: 0.5609,
+        short_pct: 0.4391,
+    };
+    rt_bytes_stable(p.clone());
+    let mut buf = vec![0u8; LongShortRatioPoint::RECORD_SIZE];
+    p.encode(&mut buf);
+    let back = LongShortRatioPoint::decode(&buf).unwrap();
+    assert_eq!(back.ts_ms, p.ts_ms);
+    assert!((back.ratio - p.ratio).abs() < 1e-10);
+    assert!((back.long_pct - p.long_pct).abs() < 1e-10);
+    assert!((back.short_pct - p.short_pct).abs() < 1e-10);
+    assert_eq!(back.timestamp_ms(), p.ts_ms);
+}
+
+#[test]
+fn long_short_ratio_from_stream_event() {
+    use digdigdig3_station::DataPoint;
+    use digdigdig3::core::types::StreamEvent;
+    let ev = StreamEvent::LongShortRatio {
+        symbol: "BTCUSDT".to_string(),
+        ratio_type: "globalAccount".to_string(),
+        long_ratio: 0.56,
+        short_ratio: 0.44,
+        timestamp: 1_700_000_001_000,
+    };
+    let pt = LongShortRatioPoint::from_stream_event(&ev).expect("must extract from LongShortRatio event");
+    assert_eq!(pt.ts_ms, 1_700_000_001_000);
+    assert!((pt.long_pct - 0.56).abs() < 1e-10);
+    assert!((pt.short_pct - 0.44).abs() < 1e-10);
+    // ratio = 0.56 / 0.44 ≈ 1.2727
+    assert!((pt.ratio - (0.56f64 / 0.44)).abs() < 1e-8);
 }
 
 // --- FundingSettlementPoint round-trip (sanity, unchanged schema) ---

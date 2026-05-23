@@ -7,7 +7,7 @@
 use async_trait::async_trait;
 
 use crate::core::types::{
-    AccountType, ExchangeError, ExchangeResult, FundingRate, Kline,
+    AccountType, ExchangeError, ExchangeResult, FundingRate, HistoricalVolatility, Kline,
     Liquidation, LongShortRatio, MarkPrice, OpenInterest, PublicTrade, SymbolInput,
 };
 
@@ -118,6 +118,24 @@ pub trait MarketDataPublic: Send + Sync {
         let _ = (symbol, interval, limit, account_type, end_time);
         Err(ExchangeError::UnsupportedOperation(
             "get_index_price_klines not supported".into(),
+        ))
+    }
+
+    /// Historical realized volatility series — trailing window (≈15 days, hourly buckets).
+    ///
+    /// `currency` is the base asset in exchange-native form (e.g. `"BTC"`, `"ETH"`
+    /// for Deribit). Other exchanges may accept a symbol or index name instead.
+    ///
+    /// Default: `UnsupportedOperation` — only Deribit overrides this method.
+    async fn get_historical_volatility(
+        &self,
+        currency: &str,
+    ) -> ExchangeResult<Vec<HistoricalVolatility>> {
+        let _ = currency;
+        Err(ExchangeError::UnsupportedOperation(
+            "get_historical_volatility: not available on this exchange \
+             (Deribit-only: public/get_historical_volatility)"
+                .into(),
         ))
     }
 

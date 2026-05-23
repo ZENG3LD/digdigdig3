@@ -38,6 +38,7 @@ use crate::core::types::{ConnectorStats, SymbolInfo, CancelAllResponse, AmendReq
 use crate::core::types::{UserTrade, UserTradeFilter};
 use crate::core::types::{
     FundingPayment, FundingFilter,
+    HistoricalVolatility,
     LedgerEntry, LedgerEntryType, LedgerFilter,
     OpenInterest, MarkPrice,
 };
@@ -1936,6 +1937,50 @@ impl MarketDataPublic for DeribitConnector {
             });
         }
         Ok(result)
+    }
+
+    /// Historical realized volatility — `public/get_historical_volatility`.
+    ///
+    /// Wraps the inherent `get_historical_volatility` method (which returns raw
+    /// `Value`) and parses the Deribit JSON-RPC result into typed structs.
+    ///
+    /// Deribit response shape: `{ "result": [[ts_ms, vol], ...] }` where each
+    /// inner array is `[i64 timestamp_ms, f64 annualized_vol_pct]`.
+    ///
+    /// The 15-day trailing window returns ≈360 hourly data points per call.
+    async fn get_historical_volatility(
+        &self,
+        currency: &str,
+    ) -> ExchangeResult<Vec<HistoricalVolatility>> {
+        // Delegate to the inherent method (already has the RPC wiring).
+        let raw = DeribitConnector::get_historical_volatility(self, currency).await?;
+        let arr = raw
+            .get("result")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| {
+                ExchangeError::Parse(
+                    "get_historical_volatility: expected result array of [ts, vol] pairs".into(),
+                )
+            })?;
+        let mut out = Vec::with_capacity(arr.len());
+        for item in arr {
+            let pair = item
+                .as_array()
+                .ok_or_else(|| ExchangeError::Parse("get_historical_volatility: inner element is not array".into()))?;
+            if pair.len() < 2 {
+                return Err(ExchangeError::Parse(
+                    "get_historical_volatility: inner array has fewer than 2 elements".into(),
+                ));
+            }
+            let timestamp = pair[0]
+                .as_i64()
+                .ok_or_else(|| ExchangeError::Parse("get_historical_volatility: ts_ms is not i64".into()))?;
+            let volatility = pair[1]
+                .as_f64()
+                .ok_or_else(|| ExchangeError::Parse("get_historical_volatility: volatility is not f64".into()))?;
+            out.push(HistoricalVolatility { timestamp, volatility });
+        }
+        Ok(out)
     }
 }
 

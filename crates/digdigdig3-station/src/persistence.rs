@@ -91,6 +91,7 @@ impl PersistenceConfig {
             // use header + companion `.blob` storage via
             // `DataPoint::blob_pointer_offset` and persist normally.
             IndexPrice | CompositeIndex | VolatilityIndex | HistoricalVolatility
+            | LongShortRatio
             | Basis | InsuranceFund | SettlementEvent | PredictedFunding
             | FundingSettlement | RiskLimit | OptionGreeks
             | MarkPriceKline(_) | IndexPriceKline(_) | PremiumIndexKline(_)

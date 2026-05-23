@@ -15,13 +15,15 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use crate::data::{
     AggTradePoint, BarPoint, BasisPoint, BlockTradePoint, CompositeIndexPoint,
     FundingRatePoint, FundingSettlementPoint, HistoricalVolatilityPoint, IndexPriceKlinePoint,
-    IndexPricePoint, InsuranceFundPoint, LiquidationPoint, MarkPriceKlinePoint, MarkPricePoint,
+    IndexPricePoint, InsuranceFundPoint, LiquidationPoint, LongShortRatioPoint,
+    MarkPriceKlinePoint, MarkPricePoint,
     MarketWarningPoint, ObDeltaPoint, ObSnapshotPoint, OpenInterestPoint, OptionGreeksPoint,
     OrderbookL3Point,
     PredictedFundingPoint, PremiumIndexKlinePoint, RiskLimitPoint, SettlementEventPoint,
     TickerPoint, TradePoint, VolatilityIndexPoint,
 };
 use crate::derived::{BasisDerived, DerivedStream, FundingSettlementDerived};
+use crate::polling;
 use crate::series::{DataPoint, DiskStore, Kind, Series, SeriesKey};
 use crate::subscription::{Entry, Event, FailedStream, MultiplexRef, Stream};
 use crate::{
@@ -119,12 +121,15 @@ impl Station {
                 tracing::debug!(?e, ?entry.exchange, "connect_public failed; warm-start REST backfill will be skipped");
             }
 
-            // WS connect: skip if ALL streams in this entry are derived
-            // (they never touch a WS connector). For mixed entries — e.g.
-            // [Stream::Basis, Stream::Trade] — the WS connect is still needed
-            // for the non-derived streams. Per-stream failures are reported in
-            // `failed`; derived streams are excluded from that push.
-            let needs_ws = entry.streams.iter().any(|s| !s.to_kind().is_derived());
+            // WS connect: skip if ALL streams in this entry are derived or
+            // poll-only (they never touch a WS connector). For mixed entries —
+            // e.g. [Stream::Trade, Stream::LongShortRatio] — the WS connect is
+            // still needed for the Trade stream. Per-stream failures are reported
+            // in `failed`; derived and poll-only streams are excluded from that.
+            let needs_ws = entry.streams.iter().any(|s| {
+                let kind = s.to_kind();
+                !kind.is_derived() && kind.is_poll_only().is_none()
+            });
 
             if needs_ws {
                 if let Err(e) = self
@@ -135,9 +140,10 @@ impl Station {
                 {
                     let err_msg = format!("connect_websocket: {e}");
                     for s in &entry.streams {
-                        // Exclude derived streams from the WS-connect failure list —
-                        // they don't use WS and should not be marked as failed here.
-                        if s.to_kind().is_derived() {
+                        // Exclude derived and poll-only streams from the WS-connect
+                        // failure list — they don't use WS.
+                        let kind = s.to_kind();
+                        if kind.is_derived() || kind.is_poll_only().is_some() {
                             continue;
                         }
                         failed.push(FailedStream {
@@ -148,10 +154,13 @@ impl Station {
                             error: StationError::Core(err_msg.clone()),
                         });
                     }
-                    // Only `continue` (skip remaining entry processing) if there
-                    // are no derived streams that can still be acquired.
-                    let has_derived = entry.streams.iter().any(|s| s.to_kind().is_derived());
-                    if !has_derived {
+                    // Only `continue` if there are no derived/poll-only streams
+                    // that can still be acquired without WS.
+                    let has_non_ws = entry.streams.iter().any(|s| {
+                        let kind = s.to_kind();
+                        kind.is_derived() || kind.is_poll_only().is_some()
+                    });
+                    if !has_non_ws {
                         continue;
                     }
                 }
@@ -294,6 +303,13 @@ impl Station {
             };
         }
 
+        // --- Poll-only stream path (REST periodic polling, no WS) ---
+        // Must come BEFORE the ws.subscribe call so we never try to subscribe
+        // a WS channel for streams that have no WS feed.
+        if let Some(poll_spec) = key.kind.is_poll_only() {
+            return self.acquire_or_spawn_polled(key, entry, poll_spec, raw_symbol).await;
+        }
+
         let sym = Symbol::with_raw(&canonical.base, &canonical.quote, raw_symbol.to_string());
         let req = ws_request_for(&key.kind, sym, entry.account_type);
 
@@ -361,6 +377,10 @@ impl Station {
             Kind::OptionGreeks => spawn_forwarder::<OptionGreeksPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::VolatilityIndex => spawn_forwarder::<VolatilityIndexPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::HistoricalVolatility => spawn_forwarder::<HistoricalVolatilityPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            // LongShortRatio: poll-only, unreachable in normal operation (the
+            // is_poll_only() branch above handles this first). Kept as defensive
+            // fallback so the match arm is exhaustive.
+            Kind::LongShortRatio => spawn_forwarder::<LongShortRatioPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::Basis => spawn_forwarder::<BasisPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::InsuranceFund => spawn_forwarder::<InsuranceFundPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::OrderbookL3 => spawn_forwarder::<OrderbookL3Point>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
@@ -450,6 +470,68 @@ impl Station {
 
         Ok(bcast_tx)
         }) // end Box::pin(async move { ... })
+    }
+}
+
+impl Station {
+    /// Acquire (or spawn) a poll-driven multiplexer for `key`.
+    ///
+    /// Called when `key.kind.is_poll_only()` returns `Some(PollSpec)`. Skips
+    /// `ws.subscribe` entirely and instead spawns a `spawn_poller<T, S>` actor
+    /// driven by `tokio::time::interval`.
+    async fn acquire_or_spawn_polled(
+        &self,
+        key: &SeriesKey,
+        entry: &Entry,
+        poll_spec: crate::series::PollSpec,
+        raw_symbol: &str,
+    ) -> Result<broadcast::Sender<Event>> {
+        use crate::station::Multiplexer;
+
+        let (bcast_tx, _) = broadcast::channel::<Event>(1024);
+        let consumers = Arc::new(AtomicUsize::new(1));
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let label = raw_symbol.to_string();
+
+        match &key.kind {
+            Kind::LongShortRatio => {
+                let source = polling::lsr_poll_source(entry.exchange)
+                    .ok_or_else(|| StationError::StreamNotSupported(format!(
+                        "LongShortRatio REST polling not supported for {:?}",
+                        entry.exchange
+                    )))?;
+                polling::spawn_poller::<LongShortRatioPoint, _>(
+                    self, key, source, poll_spec, bcast_tx.clone(), shutdown_rx, label,
+                );
+            }
+            Kind::HistoricalVolatility => {
+                let source = polling::hv_poll_source(entry.exchange)
+                    .ok_or_else(|| StationError::StreamNotSupported(format!(
+                        "HistoricalVolatility REST polling not supported for {:?} \
+                         (Deribit only)",
+                        entry.exchange
+                    )))?;
+                polling::spawn_poller::<HistoricalVolatilityPoint, _>(
+                    self, key, source, poll_spec, bcast_tx.clone(), shutdown_rx, label,
+                );
+            }
+            other => {
+                return Err(StationError::StreamNotSupported(format!(
+                    "acquire_or_spawn_polled: no poll source for {:?}",
+                    other
+                )));
+            }
+        }
+
+        self.inner.muxes.insert(
+            key.clone(),
+            Multiplexer {
+                tx: bcast_tx.clone(),
+                consumers,
+                shutdown: Some(shutdown_tx),
+            },
+        );
+        Ok(bcast_tx)
     }
 }
 
@@ -933,8 +1015,8 @@ fn event_raw_symbol(ev: &StreamEvent) -> Option<&str> {
 }
 
 /// Trait wired by each `DataPoint` so the forwarder can build the right Event
-/// variant. Implemented below for all 9 types.
-trait EventFrom<T> {
+/// variant. `pub(crate)` so `polling.rs` can use it in `spawn_poller`.
+pub(crate) trait EventFrom<T> {
     fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, kind: &Kind, p: T) -> Self;
 }
 
@@ -1019,6 +1101,11 @@ impl EventFrom<HistoricalVolatilityPoint> for Event {
         Event::HistoricalVolatility { exchange, symbol: symbol.to_string(), point }
     }
 }
+impl EventFrom<LongShortRatioPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: LongShortRatioPoint) -> Self {
+        Event::LongShortRatio { exchange, symbol: symbol.to_string(), point }
+    }
+}
 impl EventFrom<BasisPoint> for Event {
     fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: BasisPoint) -> Self {
         Event::Basis { exchange, symbol: symbol.to_string(), point }
@@ -1100,6 +1187,10 @@ fn ws_request_for(
         Kind::OptionGreeks => StreamType::OptionGreeks,
         Kind::VolatilityIndex => StreamType::VolatilityIndex,
         Kind::HistoricalVolatility => StreamType::HistoricalVolatility,
+        // LongShortRatio: poll-only kind. The WS arm is unreachable in normal
+        // operation (acquire_or_spawn_polled handles it first), but kept as a
+        // defensive fallback so the match is exhaustive.
+        Kind::LongShortRatio => StreamType::LongShortRatio,
         Kind::Basis => StreamType::Basis,
         Kind::InsuranceFund => StreamType::InsuranceFund,
         Kind::OrderbookL3 => StreamType::OrderbookL3,

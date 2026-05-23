@@ -618,6 +618,10 @@ fn parse_futures_ticker_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent
     Ok(StreamEvent::FundingRate {
         symbol,
         rate,
+        // next_funding_time is intentionally None here: the push.ticker frame does not
+        // carry a next-settlement timestamp field.  Consumers that need next_funding_time
+        // populated must subscribe to the dedicated push.funding.rate channel (handled
+        // separately in topic_registry / dispatch — that path does populate the field).
         next_funding_time: None,
         timestamp,
     })

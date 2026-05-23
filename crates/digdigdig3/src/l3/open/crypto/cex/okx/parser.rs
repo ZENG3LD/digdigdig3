@@ -1479,10 +1479,18 @@ impl OkxParser {
 
         let mut result = Vec::with_capacity(arr.len());
         for item in arr {
-            let timestamp = Self::get_i64(item, "ts").unwrap_or(0);
-            // OKX field name for account ratio endpoint
-            let ratio = Self::get_f64(item, "longsShortsPosRatio")
-                .or_else(|| Self::get_f64(item, "longShortAcctRatio"))
+            // OKX returns positional arrays: [timestamp_str, ratio_str]
+            // Named-field access ("ts", "longsShortsPosRatio") always yields 0/1.0 defaults
+            // because array items have no keys.
+            let timestamp = item
+                .get(0)
+                .and_then(Value::as_str)
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(0);
+            let ratio = item
+                .get(1)
+                .and_then(Value::as_str)
+                .and_then(|s| s.parse::<f64>().ok())
                 .unwrap_or(1.0);
 
             // Derive long/short fractions from the combined ratio.
@@ -1564,5 +1572,41 @@ mod tests {
             assert!(message.contains("50111"));
             assert!(message.contains("Invalid sign"));
         }
+    }
+
+    #[test]
+    fn test_parse_long_short_ratio_list_positional() {
+        // OKX returns positional [ts_str, ratio_str] arrays (not named-field objects).
+        // Previously the parser used get_i64(item, "ts") / get_f64(item, "longsShortsPosRatio")
+        // which always fell through to 0/1.0 defaults.
+        let response = json!({
+            "code": "0",
+            "data": [
+                ["1727337900000", "2.1845"],
+                ["1727337600000", "2.1763"]
+            ]
+        });
+
+        let ratios = OkxParser::parse_long_short_ratio_list(&response, "BTC-USDT-SWAP").unwrap();
+        assert_eq!(ratios.len(), 2);
+
+        let r0 = &ratios[0];
+        assert_eq!(r0.timestamp, 1727337900000i64);
+        assert!((r0.ratio.unwrap() - 2.1845).abs() < 1e-6);
+
+        // long_pct = ratio / (1 + ratio) ≈ 2.1845 / 3.1845 ≈ 0.6859
+        let expected_long = 2.1845_f64 / (1.0 + 2.1845);
+        let expected_short = 1.0 / (1.0 + 2.1845);
+        assert!((r0.long_ratio - expected_long).abs() < 1e-6,
+            "long_ratio mismatch: got {}, expected {}", r0.long_ratio, expected_long);
+        assert!((r0.short_ratio - expected_short).abs() < 1e-6,
+            "short_ratio mismatch: got {}, expected {}", r0.short_ratio, expected_short);
+
+        // Sanity: long + short ≈ 1.0
+        assert!((r0.long_ratio + r0.short_ratio - 1.0).abs() < 1e-10);
+
+        let r1 = &ratios[1];
+        assert_eq!(r1.timestamp, 1727337600000i64);
+        assert!((r1.ratio.unwrap() - 2.1763).abs() < 1e-6);
     }
 }

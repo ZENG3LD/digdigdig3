@@ -3127,7 +3127,10 @@ impl MarketDataPublic for BinanceConnector {
         account_type: AccountType,
     ) -> ExchangeResult<Vec<crate::core::types::LongShortRatio>> {
         let symbol = symbol.resolve(ExchangeId::Binance, account_type)?;
-        self.get_top_long_short_account_ratio(&symbol, period, limit, start_time, end_time).await
+        // Route to global (all-accounts) LSR, not top-20% traders.
+        // get_top_long_short_account_ratio still exists as an inherent method for
+        // callers that specifically want the top-trader subset.
+        self.get_global_long_short_account_ratio(&symbol, period, limit, start_time, end_time).await
     }
 
     async fn get_funding_rate_history(

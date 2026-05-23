@@ -195,7 +195,7 @@ impl KuCoinParser {
 
         Ok(FundingRate {
             rate: Self::require_f64(data, "value")?,
-            next_funding_time: None,
+            next_funding_time: data.get("fundingFeeTime").and_then(|t| t.as_i64()),
             timestamp: data.get("timePoint")
                 .and_then(|t| t.as_i64())
                 .unwrap_or(0),
@@ -1237,5 +1237,43 @@ mod tests {
         // Verify other fields
         assert!((ticker.last_price - 11328.9).abs() < f64::EPSILON);
         assert_eq!(ticker.timestamp, 1602832092060i64);
+    }
+
+    #[test]
+    fn test_parse_funding_rate_with_fee_time() {
+        // Wire frame contains fundingFeeTime (i64 ms) — must be propagated to next_funding_time.
+        let response = json!({
+            "code": "200000",
+            "data": {
+                "symbol": "XBTUSDM",
+                "granularity": 28800000,
+                "timePoint": 1727337600000i64,
+                "value": 0.0001,
+                "predictedValue": 0.00012,
+                "fundingFeeTime": 1727337900000i64
+            }
+        });
+
+        let fr = KuCoinParser::parse_funding_rate(&response).unwrap();
+        assert!((fr.rate - 0.0001).abs() < 1e-10);
+        assert_eq!(fr.timestamp, 1727337600000i64);
+        assert_eq!(fr.next_funding_time, Some(1727337900000i64));
+    }
+
+    #[test]
+    fn test_parse_funding_rate_without_fee_time() {
+        // When fundingFeeTime is absent, next_funding_time must be None (no regression).
+        let response = json!({
+            "code": "200000",
+            "data": {
+                "symbol": "XBTUSDM",
+                "granularity": 28800000,
+                "timePoint": 1727337600000i64,
+                "value": 0.0001
+            }
+        });
+
+        let fr = KuCoinParser::parse_funding_rate(&response).unwrap();
+        assert_eq!(fr.next_funding_time, None);
     }
 }

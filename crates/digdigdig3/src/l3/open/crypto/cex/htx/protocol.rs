@@ -116,7 +116,12 @@ impl HtxProtocol {
                  use REST GET /linear-swap-api/v1/swap_open_interest".to_string(),
             )),
             StreamKind::IndexPriceKline { .. } => Err(WebSocketError::NotSupported(
-                "HTX: IndexPriceKline not available via WebSocket — use REST".into(),
+                "HTX IndexPriceKline is REST-only — \
+                 use REST GET /index/market/history/index/kline".to_string(),
+            )),
+            StreamKind::IndexPrice => Err(WebSocketError::NotSupported(
+                "HTX does not expose a realtime WS index price channel — \
+                 use REST GET /index/market/history/index for the current index value".to_string(),
             )),
             other => Err(WebSocketError::UnsupportedOperation(format!(
                 "htx: unsupported stream kind {other:?}"

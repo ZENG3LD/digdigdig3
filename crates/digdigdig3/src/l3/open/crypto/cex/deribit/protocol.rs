@@ -139,6 +139,16 @@ impl DeribitProtocol {
                  historical data only via REST /api/v2/public/get_liquidations".to_string(),
             ));
         }
+        // HistoricalVolatility is REST-only on Deribit — no WS channel exists.
+        // Surfaced as NotSupported (wire-not-present) rather than
+        // UnsupportedOperation (TODO_Implement), so consumers route the
+        // request to REST without retrying the WS path.
+        if matches!(spec.kind, StreamKind::HistoricalVolatility) {
+            return Err(WebSocketError::NotSupported(
+                "Deribit HistoricalVolatility is REST-only — \
+                 use REST GET /api/v2/public/get_historical_volatility?currency=BTC".to_string(),
+            ));
+        }
         let channel_str = Self::channel_name(spec)
             .ok_or_else(|| WebSocketError::UnsupportedOperation(
                 format!("deribit: unsupported stream kind {:?}", spec.kind),

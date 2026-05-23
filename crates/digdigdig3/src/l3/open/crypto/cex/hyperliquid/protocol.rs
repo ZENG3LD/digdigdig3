@@ -91,6 +91,12 @@ impl HyperliquidProtocol {
             StreamKind::BalanceUpdate => json!({ "type": "clearinghouseState", "user": coin }),
             StreamKind::PositionUpdate => json!({ "type": "clearinghouseState", "user": coin }),
             StreamKind::OrderUpdate => json!({ "type": "orderUpdates", "user": coin }),
+            StreamKind::MarketWarning => {
+                return Err(WebSocketError::NotSupported(
+                    "HyperLiquid does not expose a market-warning / notification WS channel — \
+                     status updates are delivered out-of-band via Discord / status page".to_string(),
+                ));
+            }
             other => {
                 return Err(WebSocketError::UnsupportedOperation(format!(
                     "hyperliquid: unsupported stream kind {:?}",

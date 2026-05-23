@@ -4,7 +4,7 @@
 
 use digdigdig3::core::types::{OrderSide, TradeSide};
 use digdigdig3_station::data::{
-    AuctionEventPoint, BlockTradePoint, MarketWarningPoint, OrderbookL3Point, TradePoint,
+    BlockTradePoint, MarketWarningPoint, OrderbookL3Point, TradePoint,
 };
 use digdigdig3_station::{AccountType, DataPoint, DiskStore, ExchangeId, Kind, SeriesKey};
 
@@ -67,27 +67,6 @@ fn block_trade_blob_round_trip_utf8_and_empty() {
         let back = BlockTradePoint::decode_blob(&hdr, &blob).unwrap();
         assert_eq!(back.block_id, id);
     }
-}
-
-#[test]
-fn auction_event_blob_round_trip() {
-    let p = AuctionEventPoint {
-        ts_ms: 1_700_000_000_500,
-        auction_id: "AUC-XYZ-9".to_string(),
-        indicative_price: 70_000.5,
-        indicative_qty: 0.25,
-        state: "PRE_OPEN".to_string(),
-    };
-    let mut hdr = vec![0u8; AuctionEventPoint::RECORD_SIZE];
-    p.encode(&mut hdr);
-    let blob = p.encode_blob().unwrap();
-    let back = AuctionEventPoint::decode_blob(&hdr, &blob).unwrap();
-    assert_eq!(back.ts_ms, p.ts_ms);
-    assert_eq!(back.auction_id, p.auction_id);
-    assert_eq!(back.indicative_price, p.indicative_price);
-    assert_eq!(back.indicative_qty, p.indicative_qty);
-    assert_eq!(back.state, p.state);
-    assert_eq!(AuctionEventPoint::blob_pointer_offset(), Some(24));
 }
 
 #[test]
@@ -278,7 +257,6 @@ fn fixed_size_type_does_not_create_blob_file() {
 fn blob_pointer_offset_is_set_only_on_string_bearing_types() {
     assert!(TradePoint::blob_pointer_offset().is_none());
     assert!(BlockTradePoint::blob_pointer_offset().is_some());
-    assert!(AuctionEventPoint::blob_pointer_offset().is_some());
     assert!(MarketWarningPoint::blob_pointer_offset().is_some());
     assert!(OrderbookL3Point::blob_pointer_offset().is_some());
 }

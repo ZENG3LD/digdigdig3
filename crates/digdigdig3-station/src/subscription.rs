@@ -2,7 +2,7 @@ use digdigdig3::core::types::{AccountType, ExchangeId};
 use digdigdig3::core::websocket::KlineInterval;
 
 use crate::data::{
-    AggTradePoint, AuctionEventPoint, BarPoint, BasisPoint, BlockTradePoint, CompositeIndexPoint,
+    AggTradePoint, BarPoint, BasisPoint, BlockTradePoint, CompositeIndexPoint,
     FundingRatePoint, FundingSettlementPoint, HistoricalVolatilityPoint, IndexPriceKlinePoint,
     IndexPricePoint, InsuranceFundPoint, LiquidationPoint, MarkPriceKlinePoint, MarkPricePoint,
     MarketWarningPoint, ObDeltaPoint, ObSnapshotPoint, OpenInterestPoint, OptionGreeksPoint,
@@ -38,7 +38,6 @@ pub enum Stream {
     InsuranceFund,
     OrderbookL3,
     SettlementEvent,
-    AuctionEvent,
     MarketWarning,
     RiskLimit,
     PredictedFunding,
@@ -71,7 +70,6 @@ impl Stream {
             Stream::InsuranceFund => Kind::InsuranceFund,
             Stream::OrderbookL3 => Kind::OrderbookL3,
             Stream::SettlementEvent => Kind::SettlementEvent,
-            Stream::AuctionEvent => Kind::AuctionEvent,
             Stream::MarketWarning => Kind::MarketWarning,
             Stream::RiskLimit => Kind::RiskLimit,
             Stream::PredictedFunding => Kind::PredictedFunding,
@@ -268,11 +266,6 @@ pub enum Event {
         symbol: String,
         point: SettlementEventPoint,
     },
-    AuctionEvent {
-        exchange: ExchangeId,
-        symbol: String,
-        point: AuctionEventPoint,
-    },
     MarketWarning {
         exchange: ExchangeId,
         symbol: String,
@@ -327,7 +320,7 @@ impl Event {
             Event::VolatilityIndex { exchange, .. } | Event::HistoricalVolatility { exchange, .. } |
             Event::Basis { exchange, .. } | Event::InsuranceFund { exchange, .. } |
             Event::OrderbookL3 { exchange, .. } | Event::SettlementEvent { exchange, .. } |
-            Event::AuctionEvent { exchange, .. } | Event::MarketWarning { exchange, .. } |
+            Event::MarketWarning { exchange, .. } |
             Event::RiskLimit { exchange, .. } | Event::PredictedFunding { exchange, .. } |
             Event::FundingSettlement { exchange, .. } |
             Event::MarkPriceKline { exchange, .. } | Event::IndexPriceKline { exchange, .. } |
@@ -347,7 +340,7 @@ impl Event {
             Event::VolatilityIndex { symbol, .. } | Event::HistoricalVolatility { symbol, .. } |
             Event::Basis { symbol, .. } | Event::InsuranceFund { symbol, .. } |
             Event::OrderbookL3 { symbol, .. } | Event::SettlementEvent { symbol, .. } |
-            Event::AuctionEvent { symbol, .. } | Event::MarketWarning { symbol, .. } |
+            Event::MarketWarning { symbol, .. } |
             Event::RiskLimit { symbol, .. } | Event::PredictedFunding { symbol, .. } |
             Event::FundingSettlement { symbol, .. } |
             Event::MarkPriceKline { symbol, .. } | Event::IndexPriceKline { symbol, .. } |
@@ -384,7 +377,6 @@ impl Event {
             | Event::InsuranceFund { symbol, .. }
             | Event::OrderbookL3 { symbol, .. }
             | Event::SettlementEvent { symbol, .. }
-            | Event::AuctionEvent { symbol, .. }
             | Event::MarketWarning { symbol, .. }
             | Event::RiskLimit { symbol, .. }
             | Event::PredictedFunding { symbol, .. }
@@ -417,7 +409,6 @@ impl Event {
             Event::InsuranceFund { point, .. } => point.timestamp_ms(),
             Event::OrderbookL3 { point, .. } => point.timestamp_ms(),
             Event::SettlementEvent { point, .. } => point.timestamp_ms(),
-            Event::AuctionEvent { point, .. } => point.timestamp_ms(),
             Event::MarketWarning { point, .. } => point.timestamp_ms(),
             Event::RiskLimit { point, .. } => point.timestamp_ms(),
             Event::PredictedFunding { point, .. } => point.timestamp_ms(),

@@ -269,11 +269,6 @@ fn print_event(event: &Event, ob_depth: usize, seq: u64) {
                 ts = point.ts_ms, ex = exchange, sym = symbol,
                 px = point.settlement_price, st = point.settlement_time);
         }
-        Event::AuctionEvent { exchange, symbol, point } => {
-            println!("{ts} {ex:?} {sym} AUCTION id={id} state={state} px={px}",
-                ts = point.ts_ms, ex = exchange, sym = symbol,
-                id = point.auction_id, state = point.state, px = point.indicative_price);
-        }
         Event::MarketWarning { exchange, symbol, point } => {
             println!("{ts} {ex:?} {sym} WARNING kind={kind} msg={msg}",
                 ts = point.ts_ms, ex = exchange, sym = symbol,

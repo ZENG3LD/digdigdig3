@@ -87,14 +87,14 @@ impl PersistenceConfig {
             OpenInterest => self.open_interest,
             Liquidation => self.liquidations,
             // Extended types — numeric variants persist if globally enabled.
-            // String-bearing variants (BlockTrade, OrderbookL3, AuctionEvent,
-            // MarketWarning) use header + companion `.blob` storage via
+            // String-bearing variants (BlockTrade, OrderbookL3, MarketWarning)
+            // use header + companion `.blob` storage via
             // `DataPoint::blob_pointer_offset` and persist normally.
             IndexPrice | CompositeIndex | VolatilityIndex | HistoricalVolatility
             | Basis | InsuranceFund | SettlementEvent | PredictedFunding
             | FundingSettlement | RiskLimit | OptionGreeks
             | MarkPriceKline(_) | IndexPriceKline(_) | PremiumIndexKline(_)
-            | BlockTrade | OrderbookL3 | AuctionEvent | MarketWarning => self.enabled,
+            | BlockTrade | OrderbookL3 | MarketWarning => self.enabled,
         }
     }
 }

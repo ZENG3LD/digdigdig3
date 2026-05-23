@@ -5,7 +5,6 @@
 //! itself — it lives in the path (`<kind>/<exchange>/<account>/<symbol>/...`).
 
 pub mod agg_trade;
-pub mod auction_event;
 pub mod bar;
 pub mod basis;
 pub mod block_trade;
@@ -34,7 +33,6 @@ pub mod trade;
 pub mod volatility_index;
 
 pub use agg_trade::AggTradePoint;
-pub use auction_event::AuctionEventPoint;
 pub use bar::BarPoint;
 pub use basis::BasisPoint;
 pub use block_trade::BlockTradePoint;

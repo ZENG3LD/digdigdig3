@@ -13,7 +13,7 @@ use futures_util::StreamExt;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::data::{
-    AggTradePoint, AuctionEventPoint, BarPoint, BasisPoint, BlockTradePoint, CompositeIndexPoint,
+    AggTradePoint, BarPoint, BasisPoint, BlockTradePoint, CompositeIndexPoint,
     FundingRatePoint, FundingSettlementPoint, HistoricalVolatilityPoint, IndexPriceKlinePoint,
     IndexPricePoint, InsuranceFundPoint, LiquidationPoint, MarkPriceKlinePoint, MarkPricePoint,
     MarketWarningPoint, ObDeltaPoint, ObSnapshotPoint, OpenInterestPoint, OptionGreeksPoint,
@@ -334,7 +334,6 @@ impl Station {
             Kind::InsuranceFund => spawn_forwarder::<InsuranceFundPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::OrderbookL3 => spawn_forwarder::<OrderbookL3Point>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::SettlementEvent => spawn_forwarder::<SettlementEventPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
-            Kind::AuctionEvent => spawn_forwarder::<AuctionEventPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::MarketWarning => spawn_forwarder::<MarketWarningPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::RiskLimit => spawn_forwarder::<RiskLimitPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::PredictedFunding => spawn_forwarder::<PredictedFundingPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
@@ -831,11 +830,6 @@ impl EventFrom<SettlementEventPoint> for Event {
         Event::SettlementEvent { exchange, symbol: symbol.to_string(), point }
     }
 }
-impl EventFrom<AuctionEventPoint> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: AuctionEventPoint) -> Self {
-        Event::AuctionEvent { exchange, symbol: symbol.to_string(), point }
-    }
-}
 impl EventFrom<MarketWarningPoint> for Event {
     fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: MarketWarningPoint) -> Self {
         Event::MarketWarning { exchange, symbol: symbol.to_string(), point }
@@ -901,7 +895,6 @@ fn ws_request_for(
         Kind::InsuranceFund => StreamType::InsuranceFund,
         Kind::OrderbookL3 => StreamType::OrderbookL3,
         Kind::SettlementEvent => StreamType::SettlementEvent,
-        Kind::AuctionEvent => StreamType::AuctionEvent,
         Kind::MarketWarning => StreamType::MarketWarning,
         Kind::RiskLimit => StreamType::RiskLimit,
         Kind::PredictedFunding => StreamType::PredictedFunding,

@@ -293,6 +293,20 @@ impl<P: WsProtocol> UniversalWsTransport<P> {
     pub fn protocol(&self) -> &P {
         &self.protocol
     }
+
+    /// Inject pre-built events into the broadcast channel.
+    ///
+    /// Used by connectors that need to seed initial state from REST before live
+    /// WS events flow (e.g. Bitstamp L3 snapshot bootstrap: fetch REST order book,
+    /// emit synthetic `OrderbookL3 { action: "create" }` events, then live
+    /// `live_orders_*` events follow).
+    ///
+    /// Events that fail to send (no active receivers) are silently discarded.
+    pub fn broadcast_events(&self, events: Vec<StreamEvent>) {
+        for ev in events {
+            let _ = self.event_tx.send(Ok(ev));
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

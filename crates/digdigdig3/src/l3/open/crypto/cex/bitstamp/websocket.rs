@@ -1,861 +1,166 @@
-//! # Bitstamp WebSocket Implementation
+//! BitstampWebSocket — thin wrapper around UniversalWsTransport<BitstampProtocol>.
 //!
-//! WebSocket connector for Bitstamp WebSocket API (Pusher protocol).
+//! Replaces the bespoke 1154-LOC connect/ping/reconnect loop.  The framework
+//! owns all connection lifecycle, ping scheduling (30s Pusher text ping),
+//! subscription replay on reconnect, and frame dispatch.
 //!
-//! ## Features
-//! - Public channels (live_trades, order_book, diff_order_book)
-//! - Subscription management
-//! - Message parsing to StreamEvent
-//! - WebSocket-level ping/pong heartbeat handling
+//! ## Auto-connect bug fix
 //!
-//! ## Channel Mapping
+//! The old bespoke implementation did not connect automatically when `subscribe()`
+//! was called — it required an explicit `ws.connect()` call first. Station never
+//! calls `ws.connect()` directly (it calls `subscribe()`), so every bitstamp WS
+//! subscription returned `Network("Not connected")`.
 //!
-//! Bitstamp does not have a dedicated "ticker" WebSocket channel. Instead:
-//! - `StreamType::Ticker` -> `order_book_{pair}` (best bid/ask snapshot → synthetic Ticker)
-//! - `StreamType::Trade` -> `live_trades_{pair}` (per-trade, emits Trade events)
-//! - `StreamType::Orderbook` -> `order_book_{pair}` (periodic full snapshots)
-//! - `StreamType::OrderbookDelta` -> `diff_order_book_{pair}` (incremental updates)
+//! `UniversalWsTransport::subscribe` sends a `TransportCmd::Subscribe` which
+//! triggers the driver task to connect lazily on the first command.  No explicit
+//! `connect()` call is needed from Station.
 //!
-//! ## Pusher Protocol
+//! ## L3 snapshot bootstrap
 //!
-//! Bitstamp uses the Pusher protocol over WebSocket:
-//! - Connection: `wss://ws.bitstamp.net`
-//! - Server sends `pusher:connection_established` on connect
-//! - Subscribe: `{"event":"bts:subscribe","data":{"channel":"..."}}`
-//! - Heartbeat: client sends `{"event":"pusher:ping","data":{}}`,
-//!   server responds with `{"event":"pusher:pong","data":{}}`
-//! - Trade events: `{"event":"trade","channel":"live_trades_...","data":{...}}`
-//! - Order book events: `{"event":"data","channel":"diff_order_book_...","data":{...}}`
+//! On the first `subscribe(OrderbookL3)` for a pair, `emit_l3_snapshot` fetches
+//! the REST L3 order book and injects synthetic `OrderbookL3 { action: "create" }`
+//! events via `inner.broadcast_events`.  Live `live_orders_*` events that arrive
+//! during the REST round-trip are buffered in the broadcast channel and flow after
+//! the snapshot batch — no live events are lost.
 
 use std::collections::HashSet;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex as StdMutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures_util::{Stream, StreamExt, SinkExt, stream::SplitSink, stream::SplitStream};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use tokio::sync::{mpsc, broadcast, Mutex};
-use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream, MaybeTlsStream};
+use futures_util::Stream;
+use tokio::sync::Mutex as TokioMutex;
 
-use crate::core::{
-    AccountType,
-    ExchangeError, ExchangeResult,
-    ConnectionStatus, StreamEvent, SubscriptionRequest,
-};
-use crate::core::types::{
-    WebSocketResult, WebSocketError, OrderbookCapabilities, WsBookChannel,
-    OrderSide,
-};
 use crate::core::traits::WebSocketConnector;
+use crate::core::types::{
+    AccountType, ConnectionStatus, ExchangeId, OrderSide, OrderbookCapabilities, StreamEvent,
+    SubscriptionRequest, WebSocketResult, WsBookChannel,
+};
+use crate::core::websocket::{StreamKind, StreamSpec, UniversalWsTransport};
 
-use super::endpoints::{BitstampUrls, format_symbol};
-use super::parser::BitstampParser;
+use super::protocol::BitstampProtocol;
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// WEBSOCKET MESSAGES
-// ═══════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
+// BitstampWebSocket
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// Subscription message
-#[derive(Debug, Clone, Serialize)]
-struct SubscribeMessage {
-    event: String,
-    data: ChannelData,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct ChannelData {
-    channel: String,
-}
-
-/// Incoming WebSocket message
-#[derive(Debug, Clone, Deserialize)]
-struct IncomingMessage {
-    event: String,
-    channel: Option<String>,
-    data: Option<Value>,
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// BITSTAMP WEBSOCKET CONNECTOR
-// ═══════════════════════════════════════════════════════════════════════════════
-
-type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
-type WsWriter = SplitSink<WsStream, Message>;
-type WsReader = SplitStream<WsStream>;
-
-/// Bitstamp WebSocket connector
+/// Bitstamp WebSocket connector backed by UniversalWsTransport.
+///
+/// Construct via `BitstampWebSocket::new()`.  Does NOT connect until the first
+/// `subscribe()` call (or explicit `connect()`).
 pub struct BitstampWebSocket {
-    /// Connection status
-    status: Arc<Mutex<ConnectionStatus>>,
-    /// Active subscriptions
-    subscriptions: Arc<Mutex<HashSet<SubscriptionRequest>>>,
-    /// Channels subscribed as Ticker (order_book_* channels used for ticker data).
-    /// These channels emit `StreamEvent::Ticker` instead of `StreamEvent::OrderbookSnapshot`.
-    ticker_channels: Arc<Mutex<HashSet<String>>>,
-    /// Event sender (internal - for message handler)
-    event_tx: Arc<Mutex<Option<mpsc::UnboundedSender<WebSocketResult<StreamEvent>>>>>,
-    /// Broadcast sender (for multiple consumers, dropped on disconnect)
-    broadcast_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
-    /// WebSocket write half (for sending subscriptions and pongs)
-    ws_writer: Arc<Mutex<Option<WsWriter>>>,
-    /// Timestamp of the most recently sent WS-frame ping.
-    last_ping: Arc<Mutex<Instant>>,
-    /// WebSocket ping round-trip time in milliseconds (0 = not measured yet).
-    ws_ping_rtt_ms: Arc<Mutex<u64>>,
+    inner: UniversalWsTransport<BitstampProtocol>,
+    rest_client: reqwest::Client,
+    /// Pairs for which we have already fetched the REST L3 snapshot this session.
+    l3_bootstrapped: Arc<TokioMutex<HashSet<String>>>,
 }
 
 impl BitstampWebSocket {
-    /// Create new Bitstamp WebSocket connector
-    pub async fn new() -> ExchangeResult<Self> {
-        Ok(Self {
-            status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
-            subscriptions: Arc::new(Mutex::new(HashSet::new())),
-            ticker_channels: Arc::new(Mutex::new(HashSet::new())),
-            event_tx: Arc::new(Mutex::new(None)),
-            broadcast_tx: Arc::new(StdMutex::new(None)),
-            ws_writer: Arc::new(Mutex::new(None)),
-            last_ping: Arc::new(Mutex::new(Instant::now())),
-            ws_ping_rtt_ms: Arc::new(Mutex::new(0)),
-        })
-    }
-
-    /// Subscribe to a channel by sending a Pusher subscription message
-    async fn subscribe_channel(&self, channel: &str) -> ExchangeResult<()> {
-        let msg = SubscribeMessage {
-            event: "bts:subscribe".to_string(),
-            data: ChannelData {
-                channel: channel.to_string(),
-            },
-        };
-
-        let json = serde_json::to_string(&msg)
-            .map_err(|e| ExchangeError::Parse(format!("Failed to serialize: {}", e)))?;
-
-        let mut writer_guard = self.ws_writer.lock().await;
-        if let Some(writer) = writer_guard.as_mut() {
-            writer.send(Message::Text(json))
-                .await
-                .map_err(|e| ExchangeError::Network(format!("Failed to send message: {}", e)))?;
-        } else {
-            return Err(ExchangeError::Network("Not connected".to_string()));
+    /// Create a new connector.  Does NOT connect yet.
+    pub fn new() -> Self {
+        Self {
+            inner: UniversalWsTransport::new(
+                BitstampProtocol,
+                AccountType::Spot,
+                false, // testnet ignored — Bitstamp has none
+                None,  // public streams, no credentials
+            ),
+            rest_client: reqwest::Client::new(),
+            l3_bootstrapped: Arc::new(TokioMutex::new(HashSet::new())),
         }
-
-        Ok(())
-    }
-
-    /// Subscribe to ticker data via order_book channel.
-    ///
-    /// Bitstamp has no dedicated ticker WebSocket channel. The `order_book`
-    /// channel provides top-100 orderbook snapshots on every change, from which
-    /// we derive best bid/ask and emit `StreamEvent::Ticker`. The channel name
-    /// is tracked in `ticker_channels` so the message handler emits Ticker
-    /// (with bid_price, ask_price, last_price = midpoint) instead of OrderbookSnapshot.
-    ///
-    /// `pair` must be the exchange-native raw string (e.g. `"btcusd"`).
-    pub async fn subscribe_ticker(&self, pair: &str) -> ExchangeResult<()> {
-        let channel = format!("order_book_{}", pair);
-        self.ticker_channels.lock().await.insert(channel.clone());
-        self.subscribe_channel(&channel).await
-    }
-
-    /// Subscribe to live trades.
-    ///
-    /// `pair` must be the exchange-native raw string (e.g. `"btcusd"`).
-    pub async fn subscribe_trades(&self, pair: &str) -> ExchangeResult<()> {
-        let channel = format!("live_trades_{}", pair);
-        self.subscribe_channel(&channel).await
-    }
-
-    /// Subscribe to order book snapshots.
-    ///
-    /// `pair` must be the exchange-native raw string (e.g. `"btcusd"`).
-    pub async fn subscribe_orderbook(&self, pair: &str) -> ExchangeResult<()> {
-        let channel = format!("order_book_{}", pair);
-        self.subscribe_channel(&channel).await
-    }
-
-    /// Subscribe to live order events (L3 — per-order lifecycle: created/changed/deleted).
-    ///
-    /// This is a legacy channel.  Prefer `diff_order_book` (`StreamType::OrderbookDelta`)
-    /// for L2 aggregated incremental updates.  Use `live_orders` only when you need
-    /// individual order-level events (e.g. to build a full L3 book).
-    ///
-    /// Events arrive as `OrderbookDelta` with a single bid or ask level per frame:
-    /// - `"order_created"` / `"order_changed"` — level with non-zero quantity
-    /// - `"order_deleted"` — level with zero quantity (remove signal)
-    ///
-    /// `pair` must be the exchange-native raw string (e.g. `"btcusd"`).
-    pub async fn subscribe_live_orders(&self, pair: &str) -> ExchangeResult<()> {
-        let channel = format!("live_orders_{}", pair);
-        self.subscribe_channel(&channel).await
-    }
-
-    /// Subscribe to the full L3 order book snapshot with order IDs.
-    ///
-    /// Channel: `detail_order_book_{pair}` (e.g. `detail_order_book_btcusd`)
-    ///
-    /// Bitstamp sends a full L3 book snapshot on subscribe and pushes incremental
-    /// updates when individual orders are created, changed, or deleted.
-    ///
-    /// `pair` must be the exchange-native raw string (e.g. `"btcusd"`).
-    pub async fn subscribe_detail_order_book(&self, pair: &str) -> ExchangeResult<()> {
-        let channel = format!("detail_order_book_{}", pair);
-        self.subscribe_channel(&channel).await
-    }
-
-    /// Fetch a REST L3 snapshot for `pair` and emit synthetic `OrderbookL3 { action: "create" }`
-    /// events for every bid and ask entry.
-    ///
-    /// Must be called AFTER `subscribe_live_orders` has returned OK (WS channel already active).
-    /// Live events that arrive during the REST round-trip are buffered in the broadcast channel
-    /// and will flow AFTER the snapshot events — no live events are lost.
-    ///
-    /// REST endpoint: `GET https://www.bitstamp.net/api/v2/order_book/{pair}/?group=2`
-    ///
-    /// Response shape (group=2 mirrors the WS L3 layout):
-    /// ```json
-    /// { "bids": [["price", "amount", "order_id"], ...],
-    ///   "asks": [["price", "amount", "order_id"], ...],
-    ///   "microtimestamp": "1643643584684047" }
-    /// ```
-    ///
-    /// Future improvement: full gap recovery via `POST /api/v2/order_data/` with timestamp range.
-    async fn emit_l3_snapshot(&self, pair: &str) -> ExchangeResult<()> {
-        let url = format!(
-            "https://www.bitstamp.net/api/v2/order_book/{}/?group=2",
-            pair
-        );
-        let resp = reqwest::Client::new()
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| ExchangeError::Network(format!("L3 snapshot fetch failed: {}", e)))?;
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| ExchangeError::Network(format!("L3 snapshot body read failed: {}", e)))?;
-        let json: serde_json::Value = serde_json::from_str(&body)
-            .map_err(|e| ExchangeError::Parse(format!("L3 snapshot parse failed: {}", e)))?;
-
-        // Timestamp: µs → ms, fall back to 0
-        let timestamp_ms = json.get("microtimestamp")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<i64>().ok())
-            .map(|us| us / 1000)
-            .unwrap_or(0);
-
-        let symbol = pair.to_ascii_uppercase();
-
-        let parse_entries = |entries: &serde_json::Value, side: OrderSide| -> Vec<StreamEvent> {
-            entries.as_array()
-                .map(|arr| {
-                    arr.iter().filter_map(|entry| {
-                        let e = entry.as_array()?;
-                        let price = e.first()?.as_str()?.parse::<f64>().ok()?;
-                        let quantity = e.get(1)?.as_str()?.parse::<f64>().ok()?;
-                        let order_id = e.get(2)?.as_str()?.to_string();
-                        Some(StreamEvent::OrderbookL3 {
-                            symbol: symbol.clone(),
-                            side,
-                            order_id,
-                            price,
-                            quantity,
-                            action: "create".to_string(),
-                            timestamp: timestamp_ms,
-                        })
-                    }).collect()
-                })
-                .unwrap_or_default()
-        };
-
-        let null = serde_json::Value::Null;
-        let bids_events = parse_entries(json.get("bids").unwrap_or(&null), OrderSide::Buy);
-        let asks_events = parse_entries(json.get("asks").unwrap_or(&null), OrderSide::Sell);
-
-        // Send snapshot events via the mpsc event_tx channel.
-        let tx_guard = self.event_tx.lock().await;
-        if let Some(tx) = tx_guard.as_ref() {
-            for event in bids_events.into_iter().chain(asks_events) {
-                let _ = tx.send(Ok(event));
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Start message handling task.
-    ///
-    /// The reader half processes incoming messages while the writer half
-    /// is shared for sending Pusher pings and subscription messages.
-    fn start_message_handler(
-        reader: WsReader,
-        ws_writer: Arc<Mutex<Option<WsWriter>>>,
-        event_tx: mpsc::UnboundedSender<WebSocketResult<StreamEvent>>,
-        status: Arc<Mutex<ConnectionStatus>>,
-        ticker_channels: Arc<Mutex<HashSet<String>>>,
-        last_ping: Arc<Mutex<Instant>>,
-        ws_ping_rtt_ms: Arc<Mutex<u64>>,
-    ) {
-        tokio::spawn(async move {
-            let mut reader = reader;
-
-            loop {
-                match reader.next().await {
-                    Some(Ok(Message::Text(text))) => {
-                        if let Err(e) = Self::handle_message(&text, &event_tx, &ticker_channels).await {
-                            let _ = event_tx.send(Err(e));
-                        }
-                    }
-                    Some(Ok(Message::Ping(data))) => {
-                        // Respond to WebSocket-level ping with pong
-                        let mut writer_guard = ws_writer.lock().await;
-                        if let Some(writer) = writer_guard.as_mut() {
-                            let _ = writer.send(Message::Pong(data)).await;
-                        }
-                    }
-                    Some(Ok(Message::Pong(_))) => {
-                        // Measure RTT from our last client-initiated ping frame.
-                        let rtt = last_ping.lock().await.elapsed().as_millis() as u64;
-                        *ws_ping_rtt_ms.lock().await = rtt;
-                    }
-                    Some(Ok(Message::Binary(_))) => {
-                        // Binary messages not expected from Bitstamp
-                    }
-                    Some(Ok(Message::Close(_))) => {
-                        *status.lock().await = ConnectionStatus::Disconnected;
-                        break;
-                    }
-                    Some(Ok(Message::Frame(_))) => {
-                        // Raw frame, ignore
-                    }
-                    Some(Err(_e)) => {
-                        let _ = event_tx.send(Err(WebSocketError::ConnectionError(
-                            "WebSocket read error".to_string()
-                        )));
-                        *status.lock().await = ConnectionStatus::Disconnected;
-                        break;
-                    }
-                    None => {
-                        *status.lock().await = ConnectionStatus::Disconnected;
-                        break;
-                    }
-                }
-            }
-        });
-    }
-
-    /// Start periodic WebSocket-level ping task (every 5 seconds for RTT measurement).
-    ///
-    /// Bitstamp's Pusher server has an `activity_timeout` of 120 seconds.
-    /// Sending a WS-frame ping every 5 seconds keeps the connection alive and
-    /// lets us measure RTT from the server's Pong response.
-    fn start_ping_task(
-        ws_writer: Arc<Mutex<Option<WsWriter>>>,
-        status: Arc<Mutex<ConnectionStatus>>,
-        last_ping: Arc<Mutex<Instant>>,
-    ) {
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(5));
-            interval.tick().await; // skip first immediate tick
-
-            loop {
-                interval.tick().await;
-
-                // Check if still connected
-                let current_status = *status.lock().await;
-                if current_status != ConnectionStatus::Connected {
-                    break;
-                }
-
-                // Record time before sending ping, then send WS-frame ping
-                let mut writer_guard = ws_writer.lock().await;
-                if let Some(writer) = writer_guard.as_mut() {
-                    *last_ping.lock().await = Instant::now();
-                    if writer.send(Message::Ping(vec![])).await.is_err() {
-                        break;
-                    }
-                } else {
-                    break;
-                }
-            }
-        });
-    }
-
-    /// Handle incoming WebSocket text message (Pusher protocol)
-    async fn handle_message(
-        text: &str,
-        event_tx: &mpsc::UnboundedSender<WebSocketResult<StreamEvent>>,
-        ticker_channels: &Arc<Mutex<HashSet<String>>>,
-    ) -> WebSocketResult<()> {
-        let msg: IncomingMessage = serde_json::from_str(text)
-            .map_err(|e| WebSocketError::Parse(format!("Failed to parse message: {}", e)))?;
-
-        match msg.event.as_str() {
-            // Pusher protocol events
-            "pusher:connection_established" => {
-                // Connection confirmed by Pusher - nothing to do
-                return Ok(());
-            }
-            "pusher:pong" => {
-                // Heartbeat response - connection is alive
-                return Ok(());
-            }
-            "pusher:error" => {
-                return Err(WebSocketError::ProtocolError(
-                    format!("Pusher error: {:?}", msg.data)
-                ));
-            }
-
-            // Bitstamp-specific protocol events
-            "bts:subscription_succeeded" => {
-                // Subscription confirmed
-                return Ok(());
-            }
-            "bts:error" => {
-                return Err(WebSocketError::ProtocolError(
-                    format!("Bitstamp error: {:?}", msg.data)
-                ));
-            }
-            "bts:request_reconnect" => {
-                return Err(WebSocketError::ConnectionError(
-                    "Server requested reconnection (bts:request_reconnect)".to_string()
-                ));
-            }
-
-            // Data events
-            "trade" | "data" => {
-                let is_ticker_channel = if let Some(ch) = msg.channel.as_ref() {
-                    ticker_channels.lock().await.contains(ch)
-                } else {
-                    false
-                };
-                for event in Self::parse_data_message(&msg, is_ticker_channel)? {
-                    let _ = event_tx.send(Ok(event));
-                }
-            }
-
-            // Live orders (L3) — per-order lifecycle events on live_orders_{pair} channels.
-            // Each event carries a single order; map to OrderbookDelta with one level.
-            "order_created" | "order_changed" | "order_deleted" => {
-                if let Some(event) = Self::parse_live_order_message(&msg)? {
-                    let _ = event_tx.send(Ok(event));
-                }
-            }
-
-            _ => {
-                // Unknown event type - silently ignore
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Parse data message to StreamEvent based on the channel name.
-    ///
-    /// When `as_ticker` is true, a `live_trades_*` message is parsed as
-    /// `StreamEvent::Ticker` (last_price = trade price) instead of `StreamEvent::Trade`.
-    ///
-    /// Returns a Vec because `detail_order_book_*` frames carry N bid/ask entries
-    /// and each must be emitted as a separate `StreamEvent::OrderbookL3`. All other
-    /// channel types return at most one element.
-    fn parse_data_message(msg: &IncomingMessage, as_ticker: bool) -> WebSocketResult<Vec<StreamEvent>> {
-        let channel = msg.channel.as_ref()
-            .ok_or_else(|| WebSocketError::Parse("Missing channel".to_string()))?;
-
-        // Reconstruct JSON for parser (parser expects { channel, event, data } format)
-        let json = serde_json::json!({
-            "channel": channel,
-            "event": &msg.event,
-            "data": msg.data
-        });
-
-        // Match channel to determine event type
-        if channel.starts_with("live_trades_") {
-            let symbol = channel.trim_start_matches("live_trades_").to_uppercase();
-            if as_ticker {
-                // Build a minimal Ticker from the trade price.
-                // Bitstamp has no WS ticker channel, so we use live trade price.
-                let trade = BitstampParser::parse_ws_trade(&json)
-                    .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-                let ticker = crate::core::types::Ticker {
-                    last_price: trade.price,
-                    bid_price: None,
-                    ask_price: None,
-                    high_24h: None,
-                    low_24h: None,
-                    volume_24h: None,
-                    quote_volume_24h: None,
-                    price_change_24h: None,
-                    price_change_percent_24h: None,
-                    timestamp: trade.timestamp,
-                };
-                Ok(vec![StreamEvent::Ticker { symbol, ticker }])
-            } else {
-                let trade = BitstampParser::parse_ws_trade(&json)
-                    .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-                Ok(vec![StreamEvent::Trade { symbol, trade }])
-            }
-        } else if channel.starts_with("diff_order_book_") {
-            let symbol = channel.trim_start_matches("diff_order_book_").to_uppercase();
-            let book = BitstampParser::parse_ws_orderbook(&json)
-                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(vec![StreamEvent::OrderbookSnapshot { symbol, book }])
-        } else if channel.starts_with("detail_order_book_") {
-            // L3 full book: each bid/ask entry is [price, amount, order_id].
-            // Bitstamp sends one snapshot on subscribe and incremental snapshots on change.
-            // Emit OrderbookL3 for every individual entry so consumers can build/update
-            // a full L3 order book.
-            //
-            // Data shape (verified via REST ?group=2 which mirrors WS L3 layout):
-            //   data.bids: [["price", "amount", "order_id"], ...]
-            //   data.asks: [["price", "amount", "order_id"], ...]
-            //   data.microtimestamp: "1643643584684047"
-            let data_obj = json.get("data")
-                .ok_or_else(|| WebSocketError::Parse("detail_order_book: missing data".to_string()))?;
-
-            // Timestamp in microseconds → milliseconds
-            let timestamp_ms = data_obj
-                .get("microtimestamp")
-                .or_else(|| data_obj.get("timestamp"))
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<i64>().ok())
-                .map(|us| {
-                    // microtimestamp is 16 digits (microseconds), timestamp is 10 digits (seconds)
-                    if us > 1_000_000_000_000_000 { us / 1000 } else { us * 1000 }
-                })
-                .unwrap_or(0);
-
-            // Extract pair from channel name (e.g. "detail_order_book_btcusd" → "btcusd")
-            let pair = channel.trim_start_matches("detail_order_book_").to_uppercase();
-
-            let parse_side = |entries: &Value, side: OrderSide| -> Vec<StreamEvent> {
-                entries.as_array()
-                    .map(|arr| {
-                        arr.iter().filter_map(|entry| {
-                            let e = entry.as_array()?;
-                            let price = e.first()?.as_str()?.parse::<f64>().ok()?;
-                            let quantity = e.get(1)?.as_str()?.parse::<f64>().ok()?;
-                            let order_id = e.get(2)?.as_str()?.to_string();
-                            Some(StreamEvent::OrderbookL3 {
-                                symbol: pair.clone(),
-                                side,
-                                order_id,
-                                price,
-                                quantity,
-                                action: "snapshot".to_string(),
-                                timestamp: timestamp_ms,
-                            })
-                        }).collect()
-                    })
-                    .unwrap_or_default()
-            };
-
-            let mut events: Vec<StreamEvent> = Vec::new();
-            events.extend(parse_side(data_obj.get("bids").unwrap_or(&serde_json::Value::Null), OrderSide::Buy));
-            events.extend(parse_side(data_obj.get("asks").unwrap_or(&serde_json::Value::Null), OrderSide::Sell));
-
-            Ok(events)
-        } else if channel.starts_with("order_book_") {
-            if as_ticker {
-                // Build synthetic Ticker from best bid/ask in the orderbook snapshot.
-                let orderbook = BitstampParser::parse_ws_orderbook(&json)
-                    .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-                let bid = orderbook.bids.first().map(|l| l.price);
-                let ask = orderbook.asks.first().map(|l| l.price);
-                let last_price = match (bid, ask) {
-                    (Some(b), Some(a)) => (b + a) / 2.0,
-                    (Some(b), None) => b,
-                    (None, Some(a)) => a,
-                    (None, None) => 0.0,
-                };
-                let pair = channel.trim_start_matches("order_book_").to_uppercase();
-                let ticker = crate::core::types::Ticker {
-                    last_price,
-                    bid_price: bid,
-                    ask_price: ask,
-                    high_24h: None,
-                    low_24h: None,
-                    volume_24h: None,
-                    quote_volume_24h: None,
-                    price_change_24h: None,
-                    price_change_percent_24h: None,
-                    timestamp: orderbook.timestamp,
-                };
-                Ok(vec![StreamEvent::Ticker { symbol: pair, ticker }])
-            } else {
-                let symbol = channel.trim_start_matches("order_book_").to_uppercase();
-                let book = BitstampParser::parse_ws_orderbook(&json)
-                    .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-                Ok(vec![StreamEvent::OrderbookSnapshot { symbol, book }])
-            }
-        } else {
-            // Unknown channel
-            Ok(vec![])
-        }
-    }
-
-    /// Parse a `live_orders_{pair}` event into an `OrderbookL3` event.
-    ///
-    /// Event data fields (all strings on the wire):
-    /// - `id` — order ID (integer on wire, stored as String)
-    /// - `price` — price level
-    /// - `amount` — remaining amount (`"0"` on `order_deleted`)
-    /// - `order_type` — `"0"` = bid (Buy), `"1"` = ask (Sell)
-    /// - `microtimestamp` — timestamp in microseconds
-    ///
-    /// `event_name` drives the `action` field:
-    /// - `"order_created"` → `"create"`
-    /// - `"order_changed"` → `"changed"`
-    /// - `"order_deleted"` → `"delete"`
-    fn parse_live_order_message(msg: &IncomingMessage) -> WebSocketResult<Option<StreamEvent>> {
-        let json = serde_json::json!({
-            "channel": msg.channel,
-            "event": &msg.event,
-            "data": msg.data
-        });
-        Self::parse_live_order_from_json(&json, &msg.event)
-    }
-
-    fn parse_live_order_from_json(json: &serde_json::Value, event_name: &str) -> WebSocketResult<Option<StreamEvent>> {
-        let data = json.get("data")
-            .ok_or_else(|| WebSocketError::Parse("live_orders: missing data".to_string()))?;
-
-        // Parse price — string field
-        let price = data.get("price")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
-            .ok_or_else(|| WebSocketError::Parse("live_orders: missing price".to_string()))?;
-
-        // Amount is "0" on deletion events
-        let amount = data.get("amount")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
-
-        // order_type: "0" = bid (Buy), "1" = ask (Sell)
-        let side = if data.get("order_type")
-            .and_then(|v| v.as_str())
-            .map(|s| s == "0")
-            .unwrap_or(true)
-        {
-            OrderSide::Buy
-        } else {
-            OrderSide::Sell
-        };
-
-        // Timestamp in microseconds → milliseconds
-        let timestamp_ms = data.get("microtimestamp")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<i64>().ok())
-            .map(|us| us / 1000)
-            .unwrap_or(0);
-
-        // Map event name to action string.
-        let action = match event_name {
-            "order_created" => "create",
-            "order_changed" => "changed",
-            "order_deleted" => "delete",
-            other => return Err(WebSocketError::Parse(
-                format!("live_orders: unknown event_name {:?}", other)
-            )),
-        }.to_string();
-
-        // Extract order_id — integer on the wire, stored as String.
-        let order_id = data.get("id")
-            .and_then(|v| v.as_i64())
-            .map(|n| n.to_string())
-            .unwrap_or_default();
-
-        // Extract symbol from the Bitstamp channel name: "live_orders_btcusd" → "BTCUSD".
-        let symbol = json
-            .get("channel")
-            .and_then(|v| v.as_str())
-            .map(|s| s.trim_start_matches("live_orders_").to_ascii_uppercase())
-            .unwrap_or_default();
-
-        Ok(Some(StreamEvent::OrderbookL3 {
-            symbol,
-            side,
-            order_id,
-            price,
-            quantity: amount,
-            action,
-            timestamp: timestamp_ms,
-        }))
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// WEBSOCKET CONNECTOR TRAIT
-// ═══════════════════════════════════════════════════════════════════════════════
+impl Default for BitstampWebSocket {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WebSocketConnector impl — delegates to inner transport
+// ─────────────────────────────────────────────────────────────────────────────
 
 #[async_trait]
 impl WebSocketConnector for BitstampWebSocket {
     async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
-        // Idempotency guard: if already connected, skip re-initialization.
-        // A second connect() call (e.g. from collect_ws_stream after hub.connect_websocket)
-        // would orphan the message handler → events routed to old broadcast nobody reads.
-        if *self.status.lock().await == ConnectionStatus::Connected {
-            return Ok(());
-        }
-
-        *self.status.lock().await = ConnectionStatus::Connecting;
-
-        let url = BitstampUrls::ws_url();
-        let (ws_stream, _) = connect_async(url)
-            .await
-            .map_err(|e| WebSocketError::ConnectionError(format!("Failed to connect: {}", e)))?;
-
-        // Split the stream into read and write halves.
-        // This allows the message handler to read messages without blocking
-        // the write half, which is needed for sending pong responses and
-        // subscription messages concurrently.
-        let (writer, reader) = ws_stream.split();
-
-        *self.ws_writer.lock().await = Some(writer);
-        *self.status.lock().await = ConnectionStatus::Connected;
-
-        // Create event channel
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        *self.event_tx.lock().await = Some(tx.clone());
-
-        // Start message handler
-        Self::start_message_handler(
-            reader,
-            self.ws_writer.clone(),
-            tx,
-            self.status.clone(),
-            self.ticker_channels.clone(),
-            self.last_ping.clone(),
-            self.ws_ping_rtt_ms.clone(),
-        );
-
-        // Start WS-frame ping task for RTT measurement
-        Self::start_ping_task(
-            self.ws_writer.clone(),
-            self.status.clone(),
-            self.last_ping.clone(),
-        );
-
-        // Create broadcast channel and store
-        let (broadcast_sender, _) = broadcast::channel(1000);
-        *self.broadcast_tx.lock().unwrap() = Some(broadcast_sender);
-
-        // Start forwarder task (mpsc -> broadcast)
-        let broadcast_tx = self.broadcast_tx.clone();
-        tokio::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                if let Some(tx) = broadcast_tx.lock().unwrap().as_ref() {
-                    let _ = tx.send(event);
-                }
-            }
-            // mpsc channel closed — drop broadcast sender
-            let _ = broadcast_tx.lock().unwrap().take();
-        });
-
-        Ok(())
+        self.inner.connect().await
     }
 
     async fn disconnect(&self) -> WebSocketResult<()> {
-        *self.status.lock().await = ConnectionStatus::Disconnected;
-        *self.ws_writer.lock().await = None;
-        *self.event_tx.lock().await = None;
-        let _ = self.broadcast_tx.lock().unwrap().take();
-        Ok(())
+        self.inner.disconnect().await
     }
 
     fn connection_status(&self) -> ConnectionStatus {
-        match self.status.try_lock() {
-            Ok(guard) => *guard,
-            Err(_) => ConnectionStatus::Disconnected,
-        }
+        self.inner.connection_status()
     }
 
     async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
-        // Extract exchange-native pair string from the subscription symbol.
-        // Callers that already hold a raw string (e.g. "btcusd") should pass it via
-        // Symbol::with_raw. Callers that pass Symbol::new("BTC","USD") get the pair
-        // via format_symbol which produces the Bitstamp lowercase-concat format.
-        let pair = request.symbol
-            .raw()
-            .map(|r| r.to_string())
-            .unwrap_or_else(|| format_symbol(&request.symbol, AccountType::Spot));
+        let spec = StreamSpec::try_from(request)?;
 
-        let result = match request.stream_type {
-            crate::core::types::StreamType::Ticker => {
-                // Ticker -> order_book (best bid/ask on every orderbook change)
-                self.subscribe_ticker(&pair).await
-                    .map_err(|e| WebSocketError::Subscription(format!("{:?}", e)))
-            }
-            crate::core::types::StreamType::Trade => {
-                // Trade -> live_trades (per-trade events)
-                self.subscribe_trades(&pair).await
-                    .map_err(|e| WebSocketError::Subscription(format!("{:?}", e)))
-            }
-            crate::core::types::StreamType::Orderbook => {
-                // Orderbook -> order_book (full snapshots)
-                self.subscribe_orderbook(&pair).await
-                    .map_err(|e| WebSocketError::Subscription(format!("{:?}", e)))
-            }
-            crate::core::types::StreamType::OrderbookDelta => {
-                // OrderbookDelta -> diff_order_book (incremental updates)
-                let channel = format!("diff_order_book_{}", pair);
-                self.subscribe_channel(&channel).await
-                    .map_err(|e| WebSocketError::Subscription(format!("{:?}", e)))
-            }
-            crate::core::types::StreamType::OrderbookL3 => {
-                // L3 per-order lifecycle events via live_orders channel.
-                // Subscribe first so live events are buffered in the broadcast channel,
-                // then fetch a REST snapshot to populate the initial book state.
-                // Live events that arrive during the REST round-trip flow after the
-                // snapshot batch — no events are lost.
-                self.subscribe_live_orders(&pair).await
-                    .map_err(|e| WebSocketError::Subscription(format!("{:?}", e)))?;
-                self.emit_l3_snapshot(&pair).await
-                    .map_err(|e| WebSocketError::Subscription(format!("{:?}", e)))
-            }
-            _ => Err(WebSocketError::Subscription("Unsupported subscription type".to_string())),
-        };
+        let is_l3 = matches!(spec.kind, StreamKind::OrderbookL3);
+        // Resolve pair for bootstrap key before moving spec.
+        // For Bitstamp (Raw inputs only in practice), resolve is infallible.
+        // On normalization error we skip bootstrap — live events still flow.
+        let pair = spec
+            .symbol
+            .resolve(ExchangeId::Bitstamp, spec.account_type)
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
 
-        // Track subscription if successful
-        if result.is_ok() {
-            self.subscriptions.lock().await.insert(request);
+        // Subscribe via transport (triggers lazy connect + sends Pusher subscribe frame).
+        self.inner.subscribe(spec).await?;
+
+        // L3 bootstrap: on first subscribe for this pair, fetch REST snapshot.
+        if is_l3 {
+            let mut done = self.l3_bootstrapped.lock().await;
+            if !done.contains(&pair) {
+                done.insert(pair.clone());
+                drop(done);
+                let transport = self.inner.clone();
+                let client = self.rest_client.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = emit_l3_snapshot(&transport, &client, &pair).await {
+                        tracing::warn!(
+                            target: "dig3::bitstamp::l3",
+                            pair = %pair,
+                            error = ?e,
+                            "L3 REST snapshot bootstrap failed"
+                        );
+                    }
+                });
+            }
         }
 
-        result
-    }
-
-    async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
-        self.subscriptions.lock().await.remove(&request);
         Ok(())
     }
 
+    async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
+        let spec = StreamSpec::try_from(request)?;
+        self.inner.unsubscribe(spec).await
+    }
+
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        let rx = self.broadcast_tx.lock().unwrap().as_ref()
-            .map(|tx| tx.subscribe())
-            .unwrap_or_else(|| broadcast::channel(1).1);
-        Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|res| async move {
-            res.ok()
-        }))
+        Box::pin(self.inner.event_stream())
     }
 
     fn active_subscriptions(&self) -> Vec<SubscriptionRequest> {
-        match self.subscriptions.try_lock() {
-            Ok(guard) => guard.iter().cloned().collect(),
-            Err(_) => Vec::new(),
-        }
+        self.inner
+            .active_subscriptions()
+            .into_iter()
+            .map(SubscriptionRequest::from)
+            .collect()
     }
 
-    fn ping_rtt_handle(&self) -> Option<Arc<Mutex<u64>>> {
-        Some(self.ws_ping_rtt_ms.clone())
+    fn ping_rtt_handle(&self) -> Option<Arc<TokioMutex<u64>>> {
+        // Framework does not expose per-pong RTT yet.
+        None
     }
 
     fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
         static BITSTAMP_CHANNELS: &[WsBookChannel] = &[
-            WsBookChannel::snapshot("order_book",      100, 1000),
-            WsBookChannel::delta("diff_order_book",    None, None),
+            WsBookChannel::snapshot("order_book", 100, 1000),
+            WsBookChannel::delta("diff_order_book", None, None),
         ];
         OrderbookCapabilities {
             ws_depths: &[],
@@ -876,278 +181,108 @@ impl WebSocketConnector for BitstampWebSocket {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// L3 snapshot bootstrap
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Fetch the REST L3 order book snapshot for `pair` and inject synthetic
+/// `OrderbookL3 { action: "create" }` events into the transport's broadcast
+/// channel.
+///
+/// REST endpoint: `GET https://www.bitstamp.net/api/v2/order_book/{pair}/?group=2`
+///
+/// Response shape (`group=2` mirrors the WS `live_orders_*` L3 layout):
+/// ```json
+/// { "bids": [["price","amount","order_id"], ...],
+///   "asks": [["price","amount","order_id"], ...],
+///   "microtimestamp": "1643643584684047" }
+/// ```
+async fn emit_l3_snapshot(
+    transport: &UniversalWsTransport<BitstampProtocol>,
+    client: &reqwest::Client,
+    pair: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let url = format!(
+        "https://www.bitstamp.net/api/v2/order_book/{}/?group=2",
+        pair
+    );
+    let resp = client.get(&url).send().await?;
+    let json: serde_json::Value = resp.json().await?;
+
+    // microtimestamp is microseconds → convert to milliseconds.
+    let timestamp_ms = json
+        .get("microtimestamp")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<i64>().ok())
+        .map(|us| us / 1000)
+        .unwrap_or(0);
+
+    let symbol = pair.to_ascii_uppercase();
+
+    let parse_side = |entries: &serde_json::Value, side: OrderSide| -> Vec<StreamEvent> {
+        entries
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|entry| {
+                        let e = entry.as_array()?;
+                        let price = e.first()?.as_str()?.parse::<f64>().ok()?;
+                        let quantity = e.get(1)?.as_str()?.parse::<f64>().ok()?;
+                        let order_id = e.get(2)?.as_str()?.to_string();
+                        Some(StreamEvent::OrderbookL3 {
+                            symbol: symbol.clone(),
+                            side,
+                            order_id,
+                            price,
+                            quantity,
+                            action: "create".to_string(),
+                            timestamp: timestamp_ms,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    let mut events: Vec<StreamEvent> = Vec::new();
+    events.extend(parse_side(
+        json.get("bids").unwrap_or(&serde_json::Value::Null),
+        OrderSide::Buy,
+    ));
+    events.extend(parse_side(
+        json.get("asks").unwrap_or(&serde_json::Value::Null),
+        OrderSide::Sell,
+    ));
+
+    tracing::debug!(
+        target: "dig3::bitstamp::l3",
+        pair = %pair,
+        count = events.len(),
+        "injecting REST L3 snapshot events"
+    );
+
+    transport.broadcast_events(events);
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_websocket_creation() {
-        let ws = BitstampWebSocket::new().await;
-        assert!(ws.is_ok());
+    async fn websocket_construction_is_sync() {
+        // BitstampWebSocket::new() constructor is sync — no .await required.
+        // UniversalWsTransport spawns its driver task internally (needs a runtime).
+        let ws = BitstampWebSocket::new();
+        assert_eq!(ws.connection_status(), ConnectionStatus::Disconnected);
     }
 
     #[tokio::test]
-    async fn test_subscribe_message() {
-        let msg = SubscribeMessage {
-            event: "bts:subscribe".to_string(),
-            data: ChannelData {
-                channel: "diff_order_book_btcusd".to_string(),
-            },
-        };
-
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("bts:subscribe"));
-        assert!(json.contains("diff_order_book_btcusd"));
-    }
-
-    #[tokio::test]
-    async fn test_pusher_message_parsing() {
-        // Verify we can parse Pusher protocol messages
-        let established = r#"{"event":"pusher:connection_established","data":"{\"socket_id\":\"123\",\"activity_timeout\":120}"}"#;
-        let parsed: IncomingMessage = serde_json::from_str(established).unwrap();
-        assert_eq!(parsed.event, "pusher:connection_established");
-    }
-
-    /// `live_orders_<pair>` events must carry the symbol on the StreamEvent
-    /// variant; the symbol is extracted from the channel name.
-    /// Cross-pair routing on the same Station depends on this — empty symbol
-    /// would cause accept-all in station::event_matches_key.
-    #[test]
-    fn live_order_emits_symbol_from_channel() {
-        let json = serde_json::json!({
-            "channel": "live_orders_btcusd",
-            "event": "order_created",
-            "data": {
-                "id": 42,
-                "price": "50000.0",
-                "amount": "0.5",
-                "order_type": "0",
-                "microtimestamp": "1700000000000000",
-            }
-        });
-        let ev = BitstampWebSocket::parse_live_order_from_json(&json, "order_created")
-            .expect("parse")
-            .expect("Some event");
-        match ev {
-            StreamEvent::OrderbookL3 { symbol, price, .. } => {
-                assert_eq!(symbol, "BTCUSD");
-                assert!((price - 50000.0).abs() < f64::EPSILON);
-            }
-            other => panic!("expected OrderbookL3, got {:?}", other),
-        }
-    }
-
-    /// Other Bitstamp pairs must produce their own symbol — XRPUSD here.
-    #[test]
-    fn live_order_extracts_xrpusd_from_channel() {
-        let json = serde_json::json!({
-            "channel": "live_orders_xrpusd",
-            "event": "order_changed",
-            "data": {
-                "id": 7,
-                "price": "0.5",
-                "amount": "1000.0",
-                "order_type": "1",
-                "microtimestamp": "1700000000000000",
-            }
-        });
-        let ev = BitstampWebSocket::parse_live_order_from_json(&json, "order_changed")
-            .expect("parse")
-            .expect("Some event");
-        match ev {
-            StreamEvent::OrderbookL3 { symbol, .. } => assert_eq!(symbol, "XRPUSD"),
-            other => panic!("expected OrderbookL3, got {:?}", other),
-        }
-    }
-
-    /// Missing or malformed channel falls back to empty string. Routing
-    /// downstream treats empty symbol as accept-all, which is fine here:
-    /// the upstream sub registry will never deliver a misconfigured channel.
-    #[test]
-    fn live_order_empty_channel_falls_back_to_empty_symbol() {
-        let json = serde_json::json!({
-            "channel": "",
-            "event": "order_created",
-            "data": {
-                "id": 1,
-                "price": "1.0",
-                "amount": "1.0",
-                "order_type": "0",
-                "microtimestamp": "0",
-            }
-        });
-        let ev = BitstampWebSocket::parse_live_order_from_json(&json, "order_created")
-            .expect("parse")
-            .expect("Some event");
-        match ev {
-            StreamEvent::OrderbookL3 { symbol, .. } => assert_eq!(symbol, ""),
-            other => panic!("expected OrderbookL3, got {:?}", other),
-        }
-    }
-
-    // ── New tests: action mapping ──────────────────────────────────────────────
-
-    /// order_created → action "create", Buy side, correct fields
-    #[test]
-    fn live_order_created_emits_orderbookl3() {
-        let json = serde_json::json!({
-            "channel": "live_orders_btcusd",
-            "event": "order_created",
-            "data": {
-                "id": 151771464,
-                "price": "607.96",
-                "amount": "0.54",
-                "order_type": "0",
-                "microtimestamp": "1474285223000000",
-            }
-        });
-        let ev = BitstampWebSocket::parse_live_order_from_json(&json, "order_created")
-            .expect("parse")
-            .expect("Some event");
-        match ev {
-            StreamEvent::OrderbookL3 { symbol, side, order_id, price, quantity, action, timestamp } => {
-                assert_eq!(symbol, "BTCUSD");
-                assert_eq!(side, OrderSide::Buy);
-                assert_eq!(order_id, "151771464");
-                assert!((price - 607.96).abs() < 1e-9);
-                assert!((quantity - 0.54).abs() < 1e-9);
-                assert_eq!(action, "create");
-                assert_eq!(timestamp, 1474285223000);
-            }
-            other => panic!("expected OrderbookL3, got {:?}", other),
-        }
-    }
-
-    /// order_changed → action "changed"
-    #[test]
-    fn live_order_changed_emits_changed_action() {
-        let json = serde_json::json!({
-            "channel": "live_orders_btcusd",
-            "event": "order_changed",
-            "data": {
-                "id": 151771464,
-                "price": "607.96",
-                "amount": "0.20",
-                "order_type": "0",
-                "microtimestamp": "1474285224000000",
-            }
-        });
-        let ev = BitstampWebSocket::parse_live_order_from_json(&json, "order_changed")
-            .expect("parse")
-            .expect("Some event");
-        match ev {
-            StreamEvent::OrderbookL3 { action, .. } => assert_eq!(action, "changed"),
-            other => panic!("expected OrderbookL3, got {:?}", other),
-        }
-    }
-
-    /// order_deleted → action "delete", quantity 0.0
-    #[test]
-    fn live_order_deleted_emits_delete_action_zero_qty() {
-        let json = serde_json::json!({
-            "channel": "live_orders_btcusd",
-            "event": "order_deleted",
-            "data": {
-                "id": 151771464,
-                "price": "607.96",
-                "amount": "0",
-                "order_type": "0",
-                "microtimestamp": "1474285225000000",
-            }
-        });
-        let ev = BitstampWebSocket::parse_live_order_from_json(&json, "order_deleted")
-            .expect("parse")
-            .expect("Some event");
-        match ev {
-            StreamEvent::OrderbookL3 { action, quantity, .. } => {
-                assert_eq!(action, "delete");
-                assert!((quantity - 0.0).abs() < f64::EPSILON);
-            }
-            other => panic!("expected OrderbookL3, got {:?}", other),
-        }
-    }
-
-    /// order_type "1" → Sell side
-    #[test]
-    fn live_order_sell_side_emits_ask() {
-        let json = serde_json::json!({
-            "channel": "live_orders_btcusd",
-            "event": "order_created",
-            "data": {
-                "id": 999,
-                "price": "50100.0",
-                "amount": "0.1",
-                "order_type": "1",
-                "microtimestamp": "1700000000000000",
-            }
-        });
-        let ev = BitstampWebSocket::parse_live_order_from_json(&json, "order_created")
-            .expect("parse")
-            .expect("Some event");
-        match ev {
-            StreamEvent::OrderbookL3 { side, .. } => assert_eq!(side, OrderSide::Sell),
-            other => panic!("expected OrderbookL3, got {:?}", other),
-        }
-    }
-
-    /// Unknown event_name → parse error (no event emitted)
-    #[test]
-    fn live_order_unknown_event_name_returns_error() {
-        let json = serde_json::json!({
-            "channel": "live_orders_btcusd",
-            "event": "order_expired",
-            "data": {
-                "id": 1,
-                "price": "1.0",
-                "amount": "1.0",
-                "order_type": "0",
-                "microtimestamp": "0",
-            }
-        });
-        let result = BitstampWebSocket::parse_live_order_from_json(&json, "order_expired");
-        assert!(result.is_err(), "unknown event_name must return Err");
-    }
-
-    /// detail_order_book frame with 3 bids + 2 asks → Vec of 5 events, all action "snapshot"
-    #[test]
-    fn detail_order_book_emits_all_entries() {
-        let msg = IncomingMessage {
-            event: "data".to_string(),
-            channel: Some("detail_order_book_btcusd".to_string()),
-            data: Some(serde_json::json!({
-                "bids": [
-                    ["50000.0", "1.0", "id1"],
-                    ["49999.0", "2.0", "id2"],
-                    ["49998.0", "0.5", "id3"]
-                ],
-                "asks": [
-                    ["50001.0", "1.5", "id4"],
-                    ["50002.0", "0.3", "id5"]
-                ],
-                "microtimestamp": "1643643584684047"
-            })),
-        };
-        let events = BitstampWebSocket::parse_data_message(&msg, false)
-            .expect("parse");
-        assert_eq!(events.len(), 5, "must emit all 5 entries (3 bids + 2 asks)");
-        for ev in &events {
-            match ev {
-                StreamEvent::OrderbookL3 { action, .. } => {
-                    assert_eq!(action, "snapshot", "detail_order_book action must be 'snapshot'");
-                }
-                other => panic!("expected OrderbookL3, got {:?}", other),
-            }
-        }
-        // First 3 are bids (Buy), last 2 are asks (Sell)
-        for i in 0..3 {
-            if let StreamEvent::OrderbookL3 { side, .. } = &events[i] {
-                assert_eq!(*side, OrderSide::Buy);
-            }
-        }
-        for i in 3..5 {
-            if let StreamEvent::OrderbookL3 { side, .. } = &events[i] {
-                assert_eq!(*side, OrderSide::Sell);
-            }
-        }
+    async fn default_is_same_as_new() {
+        let _ws = BitstampWebSocket::default();
     }
 }

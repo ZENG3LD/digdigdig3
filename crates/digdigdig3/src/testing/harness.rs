@@ -160,6 +160,9 @@ impl TestHarness {
             ExchangeId::YahooFinance => "AAPL",
             ExchangeId::Ib => "AAPL",
 
+            // Not yet implemented
+            ExchangeId::Bitmex => "XBTUSD",
+
             // Fallback for custom / unknown
             ExchangeId::Custom(_) => "BTC/USDT",
         }

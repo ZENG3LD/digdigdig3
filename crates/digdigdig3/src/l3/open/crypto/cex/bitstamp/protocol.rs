@@ -345,12 +345,29 @@ fn parse_orderbook_inner(raw: &Value) -> WebSocketResult<OrderBook> {
     })
 }
 
+/// Parse a JSON value that may be either a JSON number or a numeric string to f64.
+///
+/// Bitstamp live_orders frames send numeric fields (price, amount) as JSON numbers,
+/// not strings. Older-format frames (and test fixtures) may use strings. Both are
+/// accepted to avoid coupling to any single wire representation.
+fn parse_f64_any(v: &Value) -> Option<f64> {
+    v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+}
+
+/// Parse a JSON value that may be either a JSON number or a numeric string to i64.
+fn parse_i64_any(v: &Value) -> Option<i64> {
+    v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+}
+
 /// Parse `live_orders_*` frame → StreamEvent::OrderbookL3.
 ///
 /// Event name drives the action field:
 /// - `"order_created"` → `"create"`
 /// - `"order_changed"` → `"changed"`
 /// - `"order_deleted"` → `"delete"`
+///
+/// Bitstamp sends numeric fields (price, amount, order_type, id) as JSON numbers.
+/// Both number and string representations are accepted for robustness.
 pub(crate) fn parse_live_order(raw: &Value) -> WebSocketResult<StreamEvent> {
     let channel = raw
         .get("channel")
@@ -382,28 +399,35 @@ pub(crate) fn parse_live_order(raw: &Value) -> WebSocketResult<StreamEvent> {
         .get("data")
         .ok_or_else(|| WebSocketError::Parse("live_orders: missing data".into()))?;
 
+    // price: JSON number (f64) on live wire; also accept string for test fixtures.
     let price = data
         .get("price")
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<f64>().ok())
+        .and_then(parse_f64_any)
         .ok_or_else(|| WebSocketError::Parse("live_orders: missing price".into()))?;
 
+    // amount: JSON number on live wire; 0.0 default on deletion events.
     let quantity = data
         .get("amount")
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<f64>().ok())
+        .and_then(parse_f64_any)
         .unwrap_or(0.0);
 
-    // order_type: "0" = bid (Buy), "1" = ask (Sell)
-    let side = if data
-        .get("order_type")
-        .and_then(|v| v.as_str())
-        .map(|s| s == "0")
-        .unwrap_or(true)
-    {
-        OrderSide::Buy
-    } else {
-        OrderSide::Sell
+    // order_type: JSON number 0 = bid (Buy), 1 = ask (Sell). Also accept string.
+    let side = match data.get("order_type").and_then(parse_i64_any) {
+        Some(0) => OrderSide::Buy,
+        Some(_) => OrderSide::Sell,
+        // String fallback for test fixtures ("0" / "1").
+        None => {
+            if data
+                .get("order_type")
+                .and_then(|v| v.as_str())
+                .map(|s| s == "0")
+                .unwrap_or(true)
+            {
+                OrderSide::Buy
+            } else {
+                OrderSide::Sell
+            }
+        }
     };
 
     let timestamp = data
@@ -413,11 +437,12 @@ pub(crate) fn parse_live_order(raw: &Value) -> WebSocketResult<StreamEvent> {
         .map(|us| us / 1000)
         .unwrap_or(0);
 
-    // order_id — integer on wire, stored as String
+    // order_id: i64 on wire; also accept string. id_str available as fallback.
     let order_id = data
         .get("id")
-        .and_then(|v| v.as_i64())
+        .and_then(parse_i64_any)
         .map(|n| n.to_string())
+        .or_else(|| data.get("id_str").and_then(|v| v.as_str()).map(|s| s.to_string()))
         .unwrap_or_default();
 
     Ok(StreamEvent::OrderbookL3 {
@@ -925,6 +950,67 @@ mod tests {
             if let StreamEvent::OrderbookL3 { side, .. } = &events[i] {
                 assert_eq!(*side, OrderSide::Sell);
             }
+        }
+    }
+
+    // ── Real-wire format: numeric price/amount/order_type/id fields ───────────
+    // Bitstamp live_orders frames send JSON numbers, not strings.
+    // Regression guard — must not break after any parser refactor.
+
+    #[test]
+    fn live_order_numeric_fields_parse_correctly() {
+        // Matches real wire format captured from wss://ws.bitstamp.net
+        let raw = serde_json::json!({
+            "channel": "live_orders_btcusd",
+            "event": "order_created",
+            "data": {
+                "id": 2010114986651651_i64,
+                "id_str": "2010114986651651",
+                "order_type": 0,
+                "microtimestamp": "1779585703820000",
+                "amount": 0.125_f64,
+                "amount_str": "0.12500000",
+                "price": 76761.96_f64,
+                "price_str": "76761.96",
+            }
+        });
+        let ev = parse_live_order(&raw).expect("parse numeric fields");
+        match ev {
+            StreamEvent::OrderbookL3 { symbol, side, order_id, price, quantity, action, timestamp } => {
+                assert_eq!(symbol, "BTCUSD");
+                assert_eq!(side, OrderSide::Buy);
+                assert_eq!(order_id, "2010114986651651");
+                assert!((price - 76761.96).abs() < 1e-6, "price mismatch: {price}");
+                assert!((quantity - 0.125).abs() < 1e-9, "quantity mismatch: {quantity}");
+                assert_eq!(action, "create");
+                // microtimestamp 1779585703820000 µs → 1779585703820 ms
+                assert_eq!(timestamp, 1779585703820000_i64 / 1000);
+            }
+            other => panic!("expected OrderbookL3, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn live_order_numeric_sell_side() {
+        let raw = serde_json::json!({
+            "channel": "live_orders_ethusd",
+            "event": "order_deleted",
+            "data": {
+                "id": 999_i64,
+                "order_type": 1,
+                "microtimestamp": "1779500000000000",
+                "amount": 0.5_f64,
+                "price": 3200.0_f64,
+            }
+        });
+        let ev = parse_live_order(&raw).expect("parse numeric sell");
+        match ev {
+            StreamEvent::OrderbookL3 { symbol, side, action, .. } => {
+                assert_eq!(symbol, "ETHUSD");
+                assert_eq!(side, OrderSide::Sell);
+                assert_eq!(action, "delete");
+            }
+            other => panic!("expected OrderbookL3, got {:?}", other),
         }
     }
 }

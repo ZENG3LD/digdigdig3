@@ -58,7 +58,10 @@ async fn bitstamp_btcusd_l3_emits_create_and_changed_events() {
         match r {
             Ok(Some(Event::OrderbookL3 { symbol, point, .. })) => {
                 total += 1;
-                if symbol != "BTCUSD" {
+                // Station relabels events with the user's raw input string ("btcusd");
+                // compare case-insensitively since the wire format uppercases but
+                // add_raw() lowercases.
+                if !symbol.eq_ignore_ascii_case("BTCUSD") {
                     bad_symbol += 1;
                 }
                 if point.ts_ms <= 0 {
@@ -100,7 +103,7 @@ async fn bitstamp_btcusd_l3_emits_create_and_changed_events() {
         changed_count + delete_count > 0,
         "no 'changed' or 'delete' events in 60s (got {total} total, {create_count} creates)"
     );
-    assert_eq!(bad_symbol, 0, "some events had wrong symbol (expected BTCUSD)");
+    assert_eq!(bad_symbol, 0, "some events had wrong symbol (expected BTCUSD case-insensitive, got non-BTCUSD)");
     assert_eq!(zero_ts, 0, "some events had zero/negative timestamp");
     assert_eq!(empty_order_id, 0, "some events had empty order_id");
 }

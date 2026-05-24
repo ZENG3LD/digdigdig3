@@ -53,6 +53,7 @@ use crate::core::traits::{Credentials, CoreConnector, WebSocketConnector};
 // CONNECTOR IMPORTS - CEX
 // ═══════════════════════════════════════════════════════════════════════════════
 
+use crate::l3::open::crypto::cex::bitmex::{BitmexConnector, BitmexWebSocket};
 use crate::l3::open::crypto::cex::binance::BinanceConnector;
 use crate::l3::open::crypto::cex::bybit::BybitConnector;
 use crate::l3::open::crypto::cex::okx::OkxConnector;
@@ -272,6 +273,10 @@ impl ConnectorFactory {
             }
             ExchangeId::Dydx => {
                 let c = DydxConnector::public(testnet).await?;
+                Ok(Arc::new(c) as Arc<dyn CoreConnector>)
+            }
+            ExchangeId::Bitmex => {
+                let c = BitmexConnector::new(testnet);
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
 
@@ -586,6 +591,14 @@ impl ConnectorFactory {
             ExchangeId::Dydx => {
                 let c = DydxConnector::new(Some(credentials), testnet).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
+            }
+
+            // ═══════════════════════════════════════════════════════════════════════
+            // CEX - Public-only (no auth supported)
+            // ═══════════════════════════════════════════════════════════════════════
+            ExchangeId::Bitmex => {
+                // BitMEX public market data only — no authenticated connector
+                Self::create_public(id, testnet).await
             }
 
             // ═══════════════════════════════════════════════════════════════════════
@@ -912,8 +925,8 @@ impl ConnectorFactory {
             // CEX — new() — no credentials
             // ═══════════════════════════════════════════════════════════════════
             ExchangeId::Bitstamp => {
-                let ws = BitstampWebSocket::new().await?;
-                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+                // Sync constructor — UniversalWsTransport connects lazily on first subscribe.
+                Ok(Arc::new(BitstampWebSocket::new()) as Arc<dyn WebSocketConnector>)
             }
             ExchangeId::MEXC => {
                 let ws = MexcWebSocket::new(None, account_type).await?;
@@ -941,6 +954,13 @@ impl ConnectorFactory {
                 // sg-api.upbit.com handles international accounts but does not
                 // serve KRW-* pairs over WebSocket.
                 let ws = UpbitWebSocket::new(None, "kr").await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            // ═══════════════════════════════════════════════════════════════════
+            // CEX — BitMEX: sync new(testnet)
+            // ═══════════════════════════════════════════════════════════════════
+            ExchangeId::Bitmex => {
+                let ws = BitmexWebSocket::new(testnet);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
             // ═══════════════════════════════════════════════════════════════════

@@ -1786,11 +1786,7 @@ async fn test_bitstamp_ws() -> WsTally {
     // NEW Channel 1: detail_order_book_btcusd — OrderbookL3
     {
         tally.channels += 1;
-        let ws_result = BitstampWebSocket::new().await;
-        let ws = match ws_result {
-            Ok(w) => w,
-            Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
-        };
+        let ws = BitstampWebSocket::new();
         if ws.connect(AccountType::Spot).await.is_ok() {
             let req = SubscriptionRequest::new(Symbol::new("BTC", "USD"), StreamType::OrderbookL3);
             let (ok, n, err, label) = ws_listen(&ws, req, duration, "detail_order_book_btcusd").await;

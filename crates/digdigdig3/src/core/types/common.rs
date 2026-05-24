@@ -34,6 +34,7 @@ pub enum ExchangeId {
     // Derivatives
     Deribit,
     HyperLiquid,
+    Bitmex,
 
     // DEX
     Lighter,
@@ -107,6 +108,7 @@ impl ExchangeId {
             Self::Upbit => "upbit",
             Self::Deribit => "deribit",
             Self::HyperLiquid => "hyperliquid",
+            Self::Bitmex => "bitmex",
             Self::Lighter => "lighter",
             Self::Dydx => "dydx",
             Self::Polymarket => "polymarket",
@@ -162,6 +164,7 @@ impl ExchangeId {
             "upbit" => Some(Self::Upbit),
             "deribit" => Some(Self::Deribit),
             "hyperliquid" => Some(Self::HyperLiquid),
+            "bitmex" => Some(Self::Bitmex),
             "lighter" => Some(Self::Lighter),
             "dydx" => Some(Self::Dydx),
             "polymarket" => Some(Self::Polymarket),

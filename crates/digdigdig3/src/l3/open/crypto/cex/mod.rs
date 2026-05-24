@@ -2,6 +2,7 @@
 //!
 //! Traditional centralized cryptocurrency exchanges with REST + WebSocket APIs.
 
+pub mod bitmex;
 pub mod binance;
 pub mod bybit;
 pub mod okx;

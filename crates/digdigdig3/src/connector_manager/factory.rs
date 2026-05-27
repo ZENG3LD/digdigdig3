@@ -943,8 +943,8 @@ impl ConnectorFactory {
             // CEX — new(credentials) — no testnet, no account_type
             // ═══════════════════════════════════════════════════════════════════
             ExchangeId::Coinbase => {
-                let ws = CoinbaseWebSocket::new(None).await?;
-                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+                // Sync constructor — UniversalWsTransport connects lazily on first subscribe.
+                Ok(Arc::new(CoinbaseWebSocket::public()) as Arc<dyn WebSocketConnector>)
             }
             // ═══════════════════════════════════════════════════════════════════
             // CEX — new() — no credentials
@@ -968,8 +968,8 @@ impl ConnectorFactory {
             // CEX — Kraken: new(token, account_type) — no credentials for public
             // ═══════════════════════════════════════════════════════════════════
             ExchangeId::Kraken => {
-                let ws = KrakenWebSocket::new(None, account_type).await?;
-                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+                // Sync constructor — UniversalWsTransport connects lazily on first subscribe.
+                Ok(Arc::new(KrakenWebSocket::new()) as Arc<dyn WebSocketConnector>)
             }
             // ═══════════════════════════════════════════════════════════════════
             // CEX — Upbit: new(credentials, region)

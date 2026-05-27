@@ -1377,3 +1377,557 @@ mod tests {
         assert!((ticker.ask_price.unwrap() - 42001.0).abs() < f64::EPSILON);
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WebSocket v2 parser functions — ParserFn = fn(&Value) -> WebSocketResult<StreamEvent>
+//
+// Each function receives the full raw frame from the transport dispatcher.
+// Kraken v2 frame shape:
+//   {"channel":"<name>","type":"snapshot"|"update","data":[{...},...]}
+//
+// Parsers extract "data" themselves and read "type" where needed.
+// ─────────────────────────────────────────────────────────────────────────────
+
+use crate::core::types::{
+    OrderbookDelta as OrderbookDeltaData,
+    PublicTrade, StreamEvent, TradeSide, WebSocketError, WebSocketResult,
+};
+use crate::core::websocket::KlineInterval;
+use crate::core::timestamp_millis;
+
+/// Parse Kraken v2 "ticker" channel frame → StreamEvent::Ticker.
+///
+/// Frame: {"channel":"ticker","type":"snapshot","data":[{
+///   "symbol":"BTC/USD","last":..,"bid":..,"ask":..,"high":..,"low":..,"volume":..,"change_pct":..
+/// }]}
+pub fn parse_ws_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
+    let data = raw.get("data").and_then(|v| v.as_array())
+        .ok_or_else(|| WebSocketError::Parse("ticker: missing data array".into()))?;
+
+    let d = data.first()
+        .ok_or_else(|| WebSocketError::Parse("ticker: empty data array".into()))?;
+
+    let symbol = d.get("symbol").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    let last_price = d.get("last").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let bid_price = d.get("bid").and_then(|v| v.as_f64());
+    let ask_price = d.get("ask").and_then(|v| v.as_f64());
+    let high_24h = d.get("high").and_then(|v| v.as_f64());
+    let low_24h = d.get("low").and_then(|v| v.as_f64());
+    let volume_24h = d.get("volume").and_then(|v| v.as_f64());
+    let change_pct = d.get("change_pct").and_then(|v| v.as_f64());
+
+    Ok(StreamEvent::Ticker {
+        symbol,
+        ticker: Ticker {
+            last_price,
+            bid_price,
+            ask_price,
+            high_24h,
+            low_24h,
+            volume_24h,
+            quote_volume_24h: None,
+            price_change_24h: None,
+            price_change_percent_24h: change_pct,
+            timestamp: timestamp_millis() as i64,
+        },
+    })
+}
+
+/// Parse Kraken v2 "trade" channel frame → StreamEvent::Trade.
+///
+/// Frame: {"channel":"trade","type":"update","data":[{
+///   "symbol":"BTC/USD","price":..,"qty":..,"side":"buy"|"sell","timestamp":"...","trade_id":..
+/// }]}
+///
+/// Multiple trades may arrive in one frame; returns the first trade.
+pub fn parse_ws_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
+    let data = raw.get("data").and_then(|v| v.as_array())
+        .ok_or_else(|| WebSocketError::Parse("trade: missing data array".into()))?;
+
+    let d = data.first()
+        .ok_or_else(|| WebSocketError::Parse("trade: empty data array".into()))?;
+
+    let symbol = d.get("symbol").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    let price = d.get("price").and_then(|v| v.as_f64())
+        .ok_or_else(|| WebSocketError::Parse("trade: missing price".into()))?;
+
+    let quantity = d.get("qty").and_then(|v| v.as_f64())
+        .ok_or_else(|| WebSocketError::Parse("trade: missing qty".into()))?;
+
+    let timestamp = d.get("timestamp")
+        .and_then(|v| v.as_str())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.timestamp_millis())
+        .unwrap_or(timestamp_millis() as i64);
+
+    let side = d.get("side").and_then(|v| v.as_str())
+        .map(|s| if s == "sell" { TradeSide::Sell } else { TradeSide::Buy })
+        .unwrap_or(TradeSide::Buy);
+
+    let id = d.get("trade_id").and_then(|v| v.as_u64())
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "0".to_string());
+
+    Ok(StreamEvent::Trade {
+        symbol,
+        trade: PublicTrade { id, price, quantity, side, timestamp },
+    })
+}
+
+/// Parse Kraken v2 "book" channel frame → OrderbookSnapshot or OrderbookDelta.
+///
+/// The "type" field determines which variant to emit:
+///   "snapshot" → StreamEvent::OrderbookSnapshot
+///   "update"   → StreamEvent::OrderbookDelta
+///
+/// Frame: {"channel":"book","type":"snapshot"|"update","data":[{
+///   "symbol":"BTC/USD","bids":[{"price":..,"qty":..},...],
+///   "asks":[{"price":..,"qty":..},...]
+/// }]}
+///
+/// Registered under BOTH StreamKind::Orderbook and StreamKind::OrderbookDelta.
+/// The transport's dispatch_all de-duplicates by function pointer so this parser
+/// is called exactly once per frame regardless of how many kinds are subscribed.
+pub fn parse_ws_book(raw: &Value) -> WebSocketResult<StreamEvent> {
+    let data = raw.get("data").and_then(|v| v.as_array())
+        .ok_or_else(|| WebSocketError::Parse("book: missing data array".into()))?;
+
+    let d = data.first()
+        .ok_or_else(|| WebSocketError::Parse("book: empty data array".into()))?;
+
+    let symbol = d.get("symbol").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    let parse_levels = |key: &str| -> Vec<OrderBookLevel> {
+        d.get(key)
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|level| {
+                        let price = level.get("price")?.as_f64()?;
+                        let qty = level.get("qty")?.as_f64()?;
+                        Some(OrderBookLevel::new(price, qty))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    let bids = parse_levels("bids");
+    let asks = parse_levels("asks");
+
+    let is_snapshot = raw.get("type").and_then(|v| v.as_str()) == Some("snapshot");
+
+    if is_snapshot {
+        Ok(StreamEvent::OrderbookSnapshot {
+            symbol,
+            book: OrderBook {
+                timestamp: timestamp_millis() as i64,
+                bids,
+                asks,
+                sequence: None,
+                last_update_id: None,
+                first_update_id: None,
+                prev_update_id: None,
+                event_time: None,
+                transaction_time: None,
+                checksum: None,
+            },
+        })
+    } else {
+        Ok(StreamEvent::OrderbookDelta {
+            symbol,
+            delta: OrderbookDeltaData {
+                bids,
+                asks,
+                timestamp: timestamp_millis() as i64,
+                first_update_id: None,
+                last_update_id: None,
+                prev_update_id: None,
+                event_time: None,
+                checksum: None,
+            },
+        })
+    }
+}
+
+/// Parse Kraken v2 "ohlc" channel frame → StreamEvent::Kline.
+///
+/// Frame: {"channel":"ohlc","type":"update","data":[{
+///   "symbol":"BTC/USD","interval":1,"timestamp":"...","open":..,"high":..,"low":..,"close":..,"volume":..,"trades":..
+/// }]}
+pub fn parse_ws_ohlc(raw: &Value) -> WebSocketResult<StreamEvent> {
+    let data = raw.get("data").and_then(|v| v.as_array())
+        .ok_or_else(|| WebSocketError::Parse("ohlc: missing data array".into()))?;
+
+    let d = data.first()
+        .ok_or_else(|| WebSocketError::Parse("ohlc: empty data array".into()))?;
+
+    let symbol = d.get("symbol").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    // interval comes as a number (minutes) — convert back to KlineInterval string
+    let interval_minutes = d.get("interval").and_then(|v| v.as_u64()).unwrap_or(1);
+    let interval_str = minutes_to_kline_interval(interval_minutes);
+    let interval = KlineInterval::new(interval_str);
+
+    let open_time = d.get("timestamp")
+        .and_then(|v| v.as_str())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.timestamp_millis())
+        .unwrap_or(timestamp_millis() as i64);
+
+    let open = d.get("open").and_then(|v| v.as_f64())
+        .ok_or_else(|| WebSocketError::Parse("ohlc: missing open".into()))?;
+    let high = d.get("high").and_then(|v| v.as_f64())
+        .ok_or_else(|| WebSocketError::Parse("ohlc: missing high".into()))?;
+    let low = d.get("low").and_then(|v| v.as_f64())
+        .ok_or_else(|| WebSocketError::Parse("ohlc: missing low".into()))?;
+    let close = d.get("close").and_then(|v| v.as_f64())
+        .ok_or_else(|| WebSocketError::Parse("ohlc: missing close".into()))?;
+    let volume = d.get("volume").and_then(|v| v.as_f64())
+        .ok_or_else(|| WebSocketError::Parse("ohlc: missing volume".into()))?;
+    let trades = d.get("trades").and_then(|v| v.as_u64());
+
+    Ok(StreamEvent::Kline {
+        symbol,
+        interval,
+        kline: crate::core::Kline {
+            open_time,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            quote_volume: None,
+            close_time: None,
+            trades,
+        },
+    })
+}
+
+/// Parse Kraken v2 "instrument" channel frame → StreamEvent::MarketWarning.
+///
+/// Frame: {"channel":"instrument","type":"snapshot","data":{
+///   "pairs":[{"symbol":"BTC/USD","status":"online"|"post_only"|...},...],
+///   "assets":[...]
+/// }}
+///
+/// Emits a MarketWarning when any pair's status != "online".
+/// Returns Err(FieldAbsent) when all pairs are online (so the transport silently
+/// skips the frame without emitting a warning log).
+pub fn parse_ws_instrument(raw: &Value) -> WebSocketResult<StreamEvent> {
+    let data = raw.get("data")
+        .ok_or_else(|| WebSocketError::Parse("instrument: missing data".into()))?;
+
+    let pairs = data.get("pairs").and_then(|v| v.as_array());
+    let empty: Vec<Value> = Vec::new();
+    let arr: &[Value] = pairs.map(|v| v.as_slice()).unwrap_or(&empty);
+
+    for item in arr {
+        let sym = item.get("symbol").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let status = item.get("status").and_then(|v| v.as_str()).unwrap_or("online");
+        if status != "online" && !sym.is_empty() {
+            let warning_kind = match status {
+                "post_only"    => "post_only_mode",
+                "cancel_only"  => "cancel_only_mode",
+                "reduced_only" => "reduced_only_mode",
+                "offline"      => "halted",
+                other          => other,
+            };
+            return Ok(StreamEvent::MarketWarning {
+                symbol: Some(sym),
+                warning_kind: warning_kind.to_string(),
+                message: format!("Kraken instrument status: {}", status),
+                timestamp: timestamp_millis() as i64,
+            });
+        }
+    }
+
+    // All instruments online — no event needed.
+    // Return FieldAbsent so the transport silently skips (no unmatched-topic warn).
+    Err(WebSocketError::FieldAbsent("instrument: all pairs online".into()))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Internal helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn minutes_to_kline_interval(minutes: u64) -> &'static str {
+    match minutes {
+        1 => "1m",
+        5 => "5m",
+        15 => "15m",
+        30 => "30m",
+        60 => "1h",
+        240 => "4h",
+        1440 => "1d",
+        10080 => "1w",
+        _ => "1m",
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WS parser tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod ws_parser_tests {
+    use super::*;
+
+    #[test]
+    fn parse_ws_ticker_basic() {
+        let raw = serde_json::json!({
+            "channel": "ticker",
+            "type": "snapshot",
+            "data": [{
+                "symbol": "BTC/USD",
+                "last": 50000.0,
+                "bid": 49999.0,
+                "ask": 50001.0,
+                "high": 51000.0,
+                "low": 49000.0,
+                "volume": 123.4,
+                "change_pct": -0.5
+            }]
+        });
+        let ev = parse_ws_ticker(&raw).expect("parse ticker");
+        match ev {
+            StreamEvent::Ticker { symbol, ticker } => {
+                assert_eq!(symbol, "BTC/USD");
+                assert!((ticker.last_price - 50000.0).abs() < f64::EPSILON);
+                assert_eq!(ticker.bid_price, Some(49999.0));
+                assert_eq!(ticker.ask_price, Some(50001.0));
+                assert_eq!(ticker.high_24h, Some(51000.0));
+                assert_eq!(ticker.low_24h, Some(49000.0));
+                assert_eq!(ticker.volume_24h, Some(123.4));
+                assert_eq!(ticker.price_change_percent_24h, Some(-0.5));
+            }
+            other => panic!("expected Ticker, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_ws_trade_buy() {
+        let raw = serde_json::json!({
+            "channel": "trade",
+            "type": "update",
+            "data": [{
+                "symbol": "BTC/USD",
+                "price": 50100.0,
+                "qty": 0.5,
+                "side": "buy",
+                "timestamp": "2024-01-01T00:00:00.000Z",
+                "trade_id": 12345
+            }]
+        });
+        let ev = parse_ws_trade(&raw).expect("parse trade");
+        match ev {
+            StreamEvent::Trade { symbol, trade } => {
+                assert_eq!(symbol, "BTC/USD");
+                assert!((trade.price - 50100.0).abs() < f64::EPSILON);
+                assert!((trade.quantity - 0.5).abs() < f64::EPSILON);
+                assert_eq!(trade.side, TradeSide::Buy);
+                assert_eq!(trade.id, "12345");
+            }
+            other => panic!("expected Trade, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_ws_trade_sell() {
+        let raw = serde_json::json!({
+            "channel": "trade",
+            "type": "update",
+            "data": [{
+                "symbol": "ETH/USD",
+                "price": 3000.0,
+                "qty": 1.0,
+                "side": "sell",
+                "timestamp": "2024-01-01T00:00:00.000Z",
+                "trade_id": 99
+            }]
+        });
+        let ev = parse_ws_trade(&raw).expect("parse sell trade");
+        match ev {
+            StreamEvent::Trade { trade, .. } => assert_eq!(trade.side, TradeSide::Sell),
+            other => panic!("expected Trade, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_ws_book_snapshot() {
+        let raw = serde_json::json!({
+            "channel": "book",
+            "type": "snapshot",
+            "data": [{
+                "symbol": "BTC/USD",
+                "bids": [{"price": 49999.0, "qty": 1.0}, {"price": 49998.0, "qty": 2.0}],
+                "asks": [{"price": 50001.0, "qty": 0.5}]
+            }]
+        });
+        let ev = parse_ws_book(&raw).expect("parse book snapshot");
+        match ev {
+            StreamEvent::OrderbookSnapshot { symbol, book } => {
+                assert_eq!(symbol, "BTC/USD");
+                assert_eq!(book.bids.len(), 2);
+                assert_eq!(book.asks.len(), 1);
+                assert!((book.bids[0].price - 49999.0).abs() < f64::EPSILON);
+                assert!((book.asks[0].price - 50001.0).abs() < f64::EPSILON);
+            }
+            other => panic!("expected OrderbookSnapshot, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_ws_book_update() {
+        let raw = serde_json::json!({
+            "channel": "book",
+            "type": "update",
+            "data": [{
+                "symbol": "BTC/USD",
+                "bids": [{"price": 50000.0, "qty": 0.0}],
+                "asks": []
+            }]
+        });
+        let ev = parse_ws_book(&raw).expect("parse book update");
+        match ev {
+            StreamEvent::OrderbookDelta { symbol, delta } => {
+                assert_eq!(symbol, "BTC/USD");
+                assert_eq!(delta.bids.len(), 1);
+                assert!(delta.asks.is_empty());
+            }
+            other => panic!("expected OrderbookDelta, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_ws_ohlc_1m() {
+        let raw = serde_json::json!({
+            "channel": "ohlc",
+            "type": "update",
+            "data": [{
+                "symbol": "BTC/USD",
+                "interval": 1,
+                "timestamp": "2024-01-01T00:01:00.000Z",
+                "open": 50000.0,
+                "high": 50100.0,
+                "low": 49900.0,
+                "close": 50050.0,
+                "volume": 10.5,
+                "trades": 42
+            }]
+        });
+        let ev = parse_ws_ohlc(&raw).expect("parse ohlc");
+        match ev {
+            StreamEvent::Kline { symbol, interval, kline } => {
+                assert_eq!(symbol, "BTC/USD");
+                assert_eq!(interval.as_str(), "1m");
+                assert!((kline.open - 50000.0).abs() < f64::EPSILON);
+                assert!((kline.high - 50100.0).abs() < f64::EPSILON);
+                assert!((kline.low - 49900.0).abs() < f64::EPSILON);
+                assert!((kline.close - 50050.0).abs() < f64::EPSILON);
+                assert!((kline.volume - 10.5).abs() < f64::EPSILON);
+                assert_eq!(kline.trades, Some(42));
+            }
+            other => panic!("expected Kline, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_ws_ohlc_1h() {
+        let raw = serde_json::json!({
+            "channel": "ohlc",
+            "type": "update",
+            "data": [{
+                "symbol": "ETH/USD",
+                "interval": 60,
+                "timestamp": "2024-01-01T01:00:00.000Z",
+                "open": 3000.0,
+                "high": 3100.0,
+                "low": 2950.0,
+                "close": 3050.0,
+                "volume": 500.0,
+                "trades": 200
+            }]
+        });
+        let ev = parse_ws_ohlc(&raw).expect("parse 1h ohlc");
+        match ev {
+            StreamEvent::Kline { interval, .. } => assert_eq!(interval.as_str(), "1h"),
+            other => panic!("expected Kline, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_ws_instrument_non_online_emits_warning() {
+        let raw = serde_json::json!({
+            "channel": "instrument",
+            "type": "snapshot",
+            "data": {
+                "pairs": [
+                    {"symbol": "BTC/USD", "status": "online"},
+                    {"symbol": "XRP/USD", "status": "post_only"}
+                ],
+                "assets": []
+            }
+        });
+        let ev = parse_ws_instrument(&raw).expect("parse instrument warning");
+        match ev {
+            StreamEvent::MarketWarning { symbol, warning_kind, .. } => {
+                assert_eq!(symbol, Some("XRP/USD".to_string()));
+                assert_eq!(warning_kind, "post_only_mode");
+            }
+            other => panic!("expected MarketWarning, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_ws_instrument_all_online_returns_field_absent() {
+        let raw = serde_json::json!({
+            "channel": "instrument",
+            "type": "snapshot",
+            "data": {
+                "pairs": [
+                    {"symbol": "BTC/USD", "status": "online"},
+                    {"symbol": "ETH/USD", "status": "online"}
+                ],
+                "assets": []
+            }
+        });
+        let result = parse_ws_instrument(&raw);
+        assert!(
+            matches!(result, Err(WebSocketError::FieldAbsent(_))),
+            "all-online must return FieldAbsent, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn parse_ws_instrument_offline_maps_to_halted() {
+        let raw = serde_json::json!({
+            "channel": "instrument",
+            "type": "snapshot",
+            "data": {
+                "pairs": [{"symbol": "ALGO/USD", "status": "offline"}],
+                "assets": []
+            }
+        });
+        let ev = parse_ws_instrument(&raw).expect("parse offline");
+        match ev {
+            StreamEvent::MarketWarning { warning_kind, .. } => {
+                assert_eq!(warning_kind, "halted");
+            }
+            other => panic!("expected MarketWarning, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn minutes_to_kline_interval_coverage() {
+        assert_eq!(minutes_to_kline_interval(1), "1m");
+        assert_eq!(minutes_to_kline_interval(5), "5m");
+        assert_eq!(minutes_to_kline_interval(60), "1h");
+        assert_eq!(minutes_to_kline_interval(1440), "1d");
+        assert_eq!(minutes_to_kline_interval(10080), "1w");
+        assert_eq!(minutes_to_kline_interval(99), "1m"); // unknown → default
+    }
+}

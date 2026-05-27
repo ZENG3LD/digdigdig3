@@ -31,6 +31,7 @@ mod endpoints;
 mod auth;
 mod parser;
 mod connector;
+pub mod protocol;
 #[cfg(not(target_arch = "wasm32"))]
 mod websocket;
 
@@ -38,5 +39,6 @@ pub use endpoints::*;
 pub use auth::*;
 pub use parser::*;
 pub use connector::*;
+pub use protocol::{CoinbaseProtocol, map_kline_interval};
 #[cfg(not(target_arch = "wasm32"))]
 pub use websocket::*;

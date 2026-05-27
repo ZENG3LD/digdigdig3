@@ -140,6 +140,19 @@ pub trait WsProtocol: Send + Sync + 'static {
         &[]
     }
 
+    // ── Optional post-connect frames ─────────────────────────────────────
+
+    /// Frames to send immediately after connection is established, before any
+    /// subscription replay.
+    ///
+    /// Use this for connection-level setup that must run on every connect/reconnect
+    /// but is not a per-stream subscription (e.g. Coinbase "heartbeats" channel).
+    ///
+    /// Default: empty — no post-connect frames.
+    fn post_connect_frames(&self) -> Vec<WsFrame> {
+        Vec::new()
+    }
+
     // ── Optional binary decode hook ───────────────────────────────────────
 
     /// Decode a binary frame to a JSON Value.

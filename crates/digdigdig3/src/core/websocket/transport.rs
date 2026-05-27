@@ -533,6 +533,13 @@ impl<P: WsProtocol> DriverTask<P> {
                 }
             }
 
+            // ── Post-connect frames (e.g. Coinbase heartbeats channel) ────────
+            for frame in self.protocol.post_connect_frames() {
+                if let Err(e) = conn.send(frame).await {
+                    warn!(target: "dig3::ws::connect", exchange, error = %e, "post_connect frame send failed");
+                }
+            }
+
             // ── Mark Connected ─────────────────────────────────────────────
             self.state
                 .store(TransportState::Connected as u8, Ordering::Release);

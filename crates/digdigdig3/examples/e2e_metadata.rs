@@ -1826,11 +1826,7 @@ async fn test_coinbase_ws() -> WsTally {
 
     // Subscribe to Ticker to confirm WS connectivity is working.
     {
-        let ws_result = CoinbaseWebSocket::new(None).await;
-        let ws = match ws_result {
-            Ok(w) => w,
-            Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
-        };
+        let ws = CoinbaseWebSocket::new(None);
         if ws.connect(AccountType::Spot).await.is_ok() {
             let req = SubscriptionRequest::new(Symbol::new("BTC", "USD"), StreamType::Ticker);
             let (ok, n, err, label) = ws_listen(&ws, req, duration, "ticker BTC-USD (connectivity check)").await;
@@ -1863,11 +1859,7 @@ async fn test_kraken_ws() -> WsTally {
     // NEW Channel 1: instrument channel — MarketWarning
     {
         tally.channels += 1;
-        let ws_result = KrakenWebSocket::new(None, AccountType::Spot).await;
-        let ws = match ws_result {
-            Ok(w) => w,
-            Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
-        };
+        let ws = KrakenWebSocket::new();
         if ws.connect(AccountType::Spot).await.is_ok() {
             // MarketWarning maps to the "instrument" channel on Kraken
             let req = SubscriptionRequest::new(Symbol::new("BTC", "USD"), StreamType::MarketWarning);

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::{GapHealConfig, PersistenceConfig, Result, Station};
+use crate::{PersistenceConfig, Result, Station};
 
 /// Fluent builder for [`Station`].
 #[derive(Debug)]
@@ -8,7 +8,8 @@ pub struct StationBuilder {
     pub(crate) storage_root: PathBuf,
     pub(crate) persistence: PersistenceConfig,
     pub(crate) warm_start: usize,
-    pub(crate) gap_heal: GapHealConfig,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) gap_heal: crate::GapHealConfig,
 }
 
 impl Default for StationBuilder {
@@ -18,7 +19,8 @@ impl Default for StationBuilder {
             storage_root: env_root.unwrap_or_else(|| PathBuf::from("./dig3_storage")),
             persistence: PersistenceConfig::default(),
             warm_start: 0,
-            gap_heal: GapHealConfig::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            gap_heal: crate::GapHealConfig::default(),
         }
     }
 }
@@ -50,8 +52,9 @@ impl StationBuilder {
     /// Configure proactive gap-heal: when a live event arrives whose timestamp
     /// jumps further than the configured threshold past the last seen event,
     /// the station REST-backfills the missing window before emitting the live
-    /// event. Off by default.
-    pub fn gap_heal(mut self, cfg: GapHealConfig) -> Self {
+    /// event. Off by default. Native-only.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn gap_heal(mut self, cfg: crate::GapHealConfig) -> Self {
         self.gap_heal = cfg;
         self
     }

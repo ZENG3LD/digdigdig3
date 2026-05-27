@@ -23,8 +23,11 @@ use crate::data::{
     TickerPoint, TradePoint, VolatilityIndexPoint,
 };
 use crate::derived::{BasisDerived, DerivedStream, FundingSettlementDerived};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::polling;
-use crate::series::{DataPoint, DiskStore, Kind, Series, SeriesKey};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::series::DiskStore;
+use crate::series::{DataPoint, Kind, Series, SeriesKey};
 use crate::subscription::{Entry, Event, FailedStream, MultiplexRef, Stream};
 use crate::{
     PersistenceConfig, Result, StationBuilder, StationError, SubscribeReport, SubscriptionHandle,
@@ -44,6 +47,7 @@ pub(crate) struct StationInner {
     pub(crate) persistence: PersistenceConfig,
     pub(crate) muxes: DashMap<SeriesKey, Multiplexer>,
     pub(crate) warm_start_capacity: usize,
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) gap_heal: crate::GapHealConfig,
 }
 
@@ -105,6 +109,7 @@ impl Station {
                 persistence: b.persistence,
                 muxes: DashMap::new(),
                 warm_start_capacity: b.warm_start.max(1),
+                #[cfg(not(target_arch = "wasm32"))]
                 gap_heal: b.gap_heal,
             }),
         })
@@ -329,8 +334,17 @@ impl Station {
         // --- Poll-only stream path (REST periodic polling, no WS) ---
         // Must come BEFORE the ws.subscribe call so we never try to subscribe
         // a WS channel for streams that have no WS feed.
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(poll_spec) = key.kind.is_poll_only() {
             return self.acquire_or_spawn_polled(key, entry, poll_spec, raw_symbol).await;
+        }
+        // On wasm, poll-only kinds are not supported (no tokio::time::interval).
+        #[cfg(target_arch = "wasm32")]
+        if key.kind.is_poll_only().is_some() {
+            return Err(StationError::StreamNotSupported(format!(
+                "poll-only streams not supported on wasm32 ({:?})",
+                key.kind
+            )));
         }
 
         let sym = Symbol::with_raw(&canonical.base, &canonical.quote, raw_symbol.to_string());
@@ -496,6 +510,7 @@ impl Station {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Station {
     /// Acquire (or spawn) a poll-driven multiplexer for `key`.
     ///
@@ -602,14 +617,19 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
     let exchange = key.exchange;
 
     tokio::spawn(async move {
-        // Open disk store if persistence is on for this kind.
+        // Open disk store if persistence is on for this kind (native only).
+        #[cfg(not(target_arch = "wasm32"))]
         let mut disk: Option<DiskStore<D::Output>> = None;
+        #[cfg(not(target_arch = "wasm32"))]
         if persistence.is_enabled_for(&key.kind) {
             match DiskStore::<D::Output>::new(&storage_root, key.clone()) {
                 Ok(store) => disk = Some(store),
                 Err(e) => tracing::warn!(?e, ?key, "derived: disk store open failed"),
             }
         }
+        // On wasm, no disk store.
+        #[cfg(target_arch = "wasm32")]
+        let _ = (&storage_root, &persistence);
 
         let mut series = Series::<D::Output>::new(warm);
 
@@ -652,6 +672,7 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
             };
 
             if let Some(point) = state.on_upstream_event(&ev, dep_idx) {
+                #[cfg(not(target_arch = "wasm32"))]
                 if let Some(d) = disk.as_mut() {
                     if let Err(e) = d.append(&point) {
                         tracing::warn!(?e, "derived: disk store append failed");
@@ -662,6 +683,7 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
             }
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(mut d) = disk { let _ = d.flush(); }
         let _ = series;
 
@@ -714,18 +736,25 @@ fn spawn_forwarder<T: DataPoint + 'static>(
     let persistence = inner.persistence.clone();
     let warm = inner.warm_start_capacity;
     let exchange = key.exchange;
+    #[cfg(not(target_arch = "wasm32"))]
     let gap_cfg = inner.gap_heal;
+    #[cfg(not(target_arch = "wasm32"))]
     let hub_for_heal = inner.hub.clone();
 
     tokio::spawn(async move {
-        // Open disk store if persistence is on for this kind.
+        // Open disk store if persistence is on for this kind (native only).
+        #[cfg(not(target_arch = "wasm32"))]
         let mut disk: Option<DiskStore<T>> = None;
+        #[cfg(not(target_arch = "wasm32"))]
         if persistence.is_enabled_for(&key.kind) {
             match DiskStore::<T>::new(&storage_root, key.clone()) {
                 Ok(store) => disk = Some(store),
                 Err(e) => tracing::warn!(?e, ?key, "disk store open failed"),
             }
         }
+        // On wasm, no disk store.
+        #[cfg(target_arch = "wasm32")]
+        let _ = (&storage_root, &persistence);
 
         // In-memory ring (warm capacity).
         let mut series = Series::<T>::new(warm);
@@ -735,10 +764,13 @@ fn spawn_forwarder<T: DataPoint + 'static>(
 
         // Warm-start. Priority: disk tail > REST seed.
         if warm > 0 {
+            #[cfg(not(target_arch = "wasm32"))]
             let disk_tail: Vec<T> = disk
                 .as_ref()
                 .and_then(|d| d.read_tail(warm).ok())
                 .unwrap_or_default();
+            #[cfg(target_arch = "wasm32")]
+            let disk_tail: Vec<T> = Vec::new();
             let seed_points: Vec<T> = if disk_tail.is_empty() && !rest_seed.is_empty() {
                 rest_seed
             } else {
@@ -755,12 +787,15 @@ fn spawn_forwarder<T: DataPoint + 'static>(
         // Silence threshold: if `event_stream().next()` produces no event for
         // this long, the underlying WS is presumed dropped. Mirrors MLC
         // `ws_manager` behaviour (60s). Tunable via env for tests.
+        // Native-only: tokio::time::timeout not available on wasm.
+        #[cfg(not(target_arch = "wasm32"))]
         let silence_timeout = std::time::Duration::from_secs(
             std::env::var("DIG3_WS_SILENCE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(60),
         );
         // Debug-only: artificially slow down the per-event loop. Used by e2e
         // tests to force broadcast-channel overflow → `Lagged` error →
         // `stream_err` branch. Production callers leave this unset (0 ms).
+        #[cfg(not(target_arch = "wasm32"))]
         let debug_slow_ms: u64 = std::env::var("DIG3_DEBUG_SLOW_CONSUMER_MS")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -769,16 +804,32 @@ fn spawn_forwarder<T: DataPoint + 'static>(
         loop {
             // Single tokio::select! arm — exits via the shutdown branch or
             // detects (None / Err / silence). All three = disconnect = heal.
+            // Native: uses tokio::time::timeout for silence detection.
+            // Wasm: no timeout — just wait for next event or shutdown.
+            #[cfg(not(target_arch = "wasm32"))]
             let item_opt = tokio::select! {
                 _ = &mut shutdown_rx => break,
                 res = tokio::time::timeout(silence_timeout, stream.next()) => res,
             };
+            #[cfg(target_arch = "wasm32")]
+            // On wasm we can't use tokio::time::timeout (no "time" feature).
+            // Map the Option<Result<...>> to a Result<Option<Result<...>>, !>
+            // so downstream code sees the same Ok(...) shape.
+            let item_opt: Result<Option<Result<_, _>>, std::convert::Infallible> = tokio::select! {
+                _ = &mut shutdown_rx => break,
+                item = stream.next() => Ok(item),
+            };
 
             let trigger_heal_reason: Option<&'static str> = match &item_opt {
+                #[cfg(not(target_arch = "wasm32"))]
                 Err(_) => Some("silence_timeout"),
                 Ok(None) => Some("stream_ended"),
                 Ok(Some(Err(_))) => Some("stream_err"),
                 Ok(Some(Ok(_))) => None,
+                // Infallible branch on wasm — the Err arm cannot happen but
+                // the match must be exhaustive.
+                #[cfg(target_arch = "wasm32")]
+                Err(_infallible) => unreachable!(),
             };
 
             if let Some(reason) = trigger_heal_reason {
@@ -810,7 +861,9 @@ fn spawn_forwarder<T: DataPoint + 'static>(
 
                 tracing::info!(target: "dig3::gap_heal", ?key, reason, "ws disconnect detected → heal + resub");
                 // 1. REST heal (kline-only; no-op for non-kline kinds, which
-                //    have already returned above).
+                //    have already returned above). Native-only: gap_heal uses
+                //    tokio::time + DiskStore which are not available on wasm.
+                #[cfg(not(target_arch = "wasm32"))]
                 run_kline_heal::<T>(
                     &hub_for_heal, &key, &gap_cfg, &symbol_label,
                     last_emitted_ms, exchange,
@@ -861,6 +914,7 @@ fn spawn_forwarder<T: DataPoint + 'static>(
                 continue;
             };
 
+            #[cfg(not(target_arch = "wasm32"))]
             if let Some(d) = disk.as_mut() {
                 if let Err(e) = d.append(&point) {
                     tracing::warn!(?e, "disk store append failed");
@@ -878,11 +932,13 @@ fn spawn_forwarder<T: DataPoint + 'static>(
 
             let _ = bcast_tx.send(Event::from_point(exchange, &symbol_label, &key.kind, point));
 
+            #[cfg(not(target_arch = "wasm32"))]
             if debug_slow_ms > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(debug_slow_ms)).await;
             }
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(mut d) = disk { let _ = d.flush(); }
         let _ = series; // dropped
         // Remove the mux entry so a subsequent `subscribe` for the same key
@@ -907,7 +963,8 @@ fn spawn_forwarder<T: DataPoint + 'static>(
 }
 
 /// Run a kline auto-heal triggered by WS disconnect. Called only for
-/// `Kind::Kline`; no-op for other kinds.
+/// `Kind::Kline`; no-op for other kinds. Native-only (requires DiskStore + gap_heal).
+#[cfg(not(target_arch = "wasm32"))]
 async fn run_kline_heal<T: DataPoint + 'static>(
     hub: &Arc<ExchangeHub>,
     key: &SeriesKey,

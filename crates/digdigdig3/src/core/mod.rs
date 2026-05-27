@@ -81,10 +81,19 @@ pub mod grpc;
 /// `HttpClient::new` calls this implicitly; callers that only need WebSocket
 /// (e.g. `digdigdig3-station`) should call this before opening any TLS
 /// connection. Idempotent: returns `Err(())` if a provider is already set.
+///
+/// On wasm32, this is a no-op (no native TLS stack needed).
 pub fn install_default_crypto_provider() -> std::result::Result<(), ()> {
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .map_err(|_| ())
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .map_err(|_| ())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        Ok(())
+    }
 }
 
 // Re-exports types

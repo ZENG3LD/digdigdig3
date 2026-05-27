@@ -49,23 +49,22 @@ k256-signing = ["dep:k256", "dep:sha3"]
 # Legacy alias — starknet feature now maps to onchain-starknet
 starknet = ["onchain-starknet"]
 
+# ─── Shared dependencies (compile on BOTH targets) ────────────────────────────
+
 [dependencies]
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
-# Async
-tokio = { version = "1.0", features = ["full"] }
+# Async foundations (target-split below for tokio itself)
 async-trait = "0.1"
 futures-util = "0.3"
 
-# HTTP/WebSocket
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
-tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
-# Explicit rustls dep to pin ring as the process-level CryptoProvider.
-# reqwest pulls ring; we pin ring here to avoid provider conflicts.
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
-tokio-stream = { version = "0.1", features = ["sync"] }
+# HTTP — reqwest 0.12 targets wasm32 automatically via its own cfg; it uses
+# browser fetch underneath on wasm32 so NO TLS feature is wanted there.
+# We declare it here without any tls feature and add tls features only on
+# the native target block below.
+reqwest = { version = "0.12", features = ["json"], default-features = false }
 
 # Error handling
 thiserror = "1.0"
@@ -73,66 +72,141 @@ thiserror = "1.0"
 # Logging
 tracing = "0.1"
 
-# Crypto (for HMAC signatures)
+# Crypto (HMAC signatures — pure-Rust, compile on both targets)
 hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
 base64 = "0.22"
 
-# Time (for OKX ISO timestamps)
-chrono = "0.4"
+# Time (OKX ISO timestamps — pure-Rust, compile on both targets)
+# "now" enables Utc::now(); "wasmbind" is added in wasm block for the wasm impl.
+chrono = { version = "0.4", default-features = false, features = ["std", "now"] }
 
-# Binary parsing (for Dhan WebSocket binary format - Little Endian)
+# Binary parsing (Dhan WebSocket binary format)
 byteorder = "1.5"
 
-# UUID generation (for client order IDs)
+# UUID generation (client order IDs) — getrandom js feature needed on wasm
 uuid = { version = "1.0", features = ["v4"] }
 
-# Compression (for BingX and HTX WebSocket, Dukascopy binary files)
+# Compression (BingX, HTX, Dukascopy)
 flate2 = "1.0"
 lzma-rs = "0.3"
 
-# URL encoding (for HTX authentication and Polygon)
+# URL encoding (HTX auth, Polygon)
 url = "2.5"
 urlencoding = "2.1"
 
-# JWT (for Coinbase authentication)
-jsonwebtoken = "9.3"
-# ring: explicit dep for manual JWT signing (Coinbase nonce-in-header);
-# already a transitive dep via jsonwebtoken, pinned to the same major version
-ring = "0.17"
-rand = "0.8"
-
-# Base58 encoding (for Raydium pubkey parsing)
+# Base58 (Raydium pubkey parsing)
 bs58 = "0.5"
-
-# Solana (for Raydium WebSocket via Solana RPC)
-# Implemented using raw WebSocket to avoid OpenSSL dependency
-# Uses tokio-tungstenite with native-tls (already available via reqwest)
-# No additional dependencies needed
 
 tracing-subscriber = "0.3.22"
 
-# TOTP (for Angel One 2FA)
+# TOTP (Angel One 2FA)
 totp-rs = "5.6"
 
-# Concurrent hashmap (for ConnectorPool)
+# Concurrent hashmap (ConnectorPool)
 dashmap = "5.5"
 
-# gRPC transport (feature-gated behind `grpc`)
-tonic = { version = "0.12", features = ["tls", "tls-native-roots"], optional = true }
-prost = { version = "0.13", optional = true }
+# Decimal arithmetic
+rust_decimal = "1"
 
-# Cryptographic signing (feature-gated)
+# TOML config
+toml = "0.8"
+
+# Cryptographic signing (feature-gated — native-only libs gated via features)
 k256 = { version = "0.13", features = ["ecdsa-core", "ecdsa"], optional = true }
 sha3 = { version = "0.10", optional = true }
 starknet-crypto = { version = "0.6", optional = true }
 
-# Cosmos SDK transaction builder + signer (for dYdX, Osmosis, etc.)
+# Cosmos SDK (native-only via optional + cfg gate on dep site)
 cosmrs = { version = "0.22", optional = true, default-features = false, features = ["bip32"] }
 
-# Decimal arithmetic (f64 → Decimal conversion for safe price/qty rounding)
-rust_decimal = "1"
+# gRPC (native-only via optional)
+tonic = { version = "0.12", features = ["tls", "tls-native-roots"], optional = true }
+prost = { version = "0.13", optional = true }
 
-# TOML config parsing (for dig3-catcher, now in dig3-cli)
-toml = "0.8"
+# ─── Native-only dependencies ─────────────────────────────────────────────────
+# Everything that requires std::net, native TLS, or tokio I/O goes here.
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Full tokio runtime for native
+tokio = { version = "1.0", features = ["full"] }
+
+# tokio-tungstenite: native WS. NOT available on wasm32.
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+
+# tokio-stream: used for stream combinators in transport.rs
+tokio-stream = { version = "0.1", features = ["sync"] }
+
+# Explicit rustls dep to pin ring as process-level CryptoProvider.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+
+# reqwest native TLS features — only valid when not wasm
+# (rustls-tls cannot compile to wasm32-unknown-unknown)
+reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
+
+# JWT + ECDSA signing (Coinbase auth, Angel One TOTP) — trading is native-only.
+# ring requires native assembly (clang), cannot compile to wasm32.
+jsonwebtoken = "9.3"
+ring = "0.17"
+rand = "0.8"
+
+# ─── wasm32-only dependencies ─────────────────────────────────────────────────
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Tokio sync-only: broadcast, mpsc, oneshot, Mutex, RwLock compile on wasm.
+# Do NOT enable "full", "net", "time", "io-util" — they pull in mio which
+# does not compile for wasm32-unknown-unknown.
+# We use sync + macros only. rt is NOT enabled because we delegate to
+# wasm_bindgen_futures::spawn_local for task spawning.
+tokio = { version = "1.0", default-features = false, features = ["sync", "macros"] }
+
+# tokio-stream: sync feature is wasm-compatible (no I/O)
+tokio-stream = { version = "0.1", default-features = false, features = ["sync"] }
+
+# wasm-bindgen core
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+
+# gloo-timers: replaces tokio::time::sleep / interval on wasm.
+# The "futures" feature pulls in futures-core + futures-channel (pure Rust).
+gloo-timers = { version = "0.3", features = ["futures"] }
+
+# gloo-net: provides WebSocket API wrapping web_sys, used by WasmWsConn actor.
+# Alternative to tokio-tungstenite on the browser side.
+gloo-net = { version = "0.6", features = ["websocket"] }
+
+# web-sys: low-level browser API bindings.
+web-sys = { version = "0.3", features = [
+    "WebSocket",
+    "MessageEvent",
+    "BinaryType",
+    "CloseEvent",
+    "ErrorEvent",
+    "Window",
+    "Performance",
+    "Blob",
+    "FileReader",
+] }
+
+# getrandom js feature — required for uuid v4 on wasm32-unknown-unknown.
+# Without this getrandom panics at runtime ("unsupported platform").
+getrandom = { version = "0.2", features = ["js"] }
+
+# uuid js feature — uuid 1.22+ requires this explicitly on wasm32-unknown-unknown
+# in addition to getrandom/js. Cargo merges features from both dependency declarations.
+uuid = { version = "1.0", features = ["v4", "js"] }
+
+# chrono wasmbind + now — enables Utc::now() on wasm32 via JS Date.now().
+# "now" enables the Utc::now() method; "wasmbind" provides the wasm32 impl
+# via js_sys::Date. Without both, chrono::Utc::now() is a compile-time error.
+chrono = { version = "0.4", default-features = false, features = ["std", "now", "wasmbind"] }
+
+# ─── Dev dependencies ─────────────────────────────────────────────────────────
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio-test = "0.4"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"

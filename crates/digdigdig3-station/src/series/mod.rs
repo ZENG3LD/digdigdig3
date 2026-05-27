@@ -24,10 +24,19 @@ pub mod data_point;
 pub mod key;
 pub mod map;
 pub mod series;
+
+// DiskStore uses std::fs, sled, and blocking I/O — native-only.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod store;
 
 pub use data_point::DataPoint;
-pub use key::{Kind, PollSpec, SeriesKey};
+pub use key::{Kind, SeriesKey};
 pub use map::SharedSeriesMap;
 pub use series::Series;
+
+// native-only re-exports
+#[cfg(not(target_arch = "wasm32"))]
+pub use key::PollSpec;
+
+#[cfg(not(target_arch = "wasm32"))]
 pub use store::DiskStore;

@@ -34,7 +34,7 @@ use std::time::Duration;
 use digdigdig3::core::types::ExchangeId;
 use thiserror::Error;
 use tokio::sync::Mutex;
-use tokio::time::Instant;
+use std::time::Instant;
 
 use crate::series::Kind;
 use crate::station::StationInner;
@@ -190,8 +190,8 @@ pub enum QuotaError {
 // Token bucket (REST rate limiting)
 // ---------------------------------------------------------------------------
 
-/// Simple fixed-window token bucket. Uses `tokio::time::Instant` for
-/// monotonic time, compatible with `tokio::time::pause()` in tests.
+/// Simple fixed-window token bucket. Uses `std::time::Instant` for
+/// monotonic time (cross-target: compiles on native and wasm32).
 pub(crate) struct TokenBucket {
     capacity: u32,
     available: u32,

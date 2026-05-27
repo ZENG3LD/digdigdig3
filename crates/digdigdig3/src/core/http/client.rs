@@ -92,6 +92,8 @@ impl HttpClient {
         // Install ring as the rustls CryptoProvider. Idempotent — silently
         // ignored if a provider is already installed. rustls 0.23 panics at
         // TLS init unless exactly one provider is registered process-wide.
+        // Native-only: rustls is not available on wasm32.
+        #[cfg(not(target_arch = "wasm32"))]
         let _ = rustls::crypto::ring::default_provider().install_default();
 
         let client = Client::builder()

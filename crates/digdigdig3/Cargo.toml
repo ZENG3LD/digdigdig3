@@ -177,6 +177,12 @@ gloo-timers = { version = "0.3", features = ["futures"] }
 # Alternative to tokio-tungstenite on the browser side.
 gloo-net = { version = "0.6", features = ["websocket"] }
 
+# futures-channel: mpsc + oneshot channels inside JS closures (which are sync,
+# not async). Explicitly declared even though gloo-timers pulls it transitively,
+# so our direct use of `futures_channel::mpsc::unbounded` + `oneshot::channel`
+# in rt/wasm.rs does not depend on a transitive dep only.
+futures-channel = "0.3"
+
 # web-sys: low-level browser API bindings.
 web-sys = { version = "0.3", features = [
     "WebSocket",

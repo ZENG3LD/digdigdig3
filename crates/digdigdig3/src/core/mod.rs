@@ -71,6 +71,7 @@ pub mod websocket;
 pub mod chain;
 pub mod macros;
 pub mod normalization;
+pub mod rt;
 
 #[cfg(feature = "grpc")]
 pub mod grpc;

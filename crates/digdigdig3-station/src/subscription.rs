@@ -491,6 +491,20 @@ impl SubscribeReport {
     pub fn is_fully_ok(&self) -> bool { self.failed.is_empty() }
     /// Convenience: total streams requested (`ok.len() + failed.len()`).
     pub fn total(&self) -> usize { self.ok.len() + self.failed.len() }
+
+    /// Move all [`MultiplexRef`]s out of the inner [`SubscriptionHandle`]
+    /// into `dest`, returning `Self` with an empty `_refs` list.
+    ///
+    /// Used by [`crate::quota::ConsumerHandle::subscribe`] to take ownership
+    /// of the refs so that dropping the `ConsumerHandle` releases all the
+    /// consumer's subscriptions, even when the caller retains the
+    /// `SubscriptionHandle` for event `recv()`. The upstream broadcast keeps
+    /// emitting as long as any consumer holds a ref — ref extraction does not
+    /// interrupt the event stream.
+    pub(crate) fn take_refs_into(mut self, dest: &mut Vec<MultiplexRef>) -> Self {
+        dest.extend(std::mem::take(&mut self.handle._refs));
+        self
+    }
 }
 
 impl std::fmt::Debug for SubscribeReport {

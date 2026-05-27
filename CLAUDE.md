@@ -1,6 +1,6 @@
 # digdigdig3 (dig3)
 
-Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major crypto + 4 DEX, full futures coverage). Three crates in one workspace — single version pin (uzor-style), currently `0.3.10`:
+Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major crypto + 4 DEX, full futures coverage). Three crates in one workspace — single version pin (uzor-style), currently `0.3.11`:
 
 - **`digdigdig3`** — pure connector library. ONLY `ExchangeHub` + REST/WS connectors + capabilities + symbol normalization. No persistence, no replay, no cure/cache infrastructure.
 - **`digdigdig3-station`** — high-level builder over `ExchangeHub`. OWNS: unified `Series<T>` / `DiskStore<T>` over 27 `DataPoint` impls (9 core + 18 extended for MLI), `SeriesKey { exchange, account, symbol, kind }`, multiplexed `Station` (N consumers share one WS per StreamKey), warm-start, REST cache, replay, cure, **auto-heal on WS disconnect** (kline-only — see below). String-bearing variants (BlockTrade, AuctionEvent, MarketWarning, OrderbookL3) persist via fixed header + companion `.blob` file.

@@ -70,6 +70,29 @@ impl Station {
     pub fn storage_root(&self) -> &std::path::Path { &self.inner.storage_root }
     pub fn active_streams(&self) -> usize { self.inner.muxes.len() }
 
+    /// Register a consumer with the given quota. Drop the returned
+    /// [`ConsumerHandle`] to release all of the consumer's active
+    /// subscriptions atomically.
+    ///
+    /// This is opt-in: [`Station::subscribe`] continues to work without
+    /// quotas. A consumer that wants caps registers and uses
+    /// [`ConsumerHandle::subscribe`]; one that does not keeps calling
+    /// [`Station::subscribe`] directly.
+    pub fn register_consumer(
+        &self,
+        quota: crate::quota::ConsumerQuota,
+    ) -> crate::quota::ConsumerHandle {
+        let rest_bucket = quota.max_rest_per_window.map(|cap| {
+            crate::quota::TokenBucket::new(cap, quota.rest_window)
+        });
+        crate::quota::ConsumerHandle {
+            station: Arc::clone(&self.inner),
+            quota,
+            rest_bucket: Arc::new(tokio::sync::Mutex::new(rest_bucket)),
+            refs: tokio::sync::Mutex::new((0, Vec::new())),
+        }
+    }
+
     pub(crate) async fn from_builder(b: StationBuilder) -> Result<Self> {
         let _ = digdigdig3::core::install_default_crypto_provider();
         if b.persistence.enabled {

@@ -15,6 +15,7 @@ pub mod error;
 pub mod gap_heal;
 pub mod persistence;
 pub(crate) mod polling;
+pub mod quota;
 pub mod series;
 pub mod station;
 pub mod subscription;
@@ -36,6 +37,7 @@ pub use gap_heal::GapHealConfig;
 pub use persistence::PersistenceConfig;
 pub use polling::PollSource;
 pub use series::{DataPoint, DiskStore, Kind, PollSpec, Series, SeriesKey, SharedSeriesMap};
+pub use quota::{ConsumerHandle, ConsumerQuota, ConsumerWhitelist, QuotaError};
 pub use station::Station;
 pub use subscription::{
     Event, FailedStream, Stream, SubscribeReport, SubscriptionHandle, SubscriptionSet,

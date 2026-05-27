@@ -29,7 +29,9 @@ mod endpoints;
 mod auth;
 mod parser;
 mod connector;
+#[cfg(not(target_arch = "wasm32"))]
 mod websocket;
 
 pub use connector::TiingoConnector;
+#[cfg(not(target_arch = "wasm32"))]
 pub use websocket::TiingoWebSocket;

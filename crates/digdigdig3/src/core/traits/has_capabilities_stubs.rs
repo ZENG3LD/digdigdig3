@@ -47,6 +47,7 @@ use crate::l3::open::prediction::polymarket::PolymarketConnector;
 
 // ── Brokers ───────────────────────────────────────────────────────────────────
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::gated::multi::ib::IBConnector;
 
 // ── Data Feeds ────────────────────────────────────────────────────────────────
@@ -466,6 +467,7 @@ impl HasCapabilities for PolymarketConnector {
 // Brokers
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[cfg(not(target_arch = "wasm32"))]
 impl HasCapabilities for IBConnector {
     fn capabilities(&self) -> ConnectorCapabilities {
         // minimal profile — verify (IB connector is incomplete)

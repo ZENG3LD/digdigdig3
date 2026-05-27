@@ -10,9 +10,9 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
+use crate::core::rt::WsFrame;
 use crate::core::traits::Credentials;
 use crate::core::types::{AccountType, WebSocketError};
 use crate::core::websocket::{
@@ -93,28 +93,28 @@ impl WsProtocol for BitmexProtocol {
         Url::parse(url).expect("bitmex ws url is valid")
     }
 
-    fn ping_frame(&self) -> Option<Message> {
+    fn ping_frame(&self) -> Option<WsFrame> {
         // BitMEX heartbeat is a plain "ping" text frame (NOT JSON).
-        Some(Message::Text("ping".into()))
+        Some(WsFrame::Text("ping".into()))
     }
 
     fn ping_interval(&self) -> Duration {
         Duration::from_secs(20)
     }
 
-    fn subscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn subscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         let topic = Self::build_topic(spec)?;
         let frame = json!({ "op": "subscribe", "args": [topic] });
-        Ok(Message::Text(frame.to_string()))
+        Ok(WsFrame::Text(frame.to_string()))
     }
 
-    fn unsubscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn unsubscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         let topic = Self::build_topic(spec)?;
         let frame = json!({ "op": "unsubscribe", "args": [topic] });
-        Ok(Message::Text(frame.to_string()))
+        Ok(WsFrame::Text(frame.to_string()))
     }
 
-    fn auth_frame(&self, _credentials: &Credentials) -> Option<Result<Message, WebSocketError>> {
+    fn auth_frame(&self, _credentials: &Credentials) -> Option<Result<WsFrame, WebSocketError>> {
         // Public-only connector — no auth frame.
         None
     }
@@ -263,7 +263,7 @@ mod tests {
         let spec = futures_spec(StreamKind::PredictedFunding);
         let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed");
         let text = match msg {
-            Message::Text(t) => t,
+            WsFrame::Text(t) => t,
             _ => panic!("expected text frame"),
         };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
@@ -276,7 +276,7 @@ mod tests {
         let proto = BitmexProtocol::new(false);
         let spec = futures_spec(StreamKind::Trade);
         let msg = proto.subscribe_frame(&spec).unwrap();
-        let text = match msg { Message::Text(t) => t, _ => panic!() };
+        let text = match msg { WsFrame::Text(t) => t, _ => panic!() };
         let v: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(v["args"][0], "trade:XBTUSD");
     }
@@ -286,7 +286,7 @@ mod tests {
         let proto = BitmexProtocol::new(false);
         let spec = futures_spec(StreamKind::Ticker);
         let msg = proto.subscribe_frame(&spec).unwrap();
-        let text = match msg { Message::Text(t) => t, _ => panic!() };
+        let text = match msg { WsFrame::Text(t) => t, _ => panic!() };
         let v: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(v["args"][0], "quote:XBTUSD");
     }
@@ -296,7 +296,7 @@ mod tests {
         let proto = BitmexProtocol::new(false);
         let spec = futures_spec(StreamKind::Liquidation);
         let msg = proto.subscribe_frame(&spec).unwrap();
-        let text = match msg { Message::Text(t) => t, _ => panic!() };
+        let text = match msg { WsFrame::Text(t) => t, _ => panic!() };
         let v: serde_json::Value = serde_json::from_str(&text).unwrap();
         // Liquidation is a global channel — no symbol suffix
         assert_eq!(v["args"][0], "liquidation");
@@ -307,7 +307,7 @@ mod tests {
         let proto = BitmexProtocol::new(false);
         let spec = futures_spec(StreamKind::FundingSettlement);
         let msg = proto.subscribe_frame(&spec).unwrap();
-        let text = match msg { Message::Text(t) => t, _ => panic!() };
+        let text = match msg { WsFrame::Text(t) => t, _ => panic!() };
         let v: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(v["args"][0], "funding:XBTUSD");
     }
@@ -329,7 +329,7 @@ mod tests {
     fn ping_frame_is_literal_ping() {
         let proto = BitmexProtocol::new(false);
         match proto.ping_frame() {
-            Some(Message::Text(t)) => assert_eq!(t, "ping"),
+            Some(WsFrame::Text(t)) => assert_eq!(t, "ping"),
             _ => panic!("expected Some(Text('ping'))"),
         }
     }

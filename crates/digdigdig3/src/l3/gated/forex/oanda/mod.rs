@@ -45,10 +45,12 @@ mod endpoints;
 mod auth;
 mod parser;
 mod connector;
+#[cfg(not(target_arch = "wasm32"))]
 mod streaming;
 
 pub use endpoints::{OandaEndpoint, OandaUrls, format_symbol, parse_symbol, map_granularity};
 pub use auth::OandaAuth;
 pub use parser::OandaParser;
 pub use connector::OandaConnector;
+#[cfg(not(target_arch = "wasm32"))]
 pub use streaming::{PricingStream, TransactionStream, StreamMessage, PriceUpdate};

@@ -120,10 +120,13 @@ impl PolymarketConnector {
     /// Create a public (no authentication) connector
     pub fn public() -> Self {
         Self {
-            client: Client::builder()
-                .timeout(Duration::from_secs(30))
-                .build()
-                .unwrap_or_default(),
+            client: {
+                #[cfg(not(target_arch = "wasm32"))]
+                let b = Client::builder().timeout(Duration::from_secs(30));
+                #[cfg(target_arch = "wasm32")]
+                let b = Client::builder();
+                b.build().unwrap_or_default()
+            },
             _auth: PolymarketAuth::new(),
             endpoints: PolymarketEndpoints::default(),
             limiter: Arc::new(Mutex::new(RuntimeLimiter::from_caps(&POLYMARKET_RATE_CAPS))),
@@ -135,10 +138,13 @@ impl PolymarketConnector {
     /// Create an authenticated connector with L2 credentials
     pub fn authenticated(creds: PolymarketCredentials) -> Self {
         Self {
-            client: Client::builder()
-                .timeout(Duration::from_secs(30))
-                .build()
-                .unwrap_or_default(),
+            client: {
+                #[cfg(not(target_arch = "wasm32"))]
+                let b = Client::builder().timeout(Duration::from_secs(30));
+                #[cfg(target_arch = "wasm32")]
+                let b = Client::builder();
+                b.build().unwrap_or_default()
+            },
             _auth: PolymarketAuth::with_credentials(creds),
             endpoints: PolymarketEndpoints::default(),
             limiter: Arc::new(Mutex::new(RuntimeLimiter::from_caps(&POLYMARKET_RATE_CAPS))),
@@ -150,10 +156,13 @@ impl PolymarketConnector {
     /// Create connector from environment variables (tries auth, falls back to public)
     pub fn from_env() -> Self {
         Self {
-            client: Client::builder()
-                .timeout(Duration::from_secs(30))
-                .build()
-                .unwrap_or_default(),
+            client: {
+                #[cfg(not(target_arch = "wasm32"))]
+                let b = Client::builder().timeout(Duration::from_secs(30));
+                #[cfg(target_arch = "wasm32")]
+                let b = Client::builder();
+                b.build().unwrap_or_default()
+            },
             _auth: PolymarketAuth::from_env(),
             endpoints: PolymarketEndpoints::default(),
             limiter: Arc::new(Mutex::new(RuntimeLimiter::from_caps(&POLYMARKET_RATE_CAPS))),

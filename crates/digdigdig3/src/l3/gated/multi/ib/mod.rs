@@ -94,15 +94,20 @@
 //! - [IBKR Campus API Page](https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/)
 //! - [WebSocket Streaming](https://www.interactivebrokers.com/campus/trading-lessons/websockets/)
 
+#[cfg(not(target_arch = "wasm32"))]
 mod endpoints;
+#[cfg(not(target_arch = "wasm32"))]
 mod auth;
+#[cfg(not(target_arch = "wasm32"))]
 mod parser;
+#[cfg(not(target_arch = "wasm32"))]
 mod connector;
 
-#[cfg(feature = "websocket")]
+#[cfg(all(not(target_arch = "wasm32"), feature = "websocket"))]
 mod websocket;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub use connector::IBConnector;
 
-#[cfg(feature = "websocket")]
+#[cfg(all(not(target_arch = "wasm32"), feature = "websocket"))]
 pub use websocket::IBWebSocket;

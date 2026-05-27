@@ -102,10 +102,13 @@ impl BitstampConnector {
     pub async fn new(credentials: Option<Credentials>) -> ExchangeResult<Self> {
         let http = HttpClient::new(30_000)?; // 30 sec timeout
 
-        let reqwest_client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|e| ExchangeError::Network(format!("Failed to create HTTP client: {}", e)))?;
+        let reqwest_client = {
+            #[cfg(not(target_arch = "wasm32"))]
+            let b = reqwest::Client::builder().timeout(Duration::from_secs(30));
+            #[cfg(target_arch = "wasm32")]
+            let b = reqwest::Client::builder();
+            b.build().map_err(|e| ExchangeError::Network(format!("Failed to create HTTP client: {}", e)))?
+        };
 
         let auth = credentials.as_ref().map(BitstampAuth::new);
 

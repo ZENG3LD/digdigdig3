@@ -17,9 +17,9 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde_json::Value;
-use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
+use crate::core::rt::WsFrame;
 use crate::core::traits::Credentials;
 use crate::core::types::{AccountType, OrderBook, OrderBookLevel, OrderSide, OrderbookDelta, StreamEvent, Ticker, WebSocketError, WebSocketResult};
 use crate::core::websocket::{
@@ -78,13 +78,13 @@ impl BitstampProtocol {
     }
 
     /// Build subscribe / unsubscribe frame.
-    fn build_frame(op: &str, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn build_frame(op: &str, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         let channel = Self::channel_name(spec)?;
         let frame = serde_json::json!({
             "event": op,
             "data": { "channel": channel }
         });
-        Ok(Message::Text(frame.to_string()))
+        Ok(WsFrame::Text(frame.to_string()))
     }
 }
 
@@ -103,8 +103,8 @@ impl WsProtocol for BitstampProtocol {
     }
 
     /// Pusher application-level ping: text frame `{"event":"pusher:ping","data":{}}`.
-    fn ping_frame(&self) -> Option<Message> {
-        Some(Message::Text(
+    fn ping_frame(&self) -> Option<WsFrame> {
+        Some(WsFrame::Text(
             r#"{"event":"pusher:ping","data":{}}"#.to_string(),
         ))
     }
@@ -114,16 +114,16 @@ impl WsProtocol for BitstampProtocol {
         Duration::from_secs(30)
     }
 
-    fn subscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn subscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         Self::build_frame("bts:subscribe", spec)
     }
 
-    fn unsubscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn unsubscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         Self::build_frame("bts:unsubscribe", spec)
     }
 
     /// Bitstamp public WS is unauthenticated.
-    fn auth_frame(&self, _credentials: &Credentials) -> Option<Result<Message, WebSocketError>> {
+    fn auth_frame(&self, _credentials: &Credentials) -> Option<Result<WsFrame, WebSocketError>> {
         None
     }
 
@@ -573,7 +573,7 @@ mod tests {
         let proto = BitstampProtocol;
         let spec = make_spec(StreamKind::Trade, "btcusd");
         let msg = proto.subscribe_frame(&spec).expect("subscribe frame");
-        if let Message::Text(s) = msg {
+        if let WsFrame::Text(s) = msg {
             let v: Value = serde_json::from_str(&s).expect("valid json");
             assert_eq!(v["event"], "bts:subscribe");
             assert_eq!(v["data"]["channel"], "live_trades_btcusd");
@@ -587,7 +587,7 @@ mod tests {
         let proto = BitstampProtocol;
         let spec = make_spec(StreamKind::OrderbookDelta, "btcusd");
         let msg = proto.subscribe_frame(&spec).expect("subscribe frame");
-        if let Message::Text(s) = msg {
+        if let WsFrame::Text(s) = msg {
             let v: Value = serde_json::from_str(&s).expect("valid json");
             assert_eq!(v["data"]["channel"], "diff_order_book_btcusd");
         } else {
@@ -600,7 +600,7 @@ mod tests {
         let proto = BitstampProtocol;
         let spec = make_spec(StreamKind::OrderbookL3, "btcusd");
         let msg = proto.subscribe_frame(&spec).expect("subscribe frame");
-        if let Message::Text(s) = msg {
+        if let WsFrame::Text(s) = msg {
             let v: Value = serde_json::from_str(&s).expect("valid json");
             assert_eq!(v["data"]["channel"], "live_orders_btcusd");
         } else {
@@ -704,7 +704,7 @@ mod tests {
         let proto = BitstampProtocol;
         let frame = proto.ping_frame();
         assert!(frame.is_some(), "ping_frame must be Some");
-        if let Some(Message::Text(s)) = frame {
+        if let Some(WsFrame::Text(s)) = frame {
             let v: Value = serde_json::from_str(&s).expect("valid json");
             assert_eq!(v["event"], "pusher:ping");
         } else {

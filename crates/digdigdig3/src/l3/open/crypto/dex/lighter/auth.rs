@@ -31,11 +31,12 @@ use crate::core::{
 
 use super::crypto::{
     hash_auth_token_bytes, hash_create_order_bytes, hash_cancel_order_bytes,
-    sign_hashed_message,
     CreateOrderFields, CancelOrderFields,
     CHAIN_ID_MAINNET, CHAIN_ID_TESTNET,
     NIL_CLIENT_ORDER_INDEX,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use super::crypto::sign_hashed_message;
 
 /// Lighter authentication handler.
 ///
@@ -145,6 +146,9 @@ impl LighterAuth {
     ///
     /// # Returns
     /// The complete auth token string ready to use as the `Authorization` header value.
+    ///
+    /// Native-only: requires `sign_hashed_message` which uses `rand::rngs::OsRng`.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn generate_auth_token(&self, expiry_seconds: u64) -> ExchangeResult<String> {
         let private_key = self.private_key.as_ref().ok_or_else(|| {
             ExchangeError::Auth(
@@ -184,11 +188,8 @@ impl LighterAuth {
         Ok(format!("{}:{}:{}:{}", deadline, account_index, api_key_index, sig_b64))
     }
 
-    /// Generate a read-only auth token.
-    ///
-    /// Uses the same signing format as a regular auth token. Lighter's server
-    /// distinguishes read-only vs write access via the API key's permission level
-    /// registered on-chain, not via a different token format.
+    /// Generate a read-only auth token. Native-only: delegates to `generate_auth_token`.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn generate_readonly_token(&self, expiry_seconds: u64) -> ExchangeResult<String> {
         self.generate_auth_token(expiry_seconds)
     }
@@ -211,6 +212,7 @@ impl LighterAuth {
     /// - `expired_at_ms`: Unix timestamp in **milliseconds** when the order expires
     /// - `order_expiry_ms`: order-level expiry; pass `-1` for default (now + 28 days)
     /// - `client_order_index`: pass `NIL_CLIENT_ORDER_INDEX` if none
+    #[cfg(not(target_arch = "wasm32"))]
     #[allow(clippy::too_many_arguments)]
     pub fn sign_create_order(
         &self,
@@ -274,9 +276,10 @@ impl LighterAuth {
         Ok(BASE64.encode(signature))
     }
 
-    /// Sign an L2CancelOrder transaction (tx_type = 15).
+    /// Sign an L2CancelOrder transaction (tx_type = 15). Native-only.
     ///
     /// Returns a base64-encoded 80-byte signature.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn sign_cancel_order(
         &self,
         market_index: i16,
@@ -367,6 +370,8 @@ impl LighterAuth {
     /// Convenience wrapper used by connector methods that need auth headers.
     /// On failure (e.g. no private key configured) silently omits the header
     /// so public endpoints continue to work.
+    /// Native-only: calls `generate_auth_token` which requires `sign_hashed_message`.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn make_auth_headers(&self) -> HashMap<String, String> {
         let mut headers = HashMap::new();
         headers.insert("Content-Type".to_string(), "application/json".to_string());
@@ -375,6 +380,14 @@ impl LighterAuth {
             headers.insert("Authorization".to_string(), token);
         }
 
+        headers
+    }
+
+    /// Wasm stub — returns Content-Type only (no auth token on wasm32).
+    #[cfg(target_arch = "wasm32")]
+    pub fn make_auth_headers(&self) -> HashMap<String, String> {
+        let mut headers = HashMap::new();
+        headers.insert("Content-Type".to_string(), "application/json".to_string());
         headers
     }
 }

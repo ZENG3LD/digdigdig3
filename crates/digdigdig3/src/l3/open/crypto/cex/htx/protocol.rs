@@ -26,9 +26,9 @@ use std::time::Duration;
 
 use flate2::read::GzDecoder;
 use serde_json::{json, Value};
-use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
+use crate::core::rt::WsFrame;
 use crate::core::traits::Credentials;
 use crate::core::types::{AccountType, StreamEvent, WebSocketError, WebSocketResult};
 use crate::core::websocket::{
@@ -156,7 +156,7 @@ impl WsProtocol for HtxProtocol {
     }
 
     /// HTX heartbeat is server-initiated — client does NOT send periodic pings.
-    fn ping_frame(&self) -> Option<Message> {
+    fn ping_frame(&self) -> Option<WsFrame> {
         None
     }
 
@@ -165,20 +165,20 @@ impl WsProtocol for HtxProtocol {
         Duration::from_secs(30)
     }
 
-    fn subscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn subscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         let topic = Self::topic_for(spec)?;
         let frame = json!({ "sub": topic, "id": self.next_id() });
-        Ok(Message::Text(frame.to_string()))
+        Ok(WsFrame::Text(frame.to_string()))
     }
 
-    fn unsubscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn unsubscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         let topic = Self::topic_for(spec)?;
         let frame = json!({ "unsub": topic, "id": self.next_id() });
-        Ok(Message::Text(frame.to_string()))
+        Ok(WsFrame::Text(frame.to_string()))
     }
 
     /// Public channels only — no auth frame.
-    fn auth_frame(&self, _credentials: &Credentials) -> Option<Result<Message, WebSocketError>> {
+    fn auth_frame(&self, _credentials: &Credentials) -> Option<Result<WsFrame, WebSocketError>> {
         None
     }
 
@@ -835,7 +835,7 @@ mod tests {
         let spec = spot_spec(StreamKind::Kline { interval: KlineInterval::new("1m") });
         let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed");
         let text = match msg {
-            Message::Text(t) => t,
+            WsFrame::Text(t) => t,
             _ => panic!("expected text frame"),
         };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
@@ -877,7 +877,7 @@ mod tests {
         let spec = spot_spec(StreamKind::Ticker);
         let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed");
         let text = match msg {
-            Message::Text(t) => t,
+            WsFrame::Text(t) => t,
             _ => panic!("expected text frame"),
         };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");

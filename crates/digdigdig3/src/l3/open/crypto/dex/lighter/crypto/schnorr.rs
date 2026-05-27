@@ -20,6 +20,7 @@
 //! 2. Recompute e_v = Schnorr hash of (r_v, hashed_msg)
 //! 3. Return e_v == sig.e
 
+#[cfg(not(target_arch = "wasm32"))]
 use rand::RngCore;
 use super::ecgfp5::Point;
 use super::gfp5::GFp5;
@@ -66,7 +67,8 @@ pub fn derive_public_key(private_key: &[u8; 40]) -> [u8; 40] {
 
 /// Sign a pre-hashed message (a GFp5 element) with the given private key.
 ///
-/// Uses OsRng for nonce generation.
+/// Uses OsRng for nonce generation. Native-only: `rand::rngs::OsRng` requires
+/// native OS entropy; on wasm32 this function is unavailable.
 ///
 /// # Arguments
 /// - `hashed_msg`: The GFp5 element (40 bytes) representing the Poseidon2 hash of the transaction.
@@ -74,6 +76,7 @@ pub fn derive_public_key(private_key: &[u8; 40]) -> [u8; 40] {
 ///
 /// # Returns
 /// 80-byte signature: s[0..40] || e[0..40]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn sign(private_key: &[u8; 40], hashed_msg: GFp5) -> [u8; 80] {
     let (sk, _) = Scalar::from_le_bytes(private_key);
 
@@ -168,6 +171,8 @@ pub fn verify(public_key: &[u8; 40], hashed_msg: GFp5, signature: &[u8; 80]) -> 
 
 /// Sign pre-hashed bytes (40 bytes = a GFp5 element in little-endian).
 /// This is the interface matching the Go SDK's `Sign(hashedMessage []byte)`.
+/// Native-only: delegates to `sign()` which requires `rand::rngs::OsRng`.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn sign_hashed_message(private_key: &[u8; 40], hashed_message_bytes: &[u8; 40]) -> [u8; 80] {
     let (msg_gfp5, _) = GFp5::from_le_bytes(hashed_message_bytes);
     sign(private_key, msg_gfp5)

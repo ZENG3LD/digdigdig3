@@ -46,6 +46,7 @@ use crate::l1::paid::alphavantage::AlphaVantageConnector;
 // Prediction — PolymarketConnector has real impl in connector.rs
 
 // Brokers
+#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::gated::multi::ib::IBConnector;
 
 // Data Feeds
@@ -125,6 +126,7 @@ impl MarketDataPublic for AlphaVantageConnector {}
 // Brokers stubs
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[cfg(not(target_arch = "wasm32"))]
 impl MarketDataPublic for IBConnector {}
 
 // ═══════════════════════════════════════════════════════════════════════════════

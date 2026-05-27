@@ -9,9 +9,9 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
+use crate::core::rt::WsFrame;
 use crate::core::traits::Credentials;
 use crate::core::types::{AccountType, StreamEvent, WebSocketError, WebSocketResult};
 use crate::core::websocket::{
@@ -85,7 +85,7 @@ impl BitgetProtocol {
     }
 
     /// Build subscribe/unsubscribe frame.
-    fn build_frame(op: &str, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn build_frame(op: &str, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         // Liquidation has no public channel on Bitget V2 Classic futures — UTA V3 only.
         if matches!(spec.kind, StreamKind::Liquidation) {
             return Err(WebSocketError::NotSupported(
@@ -116,7 +116,7 @@ impl BitgetProtocol {
             }]
         });
 
-        Ok(Message::Text(frame.to_string()))
+        Ok(WsFrame::Text(frame.to_string()))
     }
 
     /// Build the spot topic registry (cached).
@@ -145,24 +145,24 @@ impl WsProtocol for BitgetProtocol {
         Url::parse(url).expect("bitget ws url is valid")
     }
 
-    fn ping_frame(&self) -> Option<Message> {
+    fn ping_frame(&self) -> Option<WsFrame> {
         // Bitget public WS expects literal "ping" text frame every 30s
-        Some(Message::Text("ping".into()))
+        Some(WsFrame::Text("ping".into()))
     }
 
     fn ping_interval(&self) -> Duration {
         Duration::from_secs(30)
     }
 
-    fn subscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn subscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         Self::build_frame("subscribe", spec)
     }
 
-    fn unsubscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn unsubscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         Self::build_frame("unsubscribe", spec)
     }
 
-    fn auth_frame(&self, _credentials: &Credentials) -> Option<Result<Message, WebSocketError>> {
+    fn auth_frame(&self, _credentials: &Credentials) -> Option<Result<WsFrame, WebSocketError>> {
         // Public WS only — no auth frame
         None
     }
@@ -815,7 +815,7 @@ mod tests {
         let spec = spot_spec(StreamKind::Ticker);
         let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed");
         let text = match msg {
-            Message::Text(t) => t,
+            WsFrame::Text(t) => t,
             _ => panic!("expected text frame"),
         };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
@@ -868,7 +868,7 @@ mod tests {
         });
         let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed");
         let text = match msg {
-            Message::Text(t) => t,
+            WsFrame::Text(t) => t,
             _ => panic!("expected text frame"),
         };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
@@ -888,7 +888,7 @@ mod tests {
     fn ping_frame_is_literal_ping() {
         let proto = BitgetProtocol::new(AccountType::Spot, false);
         match proto.ping_frame() {
-            Some(Message::Text(t)) => assert_eq!(t, "ping"),
+            Some(WsFrame::Text(t)) => assert_eq!(t, "ping"),
             _ => panic!("expected Some(Text('ping'))"),
         }
     }
@@ -923,7 +923,7 @@ mod tests {
         let spec = futures_spec(StreamKind::MarkPrice);
         let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed");
         let text = match msg {
-            Message::Text(t) => t,
+            WsFrame::Text(t) => t,
             _ => panic!("expected text frame"),
         };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
@@ -937,7 +937,7 @@ mod tests {
         let proto = BitgetProtocol::new(AccountType::FuturesCross, false);
         let spec = futures_spec(StreamKind::FundingRate);
         let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed");
-        let text = match msg { Message::Text(t) => t, _ => panic!("expected text frame") };
+        let text = match msg { WsFrame::Text(t) => t, _ => panic!("expected text frame") };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
         assert_eq!(v["args"][0]["channel"], "ticker", "FundingRate must fan-out via ticker channel");
     }
@@ -947,7 +947,7 @@ mod tests {
         let proto = BitgetProtocol::new(AccountType::FuturesCross, false);
         let spec = futures_spec(StreamKind::OpenInterest);
         let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed");
-        let text = match msg { Message::Text(t) => t, _ => panic!("expected text frame") };
+        let text = match msg { WsFrame::Text(t) => t, _ => panic!("expected text frame") };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
         assert_eq!(v["args"][0]["channel"], "ticker", "OpenInterest must fan-out via ticker channel");
     }
@@ -957,7 +957,7 @@ mod tests {
         let proto = BitgetProtocol::new(AccountType::FuturesCross, false);
         let spec = futures_spec(StreamKind::AggTrade);
         let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed");
-        let text = match msg { Message::Text(t) => t, _ => panic!("expected text frame") };
+        let text = match msg { WsFrame::Text(t) => t, _ => panic!("expected text frame") };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
         assert_eq!(v["args"][0]["channel"], "trade", "AggTrade maps to trade channel");
     }

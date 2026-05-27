@@ -16,9 +16,9 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
+use crate::core::rt::WsFrame;
 use crate::core::traits::Credentials;
 use crate::core::types::{AccountType, StreamEvent, WebSocketError, WebSocketResult};
 use crate::core::websocket::{
@@ -125,7 +125,7 @@ impl GateIoProtocol {
     }
 
     /// Build subscribe/unsubscribe frame.
-    fn build_frame(op: &str, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn build_frame(op: &str, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         let category = GateIoCategory::from_account_type(spec.account_type);
         let prefix = category.channel_prefix();
 
@@ -147,7 +147,7 @@ impl GateIoProtocol {
             })
         };
 
-        Ok(Message::Text(frame.to_string()))
+        Ok(WsFrame::Text(frame.to_string()))
     }
 
     fn spot_registry() -> &'static TopicRegistry {
@@ -177,26 +177,26 @@ impl WsProtocol for GateIoProtocol {
         Url::parse(cat.ws_url(testnet)).expect("gateio ws url is valid")
     }
 
-    fn ping_frame(&self) -> Option<Message> {
+    fn ping_frame(&self) -> Option<WsFrame> {
         let ping_channel = self.category().ping_channel();
         let ts = timestamp_seconds() as i64;
         let frame = json!({ "time": ts, "channel": ping_channel });
-        Some(Message::Text(frame.to_string()))
+        Some(WsFrame::Text(frame.to_string()))
     }
 
     fn ping_interval(&self) -> Duration {
         Duration::from_secs(20)
     }
 
-    fn subscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn subscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         Self::build_frame("subscribe", spec)
     }
 
-    fn unsubscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn unsubscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         Self::build_frame("unsubscribe", spec)
     }
 
-    fn auth_frame(&self, _credentials: &Credentials) -> Option<Result<Message, WebSocketError>> {
+    fn auth_frame(&self, _credentials: &Credentials) -> Option<Result<WsFrame, WebSocketError>> {
         // Public WS only — Gate.io private channels use per-message auth in the payload
         None
     }
@@ -769,7 +769,7 @@ mod tests {
         let spec = spot_spec(StreamKind::Trade);
         let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed");
         let text = match msg {
-            Message::Text(t) => t,
+            WsFrame::Text(t) => t,
             _ => panic!("expected text frame"),
         };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
@@ -824,7 +824,7 @@ mod tests {
         let proto = GateIoProtocol::new(AccountType::Spot, false);
         let frame = proto.ping_frame().expect("ping frame must exist");
         let text = match frame {
-            Message::Text(t) => t,
+            WsFrame::Text(t) => t,
             _ => panic!("expected text frame"),
         };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");

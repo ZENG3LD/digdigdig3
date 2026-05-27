@@ -8,9 +8,9 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
+use crate::core::rt::WsFrame;
 use crate::core::traits::Credentials;
 use crate::core::types::{AccountType, StreamEvent, TradeSide, WebSocketError, WebSocketResult};
 use crate::core::websocket::{
@@ -87,12 +87,12 @@ impl OkxProtocol {
     }
 
     /// Build subscribe/unsubscribe frame for standard channels (channel + instId).
-    fn build_instid_frame(op: &str, channel: &str, inst_id: &str) -> Message {
+    fn build_instid_frame(op: &str, channel: &str, inst_id: &str) -> WsFrame {
         let frame = json!({
             "op": op,
             "args": [{ "channel": channel, "instId": inst_id }]
         });
-        Message::Text(frame.to_string())
+        WsFrame::Text(frame.to_string())
     }
 
     /// Rewrite a spot-format instId to SWAP form for futures channels.
@@ -194,15 +194,15 @@ impl WsProtocol for OkxProtocol {
         Url::parse(s).expect("okx ws url is valid")
     }
 
-    fn ping_frame(&self) -> Option<Message> {
-        Some(Message::Text("ping".into()))
+    fn ping_frame(&self) -> Option<WsFrame> {
+        Some(WsFrame::Text("ping".into()))
     }
 
     fn ping_interval(&self) -> Duration {
         Duration::from_secs(30)
     }
 
-    fn subscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn subscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         // Special cases first.
         match &spec.kind {
             StreamKind::Liquidation => {
@@ -210,14 +210,14 @@ impl WsProtocol for OkxProtocol {
                     "op": "subscribe",
                     "args": [{ "channel": "liquidation-orders", "instType": "SWAP" }]
                 });
-                return Ok(Message::Text(frame.to_string()));
+                return Ok(WsFrame::Text(frame.to_string()));
             }
             StreamKind::BlockTrade => {
                 let frame = json!({
                     "op": "subscribe",
                     "args": [{ "channel": "public-block-trades", "instId": spec.symbol.as_str() }]
                 });
-                return Ok(Message::Text(frame.to_string()));
+                return Ok(WsFrame::Text(frame.to_string()));
             }
             StreamKind::SettlementEvent => {
                 // spec.symbol is raw e.g. "BTC-USDT" or "BTC-USDT-SWAP";
@@ -227,7 +227,7 @@ impl WsProtocol for OkxProtocol {
                     "op": "subscribe",
                     "args": [{ "channel": "estimated-price", "instType": "FUTURES", "instFamily": inst_family }]
                 });
-                return Ok(Message::Text(frame.to_string()));
+                return Ok(WsFrame::Text(frame.to_string()));
             }
             StreamKind::OptionGreeks => {
                 let uly = Self::okx_inst_family(spec.symbol.as_str());
@@ -235,7 +235,7 @@ impl WsProtocol for OkxProtocol {
                     "op": "subscribe",
                     "args": [{ "channel": "opt-summary", "uly": uly }]
                 });
-                return Ok(Message::Text(frame.to_string()));
+                return Ok(WsFrame::Text(frame.to_string()));
             }
             _ => {}
         }
@@ -260,21 +260,21 @@ impl WsProtocol for OkxProtocol {
         Ok(Self::build_instid_frame("subscribe", &channel, &inst_id))
     }
 
-    fn unsubscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn unsubscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         match &spec.kind {
             StreamKind::Liquidation => {
                 let frame = json!({
                     "op": "unsubscribe",
                     "args": [{ "channel": "liquidation-orders", "instType": "SWAP" }]
                 });
-                return Ok(Message::Text(frame.to_string()));
+                return Ok(WsFrame::Text(frame.to_string()));
             }
             StreamKind::BlockTrade => {
                 let frame = json!({
                     "op": "unsubscribe",
                     "args": [{ "channel": "public-block-trades", "instId": spec.symbol.as_str() }]
                 });
-                return Ok(Message::Text(frame.to_string()));
+                return Ok(WsFrame::Text(frame.to_string()));
             }
             StreamKind::SettlementEvent => {
                 let inst_family = Self::okx_inst_family(spec.symbol.as_str());
@@ -282,7 +282,7 @@ impl WsProtocol for OkxProtocol {
                     "op": "unsubscribe",
                     "args": [{ "channel": "estimated-price", "instType": "FUTURES", "instFamily": inst_family }]
                 });
-                return Ok(Message::Text(frame.to_string()));
+                return Ok(WsFrame::Text(frame.to_string()));
             }
             StreamKind::OptionGreeks => {
                 let uly = Self::okx_inst_family(spec.symbol.as_str());
@@ -290,7 +290,7 @@ impl WsProtocol for OkxProtocol {
                     "op": "unsubscribe",
                     "args": [{ "channel": "opt-summary", "uly": uly }]
                 });
-                return Ok(Message::Text(frame.to_string()));
+                return Ok(WsFrame::Text(frame.to_string()));
             }
             _ => {}
         }
@@ -313,7 +313,7 @@ impl WsProtocol for OkxProtocol {
         Ok(Self::build_instid_frame("unsubscribe", &channel, &inst_id))
     }
 
-    fn auth_frame(&self, credentials: &Credentials) -> Option<Result<Message, WebSocketError>> {
+    fn auth_frame(&self, credentials: &Credentials) -> Option<Result<WsFrame, WebSocketError>> {
         let passphrase = credentials.passphrase.as_deref()?;
         let timestamp = timestamp_iso8601();
         let prehash = format!("{}GET/users/self/verify", timestamp);
@@ -330,7 +330,7 @@ impl WsProtocol for OkxProtocol {
                 "sign": signature,
             }]
         });
-        Some(Ok(Message::Text(login.to_string())))
+        Some(Ok(WsFrame::Text(login.to_string())))
     }
 
     fn is_auth_ack(&self, raw: &Value) -> bool {
@@ -1083,7 +1083,7 @@ mod tests {
         let spec = spot_spec(StreamKind::Trade);
         let msg = proto.subscribe_frame(&spec).expect("subscribe_frame ok");
         let text = match msg {
-            Message::Text(t) => t,
+            WsFrame::Text(t) => t,
             _ => panic!("expected text frame"),
         };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
@@ -1133,7 +1133,7 @@ mod tests {
         };
         let msg = proto.subscribe_frame(&spec).expect("subscribe_frame ok");
         let text = match msg {
-            Message::Text(t) => t,
+            WsFrame::Text(t) => t,
             _ => panic!("expected text frame"),
         };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
@@ -1156,7 +1156,7 @@ mod tests {
         };
         let msg = proto.subscribe_frame(&spec).expect("subscribe_frame ok");
         let text = match msg {
-            Message::Text(t) => t,
+            WsFrame::Text(t) => t,
             _ => panic!("expected text frame"),
         };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
@@ -1279,7 +1279,7 @@ mod tests {
         };
         let msg = proto.subscribe_frame(&spec).expect("subscribe_frame ok");
         let text = match msg {
-            Message::Text(t) => t,
+            WsFrame::Text(t) => t,
             _ => panic!("expected text frame"),
         };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");

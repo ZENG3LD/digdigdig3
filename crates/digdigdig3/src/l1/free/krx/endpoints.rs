@@ -149,3 +149,10 @@ pub fn format_today() -> String {
     let now = Local::now();
     format!("{:04}{:02}{:02}", now.year(), now.month(), now.day())
 }
+
+/// Wasm stub — KRX scrapes Korean exchange data and requires native chrono::Local.
+/// On wasm32 this returns a placeholder; KRX connector methods will fail gracefully.
+#[cfg(target_arch = "wasm32")]
+pub fn format_today() -> String {
+    "20000101".to_string()
+}

@@ -25,11 +25,12 @@ mod endpoints;
 mod auth;
 mod parser;
 mod connector;
+#[cfg(not(target_arch = "wasm32"))]
 mod websocket;
 
 pub use endpoints::{BingxEndpoint, BingxUrls};
 pub use auth::BingxAuth;
 pub use parser::BingxParser;
 pub use connector::BingxConnector;
+#[cfg(not(target_arch = "wasm32"))]
 pub use websocket::BingxWebSocket;
-

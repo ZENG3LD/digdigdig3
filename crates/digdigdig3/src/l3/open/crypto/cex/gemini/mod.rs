@@ -30,11 +30,12 @@ mod endpoints;
 mod auth;
 mod parser;
 mod connector;
+#[cfg(not(target_arch = "wasm32"))]
 mod websocket;
 
 pub use endpoints::{GeminiEndpoint, GeminiUrls};
 pub use auth::GeminiAuth;
 pub use parser::GeminiParser;
 pub use connector::GeminiConnector;
+#[cfg(not(target_arch = "wasm32"))]
 pub use websocket::{GeminiWebSocket, WebSocketType};
-

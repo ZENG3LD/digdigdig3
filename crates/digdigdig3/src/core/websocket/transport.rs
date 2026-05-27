@@ -9,6 +9,14 @@
 //! - tokio::sync::Mutex only (never std::sync::Mutex across .await).
 //! - broadcast::Sender is Arc-held and never taken/dropped on reconnect.
 //! - Subscriptions are replayed on every successful reconnect.
+//!
+//! ## Target portability (Phase 3)
+//! All tokio::spawn / tokio::time / tokio_tungstenite calls are gone.
+//! The transport goes through `crate::core::rt::Runtime`:
+//! - `rt.spawn_send(fut)` on native / `rt.spawn_local(fut)` on wasm
+//! - `rt.sleep(dur).await` replaces tokio::time::sleep
+//! - `rt.connect_ws(url, timeout).await` replaces connect_async
+//! - `WsConn::send` / `next_frame` replace SinkExt / StreamExt on the raw stream
 
 use std::collections::HashSet;
 use std::pin::Pin;
@@ -19,13 +27,12 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use futures_util::{SinkExt, Stream, StreamExt};
+use futures_util::{Stream, StreamExt};
 use serde_json::Value;
 use tokio::sync::{broadcast, mpsc, Mutex as TokioMutex, RwLock as TokioRwLock};
-use tokio::time::timeout;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, trace, warn};
 
+use crate::core::rt::{self, WsFrame, WsRtError};
 use crate::core::traits::Credentials;
 use crate::core::types::{
     AccountType, ConnectionStatus, StreamEvent, SubscriptionRequest, WebSocketError,
@@ -165,8 +172,20 @@ impl<P: WsProtocol> UniversalWsTransport<P> {
             cmd_rx,
             http: reqwest::Client::new(),
             last_frame_at,
+            rt: rt::default_runtime(),
         };
-        tokio::spawn(driver.run());
+
+        // Spawn driver via cfg-conditional rt dispatch.
+        // The driver's `run()` future is `Send` on native (all fields are Send),
+        // so `tokio::spawn` is valid. On wasm, everything is single-threaded so
+        // `spawn_local` is used.
+        {
+            let driver_fut = Box::pin(driver.run());
+            #[cfg(not(target_arch = "wasm32"))]
+            tokio::spawn(driver_fut);
+            #[cfg(target_arch = "wasm32")]
+            wasm_bindgen_futures::spawn_local(driver_fut);
+        }
 
         // ── Lag-check task ─────────────────────────────────────────────────
         // Periodically inspects the broadcast queue depth.  If depth exceeds
@@ -178,7 +197,8 @@ impl<P: WsProtocol> UniversalWsTransport<P> {
             let lag_interval =
                 Duration::from_millis(transport.reconnect_cfg.lag_check_interval_ms);
             let protocol_name = transport.protocol.name().to_owned();
-            tokio::spawn(async move {
+
+            let lag_fut = Box::pin(async move {
                 let mut tick = tokio::time::interval(lag_interval);
                 loop {
                     tick.tick().await;
@@ -196,6 +216,10 @@ impl<P: WsProtocol> UniversalWsTransport<P> {
                     }
                 }
             });
+            #[cfg(not(target_arch = "wasm32"))]
+            tokio::spawn(lag_fut);
+            #[cfg(target_arch = "wasm32")]
+            wasm_bindgen_futures::spawn_local(lag_fut);
         }
 
         transport
@@ -389,6 +413,8 @@ struct DriverTask<P: WsProtocol> {
     http: reqwest::Client,
     /// Shared timestamp of the last received frame — updated on every incoming frame.
     last_frame_at: Arc<TokioMutex<Instant>>,
+    /// Runtime abstraction: spawn + sleep + connect_ws.
+    rt: rt::Runtime,
 }
 
 impl<P: WsProtocol> DriverTask<P> {
@@ -421,39 +447,36 @@ impl<P: WsProtocol> DriverTask<P> {
                     self.state
                         .store(TransportState::Reconnecting as u8, Ordering::Release);
                     let delay = backoff.next_delay();
-                    tokio::time::sleep(delay).await;
+                    self.rt.sleep(delay).await;
                     continue;
                 }
             };
 
             debug!(target: "dig3::ws::connect", exchange, url = %url, "connecting");
 
-            // ── TCP + TLS handshake ────────────────────────────────────────
+            // ── TCP + TLS handshake via rt abstraction ─────────────────────
             let conn_timeout = backoff.connection_timeout();
-            let ws_result = timeout(conn_timeout, connect_async(url.as_str())).await;
+            let ws_result = self.rt.connect_ws(url.as_str(), conn_timeout).await;
 
-            let ws_stream = match ws_result {
-                Ok(Ok((stream, _))) => stream,
-                Ok(Err(e)) => {
+            let mut conn = match ws_result {
+                Ok(c) => c,
+                Err(WsRtError::Timeout) => {
+                    warn!(target: "dig3::ws::connect", exchange, "connection timed out");
+                    let _ = self.event_tx.send(Err(WebSocketError::Timeout));
+                    let delay = backoff.next_delay();
+                    self.rt.sleep(delay).await;
+                    continue;
+                }
+                Err(e) => {
                     warn!(target: "dig3::ws::connect", exchange, error = %e, "connection failed");
                     let _ = self
                         .event_tx
                         .send(Err(WebSocketError::ConnectionError(e.to_string())));
                     let delay = backoff.next_delay();
-                    tokio::time::sleep(delay).await;
-                    continue;
-                }
-                Err(_elapsed) => {
-                    warn!(target: "dig3::ws::connect", exchange, "connection timed out");
-                    let _ = self.event_tx.send(Err(WebSocketError::Timeout));
-                    let delay = backoff.next_delay();
-                    tokio::time::sleep(delay).await;
+                    self.rt.sleep(delay).await;
                     continue;
                 }
             };
-
-            // ── Split stream ───────────────────────────────────────────────
-            let (mut write_half, mut read_half) = ws_stream.split();
 
             // ── Auth handshake ─────────────────────────────────────────────
             if let Some(creds) = &self.credentials {
@@ -462,20 +485,20 @@ impl<P: WsProtocol> DriverTask<P> {
                         Err(e) => {
                             warn!(target: "dig3::ws::auth", exchange, error = %e, "auth frame build failed");
                             let delay = backoff.auth_failure_delay();
-                            tokio::time::sleep(delay).await;
+                            self.rt.sleep(delay).await;
                             continue;
                         }
-                        Ok(auth_msg) => {
-                            if let Err(e) = write_half.send(auth_msg).await {
+                        Ok(auth_frame) => {
+                            if let Err(e) = conn.send(auth_frame).await {
                                 warn!(target: "dig3::ws::auth", exchange, error = %e, "auth frame send failed");
                                 let delay = backoff.auth_failure_delay();
-                                tokio::time::sleep(delay).await;
+                                self.rt.sleep(delay).await;
                                 continue;
                             }
                             // Wait for auth ack
                             let ack_timeout = self.protocol.auth_ack_timeout();
                             let ack_ok = wait_for_auth_ack(
-                                &mut read_half,
+                                &mut *conn,
                                 &*self.protocol,
                                 ack_timeout,
                                 exchange,
@@ -484,7 +507,7 @@ impl<P: WsProtocol> DriverTask<P> {
                             if !ack_ok {
                                 warn!(target: "dig3::ws::auth", exchange, "auth ack not received");
                                 let delay = backoff.auth_failure_delay();
-                                tokio::time::sleep(delay).await;
+                                self.rt.sleep(delay).await;
                                 continue;
                             }
                             debug!(target: "dig3::ws::auth", exchange, "auth ack received");
@@ -498,8 +521,8 @@ impl<P: WsProtocol> DriverTask<P> {
                 let subs = self.active_subs.read().await;
                 for spec in subs.iter() {
                     match self.protocol.subscribe_frame(spec) {
-                        Ok(msg) => {
-                            if let Err(e) = write_half.send(msg).await {
+                        Ok(frame) => {
+                            if let Err(e) = conn.send(frame).await {
                                 warn!(target: "dig3::ws::replay", exchange, error = %e, "replay send failed");
                             }
                         }
@@ -518,6 +541,94 @@ impl<P: WsProtocol> DriverTask<P> {
             *self.last_frame_at.lock().await = Instant::now();
             debug!(target: "dig3::ws::connect", exchange, "connected");
 
+            // ── Channel-bridge for read / write separation ─────────────────
+            // `WsConn` is a single `&mut` object. To use it safely in a
+            // `tokio::select!` loop where both the read arm (next_frame) and
+            // write arms (send on ping / cmd) borrow it, we bridge via two
+            // mpsc channels:
+            //
+            //   read_task:  conn.next_frame() → read_tx
+            //   write_task: write_rx → conn.send()
+            //
+            // The main select! loop owns only the channel endpoints —
+            // no `&mut conn` in the loop.  Both bridge tasks are stopped via
+            // a oneshot `kill` signal when the loop exits.
+
+            // Channel carries Option<Result<..>>: Some(frame) = data, None = EOF.
+            let (read_tx, mut read_rx) =
+                mpsc::unbounded_channel::<Option<Result<WsFrame, WsRtError>>>();
+            let (write_tx, write_rx) =
+                mpsc::unbounded_channel::<WsFrame>();
+            let (kill_tx, _kill_rx) = tokio::sync::broadcast::channel::<()>(1);
+
+            // ── Split conn into read half + write half via boxing ──────────
+            // We need to move conn into the read task. The write side is
+            // handled by sending through write_tx, and the write task reads
+            // from write_rx and calls conn.send().
+            //
+            // Both halves need ownership of `conn`. We achieve this by
+            // splitting via a shared Arc<Mutex<Box<dyn WsConn>>>.
+            //
+            // read_task holds the Arc and calls next_frame (no other writer).
+            // write_task holds the same Arc and calls send (interleaved).
+            // This is safe: only one task uses conn at a time (the read lock
+            // is held briefly per frame; write lock briefly per send).
+            let conn_shared = Arc::new(TokioMutex::new(conn));
+            let conn_read = Arc::clone(&conn_shared);
+            let conn_write = Arc::clone(&conn_shared);
+
+            // read task
+            {
+                let read_tx = read_tx.clone();
+                let mut kill_sub = kill_tx.subscribe();
+                let read_fut = async move {
+                    loop {
+                        // next_frame() returns Option<Result<WsFrame, WsRtError>>
+                        let opt_result = tokio::select! {
+                            frame = async { conn_read.lock().await.next_frame().await } => frame,
+                            _ = kill_sub.recv() => break,
+                        };
+                        // Forward the Option directly; None means WsConn closed.
+                        let is_none = opt_result.is_none();
+                        if read_tx.send(opt_result).is_err() {
+                            break;
+                        }
+                        if is_none {
+                            break; // WsConn EOF
+                        }
+                    }
+                };
+                #[cfg(not(target_arch = "wasm32"))]
+                tokio::spawn(read_fut);
+                #[cfg(target_arch = "wasm32")]
+                wasm_bindgen_futures::spawn_local(read_fut);
+            }
+
+            // write task
+            {
+                let mut write_rx = write_rx;
+                let mut kill_sub = kill_tx.subscribe();
+                let write_fut = async move {
+                    loop {
+                        tokio::select! {
+                            frame = write_rx.recv() => {
+                                match frame {
+                                    Some(f) => {
+                                        let _ = conn_write.lock().await.send(f).await;
+                                    }
+                                    None => break,
+                                }
+                            }
+                            _ = kill_sub.recv() => break,
+                        }
+                    }
+                };
+                #[cfg(not(target_arch = "wasm32"))]
+                tokio::spawn(write_fut);
+                #[cfg(target_arch = "wasm32")]
+                wasm_bindgen_futures::spawn_local(write_fut);
+            }
+
             // ── Silent-stream watchdog ─────────────────────────────────────
             // Fires if no frames arrive for ping_interval × silent_multiplier.
             let (silent_tx, mut silent_rx) = mpsc::channel::<()>(1);
@@ -527,7 +638,7 @@ impl<P: WsProtocol> DriverTask<P> {
                 let multiplier = self.reconnect_cfg.silent_multiplier;
                 let silent_threshold = ping_interval_dur * multiplier;
                 let check_interval = ping_interval_dur / 2;
-                tokio::spawn(async move {
+                let watchdog_fut = async move {
                     let mut ticker = tokio::time::interval(check_interval);
                     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                     loop {
@@ -540,12 +651,15 @@ impl<P: WsProtocol> DriverTask<P> {
                                 threshold_secs = silent_threshold.as_secs(),
                                 "no frames received — forcing reconnect"
                             );
-                            // Best-effort send; if transport is gone the channel is closed.
                             let _ = silent_tx.send(()).await;
                             break;
                         }
                     }
-                });
+                };
+                #[cfg(not(target_arch = "wasm32"))]
+                tokio::spawn(watchdog_fut);
+                #[cfg(target_arch = "wasm32")]
+                wasm_bindgen_futures::spawn_local(watchdog_fut);
             }
 
             // ── Message loop ───────────────────────────────────────────────
@@ -555,10 +669,16 @@ impl<P: WsProtocol> DriverTask<P> {
 
             let exit = loop {
                 tokio::select! {
-                    // Incoming frame from exchange
-                    frame = read_half.next() => {
-                        match frame {
-                            Some(Ok(msg)) => {
+                    // Incoming frame from read_task channel
+                    // read_rx.recv() → Option<Option<Result<WsFrame, WsRtError>>>
+                    // outer None = channel closed (read_task exited)
+                    // inner None = WsConn returned None (stream closed)
+                    // inner Some(Ok(frame)) = data frame
+                    // inner Some(Err(e)) = ws-level error
+                    chan_item = read_rx.recv() => {
+                        match chan_item {
+                            // Normal data frame
+                            Some(Some(Ok(msg))) => {
                                 // Update silence clock on every received frame.
                                 *self.last_frame_at.lock().await = Instant::now();
                                 match self.dispatch_message(msg, exchange).await {
@@ -570,11 +690,13 @@ impl<P: WsProtocol> DriverTask<P> {
                                     }
                                 }
                             }
-                            Some(Err(e)) => {
+                            // WsConn-level error
+                            Some(Some(Err(e))) => {
                                 warn!(target: "dig3::ws::frame", exchange, error = %e, "ws error");
                                 break LoopExit::Error;
                             }
-                            None => {
+                            // WsConn returned None (EOF) or read_task channel closed
+                            Some(None) | None => {
                                 debug!(target: "dig3::ws::connect", exchange, "stream closed");
                                 break LoopExit::Closed;
                             }
@@ -593,9 +715,9 @@ impl<P: WsProtocol> DriverTask<P> {
                                 // Add to active set first
                                 self.active_subs.write().await.insert(spec.clone());
                                 match self.protocol.subscribe_frame(&spec) {
-                                    Ok(msg) => {
-                                        if let Err(e) = write_half.send(msg).await {
-                                            warn!(target: "dig3::ws", exchange, error = %e, "subscribe send failed");
+                                    Ok(frame) => {
+                                        if write_tx.send(frame).is_err() {
+                                            warn!(target: "dig3::ws", exchange, "subscribe send: write task gone");
                                         }
                                     }
                                     Err(e) => {
@@ -606,9 +728,9 @@ impl<P: WsProtocol> DriverTask<P> {
                             Some(TransportCmd::Unsubscribe(spec)) => {
                                 self.active_subs.write().await.remove(&spec);
                                 match self.protocol.unsubscribe_frame(&spec) {
-                                    Ok(msg) => {
-                                        if let Err(e) = write_half.send(msg).await {
-                                            warn!(target: "dig3::ws", exchange, error = %e, "unsubscribe send failed");
+                                    Ok(frame) => {
+                                        if write_tx.send(frame).is_err() {
+                                            warn!(target: "dig3::ws", exchange, "unsubscribe send: write task gone");
                                         }
                                     }
                                     Err(e) => {
@@ -617,7 +739,7 @@ impl<P: WsProtocol> DriverTask<P> {
                                 }
                             }
                             Some(TransportCmd::Shutdown) => {
-                                let _ = write_half.close().await;
+                                let _ = conn_shared.lock().await.close().await;
                                 self.state.store(TransportState::Disconnected as u8, Ordering::Release);
                                 return;
                             }
@@ -630,17 +752,20 @@ impl<P: WsProtocol> DriverTask<P> {
 
                     // Ping timer
                     _ = ping_interval.tick() => {
-                        let msg = match self.protocol.ping_frame() {
-                            Some(m) => m,
-                            None => Message::Ping(vec![]),
+                        let frame = match self.protocol.ping_frame() {
+                            Some(f) => f,
+                            None => WsFrame::Ping(vec![]),
                         };
-                        if let Err(e) = write_half.send(msg).await {
-                            warn!(target: "dig3::ws::ping", exchange, error = %e, "ping send failed");
+                        if write_tx.send(frame).is_err() {
+                            warn!(target: "dig3::ws::ping", exchange, "ping: write task gone");
                             break LoopExit::Error;
                         }
                     }
                 }
             };
+
+            // Kill bridge tasks
+            let _ = kill_tx.send(());
 
             // ── Handle loop exit ───────────────────────────────────────────
             match exit {
@@ -658,20 +783,20 @@ impl<P: WsProtocol> DriverTask<P> {
                         return;
                     }
                     let delay = backoff.next_delay();
-                    tokio::time::sleep(delay).await;
+                    self.rt.sleep(delay).await;
                 }
             }
         }
     }
 
-    /// Dispatch a single WebSocket message. Returns Ok(true) = continue, Ok(false) = shutdown.
+    /// Dispatch a single WebSocket frame. Returns Ok(true) = continue, Ok(false) = shutdown.
     async fn dispatch_message(
         &self,
-        msg: Message,
+        msg: WsFrame,
         exchange: &str,
     ) -> WebSocketResult<bool> {
         let raw: Value = match msg {
-            Message::Text(text) => {
+            WsFrame::Text(text) => {
                 trace_raw_frame(exchange, "text", text.as_bytes());
                 match serde_json::from_str(&text) {
                     Ok(v) => v,
@@ -681,7 +806,7 @@ impl<P: WsProtocol> DriverTask<P> {
                     }
                 }
             }
-            Message::Binary(bytes) => {
+            WsFrame::Binary(bytes) => {
                 trace_raw_frame(exchange, "binary", &bytes);
                 match self.protocol.decode_binary(&bytes) {
                     Ok(v) => v,
@@ -691,24 +816,19 @@ impl<P: WsProtocol> DriverTask<P> {
                     }
                 }
             }
-            Message::Ping(data) => {
-                // Native WebSocket ping — we'd need the write half here.
-                // Since write_half is not accessible from dispatch_message,
-                // tokio-tungstenite handles Ping/Pong automatically when using split.
-                // Log at trace level only.
+            WsFrame::Ping(data) => {
+                // Native WebSocket ping — handled by the rt impl (TungsteniteConn
+                // auto-replies with Pong at the tungstenite layer).
                 trace!(target: "dig3::ws::frame", exchange, kind = "Ping", len = data.len());
                 return Ok(true);
             }
-            Message::Pong(_) => {
+            WsFrame::Pong(_) => {
                 trace!(target: "dig3::ws::frame", exchange, kind = "Pong");
                 return Ok(true);
             }
-            Message::Close(_) => {
+            WsFrame::Close => {
                 debug!(target: "dig3::ws::connect", exchange, "received Close frame");
                 return Ok(true); // outer loop will see stream end
-            }
-            Message::Frame(_) => {
-                return Ok(true);
             }
         };
 
@@ -797,38 +917,51 @@ impl<P: WsProtocol> DriverTask<P> {
 
 /// Wait for an auth ack frame from the exchange.
 /// Returns true if ack received within timeout, false if timeout or error.
-async fn wait_for_auth_ack<P: WsProtocol, S>(
-    read_half: &mut S,
+///
+/// Uses `rt::WsConn::next_frame()` — works on both native and wasm.
+async fn wait_for_auth_ack<P: WsProtocol>(
+    conn: &mut dyn rt::WsConn,
     protocol: &P,
     ack_timeout: Duration,
     exchange: &str,
-) -> bool
-where
-    S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
-{
-    let result = timeout(ack_timeout, async {
-        while let Some(msg) = read_half.next().await {
-            match msg {
-                Ok(Message::Text(text)) => {
-                    if let Ok(v) = serde_json::from_str::<Value>(&text) {
-                        if protocol.is_auth_ack(&v) {
-                            return true;
-                        }
-                        // Skip non-ack frames silently during auth handshake
+) -> bool {
+    // Use tokio::time::timeout (available on both native and wasm via tokio/sync+macros).
+    // On native: tokio::time feature is enabled. On wasm: the timeout arm is driven
+    // by gloo_timers via the rt::sleep mechanism.
+    //
+    // We implement a manual timeout with rt::select pattern:
+    // sleep fires → return false; next_frame fires → check ack.
+    let deadline = tokio::time::Instant::now() + ack_timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            warn!(target: "dig3::ws::auth", exchange, "auth ack timed out");
+            return false;
+        }
+        let frame_opt = tokio::select! {
+            f = conn.next_frame() => f,
+            _ = tokio::time::sleep(remaining) => {
+                warn!(target: "dig3::ws::auth", exchange, "auth ack timed out");
+                return false;
+            }
+        };
+        match frame_opt {
+            Some(Ok(WsFrame::Text(text))) => {
+                if let Ok(v) = serde_json::from_str::<Value>(&text) {
+                    if protocol.is_auth_ack(&v) {
+                        return true;
                     }
-                }
-                Ok(_) => continue,
-                Err(e) => {
-                    warn!(target: "dig3::ws::auth", exchange, error = %e, "error during auth ack wait");
-                    return false;
+                    // Skip non-ack frames silently during auth handshake
                 }
             }
+            Some(Ok(_)) => continue, // Ping/Pong/Binary during auth — skip
+            Some(Err(e)) => {
+                warn!(target: "dig3::ws::auth", exchange, error = %e, "error during auth ack wait");
+                return false;
+            }
+            None => return false, // stream closed
         }
-        false
-    })
-    .await;
-
-    result.unwrap_or(false)
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

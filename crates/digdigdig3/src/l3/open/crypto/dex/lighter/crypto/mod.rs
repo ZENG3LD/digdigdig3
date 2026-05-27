@@ -44,7 +44,11 @@ pub use gfp5::GFp5;
 pub use scalar::Scalar;
 pub use ecgfp5::Point;
 pub use poseidon2::hash_to_quintic_extension;
-pub use schnorr::{sign, verify, derive_public_key, sign_hashed_message, verify_hashed_message, Signature};
+#[cfg(not(target_arch = "wasm32"))]
+pub use schnorr::sign;
+#[cfg(not(target_arch = "wasm32"))]
+pub use schnorr::sign_hashed_message;
+pub use schnorr::{verify, derive_public_key, verify_hashed_message, Signature};
 pub use tx_hash::{
     CreateOrderFields,
     CancelOrderFields,

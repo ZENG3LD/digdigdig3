@@ -20,9 +20,9 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
+use crate::core::rt::WsFrame;
 use crate::core::traits::Credentials;
 use crate::core::types::{AccountType, StreamEvent, WebSocketError, WebSocketResult};
 use crate::core::websocket::{
@@ -78,10 +78,10 @@ impl BybitProtocol {
     }
 
     /// Build a subscribe/unsubscribe frame.
-    fn build_frame(op: &str, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn build_frame(op: &str, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         let topic = Self::build_topic(spec)?;
         let frame = json!({ "op": op, "args": [topic] });
-        Ok(Message::Text(frame.to_string()))
+        Ok(WsFrame::Text(frame.to_string()))
     }
 
     /// Translate a StreamSpec into the Bybit V5 wire topic string.
@@ -187,23 +187,23 @@ impl WsProtocol for BybitProtocol {
         Url::parse(url_str).expect("bybit ws url is valid")
     }
 
-    fn ping_frame(&self) -> Option<Message> {
-        Some(Message::Text(r#"{"op":"ping"}"#.to_string()))
+    fn ping_frame(&self) -> Option<WsFrame> {
+        Some(WsFrame::Text(r#"{"op":"ping"}"#.to_string()))
     }
 
     fn ping_interval(&self) -> Duration {
         Duration::from_secs(20)
     }
 
-    fn subscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn subscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         Self::build_frame("subscribe", spec)
     }
 
-    fn unsubscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn unsubscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         Self::build_frame("unsubscribe", spec)
     }
 
-    fn auth_frame(&self, _credentials: &Credentials) -> Option<Result<Message, WebSocketError>> {
+    fn auth_frame(&self, _credentials: &Credentials) -> Option<Result<WsFrame, WebSocketError>> {
         // Public WS only. Private WS auth is deferred.
         None
     }
@@ -937,7 +937,7 @@ mod tests {
         let spec = spot_spec(StreamKind::Trade);
         let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed");
         let text = match msg {
-            Message::Text(t) => t,
+            WsFrame::Text(t) => t,
             _ => panic!("expected text frame"),
         };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
@@ -1008,7 +1008,7 @@ mod tests {
         };
         let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed");
         let text = match msg {
-            Message::Text(t) => t,
+            WsFrame::Text(t) => t,
             _ => panic!("expected text frame"),
         };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
@@ -1042,7 +1042,7 @@ mod tests {
     fn test_ping_frame_json() {
         let proto = spot_proto();
         match proto.ping_frame() {
-            Some(Message::Text(t)) => {
+            Some(WsFrame::Text(t)) => {
                 let v: serde_json::Value = serde_json::from_str(&t).expect("ping must be valid JSON");
                 assert_eq!(v["op"], "ping");
             }
@@ -1118,7 +1118,7 @@ mod tests {
         };
         let msg = proto.subscribe_frame(&spec).expect("must build subscribe frame");
         let text = match msg {
-            Message::Text(t) => t,
+            WsFrame::Text(t) => t,
             _ => panic!("expected text"),
         };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid json");

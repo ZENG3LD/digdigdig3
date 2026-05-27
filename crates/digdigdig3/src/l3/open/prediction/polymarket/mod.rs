@@ -70,6 +70,7 @@ mod endpoints;
 mod auth;
 mod parser;
 mod connector;
+#[cfg(not(target_arch = "wasm32"))]
 mod websocket;
 
 // Public API
@@ -92,4 +93,5 @@ pub use parser::{
     interval_to_ms,
 };
 pub use connector::PolymarketConnector;
+#[cfg(not(target_arch = "wasm32"))]
 pub use websocket::{ClobWebSocket, WsEvent, WsError, WsReconnectInfo, WsUnknownEvent, parse_event, normalize_price};

@@ -101,7 +101,9 @@ use crate::l3::gated::stocks::india::dhan::DhanConnector;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 use crate::l1::free::krx::KrxConnector;
-use crate::l2::free::moex::{MoexConnector, MoexWebSocket};
+use crate::l2::free::moex::MoexConnector;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::l2::free::moex::MoexWebSocket;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR IMPORTS - FOREX
@@ -124,40 +126,62 @@ use crate::l1::free::yahoo::YahooFinanceConnector;
 use crate::l2::paid::cryptocompare::CryptoCompareConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// WEBSOCKET IMPORTS - CEX
+// WEBSOCKET IMPORTS - CEX (native-only)
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::binance::BinanceWebSocket;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::bybit::BybitWebSocket;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::okx::OkxWebSocket;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::kucoin::KuCoinWebSocket;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::kraken::KrakenWebSocket;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::gateio::GateioWebSocket;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::bitfinex::BitfinexWebSocket;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::bitstamp::BitstampWebSocket;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::gemini::GeminiWebSocket;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::mexc::MexcWebSocket;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::htx::HtxWebSocket;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::bitget::BitgetWebSocket;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::bingx::BingxWebSocket;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::crypto_com::CryptoComWebSocket;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::upbit::UpbitWebSocket;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::deribit::DeribitWebSocket;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::hyperliquid::HyperliquidWebSocket;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::coinbase::CoinbaseWebSocket;
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// WEBSOCKET IMPORTS - DEX
+// WEBSOCKET IMPORTS - DEX (native-only)
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::dex::dydx::DydxWebSocket;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::dex::lighter::LighterWebSocket;
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// WEBSOCKET IMPORTS - DATA FEEDS
+// WEBSOCKET IMPORTS - DATA FEEDS (native-only)
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::l1::free::yahoo::YahooFinanceWebSocket;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::l2::paid::cryptocompare::CryptoCompareWebSocket;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -852,6 +876,7 @@ impl ConnectorFactory {
     /// ).await?;
     /// ws.connect(AccountType::Spot).await?;
     /// ```
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn create_websocket(
         id: ExchangeId,
         account_type: AccountType,

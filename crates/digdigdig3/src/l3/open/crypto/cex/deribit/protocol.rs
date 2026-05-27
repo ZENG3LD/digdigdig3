@@ -21,9 +21,9 @@ use std::time::Duration;
 
 use chrono::Utc;
 use serde_json::{json, Value};
-use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
+use crate::core::rt::WsFrame;
 use crate::core::traits::Credentials;
 use crate::core::types::{
     AccountType, BalanceChangeReason, BalanceUpdateEvent, PositionSide,
@@ -131,7 +131,7 @@ impl DeribitProtocol {
         Some(ch)
     }
     /// Build subscribe or unsubscribe JSON-RPC 2.0 frame.
-    fn build_sub_frame(&self, op: &str, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn build_sub_frame(&self, op: &str, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         // Special-case streams that the exchange has explicitly removed or never exposed publicly.
         if matches!(spec.kind, StreamKind::Liquidation) {
             return Err(WebSocketError::NotSupported(
@@ -177,7 +177,7 @@ impl DeribitProtocol {
             "params": { "channels": channels }
         });
 
-        Ok(Message::Text(frame.to_string()))
+        Ok(WsFrame::Text(frame.to_string()))
     }
 }
 
@@ -199,7 +199,7 @@ impl WsProtocol for DeribitProtocol {
         Url::parse(url).expect("deribit ws url is valid")
     }
 
-    fn ping_frame(&self) -> Option<Message> {
+    fn ping_frame(&self) -> Option<WsFrame> {
         // First call after construction: send public/set_heartbeat so the server
         // knows to send test_request frames every 30s.  Subsequent calls: public/test.
         // The transport sends ping_frame on its timer (every ping_interval()); the
@@ -213,7 +213,7 @@ impl WsProtocol for DeribitProtocol {
                 "method": "public/set_heartbeat",
                 "params": { "interval": 30 }
             });
-            return Some(Message::Text(frame.to_string()));
+            return Some(WsFrame::Text(frame.to_string()));
         }
         let id = self.next_id();
         let frame = json!({
@@ -221,22 +221,22 @@ impl WsProtocol for DeribitProtocol {
             "id": id,
             "method": "public/test"
         });
-        Some(Message::Text(frame.to_string()))
+        Some(WsFrame::Text(frame.to_string()))
     }
 
     fn ping_interval(&self) -> Duration {
         Duration::from_secs(30)
     }
 
-    fn subscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn subscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         self.build_sub_frame("subscribe", spec)
     }
 
-    fn unsubscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn unsubscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         self.build_sub_frame("unsubscribe", spec)
     }
 
-    fn auth_frame(&self, credentials: &Credentials) -> Option<Result<Message, WebSocketError>> {
+    fn auth_frame(&self, credentials: &Credentials) -> Option<Result<WsFrame, WebSocketError>> {
         // Deribit auth: public/auth with client_credentials grant
         let id = self.next_id();
         let frame = json!({
@@ -249,7 +249,7 @@ impl WsProtocol for DeribitProtocol {
                 "client_secret": credentials.api_secret,
             }
         });
-        Some(Ok(Message::Text(frame.to_string())))
+        Some(Ok(WsFrame::Text(frame.to_string())))
     }
 
     fn auth_ack_timeout(&self) -> Duration {
@@ -924,7 +924,7 @@ mod tests {
         let spec = futures_spec(StreamKind::Orderbook);
         let msg = proto.subscribe_frame(&spec).expect("must succeed");
         let text = match msg {
-            Message::Text(t) => t,
+            WsFrame::Text(t) => t,
             _ => panic!("expected text frame"),
         };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
@@ -1017,7 +1017,7 @@ mod tests {
         };
         let msg = proto.subscribe_frame(&spec).expect("must succeed");
         let text = match msg {
-            Message::Text(t) => t,
+            WsFrame::Text(t) => t,
             _ => panic!("expected text frame"),
         };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
@@ -1042,7 +1042,7 @@ mod tests {
         };
         let msg = proto.subscribe_frame(&spec).expect("must succeed");
         let text = match msg {
-            Message::Text(t) => t,
+            WsFrame::Text(t) => t,
             _ => panic!("expected text frame"),
         };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");

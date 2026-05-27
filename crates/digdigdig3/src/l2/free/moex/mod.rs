@@ -70,6 +70,7 @@ mod auth;
 mod parser;
 mod connector;
 
+#[cfg(not(target_arch = "wasm32"))]
 mod websocket;
 
 pub use endpoints::{MoexEndpoint, MoexEndpoints};
@@ -77,4 +78,5 @@ pub use auth::MoexAuth;
 pub use parser::MoexParser;
 pub use connector::MoexConnector;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub use websocket::MoexWebSocket;

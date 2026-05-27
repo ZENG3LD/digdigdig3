@@ -6,9 +6,9 @@
 use std::time::Duration;
 
 use serde_json::Value;
-use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
+use crate::core::rt::WsFrame;
 use crate::core::traits::Credentials;
 use crate::core::types::{AccountType, WebSocketError};
 
@@ -37,11 +37,11 @@ pub trait WsProtocol: Send + Sync + 'static {
     /// Frame to send as application-level ping.
     /// Return `None` to use native WebSocket Ping frames instead.
     ///
-    /// - Bitget: `Some(Message::Text("ping".into()))`
-    /// - OKX:    `Some(Message::Text("ping".into()))`
+    /// - Bitget: `Some(WsFrame::Text("ping".into()))`
+    /// - OKX:    `Some(WsFrame::Text("ping".into()))`
     /// - Binance: `None` (native WebSocket ping)
-    /// - KuCoin: `Some(Message::Text(json!({"id":..,"type":"ping"}).to_string()))`
-    fn ping_frame(&self) -> Option<Message>;
+    /// - KuCoin: `Some(WsFrame::Text(json!({"id":..,"type":"ping"}).to_string()))`
+    fn ping_frame(&self) -> Option<WsFrame>;
 
     /// Interval between application-level pings.
     /// Default: 30 seconds.
@@ -53,11 +53,11 @@ pub trait WsProtocol: Send + Sync + 'static {
 
     /// Build the subscribe frame for one StreamSpec.
     /// Returns Err if the stream kind is not supported.
-    fn subscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError>;
+    fn subscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError>;
 
     /// Build the unsubscribe frame for one StreamSpec.
     /// Returns Err if the stream kind is not supported.
-    fn unsubscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError>;
+    fn unsubscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError>;
 
     // ── Auth ──────────────────────────────────────────────────────────────
 
@@ -69,7 +69,7 @@ pub trait WsProtocol: Send + Sync + 'static {
     ///
     /// The transport sends this frame immediately after connection is established
     /// and waits `auth_ack_timeout()` for an ack before proceeding.
-    fn auth_frame(&self, credentials: &Credentials) -> Option<Result<Message, WebSocketError>>;
+    fn auth_frame(&self, credentials: &Credentials) -> Option<Result<WsFrame, WebSocketError>>;
 
     /// How long to wait for the auth ack before timing out.
     /// Only relevant when `auth_frame` returns `Some(_)`.

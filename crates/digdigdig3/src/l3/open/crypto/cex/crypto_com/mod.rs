@@ -36,12 +36,14 @@ mod endpoints;
 mod auth;
 mod parser;
 mod connector;
-pub mod websocket;
+#[cfg(not(target_arch = "wasm32"))]
+mod websocket;
 
 pub use endpoints::{CryptoComEndpoint, CryptoComUrls, InstrumentType, format_symbol};
 pub use auth::CryptoComAuth;
 pub use parser::CryptoComParser;
 pub use connector::CryptoComConnector;
+#[cfg(not(target_arch = "wasm32"))]
 pub use websocket::CryptoComWebSocket;
 
 

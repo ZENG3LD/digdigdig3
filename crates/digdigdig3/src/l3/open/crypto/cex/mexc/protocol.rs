@@ -21,9 +21,9 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
+use crate::core::rt::WsFrame;
 use crate::core::traits::Credentials;
 use crate::core::types::{AccountType, StreamEvent, WebSocketError, WebSocketResult};
 use crate::core::websocket::{
@@ -74,7 +74,7 @@ impl MexcProtocol {
     }
 
     /// Build SUBSCRIPTION frame for spot (params array).
-    fn spot_subscribe_frame(spec: &StreamSpec, op: &str) -> Result<Message, WebSocketError> {
+    fn spot_subscribe_frame(spec: &StreamSpec, op: &str) -> Result<WsFrame, WebSocketError> {
         let sym = spec.symbol.as_str();
         let params = match &spec.kind {
             StreamKind::Ticker => {
@@ -110,11 +110,11 @@ impl MexcProtocol {
         // MEXC requires an "id" field in every subscribe/unsubscribe request.
         // Without it the server silently drops the subscription (0 events).
         let frame = json!({ "id": 1, "method": method, "params": params });
-        Ok(Message::Text(frame.to_string()))
+        Ok(WsFrame::Text(frame.to_string()))
     }
 
     /// Build subscribe/unsubscribe frame for futures (method per channel).
-    fn futures_subscribe_frame(spec: &StreamSpec, op: &str) -> Result<Message, WebSocketError> {
+    fn futures_subscribe_frame(spec: &StreamSpec, op: &str) -> Result<WsFrame, WebSocketError> {
         // MEXC futures requires `BTC_USDT` format. If caller passes spot raw symbol
         // `BTCUSDT` (no underscore), convert via normalizer round-trip.
         let sym_normalized: String = {
@@ -169,7 +169,7 @@ impl MexcProtocol {
         };
 
         let frame = json!({ "method": method, "param": param });
-        Ok(Message::Text(frame.to_string()))
+        Ok(WsFrame::Text(frame.to_string()))
     }
 }
 
@@ -187,7 +187,7 @@ impl WsProtocol for MexcProtocol {
         Url::parse(url).expect("mexc ws url is valid")
     }
 
-    fn ping_frame(&self) -> Option<Message> {
+    fn ping_frame(&self) -> Option<WsFrame> {
         // Spot uses {"method":"PING"}, futures uses {"method":"ping"}.
         // The transport uses account_type at construction — use spot format as default.
         // Futures ping is handled by the same frame shape (lowercase).
@@ -196,14 +196,14 @@ impl WsProtocol for MexcProtocol {
         } else {
             "PING"
         };
-        Some(Message::Text(json!({ "method": method }).to_string()))
+        Some(WsFrame::Text(json!({ "method": method }).to_string()))
     }
 
     fn ping_interval(&self) -> Duration {
         Duration::from_secs(20)
     }
 
-    fn subscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn subscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         // Liquidation: MEXC has no public liquidation WS channel on either Spot or Futures.
         if matches!(spec.kind, StreamKind::Liquidation) {
             return Err(WebSocketError::NotSupported(
@@ -233,7 +233,7 @@ impl WsProtocol for MexcProtocol {
         }
     }
 
-    fn unsubscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn unsubscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         if Self::is_futures(spec.account_type) {
             Self::futures_subscribe_frame(spec, "unsubscribe")
         } else {
@@ -241,7 +241,7 @@ impl WsProtocol for MexcProtocol {
         }
     }
 
-    fn auth_frame(&self, _credentials: &Credentials) -> Option<Result<Message, WebSocketError>> {
+    fn auth_frame(&self, _credentials: &Credentials) -> Option<Result<WsFrame, WebSocketError>> {
         None
     }
 
@@ -1140,7 +1140,7 @@ mod tests {
         });
         let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed");
         let text = match msg {
-            Message::Text(t) => t,
+            WsFrame::Text(t) => t,
             _ => panic!("expected text frame"),
         };
         let v: Value = serde_json::from_str(&text).expect("valid JSON");
@@ -1158,7 +1158,7 @@ mod tests {
         let spec = futures_spec(StreamKind::Ticker);
         let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed");
         let text = match msg {
-            Message::Text(t) => t,
+            WsFrame::Text(t) => t,
             _ => panic!("expected text frame"),
         };
         let v: Value = serde_json::from_str(&text).expect("valid JSON");

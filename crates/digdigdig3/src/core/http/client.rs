@@ -73,6 +73,13 @@ pub struct HttpClient {
     timeout: Duration,
     retry_config: RetryConfig,
     debug: bool,
+    /// Optional REST base URL override for proxy / Path-B routing.
+    ///
+    /// When `Some`, callers that respect this field should substitute the
+    /// override for the connector's native base URL.  The `HttpClient` itself
+    /// does **not** rewrite URLs automatically — connectors call
+    /// `base_override()` and prepend it when constructing request URLs.
+    pub base_override: Option<String>,
     /// Total number of HTTP requests attempted (including retries)
     pub requests_total: Arc<AtomicU64>,
     /// Total number of HTTP errors encountered
@@ -96,10 +103,22 @@ impl HttpClient {
         #[cfg(not(target_arch = "wasm32"))]
         let _ = rustls::crypto::ring::default_provider().install_default();
 
+        // reqwest::ClientBuilder::timeout() is not available on wasm32 (browser
+        // fetch has no per-request timeout API). We accept the timeout parameter
+        // to keep the API uniform but only apply it on native.
+        #[cfg(not(target_arch = "wasm32"))]
         let client = Client::builder()
             .timeout(Duration::from_millis(timeout_ms))
             .build()
             .map_err(|e| ExchangeError::Network(format!("Failed to create HTTP client: {}", e)))?;
+
+        #[cfg(target_arch = "wasm32")]
+        let client = {
+            let _ = timeout_ms; // unused on wasm
+            Client::builder()
+                .build()
+                .map_err(|e| ExchangeError::Network(format!("Failed to create HTTP client: {}", e)))?
+        };
 
         let debug = std::env::var("DEBUG_API").is_ok();
 
@@ -108,10 +127,34 @@ impl HttpClient {
             timeout: Duration::from_millis(timeout_ms),
             retry_config,
             debug,
+            base_override: None,
             requests_total: Arc::new(AtomicU64::new(0)),
             errors_total: Arc::new(AtomicU64::new(0)),
             last_latency_ms: Arc::new(AtomicU64::new(0)),
         })
+    }
+
+    /// Clone this client and attach a REST base URL override for proxy / Path-B routing.
+    ///
+    /// The returned client is otherwise identical to `self`.  Connectors that
+    /// want to respect the override call `base_override()` and substitute it
+    /// for the connector's own base URL when constructing request URLs.
+    pub fn with_base_override(&self, base: String) -> Self {
+        Self {
+            client: self.client.clone(),
+            timeout: self.timeout,
+            retry_config: self.retry_config.clone(),
+            debug: self.debug,
+            base_override: Some(base),
+            requests_total: Arc::clone(&self.requests_total),
+            errors_total: Arc::clone(&self.errors_total),
+            last_latency_ms: Arc::clone(&self.last_latency_ms),
+        }
+    }
+
+    /// Return the REST base URL override if one has been set.
+    pub fn base_override(&self) -> Option<&str> {
+        self.base_override.as_deref()
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -557,11 +600,15 @@ impl HttpClient {
     fn map_reqwest_error(&self, error: reqwest::Error) -> ExchangeError {
         if error.is_timeout() {
             ExchangeError::Timeout(format!("Request timed out after {:?}", self.timeout))
-        } else if error.is_connect() {
-            ExchangeError::Network(format!("Connection failed: {}", error))
         } else if error.is_request() {
             ExchangeError::InvalidRequest(format!("Invalid request: {}", error))
         } else {
+            // is_connect() is not available on wasm32 (no TCP-level access).
+            // Treat all remaining errors as network errors on both targets.
+            #[cfg(not(target_arch = "wasm32"))]
+            if error.is_connect() {
+                return ExchangeError::Network(format!("Connection failed: {}", error));
+            }
             ExchangeError::Network(format!("HTTP error: {}", error))
         }
     }

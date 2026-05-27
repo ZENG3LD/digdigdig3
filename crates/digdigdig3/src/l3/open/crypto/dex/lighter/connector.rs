@@ -550,11 +550,17 @@ impl MarketData for LighterConnector {
 #[async_trait]
 impl Trading for LighterConnector {
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
-        self.place_order_signed(req).await
+        #[cfg(not(target_arch = "wasm32"))]
+        { self.place_order_signed(req).await }
+        #[cfg(target_arch = "wasm32")]
+        { let _ = req; Err(ExchangeError::NotSupported("Lighter signing not available on wasm32 (ring/rand required)".into())) }
     }
 
     async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
-        self.cancel_order_signed(req).await
+        #[cfg(not(target_arch = "wasm32"))]
+        { self.cancel_order_signed(req).await }
+        #[cfg(target_arch = "wasm32")]
+        { let _ = req; Err(ExchangeError::NotSupported("Lighter signing not available on wasm32 (ring/rand required)".into())) }
     }
 
     async fn get_order(
@@ -1140,8 +1146,10 @@ impl LighterConnector {
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SIGNED TRADING METHODS (ECgFp5 + Poseidon2 native signing)
+// Native-only: sign_create_order / sign_cancel_order use ring + rand (not on wasm32)
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[cfg(not(target_arch = "wasm32"))]
 impl LighterConnector {
     /// Place an order on Lighter using ECgFp5+Poseidon2 Schnorr signing (tx_type = 14).
     ///
@@ -1423,7 +1431,9 @@ impl LighterConnector {
             time_in_force: crate::core::TimeInForce::Gtc,
         })
     }
+}
 
+impl LighterConnector {
     /// GET request with optional Authorization header.
     ///
     /// Generates a 1-hour auth token if credentials are available, then

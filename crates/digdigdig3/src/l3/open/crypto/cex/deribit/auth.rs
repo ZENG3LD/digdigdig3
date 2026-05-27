@@ -160,19 +160,29 @@ impl DeribitAuth {
     }
 }
 
-/// Generate random nonce for client signature
+/// Generate random nonce for client signature.
+/// On native: uses `rand` for cryptographic randomness.
+/// On wasm32: falls back to a deterministic placeholder (trading is not
+/// supported on wasm32; this code path is unreachable in practice).
 fn generate_nonce() -> String {
-    use rand::Rng;
-    const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    const NONCE_LEN: usize = 16;
-
-    let mut rng = rand::thread_rng();
-    (0..NONCE_LEN)
-        .map(|_| {
-            let idx = rng.gen_range(0..CHARSET.len());
-            CHARSET[idx] as char
-        })
-        .collect()
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rand::Rng;
+        const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        const NONCE_LEN: usize = 16;
+        let mut rng = rand::thread_rng();
+        (0..NONCE_LEN)
+            .map(|_| {
+                let idx = rng.gen_range(0..CHARSET.len());
+                CHARSET[idx] as char
+            })
+            .collect()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        // Trading requires native target; this branch is unreachable in production.
+        "wasm32_stub_nonce".to_string()
+    }
 }
 
 #[cfg(test)]

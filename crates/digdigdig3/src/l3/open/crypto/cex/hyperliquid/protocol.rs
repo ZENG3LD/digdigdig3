@@ -13,9 +13,9 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
+use crate::core::rt::WsFrame;
 use crate::core::traits::Credentials;
 use crate::core::types::{
     AccountType, OrderSide, OrderStatus, OrderType, StreamEvent,
@@ -53,7 +53,7 @@ impl HyperliquidProtocol {
     }
 
     /// Build subscribe/unsubscribe JSON frame.
-    fn build_frame(method: &str, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn build_frame(method: &str, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         let coin = spec.symbol.as_str();
         let subscription = match &spec.kind {
             // Empty coin → allMids (global mid-price snapshot)
@@ -105,7 +105,7 @@ impl HyperliquidProtocol {
             }
         };
         let frame = json!({ "method": method, "subscription": subscription });
-        Ok(Message::Text(frame.to_string()))
+        Ok(WsFrame::Text(frame.to_string()))
     }
 }
 
@@ -123,23 +123,23 @@ impl WsProtocol for HyperliquidProtocol {
         Url::parse(url).expect("hyperliquid ws url is valid")
     }
 
-    fn ping_frame(&self) -> Option<Message> {
-        Some(Message::Text(json!({ "method": "ping" }).to_string()))
+    fn ping_frame(&self) -> Option<WsFrame> {
+        Some(WsFrame::Text(json!({ "method": "ping" }).to_string()))
     }
 
     fn ping_interval(&self) -> Duration {
         Duration::from_secs(30)
     }
 
-    fn subscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn subscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         Self::build_frame("subscribe", spec)
     }
 
-    fn unsubscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn unsubscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         Self::build_frame("unsubscribe", spec)
     }
 
-    fn auth_frame(&self, _credentials: &Credentials) -> Option<Result<Message, WebSocketError>> {
+    fn auth_frame(&self, _credentials: &Credentials) -> Option<Result<WsFrame, WebSocketError>> {
         None
     }
 
@@ -836,7 +836,7 @@ mod tests {
         let spec = futures_spec(StreamKind::Trade);
         let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed");
         let text = match msg {
-            Message::Text(t) => t,
+            WsFrame::Text(t) => t,
             _ => panic!("expected text frame"),
         };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
@@ -880,7 +880,7 @@ mod tests {
         let spec = futures_spec(StreamKind::Ticker);
         let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed");
         let text = match msg {
-            Message::Text(t) => t,
+            WsFrame::Text(t) => t,
             _ => panic!("expected text frame"),
         };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
@@ -942,7 +942,7 @@ mod tests {
         let proto2 = HyperliquidProtocol::new(false);
         let msg = proto2.subscribe_frame(&spec).expect("subscribe_frame must succeed");
         let text = match msg {
-            Message::Text(t) => t,
+            WsFrame::Text(t) => t,
             _ => panic!("expected text frame"),
         };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");

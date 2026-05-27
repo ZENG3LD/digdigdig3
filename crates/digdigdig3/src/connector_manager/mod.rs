@@ -41,6 +41,7 @@ mod aggregator;
 mod config;
 mod factory;
 mod hub;
+#[cfg(not(target_arch = "wasm32"))]
 mod feed;
 
 pub use hub::ExchangeHub;
@@ -49,6 +50,8 @@ pub use crate::core::traits::CoreConnector;
 // High-level feed API — fan-out of WebSocketConnector::event_stream over
 // per-subscription broadcast channels. Exchanges still live in the hub;
 // the feed only wraps subscribe/event-loop boilerplate.
+// Native-only: requires tokio::spawn + WebSocket infrastructure.
+#[cfg(not(target_arch = "wasm32"))]
 pub use feed::{
     FeedBuilder, FeedEvent, FeedHandle, MarketFeed, OrderbookTrackerOpt,
     PersistenceOption, ReconnectPolicy,

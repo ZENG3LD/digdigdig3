@@ -19,9 +19,9 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
+use crate::core::rt::WsFrame;
 use crate::core::traits::Credentials;
 use crate::core::types::{AccountType, StreamEvent, WebSocketError, WebSocketResult};
 use crate::core::websocket::{
@@ -73,7 +73,7 @@ impl KuCoinProtocol {
     }
 
     /// Build subscribe/unsubscribe JSON frame.
-    fn build_frame(op: &str, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn build_frame(op: &str, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         let topic = Self::build_topic(spec)?;
         let is_private = spec.kind.is_private();
 
@@ -95,7 +95,7 @@ impl KuCoinProtocol {
             })
         };
 
-        Ok(Message::Text(frame.to_string()))
+        Ok(WsFrame::Text(frame.to_string()))
     }
 
     /// Build the full KuCoin topic string for a StreamSpec.
@@ -220,27 +220,27 @@ impl WsProtocol for KuCoinProtocol {
         self.resolved_url.clone()
     }
 
-    fn ping_frame(&self) -> Option<Message> {
+    fn ping_frame(&self) -> Option<WsFrame> {
         let ping = json!({
             "id": timestamp_millis().to_string(),
             "type": "ping"
         });
-        Some(Message::Text(ping.to_string()))
+        Some(WsFrame::Text(ping.to_string()))
     }
 
     fn ping_interval(&self) -> Duration {
         Duration::from_millis(self.ping_interval_ms)
     }
 
-    fn subscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn subscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         Self::build_frame("subscribe", spec)
     }
 
-    fn unsubscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn unsubscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         Self::build_frame("unsubscribe", spec)
     }
 
-    fn auth_frame(&self, _credentials: &Credentials) -> Option<Result<Message, WebSocketError>> {
+    fn auth_frame(&self, _credentials: &Credentials) -> Option<Result<WsFrame, WebSocketError>> {
         // KuCoin uses token-based auth baked into the WS URL; no separate auth frame
         None
     }
@@ -613,7 +613,7 @@ mod tests {
         let spec = spot_spec(StreamKind::Ticker);
         let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed");
         let text = match msg {
-            Message::Text(t) => t,
+            WsFrame::Text(t) => t,
             _ => panic!("expected text frame"),
         };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
@@ -705,7 +705,7 @@ mod tests {
     fn test_ping_frame_is_json() {
         let proto = make_protocol();
         match proto.ping_frame() {
-            Some(Message::Text(t)) => {
+            Some(WsFrame::Text(t)) => {
                 let v: serde_json::Value = serde_json::from_str(&t).expect("ping must be valid JSON");
                 assert_eq!(v["type"], "ping");
             }
@@ -719,7 +719,7 @@ mod tests {
         let spec = spot_spec(StreamKind::Kline { interval: KlineInterval::new("1h") });
         let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed");
         let text = match msg {
-            Message::Text(t) => t,
+            WsFrame::Text(t) => t,
             _ => panic!("expected text frame"),
         };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");

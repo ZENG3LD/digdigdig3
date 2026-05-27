@@ -18,9 +18,9 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
+use crate::core::rt::WsFrame;
 use crate::core::traits::Credentials;
 use crate::core::types::{
     AccountType, OrderBookLevel, StreamEvent, WebSocketError, WebSocketResult,
@@ -156,7 +156,7 @@ impl BinanceProtocol {
         Ok(name)
     }
 
-    fn build_sub_frame(op: &str, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn build_sub_frame(op: &str, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         let stream = Self::stream_name(spec)?;
         // Use a simple incrementing id via thread-local or constant — framework doesn't
         // inspect the id value, only the server uses it for correlation.
@@ -165,7 +165,7 @@ impl BinanceProtocol {
             "params": [stream],
             "id": 1u64,
         });
-        Ok(Message::Text(frame.to_string()))
+        Ok(WsFrame::Text(frame.to_string()))
     }
 }
 
@@ -183,7 +183,7 @@ impl WsProtocol for BinanceProtocol {
 
     /// Binance uses native WS Ping frames; server sends them, tokio-tungstenite
     /// auto-responds with Pong.  No application-level ping frame needed.
-    fn ping_frame(&self) -> Option<Message> {
+    fn ping_frame(&self) -> Option<WsFrame> {
         None
     }
 
@@ -192,15 +192,15 @@ impl WsProtocol for BinanceProtocol {
         Duration::from_secs(20)
     }
 
-    fn subscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn subscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         Self::build_sub_frame("SUBSCRIBE", spec)
     }
 
-    fn unsubscribe_frame(&self, spec: &StreamSpec) -> Result<Message, WebSocketError> {
+    fn unsubscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {
         Self::build_sub_frame("UNSUBSCRIBE", spec)
     }
 
-    fn auth_frame(&self, _credentials: &Credentials) -> Option<Result<Message, WebSocketError>> {
+    fn auth_frame(&self, _credentials: &Credentials) -> Option<Result<WsFrame, WebSocketError>> {
         // Binance public WS — no auth frame.
         // Private streams use listenKey URL rather than an auth frame.
         None
@@ -902,7 +902,7 @@ mod tests {
         let spec = spot_spec(StreamKind::Trade);
         let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed");
         let text = match msg {
-            Message::Text(t) => t,
+            WsFrame::Text(t) => t,
             _ => panic!("expected text frame"),
         };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
@@ -973,7 +973,7 @@ mod tests {
         });
         let msg = proto.subscribe_frame(&spec).expect("subscribe_frame");
         let text = match msg {
-            Message::Text(t) => t,
+            WsFrame::Text(t) => t,
             _ => panic!("expected text"),
         };
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");

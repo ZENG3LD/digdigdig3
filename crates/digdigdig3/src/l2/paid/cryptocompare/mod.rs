@@ -35,10 +35,12 @@ mod endpoints;
 mod auth;
 mod parser;
 mod connector;
-pub mod websocket;
+#[cfg(not(target_arch = "wasm32"))]
+mod websocket;
 
 pub use endpoints::{CryptoCompareEndpoints, CryptoCompareEndpoint, format_symbol};
 pub use auth::CryptoCompareAuth;
 pub use parser::CryptoCompareParser;
 pub use connector::CryptoCompareConnector;
+#[cfg(not(target_arch = "wasm32"))]
 pub use websocket::CryptoCompareWebSocket;

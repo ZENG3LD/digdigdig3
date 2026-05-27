@@ -19,6 +19,8 @@
 
 use std::sync::Arc;
 
+use dashmap::DashMap;
+
 use crate::connector_manager::{ConnectorFactory, ConnectorPool, WebSocketPool};
 use crate::core::traits::{CoreConnector, WebSocketConnector};
 use crate::core::types::{AccountType, ConnectorCapabilities, ExchangeError, ExchangeId, ExchangeResult};
@@ -27,10 +29,26 @@ use crate::core::types::{AccountType, ConnectorCapabilities, ExchangeError, Exch
 ///
 /// Wraps `ConnectorPool` (REST) and `WebSocketPool` (WS) behind one entry point.
 /// `clone()` is O(1) — both underlying pools use `Arc<DashMap<…>>` internally.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct ExchangeHub {
     rest: ConnectorPool,
     ws: WebSocketPool,
+    /// Per-exchange REST base URL overrides for proxy / Path-B routing.
+    ///
+    /// When set, connectors that respect this map should substitute the
+    /// override for their native base URL.  Use `set_rest_base_override` /
+    /// `get_rest_base_override` to read and write.
+    rest_overrides: Arc<DashMap<ExchangeId, String>>,
+}
+
+impl Default for ExchangeHub {
+    fn default() -> Self {
+        Self {
+            rest: ConnectorPool::default(),
+            ws: WebSocketPool::default(),
+            rest_overrides: Arc::new(DashMap::new()),
+        }
+    }
 }
 
 impl ExchangeHub {
@@ -53,9 +71,36 @@ impl ExchangeHub {
         self.rest.get(&id)
     }
 
+    /// Set a REST base URL override for a specific exchange.
+    ///
+    /// Connectors that respect this call `hub.get_rest_base_override(id)` and
+    /// substitute the result for their native endpoint base URL, enabling
+    /// Path-B proxy routing (e.g. via a local relay or gateway).
+    ///
+    /// Passing an empty string removes the override (equivalent to
+    /// `clear_rest_base_override`).
+    pub fn set_rest_base_override(&self, id: ExchangeId, url: String) {
+        if url.is_empty() {
+            self.rest_overrides.remove(&id);
+        } else {
+            self.rest_overrides.insert(id, url);
+        }
+    }
+
+    /// Remove the REST base URL override for a specific exchange.
+    pub fn clear_rest_base_override(&self, id: ExchangeId) {
+        self.rest_overrides.remove(&id);
+    }
+
+    /// Return the REST base URL override for an exchange, if one has been set.
+    pub fn get_rest_base_override(&self, id: ExchangeId) -> Option<String> {
+        self.rest_overrides.get(&id).map(|v| v.clone())
+    }
+
     // ── WS methods ────────────────────────────────────────────────────────
 
     /// Connect ONLY the WebSocket for a specific (exchange, account_type).
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn connect_websocket(
         &self,
         id: ExchangeId,
@@ -76,6 +121,7 @@ impl ExchangeHub {
 
     /// Wire REST + WS for all listed account_types in one call.
     ///
+    /// On native: REST + WS. On wasm32: REST only (WS not available).
     /// REST connection is required (fails if it errors). WS connections are
     /// best-effort — if a particular (id, account_type) doesn't have native
     /// WS support, that one is silently skipped and the REST half remains.
@@ -88,11 +134,16 @@ impl ExchangeHub {
         let conn = ConnectorFactory::create_public(id, testnet).await?;
         self.rest.insert(id, conn);
 
+        #[cfg(not(target_arch = "wasm32"))]
         for &at in account_types {
             if let Ok(ws) = ConnectorFactory::create_websocket(id, at, testnet).await {
                 self.ws.insert(id, at, ws);
             }
         }
+        // On wasm32, `account_types` is intentionally unused — WS not available.
+        #[cfg(target_arch = "wasm32")]
+        let _ = account_types;
+
         Ok(())
     }
 

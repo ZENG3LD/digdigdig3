@@ -80,7 +80,7 @@ base64 = "0.22"
 
 # Time (OKX ISO timestamps — pure-Rust, compile on both targets)
 # "now" enables Utc::now(); "wasmbind" is added in wasm block for the wasm impl.
-chrono = { version = "0.4", default-features = false, features = ["std", "now"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "now", "clock"] }
 
 # Binary parsing (Dhan WebSocket binary format)
 byteorder = "1.5"
@@ -159,7 +159,7 @@ rand = "0.8"
 # does not compile for wasm32-unknown-unknown.
 # We use sync + macros only. rt is NOT enabled because we delegate to
 # wasm_bindgen_futures::spawn_local for task spawning.
-tokio = { version = "1.0", default-features = false, features = ["sync", "macros"] }
+tokio = { version = "1.0", default-features = false, features = ["sync", "macros", "time"] }
 
 # tokio-stream: sync feature is wasm-compatible (no I/O)
 tokio-stream = { version = "0.1", default-features = false, features = ["sync"] }

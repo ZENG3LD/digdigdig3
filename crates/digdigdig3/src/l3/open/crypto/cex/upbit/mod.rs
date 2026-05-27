@@ -37,11 +37,12 @@ mod endpoints;
 mod auth;
 mod parser;
 mod connector;
+#[cfg(not(target_arch = "wasm32"))]
 mod websocket;
 
 pub use endpoints::{UpbitEndpoint, UpbitUrls};
 pub use auth::UpbitAuth;
 pub use parser::UpbitParser;
 pub use connector::UpbitConnector;
+#[cfg(not(target_arch = "wasm32"))]
 pub use websocket::UpbitWebSocket;
-

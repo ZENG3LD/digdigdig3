@@ -31,11 +31,12 @@ mod endpoints;
 mod auth;
 mod parser;
 mod connector;
+#[cfg(not(target_arch = "wasm32"))]
 mod websocket;
 
 pub use endpoints::*;
 pub use auth::*;
 pub use parser::*;
 pub use connector::*;
+#[cfg(not(target_arch = "wasm32"))]
 pub use websocket::*;
-

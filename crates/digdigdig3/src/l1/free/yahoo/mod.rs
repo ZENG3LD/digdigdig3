@@ -58,10 +58,12 @@ mod endpoints;
 mod auth;
 mod parser;
 mod connector;
-pub mod websocket;
+#[cfg(not(target_arch = "wasm32"))]
+mod websocket;
 
 pub use endpoints::{YahooFinanceEndpoint, YahooFinanceUrls};
 pub use auth::YahooFinanceAuth;
 pub use parser::YahooFinanceParser;
 pub use connector::YahooFinanceConnector;
+#[cfg(not(target_arch = "wasm32"))]
 pub use websocket::YahooFinanceWebSocket;

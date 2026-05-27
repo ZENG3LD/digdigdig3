@@ -9,6 +9,7 @@
 //!
 //! Run with: cargo test --test silent_watchdog -- --nocapture
 
+use digdigdig3::core::rt::WsFrame;
 use digdigdig3::core::websocket::reconnect::ReconnectConfig;
 use digdigdig3::core::websocket::transport::UniversalWsTransport;
 use digdigdig3::core::websocket::protocol::WsProtocol;
@@ -47,7 +48,7 @@ impl WsProtocol for SilentProtocol {
         self.url.clone()
     }
 
-    fn ping_frame(&self) -> Option<tokio_tungstenite::tungstenite::Message> {
+    fn ping_frame(&self) -> Option<WsFrame> {
         None
     }
 
@@ -59,25 +60,21 @@ impl WsProtocol for SilentProtocol {
     fn subscribe_frame(
         &self,
         _: &StreamSpec,
-    ) -> Result<tokio_tungstenite::tungstenite::Message, WebSocketError> {
-        Ok(tokio_tungstenite::tungstenite::Message::Text(
-            "{}".to_string(),
-        ))
+    ) -> Result<WsFrame, WebSocketError> {
+        Ok(WsFrame::Text("{}".to_string()))
     }
 
     fn unsubscribe_frame(
         &self,
         _: &StreamSpec,
-    ) -> Result<tokio_tungstenite::tungstenite::Message, WebSocketError> {
-        Ok(tokio_tungstenite::tungstenite::Message::Text(
-            "{}".to_string(),
-        ))
+    ) -> Result<WsFrame, WebSocketError> {
+        Ok(WsFrame::Text("{}".to_string()))
     }
 
     fn auth_frame(
         &self,
         _: &digdigdig3::core::traits::Credentials,
-    ) -> Option<Result<tokio_tungstenite::tungstenite::Message, WebSocketError>> {
+    ) -> Option<Result<WsFrame, WebSocketError>> {
         None
     }
 

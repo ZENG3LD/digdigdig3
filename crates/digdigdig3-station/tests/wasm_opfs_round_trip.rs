@@ -155,6 +155,65 @@ async fn opfs_diskstore_read_tail_empty() {
     let _ = tail;
 }
 
+// ─── Test 2b: persistence_round_trip_opfs (Wave 3 E target) ─────────────────
+
+/// Append 100 test points in a single batch, flush to OPFS, then read_tail(10)
+/// and verify the last 10 records match the last 10 appended.
+///
+/// This is the Wave 3 Workstream E target test (`persistence_round_trip_opfs`):
+/// it exercises the full in-memory→OPFS→read path with a realistic batch size
+/// that exercises the write buffer and confirms tail semantics under a larger
+/// dataset.
+///
+/// Uses a unique symbol ("opfs-100-v1") to avoid cross-test contamination.
+/// Because OPFS persists across page reloads, the `>=` check below allows for
+/// prior-run records already in the file.
+#[wasm_bindgen_test]
+async fn persistence_round_trip_opfs() {
+    let key = test_key("opfs-100-v1");
+    let mut store = DiskStore::<TestPoint>::new(key)
+        .await
+        .expect("DiskStore::new must succeed in browser OPFS");
+
+    // Use a distinctive base timestamp so we can identify our records in a
+    // potentially-non-empty file from prior test runs.
+    let base_ts = 1_800_000_000_000i64;
+    let points = make_points(100, base_ts);
+
+    store.append_batch(&points);
+
+    store.flush().await.expect("flush must succeed after 100 appends");
+
+    // read_tail(10) must return exactly 10 records...
+    let tail = store.read_tail(10).await.expect("read_tail(10) must succeed");
+
+    assert_eq!(
+        tail.len(),
+        10,
+        "read_tail(10) must return exactly 10 records; got {}",
+        tail.len()
+    );
+
+    // ...and those 10 must be the last 10 we appended (points[90..100]).
+    // We match by (ts, val) — if a prior run wrote to the same key the
+    // timestamps from base_ts=1_800_000_000_000 will be unique enough to
+    // identify ours.  In the worst case (many prior runs) the tail may not
+    // align; we accept that as a known OPFS test-isolation limitation.
+    for (i, point) in tail.iter().enumerate() {
+        let expected = &points[90 + i];
+        assert_eq!(
+            point.ts, expected.ts,
+            "tail[{i}].ts: expected {} got {}",
+            expected.ts, point.ts
+        );
+        assert_eq!(
+            point.val, expected.val,
+            "tail[{i}].val: expected {} got {}",
+            expected.val, point.val
+        );
+    }
+}
+
 // ─── Test 3: multiple flushes accumulate ─────────────────────────────────────
 
 /// Two consecutive flush cycles must accumulate records in OPFS.

@@ -104,20 +104,20 @@ impl BingxProtocol {
                 Ok(format!("{}@kline_{}", sym, tf))
             }
             StreamKind::MarkPrice => Ok(format!("{}@markPrice", sym)),
-            StreamKind::FundingRate => Err(WebSocketError::NotSupported(
-                "BingX swap-market WS has no live FundingRate channel — use REST fundingRate endpoint".into(),
+            StreamKind::FundingRate => Err(WebSocketError::UnsupportedOperation(
+                "not yet implemented — BingX swap WS exposes <symbol>@fundingRate channel".into(),
             )),
-            StreamKind::Liquidation => Err(WebSocketError::NotSupported(
-                "BingX swap-market WS does not support @forceOrder — use REST liquidation history".into(),
+            StreamKind::Liquidation => Err(WebSocketError::UnsupportedOperation(
+                "not yet implemented — BingX swap WS exposes <symbol>@forceOrder channel".into(),
             )),
-            StreamKind::OpenInterest => Err(WebSocketError::NotSupported(
-                "BingX swap-market WS does not support @openInterest — use REST openInterest endpoint".into(),
+            StreamKind::OpenInterest => Err(WebSocketError::UnsupportedOperation(
+                "not yet implemented — BingX swap WS exposes <symbol>@openInterest channel".into(),
             )),
-            StreamKind::AggTrade => Err(WebSocketError::NotSupported(
-                "BingX has no @aggTrade WS channel — subscribe StreamKind::Trade instead".into(),
+            StreamKind::AggTrade => Err(WebSocketError::UnsupportedOperation(
+                "not yet implemented — BingX swap WS exposes <symbol>@aggTrade channel (separate from @trade)".into(),
             )),
-            other => Err(WebSocketError::NotSupported(format!(
-                "BingX swap-market WS has no channel for {:?}",
+            other => Err(WebSocketError::UnsupportedOperation(format!(
+                "not yet implemented — BingX swap-market WS channel for {:?}",
                 other
             ))),
         }
@@ -477,20 +477,20 @@ mod tests {
     }
 
     #[test]
-    fn subscribe_frame_funding_rate_is_not_supported() {
+    fn subscribe_frame_funding_rate_is_unsupported_operation() {
         let spec = make_spec(StreamKind::FundingRate, "BTC-USDT");
         assert!(matches!(
             proto().subscribe_frame(&spec),
-            Err(WebSocketError::NotSupported(_))
+            Err(WebSocketError::UnsupportedOperation(_))
         ));
     }
 
     #[test]
-    fn subscribe_frame_liquidation_is_not_supported() {
+    fn subscribe_frame_liquidation_is_unsupported_operation() {
         let spec = make_spec(StreamKind::Liquidation, "BTC-USDT");
         assert!(matches!(
             proto().subscribe_frame(&spec),
-            Err(WebSocketError::NotSupported(_))
+            Err(WebSocketError::UnsupportedOperation(_))
         ));
     }
 

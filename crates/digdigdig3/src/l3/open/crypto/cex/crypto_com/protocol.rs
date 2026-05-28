@@ -125,6 +125,15 @@ impl CryptoComProtocol {
             StreamKind::Kline { interval } => {
                 Ok(format!("candlestick.{}.{}", interval.as_str(), sym))
             }
+            StreamKind::BalanceUpdate => Err(WebSocketError::UnsupportedOperation(
+                "not yet implemented — user.balance private channel exists".into(),
+            )),
+            StreamKind::PositionUpdate => Err(WebSocketError::UnsupportedOperation(
+                "not yet implemented — user.positions private channel exists".into(),
+            )),
+            StreamKind::OrderUpdate => Err(WebSocketError::UnsupportedOperation(
+                "not yet implemented — user.order.{instrument_name} private channel exists".into(),
+            )),
             other => Err(WebSocketError::NotSupported(format!(
                 "Crypto.com public WS has no channel for {:?}",
                 other

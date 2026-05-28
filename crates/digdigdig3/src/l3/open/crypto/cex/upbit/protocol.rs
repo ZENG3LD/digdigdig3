@@ -40,12 +40,12 @@
 //! - `orderbook` → `StreamEvent::OrderbookSnapshot`
 //! - `ticker`    → (state-only update, no emitted event — Ticker punted)
 //!
-//! ## Synthetic Ticker — PUNTED (v1)
+//! ## Synthetic Ticker — TODO_Implement
 //!
-//! Upbit's `ticker` channel has no bid/ask; `orderbook` has bid/ask but no
-//! trade price. A fused Ticker requires cross-frame state. This is deferred to a
-//! follow-up pass matching the Gemini v1 precedent. `subscribe_frame` returns
-//! `NotSupported` for `StreamKind::Ticker`.
+//! Upbit exposes a native `ticker` channel (last price, 24h stats) and
+//! `orderbook` (bid/ask). A complete Ticker (last+bid+ask) requires cross-frame
+//! state fusion. `subscribe_frame` returns `UnsupportedOperation` for
+//! `StreamKind::Ticker` until implemented.
 
 use std::sync::OnceLock;
 
@@ -148,10 +148,9 @@ impl WsProtocol for UpbitProtocol {
         match &spec.kind {
             StreamKind::Trade => Ok(Self::build_subscribe("trade", &code)),
             StreamKind::Orderbook => Ok(Self::build_subscribe("orderbook", &code)),
-            StreamKind::Ticker => Err(WebSocketError::NotSupported(
-                "Upbit synthetic Ticker requires stateful parser hook — pending \
-                 (v1 matches Gemini precedent). Subscribe to Stream::Orderbook or \
-                 Stream::Trade instead."
+            StreamKind::Ticker => Err(WebSocketError::UnsupportedOperation(
+                "not yet implemented — Upbit exposes a native ticker channel; \
+                 complete Ticker (last+bid+ask) can also be synthesized from orderbook (bid/ask) + trade (last price)"
                     .into(),
             )),
             other => Err(WebSocketError::NotSupported(format!(
@@ -382,12 +381,12 @@ mod tests {
     }
 
     #[test]
-    fn subscribe_frame_ticker_returns_not_supported() {
+    fn subscribe_frame_ticker_returns_unsupported_operation() {
         let spec = make_spec(StreamKind::Ticker, "KRW-BTC");
         let result = proto().subscribe_frame(&spec);
         assert!(
-            matches!(result, Err(WebSocketError::NotSupported(_))),
-            "Ticker must return NotSupported, got {:?}",
+            matches!(result, Err(WebSocketError::UnsupportedOperation(_))),
+            "Ticker must return UnsupportedOperation, got {:?}",
             result
         );
     }

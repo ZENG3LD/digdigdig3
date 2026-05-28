@@ -269,6 +269,13 @@ impl WsProtocol for BitfinexProtocol {
                     "key": key,
                 })
             }
+            StreamKind::Liquidation => {
+                return Err(WebSocketError::UnsupportedOperation(
+                    "not yet implemented — public status channel key liq:global \
+                     ({\"event\":\"subscribe\",\"channel\":\"status\",\"key\":\"liq:global\"})"
+                        .into(),
+                ))
+            }
             other => {
                 return Err(WebSocketError::NotSupported(format!(
                     "Bitfinex public WS has no channel for {:?}",
@@ -287,6 +294,13 @@ impl WsProtocol for BitfinexProtocol {
             StreamKind::Orderbook | StreamKind::OrderbookDelta => format!("book:{}", sym),
             StreamKind::Kline { interval } => {
                 format!("candles:{}:{}", interval.as_str(), sym)
+            }
+            StreamKind::Liquidation => {
+                return Err(WebSocketError::UnsupportedOperation(
+                    "not yet implemented — public status channel key liq:global \
+                     ({\"event\":\"subscribe\",\"channel\":\"status\",\"key\":\"liq:global\"})"
+                        .into(),
+                ))
             }
             other => {
                 return Err(WebSocketError::NotSupported(format!(
@@ -875,9 +889,21 @@ mod tests {
     }
 
     #[test]
-    fn subscribe_frame_unsupported_returns_not_supported() {
+    fn subscribe_frame_liquidation_returns_unsupported_operation() {
+        // Bitfinex public status channel liq:global exists — not yet implemented.
         let proto = make_proto();
         let spec = make_spec(StreamKind::Liquidation, "tBTCUSD");
+        assert!(matches!(
+            proto.subscribe_frame(&spec),
+            Err(WebSocketError::UnsupportedOperation(_))
+        ));
+    }
+
+    #[test]
+    fn subscribe_frame_truly_absent_returns_not_supported() {
+        // StreamKind::OpenInterest has no Bitfinex public WS channel.
+        let proto = make_proto();
+        let spec = make_spec(StreamKind::OpenInterest, "tBTCUSD");
         assert!(matches!(
             proto.subscribe_frame(&spec),
             Err(WebSocketError::NotSupported(_))

@@ -306,15 +306,10 @@ fn channel_and_payload(
         StreamKind::OrderUpdate => ("orders", vec![sym]),
         StreamKind::BalanceUpdate => ("balances", vec![]),
         StreamKind::PositionUpdate => ("positions", vec![sym]),
-        // contract_stats: minimum valid interval is "1m" (10s/30s rejected).
-        // Updates arrive at the interval boundary — too slow for the 5s smoke window.
-        // Return NotSupported so callers get a clean error instead of silent_0_events.
-        // Use REST GET /futures/usdt/contract_stats for period-based OI data.
         StreamKind::OpenInterest => {
-            return Err(WebSocketError::NotSupported(
-                "GateIO futures.contract_stats WS minimum interval is 1m — \
-                 not suitable for real-time streaming. Use REST /futures/usdt/contract_stats \
-                 or poll REST GET /futures/usdt/tickers for current total_size (OI proxy).".to_string()
+            return Err(WebSocketError::UnsupportedOperation(
+                "not yet implemented — futures.contract_stats channel exists (1m cadence minimum); \
+                 use REST /futures/usdt/contract_stats for now".to_string()
             ));
         }
         other => {

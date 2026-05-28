@@ -162,9 +162,9 @@ impl KuCoinProtocol {
             }
             StreamKind::PositionUpdate => "/contract/positionAll".to_string(),
             StreamKind::Liquidation => {
-                return Err(WebSocketError::NotSupported(
-                    "KuCoin /contractMarket/liquidationOrders requires authentication — \
-                     not available as a public WS feed".to_string(),
+                return Err(WebSocketError::UnsupportedOperation(
+                    "not yet implemented — public /contractMarket/liquidationOrders:{symbol} \
+                     channel (no auth required, uses public token)".to_string(),
                 ));
             }
             StreamKind::OpenInterest => {

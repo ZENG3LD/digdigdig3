@@ -114,6 +114,13 @@ impl LighterProtocol {
             StreamKind::FundingRate | StreamKind::MarkPrice => {
                 ("market_stats", "update/market_stats")
             }
+            StreamKind::Kline { .. } => {
+                return Err(WebSocketError::UnsupportedOperation(
+                    "not yet implemented — candle/<market_id>/<resolution> channel exists \
+                     (resolutions: 1m, 5m, 15m, 30m, 1h, 4h, 12h, 1d)"
+                        .into(),
+                ));
+            }
             other => {
                 return Err(WebSocketError::NotSupported(format!(
                     "Lighter WS has no public channel for {:?} \

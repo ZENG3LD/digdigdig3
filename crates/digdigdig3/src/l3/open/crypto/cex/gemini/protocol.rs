@@ -17,13 +17,12 @@
 //!   - `heartbeat`               → ignored (route to None)
 //!   - `subscribed`              → subscribe ACK, route to None
 //!
-//! ## Ticker synthesis — NOT YET PORTED
+//! ## Ticker synthesis — TODO_Implement
 //!
-//! Gemini has no dedicated ticker stream. In the bespoke loop a synthetic Ticker
-//! was built from cross-frame state (top-of-book bid/ask from `changes` + last
-//! trade price from `trades`). `WsProtocol` parsers are stateless, so the
-//! synthesis requires shared mutable state. This is **deferred to a follow-up
-//! pass**. Subscribing to `Stream::Ticker` currently returns `NotSupported`.
+//! Gemini has no dedicated ticker stream. A synthetic Ticker is buildable from
+//! the `l2` subscription: top-of-book bid/ask from `changes` + last trade price
+//! from `trades`. Requires shared mutable state across parser calls.
+//! `subscribe_frame` returns `UnsupportedOperation` until implemented.
 //!
 //! ## Ping discipline — CRITICAL
 //!
@@ -72,10 +71,9 @@ impl GeminiProtocol {
                 // Gemini candle feed name: "candles_1m", "candles_5m", etc.
                 Ok(format!("candles_{}", interval.as_str()))
             }
-            StreamKind::Ticker => Err(WebSocketError::NotSupported(
-                "Gemini synthetic Ticker not yet ported to UniversalWsTransport — \
-                 pending stateful parser hook. Subscribe to Stream::Orderbook or \
-                 Stream::Trade instead."
+            StreamKind::Ticker => Err(WebSocketError::UnsupportedOperation(
+                "not yet implemented — synthesize from l2 changes (bid/ask) + trades (last price); \
+                 pending stateful parser hook"
                     .into(),
             )),
             other => Err(WebSocketError::NotSupported(format!(
@@ -561,13 +559,13 @@ mod tests {
     }
 
     #[test]
-    fn subscribe_frame_ticker_returns_not_supported() {
+    fn subscribe_frame_ticker_returns_unsupported_operation() {
         let proto = GeminiProtocol;
         let spec = make_spec(StreamKind::Ticker, "BTCUSD");
         let result = proto.subscribe_frame(&spec);
         assert!(
-            matches!(result, Err(WebSocketError::NotSupported(_))),
-            "Ticker must return NotSupported, got {:?}",
+            matches!(result, Err(WebSocketError::UnsupportedOperation(_))),
+            "Ticker must return UnsupportedOperation, got {:?}",
             result
         );
     }

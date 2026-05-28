@@ -46,24 +46,28 @@ rust_decimal = "1"
 sha2 = "0.10"
 byteorder = "1.5"
 
-# Feature-gated optional deps — these are native-only in practice (sled = file I/O,
-# zstd links native C lib), but they are only activated by features that consumers
-# opt into. On wasm, no consumer should activate "persistence" feature.
-# If they do, the build will fail at the sled/zstd compilation stage — acceptable;
-# document that "persistence" feature is native-only.
-zstd = { version = "0.13", optional = true }
-bincode = { version = "1.3", optional = true }
-crc32fast = { version = "1.4", optional = true }
+# Feature-gated optional deps — wasm-compatible ones stay here; native-only
+# ones (zstd links C, sled uses file I/O) live in the native target block below
+# so they never enter the wasm32 dep graph even when default features include
+# "persistence". Cargo resolver v2 allows optional deps in target-specific blocks
+# to be referenced by [features].
 lru = { version = "0.12", optional = true }
 metrics = { version = "0.23", optional = true }
 metrics-exporter-prometheus = { version = "0.15", optional = true }
-sled = { version = "0.34", optional = true }
 
 # ─── Native-only dependencies ─────────────────────────────────────────────────
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
+
+# Persistence deps — link native C code (zstd-sys) or use file I/O (sled).
+# Kept in the native-only target block so the wasm32 dep graph never sees them
+# even when the "persistence" feature is activated via the default feature set.
+zstd = { version = "0.13", optional = true }
+bincode = { version = "1.3", optional = true }
+crc32fast = { version = "1.4", optional = true }
+sled = { version = "0.34", optional = true }
 
 # ─── wasm32-only dependencies ─────────────────────────────────────────────────
 

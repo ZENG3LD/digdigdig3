@@ -82,6 +82,13 @@ impl TransportState {
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub(super) enum TransportCmd {
+    /// Pure connect trigger — wakes the driver's cmd loop without registering
+    /// any subscription. Sent by `connect()`. The driver treats it as a no-op
+    /// (it already establishes the connection autonomously); this exists only
+    /// so `connect()` need not fabricate a sentinel `Subscribe` with an empty
+    /// symbol, which used to leak a malformed subscribe frame to exchanges
+    /// whose `subscribe_frame` accepts an empty symbol (dYdX, Bitfinex).
+    Connect,
     Subscribe(StreamSpec),
     Unsubscribe(StreamSpec),
     Shutdown,
@@ -231,15 +238,11 @@ impl<P: WsProtocol> UniversalWsTransport<P> {
 
     /// Initiate connection.
     pub async fn connect(&self) -> WebSocketResult<()> {
-        self.cmd_tx
-            .send(TransportCmd::Subscribe(StreamSpec {
-                kind: StreamKind::Ticker, // sentinel — driver ignores this on connect signal
-                symbol: crate::core::types::OwnedSymbolInput::Raw(String::new()),
-                account_type: self.account_type,
-                depth: None,
-                speed_ms: None,
-            }))
-            .ok();
+        // The driver connects autonomously; this is a pure wake-up trigger, not
+        // a subscription. (Previously a sentinel Subscribe with an empty symbol
+        // was sent here — it leaked a malformed subscribe frame to exchanges
+        // whose subscribe_frame accepts an empty symbol, poisoning their data.)
+        self.cmd_tx.send(TransportCmd::Connect).ok();
         // Wait for Connected state
         let deadline = tokio::time::Instant::now()
             + Duration::from_millis(self.reconnect_cfg.connection_timeout_ms + 2_000);
@@ -603,10 +606,34 @@ impl<P: WsProtocol> DriverTask<P> {
                 let mut kill_sub = kill_tx.subscribe();
                 let read_fut = async move {
                     loop {
-                        // next_frame() returns Option<Result<WsFrame, WsRtError>>
-                        let opt_result = tokio::select! {
-                            frame = async { conn_read.lock().await.next_frame().await } => frame,
-                            _ = kill_sub.recv() => break,
+                        // CRITICAL: `next_frame()` blocks until a frame arrives.
+                        // `conn` is shared with the write task via one Mutex, so
+                        // holding the lock across a blocking `next_frame().await`
+                        // starves the write task — subscribe/ping frames can never
+                        // be sent. On exchanges that send NOTHING until they
+                        // receive a subscribe (dYdX, Gemini, Bitfinex), this is a
+                        // hard deadlock: read holds the lock forever waiting for
+                        // data that only arrives AFTER a subscribe the write task
+                        // can't send. Fix: poll `next_frame` under a short timeout,
+                        // releasing the lock each tick so the write task gets a
+                        // window. A timeout is NOT an EOF — keep looping.
+                        let opt_result = {
+                            let poll = async {
+                                let mut guard = conn_read.lock().await;
+                                tokio::time::timeout(
+                                    Duration::from_millis(100),
+                                    guard.next_frame(),
+                                )
+                                .await
+                            };
+                            tokio::select! {
+                                r = poll => r,
+                                _ = kill_sub.recv() => break,
+                            }
+                        };
+                        let opt_result = match opt_result {
+                            Ok(frame) => frame,        // got a frame (or stream EOF)
+                            Err(_elapsed) => continue, // lock released; let writer run
                         };
                         // Forward the Option directly; None means WsConn closed.
                         let is_none = opt_result.is_none();
@@ -683,8 +710,14 @@ impl<P: WsProtocol> DriverTask<P> {
             }
 
             // ── Message loop ───────────────────────────────────────────────
-            let mut ping_interval =
-                tokio::time::interval(self.protocol.ping_interval());
+            // tokio::interval fires its FIRST tick immediately (t≈0). A ping on
+            // connect kills exchanges that disconnect on client Ping (Gemini) —
+            // so reset the deadline one full interval into the future.
+            let ping_period = self.protocol.ping_interval();
+            let mut ping_interval = tokio::time::interval_at(
+                tokio::time::Instant::now() + ping_period,
+                ping_period,
+            );
             ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
             let exit = loop {
@@ -731,6 +764,9 @@ impl<P: WsProtocol> DriverTask<P> {
                     // Command from user
                     cmd = self.cmd_rx.recv() => {
                         match cmd {
+                            // Pure connect trigger — connection is already up by
+                            // the time we reach the message loop. No-op.
+                            Some(TransportCmd::Connect) => {}
                             Some(TransportCmd::Subscribe(spec)) => {
                                 // Add to active set first
                                 self.active_subs.write().await.insert(spec.clone());
@@ -774,7 +810,13 @@ impl<P: WsProtocol> DriverTask<P> {
                     _ = ping_interval.tick() => {
                         let frame = match self.protocol.ping_frame() {
                             Some(f) => f,
-                            None => WsFrame::Ping(vec![]),
+                            // No app-level ping frame. Fall back to a native WS
+                            // Ping ONLY if the protocol allows it. Exchanges that
+                            // disconnect on client Ping (Gemini) or can't flush
+                            // Pong promptly (Upbit) opt out via uses_native_ping()
+                            // → the timer becomes a no-op.
+                            None if self.protocol.uses_native_ping() => WsFrame::Ping(vec![]),
+                            None => continue,
                         };
                         if write_tx.send(frame).is_err() {
                             warn!(target: "dig3::ws::ping", exchange, "ping: write task gone");

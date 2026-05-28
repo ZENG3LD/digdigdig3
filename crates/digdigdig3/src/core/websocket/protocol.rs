@@ -43,6 +43,20 @@ pub trait WsProtocol: Send + Sync + 'static {
     /// - KuCoin: `Some(WsFrame::Text(json!({"id":..,"type":"ping"}).to_string()))`
     fn ping_frame(&self) -> Option<WsFrame>;
 
+    /// Whether the transport may send native WebSocket Ping frames when
+    /// `ping_frame()` returns `None`.
+    ///
+    /// - `true` (default): `ping_frame() == None` means "use native WS Ping".
+    /// - `false`: the connection must NEVER receive a client-initiated frame on
+    ///   the ping timer. Required by exchanges that DISCONNECT on client Ping
+    ///   (Gemini) or whose Pong cannot be flushed promptly under our read/write
+    ///   task split (Upbit). With this `false` AND `ping_frame() == None`, the
+    ///   ping timer is a no-op — liveness relies on the silent-stream watchdog
+    ///   + server-side heartbeats instead.
+    fn uses_native_ping(&self) -> bool {
+        true
+    }
+
     /// Interval between application-level pings.
     /// Default: 30 seconds.
     fn ping_interval(&self) -> Duration {

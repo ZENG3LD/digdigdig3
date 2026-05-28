@@ -135,7 +135,14 @@ impl WsProtocol for GeminiProtocol {
         None
     }
 
-    /// Interval is set to 30 s but is unused because `ping_frame` returns None.
+    /// Gemini DISCONNECTS on any client-initiated WS Ping. The transport must
+    /// never fall back to native Ping — liveness relies on Gemini's server-side
+    /// heartbeats + the silent-stream watchdog.
+    fn uses_native_ping(&self) -> bool {
+        false
+    }
+
+    /// Interval is set to 30 s but is unused (no ping frame, no native ping).
     fn ping_interval(&self) -> Duration {
         Duration::from_secs(30)
     }

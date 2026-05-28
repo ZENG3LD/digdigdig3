@@ -129,10 +129,18 @@ impl WsProtocol for UpbitProtocol {
             .expect("upbit ws endpoint is valid")
     }
 
-    /// Returns `None` — Upbit uses standard WS-level Ping/Pong handled by the
-    /// transport layer automatically.
+    /// Returns `None`. Upbit accepts client WS Ping per spec, but under our
+    /// read/write task split the auto-Pong is not flushed until the next
+    /// outgoing frame (≈one ping_interval later) — longer than Upbit's Pong
+    /// timeout, so the server drops the connection before data arrives.
+    /// Disable native ping; rely on Upbit's `{"status":"UP"}` server ping +
+    /// the silent-stream watchdog.
     fn ping_frame(&self) -> Option<WsFrame> {
         None
+    }
+
+    fn uses_native_ping(&self) -> bool {
+        false
     }
 
     fn subscribe_frame(&self, spec: &StreamSpec) -> Result<WsFrame, WebSocketError> {

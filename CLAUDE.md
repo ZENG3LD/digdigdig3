@@ -48,6 +48,46 @@ until the whole wave is accepted. Plan: `docs/plans/wasm-wave3-master.md` +
 **HyperLiquid mis-placement** (`cex/hyperliquid/` → should be `dex/`) is a known
 legacy directory mistake — refactor is a separate followup, NOT Wave 3.
 
+### Wave 3 live-validation pass (2026-05-28) — transport deadlock fix
+
+`cargo check` passing ≠ data flowing. A full live `e2e_smoke` run after the WS
+migrations exposed that most WS connectors emitted ZERO events. Root cause was
+NOT per-connector — a **transport-level deadlock**:
+
+- The driver shares ONE `Arc<Mutex<Box<dyn WsConn>>>` between read and write
+  tasks. The read task held the lock across a blocking `next_frame().await`.
+  On venues that send nothing until they receive a subscribe (dYdX, Gemini,
+  Bitfinex, Upbit, Lighter), the write task could never acquire the lock to
+  SEND the subscribe → silent forever, no error. High-frequency venues
+  (Binance/BingX/CryptoCom) masked it by releasing the lock between frames.
+- Fix: read task polls `next_frame` under a 100ms timeout, releasing the lock
+  each tick. Plus two smaller systemic fixes: `WsProtocol::uses_native_ping()`
+  (Gemini disconnects on client Ping, Upbit can't flush Pong promptly under the
+  task split) + ping deadline reset to +interval (no ping on connect); and
+  replacing the sentinel `Subscribe(Ticker,"")` in `connect()` with a no-op
+  `TransportCmd::Connect` (the empty symbol leaked a malformed subscribe to
+  dYdX/Bitfinex). Commit 70f82b6.
+- Per-connector fixes (commit b5105a8): Kraken WS needs `BASE/QUOTE` slash
+  format not REST `XBTUSD` (`to_kraken_ws_symbol` normalizer added); Bitstamp
+  synthetic ticker had bid/ask swapped; Lighter AggTrade misrouted to Trade
+  parser → now `NotSupported` (Lighter has no aggTrade channel).
+
+**Result: TRUSTED 5 → 15.** All 18 crypto WS connectors flow real data live
+(trade/ob/kline verified green per venue). All 7 migrated WS connectors pass
+their `--ignored` live tests. Wasm smoke still 2/2 in headless Chrome (the
+timeout-poll is wasm-safe).
+
+Remaining non-bugs in the matrix: Binance/Bybit `WS_ticker connect_timeout` is
+an IP-level rate-limit from repeated test runs (raw probe returns AWS/CloudFront
+`403 too many requests` — clears on cooldown), NOT code. dYdX ticker uses the
+low-frequency `v4_markets` channel. Gemini/Upbit/Lighter Ticker is intentionally
+`NotSupported` (synthetic ticker deferred). GateIO `WS_liq` silence is a
+low-frequency feed (~25 liq/hr), channel verified correct.
+
+**Lesson (durable):** a connector migration is not done at `cargo check` — it
+is done when a live `e2e_smoke` / `--ignored` test shows real data flowing.
+Always run the live matrix before claiming a WS connector works.
+
 Native baseline after Wave 3: 1090/0 across lib + integration + examples,
 `RUSTFLAGS=-D warnings` clean. Wasm: lib + station compile clean to wasm32.
 

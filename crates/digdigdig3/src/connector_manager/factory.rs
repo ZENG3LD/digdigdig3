@@ -154,7 +154,6 @@ use crate::l3::open::crypto::cex::htx::HtxWebSocket;
 use crate::l3::open::crypto::cex::bitget::BitgetWebSocket;
 use crate::l3::open::crypto::cex::bingx::BingxWebSocket;
 use crate::l3::open::crypto::cex::crypto_com::CryptoComWebSocket;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::upbit::UpbitWebSocket;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::deribit::DeribitWebSocket;
@@ -1002,9 +1001,8 @@ impl ConnectorFactory {
             // ═══════════════════════════════════════════════════════════════════
             ExchangeId::Upbit => {
                 // KRW markets live on the Korean endpoint (api.upbit.com).
-                // sg-api.upbit.com handles international accounts but does not
-                // serve KRW-* pairs over WebSocket.
-                let ws = UpbitWebSocket::new(None, "kr").await?;
+                // The protocol shim hardcodes the Korea WS URL.
+                let ws = UpbitWebSocket::new(None, testnet, account_type);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
             // ═══════════════════════════════════════════════════════════════════
@@ -1197,9 +1195,13 @@ impl ConnectorFactory {
                 let ws = BingxWebSocket::new(None, testnet, account_type);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            ExchangeId::Upbit => {
+                let ws = UpbitWebSocket::new(None, testnet, account_type);
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
             other => Err(ExchangeError::UnsupportedOperation(format!(
                 "{other:?} WebSocket not enabled on wasm32; \
-                 only Binance/Bybit/OKX/HyperLiquid/Gemini/CryptoCom/Bitfinex/BingX use UniversalWsTransport+browser-WS"
+                 only Binance/Bybit/OKX/HyperLiquid/Gemini/CryptoCom/Bitfinex/BingX/Upbit use UniversalWsTransport+browser-WS"
             ))),
         }
     }

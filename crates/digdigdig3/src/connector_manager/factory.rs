@@ -142,7 +142,6 @@ use crate::l3::open::crypto::cex::kucoin::KuCoinWebSocket;
 use crate::l3::open::crypto::cex::kraken::KrakenWebSocket;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::gateio::GateioWebSocket;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::bitfinex::BitfinexWebSocket;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::bitstamp::BitstampWebSocket;
@@ -925,8 +924,9 @@ impl ConnectorFactory {
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
             ExchangeId::Bitfinex => {
-                let ws = BitfinexWebSocket::new(None, testnet, account_type).await?;
-                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+                // Sync constructor — UniversalWsTransport connects lazily on first subscribe.
+                let _ = account_type;
+                Ok(Arc::new(BitfinexWebSocket::new(testnet)) as Arc<dyn WebSocketConnector>)
             }
             ExchangeId::Bitget => {
                 let ws = BitgetWebSocket::new(None, testnet, account_type).await?;
@@ -1188,9 +1188,14 @@ impl ConnectorFactory {
                 let ws = CryptoComWebSocket::new(testnet);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            ExchangeId::Bitfinex => {
+                let _ = account_type;
+                let ws = BitfinexWebSocket::new(testnet);
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
             other => Err(ExchangeError::UnsupportedOperation(format!(
                 "{other:?} WebSocket not enabled on wasm32; \
-                 only Binance/Bybit/OKX/HyperLiquid/Gemini/CryptoCom use UniversalWsTransport+browser-WS"
+                 only Binance/Bybit/OKX/HyperLiquid/Gemini/CryptoCom/Bitfinex use UniversalWsTransport+browser-WS"
             ))),
         }
     }

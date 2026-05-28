@@ -8,18 +8,8 @@
 //! - `auth` - Request signing (HMAC-SHA384)
 //! - `parser` - JSON array parsing
 //! - `connector` - BitfinexConnector + trait implementations
-//!
-//! ## Usage
-//!
-//! ```ignore
-//! use connectors_v5::exchanges::bitfinex::BitfinexConnector;
-//!
-//! let connector = BitfinexConnector::new(credentials, false).await?;
-//!
-//! // Core methods (from traits)
-//! let price = connector.get_price(symbol, AccountType::Spot).await?;
-//! let order = connector.market_order(symbol, side, qty, AccountType::Spot).await?;
-//! ```
+//! - `protocol` - WsProtocol shim for UniversalWsTransport
+//! - `websocket` - BitfinexWebSocket thin wrapper
 //!
 //! ## Key Differences from Other Exchanges
 //!
@@ -28,17 +18,17 @@
 //! 3. **Microsecond nonces**: Nonces in microseconds, not milliseconds
 //! 4. **Symbol prefixes**: `t` for trading pairs, `f` for funding
 //! 5. **Signed amounts**: Positive=buy, negative=sell for orders/positions
+//! 6. **chanId routing**: WS data frames route by integer chanId, not channel name
 
 mod endpoints;
 mod auth;
 mod parser;
 mod connector;
-#[cfg(not(target_arch = "wasm32"))]
+mod protocol;
 mod websocket;
 
 pub use endpoints::{BitfinexEndpoint, BitfinexUrls};
 pub use auth::BitfinexAuth;
 pub use parser::BitfinexParser;
 pub use connector::BitfinexConnector;
-#[cfg(not(target_arch = "wasm32"))]
 pub use websocket::BitfinexWebSocket;

@@ -136,11 +136,16 @@ fn extract_base(spec: &StreamSpec) -> String {
 /// Lighter sends either colon-separated (`"order_book:0"`) or slash-separated
 /// (`"order_book/0"`) channel names. We always take the last segment.
 pub(super) fn extract_market_id_from_channel(channel: &str) -> &str {
-    channel
-        .rsplit(':')
-        .next()
-        .or_else(|| channel.rsplit('/').next())
-        .unwrap_or(channel)
+    // Lighter channels are `<name>:<market_id>`; some server versions use a
+    // slash separator (`<name>/<market_id>`). `rsplit(sep).next()` always
+    // yields Some (the whole string when the separator is absent), so pick the
+    // separator that actually occurs rather than chaining or_else.
+    let sep = if channel.contains(':') {
+        ':'
+    } else {
+        '/'
+    };
+    channel.rsplit(sep).next().unwrap_or(channel)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -518,7 +523,8 @@ mod tests {
 
     #[test]
     fn registry_supports_public_channels() {
-        let reg = proto().topic_registry(AccountType::FuturesCross);
+        let p = proto();
+        let reg = p.topic_registry(AccountType::FuturesCross);
         let at = AccountType::FuturesCross;
         assert!(reg.supports(&StreamKind::Orderbook, at), "Orderbook");
         assert!(reg.supports(&StreamKind::Trade, at), "Trade");
@@ -529,7 +535,8 @@ mod tests {
 
     #[test]
     fn registry_wildcard_dispatches() {
-        let reg = proto().topic_registry(AccountType::FuturesCross);
+        let p = proto();
+        let reg = p.topic_registry(AccountType::FuturesCross);
         assert!(reg.dispatch(&TopicKey::new("update/order_book:0")).is_some());
         assert!(reg.dispatch(&TopicKey::new("update/trade:1")).is_some());
         assert!(reg.dispatch(&TopicKey::new("update/ticker:0")).is_some());

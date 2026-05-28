@@ -601,7 +601,8 @@ mod tests {
 
     #[test]
     fn registry_supports_public_channels() {
-        let reg = proto().topic_registry(AccountType::FuturesCross);
+        let p = proto();
+        let reg = p.topic_registry(AccountType::FuturesCross);
         let at = AccountType::FuturesCross;
         assert!(reg.supports(&StreamKind::Orderbook, at), "Orderbook");
         assert!(reg.supports(&StreamKind::Trade, at), "Trade");
@@ -616,7 +617,8 @@ mod tests {
 
     #[test]
     fn registry_wildcard_dispatches_per_symbol() {
-        let reg = proto().topic_registry(AccountType::FuturesCross);
+        let p = proto();
+        let reg = p.topic_registry(AccountType::FuturesCross);
         assert!(reg.dispatch(&TopicKey::new("v4_orderbook:BTC-USD")).is_some());
         assert!(reg.dispatch(&TopicKey::new("v4_trades:ETH-USD")).is_some());
         assert!(reg.dispatch(&TopicKey::new("v4_markets:BTC-USD")).is_some());

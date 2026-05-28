@@ -22,15 +22,15 @@ fn ring_evicts_oldest_at_capacity() {
     assert_eq!(snap[2].ts_ms, 4);
 }
 
-#[test]
-fn disk_store_tail_round_trip() {
+#[tokio::test]
+async fn disk_store_tail_round_trip() {
     let tmp = std::env::temp_dir().join(format!("dig3-store-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
 
     let key = SeriesKey::new(ExchangeId::Binance, AccountType::Spot, "BTCUSDT", Kind::Trade);
 
     {
-        let mut store = DiskStore::<TradePoint>::new(&tmp, key.clone()).unwrap();
+        let mut store = DiskStore::<TradePoint>::new(&tmp, key.clone()).await.unwrap();
         for i in 0..10 {
             store
                 .append(&TradePoint {
@@ -42,12 +42,12 @@ fn disk_store_tail_round_trip() {
                 })
                 .unwrap();
         }
-        store.flush().unwrap();
+        store.flush().await.unwrap();
     }
 
     // Re-open and read last 4 records.
-    let store = DiskStore::<TradePoint>::new(&tmp, key).unwrap();
-    let tail = store.read_tail(4).unwrap();
+    let store = DiskStore::<TradePoint>::new(&tmp, key).await.unwrap();
+    let tail = store.read_tail(4).await.unwrap();
     assert_eq!(tail.len(), 4);
     assert_eq!(tail[0].ts_ms, 1_700_000_000_006);
     assert_eq!(tail[3].ts_ms, 1_700_000_000_009);

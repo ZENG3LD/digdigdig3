@@ -574,7 +574,8 @@ mod tests {
 
     #[test]
     fn topic_registry_covers_supported_channels() {
-        let reg = proto().topic_registry(AccountType::Spot);
+        let p = proto();
+        let reg = p.topic_registry(AccountType::Spot);
         let at = AccountType::Spot;
         assert!(reg.supports(&StreamKind::Ticker, at), "Ticker");
         assert!(reg.supports(&StreamKind::Trade, at), "Trade");
@@ -588,7 +589,8 @@ mod tests {
 
     #[test]
     fn topic_registry_wildcard_matches_per_symbol_keys() {
-        let reg = proto().topic_registry(AccountType::Spot);
+        let p = proto();
+        let reg = p.topic_registry(AccountType::Spot);
         assert!(
             reg.dispatch(&TopicKey::new("BTCUSDT@bookTicker")).is_some(),
             "BTCUSDT@bookTicker"

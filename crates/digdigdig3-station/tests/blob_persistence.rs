@@ -109,8 +109,8 @@ fn orderbook_l3_blob_round_trip() {
     assert_eq!(OrderbookL3Point::blob_pointer_offset(), Some(32));
 }
 
-#[test]
-fn disk_store_block_trade_end_to_end() {
+#[tokio::test]
+async fn disk_store_block_trade_end_to_end() {
     let tmp = tmpdir("block-trade");
     let key = SeriesKey::new(
         ExchangeId::Binance,
@@ -120,7 +120,7 @@ fn disk_store_block_trade_end_to_end() {
     );
 
     {
-        let mut store = DiskStore::<BlockTradePoint>::new(&tmp, key.clone()).unwrap();
+        let mut store = DiskStore::<BlockTradePoint>::new(&tmp, key.clone()).await.unwrap();
         for i in 0..50 {
             store
                 .append(&BlockTradePoint {
@@ -133,7 +133,7 @@ fn disk_store_block_trade_end_to_end() {
                 })
                 .unwrap();
         }
-        store.flush().unwrap();
+        store.flush().await.unwrap();
     }
 
     // .blob file must exist for this kind.
@@ -154,8 +154,8 @@ fn disk_store_block_trade_end_to_end() {
         .collect();
     assert_eq!(blobs.len(), 1, "blob file must be created for string-bearing kind");
 
-    let store = DiskStore::<BlockTradePoint>::new(&tmp, key).unwrap();
-    let tail = store.read_tail(10).unwrap();
+    let store = DiskStore::<BlockTradePoint>::new(&tmp, key).await.unwrap();
+    let tail = store.read_tail(10).await.unwrap();
     assert_eq!(tail.len(), 10);
     // tail returns oldest → newest of last N; for 50 records last 10 starts at i=40.
     for (k, p) in tail.iter().enumerate() {
@@ -168,8 +168,8 @@ fn disk_store_block_trade_end_to_end() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
-#[test]
-fn disk_store_market_warning_handles_empty_strings() {
+#[tokio::test]
+async fn disk_store_market_warning_handles_empty_strings() {
     let tmp = tmpdir("market-warning");
     let key = SeriesKey::new(
         ExchangeId::Binance,
@@ -179,7 +179,7 @@ fn disk_store_market_warning_handles_empty_strings() {
     );
 
     {
-        let mut store = DiskStore::<MarketWarningPoint>::new(&tmp, key.clone()).unwrap();
+        let mut store = DiskStore::<MarketWarningPoint>::new(&tmp, key.clone()).await.unwrap();
         for i in 0..5 {
             store
                 .append(&MarketWarningPoint {
@@ -189,11 +189,11 @@ fn disk_store_market_warning_handles_empty_strings() {
                 })
                 .unwrap();
         }
-        store.flush().unwrap();
+        store.flush().await.unwrap();
     }
 
-    let store = DiskStore::<MarketWarningPoint>::new(&tmp, key).unwrap();
-    let tail = store.read_tail(5).unwrap();
+    let store = DiskStore::<MarketWarningPoint>::new(&tmp, key).await.unwrap();
+    let tail = store.read_tail(5).await.unwrap();
     assert_eq!(tail.len(), 5);
     for (i, p) in tail.iter().enumerate() {
         assert_eq!(p.ts_ms, 1_700_000_000_000 + i as i64);
@@ -208,13 +208,13 @@ fn disk_store_market_warning_handles_empty_strings() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
-#[test]
-fn fixed_size_type_does_not_create_blob_file() {
+#[tokio::test]
+async fn fixed_size_type_does_not_create_blob_file() {
     let tmp = tmpdir("trade-no-blob");
     let key = SeriesKey::new(ExchangeId::Binance, AccountType::Spot, "BTCUSDT", Kind::Trade);
 
     {
-        let mut store = DiskStore::<TradePoint>::new(&tmp, key.clone()).unwrap();
+        let mut store = DiskStore::<TradePoint>::new(&tmp, key.clone()).await.unwrap();
         for i in 0..20 {
             store
                 .append(&TradePoint {
@@ -226,7 +226,7 @@ fn fixed_size_type_does_not_create_blob_file() {
                 })
                 .unwrap();
         }
-        store.flush().unwrap();
+        store.flush().await.unwrap();
     }
 
     let dir = tmp

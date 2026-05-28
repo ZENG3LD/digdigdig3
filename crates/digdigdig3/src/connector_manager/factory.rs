@@ -146,7 +146,6 @@ use crate::l3::open::crypto::cex::gateio::GateioWebSocket;
 use crate::l3::open::crypto::cex::bitfinex::BitfinexWebSocket;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::bitstamp::BitstampWebSocket;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::gemini::GeminiWebSocket;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::mexc::MexcWebSocket;
@@ -986,10 +985,10 @@ impl ConnectorFactory {
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
             // ═══════════════════════════════════════════════════════════════════
-            // CEX — Gemini: new_market_data(testnet)
+            // CEX — Gemini: new(testnet) — sync, UniversalWsTransport connects lazily
             // ═══════════════════════════════════════════════════════════════════
             ExchangeId::Gemini => {
-                let ws = GeminiWebSocket::new_market_data(testnet).await?;
+                let ws = GeminiWebSocket::new(testnet);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
             // ═══════════════════════════════════════════════════════════════════
@@ -1180,9 +1179,14 @@ impl ConnectorFactory {
                 let ws = HyperliquidWebSocket::new(testnet);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            ExchangeId::Gemini => {
+                let _ = account_type;
+                let ws = GeminiWebSocket::new(testnet);
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
             other => Err(ExchangeError::UnsupportedOperation(format!(
                 "{other:?} WebSocket not enabled on wasm32; \
-                 only Binance/Bybit/OKX/HyperLiquid use UniversalWsTransport+browser-WS"
+                 only Binance/Bybit/OKX/HyperLiquid/Gemini use UniversalWsTransport+browser-WS"
             ))),
         }
     }

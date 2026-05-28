@@ -1,41 +1,25 @@
 //! # Gemini Exchange Connector
 //!
-//! Полная реализация коннектора для Gemini.
+//! Full connector implementation for Gemini.
 //!
-//! ## Структура
+//! ## Structure
 //!
-//! - `endpoints` - URL'ы и endpoint enum
-//! - `auth` - Подпись запросов (HMAC-SHA384)
-//! - `parser` - Парсинг JSON ответов
-//! - `connector` - GeminiConnector + impl трейтов
-//! - `websocket` - WebSocket подключение
-//!
-//! ## Использование
-//!
-//! ```ignore
-//! use connectors_v5::exchanges::gemini::GeminiConnector;
-//!
-//! let connector = GeminiConnector::new(Some(credentials), false).await?;
-//!
-//! // Core методы (из трейтов)
-//! let price = connector.get_price(symbol, AccountType::Spot).await?;
-//! let order = connector.market_order(symbol, side, qty, AccountType::Spot).await?;
-//!
-//! // Extended методы (Gemini-специфичные)
-//! let symbols = connector.get_symbols().await?;
-//! let volume = connector.get_notional_volume().await?;
-//! ```
+//! - `endpoints` — URLs and endpoint enum
+//! - `auth`      — Request signing (HMAC-SHA384)
+//! - `parser`    — JSON response parsing
+//! - `connector` — GeminiConnector + trait impls
+//! - `protocol`  — GeminiProtocol WsProtocol shim (wasm-compatible)
+//! - `websocket` — GeminiWebSocket thin wrapper (wasm-compatible via UniversalWsTransport)
 
 mod endpoints;
 mod auth;
 mod parser;
 mod connector;
-#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod protocol;
 mod websocket;
 
 pub use endpoints::{GeminiEndpoint, GeminiUrls};
 pub use auth::GeminiAuth;
 pub use parser::GeminiParser;
 pub use connector::GeminiConnector;
-#[cfg(not(target_arch = "wasm32"))]
-pub use websocket::{GeminiWebSocket, WebSocketType};
+pub use websocket::GeminiWebSocket;

@@ -73,7 +73,7 @@ impl KrakenProtocol {
                     e
                 ))
             })?;
-        Ok(resolved.to_string())
+        Ok(to_kraken_ws_symbol(&resolved.to_string()))
     }
 
     /// Build subscribe / unsubscribe frame.
@@ -224,6 +224,42 @@ fn build_registry() -> TopicRegistry {
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Convert a symbol string to Kraken WS v2 slash format.
+///
+/// Kraken WS v2 requires `"BTC/USD"` (slash, BTC not XBT). The REST API uses the
+/// concat form `"XBTUSD"`. This function normalises both forms to the WS format so
+/// that consumers using `SymbolNormalizer::to_exchange` (REST) still work correctly
+/// when their symbol is forwarded to the WS connector.
+///
+/// Rules:
+/// - Already contains '/' → returned as-is (idempotent).
+/// - Otherwise: split a known quote suffix off the right, map XBT→BTC on the base,
+///   then join with '/'.
+/// - Unknown suffix: return unchanged (safe fallback — Kraken will NAK the subscribe
+///   rather than silently drop data).
+pub(crate) fn to_kraken_ws_symbol(sym: &str) -> String {
+    // Idempotent: already in WS slash form.
+    if sym.contains('/') {
+        return sym.to_string();
+    }
+
+    // Known Kraken quote currencies (longest first to avoid prefix ambiguity).
+    const KNOWN_QUOTES: &[&str] = &["USDT", "USDC", "EUR", "USD", "GBP", "AUD", "CHF", "JPY"];
+
+    for q in KNOWN_QUOTES {
+        if let Some(base) = sym.to_uppercase().strip_suffix(*q) {
+            if !base.is_empty() {
+                // XBT is Kraken's legacy REST code for Bitcoin; WS v2 uses BTC.
+                let ws_base = if base == "XBT" { "BTC" } else { base };
+                return format!("{}/{}", ws_base, q);
+            }
+        }
+    }
+
+    // No known quote matched — return unchanged so the caller gets a clear NAK.
+    sym.to_string()
+}
 
 /// Convert KlineInterval to Kraken ohlc interval in minutes.
 fn kline_interval_to_minutes(interval: &KlineInterval) -> u32 {
@@ -444,6 +480,64 @@ mod tests {
         // Orderbook + OrderbookDelta are registered with the SAME function ptr,
         // so dispatch_all de-duplicates → 1 unique parser.
         assert_eq!(parsers.len(), 1, "book channel must have 1 unique parser (de-duped)");
+    }
+
+    // ── to_kraken_ws_symbol ───────────────────────────────────────────────────
+
+    #[test]
+    fn ws_symbol_xbtusd_to_btc_usd() {
+        assert_eq!(to_kraken_ws_symbol("XBTUSD"), "BTC/USD");
+    }
+
+    #[test]
+    fn ws_symbol_btcusd_to_btc_usd() {
+        assert_eq!(to_kraken_ws_symbol("BTCUSD"), "BTC/USD");
+    }
+
+    #[test]
+    fn ws_symbol_btc_usd_idempotent() {
+        assert_eq!(to_kraken_ws_symbol("BTC/USD"), "BTC/USD");
+    }
+
+    #[test]
+    fn ws_symbol_xbtusdt_to_btc_usdt() {
+        assert_eq!(to_kraken_ws_symbol("XBTUSDT"), "BTC/USDT");
+    }
+
+    #[test]
+    fn ws_symbol_ethusdt_to_eth_usdt() {
+        assert_eq!(to_kraken_ws_symbol("ETHUSDT"), "ETH/USDT");
+    }
+
+    #[test]
+    fn ws_symbol_ethusd_to_eth_usd() {
+        assert_eq!(to_kraken_ws_symbol("ETHUSD"), "ETH/USD");
+    }
+
+    #[test]
+    fn ws_symbol_unknown_passthrough() {
+        // No known quote suffix — returned unchanged so Kraken gives a clear NAK.
+        assert_eq!(to_kraken_ws_symbol("BTCXXX"), "BTCXXX");
+    }
+
+    // ── subscribe_frame uses WS symbol format ─────────────────────────────────
+
+    #[test]
+    fn subscribe_frame_ticker_xbtusd_normalised() {
+        // When a consumer passes the REST format "XBTUSD" as raw, the connector
+        // must normalise it to "BTC/USD" before sending to Kraken WS v2.
+        let proto = KrakenProtocol;
+        let spec = make_spec(StreamKind::Ticker, "XBTUSD");
+        let frame = proto.subscribe_frame(&spec).expect("subscribe frame");
+        if let WsFrame::Text(s) = frame {
+            let v: Value = serde_json::from_str(&s).expect("valid json");
+            assert_eq!(
+                v["params"]["symbol"][0], "BTC/USD",
+                "XBTUSD must be normalised to BTC/USD for Kraken WS v2"
+            );
+        } else {
+            panic!("expected Text frame");
+        }
     }
 
     // ── kline interval mapping ────────────────────────────────────────────────

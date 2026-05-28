@@ -476,7 +476,13 @@ fn raw_symbol_for(id: ExchangeId) -> (Symbol, String, AccountType) {
         ExchangeId::Bitfinex => make(btc_usd, AccountType::Spot),
         ExchangeId::Gemini => make(btc_usd, AccountType::Spot),
         ExchangeId::Bitstamp => make(btc_usd, AccountType::Spot),
-        ExchangeId::Kraken => make(btc_usd, AccountType::Spot),
+        ExchangeId::Kraken => {
+            // Kraken WS v2 requires slash-format "BTC/USD", not the REST concat "XBTUSD".
+            // SymbolNormalizer::to_exchange for Kraken produces the REST format (XBTUSD),
+            // so we bypass it and pass the WS symbol directly.
+            let raw = "BTC/USD".to_string();
+            (Symbol::with_raw("BTC", "USD", raw.clone()), raw, AccountType::Spot)
+        }
         ExchangeId::Coinbase => make(btc_usd, AccountType::Spot),
         ExchangeId::KuCoin => make(btc_usdt, AccountType::Spot),
         ExchangeId::OKX => make(btc_usdt, AccountType::Spot),

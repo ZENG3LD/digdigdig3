@@ -94,8 +94,19 @@ impl LighterProtocol {
             StreamKind::Orderbook | StreamKind::OrderbookDelta => {
                 ("order_book", "update/order_book")
             }
-            StreamKind::Trade | StreamKind::AggTrade => {
+            StreamKind::Trade => {
                 ("trade", "update/trade")
+            }
+            // Lighter has a single trade channel — there is no separate aggregate-trade
+            // feed.  Routing AggTrade to the same channel would cause WRONG_TYPE errors
+            // in consumers expecting AggTrade events but receiving Trade events.
+            // Return NotSupported so callers get a clear error instead of misrouting.
+            StreamKind::AggTrade => {
+                return Err(WebSocketError::NotSupported(
+                    "Lighter has no AggTrade channel — subscribe to Trade instead. \
+                     The exchange publishes individual trades only."
+                        .into(),
+                ));
             }
             StreamKind::Ticker => {
                 ("ticker", "update/ticker")
@@ -242,11 +253,12 @@ fn build_registry() -> TopicRegistry {
     // Lighter is perp-only — use FuturesCross as canonical AccountType.
     let at = AccountType::FuturesCross;
 
+    // AggTrade is intentionally absent: Lighter has no aggregate-trade channel.
+    // subscribe_frame returns NotSupported for AggTrade so callers get a clean error.
     TopicRegistry::builder()
         .register(StreamKind::Orderbook, at, "update/order_book:*", wrap_orderbook)
         .register(StreamKind::OrderbookDelta, at, "update/order_book:*", wrap_orderbook)
         .register(StreamKind::Trade, at, "update/trade:*", wrap_trade)
-        .register(StreamKind::AggTrade, at, "update/trade:*", wrap_trade)
         .register(StreamKind::Ticker, at, "update/ticker:*", wrap_ticker)
         .register(StreamKind::FundingRate, at, "update/market_stats:*", wrap_market_stats)
         .register(StreamKind::MarkPrice, at, "update/market_stats:*", wrap_market_stats)
@@ -270,9 +282,13 @@ fn wrap_orderbook(raw: &Value) -> WebSocketResult<StreamEvent> {
 fn wrap_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
     let channel = raw.get("channel").and_then(|v| v.as_str()).unwrap_or("");
     let events = parse_trade(raw, channel);
-    events.into_iter().next().ok_or_else(|| WebSocketError::Parse(
-        "lighter: no trades in update/trade frame".into()
-    ))
+    // Use FieldAbsent (not Parse) so the transport silently skips empty frames
+    // instead of broadcasting an error that would break the consumer stream.
+    // An empty trades array is a valid server message (no trades in the window).
+    events
+        .into_iter()
+        .next()
+        .ok_or_else(|| WebSocketError::FieldAbsent("lighter: trades[0]".into()))
 }
 
 fn wrap_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -386,6 +402,19 @@ mod tests {
     fn subscribe_unknown_market_err() {
         let spec = make_spec(StreamKind::Trade, "NONEXISTENT");
         assert!(proto().subscribe_frame(&spec).is_err());
+    }
+
+    #[test]
+    fn subscribe_agg_trade_returns_not_supported() {
+        // Lighter has no AggTrade channel — subscribing must return NotSupported, not
+        // silently misroute to the Trade parser (which causes WRONG_TYPE in consumers).
+        let spec = make_spec(StreamKind::AggTrade, "BTC");
+        let result = proto().subscribe_frame(&spec);
+        assert!(
+            matches!(result, Err(WebSocketError::NotSupported(_))),
+            "AggTrade must return NotSupported for Lighter, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -531,6 +560,8 @@ mod tests {
         assert!(reg.supports(&StreamKind::Ticker, at), "Ticker");
         assert!(reg.supports(&StreamKind::FundingRate, at), "FundingRate");
         assert!(reg.supports(&StreamKind::MarkPrice, at), "MarkPrice");
+        // AggTrade intentionally absent from registry — Lighter has no aggregate-trade channel.
+        assert!(!reg.supports(&StreamKind::AggTrade, at), "AggTrade must NOT be registered");
     }
 
     #[test]

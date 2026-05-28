@@ -219,6 +219,13 @@ pub(crate) fn parse_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
 }
 
 /// Parse `order_book_*` frame → StreamEvent::Ticker (synthetic from best bid/ask).
+///
+/// Bitstamp `order_book_*` frames deliver bids and asks as `["price_str","size_str"]`
+/// arrays. The ordering of the wire arrays is not guaranteed to be descending for bids
+/// or ascending for asks — the live wire shows bids[0].price > asks[0].price (inverted),
+/// meaning the arrays may be sorted ascending for both sides.  We derive the best bid
+/// (highest) and best ask (lowest) by scanning all levels instead of assuming a sort
+/// order, so the bid ≤ ask invariant is always satisfied.
 pub(crate) fn parse_ticker_from_ob(raw: &Value) -> WebSocketResult<StreamEvent> {
     let channel = raw
         .get("channel")
@@ -229,8 +236,20 @@ pub(crate) fn parse_ticker_from_ob(raw: &Value) -> WebSocketResult<StreamEvent> 
         .to_ascii_uppercase();
 
     let book = parse_orderbook_inner(raw)?;
-    let bid = book.bids.first().map(|l| l.price);
-    let ask = book.asks.first().map(|l| l.price);
+
+    // Best bid = highest bid price; best ask = lowest ask price.
+    // Using fold over all levels so we are independent of wire sort order.
+    let bid = book
+        .bids
+        .iter()
+        .map(|l| l.price)
+        .reduce(f64::max);
+    let ask = book
+        .asks
+        .iter()
+        .map(|l| l.price)
+        .reduce(f64::min);
+
     let last_price = match (bid, ask) {
         (Some(b), Some(a)) => (b + a) / 2.0,
         (Some(b), None) => b,
@@ -724,6 +743,50 @@ mod tests {
         assert!(reg.supports(&StreamKind::Orderbook, at), "Orderbook must be supported");
         assert!(reg.supports(&StreamKind::OrderbookDelta, at), "OrderbookDelta must be supported");
         assert!(reg.supports(&StreamKind::OrderbookL3, at), "OrderbookL3 must be supported");
+    }
+
+    // ── parse_ticker_from_ob: bid ≤ ask invariant ─────────────────────────────
+
+    /// Bitstamp `order_book_*` live wire delivers bids and asks in ascending order.
+    /// Regression guard: best bid must be the MAX of all bids, best ask the MIN of
+    /// all asks, and bid < ask must always hold.
+    #[test]
+    fn ticker_from_ob_bid_lt_ask() {
+        // Simulate ascending-sorted bids (lowest first) and asks — matches live wire.
+        let raw = serde_json::json!({
+            "channel": "order_book_btcusd",
+            "event": "data",
+            "data": {
+                "bids": [
+                    ["73610.00", "0.5"],
+                    ["73612.00", "1.0"],
+                    ["73615.00", "2.0"]   // highest bid — correct best bid
+                ],
+                "asks": [
+                    ["73617.00", "0.8"],  // lowest ask — correct best ask
+                    ["73620.00", "1.5"],
+                    ["73625.00", "0.3"]
+                ],
+                "microtimestamp": "1700000000000000"
+            }
+        });
+        let ev = parse_ticker_from_ob(&raw).expect("parse ticker");
+        match ev {
+            StreamEvent::Ticker { ticker, .. } => {
+                let bid = ticker.bid_price.expect("bid must be Some");
+                let ask = ticker.ask_price.expect("ask must be Some");
+                assert!(
+                    bid < ask,
+                    "bid ({}) must be less than ask ({})",
+                    bid, ask
+                );
+                // Best bid is the maximum of all bids (73615.00).
+                assert!((bid - 73615.0).abs() < 1e-6, "best bid must be 73615.00, got {}", bid);
+                // Best ask is the minimum of all asks (73617.00).
+                assert!((ask - 73617.0).abs() < 1e-6, "best ask must be 73617.00, got {}", ask);
+            }
+            other => panic!("expected Ticker, got {:?}", other),
+        }
     }
 
     #[test]

@@ -138,6 +138,9 @@ pub mod native;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
 
+/// Monotonic clock: `std::time::Instant` on native, `instant::Instant` on wasm32.
+pub mod clock;
+
 // ─── Runtime façade ───────────────────────────────────────────────────────────
 
 /// Default runtime for the current target.

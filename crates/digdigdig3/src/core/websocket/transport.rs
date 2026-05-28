@@ -24,7 +24,12 @@ use std::sync::{
     atomic::{AtomicU8, Ordering},
     Arc,
 };
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+// Monotonic clock: std::time::Instant on native, instant::Instant on wasm32.
+// std::time::Instant panics at runtime on wasm32-unknown-unknown; the alias
+// from core::rt::clock is wasm-safe.
+use crate::core::rt::clock::Instant;
 
 use futures_util::{Stream, StreamExt};
 use serde_json::Value;

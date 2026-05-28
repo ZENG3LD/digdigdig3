@@ -209,6 +209,11 @@ uuid = { version = "1.0", features = ["v4", "js"] }
 # via js_sys::Date. Without both, chrono::Utc::now() is a compile-time error.
 chrono = { version = "0.4", default-features = false, features = ["std", "now", "wasmbind"] }
 
+# Monotonic clock drop-in for wasm32. std::time::Instant panics at runtime on
+# wasm32-unknown-unknown; this crate re-exports a wasm-compatible Instant backed
+# by js_sys::Date::now(). Used via crate::core::rt::clock::Instant.
+instant = { version = "0.1", features = ["wasm-bindgen"] }
+
 # ─── Dev dependencies ─────────────────────────────────────────────────────────
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]

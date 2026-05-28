@@ -22,7 +22,7 @@ wasm_bindgen_test_configure!(run_in_browser);
 /// the signal we care about here.
 #[wasm_bindgen_test]
 async fn binance_ws_handshake_succeeds() {
-    use digdigdig3::core::rt::{default_runtime, WsConnector};
+    use digdigdig3::core::rt::default_runtime;
 
     let rt = default_runtime();
     let conn = rt
@@ -42,7 +42,7 @@ async fn binance_ws_handshake_succeeds() {
 /// arrive well within 1 second under normal conditions.
 #[wasm_bindgen_test]
 async fn binance_ws_first_frame() {
-    use digdigdig3::core::rt::{default_runtime, WsConnector, WsFrame};
+    use digdigdig3::core::rt::{default_runtime, WsFrame};
 
     let rt = default_runtime();
     let mut conn = rt

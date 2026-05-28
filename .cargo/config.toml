@@ -1,0 +1,9 @@
+# wasm-bindgen test runner for headless browser tests.
+#
+# `cargo test --target wasm32-unknown-unknown` delegates to dig2-wasm-test,
+# which auto-detects Chrome/Edge/Firefox, downloads the matching WebDriver,
+# spawns headless browser, runs tests, returns exit code. No PATH setup.
+#
+# Install: `cargo install dig2browser` (provides dig2-wasm-test binary).
+[target.wasm32-unknown-unknown]
+runner = "dig2-wasm-test"

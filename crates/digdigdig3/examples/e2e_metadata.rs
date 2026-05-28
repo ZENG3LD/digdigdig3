@@ -1568,9 +1568,8 @@ async fn test_crypto_com_ws() -> WsTally {
     // NEW Channel 1: estimatedfunding.BTCUSD-PERP — PredictedFunding
     {
         tally.channels += 1;
-        let ws = CryptoComWebSocket::new(None, false);
-        // CryptoComWebSocket::connect() takes no AccountType arg
-        if ws.connect().await.is_ok() {
+        let ws = CryptoComWebSocket::new(false);
+        if ws.connect(AccountType::FuturesCross).await.is_ok() {
             let req = SubscriptionRequest::new(btcusd_perp.clone(), StreamType::PredictedFunding);
             let (ok, n, err, label) = ws_listen(&ws, req, duration, "estimatedfunding.BTCUSD-PERP").await;
             if ok { tally.subscribed += 1; }
@@ -1586,8 +1585,8 @@ async fn test_crypto_com_ws() -> WsTally {
     // NEW Channel 2: settlement.BTCUSD-PERP — SettlementEvent (likely quiet)
     {
         tally.channels += 1;
-        let ws = CryptoComWebSocket::new(None, false);
-        if ws.connect().await.is_ok() {
+        let ws = CryptoComWebSocket::new(false);
+        if ws.connect(AccountType::FuturesCross).await.is_ok() {
             let req = SubscriptionRequest::new(btcusd_perp.clone(), StreamType::SettlementEvent);
             let (ok, n, err, label) = ws_listen(&ws, req, duration, "settlement.BTCUSD-PERP").await;
             if ok { tally.subscribed += 1; }
@@ -1614,89 +1613,32 @@ async fn test_bitfinex_ws() -> WsTally {
 
     let duration = Duration::from_secs(5);
 
-    // NEW Channel 1: L3 book R0 for tBTCUSD
+    // Channel 1: L2 orderbook tBTCUSD — replaced L3 book (subscribe_l3_book removed after UniversalWsTransport migration)
+    // removed: bespoke subscribe_l3_book gone after UniversalWsTransport migration
     {
         tally.channels += 1;
-        let ws_result = BitfinexWebSocket::new(None, false, AccountType::Spot).await;
-        let ws = match ws_result {
-            Ok(w) => w,
-            Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
-        };
+        let ws = BitfinexWebSocket::new(false);
         if ws.connect(AccountType::Spot).await.is_ok() {
-            match ws.subscribe_l3_book(Symbol::new("BTC", "USD"), 25).await {
-                Ok(_) => {
-                    tally.subscribed += 1;
-                    let mut stream = ws.event_stream();
-                    let mut n = 0usize;
-                    let mut errors = 0usize;
-                    let _ = timeout(duration, async {
-                        while let Some(item) = stream.next().await {
-                            match item { Ok(_) => n += 1, Err(_) => errors += 1 }
-                        }
-                    }).await;
-                    tally.events += n;
-                    tally.parse_errors += errors;
-                    let label = "book R0 tBTCUSD (L3)".to_string();
-                    println!(
-                        "    CH {} -> events={}, errors={}{}",
-                        label, n, errors,
-                        if n == 0 { " [ZERO EVENTS]" } else { "" }
-                    );
-                    if n == 0 { tally.zero_event_channels.push(label); }
-                }
-                Err(e) => println!("    FAIL subscribe book R0 tBTCUSD -> {}", e),
-            }
+            let req = SubscriptionRequest::new(Symbol::new("BTC", "USD"), StreamType::Orderbook);
+            let (ok, n, err, label) = ws_listen(&ws, req, duration, "book P0 tBTCUSD (L2)").await;
+            if ok { tally.subscribed += 1; }
+            tally.events += n;
+            tally.parse_errors += err;
+            if ok && n == 0 { tally.zero_event_channels.push(label); }
             let _ = ws.disconnect().await;
         } else {
             println!("  FAIL: Bitfinex WS connect");
         }
     }
 
-    // NEW Channel 2: funding book fUSD
-    {
-        tally.channels += 1;
-        let ws_result = BitfinexWebSocket::new(None, false, AccountType::Spot).await;
-        let ws = match ws_result {
-            Ok(w) => w,
-            Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
-        };
-        if ws.connect(AccountType::Spot).await.is_ok() {
-            match ws.subscribe_funding_book("fUSD").await {
-                Ok(_) => {
-                    tally.subscribed += 1;
-                    let mut stream = ws.event_stream();
-                    let mut n = 0usize;
-                    let mut errors = 0usize;
-                    let _ = timeout(duration, async {
-                        while let Some(item) = stream.next().await {
-                            match item { Ok(_) => n += 1, Err(_) => errors += 1 }
-                        }
-                    }).await;
-                    tally.events += n;
-                    tally.parse_errors += errors;
-                    let label = "funding book fUSD".to_string();
-                    println!(
-                        "    CH {} -> events={}, errors={}{}",
-                        label, n, errors,
-                        if n == 0 { " [ZERO EVENTS]" } else { "" }
-                    );
-                    if n == 0 { tally.zero_event_channels.push(label); }
-                }
-                Err(e) => println!("    FAIL subscribe funding book fUSD -> {}", e),
-            }
-            let _ = ws.disconnect().await;
-        }
-    }
+    // removed: bespoke subscribe_funding_book("fUSD") gone after UniversalWsTransport migration;
+    // no standard StreamType equivalent for Bitfinex funding book.
 
-    // Channel 3: status deriv:tBTCF0:USTF0 (multi-emit: MarkPrice + FundingRate + OI + InsuranceFund)
+    // Channel 2: status deriv:tBTCF0:USTF0 (multi-emit: MarkPrice + FundingRate + OI + InsuranceFund)
     // Use Symbol("BTC", "USDT") + FuturesCross so format_symbol produces "tBTCF0:USTF0" correctly.
     {
         tally.channels += 1;
-        let ws_result = BitfinexWebSocket::new(None, false, AccountType::FuturesCross).await;
-        let ws = match ws_result {
-            Ok(w) => w,
-            Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
-        };
+        let ws = BitfinexWebSocket::new(false);
         if ws.connect(AccountType::FuturesCross).await.is_ok() {
             // FundingRate StreamType maps to status channel with key "deriv:tBTCF0:USTF0".
             // format_symbol("BTC", "USDT", FuturesCross) = "tBTCF0:USTF0" (correct).
@@ -1727,40 +1669,19 @@ async fn test_gemini_ws() -> WsTally {
 
     let duration = Duration::from_secs(5);
 
-    // NEW Channel 1: auction for btcusd — AuctionEvent
+    // removed: bespoke new_market_data + subscribe_auction gone after UniversalWsTransport migration;
+    // AuctionEvent is not subscriptable via standard StreamType on Gemini (subscription_name returns NotSupported).
+    // Channel 1: L2 orderbook btcusd — standard trait API (connectivity + parse check)
     {
         tally.channels += 1;
-        let ws_result = GeminiWebSocket::new_market_data(false).await;
-        let ws = match ws_result {
-            Ok(w) => w,
-            Err(e) => { println!("  FAIL WS init -> {}", e); return tally; }
-        };
-        // GeminiWebSocket has inherent connect() with no args (inherent method shadows trait)
-        if ws.connect().await.is_ok() {
-            match ws.subscribe_auction(Symbol::new("BTC", "USD")).await {
-                Ok(_) => {
-                    tally.subscribed += 1;
-                    // Use trait event_stream (returns Pin<Box<dyn Stream>>) via UFCS
-                    let mut stream = <GeminiWebSocket as WebSocketConnector>::event_stream(&ws);
-                    let mut n = 0usize;
-                    let mut errors = 0usize;
-                    let _ = timeout(duration, async {
-                        while let Some(item) = stream.next().await {
-                            match item { Ok(_) => n += 1, Err(_) => errors += 1 }
-                        }
-                    }).await;
-                    tally.events += n;
-                    tally.parse_errors += errors;
-                    let label = "auction btcusd".to_string();
-                    println!(
-                        "    CH {} -> events={}, errors={}{}",
-                        label, n, errors,
-                        if n == 0 { " [ZERO EVENTS]" } else { "" }
-                    );
-                    if n == 0 { tally.zero_event_channels.push(label); }
-                }
-                Err(e) => println!("    FAIL subscribe auction btcusd -> {}", e),
-            }
+        let ws = GeminiWebSocket::new(false);
+        if ws.connect(AccountType::Spot).await.is_ok() {
+            let req = SubscriptionRequest::new(Symbol::new("BTC", "USD"), StreamType::Orderbook);
+            let (ok, n, err, label) = ws_listen(&ws, req, duration, "l2 btcusd").await;
+            if ok { tally.subscribed += 1; }
+            tally.events += n;
+            tally.parse_errors += err;
+            if ok && n == 0 { tally.zero_event_channels.push(label); }
             let _ = ws.disconnect().await;
         } else {
             println!("  FAIL: Gemini WS connect");

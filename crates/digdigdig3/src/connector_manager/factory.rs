@@ -162,7 +162,10 @@ use crate::l3::open::crypto::cex::crypto_com::CryptoComWebSocket;
 use crate::l3::open::crypto::cex::upbit::UpbitWebSocket;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::deribit::DeribitWebSocket;
-#[cfg(all(not(target_arch = "wasm32"), feature = "onchain-evm"))]
+// HyperLiquid WS: public subscribe (`l2Book`/`trades`/`candle`) sends NO auth,
+// `EvmWallet` is only built inside `HyperliquidConnector::new(Some(creds), _)`.
+// Public path is wasm-eligible; k256+sha3 from `onchain-evm` compile to wasm.
+#[cfg(feature = "onchain-evm")]
 use crate::l3::open::crypto::cex::hyperliquid::HyperliquidWebSocket;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::coinbase::CoinbaseWebSocket;
@@ -1171,9 +1174,15 @@ impl ConnectorFactory {
                 let ws = OkxWebSocket::new(None, testnet, account_type).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            #[cfg(feature = "onchain-evm")]
+            ExchangeId::HyperLiquid => {
+                let _ = account_type;
+                let ws = HyperliquidWebSocket::new(testnet);
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
             other => Err(ExchangeError::UnsupportedOperation(format!(
                 "{other:?} WebSocket not enabled on wasm32; \
-                 only Binance/Bybit/OKX use UniversalWsTransport+browser-WS"
+                 only Binance/Bybit/OKX/HyperLiquid use UniversalWsTransport+browser-WS"
             ))),
         }
     }

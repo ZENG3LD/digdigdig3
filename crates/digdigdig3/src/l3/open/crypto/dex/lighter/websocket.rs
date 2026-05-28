@@ -1,1218 +1,135 @@
-//! # Lighter WebSocket Implementation
+//! LighterWebSocket — thin wrapper around UniversalWsTransport<LighterProtocol>.
 //!
-//! WebSocket connector for Lighter DEX.
+//! ## Public data only
 //!
-//! ## Features
-//! - Public channels (orderbook, trades, market stats)
-//! - Authenticated channels (account updates - Phase 2)
-//! - Ping/pong heartbeat
-//! - Subscription management
-//! - Message parsing to StreamEvent
+//! Lighter public channels (orderbook, trades, market stats, ticker) require
+//! zero authentication. Private channels (account_all, account_market) are
+//! NOT supported through this connector by design — they are native-only
+//! and require ECDSA wallet signing.
 //!
-//! ## Channels
-//! - `order_book/{market_id}` - Order book updates (50ms batches)
-//! - `ticker/{market_id}` - Ticker (best bid/ask + last price) per market
-//! - `trade/{market_id}` - Trade executions
-//! - `market_stats/{market_id}` - Market statistics per market
-//! - `market_stats/all` - All markets statistics (global)
-//! - `account_all/{account_id}` - All account events (public)
-//! - `account_market/{market_id}/{account_id}` - Per-market account events
-//! - `height` - Chain block height updates
+//! ## Wasm support
+//!
+//! `LighterProtocol` passes the standard WS transport requirements (text frames,
+//! no binary frames, standard Ping/Pong). `UniversalWsTransport` compiles to
+//! wasm32 via `web-sys`. No `#[cfg(not(target_arch = "wasm32"))]` gates needed.
+//!
+//! ## Topic routing
+//!
+//! Topics use `"<type_field>:<market_id>"` string keys.
+//! E.g. `"update/order_book:0"`, `"update/trade:1"`.
 
-use std::collections::HashSet;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex as StdMutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
 
-use futures_util::{Stream, StreamExt, SinkExt};
-use serde::Serialize;
-use serde_json::{json, Value};
-use tokio::sync::{mpsc, broadcast, Mutex};
-use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream, MaybeTlsStream};
+use futures_util::Stream;
+use serde_json::Value;
+use tokio::sync::Mutex;
 
-use crate::core::{
-    Credentials, AccountType, ExchangeResult,
-    ConnectionStatus, StreamEvent, SubscriptionRequest,
-    Ticker, PublicTrade, OrderBook,
+use crate::core::traits::WebSocketConnector;
+use crate::core::types::{
+    AccountType, ConnectionStatus, OrderBook, OrderbookCapabilities, PublicTrade,
+    StreamEvent, SubscriptionRequest, Ticker, TradeSide, WebSocketResult,
+    WsBookChannel,
 };
 use crate::core::types::OrderBookLevel;
-use crate::core::types::TradeSide;
-use crate::core::types::{WebSocketResult, WebSocketError, OrderbookCapabilities};
-use crate::core::types::{
-    BalanceUpdateEvent, PositionUpdateEvent, OrderUpdateEvent,
-    PositionSide, OrderSide, OrderType, OrderStatus, BalanceChangeReason, PositionChangeReason,
-};
-use crate::core::traits::WebSocketConnector;
+use crate::core::websocket::{StreamSpec, UniversalWsTransport};
 
-use super::auth::LighterAuth;
-use super::endpoints::{LighterUrls, symbol_to_market_id};
+use super::protocol::LighterProtocol;
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// MARKET ID MAPPING
-// ═══════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
+// LighterWebSocket
+// ─────────────────────────────────────────────────────────────────────────────
 
-// symbol_to_market_id is imported from endpoints.rs (shared with connector.rs)
-
-/// Build the correct Lighter WebSocket channel name for a given stream type and symbol.
-fn build_channel(stream_type: &crate::core::types::StreamType, base: &str) -> Result<String, WebSocketError> {
-    let market_id = symbol_to_market_id(base).ok_or_else(|| {
-        WebSocketError::UnsupportedOperation(
-            format!("Unknown Lighter market for base asset '{}'. Known: ETH(0), BTC(1), SOL(2), etc.", base)
-        )
-    })?;
-
-    match stream_type {
-        crate::core::types::StreamType::Ticker => Ok(format!("ticker/{}", market_id)),
-        crate::core::types::StreamType::Trade => Ok(format!("trade/{}", market_id)),
-        crate::core::types::StreamType::Orderbook => Ok(format!("order_book/{}", market_id)),
-        other => Err(WebSocketError::UnsupportedOperation(
-            format!("Stream type {:?} not supported for Lighter WebSocket", other)
-        )),
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// WEBSOCKET MESSAGES
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/// Subscription message.
+/// Lighter DEX WebSocket connector backed by UniversalWsTransport.
 ///
-/// Lighter uses `{"type": "subscribe", "channel": "order_book/0"}` format.
-/// Previous code used `{"method": "subscribe", "params": {"channel": "..."}}` which
-/// returned error 30001 "Invalid Type".
-#[derive(Debug, Clone, Serialize)]
-struct SubscribeMessage {
-    #[serde(rename = "type")]
-    msg_type: String,
-    channel: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    auth: Option<String>,
-}
-
-/// Ping message (used by send_ping for client-initiated keepalive)
-#[derive(Debug, Clone, Serialize)]
-#[allow(dead_code)]
-struct PingMessage {
-    #[serde(rename = "type")]
-    msg_type: String,
-}
-
-/// Pong message
-#[derive(Debug, Clone, Serialize)]
-#[allow(dead_code)]
-struct PongMessage {
-    #[serde(rename = "type")]
-    msg_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    timestamp: Option<i64>,
-}
-
-/// Incoming message from Lighter.
-///
-/// Lighter messages have varied structures:
-/// - Connection: `{"session_id":"...","type":"connected"}`
-/// - Data: `{"channel":"market_stats:0","type":"update/market_stats","market_stats":{...}}`
-/// - Error: `{"error":{"code":30001,"message":"..."}}`
-///
-/// Data fields are nested inside sub-objects (e.g., `market_stats`, `order_book`, `trade`)
-/// rather than at the top level. We parse as a generic Value and extract fields dynamically.
-#[derive(Debug, Clone)]
-struct IncomingMessage {
-    /// The raw JSON value for flexible field access
-    raw: Value,
-}
-
-impl IncomingMessage {
-    fn from_value(v: Value) -> Self {
-        Self { raw: v }
-    }
-
-    fn msg_type(&self) -> Option<&str> {
-        self.raw.get("type").and_then(|v| v.as_str())
-    }
-
-    fn channel(&self) -> Option<&str> {
-        self.raw.get("channel").and_then(|v| v.as_str())
-    }
-
-    fn error_message(&self) -> Option<String> {
-        // Top-level message field
-        if let Some(msg) = self.raw.get("message").and_then(|v| v.as_str()) {
-            return Some(msg.to_string());
-        }
-        // Nested error object: {"error":{"code":..., "message":"..."}}
-        if let Some(err) = self.raw.get("error") {
-            if let Some(msg) = err.get("message").and_then(|v| v.as_str()) {
-                return Some(msg.to_string());
-            }
-        }
-        None
-    }
-
-    /// Get the nested data object for a given channel type.
-    /// e.g., for channel "market_stats:0", returns the "market_stats" sub-object.
-    fn data_object(&self, key: &str) -> Option<&Value> {
-        self.raw.get(key)
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// LIGHTER WEBSOCKET CONNECTOR
-// ═══════════════════════════════════════════════════════════════════════════════
-
-type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
-
-/// Lighter WebSocket connector
-#[allow(dead_code)]
+/// Public market-data only. Compiles to wasm32 without any cfg gates.
 pub struct LighterWebSocket {
-    /// Authentication (optional, used in Phase 2 for authenticated channels)
-    auth: Option<LighterAuth>,
-    /// URLs (mainnet/testnet)
-    urls: LighterUrls,
-    /// Testnet mode
-    testnet: bool,
-    /// WebSocket connection (None if not connected)
-    ws: Arc<Mutex<Option<WsStream>>>,
-    /// Connection status
-    status: Arc<Mutex<ConnectionStatus>>,
-    /// Active subscriptions (channel names)
-    subscriptions: Arc<Mutex<HashSet<String>>>,
-    /// Active subscription requests (full objects for tracking)
-    subscription_requests: Arc<Mutex<Vec<SubscriptionRequest>>>,
-    /// Internal event sender (message loop -> forwarder)
-    event_tx: mpsc::UnboundedSender<WebSocketResult<StreamEvent>>,
-    /// Internal event receiver (forwarder reads from this)
-    event_rx: Arc<Mutex<Option<mpsc::UnboundedReceiver<WebSocketResult<StreamEvent>>>>>,
-    /// Broadcast sender — behind StdMutex so event_stream() can subscribe
-    /// without contending with the async message loop.
-    broadcast_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
-    /// Last ping time
-    last_ping: Arc<Mutex<Instant>>,
-    /// Ping interval (30 seconds recommended)
-    ping_interval: Duration,
-    /// Round-trip time of the last WebSocket ping/pong in milliseconds
+    inner: UniversalWsTransport<LighterProtocol>,
     ws_ping_rtt_ms: Arc<Mutex<u64>>,
 }
 
 impl LighterWebSocket {
-    /// Create new WebSocket connector
-    pub async fn new(
-        credentials: Option<Credentials>,
-        testnet: bool,
-    ) -> ExchangeResult<Self> {
-        let urls = if testnet {
-            LighterUrls::TESTNET
-        } else {
-            LighterUrls::MAINNET
-        };
-
-        let auth = credentials
-            .as_ref()
-            .map(LighterAuth::new)
-            .transpose()?;
-
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
-
-        Ok(Self {
-            auth,
-            urls,
-            testnet,
-            ws: Arc::new(Mutex::new(None)),
-            status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
-            subscriptions: Arc::new(Mutex::new(HashSet::new())),
-            subscription_requests: Arc::new(Mutex::new(Vec::new())),
-            event_tx,
-            event_rx: Arc::new(Mutex::new(Some(event_rx))),
-            broadcast_tx: Arc::new(StdMutex::new(None)),
-            last_ping: Arc::new(Mutex::new(Instant::now())),
-            ping_interval: Duration::from_secs(30),
+    /// Create a new connector. Does NOT connect yet.
+    pub fn new(testnet: bool, account_type: AccountType) -> Self {
+        Self {
+            inner: UniversalWsTransport::new(
+                LighterProtocol::new(testnet),
+                account_type,
+                testnet,
+                None, // public streams only — no credentials
+            ),
             ws_ping_rtt_ms: Arc::new(Mutex::new(0)),
-        })
-    }
-
-    /// Create public-only WebSocket connector
-    pub async fn public(testnet: bool) -> ExchangeResult<Self> {
-        Self::new(None, testnet).await
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // CONNECTION MANAGEMENT
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    /// Connect to WebSocket
-    async fn connect_ws(&self) -> WebSocketResult<()> {
-        let ws_url = self.urls.ws_url();
-
-        // Connect
-        let (ws_stream, _) = connect_async(ws_url)
-            .await
-            .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
-
-        // Store connection
-        *self.ws.lock().await = Some(ws_stream);
-        *self.status.lock().await = ConnectionStatus::Connected;
-
-        Ok(())
-    }
-
-    /// Disconnect from WebSocket
-    async fn disconnect_ws(&self) -> WebSocketResult<()> {
-        if let Some(mut ws) = self.ws.lock().await.take() {
-            let _ = ws.close(None).await;
-        }
-        *self.status.lock().await = ConnectionStatus::Disconnected;
-        let _ = self.broadcast_tx.lock().unwrap().take();
-        Ok(())
-    }
-
-    /// Subscribe to a channel
-    async fn subscribe_channel(&self, channel: &str, auth: Option<String>) -> WebSocketResult<()> {
-        let msg = SubscribeMessage {
-            msg_type: "subscribe".to_string(),
-            channel: channel.to_string(),
-            auth,
-        };
-
-        let json_str = serde_json::to_string(&msg)
-            .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-
-
-        if let Some(ws) = self.ws.lock().await.as_mut() {
-            ws.send(Message::Text(json_str))
-                .await
-                .map_err(|e| WebSocketError::SendError(e.to_string()))?;
-
-            // Add to subscriptions
-            self.subscriptions.lock().await.insert(channel.to_string());
-        } else {
-            return Err(WebSocketError::NotConnected);
-        }
-
-        Ok(())
-    }
-
-    /// Unsubscribe from a channel
-    async fn unsubscribe_channel(&self, channel: &str) -> WebSocketResult<()> {
-        let msg = json!({
-            "type": "unsubscribe",
-            "channel": channel
-        });
-
-        let json_str = serde_json::to_string(&msg)
-            .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-
-        if let Some(ws) = self.ws.lock().await.as_mut() {
-            ws.send(Message::Text(json_str))
-                .await
-                .map_err(|e| WebSocketError::SendError(e.to_string()))?;
-
-            // Remove from subscriptions
-            self.subscriptions.lock().await.remove(channel);
-        }
-
-        Ok(())
-    }
-
-    /// Send ping to keep connection alive (used for periodic keepalive)
-    #[allow(dead_code)]
-    async fn send_ping(&self) -> WebSocketResult<()> {
-        let msg = PingMessage {
-            msg_type: "ping".to_string(),
-        };
-
-        let json_str = serde_json::to_string(&msg)
-            .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-
-        if let Some(ws) = self.ws.lock().await.as_mut() {
-            ws.send(Message::Text(json_str))
-                .await
-                .map_err(|e| WebSocketError::SendError(e.to_string()))?;
-
-            *self.last_ping.lock().await = Instant::now();
-        }
-
-        Ok(())
-    }
-
-    /// Start message handler loop
-    async fn start_message_loop(&self) {
-        let ws = self.ws.clone();
-        let event_tx = self.event_tx.clone();
-        let status = self.status.clone();
-        let last_ping = self.last_ping.clone();
-        let ws_ping_rtt_ms = self.ws_ping_rtt_ms.clone();
-
-        tokio::spawn(async move {
-            loop {
-                // Check if connected
-                let mut ws_guard = ws.lock().await;
-                if ws_guard.is_none() {
-                    break;
-                }
-
-                // Read next message
-                if let Some(msg_result) = ws_guard.as_mut().expect("WebSocket is initialized").next().await {
-                    match msg_result {
-                        Ok(Message::Text(text)) => {
-                            // Parse JSON once for all handling
-                            let val = match serde_json::from_str::<Value>(&text) {
-                                Ok(v) => v,
-                                Err(_) => continue,
-                            };
-
-                            // Handle JSON ping from server: {"type":"ping","timestamp":...}
-                            if val.get("type").and_then(|t| t.as_str()) == Some("ping") {
-                                let ts = val.get("timestamp").and_then(|t| t.as_i64());
-                                let pong = if let Some(ts) = ts {
-                                    json!({"type": "pong", "timestamp": ts})
-                                } else {
-                                    json!({"type": "pong"})
-                                };
-                                if let Some(ws_inner) = ws_guard.as_mut() {
-                                    let _ = ws_inner.send(Message::Text(pong.to_string())).await;
-                                }
-                                continue;
-                            }
-
-                            // Handle data message
-                            let incoming = IncomingMessage::from_value(val);
-                            Self::handle_message(incoming, &event_tx);
-                        }
-                        Ok(Message::Ping(data)) => {
-                            // Respond with WebSocket-level pong
-                            if let Some(ws_inner) = ws_guard.as_mut() {
-                                let _ = ws_inner.send(Message::Pong(data)).await;
-                            }
-                        }
-                        Ok(Message::Pong(_)) => {
-                            // Record RTT for the WS-level ping sent by the ping task
-                            let rtt = last_ping.lock().await.elapsed().as_millis() as u64;
-                            *ws_ping_rtt_ms.lock().await = rtt;
-                        }
-                        Ok(Message::Close(_)) => {
-                            *status.lock().await = ConnectionStatus::Disconnected;
-                            break;
-                        }
-                        Err(_) => {
-                            *status.lock().await = ConnectionStatus::Disconnected;
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        });
-    }
-
-    /// Start WS-level ping task for RTT measurement.
-    ///
-    /// Sends `Message::Ping` every 5 seconds through the shared WS mutex.
-    /// The message loop handles `Message::Pong` responses and records the RTT.
-    fn start_ws_ping_task(&self) {
-        let ws = self.ws.clone();
-        let last_ping = self.last_ping.clone();
-        let ping_interval = self.ping_interval;
-
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(ping_interval);
-            // Skip immediate first tick
-            interval.tick().await;
-
-            loop {
-                interval.tick().await;
-
-                let mut ws_guard = ws.lock().await;
-                if let Some(ws_inner) = ws_guard.as_mut() {
-                    *last_ping.lock().await = Instant::now();
-                    if ws_inner.send(Message::Ping(vec![])).await.is_err() {
-                        break;
-                    }
-                } else {
-                    break;
-                }
-            }
-        });
-    }
-
-    /// Start forwarder task (mpsc -> broadcast) so multiple consumers can use event_stream()
-    fn start_forwarder(&self) {
-        let broadcast_tx = self.broadcast_tx.clone();
-        let event_rx = self.event_rx.clone();
-
-        // Create broadcast channel and store sender
-        let (tx, _) = broadcast::channel(1000);
-        *broadcast_tx.lock().unwrap() = Some(tx);
-
-        let broadcast_tx_inner = self.broadcast_tx.clone();
-        tokio::spawn(async move {
-            let mut rx = match event_rx.lock().await.take() {
-                Some(rx) => rx,
-                None => return,
-            };
-            while let Some(event) = rx.recv().await {
-                let tx_guard = broadcast_tx_inner.lock().unwrap();
-                if let Some(ref tx) = *tx_guard {
-                    let _ = tx.send(event);
-                }
-            }
-            // Drop the broadcast sender so consumers get None
-            let _ = broadcast_tx_inner.lock().unwrap().take();
-        });
-    }
-
-    /// Handle incoming message - parse into StreamEvent and send through channel.
-    ///
-    /// Note: JSON ping/pong is handled in the message loop before this is called.
-    fn handle_message(
-        msg: IncomingMessage,
-        event_tx: &mpsc::UnboundedSender<WebSocketResult<StreamEvent>>,
-    ) {
-        // Check for error messages (nested: {"error":{"code":...,"message":"..."}})
-        if msg.raw.get("error").is_some() {
-            let error_msg = msg.error_message().unwrap_or_else(|| "Unknown error".to_string());
-            let _ = event_tx.send(Err(WebSocketError::ProtocolError(error_msg)));
-            return;
-        }
-
-        // Handle special message types
-        match msg.msg_type() {
-            Some("pong") => return,
-            Some("connected") => return,
-            Some("error") => {
-                let error_msg = msg.error_message().unwrap_or_else(|| "Unknown error".to_string());
-                eprintln!("[lighter-ws] error from server: {}", error_msg);
-                let _ = event_tx.send(Err(WebSocketError::ProtocolError(error_msg)));
-                return;
-            }
-            None => return,
-            _ => {}
-        }
-
-        let msg_type = msg.msg_type().unwrap_or("");
-        let channel = msg.channel().unwrap_or("");
-
-        match msg_type {
-            // ── Order book update ────────────────────────────────────
-            // Actual type from server: "update/order_book" (with underscore)
-            "update/orderbook" | "update/order_book" => {
-                if let Some(event) = Self::parse_orderbook(&msg, channel) {
-                    let _ = event_tx.send(Ok(event));
-                }
-            }
-
-            // ── Trade update ─────────────────────────────────────────
-            "update/trade" => {
-                for event in Self::parse_trade(&msg, channel) {
-                    let _ = event_tx.send(Ok(event));
-                }
-            }
-
-            // ── Market stats (used as Ticker) ────────────────────────
-            "update/market_stats" => {
-                if let Some(event) = Self::parse_market_stats(&msg, channel) {
-                    let _ = event_tx.send(Ok(event));
-                }
-            }
-
-            // ── Ticker channel (best bid/ask + last price per market) ─
-            // The `ticker/{market_id}` channel delivers lightweight price
-            // snapshots distinct from the full `market_stats` payload.
-            "update/ticker" => {
-                if let Some(event) = Self::parse_ticker_channel(&msg, channel) {
-                    let _ = event_tx.send(Ok(event));
-                }
-            }
-
-            // ── All-markets stats (emits one Ticker per market) ──────
-            // {"type":"update/market_stats_all","market_stats_all":[{symbol,last_trade_price,...},...]}
-            "update/market_stats_all" => {
-                for event in Self::parse_market_stats_all(&msg) {
-                    let _ = event_tx.send(Ok(event));
-                }
-            }
-
-            // ── Height (block height) ─────────────────────────────────
-            // {"type":"update/height","height":12345678}
-            // No StreamEvent::BlockHeight variant in StreamEvent — drop with trace.
-            "update/height" => {
-                tracing::trace!(
-                    target: "dig3::ws::lighter",
-                    height = ?msg.raw.get("height").and_then(|v| v.as_u64()),
-                    "update/height received — no BlockHeight variant in StreamEvent yet"
-                );
-            }
-
-            // ── Account updates ───────────────────────────────────────
-            // account_all/{id}: {collateral, available_balance, positions:[]}
-            // account_market/{mkt}/{id}: {position, avg_entry_price, unrealized_pnl, realized_pnl, open_orders:[]}
-            "update/account" | "update/account_all" => {
-                for event in Self::parse_account_all(&msg) {
-                    let _ = event_tx.send(Ok(event));
-                }
-            }
-            "update/account_market" => {
-                for event in Self::parse_account_market(&msg, channel) {
-                    let _ = event_tx.send(Ok(event));
-                }
-            }
-
-            // ── Subscription acknowledgements and unknown types ──────
-            _ => {}
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // MESSAGE PARSING HELPERS
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // VALUE HELPERS
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    /// Extract market ID from channel string.
-    /// Lighter uses colon separator: "order_book:0" -> "0", "market_stats:0" -> "0"
-    fn extract_market_id(channel: &str) -> &str {
-        channel.rsplit(':').next()
-            .or_else(|| channel.rsplit('/').next())
-            .unwrap_or(channel)
-    }
-
-    /// Get a string field from a JSON Value, parsing it as f64.
-    fn val_f64(obj: &Value, field: &str) -> Option<f64> {
-        obj.get(field).and_then(|v| {
-            v.as_str().and_then(|s| s.parse::<f64>().ok())
-                .or_else(|| v.as_f64())
-        })
-    }
-
-    /// Get a string field from a JSON Value.
-    fn val_str<'a>(obj: &'a Value, field: &str) -> Option<&'a str> {
-        obj.get(field).and_then(|v| v.as_str())
-    }
-
-    /// Get an integer field from a JSON Value.
-    fn val_i64(obj: &Value, field: &str) -> Option<i64> {
-        obj.get(field).and_then(|v| v.as_i64())
-    }
-
-    /// Get a u64 field from a JSON Value.
-    fn val_u64(obj: &Value, field: &str) -> Option<u64> {
-        obj.get(field).and_then(|v| v.as_u64())
-    }
-
-    /// Get a bool field from a JSON Value.
-    fn val_bool(obj: &Value, field: &str) -> Option<bool> {
-        obj.get(field).and_then(|v| v.as_bool())
-    }
-
-    /// Parse price/size levels from a JSON array into (f64, f64) tuples.
-    ///
-    /// Lighter orderbook levels are objects: `[{"price":"2738.02","size":"15.40"}, ...]`
-    /// Also supports numeric values: `[{"price":2738.02,"size":15.40}, ...]`
-    /// Also supports legacy array format: `[["2738.02","15.40"], ...]`
-    fn parse_levels(arr: &Value) -> Vec<OrderBookLevel> {
-        arr.as_array()
-            .map(|levels| {
-                levels.iter().filter_map(|entry| {
-                    // Object format: {"price": "..." or number, "size": "..." or number}
-                    if let Some(obj) = entry.as_object() {
-                        let price = obj.get("price").and_then(Self::json_val_to_f64)?;
-                        let size = obj.get("size").and_then(Self::json_val_to_f64)?;
-                        Some(OrderBookLevel::new(price, size))
-                    }
-                    // Array format: ["price", "size"] or [price, size]
-                    else if let Some(pair_arr) = entry.as_array() {
-                        if pair_arr.len() >= 2 {
-                            let price = Self::json_val_to_f64(&pair_arr[0])?;
-                            let size = Self::json_val_to_f64(&pair_arr[1])?;
-                            Some(OrderBookLevel::new(price, size))
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                }).collect()
-            })
-            .unwrap_or_default()
-    }
-
-    /// Convert a JSON Value to f64, supporting both string-encoded numbers and raw numbers.
-    fn json_val_to_f64(v: &Value) -> Option<f64> {
-        v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // MESSAGE PARSERS
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    /// Parse order book update into StreamEvent::OrderbookSnapshot.
-    ///
-    /// Lighter sends two possible shapes:
-    ///
-    /// 1. Nested (older/some responses):
-    ///    `{"channel":"order_book:0","type":"update/order_book","order_book":{"asks":[...],"bids":[...]},...}`
-    ///
-    /// 2. Flat top-level (current mainnet, per API research):
-    ///    `{"channel":"order_book/0","type":"update/order_book","asks":[["3024.66","1.5"],...],"bids":[...],"offset":...,"nonce":...,"timestamp":1640995200}`
-    ///
-    /// Both shapes are handled: try nested `"order_book"` object first, fall back to raw.
-    ///
-    /// `timestamp` from Lighter is in **seconds** (Unix integer ~10 digits).  Multiply by 1000
-    /// to convert to milliseconds for the event.
-    fn parse_orderbook(msg: &IncomingMessage, _channel: &str) -> Option<StreamEvent> {
-        // Try nested "order_book" object first (some server versions), fall back to top-level
-        let data = msg.data_object("order_book").unwrap_or(&msg.raw);
-
-        let asks = data.get("asks").map(Self::parse_levels).unwrap_or_default();
-        let bids = data.get("bids").map(Self::parse_levels).unwrap_or_default();
-
-        if asks.is_empty() && bids.is_empty() {
-            return None;
-        }
-
-        // Lighter timestamp is in seconds — convert to ms.
-        let timestamp_raw = Self::val_i64(&msg.raw, "timestamp")
-            .or_else(|| Self::val_i64(data, "timestamp"))
-            .unwrap_or(0);
-        // Heuristic: if the value looks like seconds (< 1e12), multiply by 1000.
-        let timestamp = if timestamp_raw > 0 && timestamp_raw < 1_000_000_000_000 {
-            timestamp_raw * 1000
-        } else {
-            timestamp_raw
-        };
-
-        let sequence = Self::val_i64(data, "nonce")
-            .or_else(|| Self::val_i64(&msg.raw, "nonce"))
-            .map(|n| n.to_string());
-
-        // market_id_to_symbol reverse lookup not available here; dispatch level has symbol context
-        let ob_symbol = String::new();
-        Some(StreamEvent::OrderbookSnapshot {
-            symbol: ob_symbol,
-            book: OrderBook {
-                bids,
-                asks,
-                timestamp,
-                sequence,
-                last_update_id: None,
-                first_update_id: None,
-                prev_update_id: None,
-                event_time: None,
-                transaction_time: None,
-                checksum: None,
-            },
-        })
-    }
-
-    /// Parse trade update into StreamEvent::Trade.
-    ///
-    /// Live Lighter format (plural array):
-    /// ```json
-    /// {"type":"update/trade","channel":"trade:1","nonce":12345,
-    ///  "trades":[{"trade_id":1,"size":"0.1","price":"76500","side":"buy","timestamp":1700000000}],
-    ///  "liquidation_trades":[]}
-    /// ```
-    ///
-    /// Legacy singular format (some server versions):
-    /// ```json
-    /// {"channel":"trade:0","type":"update/trade","trade":{"trade_id":...,"price":"...","size":"...","side":"buy","is_maker_ask":true},"timestamp":...}
-    /// ```
-    fn parse_trade(msg: &IncomingMessage, channel: &str) -> Vec<StreamEvent> {
-        let market_id = Self::extract_market_id(channel);
-
-        // Helper to parse a single trade entry from a Value.
-        let parse_one = |entry: &Value| -> Option<StreamEvent> {
-            let price = Self::val_f64(entry, "price")?;
-            let quantity = Self::val_f64(entry, "size")?;
-            let timestamp_raw = Self::val_i64(entry, "timestamp")
-                .or_else(|| Self::val_i64(&msg.raw, "timestamp"))
-                .unwrap_or(0);
-            // Lighter timestamps are seconds for trade events — same heuristic as orderbook.
-            let timestamp = if timestamp_raw > 0 && timestamp_raw < 1_000_000_000_000 {
-                timestamp_raw * 1000
-            } else {
-                timestamp_raw
-            };
-            let trade_id = Self::val_u64(entry, "trade_id").unwrap_or(0);
-
-            let side = if let Some(side_str) = Self::val_str(entry, "side") {
-                match side_str {
-                    "buy" => TradeSide::Buy,
-                    "sell" => TradeSide::Sell,
-                    _ => {
-                        if Self::val_bool(entry, "is_maker_ask").unwrap_or(false) {
-                            TradeSide::Buy
-                        } else {
-                            TradeSide::Sell
-                        }
-                    }
-                }
-            } else if Self::val_bool(entry, "is_maker_ask").unwrap_or(false) {
-                TradeSide::Buy
-            } else {
-                TradeSide::Sell
-            };
-
-            let trade_symbol = market_id.to_string();
-            let trade = PublicTrade {
-                id: trade_id.to_string(),
-                price,
-                quantity,
-                side,
-                timestamp,
-            };
-            Some(StreamEvent::Trade { symbol: trade_symbol, trade })
-        };
-
-        // Primary path: "trades" array (live Lighter WS format).
-        if let Some(arr) = msg.raw.get("trades").and_then(|v| v.as_array()) {
-            return arr.iter().filter_map(parse_one).collect();
-        }
-
-        // Fallback: singular "trade" object (some older server versions).
-        if let Some(entry) = msg.data_object("trade") {
-            return parse_one(entry).into_iter().collect();
-        }
-
-        Vec::new()
-    }
-
-    /// Parse market stats update into StreamEvent::Ticker.
-    ///
-    /// Actual Lighter format (from live data):
-    /// ```json
-    /// {"channel":"market_stats:0","type":"update/market_stats","market_stats":{
-    ///   "symbol":"ETH","market_id":0,"index_price":"2736.94","mark_price":"2735.44",
-    ///   "open_interest":"...","last_trade_price":"2735.41",
-    ///   "current_funding_rate":"...","daily_volume":"...",
-    ///   "daily_price_high":"...","daily_price_low":"...","daily_price_change":"..."
-    /// }}
-    /// ```
-    fn parse_market_stats(msg: &IncomingMessage, channel: &str) -> Option<StreamEvent> {
-        // Data is nested inside "market_stats" object
-        let data = msg.data_object("market_stats").unwrap_or(&msg.raw);
-
-        // Field names from actual Lighter API (different from research docs):
-        // - "last_trade_price" (not "last_price")
-        // - "daily_price_high" (not "daily_high")
-        // - "daily_price_low" (not "daily_low")
-        // - "daily_price_change" (not "daily_change")
-        // - "daily_volume" (same)
-        // - "current_funding_rate" (not "funding_rate")
-        let last_price = Self::val_f64(data, "last_trade_price")
-            .or_else(|| Self::val_f64(data, "last_price"))
-            .or_else(|| Self::val_f64(data, "mark_price"))?;
-
-        let market_id = Self::extract_market_id(channel);
-        let symbol_name = Self::val_str(data, "symbol").unwrap_or(market_id);
-
-        let high_24h = Self::val_f64(data, "daily_price_high")
-            .or_else(|| Self::val_f64(data, "daily_high"));
-        let low_24h = Self::val_f64(data, "daily_price_low")
-            .or_else(|| Self::val_f64(data, "daily_low"));
-        let volume_24h = Self::val_f64(data, "daily_volume")
-            .or_else(|| Self::val_f64(data, "daily_base_token_volume"));
-        let price_change_24h = Self::val_f64(data, "daily_price_change")
-            .or_else(|| Self::val_f64(data, "daily_change"));
-
-        let timestamp = Self::val_i64(&msg.raw, "timestamp")
-            .or_else(|| Self::val_i64(data, "timestamp"))
-            .unwrap_or(0);
-
-        // Compute 24h price change percent from absolute change and last price.
-        // Formula: pct = (change / open_price) * 100 where open_price = last - change.
-        // Guard against division by zero or nonsensical values.
-        let price_change_percent_24h = price_change_24h.and_then(|change| {
-            let open = last_price - change;
-            if open.abs() > 1e-10 {
-                Some((change / open) * 100.0)
-            } else {
-                None
-            }
-        });
-
-        let ticker_symbol = symbol_name.to_string();
-        let ticker = Ticker {
-            last_price,
-            bid_price: None, // Lighter market_stats WS channel does not carry top-of-book quotes — use ticker channel for bid/ask
-            ask_price: None, // Lighter market_stats WS channel does not carry top-of-book quotes — use ticker channel for bid/ask
-            high_24h,
-            low_24h,
-            volume_24h,
-            quote_volume_24h: None,
-            price_change_24h,
-            price_change_percent_24h,
-            timestamp,
-        };
-        Some(StreamEvent::Ticker { symbol: ticker_symbol, ticker })
-    }
-
-    /// Parse `update/market_stats_all` — array of market_stats objects, one Ticker per market.
-    ///
-    /// Payload shape:
-    /// ```json
-    /// {"type":"update/market_stats_all","market_stats_all":[
-    ///   {"symbol":"ETH","last_trade_price":"2735.41","daily_price_high":"...","daily_price_low":"...",
-    ///    "daily_price_change":"...","daily_volume":"...","current_funding_rate":"...",
-    ///    "index_price":"...","mark_price":"...","open_interest":"..."},
-    ///   ...
-    /// ]}
-    /// ```
-    fn parse_market_stats_all(msg: &IncomingMessage) -> Vec<StreamEvent> {
-        let arr = match msg.raw.get("market_stats_all").and_then(|v| v.as_array()) {
-            Some(a) => a,
-            None => return Vec::new(),
-        };
-
-        let timestamp = Self::val_i64(&msg.raw, "timestamp").unwrap_or(0);
-
-        arr.iter().filter_map(|item| {
-            let last_price = Self::val_f64(item, "last_trade_price")
-                .or_else(|| Self::val_f64(item, "mark_price"))?;
-            let symbol_name = Self::val_str(item, "symbol").unwrap_or("UNKNOWN");
-            let high_24h = Self::val_f64(item, "daily_price_high");
-            let low_24h = Self::val_f64(item, "daily_price_low");
-            let volume_24h = Self::val_f64(item, "daily_volume");
-            let price_change_24h = Self::val_f64(item, "daily_price_change");
-            let price_change_percent_24h = price_change_24h.and_then(|change| {
-                let open = last_price - change;
-                if open.abs() > 1e-10 { Some((change / open) * 100.0) } else { None }
-            });
-            let t_symbol = symbol_name.to_string();
-            let ticker = Ticker {
-                last_price,
-                bid_price: None,
-                ask_price: None,
-                high_24h,
-                low_24h,
-                volume_24h,
-                quote_volume_24h: None,
-                price_change_24h,
-                price_change_percent_24h,
-                timestamp,
-            };
-            Some(StreamEvent::Ticker { symbol: t_symbol, ticker })
-        }).collect()
-    }
-
-    /// Parse `update/account_all` — emits BalanceUpdate for collateral + PositionUpdate per position.
-    ///
-    /// Payload shape:
-    /// ```json
-    /// {"type":"update/account_all","collateral":"10000.00","available_balance":"9500.00",
-    ///  "positions":[{"symbol":"ETH","side":"long","quantity":"1.5","entry_price":"2700.0",
-    ///                "mark_price":"2735.0","unrealized_pnl":"52.5","realized_pnl":"0"}]}
-    /// ```
-    fn parse_account_all(msg: &IncomingMessage) -> Vec<StreamEvent> {
-        let mut events = Vec::new();
-        let timestamp = Self::val_i64(&msg.raw, "timestamp").unwrap_or(0);
-
-        // Collateral → BalanceUpdate
-        if let Some(total) = Self::val_f64(&msg.raw, "collateral") {
-            let free = Self::val_f64(&msg.raw, "available_balance").unwrap_or(total);
-            let locked = (total - free).max(0.0);
-            events.push(StreamEvent::BalanceUpdate(BalanceUpdateEvent {
-                asset: "USDC".to_string(),
-                free,
-                locked,
-                total,
-                delta: None,
-                reason: Some(BalanceChangeReason::Other),
-                timestamp,
-            }));
-        }
-
-        // Positions
-        if let Some(positions) = msg.raw.get("positions").and_then(|v| v.as_array()) {
-            for pos in positions {
-                let Some(symbol) = Self::val_str(pos, "symbol") else { continue };
-                let quantity = Self::val_f64(pos, "quantity").unwrap_or(0.0);
-                let entry_price = Self::val_f64(pos, "entry_price").unwrap_or(0.0);
-                let mark_price = Self::val_f64(pos, "mark_price");
-                let unrealized_pnl = Self::val_f64(pos, "unrealized_pnl").unwrap_or(0.0);
-                let realized_pnl = Self::val_f64(pos, "realized_pnl");
-                let side = match Self::val_str(pos, "side") {
-                    Some("short") => PositionSide::Short,
-                    _ => PositionSide::Long,
-                };
-                events.push(StreamEvent::PositionUpdate {
-                    symbol: symbol.to_string(),
-                    event: PositionUpdateEvent {
-                        side,
-                        quantity,
-                        entry_price,
-                        mark_price,
-                        unrealized_pnl,
-                        realized_pnl,
-                        liquidation_price: None,
-                        leverage: None,
-                        margin_type: None,
-                        reason: Some(PositionChangeReason::Other),
-                        timestamp,
-                    },
-                });
-            }
-        }
-
-        events
-    }
-
-    /// Parse `update/account_market` — per-market account snapshot.
-    ///
-    /// Payload shape:
-    /// ```json
-    /// {"type":"update/account_market","channel":"account_market/0/42",
-    ///  "position":"1.5","avg_entry_price":"2700.0","unrealized_pnl":"52.5","realized_pnl":"10.0",
-    ///  "open_orders":[{"order_id":"123","side":"buy","price":"2650.0","size":"0.5","status":"open"}]}
-    /// ```
-    fn parse_account_market(msg: &IncomingMessage, channel: &str) -> Vec<StreamEvent> {
-        let mut events = Vec::new();
-        let timestamp = Self::val_i64(&msg.raw, "timestamp").unwrap_or(0);
-
-        // Derive symbol from channel "account_market/{market_id}/{account_id}"
-        // market_id → symbol lookup via reverse of symbol_to_market_id is unavailable here;
-        // use market_id string as symbol fallback.
-        let symbol = {
-            let parts: Vec<&str> = channel.splitn(4, '/').collect();
-            // "account_market/0/42" → parts[1] = "0"
-            if parts.len() >= 3 { parts[1].to_string() } else { channel.to_string() }
-        };
-
-        // Position update
-        if let Some(quantity) = Self::val_f64(&msg.raw, "position") {
-            let entry_price = Self::val_f64(&msg.raw, "avg_entry_price").unwrap_or(0.0);
-            let unrealized_pnl = Self::val_f64(&msg.raw, "unrealized_pnl").unwrap_or(0.0);
-            let realized_pnl = Self::val_f64(&msg.raw, "realized_pnl");
-            let side = if quantity >= 0.0 { PositionSide::Long } else { PositionSide::Short };
-            events.push(StreamEvent::PositionUpdate {
-                symbol: symbol.clone(),
-                event: PositionUpdateEvent {
-                    side,
-                    quantity: quantity.abs(),
-                    entry_price,
-                    mark_price: None,
-                    unrealized_pnl,
-                    realized_pnl,
-                    liquidation_price: None,
-                    leverage: None,
-                    margin_type: None,
-                    reason: Some(PositionChangeReason::Other),
-                    timestamp,
-                },
-            });
-        }
-
-        // Open orders
-        if let Some(orders) = msg.raw.get("open_orders").and_then(|v| v.as_array()) {
-            for order in orders {
-                let order_id = Self::val_str(order, "order_id")
-                    .or_else(|| Self::val_str(order, "id"))
-                    .unwrap_or("0")
-                    .to_string();
-                let side = match Self::val_str(order, "side") {
-                    Some("sell") => OrderSide::Sell,
-                    _ => OrderSide::Buy,
-                };
-                let price = Self::val_f64(order, "price");
-                let quantity = Self::val_f64(order, "size").unwrap_or(0.0);
-                let status = match Self::val_str(order, "status") {
-                    Some("filled") => OrderStatus::Filled,
-                    Some("canceled") | Some("cancelled") => OrderStatus::Canceled,
-                    Some("partially_filled") => OrderStatus::PartiallyFilled,
-                    _ => OrderStatus::Open,
-                };
-                let order_type = if let Some(p) = price {
-                    OrderType::Limit { price: p }
-                } else {
-                    OrderType::Market
-                };
-                events.push(StreamEvent::OrderUpdate {
-                    symbol: symbol.clone(),
-                    event: OrderUpdateEvent {
-                        order_id,
-                        client_order_id: None,
-                        side,
-                        order_type,
-                        status,
-                        price,
-                        quantity,
-                        filled_quantity: 0.0,
-                        average_price: None,
-                        last_fill_price: None,
-                        last_fill_quantity: None,
-                        last_fill_commission: None,
-                        commission_asset: None,
-                        trade_id: None,
-                        timestamp,
-                    },
-                });
-            }
-        }
-
-        events
-    }
-
-    /// Parse a `ticker/{market_id}` channel update into `StreamEvent::Ticker`.
-    ///
-    /// Live Lighter format:
-    /// ```json
-    /// {
-    ///   "channel": "ticker:0",
-    ///   "type": "update/ticker",
-    ///   "nonce": 12345,
-    ///   "last_updated_at": 1700000000000,
-    ///   "ticker": {
-    ///     "s": "ETH-PERP",
-    ///     "a": {"price": "3500.50", "size": "1.2"},
-    ///     "b": {"price": "3500.00", "size": "0.8"},
-    ///     "last_updated_at": 1700000000000
-    ///   }
-    /// }
-    /// ```
-    fn parse_ticker_channel(msg: &IncomingMessage, channel: &str) -> Option<StreamEvent> {
-        // Data is nested in "ticker" object
-        let data = msg.data_object("ticker").unwrap_or(&msg.raw);
-
-        // Best ask: ticker.a.price (string)
-        let ask_price = data.get("a")
-            .and_then(|a| a.get("price"))
-            .and_then(Self::json_val_to_f64);
-
-        // Best bid: ticker.b.price (string)
-        let bid_price = data.get("b")
-            .and_then(|b| b.get("price"))
-            .and_then(Self::json_val_to_f64);
-
-        // last_price: midpoint of ask/bid when both present; fall back to either
-        let last_price = match (bid_price, ask_price) {
-            (Some(b), Some(a)) => (b + a) / 2.0,
-            (Some(b), None) => b,
-            (None, Some(a)) => a,
-            (None, None) => return None,
-        };
-
-        let market_id = Self::extract_market_id(channel);
-        // Symbol: ticker.s field ("ETH-PERP"), or fall back to market id string
-        let symbol_name = Self::val_str(data, "s").unwrap_or(market_id);
-
-        // Timestamp: ticker.last_updated_at, then top-level last_updated_at, then nonce-fallback 0.
-        // Lighter returns microseconds (17-digit integer); divide by 1000 to get milliseconds.
-        let timestamp = Self::val_i64(data, "last_updated_at")
-            .or_else(|| Self::val_i64(&msg.raw, "last_updated_at"))
-            .map(|us| us / 1000)
-            .unwrap_or(0);
-
-        Some(StreamEvent::Ticker {
-            symbol: symbol_name.to_string(),
-            ticker: Ticker {
-                last_price,
-                bid_price,
-                ask_price,
-                high_24h: None,
-                low_24h: None,
-                volume_24h: None,
-                quote_volume_24h: None,
-                price_change_24h: None,
-                price_change_percent_24h: None,
-                timestamp,
-            },
-        })
+    /// Create a public connector (alias for `new`).
+    pub fn public(testnet: bool) -> Self {
+        Self::new(testnet, AccountType::FuturesCross)
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// WEBSOCKET CONNECTOR TRAIT
-// ═══════════════════════════════════════════════════════════════════════════════
+impl Default for LighterWebSocket {
+    fn default() -> Self {
+        Self::new(false, AccountType::FuturesCross)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WebSocketConnector impl — delegates to inner transport
+// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl WebSocketConnector for LighterWebSocket {
     async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
-        self.connect_ws().await?;
-        self.start_message_loop().await;
-        self.start_forwarder();
-        self.start_ws_ping_task();
-        Ok(())
+        self.inner.connect().await
     }
 
     async fn disconnect(&self) -> WebSocketResult<()> {
-        self.disconnect_ws().await
+        self.inner.disconnect().await
     }
 
     fn connection_status(&self) -> ConnectionStatus {
-        // Block on the async mutex to get the current status
-        // This is safe because we're just reading a simple enum value
-        match self.status.try_lock() {
-            Ok(status) => *status,
-            Err(_) => ConnectionStatus::Disconnected,
-        }
+        self.inner.connection_status()
     }
 
     async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
-        // Map StreamType + Symbol to Lighter channel name using numeric market IDs
-        // Lighter channels: order_book/{market_id}, trade/{market_id}, market_stats/{market_id}
-        let channel = build_channel(&request.stream_type, &request.symbol.base)?;
-
-
-        // For private streams, would need auth token
-        let auth = None; // Phase 1 - public only
-
-        self.subscribe_channel(&channel, auth).await?;
-
-        // Track the subscription request
-        self.subscription_requests.lock().await.push(request);
-
-        Ok(())
+        let spec = StreamSpec::try_from(request)?;
+        self.inner.subscribe(spec).await
     }
 
     async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
-        // Map StreamType + Symbol to Lighter channel name using numeric market IDs
-        let channel = build_channel(&request.stream_type, &request.symbol.base)?;
-
-        self.unsubscribe_channel(&channel).await?;
-
-        // Remove from tracked subscriptions
-        self.subscription_requests.lock().await.retain(|r| {
-            r.symbol != request.symbol || r.stream_type != request.stream_type
-        });
-
-        Ok(())
+        let spec = StreamSpec::try_from(request)?;
+        self.inner.unsubscribe(spec).await
     }
 
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        let tx_guard = self.broadcast_tx.lock().unwrap();
-        if let Some(ref tx) = *tx_guard {
-            let rx = tx.subscribe();
-            Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).map(|r| {
-                r.map_err(|e| WebSocketError::ConnectionError(format!("Broadcast error: {}", e)))
-                    .and_then(|x| x)
-            }))
-        } else {
-            Box::pin(futures_util::stream::empty())
-        }
+        Box::pin(self.inner.event_stream())
     }
 
     fn active_subscriptions(&self) -> Vec<SubscriptionRequest> {
-        // Return cloned subscription requests
-        match self.subscription_requests.try_lock() {
-            Ok(subs) => subs.clone(),
-            Err(_) => Vec::new(),
-        }
+        self.inner
+            .active_subscriptions()
+            .into_iter()
+            .map(SubscriptionRequest::from)
+            .collect()
     }
 
     fn ping_rtt_handle(&self) -> Option<Arc<Mutex<u64>>> {
-        Some(self.ws_ping_rtt_ms.clone())
+        // Lighter uses protocol-level Ping/Pong (no application-level ping).
+        Some(Arc::clone(&self.ws_ping_rtt_ms))
     }
 
     /// Lighter orderbook capabilities.
     ///
-    /// Single channel `order_book/{market}`: snapshot on first subscribe, then incremental
-    /// deltas batched every 50 ms. No configurable depth or speed.
-    /// No checksum. Carries `nonce` (current sequence) and `begin_nonce` (previous sequence)
-    /// enabling in-message gap detection — both sequence and prev-sequence are present.
-    /// Same mechanics for both spot and perp markets.
+    /// Single channel `order_book/{market}`: snapshot on first subscribe, then
+    /// incremental deltas batched every 50 ms. No configurable depth or speed.
+    /// Carries `nonce` (current sequence) and `begin_nonce` (previous sequence)
+    /// enabling in-message gap detection. Same mechanics for perp markets.
     fn orderbook_capabilities(&self, _account_type: AccountType) -> OrderbookCapabilities {
+        static CHANNELS: &[WsBookChannel] = &[
+            WsBookChannel::delta("order_book", None, Some(50)),
+        ];
         OrderbookCapabilities {
             ws_depths: &[],
             ws_default_depth: None,
@@ -1222,7 +139,7 @@ impl WebSocketConnector for LighterWebSocket {
             supports_delta: true,
             update_speeds_ms: &[50],
             default_speed_ms: Some(50),
-            ws_channels: &[],
+            ws_channels: CHANNELS,
             checksum: None,
             has_sequence: true,
             has_prev_sequence: true,
@@ -1232,113 +149,381 @@ impl WebSocketConnector for LighterWebSocket {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// EXTENDED METHODS (Lighter-specific subscriptions)
-// ═══════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
+// Parser functions
+//
+// Parsing logic factored from the original bespoke websocket.rs.
+// These are called by protocol.rs registry bridge functions (wrap_*).
+// ─────────────────────────────────────────────────────────────────────────────
 
-impl LighterWebSocket {
-    /// Subscribe to order book for a market
-    pub async fn subscribe_orderbook(&self, market_id: u16) -> WebSocketResult<()> {
-        let channel = format!("order_book/{}", market_id);
-        self.subscribe_channel(&channel, None).await
-    }
+// ── Value helpers ──────────────────────────────────────────────────────────
 
-    /// Subscribe to trades for a market
-    pub async fn subscribe_trades(&self, market_id: u16) -> WebSocketResult<()> {
-        let channel = format!("trade/{}", market_id);
-        self.subscribe_channel(&channel, None).await
-    }
+fn val_f64(obj: &Value, field: &str) -> Option<f64> {
+    obj.get(field).and_then(|v| {
+        v.as_str().and_then(|s| s.parse::<f64>().ok())
+            .or_else(|| v.as_f64())
+    })
+}
 
-    /// Subscribe to market stats
-    pub async fn subscribe_market_stats(&self, market_id: u16) -> WebSocketResult<()> {
-        let channel = format!("market_stats/{}", market_id);
-        self.subscribe_channel(&channel, None).await
-    }
+fn val_str<'a>(obj: &'a Value, field: &str) -> Option<&'a str> {
+    obj.get(field).and_then(|v| v.as_str())
+}
 
-    /// Subscribe to account data (public - no auth required)
-    pub async fn subscribe_account(&self, account_id: u64) -> WebSocketResult<()> {
-        let channel = format!("account_all/{}", account_id);
-        self.subscribe_channel(&channel, None).await
-    }
+fn val_i64(obj: &Value, field: &str) -> Option<i64> {
+    obj.get(field).and_then(|v| v.as_i64())
+}
 
-    /// Subscribe to blockchain height updates
-    pub async fn subscribe_height(&self) -> WebSocketResult<()> {
-        self.subscribe_channel("height", None).await
-    }
+fn val_u64(obj: &Value, field: &str) -> Option<u64> {
+    obj.get(field).and_then(|v| v.as_u64())
+}
 
-    /// Subscribe to the lightweight `ticker/{market_id}` channel.
-    ///
-    /// Delivers best-bid/ask and last-price snapshots at high frequency,
-    /// distinct from the heavier `market_stats/{market_id}` payload.
-    pub async fn subscribe_ticker(&self, market_id: u16) -> WebSocketResult<()> {
-        let channel = format!("ticker/{}", market_id);
-        self.subscribe_channel(&channel, None).await
-    }
+fn val_bool(obj: &Value, field: &str) -> Option<bool> {
+    obj.get(field).and_then(|v| v.as_bool())
+}
 
-    /// Unsubscribe from the `ticker/{market_id}` channel.
-    pub async fn unsubscribe_ticker(&self, market_id: u16) -> WebSocketResult<()> {
-        let channel = format!("ticker/{}", market_id);
-        self.unsubscribe_channel(&channel).await
-    }
+fn json_val_to_f64(v: &Value) -> Option<f64> {
+    v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
+}
 
-    /// Subscribe to `market_stats/all` — aggregated stats for all markets in a
-    /// single stream, avoiding per-market subscriptions when monitoring the full book.
-    pub async fn subscribe_market_stats_all(&self) -> WebSocketResult<()> {
-        self.subscribe_channel("market_stats/all", None).await
-    }
+/// Parse price/size levels from a JSON array into `OrderBookLevel` list.
+///
+/// Supports both object format `{"price":"2738","size":"1.5"}` and
+/// legacy array format `["2738","1.5"]`.
+fn parse_levels(arr: &Value) -> Vec<OrderBookLevel> {
+    arr.as_array()
+        .map(|levels| {
+            levels.iter().filter_map(|entry| {
+                if let Some(obj) = entry.as_object() {
+                    let price = obj.get("price").and_then(json_val_to_f64)?;
+                    let size = obj.get("size").and_then(json_val_to_f64)?;
+                    Some(OrderBookLevel::new(price, size))
+                } else if let Some(pair) = entry.as_array() {
+                    if pair.len() >= 2 {
+                        let price = json_val_to_f64(&pair[0])?;
+                        let size = json_val_to_f64(&pair[1])?;
+                        Some(OrderBookLevel::new(price, size))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }).collect()
+        })
+        .unwrap_or_default()
+}
 
-    /// Unsubscribe from `market_stats/all`.
-    pub async fn unsubscribe_market_stats_all(&self) -> WebSocketResult<()> {
-        self.unsubscribe_channel("market_stats/all").await
-    }
-
-    /// Subscribe to `account_market/{market_id}/{account_id}` — per-market account
-    /// events (orders, fills, positions) for a specific account on a specific market.
-    ///
-    /// This channel requires authentication for private account data.
-    /// Supply an `auth` token when the account is private.
-    pub async fn subscribe_account_market(
-        &self,
-        market_id: u16,
-        account_id: u64,
-        auth: Option<String>,
-    ) -> WebSocketResult<()> {
-        let channel = format!("account_market/{}/{}", market_id, account_id);
-        self.subscribe_channel(&channel, auth).await
-    }
-
-    /// Unsubscribe from `account_market/{market_id}/{account_id}`.
-    pub async fn unsubscribe_account_market(
-        &self,
-        market_id: u16,
-        account_id: u64,
-    ) -> WebSocketResult<()> {
-        let channel = format!("account_market/{}/{}", market_id, account_id);
-        self.unsubscribe_channel(&channel).await
+/// Normalize a timestamp from Lighter.
+///
+/// Lighter sends seconds-precision timestamps (~10 digits).
+/// Multiply by 1000 to convert to milliseconds.
+fn normalize_ts(ts: i64) -> i64 {
+    if ts > 0 && ts < 1_000_000_000_000 {
+        ts * 1000
+    } else {
+        ts
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// TESTS
-// ═══════════════════════════════════════════════════════════════════════════════
+// ── Public parse fns (used by protocol.rs registry bridges) ───────────────
+
+/// Parse `update/order_book` frame → `StreamEvent::OrderbookSnapshot`.
+///
+/// Lighter sends either:
+/// 1. Flat top-level: `{"asks":[...],"bids":[...],"nonce":N,"timestamp":T}`
+/// 2. Nested `"order_book"` object: `{"order_book":{"asks":...,"bids":...}}`
+pub(super) fn parse_orderbook(raw: &Value, _channel: &str) -> Option<StreamEvent> {
+    let data = raw.get("order_book").unwrap_or(raw);
+
+    let asks = data.get("asks").map(parse_levels).unwrap_or_default();
+    let bids = data.get("bids").map(parse_levels).unwrap_or_default();
+
+    if asks.is_empty() && bids.is_empty() {
+        return None;
+    }
+
+    let timestamp_raw = val_i64(raw, "timestamp")
+        .or_else(|| val_i64(data, "timestamp"))
+        .unwrap_or(0);
+    let timestamp = normalize_ts(timestamp_raw);
+
+    let sequence = val_i64(data, "nonce")
+        .or_else(|| val_i64(raw, "nonce"))
+        .map(|n| n.to_string());
+
+    Some(StreamEvent::OrderbookSnapshot {
+        symbol: String::new(), // transport overwrites via relay
+        book: OrderBook {
+            bids,
+            asks,
+            timestamp,
+            sequence,
+            last_update_id: None,
+            first_update_id: None,
+            prev_update_id: None,
+            event_time: None,
+            transaction_time: None,
+            checksum: None,
+        },
+    })
+}
+
+/// Parse `update/trade` frame → vec of `StreamEvent::Trade`.
+///
+/// Live format uses `"trades"` plural array. Legacy format uses singular `"trade"`.
+pub(super) fn parse_trade(raw: &Value, channel: &str) -> Vec<StreamEvent> {
+    use super::protocol::extract_market_id_from_channel;
+    let market_id = extract_market_id_from_channel(channel);
+
+    let parse_one = |entry: &Value| -> Option<StreamEvent> {
+        let price = val_f64(entry, "price")?;
+        let quantity = val_f64(entry, "size")?;
+        let timestamp_raw = val_i64(entry, "timestamp")
+            .or_else(|| val_i64(raw, "timestamp"))
+            .unwrap_or(0);
+        let timestamp = normalize_ts(timestamp_raw);
+        let trade_id = val_u64(entry, "trade_id").unwrap_or(0);
+
+        let side = if let Some(side_str) = val_str(entry, "side") {
+            match side_str {
+                "buy" => TradeSide::Buy,
+                "sell" => TradeSide::Sell,
+                _ => {
+                    if val_bool(entry, "is_maker_ask").unwrap_or(false) {
+                        TradeSide::Buy
+                    } else {
+                        TradeSide::Sell
+                    }
+                }
+            }
+        } else if val_bool(entry, "is_maker_ask").unwrap_or(false) {
+            TradeSide::Buy
+        } else {
+            TradeSide::Sell
+        };
+
+        Some(StreamEvent::Trade {
+            symbol: market_id.to_string(),
+            trade: PublicTrade {
+                id: trade_id.to_string(),
+                price,
+                quantity,
+                side,
+                timestamp,
+            },
+        })
+    };
+
+    // Primary: "trades" array (live Lighter WS format)
+    if let Some(arr) = raw.get("trades").and_then(|v| v.as_array()) {
+        return arr.iter().filter_map(parse_one).collect();
+    }
+
+    // Fallback: singular "trade" object
+    if let Some(entry) = raw.get("trade") {
+        return parse_one(entry).into_iter().collect();
+    }
+
+    Vec::new()
+}
+
+/// Parse `update/market_stats` frame → `StreamEvent::Ticker`.
+///
+/// Data is nested inside `"market_stats"` object. Falls back to top-level.
+pub(super) fn parse_market_stats(raw: &Value, channel: &str) -> Option<StreamEvent> {
+    use super::protocol::extract_market_id_from_channel;
+    let data = raw.get("market_stats").unwrap_or(raw);
+
+    let last_price = val_f64(data, "last_trade_price")
+        .or_else(|| val_f64(data, "last_price"))
+        .or_else(|| val_f64(data, "mark_price"))?;
+
+    let market_id = extract_market_id_from_channel(channel);
+    let symbol_name = val_str(data, "symbol").unwrap_or(market_id);
+
+    let high_24h = val_f64(data, "daily_price_high").or_else(|| val_f64(data, "daily_high"));
+    let low_24h = val_f64(data, "daily_price_low").or_else(|| val_f64(data, "daily_low"));
+    let volume_24h = val_f64(data, "daily_volume").or_else(|| val_f64(data, "daily_base_token_volume"));
+    let price_change_24h = val_f64(data, "daily_price_change").or_else(|| val_f64(data, "daily_change"));
+
+    let timestamp = val_i64(raw, "timestamp")
+        .or_else(|| val_i64(data, "timestamp"))
+        .unwrap_or(0);
+
+    let price_change_percent_24h = price_change_24h.and_then(|change| {
+        let open = last_price - change;
+        if open.abs() > 1e-10 {
+            Some((change / open) * 100.0)
+        } else {
+            None
+        }
+    });
+
+    Some(StreamEvent::Ticker {
+        symbol: symbol_name.to_string(),
+        ticker: Ticker {
+            last_price,
+            bid_price: None,
+            ask_price: None,
+            high_24h,
+            low_24h,
+            volume_24h,
+            quote_volume_24h: None,
+            price_change_24h,
+            price_change_percent_24h,
+            timestamp,
+        },
+    })
+}
+
+/// Parse `update/ticker` frame → `StreamEvent::Ticker`.
+///
+/// Delivers lightweight best-bid/ask from `ticker.b` / `ticker.a` sub-objects.
+/// Timestamp in `last_updated_at` is microseconds — divide by 1000 for ms.
+pub(super) fn parse_ticker_channel(raw: &Value, channel: &str) -> Option<StreamEvent> {
+    use super::protocol::extract_market_id_from_channel;
+    let data = raw.get("ticker").unwrap_or(raw);
+
+    let ask_price = data.get("a")
+        .and_then(|a| a.get("price"))
+        .and_then(json_val_to_f64);
+    let bid_price = data.get("b")
+        .and_then(|b| b.get("price"))
+        .and_then(json_val_to_f64);
+
+    let last_price = match (bid_price, ask_price) {
+        (Some(b), Some(a)) => (b + a) / 2.0,
+        (Some(b), None) => b,
+        (None, Some(a)) => a,
+        (None, None) => return None,
+    };
+
+    let market_id = extract_market_id_from_channel(channel);
+    let symbol_name = val_str(data, "s").unwrap_or(market_id);
+
+    // Lighter returns microseconds — divide by 1000 to get ms.
+    let timestamp = val_i64(data, "last_updated_at")
+        .or_else(|| val_i64(raw, "last_updated_at"))
+        .map(|us| us / 1000)
+        .unwrap_or(0);
+
+    Some(StreamEvent::Ticker {
+        symbol: symbol_name.to_string(),
+        ticker: Ticker {
+            last_price,
+            bid_price,
+            ask_price,
+            high_24h: None,
+            low_24h: None,
+            volume_24h: None,
+            quote_volume_24h: None,
+            price_change_24h: None,
+            price_change_percent_24h: None,
+            timestamp,
+        },
+    })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tests
+// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
-    fn make_msg(raw: serde_json::Value) -> IncomingMessage {
-        IncomingMessage::from_value(raw)
+    #[tokio::test]
+    async fn construction_is_disconnected() {
+        let ws = LighterWebSocket::new(false, AccountType::FuturesCross);
+        assert_eq!(ws.connection_status(), ConnectionStatus::Disconnected);
+    }
+
+    #[tokio::test]
+    async fn default_is_disconnected() {
+        let ws = LighterWebSocket::default();
+        assert_eq!(ws.connection_status(), ConnectionStatus::Disconnected);
+    }
+
+    #[tokio::test]
+    async fn public_is_disconnected() {
+        let ws = LighterWebSocket::public(false);
+        assert_eq!(ws.connection_status(), ConnectionStatus::Disconnected);
+    }
+
+    // ── parse_orderbook ───────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_orderbook_flat_format() {
+        let raw = serde_json::json!({
+            "type": "update/order_book",
+            "channel": "order_book:0",
+            "asks": [{"price":"3024.66","size":"1.5"}],
+            "bids": [{"price":"3024.00","size":"2.0"}],
+            "nonce": 12345,
+            "timestamp": 1700000000
+        });
+        let event = parse_orderbook(&raw, "order_book:0").expect("should parse");
+        if let StreamEvent::OrderbookSnapshot { book, .. } = event {
+            assert_eq!(book.asks.len(), 1);
+            assert_eq!(book.bids.len(), 1);
+            assert!((book.asks[0].price - 3024.66).abs() < 1e-6);
+            assert!((book.bids[0].price - 3024.00).abs() < 1e-6);
+            assert_eq!(book.timestamp, 1700000000 * 1000);
+            assert_eq!(book.sequence.as_deref(), Some("12345"));
+        } else {
+            panic!("expected OrderbookSnapshot");
+        }
     }
 
     #[test]
-    fn test_parse_ticker_channel_bid_ask() {
-        // Lighter sends microseconds (17-digit). Parser divides by 1000 → ms.
-        // 1700000000000000 µs ÷ 1000 = 1700000000000 ms
-        let raw = json!({
+    fn parse_orderbook_empty_returns_none() {
+        let raw = serde_json::json!({
+            "type": "update/order_book",
+            "channel": "order_book:0",
+            "asks": [],
+            "bids": []
+        });
+        assert!(parse_orderbook(&raw, "order_book:0").is_none());
+    }
+
+    // ── parse_trade ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_trade_plural_array() {
+        let raw = serde_json::json!({
+            "type": "update/trade",
+            "channel": "trade:1",
+            "trades": [
+                {"trade_id":1,"price":"76500","size":"0.1","side":"buy","timestamp":1700000000}
+            ]
+        });
+        let events = parse_trade(&raw, "trade:1");
+        assert_eq!(events.len(), 1);
+        if let StreamEvent::Trade { trade, .. } = &events[0] {
+            assert!((trade.price - 76500.0).abs() < 1e-6);
+            assert_eq!(trade.side, TradeSide::Buy);
+        } else {
+            panic!("expected Trade");
+        }
+    }
+
+    #[test]
+    fn parse_trade_empty_array() {
+        let raw = serde_json::json!({
+            "type": "update/trade",
+            "channel": "trade:1",
+            "trades": []
+        });
+        assert!(parse_trade(&raw, "trade:1").is_empty());
+    }
+
+    // ── parse_ticker_channel ──────────────────────────────────────────────────
+
+    #[test]
+    fn parse_ticker_bid_ask_midpoint() {
+        let raw = serde_json::json!({
             "channel": "ticker:0",
             "type": "update/ticker",
-            "nonce": 12345,
             "last_updated_at": 1700000000000000i64,
             "ticker": {
                 "s": "ETH-PERP",
@@ -1347,84 +532,15 @@ mod tests {
                 "last_updated_at": 1700000000000000i64
             }
         });
-        let msg = make_msg(raw);
-        let event = LighterWebSocket::parse_ticker_channel(&msg, "ticker:0")
-            .expect("should parse ticker");
-
-        if let StreamEvent::Ticker { symbol, ticker: t, .. } = event {
+        let event = parse_ticker_channel(&raw, "ticker:0").expect("should parse");
+        if let StreamEvent::Ticker { symbol, ticker: t } = event {
             assert_eq!(symbol, "ETH-PERP");
             assert!((t.bid_price.unwrap() - 3500.00).abs() < 1e-6);
             assert!((t.ask_price.unwrap() - 3500.50).abs() < 1e-6);
-            // midpoint = (3500.00 + 3500.50) / 2
             assert!((t.last_price - 3500.25).abs() < 1e-6);
-            // 1700000000000000 µs → 1700000000000 ms
             assert_eq!(t.timestamp, 1700000000000);
         } else {
-            panic!("expected StreamEvent::Ticker");
+            panic!("expected Ticker");
         }
-    }
-
-    #[test]
-    fn test_parse_ticker_channel_btc() {
-        // 1700000001000000 µs ÷ 1000 = 1700000001000 ms
-        let raw = json!({
-            "channel": "ticker:1",
-            "type": "update/ticker",
-            "last_updated_at": 1700000001000000i64,
-            "ticker": {
-                "s": "BTC-USD",
-                "a": {"price": "68000.00", "size": "0.5"},
-                "b": {"price": "67990.00", "size": "0.3"},
-                "last_updated_at": 1700000001000000i64
-            }
-        });
-        let msg = make_msg(raw);
-        let event = LighterWebSocket::parse_ticker_channel(&msg, "ticker:1")
-            .expect("should parse btc ticker");
-
-        if let StreamEvent::Ticker { symbol, ticker: t, .. } = event {
-            assert_eq!(symbol, "BTC-USD");
-            assert!((t.bid_price.unwrap() - 67990.0).abs() < 1e-3);
-            assert!((t.ask_price.unwrap() - 68000.0).abs() < 1e-3);
-            assert!((t.last_price - 67995.0).abs() < 1e-3);
-        } else {
-            panic!("expected StreamEvent::Ticker");
-        }
-    }
-
-    #[test]
-    fn test_parse_ticker_channel_missing_bid_ask_returns_none() {
-        // No bid or ask → no last_price → None
-        let raw = json!({
-            "channel": "ticker:0",
-            "type": "update/ticker",
-            "ticker": {
-                "s": "ETH-PERP"
-            }
-        });
-        let msg = make_msg(raw);
-        assert!(LighterWebSocket::parse_ticker_channel(&msg, "ticker:0").is_none());
-    }
-
-    #[test]
-    fn test_build_channel_ticker_uses_ticker_not_market_stats() {
-        let st = crate::core::types::StreamType::Ticker;
-        let ch = build_channel(&st, "BTC").expect("BTC known");
-        assert!(ch.starts_with("ticker/"), "expected ticker/ channel, got {}", ch);
-        assert!(!ch.starts_with("market_stats/"), "must NOT use market_stats for Ticker");
-    }
-
-    #[test]
-    fn test_build_channel_btc_market_id_1() {
-        let st = crate::core::types::StreamType::Ticker;
-        let ch = build_channel(&st, "BTC").expect("BTC known");
-        assert_eq!(ch, "ticker/1");
-    }
-
-    #[test]
-    fn test_build_channel_eth_market_id_0() {
-        let st = crate::core::types::StreamType::Ticker;
-        let ch = build_channel(&st, "ETH").expect("ETH known");
-        assert_eq!(ch, "ticker/0");
     }
 }

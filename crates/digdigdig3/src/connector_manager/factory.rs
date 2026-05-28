@@ -171,7 +171,7 @@ use crate::l3::open::crypto::cex::coinbase::CoinbaseWebSocket;
 
 // DydxWebSocket uses UniversalWsTransport — compiles on all targets including wasm32.
 use crate::l3::open::crypto::dex::dydx::DydxWebSocket;
-#[cfg(not(target_arch = "wasm32"))]
+// LighterWebSocket uses UniversalWsTransport — compiles on all targets including wasm32.
 use crate::l3::open::crypto::dex::lighter::LighterWebSocket;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1041,10 +1041,10 @@ impl ConnectorFactory {
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
             // ═══════════════════════════════════════════════════════════════════
-            // DEX — Lighter: public(testnet)
+            // DEX — Lighter: sync public(testnet) — UniversalWsTransport wrapper
             // ═══════════════════════════════════════════════════════════════════
             ExchangeId::Lighter => {
-                let ws = LighterWebSocket::public(testnet).await?;
+                let ws = LighterWebSocket::public(testnet);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
             // ═══════════════════════════════════════════════════════════════════
@@ -1206,9 +1206,16 @@ impl ConnectorFactory {
                 let ws = DydxWebSocket::new(testnet, account_type);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            // ═══════════════════════════════════════════════════════════════════
+            // DEX — Lighter: sync public(testnet) — UniversalWsTransport wrapper
+            // ═══════════════════════════════════════════════════════════════════
+            ExchangeId::Lighter => {
+                let ws = LighterWebSocket::public(testnet);
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
             other => Err(ExchangeError::UnsupportedOperation(format!(
                 "{other:?} WebSocket not enabled on wasm32; \
-                 only Binance/Bybit/OKX/HyperLiquid/Gemini/CryptoCom/Bitfinex/BingX/Upbit/Dydx use UniversalWsTransport+browser-WS"
+                 only Binance/Bybit/OKX/HyperLiquid/Gemini/CryptoCom/Bitfinex/BingX/Upbit/Dydx/Lighter use UniversalWsTransport+browser-WS"
             ))),
         }
     }

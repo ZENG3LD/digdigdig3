@@ -69,13 +69,12 @@ mod endpoints;
 mod auth;
 mod parser;
 mod connector;
-#[cfg(not(target_arch = "wasm32"))]
 mod websocket;
+mod protocol;
 pub mod crypto;
 
 pub use endpoints::{LighterEndpoint, LighterUrls, format_symbol, normalize_symbol, map_kline_interval};
 pub use auth::LighterAuth;
 pub use parser::LighterParser;
 pub use connector::LighterConnector;
-#[cfg(not(target_arch = "wasm32"))]
 pub use websocket::LighterWebSocket;

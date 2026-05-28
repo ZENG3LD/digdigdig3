@@ -25,20 +25,21 @@ pub mod rest_cache;
 #[cfg(feature = "reconnect")]
 pub mod reconnect;
 
-// native-only — file I/O + tokio runtime-dependent
+// native-only — file I/O, sled, zstd
 #[cfg(not(target_arch = "wasm32"))]
 pub mod storage;
 
+// cure/replay depend on StorageManager (sled + tokio::fs) — native-only.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cure;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) mod polling;
-
-#[cfg(not(target_arch = "wasm32"))]
 pub mod replay;
 
-#[cfg(not(target_arch = "wasm32"))]
+// polling + gap_heal: REST-based; work on wasm via rest_override (Workstream A).
+// spawn_poller uses cfg-split tokio::spawn / wasm_bindgen_futures::spawn_local.
+pub(crate) mod polling;
+
 pub mod gap_heal;
 
 pub use builder::StationBuilder;
@@ -55,14 +56,10 @@ pub use subscription::{
 // DiskStore is available on both targets (native: std::fs; wasm32: OPFS).
 pub use series::DiskStore;
 
-// native-only re-exports
-#[cfg(not(target_arch = "wasm32"))]
+// PollSpec, PollSource, GapHealConfig: available on both targets.
+// polling is now un-gated; gap_heal is un-gated.
 pub use series::PollSpec;
-
-#[cfg(not(target_arch = "wasm32"))]
 pub use polling::PollSource;
-
-#[cfg(not(target_arch = "wasm32"))]
 pub use gap_heal::GapHealConfig;
 
 // Re-exports for moved modules (mirror what core used to expose)

@@ -15,20 +15,40 @@
 //!
 //! The public entry point for the station dispatch loop is [`is_poll_only`] +
 //! [`spawn_poller`]; they are `pub(crate)` and called from `station.rs`.
+//!
+//! ## Wasm note
+//!
+//! `PollSource<T>`, `LongShortRatioPoll`, and `DeribitHvPoll` are available on
+//! wasm32. However, the concrete `impl PollSource` blocks and `spawn_poller`
+//! are native-only because they rely on `tokio::time::interval` (full timer
+//! feature) which is not available on wasm32. On wasm, Station returns
+//! `StationError::StreamNotSupported` for poll-only kinds before reaching
+//! `spawn_poller`.
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
 use digdigdig3::connector_manager::ExchangeHub;
 use digdigdig3::core::types::{AccountType, ExchangeId};
-use tokio::sync::{broadcast, oneshot};
 
+use crate::series::DataPoint;
+use crate::Result;
+
+// Items only needed on native (impl PollSource + spawn_poller).
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::atomic::Ordering;
+#[cfg(not(target_arch = "wasm32"))]
+use tokio::sync::{broadcast, oneshot};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::data::{HistoricalVolatilityPoint, LongShortRatioPoint};
-use crate::series::{DataPoint, DiskStore, PollSpec, SeriesKey};
-use crate::station::{Station, EventFrom};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::series::{DiskStore, PollSpec, SeriesKey};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::subscription::Event;
-use crate::{Result, StationError};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::StationError;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::station::{Station, EventFrom};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PollSource trait
@@ -42,6 +62,13 @@ use crate::{Result, StationError};
 ///
 /// The trait uses stable AFIT (available since Rust 1.75). No `async_trait`
 /// macro is needed.
+///
+/// # Wasm note
+///
+/// The native `spawn_poller` requires the returned future to be `Send`
+/// (for `tokio::spawn`). Concrete implementations must therefore return `Send`
+/// futures on native. On wasm `spawn_poller` is not compiled, so no `Send`
+/// requirement is imposed — the REST future may be `!Send`.
 pub trait PollSource<T: DataPoint>: Send + Sync + 'static {
     /// Fetch recent data points from the exchange.
     ///
@@ -64,7 +91,7 @@ pub trait PollSource<T: DataPoint>: Send + Sync + 'static {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// spawn_poller actor
+// spawn_poller actor (native-only — tokio::time not available on wasm32)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Spawn a poll actor for `key`. Mirrors `spawn_forwarder` in structure but is
@@ -76,6 +103,11 @@ pub trait PollSource<T: DataPoint>: Send + Sync + 'static {
 ///    disk, emits on `bcast_tx`.
 /// 3. On consecutive REST errors ≥ 10: logs "poller degraded", keeps retrying.
 /// 4. On shutdown signal: flushes disk, removes mux entry if no consumers remain.
+///
+/// Native-only: uses `tokio::time::interval` + `tokio::spawn`. On wasm,
+/// `Station::acquire_or_spawn_polled` is `#[cfg(not(target_arch = "wasm32"))]`
+/// so this function is never reachable from the wasm build.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn spawn_poller<T, S>(
     station: &Station,
     key: &SeriesKey,
@@ -212,8 +244,13 @@ pub(crate) fn spawn_poller<T, S>(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LongShortRatioPoll
+// LongShortRatioPoll (native-only)
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// Concrete `impl PollSource` requires `Send` futures from `hub.rest(...)`.
+// On wasm, REST futures are `!Send` (browser fetch). Since `spawn_poller` is
+// native-only, the struct + its impl are native-only too. Custom wasm poll
+// sources can still implement the `PollSource` trait directly.
 
 /// REST poll source for `Kind::LongShortRatio`.
 ///
@@ -222,10 +259,12 @@ pub(crate) fn spawn_poller<T, S>(
 /// - Binance → `"5m"`
 /// - Bybit   → `"5min"`
 /// - OKX     → `"5m"`
+#[cfg(not(target_arch = "wasm32"))]
 pub struct LongShortRatioPoll {
     cadence: Duration,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl LongShortRatioPoll {
     pub fn new() -> Self {
         Self {
@@ -242,12 +281,14 @@ impl LongShortRatioPoll {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Default for LongShortRatioPoll {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl PollSource<LongShortRatioPoint> for LongShortRatioPoll {
     fn poll(
         &self,
@@ -296,7 +337,7 @@ impl PollSource<LongShortRatioPoint> for LongShortRatioPoll {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DeribitHvPoll
+// DeribitHvPoll (native-only — same rationale as LongShortRatioPoll)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// REST poll source for `Kind::HistoricalVolatility` on Deribit.
@@ -304,10 +345,12 @@ impl PollSource<LongShortRatioPoint> for LongShortRatioPoll {
 /// The `symbol` field of the `SeriesKey` is used as the `currency` parameter
 /// (e.g. `"BTC"`, `"ETH"`). Use `SubscriptionSet::add_raw` with currency
 /// strings directly.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct DeribitHvPoll {
     cadence: Duration,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl DeribitHvPoll {
     pub fn new() -> Self {
         Self {
@@ -316,12 +359,14 @@ impl DeribitHvPoll {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Default for DeribitHvPoll {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl PollSource<HistoricalVolatilityPoint> for DeribitHvPoll {
     fn poll(
         &self,
@@ -360,6 +405,9 @@ impl PollSource<HistoricalVolatilityPoint> for DeribitHvPoll {
 /// Returns `Some(LongShortRatioPoll)` for exchanges that support LSR REST.
 /// Returns `None` for exchanges that don't, which causes `acquire_or_spawn`
 /// to return `StationError::StreamNotSupported`.
+///
+/// Native-only: called from `acquire_or_spawn_polled` which is itself native-only.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn lsr_poll_source(exchange: ExchangeId) -> Option<LongShortRatioPoll> {
     match exchange {
         ExchangeId::Binance | ExchangeId::Bybit | ExchangeId::OKX => {
@@ -370,6 +418,9 @@ pub(crate) fn lsr_poll_source(exchange: ExchangeId) -> Option<LongShortRatioPoll
 }
 
 /// Returns `Some(DeribitHvPoll)` for Deribit only.
+///
+/// Native-only: called from `acquire_or_spawn_polled` which is itself native-only.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn hv_poll_source(exchange: ExchangeId) -> Option<DeribitHvPoll> {
     match exchange {
         ExchangeId::Deribit => Some(DeribitHvPoll::new()),
@@ -383,57 +434,60 @@ pub(crate) fn hv_poll_source(exchange: ExchangeId) -> Option<DeribitHvPoll> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::series::Kind;
 
-    #[test]
-    fn lsr_poll_source_allow_list() {
-        // Supported exchanges return Some(...)
-        assert!(lsr_poll_source(ExchangeId::Binance).is_some());
-        assert!(lsr_poll_source(ExchangeId::Bybit).is_some());
-        assert!(lsr_poll_source(ExchangeId::OKX).is_some());
-        // Unsupported exchanges return None
-        assert!(lsr_poll_source(ExchangeId::Deribit).is_none());
-        assert!(lsr_poll_source(ExchangeId::Kraken).is_none());
-    }
-
-    #[test]
-    fn hv_poll_source_allow_list() {
-        // Only Deribit supported
-        assert!(hv_poll_source(ExchangeId::Deribit).is_some());
-        assert!(hv_poll_source(ExchangeId::Binance).is_none());
-        assert!(hv_poll_source(ExchangeId::Bybit).is_none());
-        assert!(hv_poll_source(ExchangeId::OKX).is_none());
-    }
-
-    #[test]
-    fn lsr_period_for_exchange() {
-        assert_eq!(LongShortRatioPoll::period_for(ExchangeId::Bybit), "5min");
-        assert_eq!(LongShortRatioPoll::period_for(ExchangeId::Binance), "5m");
-        assert_eq!(LongShortRatioPoll::period_for(ExchangeId::OKX), "5m");
-    }
-
-    #[test]
-    fn lsr_poll_cadence() {
-        assert_eq!(LongShortRatioPoll::new().cadence(), Duration::from_secs(300));
-    }
-
-    #[test]
-    fn hv_poll_cadence() {
-        assert_eq!(DeribitHvPoll::new().cadence(), Duration::from_secs(3600));
-    }
-
+    // Wasm-safe tests — only use Kind (no native-only polling types).
     #[test]
     fn kind_lsr_poll_spec() {
         let spec = Kind::LongShortRatio.is_poll_only().unwrap();
-        assert_eq!(spec.cadence, Duration::from_secs(300));
+        assert_eq!(spec.cadence, std::time::Duration::from_secs(300));
         assert_eq!(spec.jitter_pct, 10);
     }
 
     #[test]
     fn kind_hv_poll_spec() {
         let spec = Kind::HistoricalVolatility.is_poll_only().unwrap();
-        assert_eq!(spec.cadence, Duration::from_secs(3600));
+        assert_eq!(spec.cadence, std::time::Duration::from_secs(3600));
         assert_eq!(spec.jitter_pct, 5);
+    }
+
+    // Native-only tests — use concrete poll types and factory functions.
+    #[cfg(not(target_arch = "wasm32"))]
+    mod native {
+        use super::super::*;
+
+        #[test]
+        fn lsr_poll_cadence() {
+            assert_eq!(LongShortRatioPoll::new().cadence(), Duration::from_secs(300));
+        }
+
+        #[test]
+        fn hv_poll_cadence() {
+            assert_eq!(DeribitHvPoll::new().cadence(), Duration::from_secs(3600));
+        }
+
+        #[test]
+        fn lsr_poll_source_allow_list() {
+            assert!(lsr_poll_source(ExchangeId::Binance).is_some());
+            assert!(lsr_poll_source(ExchangeId::Bybit).is_some());
+            assert!(lsr_poll_source(ExchangeId::OKX).is_some());
+            assert!(lsr_poll_source(ExchangeId::Deribit).is_none());
+            assert!(lsr_poll_source(ExchangeId::Kraken).is_none());
+        }
+
+        #[test]
+        fn hv_poll_source_allow_list() {
+            assert!(hv_poll_source(ExchangeId::Deribit).is_some());
+            assert!(hv_poll_source(ExchangeId::Binance).is_none());
+            assert!(hv_poll_source(ExchangeId::Bybit).is_none());
+            assert!(hv_poll_source(ExchangeId::OKX).is_none());
+        }
+
+        #[test]
+        fn lsr_period_for_exchange() {
+            assert_eq!(LongShortRatioPoll::period_for(ExchangeId::Bybit), "5min");
+            assert_eq!(LongShortRatioPoll::period_for(ExchangeId::Binance), "5m");
+            assert_eq!(LongShortRatioPoll::period_for(ExchangeId::OKX), "5m");
+        }
     }
 }

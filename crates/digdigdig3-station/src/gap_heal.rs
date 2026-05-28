@@ -46,14 +46,23 @@ impl Default for GapHealConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            // On wasm std::env::var is unavailable; fall back to compile-time
+            // defaults. On native, allow env-var tuning for testing.
             default_limit: parse_env_usize("DIG3_HEAL_DEFAULT_LIMIT").unwrap_or(300),
             max_limit: parse_env_usize("DIG3_HEAL_MAX_LIMIT").unwrap_or(1000),
         }
     }
 }
 
-fn parse_env_usize(key: &str) -> Option<usize> {
-    std::env::var(key).ok().and_then(|s| s.parse().ok())
+/// Read a usize from an environment variable. Returns `None` on wasm32 (no
+/// env) or when the variable is absent / unparseable on native.
+fn parse_env_usize(_key: &str) -> Option<usize> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::env::var(_key).ok().and_then(|s| s.parse().ok())
+    }
+    #[cfg(target_arch = "wasm32")]
+    None
 }
 
 impl GapHealConfig {

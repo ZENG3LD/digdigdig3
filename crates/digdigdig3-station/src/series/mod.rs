@@ -42,8 +42,7 @@ pub use key::{Kind, SeriesKey};
 pub use map::SharedSeriesMap;
 pub use series::Series;
 
-// native-only re-exports
-#[cfg(not(target_arch = "wasm32"))]
+// PollSpec is wasm-safe (pure Duration + u8).
 pub use key::PollSpec;
 
 // DiskStore is available on both targets now.

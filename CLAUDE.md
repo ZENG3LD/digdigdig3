@@ -6,6 +6,51 @@ Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major cr
 - **`digdigdig3-station`** — high-level builder over `ExchangeHub`. OWNS: unified `Series<T>` / `DiskStore<T>` over 27 `DataPoint` impls (9 core + 18 extended for MLI), `SeriesKey { exchange, account, symbol, kind }`, multiplexed `Station` (N consumers share one WS per StreamKey), warm-start, REST cache, replay, cure, **auto-heal on WS disconnect** (kline-only — see below). String-bearing variants (BlockTrade, AuctionEvent, MarketWarning, OrderbookL3) persist via fixed header + companion `.blob` file.
 - **`digdigdig3-cli`** — `dig3` binary (watch trades/orderbook/kline/ticker/mark/funding/open-interest/liquidations/agg-trades) + `dig3-inspect` post-mortem analyzer + legacy `dig3-catcher` / `dig3-cure` bins.
 
+## WASM Wave 3 (2026-05-28, in-flight — NOT yet bumped/published)
+
+Full wasm parity for the 0.4.0 target. Local commits only, no push/publish/bump
+until the whole wave is accepted. Plan: `docs/plans/wasm-wave3-master.md` +
+4 research reports under `docs/research/wasm-wave3/`.
+
+**What landed (15 commits on top of Wave 2's c9584a7..34858ba):**
+
+- **WsProtocol hooks**: `is_server_ping` + `pong_response_frame` (server-initiated
+  heartbeats), `post_connect_delay` (Crypto.com 1s mandatory connect pause).
+  Binary frame decode (BingX gzip, Upbit UTF-8) handled by the pre-existing
+  `decode_binary` default fallback (gzip → zlib → deflate → utf-8).
+- **5 bespoke WS migrated to `UniversalWsTransport`** (Workstream B — the user's
+  hard blocker): Gemini, CryptoCom, Bitfinex, BingX, Upbit. ~4,200 LOC bespoke
+  loops → ~600 LOC wrappers + ~2,200 LOC protocol.rs. All now compile to wasm32.
+  - Gemini + Upbit synthetic Ticker punted (return `NotSupported`) — needs a
+    stateful cross-channel parser hook; Trade + Orderbook fully migrated.
+  - Bitfinex chanId integer routing via `Arc<Mutex<HashMap<u64, TopicKey>>>` in
+    the protocol struct + thread-local symbol passthrough to fn-pointer parsers.
+  - CryptoCom server heartbeat via the new hooks + `post_connect_delay`.
+- **REST override end-to-end** (Workstream A): `set_rest_base_override` was a dead
+  API in Wave 2; now `ConnectorFactory::create_public` threads `Option<String>`
+  into 9 wasm-eligible connectors (Binance/Bybit/OKX/Bitget/Bitstamp/Coinbase/
+  Kraken/Deribit/HTX) which substitute it at every base_url call site. Unblocks
+  MLC-backend-proxy + nginx-proxy patterns. `None` = current behavior (zero regression).
+- **3 DEX wasm-enabled, public data only** (Workstream F): HyperLiquid (cfg fix —
+  k256+sha3 compile to wasm, auth only in trading ctor), dYdX v4 + Lighter WS
+  ported to `UniversalWsTransport`. REST arms for all three on wasm. Trading paths
+  stay native-only by design. Lighter CORS confirmed `*` (live curl 2026-05-28).
+- **OPFS DiskStore** (Workstream C): wasm-side `series/store_wasm.rs` (Option C —
+  in-memory buffer + async `createWritable` flush). Native `new/flush/read_tail`
+  widened to async for API parity (`append` stays sync). `Drop` keeps a sync flush.
+- **Un-gated polling + gap_heal for wasm** (Workstream D). `cure` + `replay`
+  DEFERRED to Wave 4 — both depend on the native sled/tokio::fs `StorageManager`;
+  need a wasm StorageManager port first. Poll-only kinds (LSR, HV) gracefully
+  return `StreamNotSupported` on wasm (browser fetch is `!Send`).
+- **Wasm e2e test suite** (Workstream E): `wasm_rest_corsproxy`, `wasm_opfs_round_trip`
+  (100 appends + read_tail), `wasm_poll_degradation`. cure/replay live tests deferred.
+
+**HyperLiquid mis-placement** (`cex/hyperliquid/` → should be `dex/`) is a known
+legacy directory mistake — refactor is a separate followup, NOT Wave 3.
+
+Native baseline after Wave 3: 1090/0 across lib + integration + examples,
+`RUSTFLAGS=-D warnings` clean. Wasm: lib + station compile clean to wasm32.
+
 ## Major refactors (0.3.4 + 0.3.5 + 0.3.6 + 0.3.7 + 0.3.8 + 0.3.9)
 
 **0.3.9 (2026-05-23)** — `Stream::OrderbookDelta` exposed in Station (MLI Ask 1):

@@ -39,11 +39,12 @@ use crate::core::websocket::{
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Registry caches — one per product line (spot vs linear-swap)
+// Registry caches — one per product line (spot vs linear-swap vs ws_index)
 // ─────────────────────────────────────────────────────────────────────────────
 
 static SPOT_REGISTRY: OnceLock<TopicRegistry> = OnceLock::new();
 static FUTURES_REGISTRY: OnceLock<TopicRegistry> = OnceLock::new();
+static INDEX_REGISTRY: OnceLock<TopicRegistry> = OnceLock::new();
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HtxProtocol
@@ -55,6 +56,8 @@ pub struct HtxProtocol {
     _testnet: bool,
     /// Monotonically increasing counter for subscription IDs.
     id_counter: std::sync::atomic::AtomicU64,
+    /// When true, this protocol instance connects to `ws_index` endpoint (index klines only).
+    pub(crate) is_index_endpoint: bool,
 }
 
 impl HtxProtocol {
@@ -63,7 +66,24 @@ impl HtxProtocol {
             _account_type: account_type,
             _testnet: testnet,
             id_counter: std::sync::atomic::AtomicU64::new(1),
+            is_index_endpoint: false,
         }
+    }
+
+    /// Create a protocol instance that connects to the `ws_index` endpoint.
+    ///
+    /// This endpoint only serves index kline topics (`market.*.index.*`).
+    pub fn new_index(account_type: AccountType, testnet: bool) -> Self {
+        Self {
+            _account_type: account_type,
+            _testnet: testnet,
+            id_counter: std::sync::atomic::AtomicU64::new(1),
+            is_index_endpoint: true,
+        }
+    }
+
+    fn index_registry() -> &'static TopicRegistry {
+        INDEX_REGISTRY.get_or_init(|| build_index_registry())
     }
 
     fn next_id(&self) -> String {
@@ -115,10 +135,10 @@ impl HtxProtocol {
                 "HTX does not expose a realtime WS open interest feed — \
                  use REST GET /linear-swap-api/v1/swap_open_interest".to_string(),
             )),
-            StreamKind::IndexPriceKline { .. } => Err(WebSocketError::UnsupportedOperation(
-                "not yet implemented — market.<contract>.index.<period> channel exists \
-                 (e.g. market.BTC-USDT.index.1min)".to_string(),
-            )),
+            StreamKind::IndexPriceKline { interval } => {
+                let contract = if is_futures { to_futures_contract(sym) } else { sym.to_string() };
+                Ok(format!("market.{contract}.index.{}", htx_kline_wire(interval)))
+            }
             StreamKind::IndexPrice => Err(WebSocketError::NotSupported(
                 "HTX does not expose a realtime WS index price channel — \
                  use REST GET /index/market/history/index for the current index value".to_string(),
@@ -146,11 +166,15 @@ impl WsProtocol for HtxProtocol {
     }
 
     fn endpoint(&self, account_type: AccountType, testnet: bool) -> Url {
-        let url = match account_type {
-            AccountType::FuturesCross | AccountType::FuturesIsolated => {
-                HtxUrls::ws_linear_swap_url(testnet)
+        let url = if self.is_index_endpoint {
+            HtxUrls::ws_index_url(testnet)
+        } else {
+            match account_type {
+                AccountType::FuturesCross | AccountType::FuturesIsolated => {
+                    HtxUrls::ws_linear_swap_url(testnet)
+                }
+                _ => HtxUrls::ws_market_url(testnet),
             }
-            _ => HtxUrls::ws_market_url(testnet),
         };
         Url::parse(url).expect("htx ws url is valid")
     }
@@ -225,6 +249,9 @@ impl WsProtocol for HtxProtocol {
     }
 
     fn topic_registry(&self, account_type: AccountType) -> &TopicRegistry {
+        if self.is_index_endpoint {
+            return Self::index_registry();
+        }
         match account_type {
             AccountType::FuturesCross | AccountType::FuturesIsolated | AccountType::Options => {
                 Self::futures_registry()
@@ -320,6 +347,30 @@ fn build_registry(account_type: AccountType) -> TopicRegistry {
         b = b.register(kind, account_type, format!("market.*.kline.{wire}"), parse_kline);
     }
 
+    // Index price kline channels — market.<contract>.index.<period>
+    // Same OHLCV shape as regular klines; parsed identically.
+    for (wire, internal) in HTX_KLINE_CHANNELS {
+        let kind = StreamKind::IndexPriceKline {
+            interval: KlineInterval::new(*internal),
+        };
+        b = b.register(kind, account_type, format!("market.*.index.{wire}"), parse_index_kline);
+    }
+
+    b.build()
+}
+
+/// Build the index-endpoint-only registry (ws_index — only IndexPriceKline channels).
+fn build_index_registry() -> TopicRegistry {
+    let mut b = TopicRegistry::builder();
+    // ws_index endpoint topics: market.{contract}.index.{period}
+    // Available for both USDT-margined (BTC-USDT) and inverse (BTC-USD) contracts.
+    // Register under FuturesCross account type (the one used for futures OI/index klines).
+    for (wire, internal) in HTX_KLINE_CHANNELS {
+        let kind = StreamKind::IndexPriceKline {
+            interval: KlineInterval::new(*internal),
+        };
+        b = b.register(kind, AccountType::FuturesCross, format!("market.*.index.{wire}"), parse_index_kline);
+    }
     b.build()
 }
 
@@ -723,6 +774,77 @@ fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
     })
 }
 
+fn parse_index_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
+    use crate::core::types::Kline;
+
+    // channel: "market.BTC-USDT.index.1min" → symbol=parts[1], interval=parts[3]
+    let ch = raw.get("ch").and_then(|v| v.as_str()).unwrap_or("");
+    let parts: Vec<&str> = ch.split('.').collect();
+    let symbol = parts.get(1).copied().unwrap_or("").to_uppercase();
+    // parts[3] is the HTX wire interval; convert to internal KlineInterval
+    let htx_wire_interval = parts.get(3).copied().unwrap_or("");
+    let interval = KlineInterval::new(htx_wire_to_internal(htx_wire_interval));
+
+    let data = tick_data(raw)?;
+
+    let open_time = data
+        .get("id")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| WebSocketError::Parse("htx index_kline: missing id".into()))?
+        * 1000; // seconds → ms
+    let open = data
+        .get("open")
+        .and_then(parse_f64_field)
+        .ok_or_else(|| WebSocketError::Parse("htx index_kline: missing open".into()))?;
+    let high = data
+        .get("high")
+        .and_then(parse_f64_field)
+        .ok_or_else(|| WebSocketError::Parse("htx index_kline: missing high".into()))?;
+    let low = data
+        .get("low")
+        .and_then(parse_f64_field)
+        .ok_or_else(|| WebSocketError::Parse("htx index_kline: missing low".into()))?;
+    let close = data
+        .get("close")
+        .and_then(parse_f64_field)
+        .ok_or_else(|| WebSocketError::Parse("htx index_kline: missing close".into()))?;
+    let volume = data.get("amount").and_then(parse_f64_field).unwrap_or(0.0);
+    let quote_volume = data.get("vol").and_then(parse_f64_field);
+    let trades = data.get("count").and_then(|v| v.as_i64()).map(|c| c as u64);
+
+    Ok(StreamEvent::IndexPriceKline {
+        symbol,
+        interval,
+        kline: Kline {
+            open_time,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            quote_volume,
+            close_time: None,
+            trades,
+        },
+    })
+}
+
+/// Convert HTX wire interval string → internal KlineInterval str.
+fn htx_wire_to_internal(wire: &str) -> &'static str {
+    match wire {
+        "1min"  => "1m",
+        "5min"  => "5m",
+        "15min" => "15m",
+        "30min" => "30m",
+        "60min" => "1h",
+        "4hour" => "4h",
+        "1day"  => "1d",
+        "1week" => "1w",
+        "1mon"  => "1M",
+        _       => "1m",
+    }
+}
+
 fn parse_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent> {
     let channel = raw.get("ch").and_then(|v| v.as_str()).unwrap_or("");
     let symbol = channel.split('.').nth(1).unwrap_or("").to_uppercase();
@@ -891,6 +1013,70 @@ mod tests {
         assert_eq!(to_futures_contract("ethusdt"), "ETH-USDT");
         assert_eq!(to_futures_contract("BTC-USDT"), "BTC-USDT");
         assert_eq!(to_futures_contract("btcbtc"), "BTC-BTC");
+    }
+
+    #[test]
+    fn test_futures_registry_has_index_price_kline() {
+        let proto = HtxProtocol::new(AccountType::FuturesCross, false);
+        let reg = proto.topic_registry(AccountType::FuturesCross);
+        assert!(
+            reg.supports(&StreamKind::IndexPriceKline { interval: KlineInterval::new("1m") }, AccountType::FuturesCross),
+            "futures registry must support IndexPriceKline"
+        );
+    }
+
+    #[test]
+    fn test_subscribe_frame_index_kline() {
+        let proto = HtxProtocol::new(AccountType::FuturesCross, false);
+        let spec = StreamSpec {
+            kind: StreamKind::IndexPriceKline { interval: KlineInterval::new("1m") },
+            symbol: crate::core::types::OwnedSymbolInput::Raw("BTC-USDT".to_string()),
+            account_type: AccountType::FuturesCross,
+            depth: None,
+            speed_ms: None,
+        };
+        let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed");
+        let text = match msg {
+            WsFrame::Text(t) => t,
+            _ => panic!("expected text frame"),
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert_eq!(v["sub"], "market.BTC-USDT.index.1min");
+    }
+
+    #[test]
+    fn test_parse_index_kline_frame() {
+        let proto = HtxProtocol::new(AccountType::FuturesCross, false);
+        let frame = serde_json::json!({
+            "ch": "market.BTC-USDT.index.1min",
+            "ts": 1629384000000i64,
+            "tick": {
+                "id": 1629384000i64,
+                "open": 48000.0,
+                "close": 49500.0,
+                "low": 47500.0,
+                "high": 50000.0,
+                "amount": 0.0,
+                "vol": 0.0,
+                "count": 0
+            }
+        });
+        let topic = proto.extract_topic(&frame).expect("should extract topic");
+        assert_eq!(topic.as_str(), "market.BTC-USDT.index.1min");
+        let registry = proto.topic_registry(AccountType::FuturesCross);
+        let parsers = registry.dispatch_all(&topic);
+        assert!(!parsers.is_empty(), "index.1min topic must have a registered parser");
+        let event = parsers[0](&frame).expect("parse must succeed");
+        match event {
+            crate::core::types::StreamEvent::IndexPriceKline { symbol, interval, kline } => {
+                assert_eq!(symbol, "BTC-USDT");
+                assert_eq!(interval, KlineInterval::new("1m"));
+                assert!((kline.open - 48000.0).abs() < 0.01);
+                assert!((kline.close - 49500.0).abs() < 0.01);
+                assert_eq!(kline.open_time, 1629384000_i64 * 1000);
+            }
+            other => panic!("expected IndexPriceKline, got {:?}", other),
+        }
     }
 
     #[test]

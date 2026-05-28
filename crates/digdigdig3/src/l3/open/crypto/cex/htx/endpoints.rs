@@ -42,6 +42,15 @@ impl HtxUrls {
         "wss://api.hbdm.com/linear-swap-ws"
     }
 
+    /// Get WebSocket URL for index price kline data.
+    ///
+    /// HTX provides index klines on a dedicated WS endpoint: `ws_index`.
+    /// Topics: `market.BTC-USDT.index.1min`, `market.BTC-USD.index.1min`.
+    /// This endpoint is separate from the main spot or linear-swap WS.
+    pub fn ws_index_url(_testnet: bool) -> &'static str {
+        "wss://api.hbdm.com/ws_index"
+    }
+
     /// Get WebSocket URL for MBP feed (public, incremental updates)
     pub fn ws_mbp_url(_testnet: bool) -> &'static str {
         "wss://api.huobi.pro/feed"

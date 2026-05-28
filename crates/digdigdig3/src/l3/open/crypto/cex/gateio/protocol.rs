@@ -307,10 +307,16 @@ fn channel_and_payload(
         StreamKind::BalanceUpdate => ("balances", vec![]),
         StreamKind::PositionUpdate => ("positions", vec![sym]),
         StreamKind::OpenInterest => {
-            return Err(WebSocketError::UnsupportedOperation(
-                "not yet implemented — futures.contract_stats channel exists (1m cadence minimum); \
-                 use REST /futures/usdt/contract_stats for now".to_string()
-            ));
+            // futures.contract_stats streams open interest among other stats.
+            // Valid intervals: "1m" (1 minute). Data pushes at minute boundaries.
+            // FUTURES-only channel: only valid when prefix == "futures" (or "delivery").
+            if prefix == "spot" || prefix == "options" {
+                return Err(WebSocketError::NotSupported(
+                    "GateIO contract_stats (OI) is a futures-only channel — \
+                     use AccountType::FuturesCross".to_string(),
+                ));
+            }
+            ("contract_stats", vec![sym, "1m".to_string()])
         }
         other => {
             return Err(WebSocketError::UnsupportedOperation(format!(
@@ -361,8 +367,8 @@ fn build_registry(category: GateIoCategory) -> TopicRegistry {
                 .register(StreamKind::Liquidation,     AccountType::FuturesCross, format!("{}.public_liquidates", prefix), parse_liquidation)
                 .register(StreamKind::AggTrade,        AccountType::FuturesCross, format!("{}.trades", prefix), parse_agg_trade)
                 .register(StreamKind::PositionUpdate,  AccountType::FuturesCross, format!("{}.positions", prefix), parse_position_update)
-                // OpenInterest: subscribe_frame returns NotSupported (min interval 1m,
-                // outside real-time streaming use case). No registry entry needed.
+                // OpenInterest: futures.contract_stats streams OI at 10s cadence.
+                .register(StreamKind::OpenInterest, AccountType::FuturesCross, format!("{}.contract_stats", prefix), parse_open_interest)
         }
         GateIoCategory::Spot | GateIoCategory::Options => {}
     }
@@ -713,6 +719,56 @@ fn parse_balance_update(raw: &Value) -> WebSocketResult<StreamEvent> {
     Ok(StreamEvent::BalanceUpdate(event))
 }
 
+fn parse_open_interest(raw: &Value) -> WebSocketResult<StreamEvent> {
+    // futures.contract_stats frame shape:
+    // {"time":...,"channel":"futures.contract_stats","event":"update",
+    //  "result":{"t":1720000000,"contract":"BTC_USDT","open_interest":"12345.678",
+    //            "lsr_taker":"1.23","lsr_account":"1.12",...}}
+    // `result` may also be an array (batch pushes) — take the first element.
+    let result = frame_result(raw)?;
+    let item = if let Some(arr) = result.as_array() {
+        arr.first()
+            .ok_or_else(|| WebSocketError::FieldAbsent("gateio contract_stats: empty result array".into()))?
+    } else {
+        result
+    };
+
+    let parse_f64 = |v: &Value| -> Option<f64> {
+        v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
+    };
+
+    let symbol = item.get("contract")
+        .or_else(|| item.get("currency_pair"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let open_interest = item.get("open_interest")
+        .and_then(parse_f64)
+        .ok_or_else(|| WebSocketError::Parse("gateio contract_stats: missing open_interest".into()))?;
+
+    // open_interest_value may not be present; use open_interest_usd or omit.
+    let open_interest_value = item.get("open_interest_usd").and_then(parse_f64);
+
+    // `time` in result is Unix seconds; fall back to envelope time.
+    let timestamp = item.get("time")
+        .or_else(|| item.get("t"))
+        .and_then(|v| v.as_i64())
+        .map(|s| s * 1000)
+        .unwrap_or_else(|| {
+            raw.get("time_ms").and_then(|v| v.as_i64())
+                .or_else(|| raw.get("time").and_then(|v| v.as_i64()).map(|s| s * 1000))
+                .unwrap_or_else(|| crate::core::timestamp_millis() as i64)
+        });
+
+    Ok(StreamEvent::OpenInterestUpdate {
+        symbol,
+        open_interest,
+        open_interest_value,
+        timestamp,
+    })
+}
+
 fn parse_position_update(raw: &Value) -> WebSocketResult<StreamEvent> {
     let result = frame_result(raw)?;
     let symbol = result.get("contract")
@@ -833,6 +889,92 @@ mod tests {
         assert!(reg.supports(&StreamKind::Liquidation, AccountType::FuturesCross));
         assert!(reg.supports(&StreamKind::FundingRate, AccountType::FuturesCross));
         assert!(reg.supports(&StreamKind::MarkPrice, AccountType::FuturesCross));
+    }
+
+    #[test]
+    fn test_futures_registry_has_open_interest() {
+        let proto = GateIoProtocol::new(AccountType::FuturesCross, false);
+        let reg = proto.topic_registry(AccountType::FuturesCross);
+        assert!(
+            reg.supports(&StreamKind::OpenInterest, AccountType::FuturesCross),
+            "futures registry must support OpenInterest via contract_stats"
+        );
+    }
+
+    #[test]
+    fn test_subscribe_frame_open_interest_futures() {
+        let proto = GateIoProtocol::new(AccountType::FuturesCross, false);
+        let spec = StreamSpec {
+            kind: StreamKind::OpenInterest,
+            symbol: crate::core::types::OwnedSymbolInput::Raw("BTC_USDT".to_string()),
+            account_type: AccountType::FuturesCross,
+            depth: None,
+            speed_ms: None,
+        };
+        let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed for OI");
+        let text = match msg {
+            WsFrame::Text(t) => t,
+            _ => panic!("expected text frame"),
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert_eq!(v["event"], "subscribe");
+        assert_eq!(v["channel"], "futures.contract_stats");
+        let payload = v["payload"].as_array().expect("payload must be array");
+        assert_eq!(payload[0], "BTC_USDT");
+        assert_eq!(payload[1], "1m"); // GateIO contract_stats valid interval
+    }
+
+    #[test]
+    fn test_parse_open_interest_object_result() {
+        // Use the actual wire format observed from live GateIO feed (result.time, not result.t).
+        let frame = serde_json::json!({
+            "time": 1720000001i64,
+            "time_ms": 1720000001000i64,
+            "channel": "futures.contract_stats",
+            "event": "update",
+            "result": {
+                "time": 1720000000i64,
+                "contract": "BTC_USDT",
+                "open_interest": 12345,
+                "open_interest_usd": 987654321.5,
+                "lsr_taker": 1.23
+            }
+        });
+        let ev = parse_open_interest(&frame).expect("parse_open_interest must succeed");
+        match ev {
+            StreamEvent::OpenInterestUpdate { symbol, open_interest, open_interest_value, timestamp } => {
+                assert_eq!(symbol, "BTC_USDT");
+                assert!((open_interest - 12345.0).abs() < 0.001);
+                assert!(open_interest_value.is_some());
+                assert!((open_interest_value.unwrap() - 987654321.5).abs() < 1.0);
+                // time=1720000000 seconds → 1720000000000 ms
+                assert_eq!(timestamp, 1720000000_i64 * 1000);
+            }
+            other => panic!("expected OpenInterestUpdate, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_open_interest_array_result() {
+        // GateIO sometimes wraps result in an array
+        let frame = serde_json::json!({
+            "time": 1720000000i64,
+            "channel": "futures.contract_stats",
+            "event": "update",
+            "result": [{
+                "t": 1720000010i64,
+                "contract": "ETH_USDT",
+                "open_interest": "99999.5"
+            }]
+        });
+        let ev = parse_open_interest(&frame).expect("parse_open_interest array result");
+        match ev {
+            StreamEvent::OpenInterestUpdate { symbol, open_interest, .. } => {
+                assert_eq!(symbol, "ETH_USDT");
+                assert!((open_interest - 99999.5).abs() < 0.01);
+            }
+            other => panic!("expected OpenInterestUpdate, got {:?}", other),
+        }
     }
 
     // ── parse_kline interval+symbol extraction (regression: was double-broken) ──

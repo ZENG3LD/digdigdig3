@@ -162,10 +162,16 @@ impl KuCoinProtocol {
             }
             StreamKind::PositionUpdate => "/contract/positionAll".to_string(),
             StreamKind::Liquidation => {
-                return Err(WebSocketError::UnsupportedOperation(
-                    "not yet implemented — public /contractMarket/liquidationOrders:{symbol} \
-                     channel (no auth required, uses public token)".to_string(),
-                ));
+                // Public channel — uses the public bullet token (same as all other
+                // public futures channels). No auth required.
+                if is_futures {
+                    format!("/contractMarket/liquidationOrders:{}", sym)
+                } else {
+                    return Err(WebSocketError::NotSupported(
+                        "KuCoin liquidationOrders is a futures-only channel — \
+                         use AccountType::FuturesCross".to_string(),
+                    ));
+                }
             }
             StreamKind::OpenInterest => {
                 return Err(WebSocketError::NotSupported(
@@ -348,7 +354,9 @@ fn build_registry(account_type: AccountType) -> TopicRegistry {
             .register(StreamKind::MarkPrice,      account_type, "/contract/instrument:*",            parse_mark_price)
             .register(StreamKind::IndexPrice,     account_type, "/contractMarket/indexPrice:*",      parse_index_price)
             .register(StreamKind::FundingRate,    account_type, "/contract/instrument:*",            parse_funding_rate)
-            // Liquidation: requires auth — NotSupported as public feed. Registry entry removed.
+            // Liquidation: public channel via /contractMarket/liquidationOrders:{symbol}.
+            // Uses the public bullet token — no auth required.
+            .register(StreamKind::Liquidation,    account_type, "/contractMarket/liquidationOrders:*", parse_liquidation)
             .register(StreamKind::OrderUpdate,    account_type, "/contractMarket/tradeOrders",       parse_order_update)
             .register(StreamKind::BalanceUpdate,  account_type, "/contractAccount/wallet",           parse_balance_update)
             .register(StreamKind::PositionUpdate, account_type, "/contract/positionAll",             parse_position_update);
@@ -545,6 +553,55 @@ fn parse_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent> {
         .map_err(|e| WebSocketError::Parse(e.to_string()))
 }
 
+fn parse_liquidation(raw: &Value) -> WebSocketResult<StreamEvent> {
+    use crate::core::types::TradeSide;
+
+    // KuCoin liquidationOrders frame shape:
+    // {"type":"message","topic":"/contractMarket/liquidationOrders:XBTUSDTM",
+    //  "subject":"liquidation.match","data":{
+    //    "symbol":"XBTUSDTM","type":"open"|"done","side":"buy"|"sell",
+    //    "price":"50000","size":10,"ts":1234567890000000000 (nanoseconds)
+    //  }}
+    let data = frame_data(raw)?;
+    let parse_f64 = |v: &Value| -> Option<f64> {
+        v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
+    };
+
+    let symbol = data.get("symbol")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .unwrap_or_else(|| topic_symbol(raw));
+
+    let price = data.get("price")
+        .and_then(parse_f64)
+        .ok_or_else(|| WebSocketError::Parse("kucoin liq: missing price".into()))?;
+
+    let quantity = data.get("size")
+        .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+        .unwrap_or(0.0);
+
+    let side = match data.get("side").and_then(|v| v.as_str()) {
+        Some("buy") | Some("Buy") => TradeSide::Buy,
+        _ => TradeSide::Sell,
+    };
+
+    // KuCoin liquidationOrders uses nanosecond timestamps in `ts`.
+    // Convert ns → ms by dividing by 1_000_000.
+    let timestamp = data.get("ts")
+        .and_then(|v| v.as_i64())
+        .map(|ns| ns / 1_000_000)
+        .unwrap_or_else(|| timestamp_millis() as i64);
+
+    Ok(StreamEvent::Liquidation {
+        symbol,
+        side,
+        price,
+        quantity,
+        value: None,
+        timestamp,
+    })
+}
+
 fn parse_order_update(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw)?;
     let symbol = data.get("symbol").and_then(|s| s.as_str()).unwrap_or("").to_string();
@@ -697,8 +754,102 @@ mod tests {
         let reg = proto.topic_registry(AccountType::FuturesCross);
         assert!(reg.supports(&StreamKind::Ticker, AccountType::FuturesCross));
         assert!(reg.supports(&StreamKind::Trade, AccountType::FuturesCross));
-        // Liquidation removed from public feed (requires auth) — no longer in registry.
-        assert!(!reg.supports(&StreamKind::Liquidation, AccountType::FuturesCross));
+        // Liquidation is now a public channel via /contractMarket/liquidationOrders.
+        assert!(reg.supports(&StreamKind::Liquidation, AccountType::FuturesCross));
+    }
+
+    #[test]
+    fn test_futures_registry_has_liquidation() {
+        let proto = KuCoinProtocol::new(
+            AccountType::FuturesCross,
+            false,
+            Url::parse("wss://ws-api-futures.kucoin.com/?token=test&connectId=test").unwrap(),
+            18_000,
+        );
+        let reg = proto.topic_registry(AccountType::FuturesCross);
+        assert!(
+            reg.supports(&StreamKind::Liquidation, AccountType::FuturesCross),
+            "futures registry must support public Liquidation via liquidationOrders"
+        );
+    }
+
+    #[test]
+    fn test_subscribe_frame_liquidation_futures() {
+        let proto = KuCoinProtocol::new(
+            AccountType::FuturesCross,
+            false,
+            Url::parse("wss://ws-api-futures.kucoin.com/?token=test&connectId=test").unwrap(),
+            18_000,
+        );
+        let spec = StreamSpec {
+            kind: StreamKind::Liquidation,
+            symbol: crate::core::types::OwnedSymbolInput::Raw("XBTUSDTM".to_string()),
+            account_type: AccountType::FuturesCross,
+            depth: None,
+            speed_ms: None,
+        };
+        let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed");
+        let text = match msg {
+            WsFrame::Text(t) => t,
+            _ => panic!("expected text frame"),
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert_eq!(v["type"], "subscribe");
+        let topic = v["topic"].as_str().unwrap();
+        assert_eq!(topic, "/contractMarket/liquidationOrders:XBTUSDTM");
+        assert_eq!(v["privateChannel"], false);
+    }
+
+    #[test]
+    fn test_extract_topic_liquidation_frame() {
+        let proto = make_protocol();
+        let frame = serde_json::json!({
+            "type": "message",
+            "topic": "/contractMarket/liquidationOrders:XBTUSDTM",
+            "subject": "liquidation.match",
+            "data": {}
+        });
+        let topic = proto.extract_topic(&frame).expect("should extract topic");
+        assert_eq!(topic.as_str(), "/contractMarket/liquidationOrders:*");
+    }
+
+    #[test]
+    fn test_parse_liquidation_frame() {
+        let proto = KuCoinProtocol::new(
+            AccountType::FuturesCross,
+            false,
+            Url::parse("wss://ws-api-futures.kucoin.com/?token=test&connectId=test").unwrap(),
+            18_000,
+        );
+        let frame = serde_json::json!({
+            "type": "message",
+            "topic": "/contractMarket/liquidationOrders:XBTUSDTM",
+            "subject": "liquidation.match",
+            "data": {
+                "symbol": "XBTUSDTM",
+                "type": "open",
+                "side": "sell",
+                "price": "50000.5",
+                "size": 10,
+                "ts": 1700000000_000_000_000i64
+            }
+        });
+        let topic = proto.extract_topic(&frame).expect("should extract topic");
+        let registry = proto.topic_registry(AccountType::FuturesCross);
+        let parsers = registry.dispatch_all(&topic);
+        assert!(!parsers.is_empty(), "liquidationOrders:* must have a registered parser");
+        let event = parsers[0](&frame).expect("parse must succeed");
+        match event {
+            crate::core::types::StreamEvent::Liquidation { symbol, side, price, quantity, timestamp, .. } => {
+                assert_eq!(symbol, "XBTUSDTM");
+                assert_eq!(side, crate::core::types::TradeSide::Sell);
+                assert!((price - 50000.5).abs() < 0.01);
+                assert!((quantity - 10.0).abs() < 0.001);
+                // ts=1700000000_000_000_000 ns → 1700000000000 ms
+                assert_eq!(timestamp, 1_700_000_000_000i64);
+            }
+            other => panic!("expected Liquidation, got {:?}", other),
+        }
     }
 
     #[test]

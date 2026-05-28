@@ -1,9 +1,16 @@
-//! HtxWebSocket — thin wrapper around UniversalWsTransport<HtxProtocol>.
+//! HtxWebSocket — dual-transport wrapper around two UniversalWsTransport<HtxProtocol>
+//! instances: one for the main market data WS and one for the `ws_index` endpoint.
 //!
-//! All connection lifecycle, ping scheduling, subscription replay, and frame
-//! dispatch are handled by the framework.  This file contains only the adapter
-//! boilerplate plus the `orderbook_capabilities` response copied from the
-//! previous implementation.
+//! ## Why dual transports?
+//!
+//! HTX exposes index klines (market.{contract}.index.{period}) ONLY on the dedicated
+//! `wss://api.hbdm.com/ws_index` endpoint. The main endpoints (spot WS and
+//! linear-swap WS) reject these topics with "invalid topic". All other market data
+//! channels are on the main endpoint. Dual transports mirror the OKX pattern (public
+//! vs business endpoint split).
+//!
+//! `subscribe()` routes IndexPriceKline to the index transport; all other kinds go to
+//! the main transport. `event_stream()` merges both streams.
 //!
 //! ## KNOWN LIMITATION
 //! HTX sends server-initiated `{"ping":<ts>}` heartbeats and expects
@@ -16,16 +23,16 @@
 //! ## Usage
 //!
 //! ```ignore
-//! let ws = HtxWebSocket::new(None, false, AccountType::Spot)?;
-//! ws.connect(AccountType::Spot).await?;
-//! ws.subscribe(SubscriptionRequest::ticker(Symbol::new("BTC", "USDT"))).await?;
+//! let ws = HtxWebSocket::new(None, false, AccountType::FuturesCross)?;
+//! ws.connect(AccountType::FuturesCross).await?;
+//! ws.subscribe(SubscriptionRequest::index_price_kline("BTC-USDT", "1m")).await?;
 //! let stream = ws.event_stream();
 //! ```
 
 use std::pin::Pin;
 use std::sync::Arc;
 
-use futures_util::Stream;
+use futures_util::{stream::select, Stream};
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::core::traits::{Credentials, WebSocketConnector};
@@ -34,17 +41,34 @@ use crate::core::types::{
     OrderbookCapabilities, StreamEvent, SubscriptionRequest, WebSocketError, WebSocketResult,
     WsBookChannel,
 };
-use crate::core::websocket::{StreamSpec, UniversalWsTransport, WsProtocol};
+use crate::core::websocket::{StreamKind, StreamSpec, UniversalWsTransport, WsProtocol};
 
 use super::protocol::HtxProtocol;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Routing helper
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Returns true if this kind belongs to the `ws_index` endpoint.
+fn is_index_kind(kind: &StreamKind) -> bool {
+    matches!(kind, StreamKind::IndexPriceKline { .. })
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HtxWebSocket
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// HTX WebSocket connector backed by UniversalWsTransport.
+/// HTX WebSocket connector.
+///
+/// Uses two `UniversalWsTransport` instances:
+/// - `main` — spot or linear-swap WS for all standard channels
+/// - `index` — `ws_index` endpoint for `IndexPriceKline` channels
+///
+/// Both connections open eagerly on `connect()`. `subscribe()` / `unsubscribe()`
+/// route to the correct transport by `StreamKind`. `event_stream()` merges both.
 pub struct HtxWebSocket {
-    inner: UniversalWsTransport<HtxProtocol>,
+    main: UniversalWsTransport<HtxProtocol>,
+    index: UniversalWsTransport<HtxProtocol>,
     _account_type: AccountType,
     _testnet: bool,
 }
@@ -60,9 +84,11 @@ impl HtxWebSocket {
         testnet: bool,
         account_type: AccountType,
     ) -> ExchangeResult<Self> {
-        let protocol = HtxProtocol::new(account_type, testnet);
-        let inner = UniversalWsTransport::new(protocol, account_type, testnet, credentials);
-        Ok(Self { inner, _account_type: account_type, _testnet: testnet })
+        let main_proto = HtxProtocol::new(account_type, testnet);
+        let index_proto = HtxProtocol::new_index(account_type, testnet);
+        let main = UniversalWsTransport::new(main_proto, account_type, testnet, credentials.clone());
+        let index = UniversalWsTransport::new(index_proto, account_type, testnet, credentials);
+        Ok(Self { main, index, _account_type: account_type, _testnet: testnet })
     }
 }
 
@@ -74,45 +100,64 @@ impl HtxWebSocket {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl WebSocketConnector for HtxWebSocket {
     async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
-        self.inner.connect().await
+        self.main.connect().await?;
+        self.index.connect().await?;
+        Ok(())
     }
 
     async fn disconnect(&self) -> WebSocketResult<()> {
-        self.inner.disconnect().await
+        self.main.disconnect().await?;
+        self.index.disconnect().await?;
+        Ok(())
     }
 
     fn connection_status(&self) -> ConnectionStatus {
-        self.inner.connection_status()
+        self.main.connection_status()
     }
 
     async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let spec = StreamSpec::try_from(request)?;
-        // Eagerly reject NotSupported streams before queuing the subscription.
-        // The transport's cmd-channel subscribe does not do this check, so we
-        // must inspect subscribe_frame here to avoid silent_0_events timeouts.
-        let probe = HtxProtocol::new(spec.account_type, self._testnet);
-        match probe.subscribe_frame(&spec) {
-            Err(e @ WebSocketError::NotSupported(_)) => return Err(e),
-            _ => {}
+        if is_index_kind(&spec.kind) {
+            self.index.subscribe(spec).await
+        } else {
+            // Eagerly reject NotSupported streams before queuing the subscription.
+            let probe = HtxProtocol::new(spec.account_type, self._testnet);
+            match probe.subscribe_frame(&spec) {
+                Err(e @ WebSocketError::NotSupported(_)) => return Err(e),
+                _ => {}
+            }
+            self.main.subscribe(spec).await
         }
-        self.inner.subscribe(spec).await
     }
 
     async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
         let spec = StreamSpec::try_from(request)?;
-        self.inner.unsubscribe(spec).await
+        if is_index_kind(&spec.kind) {
+            self.index.unsubscribe(spec).await
+        } else {
+            self.main.unsubscribe(spec).await
+        }
     }
 
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        Box::pin(self.inner.event_stream())
+        let main_stream = self.main.event_stream();
+        let index_stream = self.index.event_stream();
+        Box::pin(select(main_stream, index_stream))
     }
 
     fn active_subscriptions(&self) -> Vec<SubscriptionRequest> {
-        self.inner
+        let mut subs: Vec<SubscriptionRequest> = self.main
             .active_subscriptions()
             .into_iter()
             .map(SubscriptionRequest::from)
-            .collect()
+            .collect();
+        subs.extend(
+            self.index
+                .active_subscriptions()
+                .into_iter()
+                .map(SubscriptionRequest::from),
+        );
+        subs
     }
 
     fn ping_rtt_handle(&self) -> Option<Arc<TokioMutex<u64>>> {

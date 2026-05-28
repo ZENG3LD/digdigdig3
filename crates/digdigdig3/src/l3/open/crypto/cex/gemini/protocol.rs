@@ -11,25 +11,28 @@
 //! - Unsubscribe: Gemini does not support per-stream unsubscribe; this impl
 //!   returns the subscribe frame again as a no-op (reconnect clears state).
 //! - Channels routed by `type` field:
-//!   - `l2_updates`              → Orderbook delta (via `changes`) + Trade (via `trades`)
+//!   - `l2_updates`              → Orderbook delta (via `changes`) + Trade (via `trades`) + Ticker (synthetic)
 //!   - `candles_<interval>_updates` → Kline
 //!   - `auction_*`               → AuctionEvent
 //!   - `heartbeat`               → ignored (route to None)
 //!   - `subscribed`              → subscribe ACK, route to None
 //!
-//! ## Ticker synthesis — TODO_Implement
+//! ## Ticker synthesis
 //!
-//! Gemini has no dedicated ticker stream. A synthetic Ticker is buildable from
-//! the `l2` subscription: top-of-book bid/ask from `changes` + last trade price
-//! from `trades`. Requires shared mutable state across parser calls.
-//! `subscribe_frame` returns `UnsupportedOperation` until implemented.
+//! Gemini has no dedicated ticker stream. Ticker is synthesised from the `l2`
+//! subscription, which carries both book deltas (`changes`) and trades in one
+//! frame. A process-wide `BOOK_STATE` map (keyed by symbol) tracks the running
+//! best-bid, best-ask, and last-trade price. The ticker parser is registered
+//! alongside Trade and Orderbook on the `l2_updates` topic and returns
+//! `WebSocketError::FieldAbsent` (silent skip) until both bid and ask are known.
 //!
 //! ## Ping discipline — CRITICAL
 //!
 //! `ping_frame()` returns `None`. Gemini **disconnects the connection** if it
 //! receives a WebSocket Ping frame from the client. Do not change this.
 
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::{Mutex as StdMutex, OnceLock};
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -39,7 +42,7 @@ use crate::core::rt::WsFrame;
 use crate::core::traits::Credentials;
 use crate::core::types::{
     AccountType, Kline, OrderBookLevel, OrderbookDelta, PublicTrade,
-    StreamEvent, TradeSide, WebSocketError, WebSocketResult,
+    StreamEvent, Ticker, TradeSide, WebSocketError, WebSocketResult,
 };
 use crate::core::websocket::{KlineInterval, StreamKind, StreamSpec, TopicKey, TopicRegistry, WsProtocol};
 use crate::core::utils::timestamp_millis;
@@ -49,6 +52,51 @@ use crate::core::utils::timestamp_millis;
 // ─────────────────────────────────────────────────────────────────────────────
 
 static REGISTRY: OnceLock<TopicRegistry> = OnceLock::new();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Synthetic ticker state
+//
+// The `l2_updates` frame carries book deltas (changes) and trades in one shot.
+// To synthesise a Ticker we track the running best-bid, best-ask, and last
+// trade price per symbol in a process-wide map. The ticker parser reads this
+// state and emits a Ticker event once both bid and ask are known.
+//
+// StdMutex is correct here — no `.await` is held across the lock.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Per-symbol top-of-book state used to synthesise Ticker from l2_updates.
+#[derive(Debug, Clone, Default)]
+struct GeminiTickerState {
+    /// Running best bid (highest buy price). `f64::NEG_INFINITY` = unknown.
+    best_bid: f64,
+    /// Running best ask (lowest sell price). `f64::INFINITY` = unknown.
+    best_ask: f64,
+    /// Price of the most recent trade. 0.0 = not yet seen.
+    last_trade: f64,
+    /// Timestamp of the most recent update (millis since epoch).
+    last_ts: i64,
+}
+
+impl GeminiTickerState {
+    fn new() -> Self {
+        Self {
+            best_bid: f64::NEG_INFINITY,
+            best_ask: f64::INFINITY,
+            last_trade: 0.0,
+            last_ts: 0,
+        }
+    }
+
+    fn has_bid_ask(&self) -> bool {
+        self.best_bid > f64::NEG_INFINITY && self.best_ask < f64::INFINITY
+    }
+}
+
+static BOOK_STATE: OnceLock<StdMutex<HashMap<String, GeminiTickerState>>> = OnceLock::new();
+
+fn book_state() -> &'static StdMutex<HashMap<String, GeminiTickerState>> {
+    BOOK_STATE.get_or_init(|| StdMutex::new(HashMap::new()))
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GeminiProtocol
@@ -66,16 +114,14 @@ impl GeminiProtocol {
     /// Returns the name to use in the `subscriptions[].name` field.
     fn subscription_name(spec: &StreamSpec) -> Result<String, WebSocketError> {
         match &spec.kind {
-            StreamKind::Trade | StreamKind::Orderbook => Ok("l2".to_string()),
+            // Ticker rides the l2 feed — same subscription as Trade/Orderbook.
+            StreamKind::Trade | StreamKind::Orderbook | StreamKind::Ticker => {
+                Ok("l2".to_string())
+            }
             StreamKind::Kline { interval } => {
                 // Gemini candle feed name: "candles_1m", "candles_5m", etc.
                 Ok(format!("candles_{}", interval.as_str()))
             }
-            StreamKind::Ticker => Err(WebSocketError::UnsupportedOperation(
-                "not yet implemented — synthesize from l2 changes (bid/ask) + trades (last price); \
-                 pending stateful parser hook"
-                    .into(),
-            )),
             other => Err(WebSocketError::NotSupported(format!(
                 "Gemini has no public WS channel for {:?}",
                 other
@@ -205,10 +251,12 @@ impl WsProtocol for GeminiProtocol {
 fn build_registry() -> TopicRegistry {
     let at = AccountType::Spot;
     TopicRegistry::builder()
-        // l2_updates → Orderbook (changes array) and Trade (trades array).
-        // Both are registered under the same topic key; dispatch_all fires both.
+        // l2_updates → Orderbook (changes array), Trade (trades array), and
+        // Ticker (synthetic from accumulated top-of-book + last trade).
+        // All three are registered under the same topic key; dispatch_all fires all.
         .register(StreamKind::Orderbook, at, "l2_updates", parse_l2_orderbook)
         .register(StreamKind::Trade, at, "l2_updates", parse_l2_trade)
+        .register(StreamKind::Ticker, at, "l2_updates", parse_l2_ticker)
         // candles_updates → Kline (interval extracted from the `type` field inside parser)
         .register(
             StreamKind::Kline { interval: KlineInterval::new("") },
@@ -343,6 +391,129 @@ pub(crate) fn parse_l2_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
             timestamp,
         },
     })
+}
+
+/// Parse `l2_updates` frame → synthetic StreamEvent::Ticker.
+///
+/// Gemini has no native ticker channel. This parser accumulates top-of-book
+/// state (best bid = highest buy, best ask = lowest sell) and last trade price
+/// across frames in a process-wide map keyed by symbol. Once both bid and ask
+/// are known it emits a `StreamEvent::Ticker`.
+///
+/// Returns `WebSocketError::FieldAbsent` (silent skip, NOT a hard error) when:
+/// - The frame carries no `changes` and no `trades` (pure heartbeat delta).
+/// - The accumulated state is not yet sufficient (bid or ask unknown).
+pub(crate) fn parse_l2_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
+    let symbol = raw
+        .get("symbol")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let ts = raw
+        .get("timestamp")
+        .and_then(|t| t.as_i64())
+        .unwrap_or_else(|| timestamp_millis() as i64);
+
+    let mut state_map = book_state()
+        .lock()
+        .expect("gemini book_state poisoned");
+    let state = state_map
+        .entry(symbol.clone())
+        .or_insert_with(GeminiTickerState::new);
+
+    // Update top-of-book from changes array.
+    // Each entry is ["buy"|"sell", price, qty]. qty == "0" means removal.
+    // We track the single best bid / best ask heuristically:
+    //   - For buys: new price > current best_bid → update.
+    //   - For sells: new price < current best_ask → update.
+    // On removal (qty == 0) of the current best, we reset to unknown so the
+    // next matching change re-establishes it. This gives approximate top-of-book
+    // without maintaining a full sorted book.
+    if let Some(changes) = raw.get("changes").and_then(|c| c.as_array()) {
+        for change in changes {
+            let arr = match change.as_array() {
+                Some(a) if a.len() >= 3 => a,
+                _ => continue,
+            };
+            let side = arr[0].as_str().unwrap_or("");
+            let price = match parse_f64_any(&arr[1]) {
+                Some(p) => p,
+                None => continue,
+            };
+            let qty = parse_f64_any(&arr[2]).unwrap_or(0.0);
+
+            match side {
+                "buy" => {
+                    if qty == 0.0 {
+                        // Removal: reset best_bid if it matched this price.
+                        if (state.best_bid - price).abs() < f64::EPSILON {
+                            state.best_bid = f64::NEG_INFINITY;
+                        }
+                    } else if price > state.best_bid {
+                        state.best_bid = price;
+                    }
+                }
+                "sell" => {
+                    if qty == 0.0 {
+                        // Removal: reset best_ask if it matched this price.
+                        if (state.best_ask - price).abs() < f64::EPSILON {
+                            state.best_ask = f64::INFINITY;
+                        }
+                    } else if price < state.best_ask {
+                        state.best_ask = price;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Update last trade price from trades array.
+    if let Some(trades) = raw.get("trades").and_then(|t| t.as_array()) {
+        if let Some(last_trade) = trades.last() {
+            if let Some(p) = parse_f64_any(last_trade.get("price").unwrap_or(&Value::Null)) {
+                if p > 0.0 {
+                    state.last_trade = p;
+                }
+            }
+        }
+    }
+
+    state.last_ts = ts;
+
+    // Emit only once we have a valid bid+ask.
+    if !state.has_bid_ask() {
+        return Err(WebSocketError::FieldAbsent(
+            "gemini ticker: top-of-book not yet established".into(),
+        ));
+    }
+
+    let best_bid = state.best_bid;
+    let best_ask = state.best_ask;
+    let last_trade = state.last_trade;
+
+    // Use last_trade as last_price; fall back to mid if no trade seen yet.
+    let last_price = if last_trade > 0.0 {
+        last_trade
+    } else {
+        (best_bid + best_ask) / 2.0
+    };
+
+    let ticker = Ticker {
+        last_price,
+        bid_price: Some(best_bid),
+        ask_price: Some(best_ask),
+        high_24h: None,
+        low_24h: None,
+        volume_24h: None,
+        quote_volume_24h: None,
+        price_change_24h: None,
+        price_change_percent_24h: None,
+        timestamp: ts,
+    };
+
+    Ok(StreamEvent::Ticker { symbol, ticker })
 }
 
 /// Parse `candles_*_updates` frame → StreamEvent::Kline.
@@ -559,15 +730,20 @@ mod tests {
     }
 
     #[test]
-    fn subscribe_frame_ticker_returns_unsupported_operation() {
+    fn subscribe_frame_ticker_sends_l2_subscription() {
+        // Ticker is now implemented via l2 synthesis — subscribe_frame must succeed.
         let proto = GeminiProtocol;
         let spec = make_spec(StreamKind::Ticker, "BTCUSD");
-        let result = proto.subscribe_frame(&spec);
-        assert!(
-            matches!(result, Err(WebSocketError::UnsupportedOperation(_))),
-            "Ticker must return UnsupportedOperation, got {:?}",
-            result
-        );
+        let frame = proto.subscribe_frame(&spec).expect("Ticker subscribe_frame must succeed");
+        if let WsFrame::Text(s) = frame {
+            let v: Value = serde_json::from_str(&s).expect("valid json");
+            assert_eq!(v["type"], "subscribe");
+            // Ticker rides the l2 channel.
+            assert_eq!(v["subscriptions"][0]["name"], "l2");
+            assert_eq!(v["subscriptions"][0]["symbols"][0], "BTCUSD");
+        } else {
+            panic!("expected Text frame");
+        }
     }
 
     // ── extract_topic ─────────────────────────────────────────────────────────
@@ -632,6 +808,7 @@ mod tests {
         let at = AccountType::Spot;
         assert!(reg.supports(&StreamKind::Orderbook, at), "Orderbook");
         assert!(reg.supports(&StreamKind::Trade, at), "Trade");
+        assert!(reg.supports(&StreamKind::Ticker, at), "Ticker");
         assert!(
             reg.supports(&StreamKind::Kline { interval: KlineInterval::new("") }, at),
             "Kline"
@@ -640,16 +817,16 @@ mod tests {
     }
 
     #[test]
-    fn l2_updates_channel_has_two_parsers() {
-        // Both Orderbook and Trade are registered on "l2_updates".
+    fn l2_updates_channel_has_three_parsers() {
+        // Orderbook, Trade, and Ticker are all registered on "l2_updates".
         let proto = GeminiProtocol;
         let reg = proto.topic_registry(AccountType::Spot);
         let key = TopicKey::new("l2_updates");
         let parsers = reg.dispatch_all(&key);
         assert_eq!(
             parsers.len(),
-            2,
-            "l2_updates must have 2 parsers (Orderbook + Trade)"
+            3,
+            "l2_updates must have 3 parsers (Orderbook + Trade + Ticker)"
         );
     }
 

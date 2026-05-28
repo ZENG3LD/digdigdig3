@@ -34,6 +34,7 @@ use crate::{
     SubscriptionSet,
 };
 
+
 /// Phase 5 Station. Unified `Series<T>` + `DiskStore<T>` plumbing under all
 /// stream classes. One multiplexer actor per `SeriesKey` (= exchange × account
 /// × symbol × kind). N consumers share via `broadcast::channel`.
@@ -275,14 +276,20 @@ impl Station {
                 // the same multiplex with different input forms each see their
                 // own label.
                 let label = entry.symbol.clone();
-                tokio::spawn(async move {
-                    while let Ok(mut ev) = bcast_rx.recv().await {
-                        ev.set_symbol(label.clone());
-                        if tx_clone.send(ev).is_err() {
-                            break;
+                {
+                    let relay_fut = Box::pin(async move {
+                        while let Ok(mut ev) = bcast_rx.recv().await {
+                            ev.set_symbol(label.clone());
+                            if tx_clone.send(ev).is_err() {
+                                break;
+                            }
                         }
-                    }
-                });
+                    });
+                    #[cfg(not(target_arch = "wasm32"))]
+                    tokio::spawn(relay_fut);
+                    #[cfg(target_arch = "wasm32")]
+                    wasm_bindgen_futures::spawn_local(relay_fut);
+                }
 
                 refs.push(MultiplexRef {
                     station: Arc::downgrade(&self.inner),
@@ -452,6 +459,10 @@ impl Station {
     /// When the derived forwarder exits it calls `inner.release_consumer` on
     /// each upstream key, propagating shutdown upward if no other consumer
     /// holds the upstream.
+    /// Acquire (or spawn) a derived multiplexer — **native** path.
+    /// Returns `Pin<Box<dyn Future + Send>>` so the future can be awaited
+    /// from `acquire_or_spawn` which is itself spawned via `tokio::spawn` on native.
+    #[cfg(not(target_arch = "wasm32"))]
     fn acquire_or_spawn_derived<'a, D: DerivedStream>(
         &'a self,
         key: &'a SeriesKey,
@@ -463,6 +474,39 @@ impl Station {
         Event: EventFrom<D::Output>,
     {
         Box::pin(async move {
+            self.acquire_or_spawn_derived_body::<D>(key, entry, canonical, raw_symbol).await
+        })
+    }
+
+    /// Acquire (or spawn) a derived multiplexer — **wasm32** path.
+    /// No `Send` bound — wasm is single-threaded and all futures are `!Send`.
+    #[cfg(target_arch = "wasm32")]
+    fn acquire_or_spawn_derived<'a, D: DerivedStream>(
+        &'a self,
+        key: &'a SeriesKey,
+        entry: &'a Entry,
+        canonical: &'a digdigdig3::core::types::Symbol,
+        raw_symbol: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<broadcast::Sender<Event>>> + 'a>>
+    where
+        Event: EventFrom<D::Output>,
+    {
+        Box::pin(async move {
+            self.acquire_or_spawn_derived_body::<D>(key, entry, canonical, raw_symbol).await
+        })
+    }
+
+    /// Shared body for `acquire_or_spawn_derived` — called from both cfg variants.
+    async fn acquire_or_spawn_derived_body<D: DerivedStream>(
+        &self,
+        key: &SeriesKey,
+        entry: &Entry,
+        canonical: &digdigdig3::core::types::Symbol,
+        raw_symbol: &str,
+    ) -> Result<broadcast::Sender<Event>>
+    where
+        Event: EventFrom<D::Output>,
+    {
         let mut upstream_rxs: Vec<broadcast::Receiver<Event>> = Vec::new();
         let mut upstream_keys: Vec<SeriesKey> = Vec::new();
 
@@ -506,7 +550,6 @@ impl Station {
         );
 
         Ok(bcast_tx)
-        }) // end Box::pin(async move { ... })
     }
 }
 
@@ -616,93 +659,99 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
     let warm = inner.warm_start_capacity;
     let exchange = key.exchange;
 
-    tokio::spawn(async move {
-        // Open disk store if persistence is on for this kind (native only).
-        #[cfg(not(target_arch = "wasm32"))]
-        let mut disk: Option<DiskStore<D::Output>> = None;
-        #[cfg(not(target_arch = "wasm32"))]
-        if persistence.is_enabled_for(&key.kind) {
-            match DiskStore::<D::Output>::new(&storage_root, key.clone()) {
-                Ok(store) => disk = Some(store),
-                Err(e) => tracing::warn!(?e, ?key, "derived: disk store open failed"),
-            }
-        }
-        // On wasm, no disk store.
-        #[cfg(target_arch = "wasm32")]
-        let _ = (&storage_root, &persistence);
-
-        let mut series = Series::<D::Output>::new(warm);
-
-        // Derived streams start with no warm-start / backfill — see spec §11.
-        let mut state = D::new_for_key(&key);
-
-        // Convert each upstream Receiver into a tagged BroadcastStream so
-        // the state machine can branch by dep_idx cheaply.
-        let tagged: Vec<_> = upstream_rxs
-            .into_iter()
-            .enumerate()
-            .map(|(idx, rx)| {
-                tokio_stream::wrappers::BroadcastStream::new(rx)
-                    .filter_map(move |res| async move {
-                        match res {
-                            Ok(ev) => Some((idx, ev)),
-                            Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
-                                tracing::warn!(dep_idx = idx, lagged = n, "derived: upstream lagged — events dropped");
-                                None
-                            }
-                        }
-                    })
-                    // Box to make all stream types uniform for select_all.
-                    .boxed()
-            })
-            .collect();
-
-        let mut merged = futures_util::stream::select_all(tagged);
-
-        loop {
-            let item_opt = tokio::select! {
-                _ = &mut shutdown_rx => break,
-                item = merged.next() => item,
-            };
-
-            let Some((dep_idx, ev)) = item_opt else {
-                // All upstreams closed their senders — derived stream is done.
-                tracing::info!(?key, "derived: all upstreams closed — exiting");
-                break;
-            };
-
-            if let Some(point) = state.on_upstream_event(&ev, dep_idx) {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(d) = disk.as_mut() {
-                    if let Err(e) = d.append(&point) {
-                        tracing::warn!(?e, "derived: disk store append failed");
-                    }
+    {
+        let derived_fut = Box::pin(async move {
+            // Open disk store if persistence is on for this kind (native only).
+            #[cfg(not(target_arch = "wasm32"))]
+            let mut disk: Option<DiskStore<D::Output>> = None;
+            #[cfg(not(target_arch = "wasm32"))]
+            if persistence.is_enabled_for(&key.kind) {
+                match DiskStore::<D::Output>::new(&storage_root, key.clone()) {
+                    Ok(store) => disk = Some(store),
+                    Err(e) => tracing::warn!(?e, ?key, "derived: disk store open failed"),
                 }
-                series.push(point.clone());
-                let _ = bcast_tx.send(Event::from_point(exchange, &symbol_label, &key.kind, point));
             }
-        }
+            // On wasm, no disk store.
+            #[cfg(target_arch = "wasm32")]
+            let _ = (&storage_root, &persistence);
 
+            let mut series = Series::<D::Output>::new(warm);
+
+            // Derived streams start with no warm-start / backfill — see spec §11.
+            let mut state = D::new_for_key(&key);
+
+            // Convert each upstream Receiver into a tagged BroadcastStream so
+            // the state machine can branch by dep_idx cheaply.
+            let tagged: Vec<_> = upstream_rxs
+                .into_iter()
+                .enumerate()
+                .map(|(idx, rx)| {
+                    tokio_stream::wrappers::BroadcastStream::new(rx)
+                        .filter_map(move |res| async move {
+                            match res {
+                                Ok(ev) => Some((idx, ev)),
+                                Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
+                                    tracing::warn!(dep_idx = idx, lagged = n, "derived: upstream lagged — events dropped");
+                                    None
+                                }
+                            }
+                        })
+                        // Box to make all stream types uniform for select_all.
+                        .boxed()
+                })
+                .collect();
+
+            let mut merged = futures_util::stream::select_all(tagged);
+
+            loop {
+                let item_opt = tokio::select! {
+                    _ = &mut shutdown_rx => break,
+                    item = merged.next() => item,
+                };
+
+                let Some((dep_idx, ev)) = item_opt else {
+                    // All upstreams closed their senders — derived stream is done.
+                    tracing::info!(?key, "derived: all upstreams closed — exiting");
+                    break;
+                };
+
+                if let Some(point) = state.on_upstream_event(&ev, dep_idx) {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(d) = disk.as_mut() {
+                        if let Err(e) = d.append(&point) {
+                            tracing::warn!(?e, "derived: disk store append failed");
+                        }
+                    }
+                    series.push(point.clone());
+                    let _ = bcast_tx.send(Event::from_point(exchange, &symbol_label, &key.kind, point));
+                }
+            }
+
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(mut d) = disk { let _ = d.flush(); }
+            let _ = series;
+
+            // Release upstream consumer refs — propagates shutdown upward if the
+            // derived forwarder was the only consumer of its upstream muxes.
+            for up_key in &upstream_keys {
+                inner.release_consumer(up_key);
+            }
+
+            // Remove own mux entry if no consumers remain.
+            let still_consumers = inner
+                .muxes
+                .get(&key)
+                .map(|m| m.consumers.load(Ordering::SeqCst))
+                .unwrap_or(0);
+            if still_consumers == 0 {
+                inner.muxes.remove(&key);
+            }
+        });
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(mut d) = disk { let _ = d.flush(); }
-        let _ = series;
-
-        // Release upstream consumer refs — propagates shutdown upward if the
-        // derived forwarder was the only consumer of its upstream muxes.
-        for up_key in &upstream_keys {
-            inner.release_consumer(up_key);
-        }
-
-        // Remove own mux entry if no consumers remain.
-        let still_consumers = inner
-            .muxes
-            .get(&key)
-            .map(|m| m.consumers.load(Ordering::SeqCst))
-            .unwrap_or(0);
-        if still_consumers == 0 {
-            inner.muxes.remove(&key);
-        }
-    });
+        tokio::spawn(derived_fut);
+        #[cfg(target_arch = "wasm32")]
+        wasm_bindgen_futures::spawn_local(derived_fut);
+    }
 }
 
 /// Generic per-kind forwarder. Owns:
@@ -741,7 +790,8 @@ fn spawn_forwarder<T: DataPoint + 'static>(
     #[cfg(not(target_arch = "wasm32"))]
     let hub_for_heal = inner.hub.clone();
 
-    tokio::spawn(async move {
+    {
+    let forwarder_fut = Box::pin(async move {
         // Open disk store if persistence is on for this kind (native only).
         #[cfg(not(target_arch = "wasm32"))]
         let mut disk: Option<DiskStore<T>> = None;
@@ -815,7 +865,10 @@ fn spawn_forwarder<T: DataPoint + 'static>(
             // On wasm we can't use tokio::time::timeout (no "time" feature).
             // Map the Option<Result<...>> to a Result<Option<Result<...>>, !>
             // so downstream code sees the same Ok(...) shape.
-            let item_opt: Result<Option<Result<_, _>>, std::convert::Infallible> = tokio::select! {
+            let item_opt: std::result::Result<
+                Option<std::result::Result<_, digdigdig3::core::types::WebSocketError>>,
+                std::convert::Infallible,
+            > = tokio::select! {
                 _ = &mut shutdown_rx => break,
                 item = stream.next() => Ok(item),
             };
@@ -960,6 +1013,11 @@ fn spawn_forwarder<T: DataPoint + 'static>(
             inner.muxes.remove(&key);
         }
     });
+    #[cfg(not(target_arch = "wasm32"))]
+    tokio::spawn(forwarder_fut);
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_futures::spawn_local(forwarder_fut);
+    }
 }
 
 /// Run a kline auto-heal triggered by WS disconnect. Called only for
@@ -1028,7 +1086,8 @@ async fn run_kline_heal<T: DataPoint + 'static>(
 /// Cast `Vec<A>` to `Vec<B>` when A == B at runtime via TypeId. Used to
 /// bridge the kind-specific REST return type (`Vec<BarPoint>`) back to the
 /// generic forwarder's `Vec<T>`. Safe when called at a site where the kind
-/// match arm guarantees A == B.
+/// match arm guarantees A == B. Native-only: called from `run_kline_heal`.
+#[cfg(not(target_arch = "wasm32"))]
 fn cast_vec<A: 'static, B: 'static>(v: Vec<A>) -> Vec<B> {
     if std::any::TypeId::of::<A>() == std::any::TypeId::of::<B>() {
         // SAFETY: confirmed TypeId equality immediately above; memory layout

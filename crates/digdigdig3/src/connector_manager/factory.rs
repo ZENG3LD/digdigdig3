@@ -186,6 +186,16 @@ use crate::l1::free::yahoo::YahooFinanceWebSocket;
 use crate::l2::paid::cryptocompare::CryptoCompareWebSocket;
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// WEBSOCKET IMPORTS — wasm32 (subset: Binance/Bybit/OKX via UniversalWsTransport)
+// ═══════════════════════════════════════════════════════════════════════════════
+#[cfg(target_arch = "wasm32")]
+use crate::l3::open::crypto::cex::binance::BinanceWebSocket;
+#[cfg(target_arch = "wasm32")]
+use crate::l3::open::crypto::cex::bybit::BybitWebSocket;
+#[cfg(target_arch = "wasm32")]
+use crate::l3::open::crypto::cex::okx::OkxWebSocket;
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR FACTORY
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1134,6 +1144,37 @@ impl ConnectorFactory {
             ExchangeId::Custom(_) => Err(ExchangeError::UnsupportedOperation(
                 "Custom exchange IDs not supported by WebSocket factory".into()
             )),
+        }
+    }
+
+    /// Create a WebSocket connector for browser (wasm32) targets.
+    ///
+    /// Supports Binance, Bybit, OKX — the three exchanges whose WS
+    /// implementations use `UniversalWsTransport` with browser-native WS
+    /// (`web-sys`). Other exchanges return `UnsupportedOperation`.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) async fn create_websocket(
+        id: ExchangeId,
+        account_type: AccountType,
+        testnet: bool,
+    ) -> ExchangeResult<Arc<dyn WebSocketConnector>> {
+        match id {
+            ExchangeId::Binance => {
+                let ws = BinanceWebSocket::new(None, testnet, account_type).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::Bybit => {
+                let ws = BybitWebSocket::new(None, testnet, account_type).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::OKX => {
+                let ws = OkxWebSocket::new(None, testnet, account_type).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            other => Err(ExchangeError::UnsupportedOperation(format!(
+                "{other:?} WebSocket not enabled on wasm32; \
+                 only Binance/Bybit/OKX use UniversalWsTransport+browser-WS"
+            ))),
         }
     }
 }

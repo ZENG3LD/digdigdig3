@@ -100,7 +100,9 @@ impl ExchangeHub {
     // ── WS methods ────────────────────────────────────────────────────────
 
     /// Connect ONLY the WebSocket for a specific (exchange, account_type).
-    #[cfg(not(target_arch = "wasm32"))]
+    ///
+    /// On native: full factory — supports all 47 exchanges.
+    /// On wasm32: browser subset — Binance, Bybit, OKX (UniversalWsTransport+web-sys).
     pub async fn connect_websocket(
         &self,
         id: ExchangeId,
@@ -121,10 +123,10 @@ impl ExchangeHub {
 
     /// Wire REST + WS for all listed account_types in one call.
     ///
-    /// On native: REST + WS. On wasm32: REST only (WS not available).
     /// REST connection is required (fails if it errors). WS connections are
-    /// best-effort — if a particular (id, account_type) doesn't have native
-    /// WS support, that one is silently skipped and the REST half remains.
+    /// best-effort — if a particular (id, account_type) doesn't support WS
+    /// on the current target, that one is silently skipped and the REST half
+    /// remains. On wasm32 only Binance/Bybit/OKX support WS.
     pub async fn connect_full(
         &self,
         id: ExchangeId,
@@ -134,15 +136,11 @@ impl ExchangeHub {
         let conn = ConnectorFactory::create_public(id, testnet).await?;
         self.rest.insert(id, conn);
 
-        #[cfg(not(target_arch = "wasm32"))]
         for &at in account_types {
             if let Ok(ws) = ConnectorFactory::create_websocket(id, at, testnet).await {
                 self.ws.insert(id, at, ws);
             }
         }
-        // On wasm32, `account_types` is intentionally unused — WS not available.
-        #[cfg(target_arch = "wasm32")]
-        let _ = account_types;
 
         Ok(())
     }

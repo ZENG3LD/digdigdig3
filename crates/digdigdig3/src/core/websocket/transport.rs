@@ -483,6 +483,14 @@ impl<P: WsProtocol> DriverTask<P> {
                 }
             };
 
+            // ── Mandatory post-connect delay (e.g. Crypto.com: 1 s) ──────────
+            {
+                let delay = self.protocol.post_connect_delay();
+                if !delay.is_zero() {
+                    self.rt.sleep(delay).await;
+                }
+            }
+
             // ── Auth handshake ─────────────────────────────────────────────
             if let Some(creds) = &self.credentials {
                 if let Some(auth_result) = self.protocol.auth_frame(creds) {

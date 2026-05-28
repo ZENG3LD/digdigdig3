@@ -177,6 +177,18 @@ pub trait WsProtocol: Send + Sync + 'static {
         Vec::new()
     }
 
+    /// Mandatory delay after WS handshake completes, before sending any frames.
+    ///
+    /// Some exchanges (Crypto.com) refuse to process any frame in the first
+    /// second after connection. Return `Duration::from_secs(1)` to enforce the
+    /// pause. The transport sleeps this duration after connect succeeds and before
+    /// auth / subscription replay / post-connect frames.
+    ///
+    /// Default: `Duration::ZERO` — no delay (zero overhead for all other exchanges).
+    fn post_connect_delay(&self) -> Duration {
+        Duration::ZERO
+    }
+
     // ── Optional binary decode hook ───────────────────────────────────────
 
     /// Decode a binary frame to a JSON Value.

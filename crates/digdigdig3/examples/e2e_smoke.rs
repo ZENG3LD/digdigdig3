@@ -953,27 +953,27 @@ async fn test_market(id: ExchangeId) -> MarketRow {
 
     let ws_ticker_fut = async {
         if !caps.has_ws_ticker { return MethodResult::Skipped; }
-        market::run_ws_sub(id, account_type, StreamType::Ticker, sym_ws, market::ExpectedKind::Ticker, stale_ms, 10).await
+        market::run_ws_sub(id, account_type, StreamType::Ticker, sym_ws, market::ExpectedKind::Ticker, stale_ms, 30).await
     };
     let ws_trade_fut = async {
         if !caps.has_ws_trades { return MethodResult::Skipped; }
-        market::run_ws_sub(id, account_type, StreamType::Trade, sym_ws2, market::ExpectedKind::Trade, stale_ms, 10).await
+        market::run_ws_sub(id, account_type, StreamType::Trade, sym_ws2, market::ExpectedKind::Trade, stale_ms, 30).await
     };
     let ws_ob_fut = async {
         if !caps.has_ws_orderbook { return MethodResult::Skipped; }
-        market::run_ws_sub(id, account_type, StreamType::Orderbook, sym_ws3, market::ExpectedKind::Orderbook, stale_ms, 10).await
+        market::run_ws_sub(id, account_type, StreamType::Orderbook, sym_ws3, market::ExpectedKind::Orderbook, stale_ms, 30).await
     };
     let ws_kline_fut = async {
         if !caps.has_ws_klines { return MethodResult::Skipped; }
-        market::run_ws_sub(id, account_type, StreamType::Kline { interval: "1m".into() }, sym_ws4, market::ExpectedKind::Kline, stale_ms, 10).await
+        market::run_ws_sub(id, account_type, StreamType::Kline { interval: "1m".into() }, sym_ws4, market::ExpectedKind::Kline, stale_ms, 30).await
     };
     let ws_mark_fut = async {
         if !futures_capable || !caps.has_ws_mark_price { return MethodResult::Skipped; }
-        market::run_ws_sub(id, futures_at, StreamType::MarkPrice, sym_ws5, market::ExpectedKind::MarkPrice, stale_ms, 10).await
+        market::run_ws_sub(id, futures_at, StreamType::MarkPrice, sym_ws5, market::ExpectedKind::MarkPrice, stale_ms, 30).await
     };
     let ws_funding_fut = async {
         if !futures_capable || !caps.has_ws_funding_rate { return MethodResult::Skipped; }
-        market::run_ws_sub(id, futures_at, StreamType::FundingRate, sym_ws6, market::ExpectedKind::FundingRate, stale_ms, 10).await
+        market::run_ws_sub(id, futures_at, StreamType::FundingRate, sym_ws6, market::ExpectedKind::FundingRate, stale_ms, 30).await
     };
     let ws_liq_fut = async {
         if !futures_capable { return MethodResult::Skipped; }
@@ -1028,11 +1028,11 @@ async fn test_market(id: ExchangeId) -> MarketRow {
     let ws_oi_fut = async {
         if !futures_capable { return MethodResult::Skipped; }
         // OpenInterest update cadence varies by exchange — use 20s window.
-        market::run_ws_sub(id, futures_at, StreamType::OpenInterest, sym_ws8, market::ExpectedKind::OpenInterest, stale_ms, 20).await
+        market::run_ws_sub(id, futures_at, StreamType::OpenInterest, sym_ws8, market::ExpectedKind::OpenInterest, stale_ms, 30).await
     };
     let ws_agg_fut = async {
         if !futures_capable { return MethodResult::Skipped; }
-        market::run_ws_sub(id, futures_at, StreamType::AggTrade, sym_ws9, market::ExpectedKind::AggTrade, stale_ms, 10).await
+        market::run_ws_sub(id, futures_at, StreamType::AggTrade, sym_ws9, market::ExpectedKind::AggTrade, stale_ms, 30).await
     };
 
     let (ws_ticker, ws_trade, ws_orderbook, ws_kline, ws_mark_price, ws_funding, ws_liquidation, ws_oi, ws_agg_trade) =

@@ -52,9 +52,12 @@ pub use subscription::{
     Event, FailedStream, Stream, SubscribeReport, SubscriptionHandle, SubscriptionSet,
 };
 
+// DiskStore is available on both targets (native: std::fs; wasm32: OPFS).
+pub use series::DiskStore;
+
 // native-only re-exports
 #[cfg(not(target_arch = "wasm32"))]
-pub use series::{DiskStore, PollSpec};
+pub use series::PollSpec;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use polling::PollSource;

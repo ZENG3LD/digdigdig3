@@ -43,11 +43,15 @@ impl<T: DataPoint> std::fmt::Debug for DiskStore<T> {
 }
 
 impl<T: DataPoint> DiskStore<T> {
-    pub fn new(storage_root: &Path, key: SeriesKey) -> std::io::Result<Self> {
-        Self::with_idx_every(storage_root, key, 1024)
+    /// Open (or create) a DiskStore. `async` to match the wasm32 sibling API
+    /// — the actual work is synchronous; the `async` wrapper is zero-cost.
+    pub async fn new(storage_root: &Path, key: SeriesKey) -> std::io::Result<Self> {
+        Self::with_idx_every(storage_root, key, 1024).await
     }
 
-    pub fn with_idx_every(
+    /// Like `new` but with a custom idx sparsity factor.
+    /// `async` to match the wasm32 sibling API — synchronous internally.
+    pub async fn with_idx_every(
         storage_root: &Path,
         key: SeriesKey,
         idx_every: u32,
@@ -121,7 +125,14 @@ impl<T: DataPoint> DiskStore<T> {
         Ok(())
     }
 
-    pub fn flush(&mut self) -> std::io::Result<()> {
+    /// Flush OS write buffers. `async` to match the wasm32 sibling API —
+    /// synchronous internally. The work completes before the future resolves.
+    pub async fn flush(&mut self) -> std::io::Result<()> {
+        self.flush_sync()
+    }
+
+    /// Synchronous flush — called from `Drop` where `async` is unavailable.
+    fn flush_sync(&mut self) -> std::io::Result<()> {
         self.dat.flush()?;
         self.idx.flush()?;
         if let Some(b) = self.blob.as_mut() {
@@ -135,7 +146,9 @@ impl<T: DataPoint> DiskStore<T> {
     ///
     /// For types with `blob_pointer_offset()`, opens the `.blob` file
     /// read-only and reconstructs string fields via [`DataPoint::decode_blob`].
-    pub fn read_tail(&self, limit: usize) -> std::io::Result<Vec<T>> {
+    ///
+    /// `async` to match the wasm32 sibling API — synchronous internally.
+    pub async fn read_tail(&self, limit: usize) -> std::io::Result<Vec<T>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -223,7 +236,7 @@ impl<T: DataPoint> DiskStore<T> {
         if today == self.current_day {
             return Ok(());
         }
-        self.flush()?;
+        self.flush_sync()?;
         let paths = paths(&self.root, &self.key, &today);
         let (dat, idx, offset) = open_pair(&paths.dat, &paths.idx)?;
         self.dat = BufWriter::new(dat);
@@ -245,7 +258,10 @@ impl<T: DataPoint> DiskStore<T> {
 
 impl<T: DataPoint> Drop for DiskStore<T> {
     fn drop(&mut self) {
-        let _ = self.flush();
+        // flush_sync flushes OS write buffers synchronously — safe in Drop.
+        // The public flush() is async (matches wasm32 sibling API) so cannot
+        // be called from Drop; flush_sync() is the sync-only entry point.
+        let _ = self.flush_sync();
     }
 }
 

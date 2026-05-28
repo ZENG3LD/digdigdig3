@@ -102,7 +102,7 @@ pub(crate) fn spawn_poller<T, S>(
         // Open disk store if persistence is enabled for this kind.
         let mut disk: Option<DiskStore<T>> = None;
         if persistence.is_enabled_for(&key.kind) {
-            match DiskStore::<T>::new(&storage_root, key.clone()) {
+            match DiskStore::<T>::new(&storage_root, key.clone()).await {
                 Ok(store) => disk = Some(store),
                 Err(e) => tracing::warn!(?e, ?key, "poll: disk store open failed"),
             }
@@ -113,7 +113,7 @@ pub(crate) fn spawn_poller<T, S>(
 
         // Warm-start: emit disk tail before the first live poll tick.
         if let Some(d) = disk.as_ref() {
-            if let Ok(tail) = d.read_tail(500) {
+            if let Ok(tail) = d.read_tail(500).await {
                 for p in &tail {
                     let _ = bcast_tx
                         .send(Event::from_point(exchange, &symbol_label, &key.kind, p.clone()));
@@ -196,7 +196,7 @@ pub(crate) fn spawn_poller<T, S>(
 
         // Flush disk on graceful shutdown.
         if let Some(mut d) = disk {
-            let _ = d.flush();
+            let _ = d.flush().await;
         }
 
         // Mux cleanup — same pattern as spawn_forwarder.

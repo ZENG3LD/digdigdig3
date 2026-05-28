@@ -666,7 +666,7 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
             let mut disk: Option<DiskStore<D::Output>> = None;
             #[cfg(not(target_arch = "wasm32"))]
             if persistence.is_enabled_for(&key.kind) {
-                match DiskStore::<D::Output>::new(&storage_root, key.clone()) {
+                match DiskStore::<D::Output>::new(&storage_root, key.clone()).await {
                     Ok(store) => disk = Some(store),
                     Err(e) => tracing::warn!(?e, ?key, "derived: disk store open failed"),
                 }
@@ -728,7 +728,7 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
             }
 
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(mut d) = disk { let _ = d.flush(); }
+            if let Some(mut d) = disk { let _ = d.flush().await; }
             let _ = series;
 
             // Release upstream consumer refs — propagates shutdown upward if the
@@ -797,7 +797,7 @@ fn spawn_forwarder<T: DataPoint + 'static>(
         let mut disk: Option<DiskStore<T>> = None;
         #[cfg(not(target_arch = "wasm32"))]
         if persistence.is_enabled_for(&key.kind) {
-            match DiskStore::<T>::new(&storage_root, key.clone()) {
+            match DiskStore::<T>::new(&storage_root, key.clone()).await {
                 Ok(store) => disk = Some(store),
                 Err(e) => tracing::warn!(?e, ?key, "disk store open failed"),
             }
@@ -815,10 +815,11 @@ fn spawn_forwarder<T: DataPoint + 'static>(
         // Warm-start. Priority: disk tail > REST seed.
         if warm > 0 {
             #[cfg(not(target_arch = "wasm32"))]
-            let disk_tail: Vec<T> = disk
-                .as_ref()
-                .and_then(|d| d.read_tail(warm).ok())
-                .unwrap_or_default();
+            let disk_tail: Vec<T> = if let Some(d) = disk.as_ref() {
+                d.read_tail(warm).await.unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             #[cfg(target_arch = "wasm32")]
             let disk_tail: Vec<T> = Vec::new();
             let seed_points: Vec<T> = if disk_tail.is_empty() && !rest_seed.is_empty() {
@@ -992,7 +993,7 @@ fn spawn_forwarder<T: DataPoint + 'static>(
         }
 
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(mut d) = disk { let _ = d.flush(); }
+        if let Some(mut d) = disk { let _ = d.flush().await; }
         let _ = series; // dropped
         // Remove the mux entry so a subsequent `subscribe` for the same key
         // can re-spawn a fresh forwarder. Without this, the dead mux would
@@ -1072,7 +1073,7 @@ async fn run_kline_heal<T: DataPoint + 'static>(
     for p in new_to_emit {
         let _ = bcast_tx.send(Event::from_point(exchange, symbol_label, &key.kind, p));
     }
-    if let Some(d) = disk.as_mut() { let _ = d.flush(); }
+    if let Some(d) = disk.as_mut() { let _ = d.flush().await; }
 
     tracing::info!(
         target: "dig3::gap_heal",

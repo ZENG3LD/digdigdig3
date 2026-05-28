@@ -25,8 +25,16 @@ pub mod key;
 pub mod map;
 pub mod series;
 
-// DiskStore uses std::fs, sled, and blocking I/O — native-only.
+// DiskStore: cfg-split between native (std::fs blocking I/O) and wasm32
+// (OPFS via async createWritable). Both expose the same struct name so call
+// sites compile against either platform without source changes.
 #[cfg(not(target_arch = "wasm32"))]
+pub mod store;
+
+// The wasm implementation lives in store_wasm.rs; the #[path] alias exposes it
+// as `store` so `pub use store::DiskStore` works unchanged on both targets.
+#[cfg(target_arch = "wasm32")]
+#[path = "store_wasm.rs"]
 pub mod store;
 
 pub use data_point::DataPoint;
@@ -38,5 +46,5 @@ pub use series::Series;
 #[cfg(not(target_arch = "wasm32"))]
 pub use key::PollSpec;
 
-#[cfg(not(target_arch = "wasm32"))]
+// DiskStore is available on both targets now.
 pub use store::DiskStore;

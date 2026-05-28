@@ -693,7 +693,7 @@ impl<P: WsProtocol> DriverTask<P> {
                             Some(Some(Ok(msg))) => {
                                 // Update silence clock on every received frame.
                                 *self.last_frame_at.lock().await = Instant::now();
-                                match self.dispatch_message(msg, exchange).await {
+                                match self.dispatch_message(msg, exchange, &write_tx).await {
                                     Ok(true) => {} // normal
                                     Ok(false) => break LoopExit::Shutdown, // shutdown cmd via pong
                                     Err(e) => {
@@ -802,10 +802,15 @@ impl<P: WsProtocol> DriverTask<P> {
     }
 
     /// Dispatch a single WebSocket frame. Returns Ok(true) = continue, Ok(false) = shutdown.
+    ///
+    /// `write_tx` is the channel to the write task — used to send out a
+    /// server-ping response frame (see `WsProtocol::is_server_ping` /
+    /// `pong_response_frame`) without exiting the dispatch path.
     async fn dispatch_message(
         &self,
         msg: WsFrame,
         exchange: &str,
+        write_tx: &mpsc::UnboundedSender<WsFrame>,
     ) -> WebSocketResult<bool> {
         let raw: Value = match msg {
             WsFrame::Text(text) => {
@@ -854,6 +859,16 @@ impl<P: WsProtocol> DriverTask<P> {
 
         // Check if it's a pong (suppress unmatched warn)
         if self.protocol.is_pong(&raw) {
+            return Ok(true);
+        }
+
+        // Check if it's a server-initiated heartbeat / ping — reply immediately.
+        if self.protocol.is_server_ping(&raw) {
+            if let Some(reply) = self.protocol.pong_response_frame(&raw) {
+                if write_tx.send(reply).is_err() {
+                    warn!(target: "dig3::ws::ping", exchange, "server-ping reply: write task gone");
+                }
+            }
             return Ok(true);
         }
 

@@ -114,6 +114,30 @@ pub trait WsProtocol: Send + Sync + 'static {
         false
     }
 
+    /// Returns true if the frame is a server-initiated heartbeat / ping that
+    /// requires a client-side response frame.
+    ///
+    /// Distinct from `is_pong` (which suppresses the unmatched warn for a
+    /// pong response to OUR client-initiated ping). `is_server_ping` is for
+    /// exchanges where the SERVER initiates an application-level heartbeat
+    /// (e.g. Crypto.com `public/heartbeat`, BingX gzip `"Ping"`). When this
+    /// returns true, the transport calls `pong_response_frame` to obtain the
+    /// frame to send back.
+    fn is_server_ping(&self, raw: &Value) -> bool {
+        let _ = raw;
+        false
+    }
+
+    /// Build the response frame to a server-initiated heartbeat / ping.
+    ///
+    /// Called only when `is_server_ping` returns true. Returning `None` means
+    /// "received but no reply needed" (rare — usually pair with is_server_ping
+    /// returning false in that case).
+    fn pong_response_frame(&self, raw: &Value) -> Option<WsFrame> {
+        let _ = raw;
+        None
+    }
+
     // ── Registry ─────────────────────────────────────────────────────────
 
     /// Return the topic registry for this exchange+account_type combination.

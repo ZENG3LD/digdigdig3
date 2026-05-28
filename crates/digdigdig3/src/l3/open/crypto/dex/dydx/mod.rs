@@ -38,7 +38,7 @@ mod endpoints;
 mod auth;
 mod parser;
 mod connector;
-#[cfg(not(target_arch = "wasm32"))]
+mod protocol;
 mod websocket;
 
 /// Hand-written prost protobuf message types for dYdX v4 order placement
@@ -58,5 +58,5 @@ pub use endpoints::{DydxEndpoint, DydxUrls};
 pub use auth::DydxAuth;
 pub use parser::DydxParser;
 pub use connector::DydxConnector;
-#[cfg(not(target_arch = "wasm32"))]
+pub use protocol::DydxProtocol;
 pub use websocket::DydxWebSocket;

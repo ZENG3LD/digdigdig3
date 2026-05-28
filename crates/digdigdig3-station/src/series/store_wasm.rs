@@ -405,7 +405,7 @@ async fn opfs_walk_or_create(
     root: &FileSystemDirectoryHandle,
     key: &SeriesKey,
 ) -> Result<FileSystemDirectoryHandle, OpfsError> {
-    let mut opts = FileSystemGetDirectoryOptions::new();
+    let opts = FileSystemGetDirectoryOptions::new();
     opts.set_create(true);
 
     let kind_slug = key.kind.slug();
@@ -450,7 +450,7 @@ async fn opfs_append(
     name: &str,
     data: &[u8],
 ) -> Result<(), OpfsError> {
-    let mut fopts = FileSystemGetFileOptions::new();
+    let fopts = FileSystemGetFileOptions::new();
     fopts.set_create(true);
 
     let fh: FileSystemFileHandle =
@@ -463,7 +463,7 @@ async fn opfs_append(
     let file_obj: web_sys::File = JsFuture::from(fh.get_file()).await?.dyn_into()?;
     let existing_size = file_obj.size() as u64;
 
-    let mut write_opts = FileSystemCreateWritableOptions::new();
+    let write_opts = FileSystemCreateWritableOptions::new();
     write_opts.set_keep_existing_data(true);
 
     let writable: FileSystemWritableFileStream =
@@ -473,7 +473,7 @@ async fn opfs_append(
 
     // Seek to end — required because keepExistingData starts cursor at 0.
     // Use the typed WriteParams dictionary with WriteCommandType::Seek.
-    let mut seek_params = WriteParams::new(WriteCommandType::Seek);
+    let seek_params = WriteParams::new(WriteCommandType::Seek);
     seek_params.set_position(Some(existing_size as f64));
     JsFuture::from(
         writable

@@ -128,6 +128,9 @@ pub struct BinanceConnector {
     urls: BinanceUrls,
     /// Testnet mode
     testnet: bool,
+    /// REST base URL override for proxy / Path-B routing.
+    /// When set, replaces `self.urls.rest_url(account_type)` in every request.
+    rest_override: Option<String>,
     /// Runtime rate limiter (Weight model: 6000 weight per minute)
     limiter: Arc<Mutex<RuntimeLimiter>>,
     /// Pressure monitor — logs transitions, gates non-essential requests at >= 90%
@@ -139,6 +142,15 @@ pub struct BinanceConnector {
 impl BinanceConnector {
     /// Создать новый коннектор
     pub async fn new(credentials: Option<Credentials>, testnet: bool) -> ExchangeResult<Self> {
+        Self::new_with_override(credentials, testnet, None).await
+    }
+
+    /// Создать коннектор с необязательным REST base URL override.
+    ///
+    /// When `rest_override` is `Some(url)`, all REST requests use that URL as
+    /// the base instead of the exchange's native endpoint.  Intended for proxy
+    /// and Path-B routing (e.g. `ExchangeHub::set_rest_base_override`).
+    pub async fn new_with_override(credentials: Option<Credentials>, testnet: bool, rest_override: Option<String>) -> ExchangeResult<Self> {
         let urls = if testnet {
             BinanceUrls::TESTNET
         } else {
@@ -173,6 +185,7 @@ impl BinanceConnector {
             auth,
             urls,
             testnet,
+            rest_override,
             limiter,
             monitor,
             precision: crate::core::utils::precision::PrecisionCache::new(),
@@ -180,9 +193,10 @@ impl BinanceConnector {
     }
 
     /// Создать коннектор только для публичных методов
-    pub async fn public(testnet: bool) -> ExchangeResult<Self> {
-        Self::new(None, testnet).await
+    pub async fn public(testnet: bool, rest_override: Option<String>) -> ExchangeResult<Self> {
+        Self::new_with_override(None, testnet, rest_override).await
     }
+
 
     // ═══════════════════════════════════════════════════════════════════════════
     // BINANCE-SPECIFIC PUBLIC METHODS
@@ -347,7 +361,8 @@ impl BinanceConnector {
             });
         }
 
-        let base_url = self.urls.rest_url(account_type);
+        let base_url: &str = self.rest_override.as_deref()
+            .unwrap_or_else(|| self.urls.rest_url(account_type));
         let path = endpoint.path();
 
         // Add auth if needed
@@ -393,7 +408,8 @@ impl BinanceConnector {
         // Order placement = essential: always wait, never drop
         self.rate_limit_wait(weight, true).await;
 
-        let base_url = self.urls.rest_url(account_type);
+        let base_url: &str = self.rest_override.as_deref()
+            .unwrap_or_else(|| self.urls.rest_url(account_type));
         let path = endpoint.path();
 
         // Auth required for POST
@@ -431,7 +447,8 @@ impl BinanceConnector {
         // Order amend = essential: always wait, never drop
         self.rate_limit_wait(weights::ORDER, true).await;
 
-        let base_url = self.urls.rest_url(account_type);
+        let base_url: &str = self.rest_override.as_deref()
+            .unwrap_or_else(|| self.urls.rest_url(account_type));
         let path = endpoint.path();
 
         let auth = self.auth.as_ref()
@@ -466,7 +483,8 @@ impl BinanceConnector {
         // Batch amend = essential: always wait, never drop
         self.rate_limit_wait(weights::DEFAULT, true).await;
 
-        let base_url = self.urls.rest_url(account_type);
+        let base_url: &str = self.rest_override.as_deref()
+            .unwrap_or_else(|| self.urls.rest_url(account_type));
         let path = endpoint.path();
 
         let auth = self.auth.as_ref()
@@ -504,7 +522,8 @@ impl BinanceConnector {
         };
         self.rate_limit_wait(weight, true).await;
 
-        let base_url = self.urls.rest_url(account_type);
+        let base_url: &str = self.rest_override.as_deref()
+            .unwrap_or_else(|| self.urls.rest_url(account_type));
         let path = endpoint.path();
 
         // Auth required for DELETE
@@ -1082,7 +1101,8 @@ impl BinanceConnector {
     pub async fn keepalive_listen_key(&self, listen_key: &str) -> ExchangeResult<Value> {
         // Listen key keepalive is essential — losing it kills the user data stream
         self.rate_limit_wait(weights::DEFAULT, true).await;
-        let base_url = self.urls.rest_url(AccountType::Spot);
+        let base_url: &str = self.rest_override.as_deref()
+            .unwrap_or_else(|| self.urls.rest_url(AccountType::Spot));
         let auth = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
         let mut params = HashMap::new();

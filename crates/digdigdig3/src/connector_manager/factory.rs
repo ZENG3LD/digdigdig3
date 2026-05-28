@@ -243,21 +243,21 @@ impl ConnectorFactory {
     /// let connector = ConnectorFactory::create_public(ExchangeId::Binance, false).await?;
     /// let price = connector.get_price(symbol, AccountType::Spot).await?;
     /// ```
-    pub(crate) async fn create_public(id: ExchangeId, testnet: bool) -> ExchangeResult<Arc<dyn CoreConnector>> {
+    pub(crate) async fn create_public(id: ExchangeId, testnet: bool, rest_override: Option<String>) -> ExchangeResult<Arc<dyn CoreConnector>> {
         match id {
             // ═══════════════════════════════════════════════════════════════════════
             // CEX - Pattern A: ::public(testnet: bool)
             // ═══════════════════════════════════════════════════════════════════════
             ExchangeId::Binance => {
-                let c = BinanceConnector::public(testnet).await?;
+                let c = BinanceConnector::public(testnet, rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Bybit => {
-                let c = BybitConnector::public(testnet).await?;
+                let c = BybitConnector::public(testnet, rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::OKX => {
-                let c = OkxConnector::public(testnet).await?;
+                let c = OkxConnector::public(testnet, rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::KuCoin => {
@@ -265,7 +265,7 @@ impl ConnectorFactory {
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Kraken => {
-                let c = KrakenConnector::public(testnet).await?;
+                let c = KrakenConnector::public(testnet, rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::GateIO => {
@@ -281,7 +281,7 @@ impl ConnectorFactory {
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::HTX => {
-                let c = HtxConnector::public(testnet).await?;
+                let c = HtxConnector::public(testnet, rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::BingX => {
@@ -297,7 +297,7 @@ impl ConnectorFactory {
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Deribit => {
-                let c = DeribitConnector::public(testnet).await?;
+                let c = DeribitConnector::public(testnet, rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             #[cfg(feature = "onchain-evm")]
@@ -324,15 +324,15 @@ impl ConnectorFactory {
             // CEX - Pattern B: ::public() (no testnet param)
             // ═══════════════════════════════════════════════════════════════════════
             ExchangeId::Bitget => {
-                let c = BitgetConnector::public().await?;
+                let c = BitgetConnector::public(rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Bitstamp => {
-                let c = BitstampConnector::public().await?;
+                let c = BitstampConnector::public(rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Coinbase => {
-                let c = CoinbaseConnector::public().await?;
+                let c = CoinbaseConnector::public(rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Gemini => {
@@ -645,7 +645,7 @@ impl ConnectorFactory {
             // ═══════════════════════════════════════════════════════════════════════
             ExchangeId::Bitmex => {
                 // BitMEX public market data only — no authenticated connector
-                Self::create_public(id, testnet).await
+                Self::create_public(id, testnet, None).await
             }
 
             // ═══════════════════════════════════════════════════════════════════════
@@ -653,7 +653,7 @@ impl ConnectorFactory {
             // ═══════════════════════════════════════════════════════════════════════
             ExchangeId::Lighter => {
                 // Lighter doesn't support authentication, use public connector
-                Self::create_public(id, testnet).await
+                Self::create_public(id, testnet, None).await
             }
 
             // ═══════════════════════════════════════════════════════════════════════
@@ -780,7 +780,7 @@ impl ConnectorFactory {
             }
             ExchangeId::Dukascopy => {
                 // Dukascopy is a data provider - no authentication supported
-                Self::create_public(id, testnet).await
+                Self::create_public(id, testnet, None).await
             }
 
             // ═══════════════════════════════════════════════════════════════════════
@@ -804,7 +804,7 @@ impl ConnectorFactory {
             // ═══════════════════════════════════════════════════════════════════════
             ExchangeId::YahooFinance => {
                 // YahooFinance doesn't need authentication, use public connector
-                Self::create_public(id, testnet).await
+                Self::create_public(id, testnet, None).await
             }
             ExchangeId::DefiLlama => {
                 Err(ExchangeError::UnsupportedOperation(
@@ -1219,7 +1219,7 @@ mod tests {
     /// Test that we can create public connectors for exchanges that support it
     #[tokio::test]
     async fn test_create_public_binance() {
-        let result = ConnectorFactory::create_public(ExchangeId::Binance, false).await;
+        let result = ConnectorFactory::create_public(ExchangeId::Binance, false, None).await;
         assert!(result.is_ok(), "Should create Binance public connector");
 
         let connector = result.unwrap();
@@ -1266,7 +1266,7 @@ mod tests {
             println!("Testing {}", meta.name);
 
             // Try public first
-            let public_result = ConnectorFactory::create_public(meta.id, false).await;
+            let public_result = ConnectorFactory::create_public(meta.id, false, None).await;
             match public_result {
                 Ok(_) => {
                     println!("  ✓ Public connector created");
@@ -1339,7 +1339,7 @@ mod tests {
     /// Test that factory creates correct connector type
     #[tokio::test]
     async fn test_factory_creates_correct_type() {
-        let result = ConnectorFactory::create_public(ExchangeId::Bybit, false).await;
+        let result = ConnectorFactory::create_public(ExchangeId::Bybit, false, None).await;
         assert!(result.is_ok());
 
         let connector = result.unwrap();
@@ -1350,9 +1350,9 @@ mod tests {
     /// Test multiple connector creation (cloning Arc is cheap)
     #[tokio::test]
     async fn test_factory_multiple_creation() {
-        let conn1 = ConnectorFactory::create_public(ExchangeId::Binance, false).await.unwrap();
-        let conn2 = ConnectorFactory::create_public(ExchangeId::Bybit, false).await.unwrap();
-        let conn3 = ConnectorFactory::create_public(ExchangeId::OKX, false).await.unwrap();
+        let conn1 = ConnectorFactory::create_public(ExchangeId::Binance, false, None).await.unwrap();
+        let conn2 = ConnectorFactory::create_public(ExchangeId::Bybit, false, None).await.unwrap();
+        let conn3 = ConnectorFactory::create_public(ExchangeId::OKX, false, None).await.unwrap();
 
         assert_eq!(conn1.exchange_id(), ExchangeId::Binance);
         assert_eq!(conn2.exchange_id(), ExchangeId::Bybit);

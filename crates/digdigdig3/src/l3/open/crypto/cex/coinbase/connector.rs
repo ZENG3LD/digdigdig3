@@ -143,6 +143,10 @@ pub struct CoinbaseConnector {
     http: HttpClient,
     /// Authentication (None for public methods)
     auth: Option<CoinbaseAuth>,
+    /// REST base URL override for proxy / Path-B routing.
+    /// Replaces `CoinbaseUrls::base_url()` only — `market_url()` and `v2_url()`
+    /// are separate path spaces and are not overridden.
+    rest_override: Option<String>,
     /// Runtime rate limiter (Group model: public 10/1s + private 30/1s)
     limiter: Arc<Mutex<RuntimeLimiter>>,
     /// Pressure monitor
@@ -154,6 +158,14 @@ pub struct CoinbaseConnector {
 impl CoinbaseConnector {
     /// Create new connector
     pub async fn new(credentials: Option<Credentials>) -> ExchangeResult<Self> {
+        Self::new_with_override(credentials, None).await
+    }
+
+    /// Create new connector with optional REST base URL override.
+    ///
+    /// Override applies to `CoinbaseUrls::base_url()` only (`/api/v3/brokerage`).
+    /// `market_url()` and `v2_url()` are separate path spaces and are not overridden.
+    pub async fn new_with_override(credentials: Option<Credentials>, rest_override: Option<String>) -> ExchangeResult<Self> {
         let http = HttpClient::new(30_000)?; // 30 sec timeout
 
         let auth = if let Some(creds) = credentials {
@@ -169,6 +181,7 @@ impl CoinbaseConnector {
         Ok(Self {
             http,
             auth,
+            rest_override,
             limiter,
             monitor,
             precision: PrecisionCache::new(),
@@ -176,9 +189,10 @@ impl CoinbaseConnector {
     }
 
     /// Create connector only for public methods
-    pub async fn public() -> ExchangeResult<Self> {
-        Self::new(None).await
+    pub async fn public(rest_override: Option<String>) -> ExchangeResult<Self> {
+        Self::new_with_override(None, rest_override).await
     }
+
 
     // ═══════════════════════════════════════════════════════════════════════════
     // HTTP HELPERS
@@ -259,12 +273,16 @@ impl CoinbaseConnector {
         };
 
         // Decide whether to use public or private endpoint
+        let effective_base: &str = match self.rest_override.as_deref() {
+            Some(ov) => ov,
+            None => CoinbaseUrls::base_url(),
+        };
         let (base_url, use_public) = if endpoint.is_private() && self.auth.is_some() {
-            (CoinbaseUrls::base_url(), false)
+            (effective_base, false)
         } else if endpoint.has_public_alternative() {
             (CoinbaseUrls::market_url(), true)
         } else if !endpoint.is_private() {
-            (CoinbaseUrls::base_url(), false)
+            (effective_base, false)
         } else {
             return Err(ExchangeError::Auth("Authentication required".to_string()));
         };
@@ -304,7 +322,10 @@ impl CoinbaseConnector {
         // POST is always private + essential
         self.rate_limit_wait(true, true).await;
 
-        let base_url = CoinbaseUrls::base_url();
+        let base_url: &str = match self.rest_override.as_deref() {
+            Some(ov) => ov,
+            None => CoinbaseUrls::base_url(),
+        };
         let path = endpoint.path();
         let url = format!("{}{}", base_url, path);
 
@@ -613,8 +634,11 @@ impl MarketData for CoinbaseConnector {
             format!("?{}", query.join("&"))
         };
 
-        let base_url = if self.auth.is_some() {
-            CoinbaseUrls::base_url()
+        let base_url: &str = if self.auth.is_some() {
+            match self.rest_override.as_deref() {
+                Some(ov) => ov,
+                None => CoinbaseUrls::base_url(),
+            }
         } else {
             CoinbaseUrls::market_url()
         };
@@ -652,7 +676,8 @@ impl MarketData for CoinbaseConnector {
         // Coinbase doesn't have a dedicated ping endpoint
         // Use the server time endpoint as a health check
         // base_url() already includes /api/v3/brokerage, so just append /time
-        let url = format!("{}/time", CoinbaseUrls::base_url());
+        let cb_base: &str = match self.rest_override.as_deref() { Some(ov) => ov, None => CoinbaseUrls::base_url() };
+        let url = format!("{}/time", cb_base);
         self.http.get(&url, &HashMap::new()).await?;
         Ok(())
     }
@@ -885,7 +910,8 @@ impl Trading for CoinbaseConnector {
         let query_str = format!("?{}", query.join("&"));
 
         let path = format!("{}{}", CoinbaseEndpoint::ListOrders.path(), query_str);
-        let url = format!("{}{}", CoinbaseUrls::base_url(), path);
+        let cb_base: &str = match self.rest_override.as_deref() { Some(ov) => ov, None => CoinbaseUrls::base_url() };
+        let url = format!("{}{}", cb_base, path);
 
         let headers = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?
@@ -1090,7 +1116,8 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         let endpoint = CoinbaseEndpoint::OrderDetails;
         let path = format!("{}/{}", endpoint.path(), order_id);
 
-        let url = format!("{}{}", CoinbaseUrls::base_url(), path);
+        let cb_base: &str = match self.rest_override.as_deref() { Some(ov) => ov, None => CoinbaseUrls::base_url() };
+        let url = format!("{}{}", cb_base, path);
 
         let headers = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?
@@ -1122,7 +1149,8 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         let query_str = format!("?{}", query.join("&"));
 
         let path = format!("{}{}", CoinbaseEndpoint::ListOrders.path(), query_str);
-        let url = format!("{}{}", CoinbaseUrls::base_url(), path);
+        let cb_base: &str = match self.rest_override.as_deref() { Some(ov) => ov, None => CoinbaseUrls::base_url() };
+        let url = format!("{}{}", cb_base, path);
 
         let headers = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?
@@ -1183,7 +1211,8 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         };
 
         let path = format!("{}{}", CoinbaseEndpoint::ListFills.path(), query_str);
-        let url = format!("{}{}", CoinbaseUrls::base_url(), path);
+        let cb_base: &str = match self.rest_override.as_deref() { Some(ov) => ov, None => CoinbaseUrls::base_url() };
+        let url = format!("{}{}", cb_base, path);
 
         let headers = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?

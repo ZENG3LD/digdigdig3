@@ -63,7 +63,7 @@ impl TestHarness {
     ///
     /// Pass `testnet: true` to use the exchange's testnet/sandbox environment.
     pub async fn create_public(&self, id: ExchangeId, testnet: bool) -> ExchangeResult<Arc<dyn CoreConnector>> {
-        ConnectorFactory::create_public(id, testnet).await
+        ConnectorFactory::create_public(id, testnet, None).await
     }
 
     /// Create an authenticated connector for `id`, if credentials are available.

@@ -130,6 +130,9 @@ pub struct BitgetConnector {
     /// When `true`, WebSocket connects to `wspap.bitget.com` and all
     /// authenticated REST requests include the `X-CHANNEL-API-CODE: paptrading` header.
     testnet: bool,
+    /// REST base URL override for proxy / Path-B routing.
+    /// When set, replaces `self.urls.rest_url(account_type)` in every request.
+    rest_override: Option<String>,
     /// Runtime rate limiter (Group model: market 20/1s + trading 10/1s)
     limiter: Arc<Mutex<RuntimeLimiter>>,
     /// Pressure monitor
@@ -146,6 +149,11 @@ impl BitgetConnector {
     /// `X-CHANNEL-API-CODE: paptrading` header is added to every authenticated
     /// REST request.  The REST base URL remains the same as mainnet.
     pub async fn new(credentials: Option<Credentials>, testnet: bool) -> ExchangeResult<Self> {
+        Self::new_with_override(credentials, testnet, None).await
+    }
+
+    /// Create new connector with optional REST base URL override.
+    pub async fn new_with_override(credentials: Option<Credentials>, testnet: bool, rest_override: Option<String>) -> ExchangeResult<Self> {
         let urls = if testnet {
             BitgetUrls::TESTNET
         } else {
@@ -184,6 +192,7 @@ impl BitgetConnector {
             auth,
             urls,
             testnet,
+            rest_override,
             limiter,
             monitor,
             precision: crate::core::utils::precision::PrecisionCache::new(),
@@ -191,9 +200,10 @@ impl BitgetConnector {
     }
 
     /// Создать коннектор только для публичных методов
-    pub async fn public() -> ExchangeResult<Self> {
-        Self::new(None, false).await
+    pub async fn public(rest_override: Option<String>) -> ExchangeResult<Self> {
+        Self::new_with_override(None, false, rest_override).await
     }
+
 
     // ═══════════════════════════════════════════════════════════════════════════
     // HTTP HELPERS
@@ -265,7 +275,8 @@ impl BitgetConnector {
             });
         }
 
-        let base_url = self.urls.rest_url(account_type);
+        let base_url: &str = self.rest_override.as_deref()
+            .unwrap_or_else(|| self.urls.rest_url(account_type));
         let path = endpoint.path();
 
         // Build query string
@@ -311,7 +322,8 @@ impl BitgetConnector {
         // POST endpoints are always trading-related (essential)
         self.rate_limit_wait(true, true).await;
 
-        let base_url = self.urls.rest_url(account_type);
+        let base_url: &str = self.rest_override.as_deref()
+            .unwrap_or_else(|| self.urls.rest_url(account_type));
         let path = endpoint.path();
         let url = format!("{}{}", base_url, path);
 

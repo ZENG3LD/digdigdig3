@@ -88,6 +88,9 @@ pub struct BitstampConnector {
     reqwest_client: reqwest::Client,
     /// Authentication (None for public methods)
     auth: Option<BitstampAuth>,
+    /// REST base URL override for proxy / Path-B routing.
+    /// When set, replaces `BitstampUrls::base_url()` in every request.
+    rest_override: Option<String>,
     /// Runtime rate limiter (Simple model: 400 req/1s)
     limiter: Arc<Mutex<RuntimeLimiter>>,
     /// Pressure monitor — logs transitions, gates non-essential requests at >= 90%
@@ -99,6 +102,11 @@ pub struct BitstampConnector {
 impl BitstampConnector {
     /// Create new connector
     pub async fn new(credentials: Option<Credentials>) -> ExchangeResult<Self> {
+        Self::new_with_override(credentials, None).await
+    }
+
+    /// Create new connector with optional REST base URL override.
+    pub async fn new_with_override(credentials: Option<Credentials>, rest_override: Option<String>) -> ExchangeResult<Self> {
         let http = HttpClient::new(30_000)?; // 30 sec timeout
 
         let reqwest_client = {
@@ -118,6 +126,7 @@ impl BitstampConnector {
             http,
             reqwest_client,
             auth,
+            rest_override,
             limiter,
             monitor,
             precision: PrecisionCache::new(),
@@ -125,9 +134,10 @@ impl BitstampConnector {
     }
 
     /// Create connector only for public methods
-    pub async fn public() -> ExchangeResult<Self> {
-        Self::new(None).await
+    pub async fn public(rest_override: Option<String>) -> ExchangeResult<Self> {
+        Self::new_with_override(None, rest_override).await
     }
+
 
     // ═══════════════════════════════════════════════════════════════════════════
     // HTTP HELPERS
@@ -175,7 +185,10 @@ impl BitstampConnector {
             });
         }
 
-        let base_url = BitstampUrls::base_url();
+        let base_url: &str = match self.rest_override.as_deref() {
+            Some(ov) => ov,
+            None => BitstampUrls::base_url(),
+        };
         let path = if let Some(p) = pair {
             endpoint.path_with_pair(p)
         } else {
@@ -211,7 +224,10 @@ impl BitstampConnector {
     ) -> ExchangeResult<Value> {
         self.rate_limit_wait(1, true).await;
 
-        let base_url = BitstampUrls::base_url();
+        let base_url: &str = match self.rest_override.as_deref() {
+            Some(ov) => ov,
+            None => BitstampUrls::base_url(),
+        };
         let path = if let Some(p) = pair {
             endpoint.path_with_pair(p)
         } else {
@@ -287,7 +303,10 @@ impl BitstampConnector {
     ) -> ExchangeResult<Value> {
         self.rate_limit_wait(1, true).await;
 
-        let base_url = BitstampUrls::base_url();
+        let base_url: &str = match self.rest_override.as_deref() {
+            Some(ov) => ov,
+            None => BitstampUrls::base_url(),
+        };
 
         let body = if body_params.is_empty() {
             String::new()
@@ -517,7 +536,11 @@ impl MarketData for BitstampConnector {
                 message: "Rate limit budget >= 90% used; non-essential market data request dropped".to_string(),
             });
         }
-        let url = format!("{}/api/v2/trading-pairs-info/", BitstampUrls::base_url());
+        let base_url: &str = match self.rest_override.as_deref() {
+            Some(ov) => ov,
+            None => BitstampUrls::base_url(),
+        };
+        let url = format!("{}/api/v2/trading-pairs-info/", base_url);
         let response = self.http.get(&url, &HashMap::new()).await?;
         let info = BitstampParser::parse_exchange_info(&response, account_type)?;
         self.precision.load_from_symbols(&info);

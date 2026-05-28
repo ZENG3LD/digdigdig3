@@ -86,6 +86,9 @@ pub struct KrakenConnector {
     urls: KrakenUrls,
     /// Testnet mode
     testnet: bool,
+    /// REST base URL override for proxy / Path-B routing.
+    /// When set, replaces `self.urls.rest_url(account_type)` in every request.
+    rest_override: Option<String>,
     /// Runtime rate limiter (Decaying model: max=15, decay=0.33/s)
     limiter: Arc<Mutex<RuntimeLimiter>>,
     /// Pressure monitor
@@ -97,6 +100,11 @@ pub struct KrakenConnector {
 impl KrakenConnector {
     /// Create new connector
     pub async fn new(credentials: Option<Credentials>, testnet: bool) -> ExchangeResult<Self> {
+        Self::new_with_override(credentials, testnet, None).await
+    }
+
+    /// Create new connector with optional REST base URL override.
+    pub async fn new_with_override(credentials: Option<Credentials>, testnet: bool, rest_override: Option<String>) -> ExchangeResult<Self> {
         let urls = if testnet {
             KrakenUrls::TESTNET
         } else {
@@ -118,6 +126,7 @@ impl KrakenConnector {
             auth,
             urls,
             testnet,
+            rest_override,
             limiter,
             monitor,
             precision: PrecisionCache::new(),
@@ -125,9 +134,10 @@ impl KrakenConnector {
     }
 
     /// Create connector for public methods only
-    pub async fn public(testnet: bool) -> ExchangeResult<Self> {
-        Self::new(None, testnet).await
+    pub async fn public(testnet: bool, rest_override: Option<String>) -> ExchangeResult<Self> {
+        Self::new_with_override(None, testnet, rest_override).await
     }
+
 
     // ═══════════════════════════════════════════════════════════════════════════
     // HTTP HELPERS
@@ -172,7 +182,8 @@ impl KrakenConnector {
             });
         }
 
-        let base_url = self.urls.rest_url(account_type);
+        let base_url: &str = self.rest_override.as_deref()
+            .unwrap_or_else(|| self.urls.rest_url(account_type));
         let path = endpoint.path();
 
         // Build query string
@@ -205,7 +216,8 @@ impl KrakenConnector {
         // POST requests are trading operations — always essential
         self.rate_limit_wait(true).await;
 
-        let base_url = self.urls.rest_url(account_type);
+        let base_url: &str = self.rest_override.as_deref()
+            .unwrap_or_else(|| self.urls.rest_url(account_type));
         let path = endpoint.path();
 
         if endpoint.requires_auth() {

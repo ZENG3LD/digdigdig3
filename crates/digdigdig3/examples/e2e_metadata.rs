@@ -183,7 +183,7 @@ async fn test_bybit_rest() -> RestTally {
     println!("\n── Bybit REST ───────────────────────────────────────────────");
     let mut tally = RestTally { exchange: "Bybit".into(), tested: 0, passed: 0, failed: 0 };
 
-    let conn = match BybitConnector::public(false).await {
+    let conn = match BybitConnector::public(false, None).await {
         Ok(c) => c,
         Err(e) => {
             println!("  FAIL: connector init -> {}", e);
@@ -249,7 +249,7 @@ async fn test_okx_rest() -> RestTally {
     println!("\n── OKX REST ─────────────────────────────────────────────────");
     let mut tally = RestTally { exchange: "OKX".into(), tested: 0, passed: 0, failed: 0 };
 
-    let conn = match OkxConnector::public(false).await {
+    let conn = match OkxConnector::public(false, None).await {
         Ok(c) => c,
         Err(e) => {
             println!("  FAIL: connector init -> {}", e);
@@ -404,7 +404,7 @@ async fn test_deribit_rest() -> RestTally {
     println!("\n── Deribit REST ─────────────────────────────────────────────");
     let mut tally = RestTally { exchange: "Deribit".into(), tested: 0, passed: 0, failed: 0 };
 
-    let conn = match DeribitConnector::public(false).await {
+    let conn = match DeribitConnector::public(false, None).await {
         Ok(c) => c,
         Err(e) => {
             println!("  FAIL: connector init -> {}", e);
@@ -447,7 +447,7 @@ async fn test_bitget_rest() -> RestTally {
     println!("\n── Bitget REST ──────────────────────────────────────────────");
     let mut tally = RestTally { exchange: "Bitget".into(), tested: 0, passed: 0, failed: 0 };
 
-    let conn = match BitgetConnector::public().await {
+    let conn = match BitgetConnector::public(None).await {
         Ok(c) => c,
         Err(e) => {
             println!("  FAIL: connector init -> {}", e);
@@ -485,7 +485,7 @@ async fn test_htx_rest() -> RestTally {
     println!("\n── HTX REST ─────────────────────────────────────────────────");
     let mut tally = RestTally { exchange: "HTX".into(), tested: 0, passed: 0, failed: 0 };
 
-    let conn = match HtxConnector::public(false).await {
+    let conn = match HtxConnector::public(false, None).await {
         Ok(c) => c,
         Err(e) => {
             println!("  FAIL: connector init -> {}", e);
@@ -665,7 +665,7 @@ async fn test_kraken_rest() -> RestTally {
     println!("\n── Kraken REST ──────────────────────────────────────────────");
     let mut tally = RestTally { exchange: "Kraken".into(), tested: 0, passed: 0, failed: 0 };
 
-    let conn = match KrakenConnector::public(false).await {
+    let conn = match KrakenConnector::public(false, None).await {
         Ok(c) => c,
         Err(e) => {
             println!("  FAIL: connector init -> {}", e);
@@ -713,7 +713,7 @@ async fn test_bitstamp_rest() -> RestTally {
     println!("\n── Bitstamp REST ────────────────────────────────────────────");
     let mut tally = RestTally { exchange: "Bitstamp".into(), tested: 0, passed: 0, failed: 0 };
 
-    let conn = match BitstampConnector::public().await {
+    let conn = match BitstampConnector::public(None).await {
         Ok(c) => c,
         Err(e) => {
             println!("  FAIL: connector init -> {}", e);

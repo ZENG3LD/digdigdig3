@@ -61,7 +61,8 @@ impl ExchangeHub {
 
     /// Connect ONLY the public REST connector for an exchange.
     pub async fn connect_public(&self, id: ExchangeId, testnet: bool) -> ExchangeResult<()> {
-        let conn = ConnectorFactory::create_public(id, testnet).await?;
+        let override_url = self.rest_overrides.get(&id).map(|v| v.clone());
+        let conn = ConnectorFactory::create_public(id, testnet, override_url).await?;
         self.rest.insert(id, conn);
         Ok(())
     }
@@ -133,7 +134,8 @@ impl ExchangeHub {
         account_types: &[AccountType],
         testnet: bool,
     ) -> ExchangeResult<()> {
-        let conn = ConnectorFactory::create_public(id, testnet).await?;
+        let override_url = self.rest_overrides.get(&id).map(|v| v.clone());
+        let conn = ConnectorFactory::create_public(id, testnet, override_url).await?;
         self.rest.insert(id, conn);
 
         for &at in account_types {

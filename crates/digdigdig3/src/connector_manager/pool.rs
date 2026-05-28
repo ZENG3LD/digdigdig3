@@ -267,7 +267,7 @@ mod tests {
     fn create_mock_okx() -> Arc<dyn CoreConnector> {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let connector = rt.block_on(async {
-            OkxConnector::public(true).await.unwrap()
+            OkxConnector::public(true, None).await.unwrap()
         });
         Arc::new(connector) as Arc<dyn CoreConnector>
     }
@@ -275,7 +275,7 @@ mod tests {
     fn create_mock_okx_2() -> Arc<dyn CoreConnector> {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let connector = rt.block_on(async {
-            OkxConnector::public(false).await.unwrap()
+            OkxConnector::public(false, None).await.unwrap()
         });
         Arc::new(connector) as Arc<dyn CoreConnector>
     }

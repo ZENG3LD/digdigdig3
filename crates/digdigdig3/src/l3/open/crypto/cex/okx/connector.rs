@@ -120,6 +120,9 @@ pub struct OkxConnector {
     urls: OkxUrls,
     /// Testnet mode
     testnet: bool,
+    /// REST base URL override for proxy / Path-B routing.
+    /// When set, replaces `self.urls.rest_url()` in every request.
+    rest_override: Option<String>,
     /// Runtime rate limiter (Simple model: 40 req/2s)
     limiter: Arc<Mutex<RuntimeLimiter>>,
     /// Pressure monitor — logs transitions, gates non-essential requests at >= 90%
@@ -131,6 +134,11 @@ pub struct OkxConnector {
 impl OkxConnector {
     /// Создать новый коннектор
     pub async fn new(credentials: Option<Credentials>, testnet: bool) -> ExchangeResult<Self> {
+        Self::new_with_override(credentials, testnet, None).await
+    }
+
+    /// Создать коннектор с необязательным REST base URL override.
+    pub async fn new_with_override(credentials: Option<Credentials>, testnet: bool, rest_override: Option<String>) -> ExchangeResult<Self> {
         let urls = if testnet {
             OkxUrls::TESTNET
         } else {
@@ -152,6 +160,7 @@ impl OkxConnector {
             auth,
             urls,
             testnet,
+            rest_override,
             limiter,
             monitor,
             precision: crate::core::utils::precision::PrecisionCache::new(),
@@ -159,9 +168,10 @@ impl OkxConnector {
     }
 
     /// Создать коннектор только для публичных методов
-    pub async fn public(testnet: bool) -> ExchangeResult<Self> {
-        Self::new(None, testnet).await
+    pub async fn public(testnet: bool, rest_override: Option<String>) -> ExchangeResult<Self> {
+        Self::new_with_override(None, testnet, rest_override).await
     }
+
 
     // ═══════════════════════════════════════════════════════════════════════════
     // HTTP HELPERS
@@ -208,7 +218,8 @@ impl OkxConnector {
             });
         }
 
-        let base_url = self.urls.rest_url();
+        let base_url: &str = self.rest_override.as_deref()
+            .unwrap_or_else(|| self.urls.rest_url());
         let path = endpoint.path();
 
         // Build query string
@@ -248,7 +259,8 @@ impl OkxConnector {
     ) -> ExchangeResult<Value> {
         self.rate_limit_wait(1, true).await;
 
-        let base_url = self.urls.rest_url();
+        let base_url: &str = self.rest_override.as_deref()
+            .unwrap_or_else(|| self.urls.rest_url());
         let path = endpoint.path();
         let url = format!("{}{}", base_url, path);
 
@@ -1626,7 +1638,8 @@ impl Positions for OkxConnector {
                 // OKX doesn't have a specific endpoint in our enum for this; use AccountConfig as fallback
                 // We need to call the raw endpoint
                 self.rate_limit_wait(1, true).await;
-                let base_url = self.urls.rest_url();
+                let base_url: &str = self.rest_override.as_deref()
+            .unwrap_or_else(|| self.urls.rest_url());
                 let path = "/api/v5/account/position/margin-balance";
                 let url = format!("{}{}", base_url, path);
                 let auth = self.auth.as_ref()
@@ -1662,7 +1675,8 @@ impl Positions for OkxConnector {
                 });
 
                 self.rate_limit_wait(1, true).await;
-                let base_url = self.urls.rest_url();
+                let base_url: &str = self.rest_override.as_deref()
+            .unwrap_or_else(|| self.urls.rest_url());
                 let path = "/api/v5/account/position/margin-balance";
                 let url = format!("{}{}", base_url, path);
                 let auth = self.auth.as_ref()
@@ -1701,7 +1715,8 @@ impl Positions for OkxConnector {
                 });
 
                 self.rate_limit_wait(1, true).await;
-                let base_url = self.urls.rest_url();
+                let base_url: &str = self.rest_override.as_deref()
+            .unwrap_or_else(|| self.urls.rest_url());
                 let path = "/api/v5/trade/close-position";
                 let url = format!("{}{}", base_url, path);
                 let auth = self.auth.as_ref()

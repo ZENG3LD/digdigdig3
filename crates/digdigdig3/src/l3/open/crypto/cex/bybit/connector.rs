@@ -100,6 +100,9 @@ pub struct BybitConnector {
     auth: Option<BybitAuth>,
     /// Testnet mode
     testnet: bool,
+    /// REST base URL override for proxy / Path-B routing.
+    /// When set, replaces `BybitUrls::base_url(self.testnet)` in every request.
+    rest_override: Option<String>,
     /// Runtime rate limiter (Weight model: 600 weight per 5 seconds)
     limiter: Arc<Mutex<RuntimeLimiter>>,
     /// Pressure monitor — gates non-essential requests at >= 90%
@@ -111,6 +114,14 @@ pub struct BybitConnector {
 impl BybitConnector {
     /// Create new connector
     pub async fn new(credentials: Option<Credentials>, testnet: bool) -> ExchangeResult<Self> {
+        Self::new_with_override(credentials, testnet, None).await
+    }
+
+    /// Create new connector with optional REST base URL override.
+    ///
+    /// When `rest_override` is `Some(url)`, all REST requests use that URL as
+    /// the base instead of the exchange's native endpoint.
+    pub async fn new_with_override(credentials: Option<Credentials>, testnet: bool, rest_override: Option<String>) -> ExchangeResult<Self> {
         let http = HttpClient::new(30_000)?; // 30 sec timeout
 
         let mut auth = credentials.as_ref().map(BybitAuth::new);
@@ -139,6 +150,7 @@ impl BybitConnector {
             http,
             auth,
             testnet,
+            rest_override,
             limiter,
             monitor,
             precision: crate::core::utils::precision::PrecisionCache::new(),
@@ -146,9 +158,10 @@ impl BybitConnector {
     }
 
     /// Create connector only for public methods
-    pub async fn public(testnet: bool) -> ExchangeResult<Self> {
-        Self::new(None, testnet).await
+    pub async fn public(testnet: bool, rest_override: Option<String>) -> ExchangeResult<Self> {
+        Self::new_with_override(None, testnet, rest_override).await
     }
+
 
     // ═══════════════════════════════════════════════════════════════════════════
     // HTTP HELPERS
@@ -218,7 +231,8 @@ impl BybitConnector {
             });
         }
 
-        let base_url = BybitUrls::base_url(self.testnet);
+        let base_url: &str = self.rest_override.as_deref()
+            .unwrap_or_else(|| BybitUrls::base_url(self.testnet));
         let path = endpoint.path();
 
         // Build query string
@@ -261,7 +275,8 @@ impl BybitConnector {
         // Order placement = essential: always wait, never drop
         self.rate_limit_wait(1, true).await;
 
-        let base_url = BybitUrls::base_url(self.testnet);
+        let base_url: &str = self.rest_override.as_deref()
+            .unwrap_or_else(|| BybitUrls::base_url(self.testnet));
         let path = endpoint.path();
         let url = format!("{}{}", base_url, path);
 

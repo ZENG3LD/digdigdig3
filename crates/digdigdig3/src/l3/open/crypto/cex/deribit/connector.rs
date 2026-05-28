@@ -90,6 +90,9 @@ pub struct DeribitConnector {
     urls: DeribitUrls,
     /// Testnet mode
     testnet: bool,
+    /// REST base URL override for proxy / Path-B routing.
+    /// When set, replaces `self.urls.rest_url()` in every request.
+    rest_override: Option<String>,
     /// Request counter for JSON-RPC ID
     request_id: Arc<Mutex<u64>>,
     /// Runtime rate limiter (Decaying: max=50000, decay=10000/s, cost=500/req)
@@ -103,6 +106,11 @@ pub struct DeribitConnector {
 impl DeribitConnector {
     /// Create new connector
     pub async fn new(credentials: Option<Credentials>, testnet: bool) -> ExchangeResult<Self> {
+        Self::new_with_override(credentials, testnet, None).await
+    }
+
+    /// Create new connector with optional REST base URL override.
+    pub async fn new_with_override(credentials: Option<Credentials>, testnet: bool, rest_override: Option<String>) -> ExchangeResult<Self> {
         let urls = if testnet {
             DeribitUrls::TESTNET
         } else {
@@ -124,6 +132,7 @@ impl DeribitConnector {
             auth: Arc::new(Mutex::new(auth)),
             urls,
             testnet,
+            rest_override,
             request_id: Arc::new(Mutex::new(1)),
             limiter,
             monitor,
@@ -139,9 +148,10 @@ impl DeribitConnector {
     }
 
     /// Create connector for public methods only
-    pub async fn public(testnet: bool) -> ExchangeResult<Self> {
-        Self::new(None, testnet).await
+    pub async fn public(testnet: bool, rest_override: Option<String>) -> ExchangeResult<Self> {
+        Self::new_with_override(None, testnet, rest_override).await
     }
+
 
     // ═══════════════════════════════════════════════════════════════════════════
     // AUTHENTICATION
@@ -264,7 +274,8 @@ impl DeribitConnector {
         self.rate_limit_wait(true).await;
 
         let id = self.next_id();
-        let url = self.urls.rest_url();
+        let url: &str = self.rest_override.as_deref()
+            .unwrap_or_else(|| self.urls.rest_url());
 
         // Build JSON-RPC request
         let request = json!({
@@ -306,7 +317,8 @@ impl DeribitConnector {
         self.rate_limit_wait(true).await;
 
         let id = self.next_id();
-        let url = self.urls.rest_url();
+        let url: &str = self.rest_override.as_deref()
+            .unwrap_or_else(|| self.urls.rest_url());
 
         // Build JSON-RPC request
         let request = json!({

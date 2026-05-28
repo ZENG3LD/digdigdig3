@@ -12,6 +12,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+// Monotonic clock: std::time::Instant on native, instant::Instant on wasm32.
+use crate::core::rt::clock::Instant;
+
 use reqwest::{Client, Method, Response, header::HeaderMap};
 use serde_json::Value;
 
@@ -336,7 +339,7 @@ impl HttpClient {
             }
 
             self.requests_total.fetch_add(1, Ordering::Relaxed);
-            let start = std::time::Instant::now();
+            let start = Instant::now();
 
             match self.execute_request(&method, url, params, headers, body).await {
                 Ok(response) => {
@@ -394,7 +397,7 @@ impl HttpClient {
             }
 
             self.requests_total.fetch_add(1, Ordering::Relaxed);
-            let start = std::time::Instant::now();
+            let start = Instant::now();
 
             match self.execute_request(&method, url, params, headers, body).await {
                 Ok(response) => {

@@ -7,3 +7,10 @@
 # Install: `cargo install dig2browser` (provides dig2-wasm-test binary).
 [target.wasm32-unknown-unknown]
 runner = "dig2-wasm-test"
+
+# WASM_BINDGEN_TEST_TIMEOUT: default is 20s which is too short for station
+# tests that poll live WebSocket streams for up to 15s per test.
+# Station tests need ~80s total (3 tests × ~27s average including WS wait).
+# Set 120s to be safe for the full test suite.
+[env]
+WASM_BINDGEN_TEST_TIMEOUT = { value = "120", force = false }

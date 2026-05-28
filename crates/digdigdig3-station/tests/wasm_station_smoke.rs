@@ -49,28 +49,10 @@ async fn wait_for_event(
 // ─── Test 1: Binance BTCUSDT Trade ───────────────────────────────────────────
 
 /// Subscribe to Binance BTCUSDT Trade stream in the browser and verify that at
-/// least one Event arrives within 10 seconds.
+/// least one Event arrives within 15 seconds.
 ///
 /// BTCUSDT trade stream fires ~10-50 frames/s — a hit within 2s is expected.
-/// The 10s budget guards against momentary exchange latency.
-///
-/// # Why this test is ignored
-///
-/// `std::time::Instant::now()` panics at runtime on wasm32-unknown-unknown
-/// because `std::time::Instant` is not mapped to a browser API in the Rust
-/// std library for this target. `UniversalWsTransport::new()` calls
-/// `Instant::now()` to initialise the `last_frame_at` silence-detection
-/// timestamp. `BinanceWebSocket::new()` calls the transport, so every
-/// `Station::subscribe` for Binance triggers the panic before any WS frame
-/// is exchanged.
-///
-/// Fix path (transport.rs — out of scope per task constraints):
-///   Replace `Arc<TokioMutex<std::time::Instant>>` with a cfg-conditional:
-///   on wasm32 use `Arc<TokioMutex<f64>>` (milliseconds via `js_sys::Date::now()`)
-///   and gate all silence-timeout logic with `#[cfg(not(target_arch = "wasm32"))]`.
-///   Once fixed, this test should pass (Binance BTCUSDT fires ~10-50 events/s).
-#[ignore = "std::time::Instant::now() panics on wasm32 inside UniversalWsTransport::new(); \
-            fix requires gating Instant usage in transport.rs (out of scope)"]
+/// The 15s budget (15 × 1s windows) guards against momentary exchange latency.
 #[wasm_bindgen_test]
 async fn station_binance_trade_recv_event() {
     let station = Station::builder()
@@ -128,7 +110,6 @@ async fn station_binance_trade_recv_event() {
 /// panics on wasm32. All three venues (Binance, Bybit, OKX) use
 /// `UniversalWsTransport` which calls `Instant::now()` at construction.
 /// See that test's doc-comment for the fix path.
-#[ignore = "std::time::Instant::now() panics on wasm32 inside UniversalWsTransport::new()"]
 #[wasm_bindgen_test]
 async fn station_multi_venue_subscribe_in_browser() {
     let station = Station::builder()

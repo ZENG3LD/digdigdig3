@@ -56,7 +56,10 @@
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+// Monotonic clock: std::time::Instant on native, instant::Instant on wasm32.
+use crate::core::rt::clock::Instant;
 
 /// Simple rate limiter: X requests per time window
 ///

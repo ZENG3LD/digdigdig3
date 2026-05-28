@@ -38,14 +38,13 @@
 //! The `type` field routes frames:
 //! - `trade`     → `StreamEvent::Trade`
 //! - `orderbook` → `StreamEvent::OrderbookSnapshot`
-//! - `ticker`    → (state-only update, no emitted event — Ticker punted)
+//! - `ticker`    → `StreamEvent::Ticker` (last price + 24h stats; bid/ask are None)
 //!
-//! ## Synthetic Ticker — TODO_Implement
+//! ## Ticker
 //!
-//! Upbit exposes a native `ticker` channel (last price, 24h stats) and
-//! `orderbook` (bid/ask). A complete Ticker (last+bid+ask) requires cross-frame
-//! state fusion. `subscribe_frame` returns `UnsupportedOperation` for
-//! `StreamKind::Ticker` until implemented.
+//! Upbit exposes a native `ticker` channel carrying last price, 24h high/low/volume,
+//! and change stats. Bid/ask are NOT part of the ticker frame — emitted as `None`.
+//! Subscribe with `StreamKind::Ticker` to receive native `StreamEvent::Ticker` events.
 
 use std::sync::OnceLock;
 
@@ -75,8 +74,7 @@ static REGISTRY: OnceLock<TopicRegistry> = OnceLock::new();
 /// Declarative Upbit WebSocket protocol shim.
 ///
 /// Korea endpoint only (`wss://api.upbit.com/websocket/v1`). KRW-* pairs.
-/// Supported: Trade, OrderbookSnapshot.
-/// Not supported: Ticker (synthetic fusion punted to follow-up pass).
+/// Supported: Trade, OrderbookSnapshot, Ticker.
 pub struct UpbitProtocol;
 
 impl UpbitProtocol {
@@ -148,11 +146,7 @@ impl WsProtocol for UpbitProtocol {
         match &spec.kind {
             StreamKind::Trade => Ok(Self::build_subscribe("trade", &code)),
             StreamKind::Orderbook => Ok(Self::build_subscribe("orderbook", &code)),
-            StreamKind::Ticker => Err(WebSocketError::UnsupportedOperation(
-                "not yet implemented — Upbit exposes a native ticker channel; \
-                 complete Ticker (last+bid+ask) can also be synthesized from orderbook (bid/ask) + trade (last price)"
-                    .into(),
-            )),
+            StreamKind::Ticker => Ok(Self::build_subscribe("ticker", &code)),
             other => Err(WebSocketError::NotSupported(format!(
                 "Upbit WS has no public channel for {:?}",
                 other
@@ -196,7 +190,7 @@ impl WsProtocol for UpbitProtocol {
     /// Upbit frames carry a `type` (or short-form `ty`) field:
     /// - `"trade"`     → `TopicKey("trade")`
     /// - `"orderbook"` → `TopicKey("orderbook")`
-    /// - `"ticker"`    → `None` (no parser registered; frame dropped silently)
+    /// - `"ticker"`    → `TopicKey("ticker")`
     /// - `{"status":"UP"}` → `None` (already handled by `is_pong`)
     fn extract_topic(&self, raw: &Value) -> Option<TopicKey> {
         let t = raw
@@ -204,8 +198,7 @@ impl WsProtocol for UpbitProtocol {
             .or_else(|| raw.get("ty"))
             .and_then(|v| v.as_str())?;
         match t {
-            "trade" | "orderbook" => Some(TopicKey::new(t)),
-            // ticker frames are state-only in v1; return None to drop silently
+            "trade" | "orderbook" | "ticker" => Some(TopicKey::new(t)),
             _ => None,
         }
     }
@@ -224,6 +217,7 @@ fn build_registry() -> TopicRegistry {
     TopicRegistry::builder()
         .register(StreamKind::Trade, at, "trade", parse_trade)
         .register(StreamKind::Orderbook, at, "orderbook", parse_orderbook)
+        .register(StreamKind::Ticker, at, "ticker", parse_ticker)
         .build()
 }
 
@@ -309,6 +303,33 @@ pub(crate) fn parse_orderbook(raw: &Value) -> WebSocketResult<StreamEvent> {
     Ok(StreamEvent::OrderbookSnapshot { symbol, book })
 }
 
+/// Parse `ticker` frame → `StreamEvent::Ticker`.
+///
+/// Upbit ticker frame carries last-price + 24h stats. Bid/ask are NOT part
+/// of the native ticker channel and are emitted as `None`.
+///
+/// Key fields:
+/// - `code`: symbol (e.g. `"KRW-BTC"`)
+/// - `trade_price`: last trade price
+/// - `high_price`, `low_price`, `opening_price`: 24h candle
+/// - `acc_trade_volume_24h`: base volume over 24h
+/// - `acc_trade_price_24h`: quote volume over 24h
+/// - `change_price`: absolute price change
+/// - `change_rate`: fractional change (multiply × 100 for percent)
+/// - `timestamp`: server send time (ms)
+pub(crate) fn parse_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
+    let symbol = raw
+        .get("code")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let ticker = UpbitParser::parse_ws_ticker(raw)
+        .map_err(|e| WebSocketError::Parse(format!("upbit ticker: {}", e)))?;
+
+    Ok(StreamEvent::Ticker { symbol, ticker })
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -381,14 +402,20 @@ mod tests {
     }
 
     #[test]
-    fn subscribe_frame_ticker_returns_unsupported_operation() {
+    fn subscribe_frame_ticker_is_3_element_array() {
         let spec = make_spec(StreamKind::Ticker, "KRW-BTC");
-        let result = proto().subscribe_frame(&spec);
-        assert!(
-            matches!(result, Err(WebSocketError::UnsupportedOperation(_))),
-            "Ticker must return UnsupportedOperation, got {:?}",
-            result
-        );
+        let frame = proto().subscribe_frame(&spec).expect("subscribe frame");
+        if let WsFrame::Text(s) = frame {
+            let v: Value = serde_json::from_str(&s).expect("valid json");
+            let arr = v.as_array().expect("outer array");
+            assert_eq!(arr.len(), 3, "subscribe frame must be 3-element array");
+            assert!(arr[0].get("ticket").is_some(), "element 0 must have ticket");
+            assert_eq!(arr[1].get("type").and_then(|v| v.as_str()), Some("ticker"));
+            assert_eq!(arr[1]["codes"][0], "KRW-BTC");
+            assert_eq!(arr[2].get("format").and_then(|v| v.as_str()), Some("DEFAULT"));
+        } else {
+            panic!("expected Text frame");
+        }
     }
 
     #[test]
@@ -439,9 +466,9 @@ mod tests {
     }
 
     #[test]
-    fn extract_topic_ticker_returns_none() {
+    fn extract_topic_ticker() {
         let raw = serde_json::json!({"type": "ticker", "code": "KRW-BTC"});
-        assert_eq!(proto().extract_topic(&raw), None);
+        assert_eq!(proto().extract_topic(&raw), Some(TopicKey::new("ticker")));
     }
 
     #[test]
@@ -453,12 +480,13 @@ mod tests {
     // ── topic_registry ────────────────────────────────────────────────────────
 
     #[test]
-    fn topic_registry_covers_trade_and_orderbook() {
+    fn topic_registry_covers_trade_and_orderbook_and_ticker() {
         let p = proto();
         let reg = p.topic_registry(AccountType::Spot);
         let at = AccountType::Spot;
         assert!(reg.supports(&StreamKind::Trade, at), "Trade");
         assert!(reg.supports(&StreamKind::Orderbook, at), "Orderbook");
+        assert!(reg.supports(&StreamKind::Ticker, at), "Ticker");
     }
 
     #[test]
@@ -467,7 +495,7 @@ mod tests {
         let reg = p.topic_registry(AccountType::Spot);
         assert!(reg.dispatch(&TopicKey::new("trade")).is_some(), "trade");
         assert!(reg.dispatch(&TopicKey::new("orderbook")).is_some(), "orderbook");
-        assert!(reg.dispatch(&TopicKey::new("ticker")).is_none(), "ticker not registered");
+        assert!(reg.dispatch(&TopicKey::new("ticker")).is_some(), "ticker registered");
     }
 
     // ── parse_trade ───────────────────────────────────────────────────────────
@@ -491,6 +519,35 @@ mod tests {
                 assert_eq!(trade.side, TradeSide::Sell);
             }
             other => panic!("expected Trade, got {:?}", other),
+        }
+    }
+
+    // ── parse_ticker ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_ticker_basic() {
+        let raw = serde_json::json!({
+            "type": "ticker",
+            "code": "KRW-BTC",
+            "trade_price": 90500000.0,
+            "high_price": 91000000.0,
+            "low_price": 87500000.0,
+            "acc_trade_volume_24h": 3200.0,
+            "acc_trade_price_24h": 290000000000.0,
+            "change_price": 2500000.0,
+            "change_rate": 0.0284,
+            "timestamp": 1718782303500i64
+        });
+        let ev = parse_ticker(&raw).expect("parse");
+        match ev {
+            StreamEvent::Ticker { symbol, ticker } => {
+                assert_eq!(symbol, "KRW-BTC");
+                assert!(ticker.last_price > 0.0, "last_price > 0");
+                assert_eq!(ticker.bid_price, None);
+                assert_eq!(ticker.ask_price, None);
+                assert!(ticker.high_24h.is_some());
+            }
+            other => panic!("expected Ticker, got {:?}", other),
         }
     }
 

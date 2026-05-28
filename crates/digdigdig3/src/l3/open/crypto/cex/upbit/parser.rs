@@ -723,6 +723,69 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    // ── parse_ws_ticker ───────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_ws_ticker_basic() {
+        // Fixture shaped from Upbit native ticker WS frame (format: DEFAULT).
+        let raw = json!({
+            "type": "ticker",
+            "code": "KRW-BTC",
+            "opening_price": 88000000.0,
+            "high_price": 91000000.0,
+            "low_price": 87500000.0,
+            "trade_price": 90500000.0,
+            "prev_closing_price": 88000000.0,
+            "acc_trade_price": 150000000000.0,
+            "change": "RISE",
+            "change_price": 2500000.0,
+            "signed_change_price": 2500000.0,
+            "change_rate": 0.0284,
+            "signed_change_rate": 0.0284,
+            "ask_bid": "BID",
+            "trade_volume": 0.0015,
+            "acc_trade_volume": 1650.5,
+            "trade_date": "20240619",
+            "trade_time": "083143",
+            "trade_timestamp": 1718782303000i64,
+            "acc_trade_price_24h": 290000000000.0,
+            "acc_trade_volume_24h": 3200.0,
+            "streaming_type": "REALTIME",
+            "timestamp": 1718782303500i64
+        });
+
+        let ticker = UpbitParser::parse_ws_ticker(&raw).expect("parse_ws_ticker");
+
+        assert!(
+            (ticker.last_price - 90_500_000.0).abs() < f64::EPSILON,
+            "last_price"
+        );
+        assert_eq!(ticker.bid_price, None, "bid_price must be None");
+        assert_eq!(ticker.ask_price, None, "ask_price must be None");
+        assert_eq!(ticker.high_24h, Some(91_000_000.0), "high_24h");
+        assert_eq!(ticker.low_24h, Some(87_500_000.0), "low_24h");
+        assert_eq!(ticker.volume_24h, Some(3200.0), "volume_24h");
+        assert_eq!(ticker.quote_volume_24h, Some(290_000_000_000.0), "quote_volume_24h");
+        assert!(
+            (ticker.price_change_percent_24h.unwrap() - 2.84).abs() < 1e-6,
+            "price_change_percent_24h"
+        );
+        assert_eq!(ticker.timestamp, 1718782303500, "timestamp");
+    }
+
+    #[test]
+    fn parse_ws_ticker_falls_back_to_trade_timestamp() {
+        // frame without top-level timestamp — must fall back to trade_timestamp
+        let raw = json!({
+            "type": "ticker",
+            "code": "KRW-ETH",
+            "trade_price": 5000000.0,
+            "trade_timestamp": 1718700000000i64
+        });
+        let ticker = UpbitParser::parse_ws_ticker(&raw).expect("parse");
+        assert_eq!(ticker.timestamp, 1718700000000);
+    }
+
     #[test]
     fn test_parse_price() {
         let response = json!([

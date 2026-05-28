@@ -1,999 +1,123 @@
-//! # BingX WebSocket Implementation
+//! BingxWebSocket — thin wrapper around UniversalWsTransport<BingxProtocol>.
 //!
-//! WebSocket connector for BingX Spot and Swap markets.
+//! Replaces the bespoke 945-LOC connect/gzip/ping loop. The framework owns all
+//! connection lifecycle, subscription replay on reconnect, server-ping response,
+//! gzip decompression, and frame dispatch.
 //!
-//! ## Features
-//! - Public and private channels
-//! - GZIP decompression for all messages
-//! - Ping/pong heartbeat (server sends ping, client responds with pong)
-//! - Subscription management
-//! - Message parsing to StreamEvent
+//! ## GZIP binary frames
 //!
-//! ## Architecture
+//! All BingX data frames are GZIP-compressed binary. The transport's default
+//! `decode_binary` fallback chain (gzip → zlib → deflate → UTF-8) handles
+//! decompression transparently — no override needed.
 //!
-//! The WebSocket stream is split into independent read and write halves on connect.
-//! The write half is stored behind a mutex for shared access by `subscribe`,
-//! `unsubscribe`, and the message handler (for pong replies).
-//! The read half is owned exclusively by the message loop task — no mutex
-//! contention on reads, which eliminates the deadlock that occurred when the
-//! reader and writer shared the same `Arc<Mutex<Option<WsStream>>>`.
+//! ## Server-initiated ping
 //!
-//! ## Usage
+//! `BingxProtocol::is_server_ping` matches both:
+//! - `{"ping":"<id>","time":"..."}` JSON objects
+//! - `"Ping"` plain strings (after gzip decompression)
 //!
-//! ```ignore
-//! let mut ws = BingxWebSocket::new(Some(credentials), false, AccountType::Spot).await?;
-//! ws.connect(AccountType::Spot).await?;
-//! ws.subscribe_ticker(Symbol::new("BTC", "USDT")).await?;
+//! `BingxProtocol::pong_response_frame` builds the appropriate reply.
+//! The transport sends the reply automatically.
 //!
-//! let stream = ws.event_stream();
-//! while let Some(event) = stream.next().await {
-//!     match event {
-//!         Ok(StreamEvent::Ticker(ticker)) => println!("{:?}", ticker),
-//!         _ => {}
-//!     }
-//! }
-//! ```
+//! ## Wasm support
+//!
+//! Uses `UniversalWsTransport` which compiles to wasm32 via `web-sys`.
+//! No native-only `#[cfg]` gates needed.
 
-use std::collections::HashSet;
-use std::io::Read;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex as StdMutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
 
-use flate2::read::GzDecoder;
-use futures_util::{SinkExt, Stream, StreamExt, stream::{SplitSink, SplitStream}};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use tokio::sync::{broadcast, Mutex};
-use tokio::time::{sleep, timeout};
-use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
-use uuid::Uuid;
+use futures_util::Stream;
+use tokio::sync::Mutex as TokioMutex;
 
-use crate::core::{
-    AccountType, ConnectionStatus, Credentials, ExchangeError, ExchangeResult, HttpClient,
-    StreamEvent, StreamType, SubscriptionRequest,
-};
-use crate::core::types::{WebSocketError, WebSocketResult, OrderbookCapabilities, WsBookChannel};
 use crate::core::traits::WebSocketConnector;
-use crate::core::utils::SimpleRateLimiter;
-use crate::core::websocket::KlineInterval;
-use std::sync::OnceLock;
+use crate::core::types::{
+    AccountType, ConnectionStatus, OrderbookCapabilities, StreamEvent,
+    SubscriptionRequest, WebSocketResult, WsBookChannel,
+};
+use crate::core::websocket::{StreamSpec, UniversalWsTransport};
 
-/// Global rate limiter for BingX WebSocket connections
-/// Shared across all instances to prevent 429 when tests run in parallel
-static GLOBAL_WS_LIMITER: OnceLock<Arc<StdMutex<SimpleRateLimiter>>> = OnceLock::new();
+use super::protocol::BingxProtocol;
 
-fn get_global_ws_limiter() -> Arc<StdMutex<SimpleRateLimiter>> {
-    GLOBAL_WS_LIMITER.get_or_init(|| {
-        Arc::new(StdMutex::new(
-            // Allow up to 10 WS connections per 10s so that the e2e_smoke matrix
-            // (which opens 6 parallel connections for BingX) does not hit rate limits.
-            // BingX allows hundreds of connections per IP in practice.
-            SimpleRateLimiter::new(10, Duration::from_secs(10))
-        ))
-    }).clone()
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// BingxWebSocket
+// ─────────────────────────────────────────────────────────────────────────────
 
-use super::auth::BingxAuth;
-use super::endpoints::format_symbol;
-use super::parser::BingxParser;
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// TYPE ALIASES
-// ═══════════════════════════════════════════════════════════════════════════════
-
-type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
-/// Write half — used by subscribe, unsubscribe, and pong replies
-type WsSink = SplitSink<WsStream, Message>;
-/// Read half — owned exclusively by the message loop task
-type WsReader = SplitStream<WsStream>;
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// WEBSOCKET MESSAGES
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/// Subscribe/Unsubscribe message
-#[derive(Debug, Clone, Serialize)]
-struct SubscribeMessage {
-    id: String,
-    #[serde(rename = "reqType")]
-    req_type: String,
-    #[serde(rename = "dataType")]
-    data_type: String,
-}
-
-/// Ping message from server — BingX sends `{"ping":"<id>","time":"..."}` (string ID).
-/// The `time` field is optional and unused; we echo back the same `id`.
-#[derive(Debug, Clone, Deserialize)]
-struct PingMessage {
-    ping: serde_json::Value, // accept string or integer
-}
-
-/// Pong response to server — mirrors the ping id value.
-#[derive(Debug, Clone, Serialize)]
-struct PongMessage {
-    pong: serde_json::Value,
-}
-
-/// Incoming message from BingX
-#[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
-struct IncomingMessage {
-    #[serde(rename = "dataType")]
-    data_type: Option<String>,
-    data: Option<Value>,
-    code: Option<i32>,
-    msg: Option<String>,
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// LISTEN KEY MANAGEMENT (for private channels)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/// Response from listen key endpoint
-#[derive(Debug, Clone, Deserialize)]
-struct ListenKeyResponse {
-    code: i32,
-    msg: Option<String>,
-    data: Option<ListenKeyData>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct ListenKeyData {
-    #[serde(rename = "listenKey")]
-    listen_key: String,
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// BINGX WEBSOCKET CONNECTOR
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/// BingX WebSocket connector
+/// BingX WebSocket connector backed by UniversalWsTransport.
+///
+/// Does NOT connect until the first `subscribe()` call (or explicit `connect()`).
 pub struct BingxWebSocket {
-    /// HTTP client for getting listen keys
-    http: HttpClient,
-    /// Authentication (None for public channels only)
-    auth: Option<BingxAuth>,
-    /// Base REST URL for listen key endpoints
-    base_url: &'static str,
-    /// Current account type (set via connect, read by subscribe/unsubscribe)
-    account_type: Arc<Mutex<AccountType>>,
-    /// Connection status
-    status: Arc<Mutex<ConnectionStatus>>,
-    /// Active subscriptions
-    subscriptions: Arc<Mutex<HashSet<SubscriptionRequest>>>,
-    /// Event broadcast sender — uses std::sync::Mutex so event_stream() can be
-    /// called without contending with the async message loop.
-    event_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
-    /// WebSocket write half — shared by subscribe, unsubscribe, and pong replies.
-    /// The read half is owned exclusively by the message loop task (no mutex needed).
-    ws_writer: Arc<Mutex<Option<WsSink>>>,
-    /// Last ping time
-    last_ping: Arc<Mutex<Instant>>,
-    /// Listen key (for private channels)
-    listen_key: Arc<Mutex<Option<String>>>,
-    /// Rate limiter for WebSocket connection attempts
-    connection_limiter: Arc<StdMutex<SimpleRateLimiter>>,
-    /// Most recent ping round-trip time in milliseconds (0 until first pong)
-    ws_ping_rtt_ms: Arc<Mutex<u64>>,
+    inner: UniversalWsTransport<BingxProtocol>,
 }
 
 impl BingxWebSocket {
-    /// WebSocket URL for perpetual swap (futures) public market data.
-    /// open-api-ws.bingx.com/market was the old SPOT endpoint; swap uses open-api-swap.bingx.com/swap-market.
-    const WS_BASE_URL: &'static str = "wss://open-api-swap.bingx.com/swap-market";
-
-    /// Create new BingX WebSocket connector
-    pub async fn new(
-        credentials: Option<Credentials>,
-        _testnet: bool,
-        account_type: AccountType,
-    ) -> ExchangeResult<Self> {
-        let base_url = "https://open-api.bingx.com";
-        let http = HttpClient::new(30_000)?;
-
-        let auth = credentials.as_ref().map(BingxAuth::new).transpose()?;
-
-        // Use global rate limiter shared across all instances
-        let connection_limiter = get_global_ws_limiter();
-
-        Ok(Self {
-            http,
-            auth,
-            base_url,
-            account_type: Arc::new(Mutex::new(account_type)),
-            status: Arc::new(Mutex::new(ConnectionStatus::Disconnected)),
-            subscriptions: Arc::new(Mutex::new(HashSet::new())),
-            event_tx: Arc::new(StdMutex::new(None)),
-            ws_writer: Arc::new(Mutex::new(None)),
-            last_ping: Arc::new(Mutex::new(Instant::now())),
-            listen_key: Arc::new(Mutex::new(None)),
-            connection_limiter,
-            ws_ping_rtt_ms: Arc::new(Mutex::new(0)),
-        })
-    }
-
-    /// Wait for rate limit if necessary before connecting
-    async fn rate_limit_wait(&self) {
-        let wait_time = {
-            let mut limiter = self.connection_limiter.lock().expect("Mutex poisoned");
-            if !limiter.try_acquire() {
-                limiter.time_until_ready()
-            } else {
-                Duration::ZERO
-            }
-        };
-
-        if !wait_time.is_zero() {
-            sleep(wait_time).await;
-            // Try again after waiting
-            let mut limiter = self.connection_limiter.lock().expect("Mutex poisoned");
-            limiter.try_acquire();
+    /// Create a new connector. Does NOT connect yet.
+    pub fn new(_credentials: Option<crate::core::traits::Credentials>, testnet: bool, account_type: AccountType) -> Self {
+        Self {
+            inner: UniversalWsTransport::new(
+                BingxProtocol::new(testnet),
+                account_type,
+                testnet,
+                None, // public streams only; private channels require listen-key
+            ),
         }
-    }
-
-    /// Get listen key for private channels
-    async fn get_listen_key(&self, account_type: AccountType) -> ExchangeResult<String> {
-        let auth = self
-            .auth
-            .as_ref()
-            .ok_or_else(|| ExchangeError::Auth("Private channels require authentication".to_string()))?;
-
-        let path = match account_type {
-            AccountType::Spot | AccountType::Margin => "/openApi/spot/v1/user/listen-key",
-            _ => "/openApi/swap/v2/user/listen-key",
-        };
-
-        let url = format!("{}{}", self.base_url, path);
-
-        // Sign request
-        let mut headers = std::collections::HashMap::new();
-        headers.insert("X-BX-APIKEY".to_string(), auth.api_key().to_string());
-
-        let response = self.http.post(&url, &serde_json::json!({}), &headers).await?;
-
-        // Parse response
-        let resp: ListenKeyResponse = serde_json::from_value(response)
-            .map_err(|e| ExchangeError::Parse(format!("Failed to parse listen key response: {}", e)))?;
-
-        if resp.code != 0 {
-            let msg = resp.msg.unwrap_or_else(|| "Failed to get listen key".to_string());
-            return Err(ExchangeError::Api {
-                code: resp.code,
-                message: msg,
-            });
-        }
-
-        let data = resp
-            .data
-            .ok_or_else(|| ExchangeError::Parse("Missing data in listen key response".to_string()))?;
-
-        Ok(data.listen_key)
-    }
-
-    /// Connect to WebSocket, returning the split (write, read) halves
-    async fn connect_ws(&self, listen_key: Option<&str>) -> ExchangeResult<(WsSink, WsReader)> {
-        // Rate limit before attempting connection
-        self.rate_limit_wait().await;
-
-        let ws_url = if let Some(key) = listen_key {
-            format!("{}?listenKey={}", Self::WS_BASE_URL, key)
-        } else {
-            Self::WS_BASE_URL.to_string()
-        };
-
-        let (ws_stream, _) = connect_async(&ws_url)
-            .await
-            .map_err(|e| ExchangeError::Network(format!("WebSocket connection failed: {}", e)))?;
-
-        Ok(ws_stream.split())
-    }
-
-    /// Start message handling task.
-    ///
-    /// Takes ownership of `reader` (the `SplitStream` half) — no mutex is needed.
-    /// `ws_writer` is passed separately so the loop can send pong replies without
-    /// touching the reader lock (there is none).
-    ///
-    /// BingX sends a server-side ping roughly every 5 seconds.
-    /// If no message of any kind arrives within READ_TIMEOUT we assume the TCP
-    /// connection is silently dead and break out so the bridge retry logic can
-    /// re-establish the stream.
-    fn start_message_handler(
-        mut reader: WsReader,
-        ws_writer: Arc<Mutex<Option<WsSink>>>,
-        event_tx: Arc<StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>>,
-        status: Arc<Mutex<ConnectionStatus>>,
-        last_ping: Arc<Mutex<Instant>>,
-        account_type: AccountType,
-        ws_ping_rtt_ms: Arc<Mutex<u64>>,
-    ) {
-        const READ_TIMEOUT: Duration = Duration::from_secs(30);
-
-        /// Extract a cloned Sender from the std::sync::Mutex so the guard is
-        /// dropped before any `.await` point.  `broadcast::Sender` is Clone + Send.
-        fn get_tx(
-            event_tx: &StdMutex<Option<broadcast::Sender<WebSocketResult<StreamEvent>>>>,
-        ) -> Option<broadcast::Sender<WebSocketResult<StreamEvent>>> {
-            event_tx.lock().unwrap().clone()
-        }
-
-        tokio::spawn(async move {
-            loop {
-                let next_msg = timeout(READ_TIMEOUT, reader.next()).await;
-
-                match next_msg {
-                    Err(_elapsed) => {
-                        // No message received within READ_TIMEOUT — connection is stale.
-                        // Grab a clone of the sender and drop the guard before .await.
-                        if let Some(tx) = get_tx(&event_tx) {
-                            let _ = tx.send(Err(WebSocketError::ConnectionError(
-                                "BingX WS read timeout — no message for 30s, reconnecting".to_string(),
-                            )));
-                        }
-                        *status.lock().await = ConnectionStatus::Disconnected;
-                        break;
-                    }
-                    Ok(Some(Ok(Message::Binary(data)))) => {
-                        // Decompress GZIP data
-                        match Self::decompress_message(&data) {
-                            Ok(text) => {
-                                tracing::debug!(target: "bingx::ws", "gzip binary decoded: {}", &text[..text.len().min(200)]);
-                                // BingX server heartbeat: plain string "Ping" (gzip-compressed)
-                                // Respond with plain string "Pong"
-                                if text.trim() == "Ping" {
-                                    let mut writer_guard = ws_writer.lock().await;
-                                    if let Some(ref mut writer) = *writer_guard {
-                                        let _ = writer.send(Message::Text("Pong".to_string())).await;
-                                    }
-                                    *last_ping.lock().await = Instant::now();
-                                    continue;
-                                }
-
-                                // Check for JSON ping message {"ping":"<id>","time":"..."}
-                                if let Ok(ping) = serde_json::from_str::<PingMessage>(&text) {
-                                    // Send pong via the write half — no deadlock risk
-                                    let pong = PongMessage { pong: ping.ping };
-                                    if let Ok(pong_json) = serde_json::to_string(&pong) {
-                                        let mut writer_guard = ws_writer.lock().await;
-                                        if let Some(ref mut writer) = *writer_guard {
-                                            let _ = writer.send(Message::Text(pong_json)).await;
-                                        }
-                                    }
-                                    *last_ping.lock().await = Instant::now();
-                                    continue;
-                                }
-
-                                // Parse data message — clone sender, drop guard, then use clone.
-                                if let Some(tx) = get_tx(&event_tx) {
-                                    if let Err(e) = Self::handle_message(&text, &tx, account_type) {
-                                        // Only propagate non-parse errors; unknown frames are silently ignored
-                                        // so a stray server message does not break the collection loop.
-                                        match &e {
-                                            WebSocketError::Parse(_) => {
-                                                tracing::debug!(target: "bingx::ws", "ignored unrecognised frame: {}", &text[..text.len().min(100)]);
-                                            }
-                                            _ => { let _ = tx.send(Err(e)); }
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(target: "bingx::ws", "gzip decompress failed: {}", e);
-                                // Don't propagate decompression failures — they can be
-                                // heartbeat frames or unknown binary messages from the server.
-                            }
-                        }
-                    }
-                    Ok(Some(Ok(Message::Text(text)))) => {
-                        // Plain-text heartbeat "Ping"
-                        if text.trim() == "Ping" {
-                            let mut writer_guard = ws_writer.lock().await;
-                            if let Some(ref mut writer) = *writer_guard {
-                                let _ = writer.send(Message::Text("Pong".to_string())).await;
-                            }
-                            *last_ping.lock().await = Instant::now();
-                            continue;
-                        }
-
-                        // JSON ping {"ping":"<id>","time":"..."}
-                        if let Ok(ping) = serde_json::from_str::<PingMessage>(&text) {
-                            let pong = PongMessage { pong: ping.ping };
-                            if let Ok(pong_json) = serde_json::to_string(&pong) {
-                                let mut writer_guard = ws_writer.lock().await;
-                                if let Some(ref mut writer) = *writer_guard {
-                                    let _ = writer.send(Message::Text(pong_json)).await;
-                                }
-                            }
-                            *last_ping.lock().await = Instant::now();
-                            continue;
-                        }
-
-                        // Parse data message — clone sender, drop guard, then use clone.
-                        if let Some(tx) = get_tx(&event_tx) {
-                            if let Err(e) = Self::handle_message(&text, &tx, account_type) {
-                                match &e {
-                                    WebSocketError::Parse(_) => {
-                                        tracing::debug!(target: "bingx::ws", "ignored unrecognised text frame: {}", &text[..text.len().min(100)]);
-                                    }
-                                    _ => { let _ = tx.send(Err(e)); }
-                                }
-                            }
-                        }
-                    }
-                    Ok(Some(Ok(Message::Pong(_)))) => {
-                        // Response to our client-initiated WS Ping frame — measure RTT
-                        let rtt = last_ping.lock().await.elapsed().as_millis() as u64;
-                        *ws_ping_rtt_ms.lock().await = rtt;
-                    }
-                    Ok(Some(Ok(Message::Close(_)))) => {
-                        *status.lock().await = ConnectionStatus::Disconnected;
-                        break;
-                    }
-                    Ok(Some(Err(e))) => {
-                        if let Some(tx) = get_tx(&event_tx) {
-                            let _ = tx.send(Err(WebSocketError::ConnectionError(e.to_string())));
-                        }
-                        break;
-                    }
-                    Ok(None) => {
-                        *status.lock().await = ConnectionStatus::Disconnected;
-                        break;
-                    }
-                    Ok(Some(Ok(_))) => {
-                        // Ignore other frame types (Ping, Frame)
-                    }
-                }
-            }
-            // Drop the broadcast sender so all BroadcastStream receivers get None
-            // from .next(). Without this, a clean close leaves the sender alive
-            // and the bridge hangs forever instead of reconnecting.
-            let _ = event_tx.lock().unwrap().take();
-            // Stream exhausted — connection closed
-            *status.lock().await = ConnectionStatus::Disconnected;
-        });
-    }
-
-    /// Decompress GZIP message
-    fn decompress_message(data: &[u8]) -> Result<String, std::io::Error> {
-        let mut decoder = GzDecoder::new(data);
-        let mut decompressed = String::new();
-        decoder.read_to_string(&mut decompressed)?;
-        Ok(decompressed)
-    }
-
-    /// Handle incoming WebSocket message
-    fn handle_message(
-        text: &str,
-        event_tx: &broadcast::Sender<WebSocketResult<StreamEvent>>,
-        account_type: AccountType,
-    ) -> WebSocketResult<()> {
-        tracing::debug!(target: "bingx::ws", "frame: {}", &text[..text.len().min(200)]);
-
-        let msg: IncomingMessage = serde_json::from_str(text)
-            .map_err(|e| WebSocketError::Parse(format!("Failed to parse message: {}", e)))?;
-
-        // Check for error response
-        if let Some(code) = msg.code {
-            if code != 0 {
-                let error_msg = msg.msg.unwrap_or_else(|| "Unknown error".to_string());
-                return Err(WebSocketError::ProtocolError(format!(
-                    "Server error {}: {}",
-                    code, error_msg
-                )));
-            }
-        }
-
-        // Parse data message
-        if let Some(data_type) = msg.data_type {
-            if let Some(data) = msg.data {
-                if let Some(event) = Self::parse_data_message(&data_type, &data, account_type)? {
-                    let _ = event_tx.send(Ok(event));
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Parse data message to StreamEvent
-    fn parse_data_message(
-        data_type: &str,
-        data: &Value,
-        account_type: AccountType,
-    ) -> WebSocketResult<Option<StreamEvent>> {
-        // Parse based on stream type from dataType
-        // Format: "SYMBOL@streamType" or "streamType" for private channels
-
-        if data_type.ends_with("@bookTicker") {
-            // Best bid/ask stream — preferred for real-time bid/ask quotes
-            let symbol = data_type.split('@').next().unwrap_or("").to_string();
-            let ticker = BingxParser::parse_ws_book_ticker(data_type, data)
-                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(StreamEvent::Ticker { symbol, ticker }))
-        } else if data_type.ends_with("@ticker") {
-            // Full 24h stats stream (high/low/volume) — no bid/ask
-            let symbol = data_type.split('@').next().unwrap_or("").to_string();
-            let ticker = BingxParser::parse_ws_ticker(data, account_type)
-                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(StreamEvent::Ticker { symbol, ticker }))
-        } else if data_type.ends_with("@trade") {
-            // Trade stream
-            let symbol = data.get("s").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let trade = BingxParser::parse_ws_trade(data)
-                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(StreamEvent::Trade { symbol, trade }))
-        } else if data_type.ends_with("@depth5") || data_type.ends_with("@depth") || data_type.ends_with("@depth20") {
-            // Orderbook stream
-            let symbol = data_type.split('@').next().unwrap_or("").to_string();
-            let delta = BingxParser::parse_ws_orderbook(data)
-                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(StreamEvent::OrderbookDelta { symbol, delta }))
-        } else if data_type.contains("@kline_") {
-            // Kline stream — extract interval from data_type: "BTC-USDT@kline_1m"
-            let symbol = data_type.split('@').next().unwrap_or("").to_string();
-            let interval = KlineInterval::new(data_type.split("@kline_").nth(1).unwrap_or(""));
-            let kline = BingxParser::parse_ws_kline(data)
-                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(StreamEvent::Kline { symbol, interval, kline }))
-        } else if data_type == "spot.executionReport" || data_type == "swap.order" {
-            // Order update (private)
-            let symbol = data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string();
-            let event = BingxParser::parse_ws_order_update(data, account_type)
-                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(StreamEvent::OrderUpdate { symbol, event }))
-        } else if data_type == "spot.account" || data_type == "swap.account" {
-            // Balance update (private)
-            let event = BingxParser::parse_ws_balance_update(data)
-                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(StreamEvent::BalanceUpdate(event)))
-        } else if data_type == "swap.position" {
-            // Position update (private, futures only)
-            let symbol = data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string();
-            let event = BingxParser::parse_ws_position_update(data)
-                .map_err(|e| WebSocketError::Parse(e.to_string()))?;
-            Ok(Some(StreamEvent::PositionUpdate { symbol, event }))
-        } else if data_type.ends_with("@markPrice") {
-            // Mark price stream — data: { symbol, markPrice, indexPrice, ts }
-            let event = Self::parse_mark_price_ws(data_type, data)?;
-            Ok(Some(event))
-        } else if data_type.ends_with("@fundingRate") {
-            // Funding rate stream — data: { symbol, fundingRate, nextFundingTime, ts }
-            let event = Self::parse_funding_rate_ws(data_type, data)?;
-            Ok(Some(event))
-        } else if data_type.ends_with("@forceOrder") || data_type == "forceOrder" {
-            // Liquidation orders stream — data: { symbol, side, price, origQty, ... }
-            let event = Self::parse_force_order_ws(data_type, data, account_type)?;
-            Ok(Some(event))
-        } else if data_type.ends_with("@openInterest") {
-            // Open interest snapshot — data: { openInterest, symbol, time }
-            let event = Self::parse_open_interest_ws(data_type, data)?;
-            Ok(Some(event))
-        } else {
-            // Unknown stream type - ignore
-            Ok(None)
-        }
-    }
-
-    /// Parse BingX mark price WebSocket push.
-    ///
-    /// BingX swap mark price channel: `{symbol}@markPrice`
-    /// data fields: { symbol?, markPrice, indexPrice?, ts? }
-    fn parse_mark_price_ws(data_type: &str, data: &Value) -> WebSocketResult<StreamEvent> {
-        let parse_f64 = |v: &Value| -> Option<f64> {
-            v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
-        };
-        // Extract symbol from data_type prefix "BTCUSDT@markPrice"
-        let symbol = data_type.split('@').next().unwrap_or("").to_string();
-        let Some(mark_price) = data.get("markPrice").and_then(|v| parse_f64(v)) else {
-            return Err(WebSocketError::Parse("Missing markPrice in BingX markPrice push".to_string()));
-        };
-        let index_price = data.get("indexPrice").and_then(|v| parse_f64(v));
-        let timestamp = data.get("ts")
-            .or_else(|| data.get("time"))
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
-        Ok(StreamEvent::MarkPrice { symbol, mark_price, index_price, timestamp })
-    }
-
-    /// Parse BingX funding rate WebSocket push.
-    ///
-    /// BingX swap funding rate channel: `{symbol}@fundingRate`
-    /// data fields: { symbol?, fundingRate, nextFundingTime?, ts? }
-    fn parse_funding_rate_ws(data_type: &str, data: &Value) -> WebSocketResult<StreamEvent> {
-        let parse_f64 = |v: &Value| -> Option<f64> {
-            v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
-        };
-        let symbol = data_type.split('@').next().unwrap_or("").to_string();
-        let Some(rate) = data.get("fundingRate").and_then(|v| parse_f64(v)) else {
-            return Err(WebSocketError::Parse("Missing fundingRate in BingX fundingRate push".to_string()));
-        };
-        let next_funding_time = data.get("nextFundingTime").and_then(|v| v.as_i64());
-        let timestamp = data.get("ts")
-            .or_else(|| data.get("time"))
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
-        Ok(StreamEvent::FundingRate { symbol, rate, next_funding_time, timestamp })
-    }
-
-    /// Parse BingX forceOrder (liquidation) WebSocket push.
-    ///
-    /// BingX swap forced order channel: `{symbol}@forceOrder`
-    /// data fields: { symbol?, side, price, origQty, ts? }
-    fn parse_force_order_ws(data_type: &str, data: &Value, _account_type: AccountType) -> WebSocketResult<StreamEvent> {
-        use crate::core::types::TradeSide;
-        let parse_f64 = |v: &Value| -> Option<f64> {
-            v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
-        };
-        let symbol = data.get("symbol")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| data_type.split('@').next().unwrap_or("").to_string());
-        let Some(price) = data.get("price").and_then(|v| parse_f64(v)) else {
-            return Err(WebSocketError::Parse("Missing price in BingX forceOrder push".to_string()));
-        };
-        let quantity = data.get("origQty")
-            .or_else(|| data.get("qty"))
-            .and_then(|v| parse_f64(v))
-            .unwrap_or(0.0);
-        let side = data.get("side").and_then(|v| v.as_str())
-            .map(|s| match s.to_uppercase().as_str() {
-                "BUY" | "LONG" => TradeSide::Buy,
-                _ => TradeSide::Sell,
-            })
-            .unwrap_or(TradeSide::Sell);
-        let timestamp = data.get("transactTime")
-            .or_else(|| data.get("ts"))
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
-        Ok(StreamEvent::Liquidation { symbol, side, price, quantity, value: None, timestamp })
-    }
-
-    /// Parse BingX open interest WebSocket push.
-    ///
-    /// BingX swap open interest channel: `{symbol}@openInterest`
-    /// data fields: { openInterest, symbol?, time? }
-    fn parse_open_interest_ws(data_type: &str, data: &Value) -> WebSocketResult<StreamEvent> {
-        let parse_f64 = |v: &Value| -> Option<f64> {
-            v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64())
-        };
-        let symbol = data.get("symbol")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| data_type.split('@').next().unwrap_or("").to_string());
-        let open_interest = data.get("openInterest")
-            .and_then(|v| parse_f64(v))
-            .unwrap_or(0.0);
-        let timestamp = data.get("time")
-            .or_else(|| data.get("ts"))
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
-        Ok(StreamEvent::OpenInterestUpdate { symbol, open_interest, open_interest_value: None, timestamp })
-    }
-
-    /// Build dataType string for subscription
-    fn build_data_type(request: &SubscriptionRequest, _account_type: AccountType) -> String {
-        match &request.stream_type {
-            StreamType::Ticker => {
-                let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, _account_type);
-                format!("{}@bookTicker", symbol)
-            }
-            StreamType::Trade => {
-                let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, _account_type);
-                format!("{}@trade", symbol)
-            }
-            StreamType::Orderbook | StreamType::OrderbookDelta => {
-                let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, _account_type);
-                format!("{}@depth5", symbol)
-            }
-            StreamType::Kline { interval } => {
-                let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, _account_type);
-                // BingX WS uses short format: "1m", "5m", "1h", "1d" (NOT "1min"/"1hour")
-                let bingx_interval = Self::map_kline_interval(interval);
-                format!("{}@kline_{}", symbol, bingx_interval)
-            }
-            StreamType::OrderUpdate => {
-                match _account_type {
-                    AccountType::Spot | AccountType::Margin => "spot.executionReport".to_string(),
-                    _ => "swap.order".to_string(),
-                }
-            }
-            StreamType::BalanceUpdate => {
-                match _account_type {
-                    AccountType::Spot | AccountType::Margin => "spot.account".to_string(),
-                    _ => "swap.account".to_string(),
-                }
-            }
-            StreamType::PositionUpdate => "swap.position".to_string(),
-            StreamType::MarkPrice => {
-                let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, _account_type);
-                format!("{}@markPrice", symbol)
-            }
-            StreamType::FundingRate => {
-                // BingX has no public WS funding-rate channel.
-                // Use REST GET /openApi/swap/v2/quote/fundingRate?symbol=BTC-USDT instead.
-                // Return empty string so subscribe() sends an empty dataType and the
-                // server rejects it gracefully — caller sees a silent no-op.
-                // The NotSupported path is handled in parse_data_message when dataType is "".
-                String::new()
-            }
-            StreamType::Liquidation => {
-                let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, _account_type);
-                format!("{}@forceOrder", symbol)
-            }
-            StreamType::OpenInterest => {
-                let symbol = format_symbol(&request.symbol.base, &request.symbol.quote, _account_type);
-                format!("{}@openInterest", symbol)
-            }
-            StreamType::AggTrade => {
-                // BingX has no aggregated-trade WS channel (no @aggTrade endpoint).
-                // Return empty string → subscribe() will return NotSupported.
-                // Callers that want trade data should subscribe StreamType::Trade instead.
-                String::new()
-            }
-            _ => String::new(),
-        }
-    }
-
-    /// Map kline interval to BingX WS format.
-    ///
-    /// BingX WS kline channel uses `{sym}@kline_1m` (short form), NOT `kline_1min`.
-    /// REST API uses `1m`/`1h`/`1d` etc. — same short form.
-    fn map_kline_interval(interval: &str) -> &'static str {
-        match interval {
-            "1m" => "1m",
-            "3m" => "3m",
-            "5m" => "5m",
-            "15m" => "15m",
-            "30m" => "30m",
-            "1h" => "1h",
-            "2h" => "2h",
-            "4h" => "4h",
-            "6h" => "6h",
-            "8h" => "8h",
-            "12h" => "12h",
-            "1d" => "1d",
-            "3d" => "3d",
-            "1w" => "1w",
-            "1M" => "1M",
-            _ => "1h",
-        }
-    }
-
-    /// Start client-initiated ping task to measure RTT via WS Ping/Pong frames.
-    ///
-    /// Sends a `Message::Ping(vec![])` every 5 seconds.  The `last_ping`
-    /// timestamp is recorded when the frame is sent, and `ws_ping_rtt_ms` is
-    /// updated in the message handler when the corresponding `Message::Pong`
-    /// arrives.
-    fn start_ping_task(
-        ws_writer: Arc<Mutex<Option<WsSink>>>,
-        last_ping: Arc<Mutex<Instant>>,
-    ) {
-        tokio::spawn(async move {
-            loop {
-                sleep(Duration::from_secs(5)).await;
-
-                let mut writer_guard = ws_writer.lock().await;
-                if let Some(ref mut writer) = *writer_guard {
-                    if writer.send(Message::Ping(vec![])).await.is_ok() {
-                        *last_ping.lock().await = Instant::now();
-                    } else {
-                        // Connection closed — exit task
-                        break;
-                    }
-                } else {
-                    break;
-                }
-            }
-        });
-    }
-
-    /// Check if stream type requires private channel (listen key)
-    fn _is_private(stream_type: &StreamType) -> bool {
-        matches!(
-            stream_type,
-            StreamType::OrderUpdate | StreamType::BalanceUpdate | StreamType::PositionUpdate
-        )
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// WEBSOCKET CONNECTOR TRAIT IMPLEMENTATION
-// ═══════════════════════════════════════════════════════════════════════════════
+impl Default for BingxWebSocket {
+    fn default() -> Self {
+        Self::new(None, false, AccountType::Spot)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WebSocketConnector impl — delegates to inner transport
+// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl WebSocketConnector for BingxWebSocket {
-    async fn connect(&self, account_type: AccountType) -> WebSocketResult<()> {
-        *self.status.lock().await = ConnectionStatus::Connecting;
-        *self.account_type.lock().await = account_type;
-
-        // Check if we need private channel (listen key)
-        let listen_key = if self.auth.is_some() {
-            let key = self
-                .get_listen_key(account_type)
-                .await
-                .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
-            *self.listen_key.lock().await = Some(key.clone());
-            Some(key)
-        } else {
-            None
-        };
-
-        // Connect WebSocket and split into independent read/write halves.
-        // The write half goes behind a mutex for shared access.
-        // The read half is passed directly to the message handler — no mutex needed.
-        let (write, read) = self
-            .connect_ws(listen_key.as_deref())
-            .await
-            .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
-
-        *self.ws_writer.lock().await = Some(write);
-
-        // Create event broadcast channel
-        let (tx, _) = broadcast::channel(1000);
-        *self.event_tx.lock().unwrap() = Some(tx);
-
-        *self.status.lock().await = ConnectionStatus::Connected;
-
-        // Start message handler — reader is moved in, never shared via mutex.
-        Self::start_message_handler(
-            read,
-            self.ws_writer.clone(),
-            self.event_tx.clone(),
-            self.status.clone(),
-            self.last_ping.clone(),
-            account_type,
-            self.ws_ping_rtt_ms.clone(),
-        );
-
-        // Start client-initiated ping task for RTT measurement
-        Self::start_ping_task(
-            self.ws_writer.clone(),
-            self.last_ping.clone(),
-        );
-
-        Ok(())
+    async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
+        self.inner.connect().await
     }
 
     async fn disconnect(&self) -> WebSocketResult<()> {
-        // Close the write half. The message loop task owns the read half and will
-        // detect the close frame / stream termination naturally and exit on its own.
-        if let Some(mut writer) = self.ws_writer.lock().await.take() {
-            let _ = writer.close().await;
-        }
-
-        *self.status.lock().await = ConnectionStatus::Disconnected;
-        *self.listen_key.lock().await = None;
-        self.subscriptions.lock().await.clear();
-        Ok(())
+        self.inner.disconnect().await
     }
 
     fn connection_status(&self) -> ConnectionStatus {
-        match self.status.try_lock() {
-            Ok(status) => *status,
-            Err(_) => ConnectionStatus::Disconnected,
-        }
+        self.inner.connection_status()
     }
 
     async fn subscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
-        let data_type = Self::build_data_type(&request, *self.account_type.lock().await);
-
-        // Guard: empty data_type signals a stream not supported on BingX swap-market WS.
-        // FundingRate, and any future no-op mappings, fall here.
-        if data_type.is_empty() {
-            return Err(WebSocketError::NotSupported(
-                "NotSupported: BingX swap-market WS does not carry this stream type".to_string(),
-            ));
-        }
-
-        // @forceOrder and @openInterest are not supported on the swap-market WS endpoint
-        // (server returns code 80015). Detect before sending to avoid a silent subscribe
-        // followed by zero events.
-        if data_type.ends_with("@forceOrder") {
-            return Err(WebSocketError::NotSupported(
-                "NotSupported: BingX swap-market WS does not support @forceOrder — use REST liquidation history".to_string(),
-            ));
-        }
-        if data_type.ends_with("@openInterest") {
-            return Err(WebSocketError::NotSupported(
-                "NotSupported: BingX swap-market WS does not support @openInterest — use REST GET /openApi/swap/v2/quote/openInterest".to_string(),
-            ));
-        }
-
-        // Brief delay so the server completes the WS handshake before we send
-        // subscription frames. Some BingX endpoints drop frames sent immediately
-        // after connect before the upgrade is fully acknowledged.
-        sleep(Duration::from_millis(100)).await;
-
-        let msg = SubscribeMessage {
-            id: Uuid::new_v4().to_string(),
-            req_type: "sub".to_string(),
-            data_type: data_type.clone(),
-        };
-
-        let msg_json = serde_json::to_string(&msg)
-            .map_err(|e| WebSocketError::ProtocolError(e.to_string()))?;
-
-        tracing::debug!(target: "bingx::ws", "subscribe: dataType={}", data_type);
-
-        let mut writer_guard = self.ws_writer.lock().await;
-        let writer = writer_guard
-            .as_mut()
-            .ok_or_else(|| WebSocketError::ConnectionError("Not connected".to_string()))?;
-
-        writer
-            .send(Message::Text(msg_json))
-            .await
-            .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
-
-        drop(writer_guard);
-
-        self.subscriptions.lock().await.insert(request);
-
-        Ok(())
+        let spec = StreamSpec::try_from(request)?;
+        self.inner.subscribe(spec).await
     }
 
     async fn unsubscribe(&self, request: SubscriptionRequest) -> WebSocketResult<()> {
-        let data_type = Self::build_data_type(&request, *self.account_type.lock().await);
-
-        let msg = SubscribeMessage {
-            id: Uuid::new_v4().to_string(),
-            req_type: "unsub".to_string(),
-            data_type,
-        };
-
-        let msg_json = serde_json::to_string(&msg)
-            .map_err(|e| WebSocketError::ProtocolError(e.to_string()))?;
-
-        let mut writer_guard = self.ws_writer.lock().await;
-        let writer = writer_guard
-            .as_mut()
-            .ok_or_else(|| WebSocketError::ConnectionError("Not connected".to_string()))?;
-
-        writer
-            .send(Message::Text(msg_json))
-            .await
-            .map_err(|e| WebSocketError::ConnectionError(e.to_string()))?;
-
-        drop(writer_guard);
-
-        self.subscriptions.lock().await.remove(&request);
-
-        Ok(())
+        let spec = StreamSpec::try_from(request)?;
+        self.inner.unsubscribe(spec).await
     }
 
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = WebSocketResult<StreamEvent>> + Send>> {
-        // std::sync::Mutex::lock() never contends long — send() is an instant operation.
-        let tx_guard = self.event_tx.lock().unwrap();
-
-        if let Some(ref tx) = *tx_guard {
-            let rx = tx.subscribe();
-            Box::pin(tokio_stream::wrappers::BroadcastStream::new(rx).map(|r| {
-                r.map_err(|e| WebSocketError::ConnectionError(format!("Broadcast error: {}", e)))
-                    .and_then(|x| x)
-            }))
-        } else {
-            Box::pin(futures_util::stream::empty())
-        }
+        Box::pin(self.inner.event_stream())
     }
 
     fn active_subscriptions(&self) -> Vec<SubscriptionRequest> {
-        match self.subscriptions.try_lock() {
-            Ok(subs) => subs.iter().cloned().collect(),
-            Err(_) => Vec::new(),
-        }
+        self.inner
+            .active_subscriptions()
+            .into_iter()
+            .map(SubscriptionRequest::from)
+            .collect()
     }
 
-    fn ping_rtt_handle(&self) -> Option<Arc<Mutex<u64>>> {
-        Some(self.ws_ping_rtt_ms.clone())
+    fn ping_rtt_handle(&self) -> Option<Arc<TokioMutex<u64>>> {
+        // BingX uses server-initiated pings; client does not send WS-level pings.
+        // RTT measurement via WS Ping/Pong frames is not available.
+        None
     }
 
     fn orderbook_capabilities(&self, account_type: AccountType) -> OrderbookCapabilities {
-        // Note: @incrDepth delta channel exists on BingX but our parser
-        // doesn't implement it yet. supports_delta stays false until parser
-        // supports @incrDepth subscription and parsing.
         static SPOT_CHANNELS: &[WsBookChannel] = &[
             WsBookChannel::snapshot("@depth5",   5,   1000),
             WsBookChannel::snapshot("@depth10",  10,  1000),
@@ -1042,5 +166,25 @@ impl WebSocketConnector for BingxWebSocket {
                 aggregation_levels: &[],
             },
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn websocket_construction_is_disconnected() {
+        let ws = BingxWebSocket::new(None, false, AccountType::Spot);
+        assert_eq!(ws.connection_status(), ConnectionStatus::Disconnected);
+    }
+
+    #[tokio::test]
+    async fn default_is_same_as_new() {
+        let _ws = BingxWebSocket::default();
     }
 }

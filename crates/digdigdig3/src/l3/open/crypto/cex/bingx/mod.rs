@@ -8,6 +8,8 @@
 //! - `auth` - Подпись запросов (HMAC-SHA256)
 //! - `parser` - Парсинг JSON ответов
 //! - `connector` - BingxConnector + impl трейтов
+//! - `protocol` - BingxProtocol (WsProtocol shim for UniversalWsTransport)
+//! - `websocket` - BingxWebSocket (thin wrapper around UniversalWsTransport)
 //!
 //! ## Использование
 //!
@@ -25,12 +27,11 @@ mod endpoints;
 mod auth;
 mod parser;
 mod connector;
-#[cfg(not(target_arch = "wasm32"))]
+mod protocol;
 mod websocket;
 
 pub use endpoints::{BingxEndpoint, BingxUrls};
 pub use auth::BingxAuth;
 pub use parser::BingxParser;
 pub use connector::BingxConnector;
-#[cfg(not(target_arch = "wasm32"))]
 pub use websocket::BingxWebSocket;

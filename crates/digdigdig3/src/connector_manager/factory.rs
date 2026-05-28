@@ -152,7 +152,6 @@ use crate::l3::open::crypto::cex::mexc::MexcWebSocket;
 use crate::l3::open::crypto::cex::htx::HtxWebSocket;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::bitget::BitgetWebSocket;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::bingx::BingxWebSocket;
 use crate::l3::open::crypto::cex::crypto_com::CryptoComWebSocket;
 #[cfg(not(target_arch = "wasm32"))]
@@ -933,7 +932,8 @@ impl ConnectorFactory {
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
             ExchangeId::BingX => {
-                let ws = BingxWebSocket::new(None, testnet, account_type).await?;
+                // Sync constructor — UniversalWsTransport connects lazily on first subscribe.
+                let ws = BingxWebSocket::new(None, testnet, account_type);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
             ExchangeId::Deribit => {
@@ -1193,9 +1193,13 @@ impl ConnectorFactory {
                 let ws = BitfinexWebSocket::new(testnet);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            ExchangeId::BingX => {
+                let ws = BingxWebSocket::new(None, testnet, account_type);
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
             other => Err(ExchangeError::UnsupportedOperation(format!(
                 "{other:?} WebSocket not enabled on wasm32; \
-                 only Binance/Bybit/OKX/HyperLiquid/Gemini/CryptoCom/Bitfinex use UniversalWsTransport+browser-WS"
+                 only Binance/Bybit/OKX/HyperLiquid/Gemini/CryptoCom/Bitfinex/BingX use UniversalWsTransport+browser-WS"
             ))),
         }
     }

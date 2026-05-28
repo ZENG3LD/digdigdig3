@@ -41,10 +41,10 @@
 //! | Orderbook     | `@depth5` / `@depth10` / `@depth20` |                         |
 //! | Kline         | `@kline_<tf>`            | e.g. `@kline_1m`, `@kline_1h`     |
 //! | MarkPrice     | `@markPrice`             |                                    |
-//! | FundingRate   | NotSupported             | No live WS channel — use REST      |
-//! | Liquidation   | NotSupported             | `@forceOrder` rejected by server  |
-//! | OpenInterest  | NotSupported             | `@openInterest` rejected by server|
-//! | AggTrade      | NotSupported             | No `@aggTrade` endpoint            |
+//! | FundingRate   | UnsupportedOperation     | TODO — `@fundingRate` channel exists|
+//! | Liquidation   | UnsupportedOperation     | TODO — `@forceOrder` channel exists |
+//! | OpenInterest  | UnsupportedOperation     | TODO — `@openInterest` channel exists|
+//! | AggTrade      | UnsupportedOperation     | TODO — `@aggTrade` channel (separate from `@trade`)|
 
 use std::sync::OnceLock;
 
@@ -77,8 +77,9 @@ static REGISTRY: OnceLock<TopicRegistry> = OnceLock::new();
 /// Public market-data channels (swap/perpetual endpoint):
 /// ticker, trade, orderbook depth, kline, mark price.
 ///
-/// FundingRate, Liquidation, OpenInterest, and AggTrade are NOT supported on
-/// the swap-market WebSocket and will return `NotSupported` from `subscribe_frame`.
+/// FundingRate, Liquidation, OpenInterest, AggTrade ARE exposed by BingX swap
+/// WS (`@fundingRate`/`@forceOrder`/`@openInterest`/`@aggTrade`) but are not yet
+/// implemented — `subscribe_frame` returns `UnsupportedOperation` (TODO) for them.
 pub struct BingxProtocol;
 
 impl BingxProtocol {
@@ -88,8 +89,8 @@ impl BingxProtocol {
 
     /// Build the `dataType` topic string for a StreamSpec.
     ///
-    /// Returns `Err(NotSupported)` for channels that BingX does not expose on
-    /// the swap-market WebSocket endpoint.
+    /// Returns `Err(UnsupportedOperation)` for channels BingX exposes but we
+    /// have not implemented yet (funding/liq/oi/aggTrade).
     fn build_data_type(spec: &StreamSpec) -> Result<String, WebSocketError> {
         let sym = wire_symbol(spec);
         match &spec.kind {

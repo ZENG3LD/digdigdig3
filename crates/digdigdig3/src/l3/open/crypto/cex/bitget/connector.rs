@@ -18,7 +18,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use reqwest::header::HeaderMap;
 use serde_json::{json, Value};
 
@@ -486,7 +485,8 @@ impl ExchangeIdentity for BitgetConnector {
 // MARKET DATA
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for BitgetConnector {
     async fn get_price(
         &self,
@@ -671,7 +671,8 @@ impl MarketData for BitgetConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for BitgetConnector {
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         let symbol = req.symbol.clone();
@@ -1395,7 +1396,8 @@ impl Trading for BitgetConnector {
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for BitgetConnector {
     async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         let asset = query.asset.clone();
@@ -1535,7 +1537,8 @@ impl Account for BitgetConnector {
 // POSITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for BitgetConnector {
     async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         let symbol = query.symbol.clone();
@@ -1867,7 +1870,8 @@ impl Positions for BitgetConnector {
 // CANCEL ALL
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CancelAll for BitgetConnector {
     async fn cancel_all_orders(
         &self,
@@ -1965,7 +1969,8 @@ impl CancelAll for BitgetConnector {
 // AMEND ORDER
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AmendOrder for BitgetConnector {
     async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
         let symbol = &req.symbol;
@@ -2025,7 +2030,8 @@ impl AmendOrder for BitgetConnector {
 // BATCH ORDERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl BatchOrders for BitgetConnector {
     fn max_batch_place_size(&self) -> usize { 50 }
     fn max_batch_cancel_size(&self) -> usize { 50 }
@@ -2293,7 +2299,8 @@ impl BatchOrders for BitgetConnector {
 // ACCOUNT TRANSFERS (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AccountTransfers for BitgetConnector {
     /// Transfer between Spot, Futures, P2P, etc.
     ///
@@ -2387,7 +2394,8 @@ impl AccountTransfers for BitgetConnector {
 // CUSTODIAL FUNDS (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CustodialFunds for BitgetConnector {
     /// Get deposit address for an asset.
     ///
@@ -2578,7 +2586,8 @@ impl CustodialFunds for BitgetConnector {
 // SUB ACCOUNTS (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl SubAccounts for BitgetConnector {
     /// Perform sub-account operations: Create, List, Transfer, GetBalance.
     async fn sub_account_operation(
@@ -2845,7 +2854,8 @@ impl BitgetConnector {
 // ACCOUNT LEDGER
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AccountLedger for BitgetConnector {
     /// Get spot account bill/ledger records from `GET /api/v2/spot/account/bills`.
     ///

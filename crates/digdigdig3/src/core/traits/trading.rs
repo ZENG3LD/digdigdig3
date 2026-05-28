@@ -9,7 +9,6 @@
 //! - NO composition (no looping over base methods)
 //! - Connectors are STRICT: unsupported variant → UnsupportedOperation
 
-use async_trait::async_trait;
 
 use crate::core::types::{
     AccountType, ExchangeResult, Order, OrderHistoryFilter, OrderRequest, CancelRequest,
@@ -29,7 +28,8 @@ use super::ExchangeIdentity;
 /// - A connector without native batch cancel MUST NOT loop `cancel_order`.
 /// - A connector without native Bracket MUST NOT submit 3 separate orders.
 /// If the exchange has no endpoint for it, return `UnsupportedOperation`.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait Trading: ExchangeIdentity {
     /// Place an order of any type.
     ///

@@ -16,7 +16,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::core::{
@@ -441,7 +440,8 @@ impl ExchangeIdentity for DeribitConnector {
 // MARKET DATA
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for DeribitConnector {
     fn market_data_capabilities(&self, _account_type: AccountType) -> MarketDataCapabilities {
         MarketDataCapabilities {
@@ -580,7 +580,8 @@ impl MarketData for DeribitConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for DeribitConnector {
     fn trading_capabilities(&self, _account_type: AccountType) -> TradingCapabilities {
         TradingCapabilities {
@@ -968,7 +969,8 @@ impl Trading for DeribitConnector {
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for DeribitConnector {
     fn account_capabilities(&self, _account_type: AccountType) -> AccountCapabilities {
         AccountCapabilities {
@@ -1054,7 +1056,8 @@ impl Account for DeribitConnector {
 // POSITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for DeribitConnector {
     async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         let symbol = query.symbol.clone();
@@ -1233,7 +1236,8 @@ impl Positions for DeribitConnector {
 // CANCEL ALL (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CancelAll for DeribitConnector {
     async fn cancel_all_orders(
         &self,
@@ -1287,7 +1291,8 @@ impl CancelAll for DeribitConnector {
 // AMEND ORDER (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AmendOrder for DeribitConnector {
     async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
         let mut params = HashMap::new();
@@ -1312,7 +1317,8 @@ impl AmendOrder for DeribitConnector {
 // CUSTODIAL FUNDS (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CustodialFunds for DeribitConnector {
     async fn get_deposit_address(
         &self,
@@ -1679,7 +1685,8 @@ impl DeribitConnector {
 // FUNDING HISTORY (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl FundingHistory for DeribitConnector {
     /// Get historical funding payments for the account.
     ///
@@ -1758,7 +1765,8 @@ impl FundingHistory for DeribitConnector {
 // ACCOUNT LEDGER (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AccountLedger for DeribitConnector {
     /// Get account ledger entries.
     ///
@@ -1899,7 +1907,8 @@ fn classify_deribit_entry_type(type_str: &str) -> LedgerEntryType {
 // MARKET DATA PUBLIC
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketDataPublic for DeribitConnector {
     /// Recent public trades for an instrument.
     ///

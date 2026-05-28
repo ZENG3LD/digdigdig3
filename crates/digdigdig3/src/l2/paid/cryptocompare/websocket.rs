@@ -45,7 +45,6 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, Stream, StreamExt};
 use serde_json::{json, Value};
@@ -841,7 +840,8 @@ impl CryptoCompareWebSocket {
 // WEBSOCKET CONNECTOR TRAIT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl WebSocketConnector for CryptoCompareWebSocket {
     async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Connecting;

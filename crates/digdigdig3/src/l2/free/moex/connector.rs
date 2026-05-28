@@ -2,7 +2,6 @@
 //!
 //! Implementation of core traits for MOEX Moscow Exchange ISS API.
 
-use async_trait::async_trait;
 use reqwest::Client;
 use std::collections::HashMap;
 
@@ -150,7 +149,8 @@ impl ExchangeIdentity for MoexConnector {
 // TRAIT: MarketData
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for MoexConnector {
     /// Get current price
     async fn get_price(
@@ -354,7 +354,8 @@ impl MarketData for MoexConnector {
 // TRAIT: Trading (UnsupportedOperation - MOEX ISS is data-only)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for MoexConnector {
     async fn place_order(&self, _req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         Err(ExchangeError::UnsupportedOperation(
@@ -408,7 +409,8 @@ impl Trading for MoexConnector {
 // TRAIT: Account (UnsupportedOperation - MOEX ISS is data-only)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for MoexConnector {
     async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         Err(ExchangeError::UnsupportedOperation(
@@ -438,7 +440,8 @@ impl Account for MoexConnector {
 // TRAIT: Positions (UnsupportedOperation - MOEX ISS is data-only)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for MoexConnector {
     async fn get_positions(&self, _query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         Err(ExchangeError::UnsupportedOperation(

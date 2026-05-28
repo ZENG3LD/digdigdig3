@@ -15,7 +15,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use reqwest::header::HeaderMap;
 use serde_json::{json, Value};
 
@@ -556,7 +555,8 @@ impl ExchangeIdentity for UpbitConnector {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for UpbitConnector {
     async fn get_price(&self, symbol: SymbolInput<'_>, account_type: AccountType) -> ExchangeResult<Price> {
         let symbol = symbol.resolve(ExchangeId::Upbit, account_type)?;
@@ -677,7 +677,8 @@ impl MarketData for UpbitConnector {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for UpbitConnector {
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         let symbol = req.symbol.clone();
@@ -892,7 +893,8 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for UpbitConnector {
     async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         let asset = query.asset.clone();
@@ -960,7 +962,8 @@ impl Account for UpbitConnector {
 // CANCEL ALL (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CancelAll for UpbitConnector {
     async fn cancel_all_orders(
         &self,
@@ -1010,7 +1013,8 @@ impl CancelAll for UpbitConnector {
 // CUSTODIAL FUNDS (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CustodialFunds for UpbitConnector {
     async fn get_deposit_address(
         &self,
@@ -1258,7 +1262,8 @@ impl CustodialFunds for UpbitConnector {
 // AMEND ORDER (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AmendOrder for UpbitConnector {
     async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
         // Upbit implements amend as an atomic cancel-and-replace via
@@ -1384,7 +1389,8 @@ impl UpbitConnector {
 }
 
 // Upbit is spot-only — no futures/positions support.
-#[async_trait::async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl crate::core::traits::Positions for UpbitConnector {
     async fn get_positions(
         &self,
@@ -1419,7 +1425,8 @@ impl crate::core::traits::Positions for UpbitConnector {
 // MARKET DATA PUBLIC
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketDataPublic for UpbitConnector {
     /// Recent public trades for a symbol.
     ///

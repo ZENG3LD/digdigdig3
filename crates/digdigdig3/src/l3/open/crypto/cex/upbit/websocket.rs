@@ -14,7 +14,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
 use futures_util::{Stream, StreamExt, SinkExt};
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, mpsc, Mutex};
@@ -347,7 +346,8 @@ impl UpbitWebSocket {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl WebSocketConnector for UpbitWebSocket {
     async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
         // Rate limit connections

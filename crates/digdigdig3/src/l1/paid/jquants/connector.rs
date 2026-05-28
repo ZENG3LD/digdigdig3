@@ -1,6 +1,5 @@
 //! # JQuants Connector Implementation
 
-use async_trait::async_trait;
 use reqwest::Client;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -155,7 +154,8 @@ impl ExchangeIdentity for JQuantsConnector {
 // TRAIT: MarketData (Implement what makes sense)
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for JQuantsConnector {
     /// Get current price (using latest daily quote close price)
     async fn get_price(
@@ -284,7 +284,8 @@ impl MarketData for JQuantsConnector {
 // TRAIT: Trading (UnsupportedOperation - data provider only)
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for JQuantsConnector {
     async fn place_order(&self, _req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         Err(ExchangeError::UnsupportedOperation(
@@ -334,7 +335,8 @@ impl Trading for JQuantsConnector {
 // TRAIT: Account (UnsupportedOperation - data provider only)
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for JQuantsConnector {
     async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         Err(ExchangeError::UnsupportedOperation(
@@ -360,7 +362,8 @@ impl Account for JQuantsConnector {
 // TRAIT: Positions (UnsupportedOperation - data provider only)
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for JQuantsConnector {
     async fn get_positions(&self, _query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         Err(ExchangeError::UnsupportedOperation(

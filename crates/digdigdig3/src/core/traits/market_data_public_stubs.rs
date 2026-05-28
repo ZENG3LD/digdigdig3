@@ -135,7 +135,8 @@ impl MarketDataPublic for IBConnector {}
 
 impl MarketDataPublic for YahooFinanceConnector {}
 
-#[async_trait::async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketDataPublic for CryptoCompareConnector {
     async fn get_recent_trades(
         &self,

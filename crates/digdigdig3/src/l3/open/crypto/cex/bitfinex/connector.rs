@@ -13,7 +13,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::core::{
@@ -438,7 +437,8 @@ impl ExchangeIdentity for BitfinexConnector {
 // MARKET DATA
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for BitfinexConnector {
     async fn get_price(
         &self,
@@ -586,7 +586,8 @@ impl MarketData for BitfinexConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for BitfinexConnector {
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         let symbol = req.symbol.clone();
@@ -969,7 +970,8 @@ impl Trading for BitfinexConnector {
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for BitfinexConnector {
     async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         let response = self.post(
@@ -1062,7 +1064,8 @@ impl Account for BitfinexConnector {
 // POSITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for BitfinexConnector {
     async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         let account_type = query.account_type;
@@ -1129,7 +1132,8 @@ impl Positions for BitfinexConnector {
 // CANCEL ALL (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CancelAll for BitfinexConnector {
     async fn cancel_all_orders(
         &self,
@@ -1173,7 +1177,8 @@ impl CancelAll for BitfinexConnector {
 // AMEND ORDER (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AmendOrder for BitfinexConnector {
     async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
         let id = req.order_id.parse::<i64>()
@@ -1204,7 +1209,8 @@ impl AmendOrder for BitfinexConnector {
 // BATCH ORDERS (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl BatchOrders for BitfinexConnector {
     /// Place multiple orders in a single batch request.
     ///
@@ -1386,7 +1392,8 @@ impl BatchOrders for BitfinexConnector {
 // ACCOUNT TRANSFERS (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AccountTransfers for BitfinexConnector {
     /// Transfer between Bitfinex wallets (exchange/margin/funding).
     ///
@@ -1451,7 +1458,8 @@ impl AccountTransfers for BitfinexConnector {
 // CUSTODIAL FUNDS (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CustodialFunds for BitfinexConnector {
     /// Get deposit address for an asset on a given network/method.
     ///
@@ -1639,7 +1647,8 @@ impl CustodialFunds for BitfinexConnector {
 // SUB ACCOUNTS (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl SubAccounts for BitfinexConnector {
     /// Perform sub-account operations (list, transfer; create/get_balance not supported).
     async fn sub_account_operation(
@@ -1729,7 +1738,8 @@ impl SubAccounts for BitfinexConnector {
 // FUNDING HISTORY (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl FundingHistory for BitfinexConnector {
     /// Get historical funding payments for the account.
     ///
@@ -1819,7 +1829,8 @@ impl FundingHistory for BitfinexConnector {
 // ACCOUNT LEDGER (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AccountLedger for BitfinexConnector {
     /// Get account ledger entries.
     ///

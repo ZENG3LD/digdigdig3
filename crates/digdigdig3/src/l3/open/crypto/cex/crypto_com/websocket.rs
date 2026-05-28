@@ -32,7 +32,6 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
 use futures_util::{Stream, StreamExt, SinkExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -899,7 +898,8 @@ impl CryptoComWebSocket {
 // WEBSOCKET CONNECTOR TRAIT IMPLEMENTATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl WebSocketConnector for CryptoComWebSocket {
     async fn connect(&self, account_type: AccountType) -> WebSocketResult<()> {
         *self.account_type.lock().await = account_type;

@@ -1,6 +1,5 @@
 //! Alpaca connector implementation
 
-use async_trait::async_trait;
 use reqwest::Client;
 use std::collections::HashMap;
 use serde_json::{json, Value};
@@ -536,7 +535,8 @@ impl ExchangeIdentity for AlpacaConnector {
 // TRAIT: MarketData
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for AlpacaConnector {
     async fn get_price(
         &self,
@@ -759,7 +759,8 @@ impl MarketData for AlpacaConnector {
 // TRAIT: Trading
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for AlpacaConnector {
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         let symbol_str = format_symbol(&req.symbol);
@@ -1052,7 +1053,8 @@ impl Trading for AlpacaConnector {
 // TRAIT: Account
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for AlpacaConnector {
     async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         let response = self.get_trading(AlpacaEndpoint::Account, HashMap::new()).await?;
@@ -1085,7 +1087,8 @@ impl Account for AlpacaConnector {
 // TRAIT: Positions
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for AlpacaConnector {
     async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         if let Some(sym) = query.symbol {
@@ -1165,7 +1168,8 @@ impl Positions for AlpacaConnector {
 // OPTIONAL TRAIT: CancelAll
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CancelAll for AlpacaConnector {
     /// Cancel all open orders via DELETE /v2/orders
     ///
@@ -1207,7 +1211,8 @@ impl CancelAll for AlpacaConnector {
 // OPTIONAL TRAIT: AmendOrder
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AmendOrder for AlpacaConnector {
     /// Amend an open order via PATCH /v2/orders/{order_id}
     ///
@@ -1300,7 +1305,8 @@ impl AlpacaConnector {
 // ACCOUNT LEDGER
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AccountLedger for AlpacaConnector {
     /// Get account activity history from `GET /v2/account/activities`.
     ///

@@ -15,7 +15,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::core::{
@@ -445,7 +444,8 @@ impl ExchangeIdentity for BitstampConnector {
 // MARKET DATA
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for BitstampConnector {
     async fn get_price(
         &self,
@@ -557,7 +557,8 @@ impl MarketData for BitstampConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for BitstampConnector {
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         let symbol = req.symbol.clone();
@@ -765,7 +766,8 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for BitstampConnector {
     async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         let _asset = query.asset.clone();
@@ -829,7 +831,8 @@ impl Account for BitstampConnector {
 // CANCEL ALL (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CancelAll for BitstampConnector {
     async fn cancel_all_orders(
         &self,
@@ -852,7 +855,8 @@ impl CancelAll for BitstampConnector {
 // AMEND ORDER (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AmendOrder for BitstampConnector {
     async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
         // Bitstamp implements amend as an atomic cancel-and-replace via
@@ -884,7 +888,8 @@ impl AmendOrder for BitstampConnector {
 // CUSTODIAL FUNDS (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CustodialFunds for BitstampConnector {
     /// Get deposit address for an asset.
     ///
@@ -1113,7 +1118,8 @@ impl BitstampConnector {
 // ACCOUNT LEDGER
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AccountLedger for BitstampConnector {
     /// Get account ledger from `POST /api/v2/user_transactions/`.
     ///
@@ -1151,7 +1157,8 @@ impl AccountLedger for BitstampConnector {
 }
 
 // Bitstamp is spot-only — no futures/positions support.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl crate::core::traits::Positions for BitstampConnector {
     async fn get_positions(
         &self,
@@ -1186,7 +1193,8 @@ impl crate::core::traits::Positions for BitstampConnector {
 // MARKET DATA PUBLIC
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketDataPublic for BitstampConnector {
     /// Recent public trades for a symbol.
     ///

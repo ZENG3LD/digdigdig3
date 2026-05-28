@@ -26,7 +26,6 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
 use futures_util::{Stream, StreamExt};
 use serde_json::Value;
 use tokio::sync::{broadcast, mpsc, Mutex as TokioMutex, RwLock as TokioRwLock};
@@ -359,7 +358,8 @@ impl<P: WsProtocol> CapabilityProvider for UniversalWsTransport<P> {
 // WebSocketConnector blanket impl (migration adapter)
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl<P: WsProtocol> crate::core::traits::WebSocketConnector for UniversalWsTransport<P> {
     async fn connect(&self, account_type: AccountType) -> WebSocketResult<()> {
         let _ = account_type; // transport is bound at construction

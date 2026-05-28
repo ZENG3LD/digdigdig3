@@ -13,7 +13,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::core::{
@@ -412,7 +411,8 @@ impl ExchangeIdentity for KrakenConnector {
 // MARKET DATA
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for KrakenConnector {
     async fn get_price(
         &self,
@@ -538,7 +538,8 @@ impl MarketData for KrakenConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for KrakenConnector {
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         let symbol = req.symbol.clone();
@@ -1048,7 +1049,8 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for KrakenConnector {
     async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         let _asset = query.asset.clone();
@@ -1140,7 +1142,8 @@ impl Account for KrakenConnector {
 // POSITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for KrakenConnector {
     async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         let _symbol = query.symbol.clone();
@@ -1278,7 +1281,8 @@ impl Positions for KrakenConnector {
 ///
 /// - Spot:    `POST /0/private/CancelAll`
 /// - Futures: `POST /derivatives/api/v3/cancelallorders` (optionally filtered by symbol)
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CancelAll for KrakenConnector {
     async fn cancel_all_orders(
         &self,
@@ -1325,7 +1329,8 @@ impl CancelAll for KrakenConnector {
 ///
 /// - Spot:    `POST /0/private/EditOrder`
 /// - Futures: `POST /derivatives/api/v3/editorder`
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AmendOrder for KrakenConnector {
     async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
         if req.fields.price.is_none() && req.fields.quantity.is_none() {
@@ -1383,7 +1388,8 @@ impl AmendOrder for KrakenConnector {
 ///
 /// Kraken Futures: `POST /derivatives/api/v3/batchorder` — max 10 orders per batch.
 /// Spot does NOT have a native batch placement endpoint.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl BatchOrders for KrakenConnector {
     async fn place_orders_batch(
         &self,
@@ -1505,7 +1511,8 @@ impl BatchOrders for KrakenConnector {
 ///
 /// Note: Kraken asset names use internal format — XXBT for BTC, ZUSD for USD.
 /// This implementation maps common tickers to Kraken's format.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CustodialFunds for KrakenConnector {
     async fn get_deposit_address(
         &self,
@@ -1623,7 +1630,8 @@ impl CustodialFunds for KrakenConnector {
 /// Kraken supports listing sub-accounts and transferring funds between them
 /// via the standard private REST API. Creating sub-accounts and querying
 /// individual balances are not available through the standard API.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl SubAccounts for KrakenConnector {
     async fn sub_account_operation(
         &self,
@@ -1733,7 +1741,8 @@ impl KrakenConnector {
 // FUNDING HISTORY
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl FundingHistory for KrakenConnector {
     async fn get_funding_payments(
         &self,
@@ -1761,7 +1770,8 @@ impl FundingHistory for KrakenConnector {
 // ACCOUNT LEDGER
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AccountLedger for KrakenConnector {
     async fn get_ledger(
         &self,

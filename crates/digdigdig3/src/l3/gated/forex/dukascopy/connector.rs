@@ -2,7 +2,6 @@
 //!
 //! Data provider connector that downloads and parses binary tick data files.
 
-use async_trait::async_trait;
 use crate::core::{
     ExchangeId, ExchangeType, AccountType, SymbolInput,
     ExchangeError, ExchangeResult,
@@ -205,7 +204,8 @@ impl ExchangeIdentity for DukascopyConnector {
 // TRAIT: MarketData
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for DukascopyConnector {
     /// Get current price — NOT SUPPORTED
     ///
@@ -314,7 +314,8 @@ impl MarketData for DukascopyConnector {
 // TRAIT: Trading (NOT SUPPORTED - DATA PROVIDER ONLY)
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for DukascopyConnector {
     async fn place_order(&self, _req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         Err(ExchangeError::UnsupportedOperation(
@@ -364,7 +365,8 @@ impl Trading for DukascopyConnector {
 // TRAIT: Account (NOT SUPPORTED - DATA PROVIDER ONLY)
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for DukascopyConnector {
     async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         Err(ExchangeError::UnsupportedOperation(
@@ -389,7 +391,8 @@ impl Account for DukascopyConnector {
 // TRAIT: Positions (NOT SUPPORTED - DATA PROVIDER ONLY)
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for DukascopyConnector {
     async fn get_positions(&self, _query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         Err(ExchangeError::UnsupportedOperation(

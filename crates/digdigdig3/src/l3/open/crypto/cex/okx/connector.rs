@@ -13,7 +13,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::core::{
@@ -752,7 +751,8 @@ impl ExchangeIdentity for OkxConnector {
 // MARKET DATA
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for OkxConnector {
     async fn get_price(
         &self,
@@ -876,7 +876,8 @@ impl MarketData for OkxConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for OkxConnector {
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         let symbol = req.symbol.clone();
@@ -1366,7 +1367,8 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for OkxConnector {
     async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         let asset = query.asset.clone();
@@ -1468,7 +1470,8 @@ impl Account for OkxConnector {
 // POSITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for OkxConnector {
     async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         let symbol = query.symbol.clone();
@@ -1789,7 +1792,8 @@ impl Positions for OkxConnector {
 /// Note: The `scope` symbol filter is not supported — OKX `cancel-all-after`
 /// always cancels across all instruments. `CancelScope::BySymbol` will return
 /// `UnsupportedOperation`.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CancelAll for OkxConnector {
     async fn cancel_all_orders(
         &self,
@@ -1830,7 +1834,8 @@ impl CancelAll for OkxConnector {
 ///
 /// OKX: `POST /api/v5/trade/amend-order`
 /// At least one of `newPx`, `newSz`, or `newStopPx` must be provided.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AmendOrder for OkxConnector {
     async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
         if req.fields.price.is_none() && req.fields.quantity.is_none() && req.fields.trigger_price.is_none() {
@@ -1868,7 +1873,8 @@ impl AmendOrder for OkxConnector {
 /// Native batch order placement and cancellation via OKX batch endpoints.
 ///
 /// OKX: `POST /api/v5/trade/batch-orders` (max 20), `POST /api/v5/trade/cancel-batch-orders` (max 20)
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl BatchOrders for OkxConnector {
     async fn place_orders_batch(
         &self,
@@ -2005,7 +2011,8 @@ impl OkxConnector {
 ///
 /// OKX: `POST /api/v5/asset/transfer`
 /// Account IDs: 6 = Funding/Spot, 5 = Margin, 18 = Unified Trading (Futures/SWAP).
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AccountTransfers for OkxConnector {
     /// Transfer an asset between two OKX account types.
     ///
@@ -2066,7 +2073,8 @@ impl AccountTransfers for OkxConnector {
 /// OKX withdrawal: `POST /api/v5/asset/withdrawal`
 /// OKX deposit history: `GET /api/v5/asset/deposit-history`
 /// OKX withdrawal history: `GET /api/v5/asset/withdrawal-history`
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CustodialFunds for OkxConnector {
     /// Get the deposit address for an asset on a given network.
     ///
@@ -2170,7 +2178,8 @@ impl CustodialFunds for OkxConnector {
 /// OKX sub-account list: `GET /api/v5/users/subaccount/list`
 /// OKX sub-account transfer: `POST /api/v5/asset/subaccount/transfer`
 /// OKX sub-account balance: `GET /api/v5/account/subaccount/balances`
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl SubAccounts for OkxConnector {
     /// Perform a sub-account operation (create, list, transfer, get balance).
     ///
@@ -2243,7 +2252,8 @@ impl SubAccounts for OkxConnector {
 ///
 /// OKX type=8 is the funding fee category. For data older than 7 days,
 /// this automatically falls back to the `bills-archive` endpoint.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl FundingHistory for OkxConnector {
     async fn get_funding_payments(
         &self,
@@ -2291,7 +2301,8 @@ impl FundingHistory for OkxConnector {
 ///
 /// Returns up to 7 days of data. The archive endpoint (`/account/bills-archive`)
 /// covers up to 3 months and is used when a time range is provided.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AccountLedger for OkxConnector {
     async fn get_ledger(
         &self,
@@ -2335,7 +2346,8 @@ impl AccountLedger for OkxConnector {
 // MarketDataPublic trait impl
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketDataPublic for OkxConnector {
     async fn get_liquidation_history(
         &self,

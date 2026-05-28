@@ -13,7 +13,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use reqwest::header::HeaderMap;
 use serde_json::{json, Value};
 
@@ -507,7 +506,8 @@ impl ExchangeIdentity for GateioConnector {
 // MARKET DATA
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for GateioConnector {
     async fn get_price(
         &self,
@@ -646,7 +646,8 @@ impl MarketData for GateioConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for GateioConnector {
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         let symbol = req.symbol.clone();
@@ -1267,7 +1268,8 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for GateioConnector {
     async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         let asset = query.asset.clone();
@@ -1396,7 +1398,8 @@ impl Account for GateioConnector {
 // POSITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for GateioConnector {
     async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         let symbol = query.symbol.clone();
@@ -1746,7 +1749,8 @@ impl Positions for GateioConnector {
 ///
 /// - Spot:    `DELETE /api/v4/spot/orders?currency_pair=BTC_USDT`
 /// - Futures: `DELETE /api/v4/futures/{settle}/orders?contract=BTC_USDT`
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CancelAll for GateioConnector {
     async fn cancel_all_orders(
         &self,
@@ -1796,7 +1800,8 @@ impl CancelAll for GateioConnector {
 ///
 /// Gate.io Spot:    `PATCH /api/v4/spot/orders/{order_id}` (introduced v4.35.0)
 /// Gate.io Futures: `PATCH /api/v4/futures/{settle}/orders/{order_id}`
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AmendOrder for GateioConnector {
     async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
         if req.fields.price.is_none() && req.fields.quantity.is_none() {
@@ -1858,7 +1863,8 @@ impl AmendOrder for GateioConnector {
 ///
 /// Batch cancel is not a dedicated endpoint on Gate.io; each item in a batch
 /// placement may fail independently. Cancel-all uses `CancelAll::cancel_all_orders`.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl BatchOrders for GateioConnector {
     async fn place_orders_batch(
         &self,
@@ -2011,7 +2017,8 @@ impl GateioConnector {
 /// - `Spot`           → `"spot"`
 /// - `FuturesCross`   → `"futures"`
 /// - `Margin`         → `"margin"`
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AccountTransfers for GateioConnector {
     async fn transfer(&self, req: TransferRequest) -> ExchangeResult<TransferResponse> {
         fn map_account(at: AccountType) -> &'static str {
@@ -2139,7 +2146,8 @@ impl AccountTransfers for GateioConnector {
 /// - Withdraw:        `POST /api/v4/withdrawals`
 /// - Deposit history: `GET  /api/v4/wallet/deposits`
 /// - Withdrawal hist: `GET  /api/v4/wallet/withdrawals`
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CustodialFunds for GateioConnector {
     async fn get_deposit_address(
         &self,
@@ -2373,7 +2381,8 @@ impl CustodialFunds for GateioConnector {
 /// - List:     `GET  /api/v4/sub_accounts`
 /// - Transfer: `POST /api/v4/sub_accounts/transfers`
 /// - Balance:  `GET  /api/v4/sub_accounts/{user_id}/balances`
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl SubAccounts for GateioConnector {
     async fn sub_account_operation(
         &self,
@@ -2701,7 +2710,8 @@ impl GateioConnector {
 // FUNDING HISTORY
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl FundingHistory for GateioConnector {
     async fn get_funding_payments(
         &self,
@@ -2734,7 +2744,8 @@ impl FundingHistory for GateioConnector {
 // ACCOUNT LEDGER
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AccountLedger for GateioConnector {
     async fn get_ledger(
         &self,

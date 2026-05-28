@@ -40,7 +40,6 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
 use flate2::read::GzDecoder;
 use futures_util::{SinkExt, Stream, StreamExt, stream::{SplitSink, SplitStream}};
 use serde::{Deserialize, Serialize};
@@ -803,7 +802,8 @@ impl BingxWebSocket {
 // WEBSOCKET CONNECTOR TRAIT IMPLEMENTATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl WebSocketConnector for BingxWebSocket {
     async fn connect(&self, account_type: AccountType) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Connecting;

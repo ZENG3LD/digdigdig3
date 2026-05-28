@@ -38,7 +38,6 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
 
-use async_trait::async_trait;
 use futures_util::{StreamExt, SinkExt, stream::{SplitSink, SplitStream}};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -562,7 +561,8 @@ impl GeminiWebSocket {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl WebSocketConnector for GeminiWebSocket {
     async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
         self.connect().await

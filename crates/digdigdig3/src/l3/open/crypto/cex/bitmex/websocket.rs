@@ -6,7 +6,6 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use futures_util::Stream;
 use tokio::sync::Mutex as TokioMutex;
 
@@ -49,7 +48,8 @@ impl BitmexWebSocket {
 // WebSocketConnector impl — delegates to inner transport
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl WebSocketConnector for BitmexWebSocket {
     async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
         self.inner.connect().await

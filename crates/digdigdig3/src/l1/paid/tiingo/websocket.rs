@@ -29,7 +29,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use futures_util::{Stream, StreamExt};
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, RwLock};
@@ -291,7 +290,8 @@ impl TiingoWebSocket {
 // TRAIT IMPLEMENTATION
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl WebSocketConnector for TiingoWebSocket {
     async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
         *self.status.write().await = ConnectionStatus::Connecting;

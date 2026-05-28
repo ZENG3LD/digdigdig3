@@ -18,7 +18,6 @@
 //! 2. Implement a TCP client that sends Futu framed protobuf packets
 //! 3. Replace the body of `proto_call()` with the actual TCP send/receive
 
-use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::{json, Value};
 
@@ -189,7 +188,8 @@ impl ExchangeIdentity for FutuConnector {
 // TRAIT: MarketData
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for FutuConnector {
     async fn get_price(
         &self,
@@ -279,7 +279,8 @@ impl MarketData for FutuConnector {
 // TRAIT: Trading
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for FutuConnector {
     /// Place an order via Trd_PlaceOrder (proto 2202).
     ///
@@ -577,7 +578,8 @@ impl Trading for FutuConnector {
 // TRAIT: Account
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for FutuConnector {
     /// Get account balance via Trd_GetFunds (proto 2101).
     ///
@@ -649,7 +651,8 @@ impl Account for FutuConnector {
 // TRAIT: Positions
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for FutuConnector {
     /// Get open stock positions via Trd_GetPositionList (proto 2102).
     ///
@@ -764,7 +767,8 @@ impl Positions for FutuConnector {
 // TRAIT: AmendOrder (optional — Futu Trd_ModifyOrder with op=Normal)
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AmendOrder for FutuConnector {
     /// Amend a live order via Trd_ModifyOrder (proto 2205) with op=Normal(1).
     ///

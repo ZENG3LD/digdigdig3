@@ -16,7 +16,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::core::{
@@ -348,7 +347,8 @@ impl ExchangeIdentity for GeminiConnector {
 // MARKET DATA
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for GeminiConnector {
     async fn get_price(&self, symbol: SymbolInput<'_>, account_type: AccountType) -> ExchangeResult<Price> {
         let symbol = symbol.resolve(ExchangeId::Gemini, account_type)?;
@@ -492,7 +492,8 @@ impl MarketData for GeminiConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for GeminiConnector {
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         let symbol = req.symbol.clone();
@@ -730,7 +731,8 @@ impl Trading for GeminiConnector {
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for GeminiConnector {
     async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         let response = self.post(GeminiEndpoint::Balances, HashMap::new(), &[]).await?;
@@ -792,7 +794,8 @@ impl Account for GeminiConnector {
 // POSITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for GeminiConnector {
     async fn get_positions(&self, _query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         let response = self.post(GeminiEndpoint::Positions, HashMap::new(), &[]).await?;
@@ -838,7 +841,8 @@ impl Positions for GeminiConnector {
 // CANCEL ALL TRAIT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CancelAll for GeminiConnector {
     async fn cancel_all_orders(
         &self,
@@ -876,7 +880,8 @@ impl CancelAll for GeminiConnector {
 // CUSTODIAL FUNDS (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CustodialFunds for GeminiConnector {
     /// Get a new deposit address for an asset.
     ///
@@ -1159,7 +1164,8 @@ mod tests {
 // MARKET DATA PUBLIC
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketDataPublic for GeminiConnector {
     /// Recent public trades for a symbol.
     ///

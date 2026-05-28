@@ -1,6 +1,5 @@
 //! Yahoo Finance connector implementation
 
-use async_trait::async_trait;
 use reqwest::Client;
 use std::collections::HashMap;
 
@@ -203,7 +202,8 @@ impl ExchangeIdentity for YahooFinanceConnector {
 // TRAIT: MarketData (Implement what makes sense)
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for YahooFinanceConnector {
     /// Get current price
     async fn get_price(
@@ -322,7 +322,8 @@ impl MarketData for YahooFinanceConnector {
 // TRAIT: Trading (UnsupportedOperation - data provider only)
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for YahooFinanceConnector {
     async fn place_order(&self, _req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         Err(ExchangeError::UnsupportedOperation(
@@ -372,7 +373,8 @@ impl Trading for YahooFinanceConnector {
 // TRAIT: Account (UnsupportedOperation - data provider only)
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for YahooFinanceConnector {
     async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         let _asset = query.asset.clone();
@@ -400,7 +402,8 @@ impl Account for YahooFinanceConnector {
 // TRAIT: Positions (UnsupportedOperation - data provider only)
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for YahooFinanceConnector {
     async fn get_positions(&self, _query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         Err(ExchangeError::UnsupportedOperation(

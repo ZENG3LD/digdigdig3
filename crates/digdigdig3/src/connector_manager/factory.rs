@@ -71,6 +71,7 @@ use crate::l3::open::crypto::cex::bingx::BingxConnector;
 use crate::l3::open::crypto::cex::crypto_com::CryptoComConnector;
 use crate::l3::open::crypto::cex::upbit::UpbitConnector;
 use crate::l3::open::crypto::cex::deribit::DeribitConnector;
+#[cfg(feature = "onchain-evm")]
 use crate::l3::open::crypto::cex::hyperliquid::HyperliquidConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -161,7 +162,7 @@ use crate::l3::open::crypto::cex::crypto_com::CryptoComWebSocket;
 use crate::l3::open::crypto::cex::upbit::UpbitWebSocket;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::deribit::DeribitWebSocket;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "onchain-evm"))]
 use crate::l3::open::crypto::cex::hyperliquid::HyperliquidWebSocket;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::coinbase::CoinbaseWebSocket;
@@ -291,9 +292,16 @@ impl ConnectorFactory {
                 let c = DeribitConnector::public(testnet).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(feature = "onchain-evm")]
             ExchangeId::HyperLiquid => {
                 let c = HyperliquidConnector::public(testnet).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
+            }
+            #[cfg(not(feature = "onchain-evm"))]
+            ExchangeId::HyperLiquid => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "HyperLiquid requires the onchain-evm feature".into()
+                ))
             }
             ExchangeId::Dydx => {
                 let c = DydxConnector::public(testnet).await?;
@@ -584,9 +592,16 @@ impl ConnectorFactory {
                 let c = DeribitConnector::new(Some(credentials), testnet).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
+            #[cfg(feature = "onchain-evm")]
             ExchangeId::HyperLiquid => {
                 let c = HyperliquidConnector::new(Some(credentials), testnet).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
+            }
+            #[cfg(not(feature = "onchain-evm"))]
+            ExchangeId::HyperLiquid => {
+                Err(ExchangeError::UnsupportedOperation(
+                    "HyperLiquid requires the onchain-evm feature".into()
+                ))
             }
 
             // ═══════════════════════════════════════════════════════════════════════
@@ -991,9 +1006,16 @@ impl ConnectorFactory {
             // ═══════════════════════════════════════════════════════════════════
             // CEX — HyperLiquid: sync new(is_testnet)
             // ═══════════════════════════════════════════════════════════════════
+            #[cfg(feature = "onchain-evm")]
             ExchangeId::HyperLiquid => {
                 let ws = HyperliquidWebSocket::new(testnet);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            #[cfg(not(feature = "onchain-evm"))]
+            ExchangeId::HyperLiquid => {
+                Err(crate::core::types::WebSocketError::UnsupportedOperation(
+                    "HyperLiquid requires the onchain-evm feature".into()
+                ))
             }
             // ═══════════════════════════════════════════════════════════════════
             // CEX — CryptoCom: sync new(auth, is_user_stream)

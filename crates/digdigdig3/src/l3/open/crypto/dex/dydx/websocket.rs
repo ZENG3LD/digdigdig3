@@ -23,7 +23,6 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
 use futures_util::{Stream, StreamExt, SinkExt, stream::SplitSink};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -910,7 +909,8 @@ impl DydxWebSocket {
 // TRAIT IMPLEMENTATIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl WebSocketConnector for DydxWebSocket {
     async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
         // Connect to WebSocket

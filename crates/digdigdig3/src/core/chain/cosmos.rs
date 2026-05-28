@@ -40,7 +40,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use tokio::sync::Mutex;
 
 use super::provider::{ChainFamily, ChainProvider, TxStatus};
@@ -60,7 +59,8 @@ use crate::core::types::ExchangeError;
 ///
 /// This trait is object-safe: all methods take `&self` with no generics.
 /// It can be stored as `Arc<dyn CosmosChain>`.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait CosmosChain: ChainProvider {
     /// Return the currently cached sequence number for `address`.
     ///
@@ -726,7 +726,8 @@ impl CosmosProvider {
 // ChainProvider IMPL
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl ChainProvider for CosmosProvider {
     fn chain_family(&self) -> ChainFamily {
         ChainFamily::Cosmos { chain_id: self.chain_id.clone() }
@@ -758,7 +759,8 @@ impl ChainProvider for CosmosProvider {
 // CosmosChain IMPL
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CosmosChain for CosmosProvider {
     async fn get_sequence(&self, address: &str) -> Result<u64, ExchangeError> {
         {

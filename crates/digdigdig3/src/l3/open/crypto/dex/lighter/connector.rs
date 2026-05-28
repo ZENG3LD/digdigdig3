@@ -18,7 +18,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::core::{
@@ -358,7 +357,8 @@ impl ExchangeIdentity for LighterConnector {
 // MARKET DATA
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for LighterConnector {
     async fn get_price(&self, symbol: SymbolInput<'_>, account_type: AccountType) -> ExchangeResult<Price> {
         let symbol = symbol.resolve(ExchangeId::Lighter, account_type)?;
@@ -547,7 +547,8 @@ impl MarketData for LighterConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for LighterConnector {
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         #[cfg(not(target_arch = "wasm32"))]
@@ -738,7 +739,8 @@ impl Trading for LighterConnector {
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for LighterConnector {
     async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         // Lighter account data is available via GET /api/v1/account
@@ -873,7 +875,8 @@ impl Account for LighterConnector {
 // POSITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for LighterConnector {
     async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         let (by_field, value) = self.resolve_account_query()?;
@@ -1475,7 +1478,8 @@ impl LighterConnector {
 // MarketDataPublic trait impl
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketDataPublic for LighterConnector {
     async fn get_recent_trades(
         &self,

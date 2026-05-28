@@ -17,6 +17,7 @@ use crate::l3::open::crypto::cex::htx::HtxConnector;
 use crate::l3::open::crypto::cex::crypto_com::CryptoComConnector;
 use crate::l3::open::crypto::cex::upbit::UpbitConnector;
 use crate::l3::open::crypto::cex::deribit::DeribitConnector;
+#[cfg(feature = "onchain-evm")]
 use crate::l3::open::crypto::cex::hyperliquid::HyperliquidConnector;
 use crate::l3::open::crypto::cex::kraken::KrakenConnector;
 use crate::l3::open::crypto::cex::bitstamp::BitstampConnector;
@@ -197,6 +198,7 @@ impl AccountTransfers for CryptoCompareConnector {}
 //             OKX, Upbit
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[cfg(feature = "onchain-evm")]
 impl CustodialFunds for HyperliquidConnector {}
 impl CustodialFunds for LighterConnector {}
 impl CustodialFunds for DydxConnector {}
@@ -232,6 +234,7 @@ impl SubAccounts for BitstampConnector {}
 impl SubAccounts for GeminiConnector {}
 impl SubAccounts for UpbitConnector {}
 impl SubAccounts for DeribitConnector {}
+#[cfg(feature = "onchain-evm")]
 impl SubAccounts for HyperliquidConnector {}
 impl SubAccounts for LighterConnector {}
 impl SubAccounts for DydxConnector {}
@@ -305,6 +308,7 @@ impl AccountLedger for MexcConnector {}
 impl AccountLedger for HtxConnector {}
 impl AccountLedger for BingxConnector {}
 impl AccountLedger for UpbitConnector {}
+#[cfg(feature = "onchain-evm")]
 impl AccountLedger for HyperliquidConnector {}
 impl AccountLedger for LighterConnector {}
 impl AccountLedger for DydxConnector {}

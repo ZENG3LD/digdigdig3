@@ -16,7 +16,6 @@
 //! does NOT require a cryptographic signature — only the wallet address in the
 //! request body. Only the `/exchange` endpoint requires EIP-712 signing.
 
-use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -591,7 +590,8 @@ impl ExchangeIdentity for HyperliquidConnector {
 // MARKETDATA TRAIT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for HyperliquidConnector {
     async fn get_price(
         &self,
@@ -760,7 +760,8 @@ impl MarketData for HyperliquidConnector {
 // TRADING TRAIT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for HyperliquidConnector {
     /// Place an order on Hyperliquid.
     ///
@@ -1182,7 +1183,8 @@ impl Trading for HyperliquidConnector {
 // ACCOUNT TRAIT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for HyperliquidConnector {
     /// Get account balances.
     ///
@@ -1320,7 +1322,8 @@ impl Account for HyperliquidConnector {
 // POSITIONS TRAIT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for HyperliquidConnector {
     /// Get open perpetual positions.
     ///
@@ -1563,7 +1566,8 @@ impl Positions for HyperliquidConnector {
 // OPTIONAL TRAITS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AmendOrder for HyperliquidConnector {
     /// Modify a live order using the native `modify` action on `/exchange`.
     ///
@@ -1659,7 +1663,8 @@ impl AmendOrder for HyperliquidConnector {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl BatchOrders for HyperliquidConnector {
     /// Place multiple orders in a single native batch request.
     ///
@@ -1915,7 +1920,8 @@ impl HyperliquidConnector {
 // CANCEL ALL TRAIT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CancelAll for HyperliquidConnector {
     /// Cancel all open orders, optionally scoped to a symbol.
     ///
@@ -2042,7 +2048,8 @@ impl CancelAll for HyperliquidConnector {
 // ACCOUNT TRANSFERS TRAIT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AccountTransfers for HyperliquidConnector {
     /// Transfer USDC between Spot and Perp wallets.
     ///
@@ -2109,7 +2116,8 @@ impl AccountTransfers for HyperliquidConnector {
 // FUNDING HISTORY
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl FundingHistory for HyperliquidConnector {
     /// Get historical funding payments from `POST /info` with `type: userFunding`.
     ///
@@ -2198,7 +2206,8 @@ impl HyperliquidConnector {
 // MARKET DATA PUBLIC TRAIT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketDataPublic for HyperliquidConnector {
     async fn get_recent_trades(
         &self,

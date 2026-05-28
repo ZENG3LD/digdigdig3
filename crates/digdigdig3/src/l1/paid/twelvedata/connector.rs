@@ -2,7 +2,6 @@
 //!
 //! DATA PROVIDER ONLY - no trading capabilities.
 
-use async_trait::async_trait;
 use reqwest::Client;
 use std::collections::HashMap;
 use serde_json::Value;
@@ -173,7 +172,8 @@ impl TwelvedataConnector {
 // TRAIT IMPLEMENTATIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl ExchangeIdentity for TwelvedataConnector {
     fn exchange_id(&self) -> ExchangeId {
         ExchangeId::Twelvedata
@@ -198,7 +198,8 @@ impl ExchangeIdentity for TwelvedataConnector {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for TwelvedataConnector {
     async fn get_price(
         &self,
@@ -338,7 +339,8 @@ impl MarketData for TwelvedataConnector {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for TwelvedataConnector {
     async fn place_order(&self, _req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         Err(ExchangeError::UnsupportedOperation(
@@ -384,7 +386,8 @@ impl Trading for TwelvedataConnector {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for TwelvedataConnector {
     async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         Err(ExchangeError::UnsupportedOperation(
@@ -406,7 +409,8 @@ impl Account for TwelvedataConnector {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for TwelvedataConnector {
     async fn get_positions(&self, _query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         Err(ExchangeError::UnsupportedOperation(

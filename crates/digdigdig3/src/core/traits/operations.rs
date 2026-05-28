@@ -22,7 +22,6 @@
 //! | `FundingHistory` | ~16/24 | `Send + Sync` |
 //! | `AccountLedger` | ~14/24 | `Send + Sync` |
 
-use async_trait::async_trait;
 
 use crate::core::types::{
     AccountType, ExchangeResult, Order,
@@ -46,7 +45,8 @@ use super::{Trading, Account};
 ///
 /// Connectors implement this trait ONLY if the exchange has a native
 /// cancel-all endpoint. No looping over `cancel_order` is permitted.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait CancelAll: Trading {
     /// Cancel orders matching the given scope.
     ///
@@ -77,7 +77,8 @@ pub trait CancelAll: Trading {
 /// Connectors that implement this trait have a native modify/amend endpoint.
 /// Connectors that DON'T implement this trait simply do not have the trait —
 /// callers must cancel+replace manually at the application layer if needed.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait AmendOrder: Trading {
     /// Modify a live order's price, quantity, and/or trigger price.
     ///
@@ -103,7 +104,8 @@ pub trait AmendOrder: Trading {
 /// Connectors implement this trait ONLY when the exchange has a native
 /// batch endpoint (one HTTP request for multiple orders).
 /// NO sequential loops are permitted even as a fallback.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait BatchOrders: Trading {
     /// Place multiple orders in a single native batch request.
     ///
@@ -158,7 +160,8 @@ pub trait BatchOrders: Trading {
 /// 17/20 applicable exchanges (non-custodial DEX excluded):
 /// Binance, Bybit, OKX, KuCoin, GateIO, Bitfinex, Gemini, MEXC, HTX,
 /// Bitget, BingX, Phemex, CryptoCom, Upbit, Deribit, HyperLiquid, Kraken.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait AccountTransfers: Account {
     /// Transfer an asset between two account types.
     async fn transfer(&self, req: TransferRequest) -> ExchangeResult<TransferResponse> {
@@ -190,7 +193,8 @@ pub trait AccountTransfers: Account {
 /// Binance, Bybit, OKX, KuCoin, Kraken, Coinbase, GateIO, Bitfinex,
 /// Bitstamp, Gemini, MEXC, HTX, Bitget, BingX, Phemex, CryptoCom,
 /// Upbit, Deribit.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait CustodialFunds: Account {
     /// Get the deposit address for an asset on a given network.
     ///
@@ -236,7 +240,8 @@ pub trait CustodialFunds: Account {
 /// BingX, Phemex, Kraken, Bitfinex.
 ///
 /// Sub-accounts are a CEX-only concept. DEX connectors never implement this.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait SubAccounts: Account {
     /// Perform a sub-account operation (create, list, transfer, get balance).
     ///
@@ -267,7 +272,8 @@ pub trait SubAccounts: Account {
 /// Default implementation returns `UnsupportedOperation`.
 /// Connectors that expose a native funding payment history endpoint override
 /// `get_funding_payments`.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait FundingHistory: Send + Sync {
     /// Get historical funding payments for the account.
     ///
@@ -298,7 +304,8 @@ pub trait FundingHistory: Send + Sync {
 /// Default implementation returns `UnsupportedOperation`.
 /// Connectors that expose a native ledger/transaction-log endpoint override
 /// `get_ledger`.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait AccountLedger: Send + Sync {
     /// Get the account ledger — all balance change entries matching the filter.
     ///

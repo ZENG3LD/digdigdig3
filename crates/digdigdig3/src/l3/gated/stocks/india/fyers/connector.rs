@@ -6,7 +6,6 @@
 
 use std::collections::HashMap;
 
-use async_trait::async_trait;
 use serde_json::{json, Value};
 use reqwest;
 
@@ -235,7 +234,8 @@ impl ExchangeIdentity for FyersConnector {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for FyersConnector {
     async fn get_price(&self, symbol: SymbolInput<'_>, _account_type: AccountType) -> ExchangeResult<Price> {
         let symbol_str: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
@@ -399,7 +399,8 @@ impl MarketData for FyersConnector {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for FyersConnector {
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         let symbol = req.symbol.clone();
@@ -673,7 +674,8 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
 // AMEND ORDER (Fyers supports PUT /api/v3/orders)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AmendOrder for FyersConnector {
     /// Modify a live order via PUT /api/v3/orders.
     ///
@@ -719,7 +721,8 @@ impl AmendOrder for FyersConnector {
 // BATCH ORDERS (Fyers supports POST /api/v3/orders/multi — up to 10 orders)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl BatchOrders for FyersConnector {
     /// Place up to 10 orders in a single native batch request.
     async fn place_orders_batch(
@@ -865,7 +868,8 @@ impl BatchOrders for FyersConnector {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for FyersConnector {
     async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         let _asset = query.asset.clone();
@@ -888,7 +892,8 @@ impl Account for FyersConnector {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for FyersConnector {
     async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         let symbol = query.symbol.clone();

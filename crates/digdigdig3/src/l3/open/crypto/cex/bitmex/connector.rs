@@ -5,7 +5,6 @@
 //! `CoreConnector` so the factory can wire it, while the real value is
 //! delivered through `BitmexWebSocket` (PredictedFunding).
 
-use async_trait::async_trait;
 use reqwest::Client;
 
 use crate::core::{
@@ -172,7 +171,8 @@ impl ExchangeIdentity for BitmexConnector {
 // MarketData
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for BitmexConnector {
     async fn get_price(
         &self,
@@ -281,7 +281,8 @@ impl MarketDataPublic for BitmexConnector {}
 // Trading — all NotSupported (no auth)
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for BitmexConnector {
     async fn place_order(&self, _req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         Err(ExchangeError::NotSupported(
@@ -335,7 +336,8 @@ impl Trading for BitmexConnector {
 // Account — all NotSupported
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for BitmexConnector {
     async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         Err(ExchangeError::NotSupported(
@@ -364,7 +366,8 @@ impl Account for BitmexConnector {
 // Positions
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for BitmexConnector {
     async fn get_positions(&self, _query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         Err(ExchangeError::NotSupported(

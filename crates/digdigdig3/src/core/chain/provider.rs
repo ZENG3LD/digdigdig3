@@ -3,7 +3,6 @@
 //! Object-safe, no SDK-specific types in signatures.
 //! All addresses and hashes are plain `String` / `&str`.
 
-use async_trait::async_trait;
 
 use crate::core::types::ExchangeError;
 
@@ -160,7 +159,8 @@ pub enum TxStatus {
 /// - Solana: Lamports (9 decimals)
 /// - Cosmos: uATOM / udydx / etc. (6 decimals)
 /// - Bitcoin: Satoshis (8 decimals)
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait ChainProvider: Send + Sync {
     /// Which chain family (and chain ID) this provider connects to.
     fn chain_family(&self) -> ChainFamily;

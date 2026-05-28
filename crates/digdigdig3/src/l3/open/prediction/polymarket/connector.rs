@@ -20,7 +20,6 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use reqwest::Client;
 
 use crate::core::{
@@ -531,7 +530,8 @@ impl ExchangeIdentity for PolymarketConnector {
 // MARKET DATA
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for PolymarketConnector {
     fn market_data_capabilities(&self, _account_type: AccountType) -> MarketDataCapabilities {
         MarketDataCapabilities {
@@ -808,7 +808,8 @@ impl MarketData for PolymarketConnector {
 }
 
 // Polymarket is a prediction market — no standard trading/account/positions support.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl crate::core::traits::Trading for PolymarketConnector {
     async fn place_order(
         &self,
@@ -860,7 +861,8 @@ impl crate::core::traits::Trading for PolymarketConnector {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl crate::core::traits::Account for PolymarketConnector {
     async fn get_balance(
         &self,
@@ -890,7 +892,8 @@ impl crate::core::traits::Account for PolymarketConnector {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl crate::core::traits::Positions for PolymarketConnector {
     async fn get_positions(
         &self,
@@ -925,7 +928,8 @@ impl crate::core::traits::Positions for PolymarketConnector {
 // MARKET DATA PUBLIC
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketDataPublic for PolymarketConnector {
     /// Recent public trades for a market.
     ///

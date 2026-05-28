@@ -31,7 +31,6 @@ use std::collections::HashSet;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex as StdMutex};
 
-use async_trait::async_trait;
 use base64::Engine;
 use futures_util::{Stream, StreamExt, SinkExt};
 use serde_json::json;
@@ -486,7 +485,8 @@ impl Default for YahooFinanceWebSocket {
 // WEBSOCKET CONNECTOR TRAIT IMPLEMENTATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl WebSocketConnector for YahooFinanceWebSocket {
     async fn connect(&self, _account_type: crate::core::types::AccountType) -> WebSocketResult<()> {
         *self.status.lock().await = ConnectionStatus::Connecting;

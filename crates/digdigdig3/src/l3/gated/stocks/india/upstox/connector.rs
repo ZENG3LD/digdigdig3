@@ -15,7 +15,6 @@
 use std::collections::HashMap;
 use std::io::Read;
 
-use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::core::{
@@ -383,7 +382,8 @@ impl ExchangeIdentity for UpstoxConnector {
 // MARKET DATA
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for UpstoxConnector {
     async fn get_price(
         &self,
@@ -523,7 +523,8 @@ impl MarketData for UpstoxConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for UpstoxConnector {
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         let symbol = req.symbol.clone();
@@ -698,7 +699,8 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for UpstoxConnector {
     async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         let _asset = query.asset.clone();
@@ -743,7 +745,8 @@ impl Account for UpstoxConnector {
 // POSITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for UpstoxConnector {
     async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         let _symbol = query.symbol.clone();
@@ -788,7 +791,8 @@ impl Positions for UpstoxConnector {
 // AMEND ORDER (optional trait — Upstox supports PUT /v2/order/modify)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AmendOrder for UpstoxConnector {
     async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
         let order_id = req.order_id.clone();
@@ -843,7 +847,8 @@ impl AmendOrder for UpstoxConnector {
 // BATCH ORDERS (optional trait — Upstox supports POST /v2/order/multi/place)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl BatchOrders for UpstoxConnector {
     async fn place_orders_batch(
         &self,
@@ -934,7 +939,8 @@ impl BatchOrders for UpstoxConnector {
 // CANCEL ALL (optional trait — Upstox supports DELETE /v2/order/multi/cancel)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CancelAll for UpstoxConnector {
     async fn cancel_all_orders(
         &self,

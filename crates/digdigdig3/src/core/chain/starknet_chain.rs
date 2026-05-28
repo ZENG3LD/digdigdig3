@@ -40,7 +40,6 @@
 //! let result = provider.call_contract(token, "balanceOf", &[account]).await?;
 //! ```
 
-use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use super::provider::{ChainFamily, ChainProvider, TxStatus};
@@ -83,7 +82,8 @@ const BALANCE_OF_SELECTOR: &str =
 /// All addresses, selectors, calldata elements, and return values are felt
 /// hex strings with a `0x` prefix (e.g. `"0x04abc..."`). It is the caller's
 /// responsibility to ensure values are within the StarkNet field modulus.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait StarkNetChain: ChainProvider {
     /// Invoke a StarkNet contract function (write operation).
     ///
@@ -278,7 +278,8 @@ impl StarkNetProvider {
 // ChainProvider IMPL
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl ChainProvider for StarkNetProvider {
     fn chain_family(&self) -> ChainFamily {
         ChainFamily::StarkNet
@@ -386,7 +387,8 @@ impl ChainProvider for StarkNetProvider {
 // StarkNetChain IMPL
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl StarkNetChain for StarkNetProvider {
     async fn invoke(
         &self,

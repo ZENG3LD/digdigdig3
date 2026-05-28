@@ -20,6 +20,7 @@ pub mod bingx;
 pub mod crypto_com;
 pub mod upbit;
 pub mod deribit;
+#[cfg(feature = "onchain-evm")]
 pub mod hyperliquid;
 
 // ═══════════════════════════════════════════════════════════════════════════════

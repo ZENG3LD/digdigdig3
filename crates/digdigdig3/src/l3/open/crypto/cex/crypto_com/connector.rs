@@ -13,7 +13,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, atomic::{AtomicI64, Ordering}};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::core::{
@@ -347,7 +346,8 @@ impl ExchangeIdentity for CryptoComConnector {
 // MARKET DATA
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for CryptoComConnector {
     async fn get_price(
         &self,
@@ -465,7 +465,8 @@ impl MarketData for CryptoComConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for CryptoComConnector {
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         let symbol = req.symbol.clone();
@@ -1087,7 +1088,8 @@ impl Trading for CryptoComConnector {
 // CANCEL ALL (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CancelAll for CryptoComConnector {
     async fn cancel_all_orders(
         &self,
@@ -1129,7 +1131,8 @@ impl CancelAll for CryptoComConnector {
 // AMEND ORDER (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AmendOrder for CryptoComConnector {
     async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
         let symbol = req.symbol.clone();
@@ -1165,7 +1168,8 @@ impl AmendOrder for CryptoComConnector {
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for CryptoComConnector {
     async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         let _asset = query.asset.clone();
@@ -1251,7 +1255,8 @@ impl Account for CryptoComConnector {
 // POSITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for CryptoComConnector {
     async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         let symbol = query.symbol.clone();
@@ -1466,7 +1471,8 @@ impl Positions for CryptoComConnector {
 // BATCH ORDERS (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl BatchOrders for CryptoComConnector {
     /// Place multiple orders in a single batch request.
     ///
@@ -1672,7 +1678,8 @@ impl BatchOrders for CryptoComConnector {
 // CUSTODIAL FUNDS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CustodialFunds for CryptoComConnector {
     /// Get deposit address for an asset on a given network.
     ///
@@ -1848,7 +1855,8 @@ impl CustodialFunds for CryptoComConnector {
 // SUB ACCOUNTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl SubAccounts for CryptoComConnector {
     /// Perform a sub-account operation.
     ///
@@ -1960,7 +1968,8 @@ impl SubAccounts for CryptoComConnector {
 // ACCOUNT LEDGER
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AccountLedger for CryptoComConnector {
     /// Get account transaction ledger from `private/get-transactions`.
     ///

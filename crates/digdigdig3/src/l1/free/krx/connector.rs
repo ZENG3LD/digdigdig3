@@ -1,6 +1,5 @@
 //! KRX connector implementation
 
-use async_trait::async_trait;
 use reqwest::Client;
 use std::collections::HashMap;
 
@@ -228,7 +227,8 @@ impl ExchangeIdentity for KrxConnector {
 // TRAIT: MarketData
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for KrxConnector {
     /// Get current price via Data Marketplace (last daily close)
     async fn get_price(&self, symbol: SymbolInput<'_>, account_type: AccountType) -> ExchangeResult<Price> {
@@ -377,7 +377,8 @@ impl MarketData for KrxConnector {
 // TRAIT: Trading (NOT SUPPORTED - DATA PROVIDER ONLY)
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for KrxConnector {
     async fn place_order(&self, _req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         Err(ExchangeError::UnsupportedOperation(
@@ -427,7 +428,8 @@ impl Trading for KrxConnector {
 // TRAIT: Account (NOT SUPPORTED - DATA PROVIDER ONLY)
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for KrxConnector {
     async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         Err(ExchangeError::UnsupportedOperation(
@@ -453,7 +455,8 @@ impl Account for KrxConnector {
 // TRAIT: Positions (NOT SUPPORTED - DATA PROVIDER ONLY)
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for KrxConnector {
     async fn get_positions(&self, _query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         Err(ExchangeError::UnsupportedOperation(

@@ -329,6 +329,9 @@ impl HttpClient {
         for attempt in 0..self.retry_config.max_attempts {
             if attempt > 0 {
                 self.log_retry(attempt, current_backoff, &last_error);
+                // On wasm, browser fetch handles its own timeout/retry semantics.
+                // tokio::time::sleep is not available on wasm32.
+                #[cfg(not(target_arch = "wasm32"))]
                 tokio::time::sleep(Duration::from_millis(current_backoff)).await;
             }
 
@@ -384,6 +387,9 @@ impl HttpClient {
         for attempt in 0..self.retry_config.max_attempts {
             if attempt > 0 {
                 self.log_retry(attempt, current_backoff, &last_error);
+                // On wasm, browser fetch handles its own timeout/retry semantics.
+                // tokio::time::sleep is not available on wasm32.
+                #[cfg(not(target_arch = "wasm32"))]
                 tokio::time::sleep(Duration::from_millis(current_backoff)).await;
             }
 

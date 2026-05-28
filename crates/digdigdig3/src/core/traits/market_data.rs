@@ -3,7 +3,6 @@
 //! Только методы, которые есть на 100% бирж.
 //! Расширенные методы (get_tickers, get_recent_trades, etc.) - в биржевых коннекторах.
 
-use async_trait::async_trait;
 
 use crate::core::types::{
     AccountType, ExchangeResult, Kline, MarketDataCapabilities, OrderBook, Price,
@@ -25,7 +24,8 @@ use super::ExchangeIdentity;
 /// - `get_recent_trades()` - последние сделки
 /// - `get_open_interest()` - OI (futures)
 /// - `get_mark_price()` - mark price (futures)
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait MarketData: ExchangeIdentity {
     /// Получить текущую цену символа
     async fn get_price(

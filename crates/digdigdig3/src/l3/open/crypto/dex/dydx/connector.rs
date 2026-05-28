@@ -17,7 +17,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::OnceCell;
 
-use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::core::{
@@ -523,7 +522,8 @@ impl ExchangeIdentity for DydxConnector {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for DydxConnector {
     async fn get_price(&self, symbol: SymbolInput<'_>, account_type: AccountType) -> ExchangeResult<Price> {
         let symbol = symbol.resolve(ExchangeId::Dydx, account_type)?;
@@ -673,7 +673,8 @@ impl MarketData for DydxConnector {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for DydxConnector {
     async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         // dYdX balances are per-subaccount; address is stored in credentials.
@@ -824,7 +825,8 @@ impl Account for DydxConnector {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for DydxConnector {
     async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         let address = self.auth.address()
@@ -958,7 +960,8 @@ impl Positions for DydxConnector {
 // TRADING (Read-only via Indexer; write operations require Node gRPC)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for DydxConnector {
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         // dYdX v4 order placement requires Cosmos SDK gRPC (MsgPlaceOrder).
@@ -1965,7 +1968,8 @@ impl DydxConnector {
 // FUNDING HISTORY
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl FundingHistory for DydxConnector {
     /// Get historical funding payments from `GET /v4/fundingPayments`.
     ///
@@ -2226,7 +2230,8 @@ fn map_tif_to_dydx_i32(tif: &crate::core::TimeInForce) -> i32 {
 // MARKET DATA PUBLIC
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketDataPublic for DydxConnector {
     /// Recent public trades for a perpetual market.
     ///

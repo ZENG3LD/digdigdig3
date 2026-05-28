@@ -2,7 +2,6 @@
 //!
 //! All position mutations go through `modify_position` via `PositionModification` enum.
 
-use async_trait::async_trait;
 
 use crate::core::types::{
     AccountType, ExchangeResult, FundingRate, Position,
@@ -22,7 +21,8 @@ use super::ExchangeIdentity;
 /// they support natively.
 ///
 /// Authentication is **required** for all methods in this trait.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait Positions: ExchangeIdentity {
     /// Get open positions, optionally filtered to a single symbol.
     ///

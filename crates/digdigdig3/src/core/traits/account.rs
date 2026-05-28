@@ -2,7 +2,6 @@
 //!
 //! Core account operations universal to 24/24 exchanges.
 
-use async_trait::async_trait;
 
 use crate::core::types::{
     AccountCapabilities, AccountInfo, AccountType, Balance, BalanceQuery, ExchangeResult, FeeInfo,
@@ -16,7 +15,8 @@ use super::ExchangeIdentity;
 /// sub-accounts) are in their own optional traits in `operations`.
 ///
 /// Authentication is **required** for all methods in this trait.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait Account: ExchangeIdentity {
     /// Get asset balances, optionally filtered to a single asset and/or account type.
     ///

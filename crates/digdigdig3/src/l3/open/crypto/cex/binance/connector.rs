@@ -13,7 +13,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::core::{
@@ -1194,7 +1193,8 @@ impl ExchangeIdentity for BinanceConnector {
 // MARKET DATA
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for BinanceConnector {
     async fn get_price(
         &self,
@@ -1335,7 +1335,8 @@ impl MarketData for BinanceConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for BinanceConnector {
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         let symbol = req.symbol;
@@ -2016,7 +2017,8 @@ impl Trading for BinanceConnector {
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for BinanceConnector {
     async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         let _asset = query.asset.as_deref();
@@ -2167,7 +2169,8 @@ impl Account for BinanceConnector {
 // POSITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for BinanceConnector {
     async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         let symbol = query.symbol;
@@ -2457,7 +2460,8 @@ impl Positions for BinanceConnector {
 ///
 /// Note: Binance requires `symbol` on both endpoints; passing `All` with
 /// `symbol = None` is not supported and returns `UnsupportedOperation`.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CancelAll for BinanceConnector {
     async fn cancel_all_orders(
         &self,
@@ -2499,7 +2503,8 @@ impl CancelAll for BinanceConnector {
 ///
 /// Binance Futures: `PUT /fapi/v1/order`
 /// Spot does NOT support amend — this returns `UnsupportedOperation` for Spot/Margin.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AmendOrder for BinanceConnector {
     async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
         match req.account_type {
@@ -2547,7 +2552,8 @@ impl AmendOrder for BinanceConnector {
 ///
 /// - Futures: `POST /fapi/v1/batchOrders` — max 5 orders per batch
 /// - Spot: no native batch endpoint → returns `UnsupportedOperation`
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl BatchOrders for BinanceConnector {
     async fn place_orders_batch(
         &self,
@@ -2725,7 +2731,8 @@ fn map_transfer_type(from: AccountType, to: AccountType) -> ExchangeResult<&'sta
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AccountTransfers for BinanceConnector {
     async fn transfer(&self, req: TransferRequest) -> ExchangeResult<TransferResponse> {
         let transfer_type = map_transfer_type(req.from_account, req.to_account)?;
@@ -2768,7 +2775,8 @@ impl AccountTransfers for BinanceConnector {
 // CUSTODIAL FUNDS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CustodialFunds for BinanceConnector {
     async fn get_deposit_address(
         &self,
@@ -2871,7 +2879,8 @@ impl CustodialFunds for BinanceConnector {
 // SUB-ACCOUNTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl SubAccounts for BinanceConnector {
     async fn sub_account_operation(
         &self,
@@ -2936,7 +2945,8 @@ impl SubAccounts for BinanceConnector {
 /// Funding payment history via `GET /fapi/v1/income?incomeType=FUNDING_FEE`
 ///
 /// Only available for futures account types. Spot returns `UnsupportedOperation`.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl FundingHistory for BinanceConnector {
     async fn get_funding_payments(
         &self,
@@ -2979,7 +2989,8 @@ impl FundingHistory for BinanceConnector {
 /// Full account ledger via `GET /fapi/v1/income` (all income types).
 ///
 /// Only available for futures account types.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AccountLedger for BinanceConnector {
     async fn get_ledger(
         &self,
@@ -3026,7 +3037,8 @@ impl AccountLedger for BinanceConnector {
 // MarketDataPublic trait impl
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketDataPublic for BinanceConnector {
     async fn get_recent_trades(
         &self,

@@ -2,7 +2,6 @@
 //!
 //! Core connector implementing the V5 traits for IB Client Portal Web API.
 
-use async_trait::async_trait;
 use reqwest::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -402,7 +401,8 @@ impl ExchangeIdentity for IBConnector {
 // TRAIT: MarketData
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for IBConnector {
     async fn get_price(&self, symbol: SymbolInput<'_>, _account_type: AccountType) -> ExchangeResult<Price> {
         let sym_str: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };

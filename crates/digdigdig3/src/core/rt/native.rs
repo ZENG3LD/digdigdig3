@@ -10,7 +10,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use tokio::time::timeout as tokio_timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -34,7 +33,8 @@ impl Timer for TokioRuntime {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl WsConnector for TokioRuntime {
     async fn connect(&self, url: &str, timeout: Duration) -> Result<Box<dyn WsConn>, WsRtError> {
         let connect_fut = connect_async(url);
@@ -57,7 +57,8 @@ pub struct TungsteniteConn {
     inner: WsStream,
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl WsConn for TungsteniteConn {
     async fn send(&mut self, frame: WsFrame) -> Result<(), WsRtError> {
         let msg = ws_frame_to_message(frame);

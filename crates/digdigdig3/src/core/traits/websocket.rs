@@ -11,7 +11,6 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use futures_util::Stream;
 use tokio::sync::Mutex as TokioMutex;
 
@@ -35,7 +34,8 @@ use crate::core::types::{
 /// - `subscribe` - подписаться на поток
 /// - `unsubscribe` - отписаться
 /// - `event_stream` - получить поток событий
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait WebSocketConnector: Send + Sync {
     /// Подключиться к WebSocket
     async fn connect(&self, account_type: AccountType) -> WebSocketResult<()> {
@@ -115,7 +115,8 @@ pub trait WebSocketConnector: Send + Sync {
 /// Удобные методы подписки
 ///
 /// Автоматически реализуется для всех `WebSocketConnector`.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait WebSocketExt: WebSocketConnector {
     // ═══════════════════════════════════════════════════════════════════════════
     // PUBLIC STREAMS

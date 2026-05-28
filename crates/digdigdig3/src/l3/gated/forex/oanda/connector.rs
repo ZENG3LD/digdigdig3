@@ -17,7 +17,6 @@
 //! - All numeric values returned as strings
 
 use std::collections::HashMap;
-use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::core::{
@@ -273,7 +272,8 @@ impl ExchangeIdentity for OandaConnector {
 // MARKET DATA
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for OandaConnector {
     async fn get_price(
         &self,
@@ -421,7 +421,8 @@ impl MarketData for OandaConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for OandaConnector {
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         let symbol = req.symbol.clone();
@@ -796,7 +797,8 @@ impl Trading for OandaConnector {
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for OandaConnector {
     async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         let _asset = query.asset.clone();
@@ -829,7 +831,8 @@ impl Account for OandaConnector {
 // POSITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for OandaConnector {
     async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         let symbol = query.symbol.clone();
@@ -938,7 +941,8 @@ impl Positions for OandaConnector {
 /// OANDA supports native order amendment — PUT to /v3/accounts/{id}/orders/{specifier}
 /// replaces the entire order in-place (cancel + recreate on the server side, but
 /// atomic and preserves the order ID).
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AmendOrder for OandaConnector {
     async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
         if req.fields.price.is_none()

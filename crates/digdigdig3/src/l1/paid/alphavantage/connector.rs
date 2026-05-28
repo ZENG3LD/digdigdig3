@@ -2,7 +2,6 @@
 //!
 //! AlphaVantage is a DATA PROVIDER ONLY - no trading, account, or position management.
 
-use async_trait::async_trait;
 use reqwest::Client;
 use std::collections::HashMap;
 
@@ -117,7 +116,8 @@ impl ExchangeIdentity for AlphaVantageConnector {
 // TRAIT: MarketData
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for AlphaVantageConnector {
     /// Get current exchange rate for forex pair
     async fn get_price(
@@ -249,7 +249,8 @@ impl MarketData for AlphaVantageConnector {
 // TRAIT: Trading - ALL UNSUPPORTED
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for AlphaVantageConnector {
     async fn place_order(&self, _req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         Err(ExchangeError::UnsupportedOperation(
@@ -299,7 +300,8 @@ impl Trading for AlphaVantageConnector {
 // TRAIT: Account - ALL UNSUPPORTED
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for AlphaVantageConnector {
     async fn get_balance(&self, _query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         Err(ExchangeError::UnsupportedOperation(
@@ -328,7 +330,8 @@ impl Account for AlphaVantageConnector {
 // TRAIT: Positions - ALL UNSUPPORTED
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for AlphaVantageConnector {
     async fn get_positions(&self, _query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         Err(ExchangeError::UnsupportedOperation(

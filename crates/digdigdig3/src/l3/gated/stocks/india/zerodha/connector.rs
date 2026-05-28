@@ -3,7 +3,6 @@
 //! Implements all core traits for Zerodha broker API.
 
 use std::collections::HashMap;
-use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::core::{
@@ -256,7 +255,8 @@ impl ExchangeIdentity for ZerodhaConnector {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for ZerodhaConnector {
     async fn get_price(&self, symbol: SymbolInput<'_>, _account_type: AccountType) -> ExchangeResult<Price> {
         let symbol_key: String = match symbol { SymbolInput::Raw(s) => s.to_string(), SymbolInput::Canonical(c) => c.to_concat() };
@@ -376,7 +376,8 @@ impl MarketData for ZerodhaConnector {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for ZerodhaConnector {
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         let symbol = req.symbol.clone();
@@ -692,7 +693,8 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for ZerodhaConnector {
     async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         let _asset = query.asset.clone();
@@ -715,7 +717,8 @@ impl Account for ZerodhaConnector {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for ZerodhaConnector {
     async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         let _symbol = query.symbol.clone();
@@ -771,7 +774,8 @@ impl Positions for ZerodhaConnector {
 // AMEND ORDER (Zerodha supports PUT /orders/{variety}/{order_id})
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AmendOrder for ZerodhaConnector {
     /// Modify a live order via PUT /orders/{variety}/{order_id}.
     ///

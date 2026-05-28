@@ -4,7 +4,6 @@
 //! overrides only the methods it natively supports. Callers consume via
 //! `Arc<dyn CoreConnector>` through dynamic dispatch.
 
-use async_trait::async_trait;
 
 use crate::core::types::{
     AccountType, ExchangeError, ExchangeResult, FundingRate, HistoricalVolatility, Kline,
@@ -15,7 +14,8 @@ use crate::core::types::{
 ///
 /// All methods default to `UnsupportedOperation`. Connectors override only
 /// the methods they natively support. Callers use this trait via `Arc<dyn CoreConnector>`.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait MarketDataPublic: Send + Sync {
     /// Recent public trades for a symbol.
     async fn get_recent_trades(

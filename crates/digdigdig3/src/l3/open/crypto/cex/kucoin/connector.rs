@@ -16,7 +16,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use reqwest::header::HeaderMap;
 use serde_json::{json, Value};
 
@@ -828,7 +827,8 @@ fn to_futures_symbol(symbol: &str) -> String {
 // MARKET DATA
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for KuCoinConnector {
     async fn get_price(
         &self,
@@ -983,7 +983,8 @@ impl MarketData for KuCoinConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for KuCoinConnector {
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         let symbol = req.symbol.clone();
@@ -1543,7 +1544,8 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for KuCoinConnector {
     async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         let asset = query.asset.clone();
@@ -1670,7 +1672,8 @@ impl Account for KuCoinConnector {
 // POSITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for KuCoinConnector {
     async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         let symbol = query.symbol.clone();
@@ -1971,7 +1974,8 @@ impl Positions for KuCoinConnector {
 ///
 /// - Spot:    `DELETE /api/v1/orders?symbol=BTC-USDT`
 /// - Futures: `DELETE /api/v1/orders?symbol=XBTUSDTM`
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CancelAll for KuCoinConnector {
     async fn cancel_all_orders(
         &self,
@@ -2040,7 +2044,8 @@ impl CancelAll for KuCoinConnector {
 /// - Futures:    `POST /api/v1/orders/multi`     — max 20 orders (futures base URL)
 ///
 /// Batch cancel is not a discrete endpoint on KuCoin; cancel-all handles that.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl BatchOrders for KuCoinConnector {
     async fn place_orders_batch(
         &self,
@@ -2161,7 +2166,8 @@ impl BatchOrders for KuCoinConnector {
 ///
 /// KuCoin Futures: `POST /api/v1/orders/{orderId}` with amended fields.
 /// Spot does NOT support amend — returns `UnsupportedOperation`.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AmendOrder for KuCoinConnector {
     async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
         match req.account_type {
@@ -2222,7 +2228,8 @@ impl AmendOrder for KuCoinConnector {
 /// - `Spot`           → `"main"`   (Main/funding account)
 /// - `FuturesCross`   → `"trade"`  (Spot trade account)
 /// - `Margin`         → `"margin"` (Margin account)
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AccountTransfers for KuCoinConnector {
     async fn transfer(&self, req: TransferRequest) -> ExchangeResult<TransferResponse> {
         fn map_account(at: AccountType) -> &'static str {
@@ -2358,7 +2365,8 @@ impl AccountTransfers for KuCoinConnector {
 /// - Withdraw:        `POST /api/v1/withdrawals`
 /// - Deposit history: `GET  /api/v1/deposits`
 /// - Withdrawal hist: `GET  /api/v1/withdrawals`
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CustodialFunds for KuCoinConnector {
     async fn get_deposit_address(
         &self,
@@ -2587,7 +2595,8 @@ impl CustodialFunds for KuCoinConnector {
 /// - List:     `GET  /api/v2/sub/user`
 /// - Transfer: `POST /api/v2/accounts/sub-transfer`
 /// - Balance:  `GET  /api/v1/sub-accounts/{subUserId}`
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl SubAccounts for KuCoinConnector {
     async fn sub_account_operation(
         &self,
@@ -2771,7 +2780,8 @@ impl KuCoinConnector {
 // FUNDING HISTORY
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl FundingHistory for KuCoinConnector {
     async fn get_funding_payments(
         &self,
@@ -2807,7 +2817,8 @@ impl FundingHistory for KuCoinConnector {
 // ACCOUNT LEDGER
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AccountLedger for KuCoinConnector {
     async fn get_ledger(
         &self,

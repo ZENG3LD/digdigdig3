@@ -12,7 +12,6 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use futures_util::{stream::select, Stream};
 use tokio::sync::Mutex as TokioMutex;
 
@@ -82,7 +81,8 @@ impl OkxWebSocket {
 // WebSocketConnector impl
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl WebSocketConnector for OkxWebSocket {
     async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
         // Connect both eagerly; return first error encountered.

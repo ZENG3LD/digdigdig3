@@ -15,7 +15,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use reqwest::header::HeaderMap;
 use serde_json::{json, Value};
 
@@ -399,7 +398,8 @@ impl ExchangeIdentity for MexcConnector {
 // MARKET DATA
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for MexcConnector {
     async fn get_price(
         &self,
@@ -667,7 +667,8 @@ impl MarketData for MexcConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for MexcConnector {
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         let symbol = &req.symbol;
@@ -1039,7 +1040,8 @@ impl Trading for MexcConnector {
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for MexcConnector {
     async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         let _asset = query.asset.clone();
@@ -1185,7 +1187,8 @@ impl Account for MexcConnector {
 // CANCEL ALL (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CancelAll for MexcConnector {
     async fn cancel_all_orders(
         &self,
@@ -1234,7 +1237,8 @@ impl CancelAll for MexcConnector {
 // BATCH ORDERS (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl BatchOrders for MexcConnector {
     async fn place_orders_batch(
         &self,
@@ -1354,7 +1358,8 @@ impl BatchOrders for MexcConnector {
 // ACCOUNT TRANSFERS (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AccountTransfers for MexcConnector {
     /// Transfer between Spot, Margin, and Futures accounts.
     ///
@@ -1448,7 +1453,8 @@ impl AccountTransfers for MexcConnector {
 // CUSTODIAL FUNDS (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CustodialFunds for MexcConnector {
     /// Get deposit address for an asset.
     ///
@@ -1622,7 +1628,8 @@ impl CustodialFunds for MexcConnector {
 // SUB ACCOUNTS (optional trait)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl SubAccounts for MexcConnector {
     /// Perform sub-account operations: Create, List, Transfer, GetBalance.
     async fn sub_account_operation(
@@ -1885,7 +1892,8 @@ fn interval_to_ms(interval: &str) -> i64 {
 }
 
 // MEXC Spot connector — no futures/positions support in v5 yet.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl crate::core::traits::Positions for MexcConnector {
     async fn get_positions(
         &self,

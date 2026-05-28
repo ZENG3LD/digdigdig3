@@ -34,11 +34,11 @@
 //! - `in_*`: carries inbound `Result<WsFrame, WsRtError>` from the actor to
 //!   the caller's `WsConn::next_frame`.
 
+use async_trait::async_trait;
 use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use futures_channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use futures_util::StreamExt;
 use gloo_timers::future::sleep as gloo_sleep;

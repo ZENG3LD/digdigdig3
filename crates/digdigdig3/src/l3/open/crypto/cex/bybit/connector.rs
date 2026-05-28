@@ -16,7 +16,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use reqwest::header::HeaderMap;
 use serde_json::{json, Value};
 
@@ -788,7 +787,8 @@ impl ExchangeIdentity for BybitConnector {
 // MARKET DATA
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for BybitConnector {
     async fn get_price(
         &self,
@@ -909,7 +909,8 @@ impl MarketData for BybitConnector {
 // TRADING
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for BybitConnector {
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         let symbol = req.symbol.clone();
@@ -1747,7 +1748,8 @@ impl Trading for BybitConnector {
 // ACCOUNT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for BybitConnector {
     async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         let _asset = query.asset.clone();
@@ -1858,7 +1860,8 @@ impl Account for BybitConnector {
 // POSITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for BybitConnector {
     async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         let symbol = query.symbol.clone();
@@ -2276,7 +2279,8 @@ impl Positions for BybitConnector {
 /// Bybit: `POST /v5/order/cancel-all`
 /// Supports both spot and linear (futures).
 /// `CancelScope::All { symbol: None }` cancels across the entire category.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CancelAll for BybitConnector {
     async fn cancel_all_orders(
         &self,
@@ -2314,7 +2318,8 @@ impl CancelAll for BybitConnector {
 ///
 /// Bybit: `POST /v5/order/amend`
 /// Supports spot and linear. At least one of price/quantity must be provided.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AmendOrder for BybitConnector {
     async fn amend_order(&self, req: AmendRequest) -> ExchangeResult<Order> {
         if req.fields.price.is_none() && req.fields.quantity.is_none() && req.fields.trigger_price.is_none() {
@@ -2354,7 +2359,8 @@ impl AmendOrder for BybitConnector {
 ///
 /// Bybit: `POST /v5/order/create-batch` (max 10), `POST /v5/order/cancel-batch` (max 10)
 /// Both spot and linear categories are supported.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl BatchOrders for BybitConnector {
     async fn place_orders_batch(
         &self,
@@ -2511,7 +2517,8 @@ impl BybitConnector {
 ///
 /// Bybit: `POST /v5/asset/transfer/inter-transfer`
 /// Supports UNIFIED, SPOT, CONTRACT, and FUND account types.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AccountTransfers for BybitConnector {
     async fn transfer(&self, req: TransferRequest) -> ExchangeResult<TransferResponse> {
         // Generate a unique transfer ID (UUID-like using timestamp)
@@ -2565,7 +2572,8 @@ impl AccountTransfers for BybitConnector {
 /// - Withdraw: `POST /v5/asset/withdraw/create`
 /// - Deposit history: `GET /v5/asset/deposit/query-record`
 /// - Withdrawal history: `GET /v5/asset/withdraw/query-record`
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl CustodialFunds for BybitConnector {
     async fn get_deposit_address(
         &self,
@@ -2673,7 +2681,8 @@ impl CustodialFunds for BybitConnector {
 /// - List: `GET /v5/user/query-sub-members`
 /// - Transfer: `POST /v5/asset/transfer/universal-transfer`
 /// - Get balance: `GET /v5/asset/transfer/query-account-coins-balance`
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl SubAccounts for BybitConnector {
     async fn sub_account_operation(
         &self,
@@ -2741,7 +2750,8 @@ impl SubAccounts for BybitConnector {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Funding payment history via `GET /v5/account/transaction-log?type=SETTLEMENT`
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl FundingHistory for BybitConnector {
     async fn get_funding_payments(
         &self,
@@ -2780,7 +2790,8 @@ impl FundingHistory for BybitConnector {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Full account ledger via `GET /v5/account/transaction-log` (all types).
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AccountLedger for BybitConnector {
     async fn get_ledger(
         &self,
@@ -2823,7 +2834,8 @@ impl AccountLedger for BybitConnector {
 // MarketDataPublic trait impl
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketDataPublic for BybitConnector {
     async fn get_open_interest_history(
         &self,

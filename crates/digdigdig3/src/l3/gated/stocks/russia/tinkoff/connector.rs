@@ -1,6 +1,5 @@
 //! Tinkoff Invest connector implementation
 
-use async_trait::async_trait;
 use reqwest::Client;
 use std::collections::HashMap;
 
@@ -307,7 +306,8 @@ impl ExchangeIdentity for TinkoffConnector {
 // TRAIT: MarketData
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketData for TinkoffConnector {
     /// Get current price using GetLastPrices
     async fn get_price(
@@ -454,7 +454,8 @@ impl TinkoffConnector {
 // TRAIT: Trading (Full support - Tinkoff is a broker)
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Trading for TinkoffConnector {
     async fn place_order(&self, req: OrderRequest) -> ExchangeResult<PlaceOrderResponse> {
         let symbol = req.symbol.clone();
@@ -726,7 +727,8 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
 // TRAIT: Account (Full support - Tinkoff is a broker)
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Account for TinkoffConnector {
     async fn get_balance(&self, query: BalanceQuery) -> ExchangeResult<Vec<Balance>> {
         let asset = query.asset.clone();
@@ -773,7 +775,8 @@ impl Account for TinkoffConnector {
 // TRAIT: Positions (Partial support - stocks don't use funding rate)
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Positions for TinkoffConnector {
     async fn get_positions(&self, query: PositionQuery) -> ExchangeResult<Vec<Position>> {
         let symbol = query.symbol.clone();
@@ -876,7 +879,8 @@ impl Positions for TinkoffConnector {
 // OPTIONAL TRAIT: AmendOrder (Tinkoff supports ReplaceOrder)
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl AmendOrder for TinkoffConnector {
     /// Amend a live order using Tinkoff's ReplaceOrder endpoint.
     ///

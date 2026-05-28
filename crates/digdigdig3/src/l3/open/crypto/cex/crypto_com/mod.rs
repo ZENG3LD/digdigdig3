@@ -4,11 +4,12 @@
 //!
 //! ## Structure
 //!
-//! - `endpoints` - URL'ы and endpoint enum
+//! - `endpoints` - URLs and endpoint enum
 //! - `auth` - Request signing (HMAC-SHA256)
 //! - `parser` - JSON response parsing
 //! - `connector` - CryptoComConnector + trait implementations
-//! - `websocket` - WebSocket client (stub)
+//! - `protocol` - WsProtocol shim (CryptoComProtocol)
+//! - `websocket` - CryptoComWebSocket (UniversalWsTransport wrapper)
 //!
 //! ## Usage
 //!
@@ -36,14 +37,13 @@ mod endpoints;
 mod auth;
 mod parser;
 mod connector;
-#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod protocol;
 mod websocket;
 
 pub use endpoints::{CryptoComEndpoint, CryptoComUrls, InstrumentType, format_symbol};
 pub use auth::CryptoComAuth;
 pub use parser::CryptoComParser;
 pub use connector::CryptoComConnector;
-#[cfg(not(target_arch = "wasm32"))]
 pub use websocket::CryptoComWebSocket;
 
 

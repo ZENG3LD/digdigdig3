@@ -155,7 +155,6 @@ use crate::l3::open::crypto::cex::htx::HtxWebSocket;
 use crate::l3::open::crypto::cex::bitget::BitgetWebSocket;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::bingx::BingxWebSocket;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::crypto_com::CryptoComWebSocket;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::upbit::UpbitWebSocket;
@@ -1030,10 +1029,10 @@ impl ConnectorFactory {
                 ))
             }
             // ═══════════════════════════════════════════════════════════════════
-            // CEX — CryptoCom: sync new(auth, is_user_stream)
+            // CEX — CryptoCom: sync new(testnet) — UniversalWsTransport wrapper
             // ═══════════════════════════════════════════════════════════════════
             ExchangeId::CryptoCom => {
-                let ws = CryptoComWebSocket::new(None, false);
+                let ws = CryptoComWebSocket::new(testnet);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
             // ═══════════════════════════════════════════════════════════════════
@@ -1184,9 +1183,14 @@ impl ConnectorFactory {
                 let ws = GeminiWebSocket::new(testnet);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            ExchangeId::CryptoCom => {
+                let _ = account_type;
+                let ws = CryptoComWebSocket::new(testnet);
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
             other => Err(ExchangeError::UnsupportedOperation(format!(
                 "{other:?} WebSocket not enabled on wasm32; \
-                 only Binance/Bybit/OKX/HyperLiquid/Gemini use UniversalWsTransport+browser-WS"
+                 only Binance/Bybit/OKX/HyperLiquid/Gemini/CryptoCom use UniversalWsTransport+browser-WS"
             ))),
         }
     }

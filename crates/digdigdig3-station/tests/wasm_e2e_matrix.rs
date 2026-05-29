@@ -729,3 +729,25 @@ venue_test!(ws_bitget, ExchangeId::Bitget);
 venue_test!(ws_bitstamp, ExchangeId::Bitstamp);
 venue_test!(ws_coinbase, ExchangeId::Coinbase);
 venue_test!(ws_bitmex, ExchangeId::Bitmex);
+
+// Isolation probe for Bybit. Its full 9-channel venue test crashes the headless
+// browser renderer (full-depth L2 orderbook firehose) on BOTH Edge (Chromium) and
+// Firefox (Gecko), regardless of free system RAM — a browser-renderer data-volume
+// limit, not a dig3 code issue. This single low-volume channel proves the Bybit WS
+// connect/subscribe/parse path itself works in-browser.
+#[wasm_bindgen_test]
+async fn ws_bybit_trade_only() {
+    let cell = probe_channel(
+        ExchangeId::Bybit,
+        StreamType::Trade,
+        Symbol::with_raw("BTC", "USDT", "BTCUSDT".to_string()),
+        AccountType::Spot,
+        Duration::from_secs(20),
+    )
+    .await;
+    assert!(
+        cell.is_data_ok(),
+        "Bybit Trade-only (spot) should flow in-browser; got {}",
+        cell.label()
+    );
+}

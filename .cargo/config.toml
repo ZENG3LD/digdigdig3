@@ -5,13 +5,15 @@
 # spawns headless browser, runs tests, returns exit code. No PATH setup.
 #
 # Install (pin the version with the GAP-1..6 runner fixes):
-#   cargo install dig2browser@0.4.14 --bin dig2-wasm-test --force
+#   cargo install dig2browser@0.4.15 --bin dig2-wasm-test --force
 #
 # Supported since 0.4.13 (see dig2browser README):
 #   - test-name filter:  cargo test --target wasm32-unknown-unknown -- ws_binance
 #   - console output:    add `-- --nocapture` to surface web_sys::console::log_*
 #                        (the e2e matrix prints its table this way)
 #   - stall watchdog:    DIG2_WASM_PER_TEST_TIMEOUT=120 (no progress N s → exit 124)
+#   - establish timeout: DIG2_WASM_ESTABLISH_TIMEOUT=60 (driver/session wedge → exit 124)
+#   - extra browser args: DIG2_WASM_BROWSER_ARGS="--js-flags=--max-old-space-size=8192 …"
 #   - headed debugging:  DIG2_WASM_HEADLESS=0
 #   - preset driver:     CHROMEDRIVER/MSEDGEDRIVER/GECKODRIVER=<path>
 #   - browser pick:      DIG2_WASM_BROWSER=chrome|edge|firefox

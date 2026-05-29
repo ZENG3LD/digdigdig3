@@ -4,37 +4,21 @@
 //! crypto venue available on wasm × every public WS stream kind and reports an
 //! OK / SILENT / ERR / unsupported matrix to the Chrome console.
 //!
-//! ## Wasm WS venues (from factory.rs `#[cfg(target_arch = "wasm32")]`)
+//! ## Concurrency model
 //!
-//! Binance, Bybit, OKX, HyperLiquid (onchain-evm feature),
-//! Gemini, CryptoCom, Bitfinex, BingX, Upbit, Dydx, Lighter.
+//! Mirrors native `e2e_smoke.rs` (`tokio::spawn` + `join_all`):
+//! - Each channel probe is SELF-CONTAINED: own `ExchangeHub`, own WS connection,
+//!   own `event_stream()`. No shared handles between concurrent probes.
+//! - All channels of one venue run CONCURRENTLY via `futures_util::join!`.
+//! - Venues run in concurrent CHUNKS of 7 (3 waves for 21 venues). Chunk size 7
+//!   chosen to cap simultaneous WS connections at ~63 (7 venues × 9 channels),
+//!   staying well under Chrome's per-host limit (~256) and avoiding exchange
+//!   rate-limit storms from a single burst of 189 simultaneous connections.
 //!
-//! ## Stream kinds tested
+//! ## Single test: `wasm_ws_matrix_all`
 //!
-//! Core public: Ticker, Trade, Orderbook, Kline.
-//! Futures-capable exchanges (Groups A/B): additionally MarkPrice, FundingRate,
-//! OpenInterest, AggTrade, Liquidation.
-//!
-//! ## Architecture — single hub per venue
-//!
-//! To avoid the 9+7+8 = 24s overhead of reconnecting for each stream, each
-//! venue test creates ONE hub + ONE WS connection, then subscribes to each
-//! stream kind sequentially on that connection. This reduces per-venue cost to
-//! ~9s connect + 7s × N subscriptions + 8s × N windows.
-//!
-//! ## Budget (all 4 tests run in one browser session, 1200s total)
-//!
-//! Group A (Binance/Bybit/OKX, 9 streams): 3 venues × (9+63+72)s ≈ 432s
-//! Group B (HyperLiquid/Dydx/Lighter, 9 streams): 3 venues × ~144s ≈ 432s
-//! Group C (Gemini/CryptoCom/Bitfinex, 4 streams): 3 venues × ~65s ≈ 195s
-//! Group D (BingX/Upbit, 4 streams): 2 venues × ~65s ≈ 130s
-//! Total: ~1189s ≈ 1200s (borderline — set timeout 1800s or run groups individually)
-//!
-//! ## IMPORTANT
-//!
-//! To keep total runtime < 1200s, Groups A+B are run separately from C+D.
-//! Run Group A+B with a higher timeout or split into individual tests:
-//!   WASM_BINDGEN_TEST_TIMEOUT=1800 cargo test ... -- wasm_ws_matrix_group_a
+//! Replaces the 6 sequential group tests (A-F). Runs all 21 venues, logs a
+//! full matrix, reports TRUSTED count (all 4 core streams OK).
 //!
 //! ## Run
 //!
@@ -47,7 +31,6 @@
 #![cfg(target_arch = "wasm32")]
 
 use std::time::Duration;
-use std::sync::Arc;
 
 use wasm_bindgen_test::*;
 
@@ -55,7 +38,6 @@ wasm_bindgen_test_configure!(run_in_browser);
 
 use digdigdig3::connector_manager::ExchangeHub;
 use digdigdig3::core::types::{AccountType, ExchangeId, StreamType, SubscriptionRequest, Symbol};
-use digdigdig3::core::traits::WebSocketConnector;
 use futures_util::StreamExt;
 
 // ─── Cell tag ────────────────────────────────────────────────────────────────
@@ -230,6 +212,20 @@ fn venue_name(id: ExchangeId) -> &'static str {
     }
 }
 
+/// Returns true for venues that have no public futures WS channels.
+/// These get Cell::Skipped for all futures-side probes without connecting.
+fn is_spot_only(id: ExchangeId) -> bool {
+    matches!(
+        id,
+        ExchangeId::Gemini
+            | ExchangeId::Upbit
+            | ExchangeId::Bitstamp
+            | ExchangeId::Coinbase
+            | ExchangeId::Kraken
+            | ExchangeId::Bitfinex
+    )
+}
+
 fn truncate(s: &str, n: usize) -> String {
     match s.char_indices().nth(n) {
         Some((i, _)) => format!("{}…", &s[..i]),
@@ -237,14 +233,15 @@ fn truncate(s: &str, n: usize) -> String {
     }
 }
 
-// ─── One-shot stream probe (reuses existing WS handle) ───────────────────────
+// ─── Self-contained channel probe ────────────────────────────────────────────
+//
+// Creates its OWN ExchangeHub + OWN WS connection for a single stream kind.
+// This is the wasm analogue of native `run_ws_sub` (each native stream gets
+// its own independent tokio task + connection). Self-contained = safe to run
+// N of these concurrently via join_all without contention on a shared handle.
 
-/// Subscribe to `stream_type` on `ws`, collect for `window`, return Cell.
-///
-/// Does NOT reconnect — reuses the handle passed in. Each call subscribes
-/// once and reads one event. gloo_timers provides the wasm-safe deadline.
-async fn probe_on_ws(
-    ws: &Arc<dyn WebSocketConnector>,
+async fn probe_channel(
+    id: ExchangeId,
     stream_type: StreamType,
     symbol: Symbol,
     account_type: AccountType,
@@ -253,6 +250,34 @@ async fn probe_on_ws(
     use futures_util::future::{select, Either};
     use futures_util::pin_mut;
 
+    // ── Connect ──
+    let hub = ExchangeHub::new();
+    {
+        let connect_fut = hub.connect_websocket(id, account_type, false);
+        let timeout_fut = gloo_timers::future::sleep(Duration::from_secs(10));
+        pin_mut!(connect_fut, timeout_fut);
+        match select(connect_fut, timeout_fut).await {
+            Either::Left((Ok(()), _)) => {}
+            Either::Left((Err(e), _)) => {
+                let msg = e.to_string();
+                if msg.contains("UnsupportedOperation")
+                    || msg.contains("not support")
+                    || msg.contains("Not supported")
+                {
+                    return Cell::Unsupported;
+                }
+                return Cell::Err(format!("connect:{}", truncate(&msg, 40)));
+            }
+            Either::Right(_) => return Cell::Err("connect_timeout".into()),
+        }
+    }
+
+    let ws = match hub.ws(id, account_type) {
+        Some(ws) => ws,
+        None => return Cell::Err("ws_none".into()),
+    };
+
+    // ── Subscribe ──
     let sub = SubscriptionRequest {
         symbol,
         stream_type,
@@ -280,6 +305,7 @@ async fn probe_on_ws(
         }
     }
 
+    // ── Collect ──
     let mut stream = ws.event_stream();
     let deadline = gloo_timers::future::sleep(window);
     pin_mut!(deadline);
@@ -295,125 +321,77 @@ async fn probe_on_ws(
     }
 }
 
-// ─── Connect helper ───────────────────────────────────────────────────────────
+// ─── Per-venue runner ─────────────────────────────────────────────────────────
+//
+// All channels run CONCURRENTLY — each has its own connection (probe_channel).
+// Core (spot) and futures channel sets run as two parallel join groups then
+// merged. For spot-only venues, futures cells are set to Skipped immediately
+// without opening any connections.
 
-/// Connect hub for `id` + `account_type`. Returns Ok(ws) or Err(Cell).
-async fn connect_hub(
-    id: ExchangeId,
-    account_type: AccountType,
-) -> Result<Arc<dyn WebSocketConnector>, Cell> {
-    use futures_util::future::{select, Either};
-    use futures_util::pin_mut;
-
-    let hub = ExchangeHub::new();
-    {
-        let connect_fut = hub.connect_websocket(id, account_type, false);
-        let timeout_fut = gloo_timers::future::sleep(Duration::from_secs(10));
-        pin_mut!(connect_fut, timeout_fut);
-        match select(connect_fut, timeout_fut).await {
-            Either::Left((Ok(()), _)) => {}
-            Either::Left((Err(e), _)) => {
-                let msg = e.to_string();
-                if msg.contains("UnsupportedOperation")
-                    || msg.contains("not support")
-                    || msg.contains("Not supported")
-                {
-                    return Err(Cell::Unsupported);
-                }
-                return Err(Cell::Err(format!("connect:{}", truncate(&msg, 40))));
-            }
-            Either::Right(_) => return Err(Cell::Err("connect_timeout".into())),
-        }
-    }
-    match hub.ws(id, account_type) {
-        Some(ws) => Ok(ws),
-        None => Err(Cell::Err("ws_none".into())),
-    }
-}
-
-// ─── Per-venue runner (core streams, one connection) ─────────────────────────
-
-/// Test 4 core streams on one connection: Ticker / Trade / Orderbook / Kline.
-/// Connect cost paid once. Total per venue: ~10s connect + 4×(7+8)s = ~70s.
-async fn test_venue_core(id: ExchangeId) -> VenueRow {
-    let name = venue_name(id);
-    let (spot_sym, _, _) = venue_symbols(id);
-    let spot_at = match id {
-        ExchangeId::HyperLiquid | ExchangeId::Dydx | ExchangeId::Lighter => AccountType::FuturesCross,
-        _ => AccountType::Spot,
-    };
-    let w = Duration::from_secs(8);
-
-    let ws = match connect_hub(id, spot_at).await {
-        Ok(ws) => ws,
-        Err(cell) => {
-            return VenueRow {
-                name,
-                ticker: cell.clone(), trade: cell.clone(), orderbook: cell.clone(), kline: cell,
-                mark_price: Cell::Skipped, funding_rate: Cell::Skipped, open_interest: Cell::Skipped,
-                agg_trade: Cell::Skipped, liquidation: Cell::Skipped,
-            };
-        }
-    };
-
-    let ticker = probe_on_ws(&ws, StreamType::Ticker, spot_sym.clone(), spot_at, w).await;
-    let trade = probe_on_ws(&ws, StreamType::Trade, spot_sym.clone(), spot_at, w).await;
-    let orderbook = probe_on_ws(&ws, StreamType::Orderbook, spot_sym.clone(), spot_at, w).await;
-    let kline = probe_on_ws(&ws, StreamType::Kline { interval: "1m".into() }, spot_sym.clone(), spot_at, w).await;
-
-    VenueRow {
-        name, ticker, trade, orderbook, kline,
-        mark_price: Cell::Skipped, funding_rate: Cell::Skipped, open_interest: Cell::Skipped,
-        agg_trade: Cell::Skipped, liquidation: Cell::Skipped,
-    }
-}
-
-// ─── Per-venue runner (full: core + futures, two connections) ─────────────────
-
-/// Test 9 streams using two connections: one spot, one futures.
-/// Spot conn: Ticker/Trade/OB/Kline. Futures conn: Mark/Fund/OI/Agg/Liq.
-/// Total per venue: 2×10s connect + 4×15s spot + 5×15s futures ≈ 155s.
-async fn test_venue_full(id: ExchangeId) -> VenueRow {
+async fn test_venue(id: ExchangeId) -> VenueRow {
     let name = venue_name(id);
     let (spot_sym, fut_sym, fut_at) = venue_symbols(id);
     let spot_at = match id {
         ExchangeId::HyperLiquid | ExchangeId::Dydx | ExchangeId::Lighter => fut_at,
         _ => AccountType::Spot,
     };
+    // 8s window for normal channels; 12s for liquidation (sparse by nature).
     let w = Duration::from_secs(8);
     let liq_w = Duration::from_secs(12);
 
-    // ── Spot connection ──
-    let (ticker, trade, orderbook, kline) = match connect_hub(id, spot_at).await {
-        Ok(ws) => {
-            let ticker = probe_on_ws(&ws, StreamType::Ticker, spot_sym.clone(), spot_at, w).await;
-            let trade = probe_on_ws(&ws, StreamType::Trade, spot_sym.clone(), spot_at, w).await;
-            let orderbook = probe_on_ws(&ws, StreamType::Orderbook, spot_sym.clone(), spot_at, w).await;
-            let kline = probe_on_ws(&ws, StreamType::Kline { interval: "1m".into() }, spot_sym.clone(), spot_at, w).await;
-            (ticker, trade, orderbook, kline)
-        }
-        Err(cell) => (cell.clone(), cell.clone(), cell.clone(), cell),
+    // Binance liquidation uses empty symbol — exchange broadcasts all symbols
+    // on one channel when subscribed with empty symbol.
+    let liq_sym = match id {
+        ExchangeId::Binance => Symbol::with_raw("", "", "".to_string()),
+        _ => fut_sym.clone(),
     };
 
-    // ── Futures connection ──
-    let (mark_price, funding_rate, open_interest, agg_trade, liquidation) =
-        match connect_hub(id, fut_at).await {
-            Ok(ws) => {
-                let mark = probe_on_ws(&ws, StreamType::MarkPrice, fut_sym.clone(), fut_at, w).await;
-                let fund = probe_on_ws(&ws, StreamType::FundingRate, fut_sym.clone(), fut_at, w).await;
-                let oi = probe_on_ws(&ws, StreamType::OpenInterest, fut_sym.clone(), fut_at, w).await;
-                let agg = probe_on_ws(&ws, StreamType::AggTrade, fut_sym.clone(), fut_at, w).await;
-                let liq_sym = match id {
-                    ExchangeId::Binance => Symbol::with_raw("", "", "".to_string()),
-                    _ => fut_sym.clone(),
-                };
-                let liq = probe_on_ws(&ws, StreamType::Liquidation, liq_sym, fut_at, liq_w).await;
-                (mark, fund, oi, agg, liq)
-            }
-            Err(cell) => (cell.clone(), cell.clone(), cell.clone(), cell.clone(), cell),
-        };
-
-    VenueRow { name, ticker, trade, orderbook, kline, mark_price, funding_rate, open_interest, agg_trade, liquidation }
+    if is_spot_only(id) {
+        // Only core channels — no futures connections opened.
+        let (ticker, trade, orderbook, kline) = futures_util::join!(
+            probe_channel(id, StreamType::Ticker, spot_sym.clone(), spot_at, w),
+            probe_channel(id, StreamType::Trade, spot_sym.clone(), spot_at, w),
+            probe_channel(id, StreamType::Orderbook, spot_sym.clone(), spot_at, w),
+            probe_channel(id, StreamType::Kline { interval: "1m".into() }, spot_sym, spot_at, w),
+        );
+        VenueRow {
+            name,
+            ticker, trade, orderbook, kline,
+            mark_price: Cell::Skipped,
+            funding_rate: Cell::Skipped,
+            open_interest: Cell::Skipped,
+            agg_trade: Cell::Skipped,
+            liquidation: Cell::Skipped,
+        }
+    } else {
+        // Core + futures — all 9 channels concurrent across two join groups,
+        // then both groups run concurrently via join!.
+        let core_fut = futures_util::future::join_all(vec![
+            probe_channel(id, StreamType::Ticker, spot_sym.clone(), spot_at, w),
+            probe_channel(id, StreamType::Trade, spot_sym.clone(), spot_at, w),
+            probe_channel(id, StreamType::Orderbook, spot_sym.clone(), spot_at, w),
+            probe_channel(id, StreamType::Kline { interval: "1m".into() }, spot_sym, spot_at, w),
+        ]);
+        let futs_fut = futures_util::future::join_all(vec![
+            probe_channel(id, StreamType::MarkPrice, fut_sym.clone(), fut_at, w),
+            probe_channel(id, StreamType::FundingRate, fut_sym.clone(), fut_at, w),
+            probe_channel(id, StreamType::OpenInterest, fut_sym.clone(), fut_at, w),
+            probe_channel(id, StreamType::AggTrade, fut_sym.clone(), fut_at, w),
+            probe_channel(id, StreamType::Liquidation, liq_sym, fut_at, liq_w),
+        ]);
+        let (mut core_res, mut futs_res) = futures_util::join!(core_fut, futs_fut);
+        // drain in order: core[0..4] = ticker/trade/ob/kline, futs[0..5] = mark/fund/oi/agg/liq
+        let liquidation = futs_res.pop().unwrap_or(Cell::Err("missing".into()));
+        let agg_trade   = futs_res.pop().unwrap_or(Cell::Err("missing".into()));
+        let open_interest = futs_res.pop().unwrap_or(Cell::Err("missing".into()));
+        let funding_rate  = futs_res.pop().unwrap_or(Cell::Err("missing".into()));
+        let mark_price    = futs_res.pop().unwrap_or(Cell::Err("missing".into()));
+        let kline     = core_res.pop().unwrap_or(Cell::Err("missing".into()));
+        let orderbook = core_res.pop().unwrap_or(Cell::Err("missing".into()));
+        let trade     = core_res.pop().unwrap_or(Cell::Err("missing".into()));
+        let ticker    = core_res.pop().unwrap_or(Cell::Err("missing".into()));
+        VenueRow { name, ticker, trade, orderbook, kline, mark_price, funding_rate, open_interest, agg_trade, liquidation }
+    }
 }
 
 // ─── Console printer ──────────────────────────────────────────────────────────
@@ -431,156 +409,43 @@ fn print_matrix_block(group_name: &str, rows: &[VenueRow]) {
     web_sys::console::log_1(&"".into());
 }
 
-// ─── Test Group A: Binance, Bybit, OKX ───────────────────────────────────────
+// ─── Full concurrent matrix test ─────────────────────────────────────────────
 //
-// Budget: 3 venues × ~155s = ~465s
-
-/// Wasm WS matrix — Group A: Binance / Bybit / OKX.
-///
-/// Full futures CEX. Two WS connections per venue: spot+futures.
-/// Expected: Ticker+Trade+OB+Kline OK, MarkPrice/FundingRate OK.
-/// Liq/OI may be SILENT (sparse in 12s window).
-#[wasm_bindgen_test]
-async fn wasm_ws_matrix_group_a_binance_bybit_okx() {
-    let venues = [ExchangeId::Binance, ExchangeId::Bybit, ExchangeId::OKX];
-    let mut rows = Vec::new();
-    for id in venues {
-        web_sys::console::log_1(&format!("[matrix-A] {}...", venue_name(id)).into());
-        rows.push(test_venue_full(id).await);
-    }
-    print_matrix_block("Group A: Binance/Bybit/OKX", &rows);
-    let trade_ob_ok = rows.iter().filter(|r| r.trade_ob_ok()).count();
-    assert!(
-        trade_ob_ok >= 2,
-        "Expected ≥2/3 (Binance/Bybit/OKX) Trade+OB in wasm; got {}/3\n{}",
-        trade_ob_ok,
-        rows.iter().map(|r| r.console_line()).collect::<Vec<_>>().join("\n")
-    );
-}
-
-// ─── Test Group B: HyperLiquid, Dydx, Lighter ────────────────────────────────
+// All 21 venues run in CHUNKS of 7 (3 waves). Within each chunk, all venues
+// run concurrently. Within each venue, all channels run concurrently.
 //
-// Budget: 3 venues × ~155s = ~465s
+// Chunk size 7 chosen to limit simultaneous WS connections to ~63
+// (7 venues × 9 channels max), staying well under Chrome's per-host
+// connection limit (~256) and avoiding rate-limit storms from a single
+// burst of all 189 connections at once. 3 waves × 7 venues = 21 total.
 
-/// Wasm WS matrix — Group B: HyperLiquid / dYdX / Lighter.
-///
-/// DEX/futures-only. Two connections per venue. ≥1 must deliver Trade+OB.
 #[wasm_bindgen_test]
-async fn wasm_ws_matrix_group_b_hyperliquid_dydx_lighter() {
-    let venues = [ExchangeId::HyperLiquid, ExchangeId::Dydx, ExchangeId::Lighter];
-    let mut rows = Vec::new();
-    for id in venues {
-        web_sys::console::log_1(&format!("[matrix-B] {}...", venue_name(id)).into());
-        rows.push(test_venue_full(id).await);
-    }
-    print_matrix_block("Group B: HyperLiquid/Dydx/Lighter", &rows);
-    let trade_ob_ok = rows.iter().filter(|r| r.trade_ob_ok()).count();
-    assert!(
-        trade_ob_ok >= 1,
-        "Expected ≥1/3 DEX venues Trade+OB in wasm; got {}/3\n{}",
-        trade_ob_ok,
-        rows.iter().map(|r| r.console_line()).collect::<Vec<_>>().join("\n")
-    );
-}
-
-// ─── Test Group C: Gemini, CryptoCom, Bitfinex ───────────────────────────────
-//
-// Budget: 3 venues × ~70s = ~210s
-
-/// Wasm WS matrix — Group C: Gemini / CryptoCom / Bitfinex.
-///
-/// Spot CEX. Core streams only (one connection per venue).
-#[wasm_bindgen_test]
-async fn wasm_ws_matrix_group_c_gemini_cryptocom_bitfinex() {
-    let venues = [ExchangeId::Gemini, ExchangeId::CryptoCom, ExchangeId::Bitfinex];
-    let mut rows = Vec::new();
-    for id in venues {
-        web_sys::console::log_1(&format!("[matrix-C] {}...", venue_name(id)).into());
-        rows.push(test_venue_core(id).await);
-    }
-    print_matrix_block("Group C: Gemini/CryptoCom/Bitfinex", &rows);
-    let any = rows.iter().filter(|r| r.trade.is_data_ok() || r.ticker.is_data_ok()).count();
-    assert!(
-        any >= 1,
-        "Expected ≥1/3 (Gemini/CryptoCom/Bitfinex) Trade or Ticker; got {}/3\n{}",
-        any,
-        rows.iter().map(|r| r.console_line()).collect::<Vec<_>>().join("\n")
-    );
-}
-
-// ─── Test Group D: BingX, Upbit ──────────────────────────────────────────────
-//
-// Budget: 2 venues × ~70s = ~140s
-
-/// Wasm WS matrix — Group D: BingX / Upbit.
-///
-/// BingX: BTC-USDT spot. Upbit: KRW-BTC spot.
-/// Core streams only. Last group — prints matrix completion summary.
-#[wasm_bindgen_test]
-async fn wasm_ws_matrix_group_d_bingx_upbit() {
-    let venues = [ExchangeId::BingX, ExchangeId::Upbit];
-    let mut rows = Vec::new();
-    for id in venues {
-        web_sys::console::log_1(&format!("[matrix-D] {}...", venue_name(id)).into());
-        rows.push(test_venue_core(id).await);
-    }
-    print_matrix_block("Group D: BingX/Upbit", &rows);
-
-    web_sys::console::log_1(&"=== WASM E2E MATRIX COMPLETE (mirrors native e2e_smoke) ===".into());
-    web_sys::console::log_1(
-        &"Venues: Binance/Bybit/OKX (A) + HyperLiquid/Dydx/Lighter (B) + Gemini/CryptoCom/Bitfinex (C) + BingX/Upbit (D) = 11 total".into()
-    );
-    web_sys::console::log_1(
-        &"Streams: Ticker/Trade/Orderbook/Kline (+futures: Mark/Fund/OI/Agg/Liq for Groups A+B)".into()
-    );
-    web_sys::console::log_1(&"Window: 8s normal / 12s liquidation. SILENT = no events in window.".into());
-
-    let any = rows.iter().filter(|r| r.trade.is_data_ok() || r.ticker.is_data_ok()).count();
-    assert!(
-        any >= 1,
-        "Expected ≥1/2 (BingX/Upbit) Trade or Ticker; got {}/2\n{}",
-        any,
-        rows.iter().map(|r| r.console_line()).collect::<Vec<_>>().join("\n")
-    );
-}
-
-// ─── Test Group E: Kraken, KuCoin, GateIO, HTX ───────────────────────────────
-//
-// Futures-capable CEX (KuCoin/GateIO/HTX) + Kraken spot. Full stream set where
-// applicable. Completes parity with native e2e_smoke for these venues.
-
-/// Wasm WS matrix — Group E: Kraken / KuCoin / GateIO / HTX.
-#[wasm_bindgen_test]
-async fn wasm_ws_matrix_group_e_kraken_kucoin_gateio_htx() {
-    let venues = [
+async fn wasm_ws_matrix_all() {
+    // 21 venues — Groups A through F combined.
+    // Group A: Binance, Bybit, OKX
+    // Group B: HyperLiquid, Dydx, Lighter
+    // Group C: Gemini, CryptoCom, Bitfinex
+    // Group D: BingX, Upbit
+    // Group E: Kraken, KuCoin, GateIO, HTX
+    // Group F: Deribit, MEXC, Bitget, Bitstamp, Coinbase, Bitmex
+    let venues: &[ExchangeId] = &[
+        ExchangeId::Binance,
+        ExchangeId::Bybit,
+        ExchangeId::OKX,
+        ExchangeId::HyperLiquid,
+        ExchangeId::Dydx,
+        ExchangeId::Lighter,
+        ExchangeId::Gemini,
+        // --- wave 2 ---
+        ExchangeId::CryptoCom,
+        ExchangeId::Bitfinex,
+        ExchangeId::BingX,
+        ExchangeId::Upbit,
         ExchangeId::Kraken,
         ExchangeId::KuCoin,
         ExchangeId::GateIO,
+        // --- wave 3 ---
         ExchangeId::HTX,
-    ];
-    let mut rows = Vec::new();
-    for id in venues {
-        web_sys::console::log_1(&format!("[matrix-E] {}...", venue_name(id)).into());
-        rows.push(test_venue_full(id).await);
-    }
-    print_matrix_block("Group E: Kraken/KuCoin/GateIO/HTX", &rows);
-    let trade_ob_ok = rows.iter().filter(|r| r.trade_ob_ok()).count();
-    assert!(
-        trade_ob_ok >= 2,
-        "Expected ≥2/4 (Kraken/KuCoin/GateIO/HTX) Trade+OB in wasm; got {}/4\n{}",
-        trade_ob_ok,
-        rows.iter().map(|r| r.console_line()).collect::<Vec<_>>().join("\n")
-    );
-}
-
-// ─── Test Group F: Deribit, MEXC, Bitget, Bitstamp, Coinbase, Bitmex ─────────
-//
-// Remaining CEX venues — completes the full crypto roster parity with native.
-
-/// Wasm WS matrix — Group F: Deribit / MEXC / Bitget / Bitstamp / Coinbase / Bitmex.
-#[wasm_bindgen_test]
-async fn wasm_ws_matrix_group_f_deribit_mexc_bitget_bitstamp_coinbase_bitmex() {
-    let venues = [
         ExchangeId::Deribit,
         ExchangeId::MEXC,
         ExchangeId::Bitget,
@@ -588,24 +453,50 @@ async fn wasm_ws_matrix_group_f_deribit_mexc_bitget_bitstamp_coinbase_bitmex() {
         ExchangeId::Coinbase,
         ExchangeId::Bitmex,
     ];
-    let mut rows = Vec::new();
-    for id in venues {
-        web_sys::console::log_1(&format!("[matrix-F] {}...", venue_name(id)).into());
-        rows.push(test_venue_full(id).await);
-    }
-    print_matrix_block("Group F: Deribit/MEXC/Bitget/Bitstamp/Coinbase/Bitmex", &rows);
 
-    web_sys::console::log_1(&"=== WASM E2E MATRIX — FULL CRYPTO ROSTER (21 venues) ===".into());
+    let mut all_rows: Vec<VenueRow> = Vec::with_capacity(venues.len());
+
+    // Run in chunks of 7 — 3 waves for 21 venues.
+    // Each chunk is fully concurrent; chunks run sequentially.
+    for chunk in venues.chunks(7) {
+        let names: Vec<&str> = chunk.iter().map(|id| venue_name(*id)).collect();
+        web_sys::console::log_1(
+            &format!("[matrix] wave starting: {}", names.join(", ")).into()
+        );
+        let chunk_rows = futures_util::future::join_all(
+            chunk.iter().copied().map(test_venue)
+        ).await;
+        for row in &chunk_rows {
+            web_sys::console::log_1(&row.console_line().into());
+        }
+        all_rows.extend(chunk_rows);
+    }
+
+    print_matrix_block("ALL 21 VENUES", &all_rows);
+
+    // TRUSTED = all 4 core streams OK
+    let trusted = all_rows.iter().filter(|r| {
+        r.ticker.is_data_ok()
+            && r.trade.is_data_ok()
+            && r.orderbook.is_data_ok()
+            && r.kline.is_data_ok()
+    }).count();
     web_sys::console::log_1(
-        &"A: Binance/Bybit/OKX  B: HyperLiquid/Dydx/Lighter  C: Gemini/CryptoCom/Bitfinex  \
-          D: BingX/Upbit  E: Kraken/KuCoin/GateIO/HTX  F: Deribit/MEXC/Bitget/Bitstamp/Coinbase/Bitmex".into()
+        &format!("=== WASM TRUSTED (all 4 core OK): {}/{} ===", trusted, all_rows.len()).into()
     );
 
-    let trade_ob_ok = rows.iter().filter(|r| r.trade_ob_ok()).count();
+    let matrix_str = all_rows.iter()
+        .map(|r| r.console_line())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Majority must flow Trade+OB. Rate-limits and sparse channels make
+    // all-green brittle, so threshold is ≥14/21 (66 %).
+    let trade_ob = all_rows.iter().filter(|r| r.trade_ob_ok()).count();
     assert!(
-        trade_ob_ok >= 3,
-        "Expected ≥3/6 of Group F Trade+OB in wasm; got {}/6\n{}",
-        trade_ob_ok,
-        rows.iter().map(|r| r.console_line()).collect::<Vec<_>>().join("\n")
+        trade_ob >= 14,
+        "expected ≥14/21 venues Trade+OB in wasm; got {}\n{}",
+        trade_ob,
+        matrix_str
     );
 }

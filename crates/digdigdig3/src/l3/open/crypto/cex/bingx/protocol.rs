@@ -41,10 +41,10 @@
 //! | Orderbook     | `@depth5` / `@depth10` / `@depth20` |                         |
 //! | Kline         | `@kline_<tf>`            | e.g. `@kline_1m`, `@kline_1h`     |
 //! | MarkPrice     | `@markPrice`             |                                    |
-//! | FundingRate   | UnsupportedOperation     | TODO — `@fundingRate` channel exists|
-//! | Liquidation   | UnsupportedOperation     | TODO — `@forceOrder` channel exists |
-//! | OpenInterest  | UnsupportedOperation     | TODO — `@openInterest` channel exists|
-//! | AggTrade      | UnsupportedOperation     | TODO — `@aggTrade` channel (separate from `@trade`)|
+//! | FundingRate   | N/A — not supported      | BingX swap WS returns code 80015 "dataType not support" for `@fundingRate` |
+//! | Liquidation   | N/A — not supported      | BingX swap WS returns code 80015 for `@forceOrder` |
+//! | OpenInterest  | N/A — not supported      | BingX swap WS returns code 80015 for `@openInterest` |
+//! | AggTrade      | N/A — not supported      | BingX swap WS returns code 80015 for `@aggTrade` |
 
 use std::sync::OnceLock;
 
@@ -77,9 +77,10 @@ static REGISTRY: OnceLock<TopicRegistry> = OnceLock::new();
 /// Public market-data channels (swap/perpetual endpoint):
 /// ticker, trade, orderbook depth, kline, mark price.
 ///
-/// FundingRate, Liquidation, OpenInterest, AggTrade ARE exposed by BingX swap
-/// WS (`@fundingRate`/`@forceOrder`/`@openInterest`/`@aggTrade`) but are not yet
-/// implemented — `subscribe_frame` returns `UnsupportedOperation` (TODO) for them.
+/// FundingRate, Liquidation, OpenInterest, AggTrade are NOT available on
+/// the public swap-market WS endpoint — BingX returns code 80015
+/// ("dataType not support") for `@fundingRate`, `@forceOrder`,
+/// `@openInterest`, and `@aggTrade`. Verified live 2026-05-29.
 pub struct BingxProtocol;
 
 impl BingxProtocol {
@@ -89,8 +90,8 @@ impl BingxProtocol {
 
     /// Build the `dataType` topic string for a StreamSpec.
     ///
-    /// Returns `Err(UnsupportedOperation)` for channels BingX exposes but we
-    /// have not implemented yet (funding/liq/oi/aggTrade).
+    /// Returns `Err(UnsupportedOperation)` for channels that the BingX
+    /// swap-market endpoint rejects with code 80015 ("dataType not support").
     fn build_data_type(spec: &StreamSpec) -> Result<String, WebSocketError> {
         let sym = wire_symbol(spec);
         match &spec.kind {
@@ -105,20 +106,22 @@ impl BingxProtocol {
                 Ok(format!("{}@kline_{}", sym, tf))
             }
             StreamKind::MarkPrice => Ok(format!("{}@markPrice", sym)),
+            // BingX swap-market WS returns code 80015 "dataType not support" for all
+            // four of these channels. Verified live 2026-05-29 via raw tungstenite probe.
             StreamKind::FundingRate => Err(WebSocketError::UnsupportedOperation(
-                "not yet implemented — BingX swap WS exposes <symbol>@fundingRate channel".into(),
+                "BingX swap WS does not support @fundingRate (server: code 80015 dataType not support)".into(),
             )),
             StreamKind::Liquidation => Err(WebSocketError::UnsupportedOperation(
-                "not yet implemented — BingX swap WS exposes <symbol>@forceOrder channel".into(),
+                "BingX swap WS does not support @forceOrder (server: code 80015 dataType not support)".into(),
             )),
             StreamKind::OpenInterest => Err(WebSocketError::UnsupportedOperation(
-                "not yet implemented — BingX swap WS exposes <symbol>@openInterest channel".into(),
+                "BingX swap WS does not support @openInterest (server: code 80015 dataType not support)".into(),
             )),
             StreamKind::AggTrade => Err(WebSocketError::UnsupportedOperation(
-                "not yet implemented — BingX swap WS exposes <symbol>@aggTrade channel (separate from @trade)".into(),
+                "BingX swap WS does not support @aggTrade (server: code 80015 dataType not support)".into(),
             )),
             other => Err(WebSocketError::UnsupportedOperation(format!(
-                "not yet implemented — BingX swap-market WS channel for {:?}",
+                "BingX swap-market WS channel not available for {:?}",
                 other
             ))),
         }
@@ -477,8 +480,11 @@ mod tests {
         }
     }
 
+    // BingX swap WS returns code 80015 "dataType not support" for the following channels.
+    // subscribe_frame correctly returns UnsupportedOperation so callers can handle gracefully.
+
     #[test]
-    fn subscribe_frame_funding_rate_is_unsupported_operation() {
+    fn subscribe_frame_funding_rate_is_unsupported() {
         let spec = make_spec(StreamKind::FundingRate, "BTC-USDT");
         assert!(matches!(
             proto().subscribe_frame(&spec),
@@ -487,13 +493,32 @@ mod tests {
     }
 
     #[test]
-    fn subscribe_frame_liquidation_is_unsupported_operation() {
+    fn subscribe_frame_liquidation_is_unsupported() {
         let spec = make_spec(StreamKind::Liquidation, "BTC-USDT");
         assert!(matches!(
             proto().subscribe_frame(&spec),
             Err(WebSocketError::UnsupportedOperation(_))
         ));
     }
+
+    #[test]
+    fn subscribe_frame_open_interest_is_unsupported() {
+        let spec = make_spec(StreamKind::OpenInterest, "BTC-USDT");
+        assert!(matches!(
+            proto().subscribe_frame(&spec),
+            Err(WebSocketError::UnsupportedOperation(_))
+        ));
+    }
+
+    #[test]
+    fn subscribe_frame_agg_trade_is_unsupported() {
+        let spec = make_spec(StreamKind::AggTrade, "BTC-USDT");
+        assert!(matches!(
+            proto().subscribe_frame(&spec),
+            Err(WebSocketError::UnsupportedOperation(_))
+        ));
+    }
+
 
     // ── is_server_ping ────────────────────────────────────────────────────────
 
@@ -586,6 +611,8 @@ mod tests {
             "Kline"
         );
         assert!(reg.supports(&StreamKind::MarkPrice, at), "MarkPrice");
+        // FundingRate, Liquidation, OpenInterest, AggTrade: NOT registered — BingX
+        // swap WS returns code 80015 for these channels (verified live 2026-05-29).
     }
 
     #[test]

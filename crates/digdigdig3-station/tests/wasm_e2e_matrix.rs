@@ -71,6 +71,7 @@ wasm_bindgen_test_configure!(run_in_browser);
 
 use digdigdig3::connector_manager::ExchangeHub;
 use digdigdig3::core::types::{AccountType, ExchangeId, StreamType, SubscriptionRequest, Symbol};
+use digdigdig3::core::utils::SymbolNormalizer;
 use futures_util::StreamExt;
 
 // ─── Window budgets (mirrors native e2e_smoke.rs budgets) ────────────────────
@@ -162,7 +163,6 @@ impl VenueRow {
 fn venue_symbols(id: ExchangeId) -> (Symbol, Symbol, AccountType) {
     let btc_usdt_spot = Symbol::with_raw("BTC", "USDT", "BTCUSDT".to_string());
     let btc_usdt_fut = Symbol::with_raw("BTC", "USDT", "BTCUSDT".to_string());
-    let btc_usd_fut = Symbol::with_raw("BTC", "USD", "BTC-USD".to_string());
     match id {
         ExchangeId::Binance => (btc_usdt_spot, btc_usdt_fut, AccountType::FuturesCross),
         ExchangeId::Bybit => (btc_usdt_spot, btc_usdt_fut, AccountType::FuturesCross),
@@ -179,7 +179,16 @@ fn venue_symbols(id: ExchangeId) -> (Symbol, Symbol, AccountType) {
             let spot = Symbol::with_raw("BTC", "USD", "BTCUSD".to_string());
             (spot.clone(), spot, AccountType::Spot)
         }
-        ExchangeId::CryptoCom => (btc_usdt_spot, btc_usdt_fut, AccountType::FuturesCross),
+        ExchangeId::CryptoCom => {
+            // Mirror native raw_symbol_for: Spot via SymbolNormalizer. The hardcoded
+            // FuturesCross path was silent — Crypto.com's perp WS uses a different
+            // instrument form than the spot one the test fed it.
+            let s = Symbol::new("BTC", "USDT");
+            let raw = SymbolNormalizer::to_exchange(id, &s, AccountType::Spot)
+                .unwrap_or_else(|_| "BTC_USDT".to_string());
+            let sym = Symbol::with_raw("BTC", "USDT", raw);
+            (sym.clone(), sym, AccountType::Spot)
+        }
         ExchangeId::Bitfinex => {
             let spot = Symbol::with_raw("BTC", "USD", "tBTCUSD".to_string());
             (spot.clone(), spot, AccountType::Spot)
@@ -197,7 +206,15 @@ fn venue_symbols(id: ExchangeId) -> (Symbol, Symbol, AccountType) {
             let fut = Symbol::with_raw("BTC", "USD", "BTC-USD".to_string());
             (fut.clone(), fut, AccountType::FuturesCross)
         }
-        ExchangeId::Lighter => (btc_usd_fut.clone(), btc_usd_fut, AccountType::FuturesCross),
+        ExchangeId::Lighter => {
+            // Mirror native raw_symbol_for default: Spot via SymbolNormalizer. The
+            // hardcoded FuturesCross "BTC-USD" did not resolve to a Lighter market_id.
+            let s = Symbol::new("BTC", "USDT");
+            let raw = SymbolNormalizer::to_exchange(id, &s, AccountType::Spot)
+                .unwrap_or_else(|_| "BTC".to_string());
+            let sym = Symbol::with_raw("BTC", "USDT", raw);
+            (sym.clone(), sym, AccountType::Spot)
+        }
         ExchangeId::Kraken => {
             // Kraken WS v2 requires BASE/QUOTE slash format (NOT REST XBTUSD).
             let spot = Symbol::with_raw("BTC", "USD", "BTC/USD".to_string());
@@ -462,7 +479,7 @@ async fn test_venue(id: ExchangeId) -> VenueRow {
     let name = venue_name(id);
     let (spot_sym, fut_sym, fut_at) = venue_symbols(id);
     let spot_at = match id {
-        ExchangeId::HyperLiquid | ExchangeId::Dydx | ExchangeId::Lighter => fut_at,
+        ExchangeId::HyperLiquid | ExchangeId::Dydx => fut_at,
         _ => AccountType::Spot,
     };
 

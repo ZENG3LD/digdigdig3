@@ -106,13 +106,17 @@ impl ExchangeHub {
     /// On wasm32: browser subset — Binance, Bybit, OKX, HyperLiquid, Gemini,
     /// CryptoCom, Bitfinex, BingX, Upbit, Dydx, Lighter (11 venues,
     /// all via UniversalWsTransport+web-sys).
+    ///
+    /// If a REST base URL override has been set via `set_rest_base_override`,
+    /// it is forwarded to connectors that perform a pre-WS REST call (KuCoin).
     pub async fn connect_websocket(
         &self,
         id: ExchangeId,
         account_type: AccountType,
         testnet: bool,
     ) -> ExchangeResult<()> {
-        let ws = ConnectorFactory::create_websocket(id, account_type, testnet).await?;
+        let rest_override = self.rest_overrides.get(&id).map(|v| v.clone());
+        let ws = ConnectorFactory::create_websocket(id, account_type, testnet, rest_override).await?;
         self.ws.insert(id, account_type, ws);
         Ok(())
     }
@@ -138,11 +142,11 @@ impl ExchangeHub {
         testnet: bool,
     ) -> ExchangeResult<()> {
         let override_url = self.rest_overrides.get(&id).map(|v| v.clone());
-        let conn = ConnectorFactory::create_public(id, testnet, override_url).await?;
+        let conn = ConnectorFactory::create_public(id, testnet, override_url.clone()).await?;
         self.rest.insert(id, conn);
 
         for &at in account_types {
-            if let Ok(ws) = ConnectorFactory::create_websocket(id, at, testnet).await {
+            if let Ok(ws) = ConnectorFactory::create_websocket(id, at, testnet, override_url.clone()).await {
                 self.ws.insert(id, at, ws);
             }
         }

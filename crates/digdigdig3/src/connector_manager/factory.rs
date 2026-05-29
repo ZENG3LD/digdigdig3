@@ -866,6 +866,9 @@ impl ConnectorFactory {
     /// * `account_type` - Account type (spot, futures, etc.) — affects WS URL on
     ///   many exchanges (Binance, Bybit, Bitfinex, Gate.io, …)
     /// * `testnet` - Whether to connect to testnet endpoint
+    /// * `rest_override` - Optional REST base URL override forwarded to connectors
+    ///   that perform a pre-WS REST call (KuCoin bullet-public token fetch).
+    ///   `None` preserves the current behavior for all venues.
     ///
     /// # Example
     ///
@@ -874,6 +877,7 @@ impl ConnectorFactory {
     ///     ExchangeId::Binance,
     ///     AccountType::Spot,
     ///     false,
+    ///     None,
     /// ).await?;
     /// ws.connect(AccountType::Spot).await?;
     /// ```
@@ -882,6 +886,7 @@ impl ConnectorFactory {
         id: ExchangeId,
         account_type: AccountType,
         testnet: bool,
+        rest_override: Option<String>,
     ) -> ExchangeResult<Arc<dyn WebSocketConnector>> {
         match id {
             // ═══════════════════════════════════════════════════════════════════
@@ -918,7 +923,7 @@ impl ConnectorFactory {
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
             ExchangeId::KuCoin => {
-                let ws = KuCoinWebSocket::new(None, testnet, account_type).await?;
+                let ws = KuCoinWebSocket::new_with_override(None, testnet, account_type, rest_override).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
             // ═══════════════════════════════════════════════════════════════════
@@ -1131,11 +1136,17 @@ impl ConnectorFactory {
     /// Bitfinex, BingX, Upbit, Dydx, Lighter, Kraken, GateIO, MEXC, HTX,
     /// Bitget, Deribit, Coinbase, Bitstamp, KuCoin. Other exchanges return
     /// `UnsupportedOperation`.
+    ///
+    /// `rest_override` is forwarded to KuCoin's bullet-public token fetch so
+    /// that the pre-WS REST call routes through the caller's CORS proxy rather
+    /// than hitting the hardcoded KuCoin host directly (which is CORS-blocked
+    /// in browser contexts).
     #[cfg(target_arch = "wasm32")]
     pub(crate) async fn create_websocket(
         id: ExchangeId,
         account_type: AccountType,
         testnet: bool,
+        rest_override: Option<String>,
     ) -> ExchangeResult<Arc<dyn WebSocketConnector>> {
         match id {
             ExchangeId::Binance => {
@@ -1229,14 +1240,12 @@ impl ConnectorFactory {
                 Ok(Arc::new(BitstampWebSocket::new()) as Arc<dyn WebSocketConnector>)
             }
             // ═══════════════════════════════════════════════════════════════════
-            // Tier 3 — KuCoin: rest_override=None (no proxy wired into create_websocket).
-            // On wasm32, bullet-public POST will route via browser fetch; CORS
-            // must be handled at the proxy layer before calling this factory.
-            // Pass rest_override via KuCoinWebSocket::new_with_override() directly
-            // when a proxy URL is known at the call site.
+            // Tier 3 — KuCoin: rest_override threaded from hub.rest_overrides so
+            // the bullet-public token fetch routes through the caller's CORS proxy
+            // on wasm32 (set via hub.set_rest_base_override before connect_websocket).
             // ═══════════════════════════════════════════════════════════════════
             ExchangeId::KuCoin => {
-                let ws = KuCoinWebSocket::new(None, testnet, account_type).await?;
+                let ws = KuCoinWebSocket::new_with_override(None, testnet, account_type, rest_override).await?;
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
             other => Err(ExchangeError::UnsupportedOperation(format!(

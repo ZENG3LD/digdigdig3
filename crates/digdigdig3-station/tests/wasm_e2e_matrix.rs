@@ -390,11 +390,28 @@ async fn probe_channel(
     account_type: AccountType,
     window: Duration,
 ) -> Cell {
+    let hub = ExchangeHub::new();
+    let cell = probe_inner(&hub, id, stream_type, symbol, account_type, window).await;
+    // web-sys WebSocket is NOT closed on Drop — explicitly release REST+WS so probes
+    // don't accumulate open sockets until the renderer hits its limit (root of the
+    // Bybit all-channels "tab crashed"). With sequential channel groups (peak 5) +
+    // this teardown, no probe's socket survives into the next group.
+    hub.shutdown(id);
+    cell
+}
+
+async fn probe_inner(
+    hub: &ExchangeHub,
+    id: ExchangeId,
+    stream_type: StreamType,
+    symbol: Symbol,
+    account_type: AccountType,
+    window: Duration,
+) -> Cell {
     use futures_util::future::{select, Either};
     use futures_util::pin_mut;
 
     // ── Connect ──
-    let hub = ExchangeHub::new();
     {
         let connect_fut = hub.connect_websocket(id, account_type, false);
         let timeout_fut =

@@ -90,8 +90,8 @@ impl BingxProtocol {
 
     /// Build the `dataType` topic string for a StreamSpec.
     ///
-    /// Returns `Err(UnsupportedOperation)` for channels that the BingX
-    /// swap-market endpoint rejects with code 80015 ("dataType not support").
+    /// Returns `Err(NotSupported)` for channels the BingX swap-market endpoint
+    /// rejects with code 80015 ("dataType not support") — they are wire-absent.
     fn build_data_type(spec: &StreamSpec) -> Result<String, WebSocketError> {
         let sym = wire_symbol(spec);
         match &spec.kind {
@@ -106,22 +106,24 @@ impl BingxProtocol {
                 Ok(format!("{}@kline_{}", sym, tf))
             }
             StreamKind::MarkPrice => Ok(format!("{}@markPrice", sym)),
-            // BingX swap-market WS returns code 80015 "dataType not support" for all
-            // four of these channels. Verified live 2026-05-29 via raw tungstenite probe.
-            StreamKind::FundingRate => Err(WebSocketError::UnsupportedOperation(
-                "BingX swap WS does not support @fundingRate (server: code 80015 dataType not support)".into(),
+            // Wire-not-present: BingX swap-market WS rejects these with
+            // code 80015 "dataType not support". Verified live 2026-05-29 via
+            // raw tungstenite probe — the channels do not exist on the public
+            // endpoint, so this is NotSupported (not a TODO).
+            StreamKind::FundingRate => Err(WebSocketError::NotSupported(
+                "BingX swap WS has no @fundingRate channel (server: code 80015 dataType not support) — use REST".into(),
             )),
-            StreamKind::Liquidation => Err(WebSocketError::UnsupportedOperation(
-                "BingX swap WS does not support @forceOrder (server: code 80015 dataType not support)".into(),
+            StreamKind::Liquidation => Err(WebSocketError::NotSupported(
+                "BingX swap WS has no @forceOrder channel (server: code 80015 dataType not support)".into(),
             )),
-            StreamKind::OpenInterest => Err(WebSocketError::UnsupportedOperation(
-                "BingX swap WS does not support @openInterest (server: code 80015 dataType not support)".into(),
+            StreamKind::OpenInterest => Err(WebSocketError::NotSupported(
+                "BingX swap WS has no @openInterest channel (server: code 80015 dataType not support) — use REST".into(),
             )),
-            StreamKind::AggTrade => Err(WebSocketError::UnsupportedOperation(
-                "BingX swap WS does not support @aggTrade (server: code 80015 dataType not support)".into(),
+            StreamKind::AggTrade => Err(WebSocketError::NotSupported(
+                "BingX swap WS has no @aggTrade channel (server: code 80015 dataType not support)".into(),
             )),
-            other => Err(WebSocketError::UnsupportedOperation(format!(
-                "BingX swap-market WS channel not available for {:?}",
+            other => Err(WebSocketError::NotSupported(format!(
+                "BingX swap-market WS has no public channel for {:?}",
                 other
             ))),
         }
@@ -483,39 +485,40 @@ mod tests {
     // BingX swap WS returns code 80015 "dataType not support" for the following channels.
     // subscribe_frame correctly returns UnsupportedOperation so callers can handle gracefully.
 
+    // BingX swap WS rejects these with code 80015 (wire-absent) — verified live.
     #[test]
-    fn subscribe_frame_funding_rate_is_unsupported() {
+    fn subscribe_frame_funding_rate_not_supported() {
         let spec = make_spec(StreamKind::FundingRate, "BTC-USDT");
         assert!(matches!(
             proto().subscribe_frame(&spec),
-            Err(WebSocketError::UnsupportedOperation(_))
+            Err(WebSocketError::NotSupported(_))
         ));
     }
 
     #[test]
-    fn subscribe_frame_liquidation_is_unsupported() {
+    fn subscribe_frame_liquidation_not_supported() {
         let spec = make_spec(StreamKind::Liquidation, "BTC-USDT");
         assert!(matches!(
             proto().subscribe_frame(&spec),
-            Err(WebSocketError::UnsupportedOperation(_))
+            Err(WebSocketError::NotSupported(_))
         ));
     }
 
     #[test]
-    fn subscribe_frame_open_interest_is_unsupported() {
+    fn subscribe_frame_open_interest_not_supported() {
         let spec = make_spec(StreamKind::OpenInterest, "BTC-USDT");
         assert!(matches!(
             proto().subscribe_frame(&spec),
-            Err(WebSocketError::UnsupportedOperation(_))
+            Err(WebSocketError::NotSupported(_))
         ));
     }
 
     #[test]
-    fn subscribe_frame_agg_trade_is_unsupported() {
+    fn subscribe_frame_agg_trade_not_supported() {
         let spec = make_spec(StreamKind::AggTrade, "BTC-USDT");
         assert!(matches!(
             proto().subscribe_frame(&spec),
-            Err(WebSocketError::UnsupportedOperation(_))
+            Err(WebSocketError::NotSupported(_))
         ));
     }
 

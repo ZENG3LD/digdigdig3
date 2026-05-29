@@ -98,6 +98,10 @@ impl Station {
 
     pub(crate) async fn from_builder(b: StationBuilder) -> Result<Self> {
         let _ = digdigdig3::core::install_default_crypto_provider();
+        // Native: pre-create the storage root. wasm32: OPFS directories are created
+        // lazily by the OPFS DiskStore on first append — std::fs is Unsupported here
+        // (it would fail Station::build for any persistence-enabled Station on wasm).
+        #[cfg(not(target_arch = "wasm32"))]
         if b.persistence.enabled {
             std::fs::create_dir_all(&b.storage_root).map_err(StationError::Io)?;
         }

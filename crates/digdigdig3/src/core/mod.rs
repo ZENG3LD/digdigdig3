@@ -72,6 +72,7 @@ pub mod chain;
 pub mod macros;
 pub mod normalization;
 pub mod rt;
+pub mod proxy_allowlist;
 
 #[cfg(feature = "grpc")]
 pub mod grpc;
@@ -182,3 +183,6 @@ pub use normalization::{
     CanonicalLevel,
     normalize_ts_to_ms,
 };
+
+// Re-exports proxy allowlist
+pub use proxy_allowlist::{REST_HOST_ALLOWLIST, rest_host_allowlist, is_allowed_rest_host};

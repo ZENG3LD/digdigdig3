@@ -959,7 +959,9 @@ async fn test_market(id: ExchangeId) -> MarketRow {
 
     let ws_ticker_fut = async {
         if !caps.has_ws_ticker { return MethodResult::Skipped; }
-        market::run_ws_sub(id, account_type, StreamType::Ticker, sym_ws, market::ExpectedKind::Ticker, stale_ms, 30).await
+        // 60s: most venues' ticker fires every tick, but aggregate-ticker
+        // channels (dYdX v4_markets) only push ~once/minute.
+        market::run_ws_sub(id, account_type, StreamType::Ticker, sym_ws, market::ExpectedKind::Ticker, stale_ms, 60).await
     };
     let ws_trade_fut = async {
         if !caps.has_ws_trades { return MethodResult::Skipped; }
@@ -1028,7 +1030,7 @@ async fn test_market(id: ExchangeId) -> MarketRow {
             }
             last
         } else {
-            market::run_ws_sub(id, futures_at, StreamType::Liquidation, liq_sym, market::ExpectedKind::Liquidation, stale_ms, 30).await
+            market::run_ws_sub(id, futures_at, StreamType::Liquidation, liq_sym, market::ExpectedKind::Liquidation, stale_ms, 60).await
         }
     };
     let ws_oi_fut = async {
@@ -1580,11 +1582,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .copied()
             .map(|id| {
                 tokio::spawn(async move {
-                    // Per-exchange wall-time cap. Was 60s but Bybit liquidation
-                    // needs 60s alone (5 parallel symbols × 60s window each); the
-                    // 90s cap leaves comfortable headroom for slower exchanges to
-                    // finish all WS budgets in parallel.
-                    timeout(Duration::from_secs(90), test_market(id))
+                    // Per-exchange wall-time cap. Ticker + Liquidation windows are
+                    // 60s (aggregate-ticker channels like dYdX v4_markets push
+                    // ~once/min; liquidations are sparse). All WS budgets run in
+                    // parallel, so 130s leaves headroom for the 60s windows plus
+                    // connect/subscribe overhead.
+                    //
+                    // NOTE: running the FULL matrix repeatedly from one IP trips
+                    // exchange rate-limits (Binance/Bybit front their WS+REST with
+                    // CloudFront/AWS-ELB which return 403 "too many requests" after
+                    // ~6-8 back-to-back full runs). A connector showing connect_timeout
+                    // or REST ERR here while a raw WS probe returns 101 is almost
+                    // always rate-limit, NOT a code bug — confirm with an ISOLATED
+                    // single-exchange run after a cooldown:
+                    //   target/release/examples/e2e_smoke.exe --exchange Binance
+                    timeout(Duration::from_secs(130), test_market(id))
                         .await
                         .unwrap_or_else(|_| MarketRow {
                             exchange: format!("{:?}", id),

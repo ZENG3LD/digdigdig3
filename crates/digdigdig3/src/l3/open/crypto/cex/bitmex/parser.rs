@@ -30,13 +30,8 @@ fn iso_to_ms(s: &str) -> Option<i64> {
         .map(|dt| dt.timestamp_millis())
 }
 
-/// Current time in ms as fallback when no timestamp field is present.
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
+// Shared wasm-safe wall-clock helper.
+use crate::core::utils::now_ms;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // instrument channel — PredictedFunding

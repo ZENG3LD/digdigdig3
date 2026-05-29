@@ -36,6 +36,12 @@ use serde_json::Value;
 use tokio::sync::{broadcast, mpsc, Mutex as TokioMutex, RwLock as TokioRwLock};
 use tracing::{debug, trace, warn};
 
+// gloo-timers: wasm-safe sleep (replaces tokio::time::sleep on wasm32).
+// Imported here at crate level so the cfg-split blocks in this file can use
+// `gloo_sleep(...)` without repeating the path.
+#[cfg(target_arch = "wasm32")]
+use gloo_timers::future::sleep as gloo_sleep;
+
 use crate::core::rt::{self, WsFrame, WsRtError};
 use crate::core::traits::Credentials;
 use crate::core::types::{
@@ -210,9 +216,16 @@ impl<P: WsProtocol> UniversalWsTransport<P> {
             let protocol_name = transport.protocol.name().to_owned();
 
             let lag_fut = Box::pin(async move {
-                let mut tick = tokio::time::interval(lag_interval);
                 loop {
-                    tick.tick().await;
+                    // tokio::time::interval panics on wasm32 — use rt::sleep in a manual loop.
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        tokio::time::sleep(lag_interval).await;
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        gloo_sleep(lag_interval).await;
+                    }
                     let queue_depth = lag_tx.len();
                     let receiver_count = lag_tx.receiver_count();
                     if queue_depth > lag_threshold {
@@ -243,18 +256,24 @@ impl<P: WsProtocol> UniversalWsTransport<P> {
         // was sent here — it leaked a malformed subscribe frame to exchanges
         // whose subscribe_frame accepts an empty symbol, poisoning their data.)
         self.cmd_tx.send(TransportCmd::Connect).ok();
-        // Wait for Connected state
-        let deadline = tokio::time::Instant::now()
+        // Wait for Connected state.
+        // Use the wasm-safe monotonic Instant alias (crate::core::rt::clock::Instant).
+        // std::time::Instant and tokio::time::Instant both panic on wasm32.
+        let deadline = Instant::now()
             + Duration::from_millis(self.reconnect_cfg.connection_timeout_ms + 2_000);
         loop {
             let s = TransportState::from_u8(self.state.load(Ordering::Acquire));
             if s == TransportState::Connected {
                 return Ok(());
             }
-            if tokio::time::Instant::now() > deadline {
+            if Instant::now() > deadline {
                 return Err(WebSocketError::Timeout);
             }
-            tokio::time::sleep(Duration::from_millis(50)).await; // Wait for state change
+            // tokio::time::sleep panics on wasm32 — use rt abstraction.
+            #[cfg(not(target_arch = "wasm32"))]
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            #[cfg(target_arch = "wasm32")]
+            gloo_sleep(Duration::from_millis(50)).await;
         }
     }
 
@@ -618,13 +637,31 @@ impl<P: WsProtocol> DriverTask<P> {
                         // releasing the lock each tick so the write task gets a
                         // window. A timeout is NOT an EOF — keep looping.
                         let opt_result = {
+                            // tokio::time::timeout panics on wasm32.
+                            // Implement the 100ms poll timeout via a select with a sleep.
                             let poll = async {
                                 let mut guard = conn_read.lock().await;
-                                tokio::time::timeout(
-                                    Duration::from_millis(100),
-                                    guard.next_frame(),
-                                )
-                                .await
+                                // For the native arm we keep tokio::time::timeout (efficient).
+                                // For wasm we use a manual futures::select with gloo sleep.
+                                #[cfg(not(target_arch = "wasm32"))]
+                                {
+                                    tokio::time::timeout(
+                                        Duration::from_millis(100),
+                                        guard.next_frame(),
+                                    )
+                                    .await
+                                }
+                                #[cfg(target_arch = "wasm32")]
+                                {
+                                    let next = guard.next_frame();
+                                    let timer = gloo_sleep(Duration::from_millis(100));
+                                    futures_util::pin_mut!(next);
+                                    futures_util::pin_mut!(timer);
+                                    match futures_util::future::select(next, timer).await {
+                                        futures_util::future::Either::Left((frame, _)) => Ok(frame),
+                                        futures_util::future::Either::Right(_) => Err(()),
+                                    }
+                                }
                             };
                             tokio::select! {
                                 r = poll => r,
@@ -686,10 +723,12 @@ impl<P: WsProtocol> DriverTask<P> {
                 let silent_threshold = ping_interval_dur * multiplier;
                 let check_interval = ping_interval_dur / 2;
                 let watchdog_fut = async move {
-                    let mut ticker = tokio::time::interval(check_interval);
-                    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                     loop {
-                        ticker.tick().await;
+                        // tokio::time::interval panics on wasm32 — use manual sleep loop.
+                        #[cfg(not(target_arch = "wasm32"))]
+                        tokio::time::sleep(check_interval).await;
+                        #[cfg(target_arch = "wasm32")]
+                        gloo_sleep(check_interval).await;
                         let elapsed = last_frame_at.lock().await.elapsed();
                         if elapsed > silent_threshold {
                             warn!(
@@ -710,15 +749,43 @@ impl<P: WsProtocol> DriverTask<P> {
             }
 
             // ── Message loop ───────────────────────────────────────────────
-            // tokio::interval fires its FIRST tick immediately (t≈0). A ping on
-            // connect kills exchanges that disconnect on client Ping (Gemini) —
-            // so reset the deadline one full interval into the future.
+            // Ping timer: fires one full interval after connect (never on connect
+            // itself — a connect-time Ping kills exchanges like Gemini).
+            //
+            // `tokio::time::interval_at` + `tokio::time::Instant` panic on wasm32.
+            // Replacement: a `ping_deadline: Instant` (wasm-safe monotonic) +
+            // a separate ping-tick channel driven by an mpsc so the select arm
+            // stays a simple channel recv on both targets.
             let ping_period = self.protocol.ping_interval();
-            let mut ping_interval = tokio::time::interval_at(
-                tokio::time::Instant::now() + ping_period,
-                ping_period,
-            );
-            ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+            // Spawn a tiny task that fires the ping tick channel every ping_period.
+            // The task sends on `ping_tick_tx`; the select loop receives on `ping_tick_rx`.
+            // This lets the select arm be a plain `ping_tick_rx.recv()` — no
+            // `tokio::time::interval` in the hot-path.
+            let (ping_tick_tx, mut ping_tick_rx) = mpsc::channel::<()>(1);
+            {
+                let ping_tick_tx = ping_tick_tx.clone();
+                let ping_fut = async move {
+                    // Skip first tick (start at t = +ping_period, not t = 0)
+                    #[cfg(not(target_arch = "wasm32"))]
+                    tokio::time::sleep(ping_period).await;
+                    #[cfg(target_arch = "wasm32")]
+                    gloo_sleep(ping_period).await;
+                    loop {
+                        if ping_tick_tx.send(()).await.is_err() {
+                            break; // receiver dropped — loop exited
+                        }
+                        #[cfg(not(target_arch = "wasm32"))]
+                        tokio::time::sleep(ping_period).await;
+                        #[cfg(target_arch = "wasm32")]
+                        gloo_sleep(ping_period).await;
+                    }
+                };
+                #[cfg(not(target_arch = "wasm32"))]
+                tokio::spawn(ping_fut);
+                #[cfg(target_arch = "wasm32")]
+                wasm_bindgen_futures::spawn_local(ping_fut);
+            }
 
             let exit = loop {
                 tokio::select! {
@@ -806,8 +873,12 @@ impl<P: WsProtocol> DriverTask<P> {
                         }
                     }
 
-                    // Ping timer
-                    _ = ping_interval.tick() => {
+                    // Ping timer (fires every ping_period via the spawned ping task)
+                    tick = ping_tick_rx.recv() => {
+                        if tick.is_none() {
+                            // ping task exited (should not happen before loop exits)
+                            break LoopExit::Error;
+                        }
                         let frame = match self.protocol.ping_frame() {
                             Some(f) => f,
                             // No app-level ping frame. Fall back to a native WS
@@ -1002,26 +1073,44 @@ async fn wait_for_auth_ack<P: WsProtocol>(
     ack_timeout: Duration,
     exchange: &str,
 ) -> bool {
-    // Use tokio::time::timeout (available on both native and wasm via tokio/sync+macros).
-    // On native: tokio::time feature is enabled. On wasm: the timeout arm is driven
-    // by gloo_timers via the rt::sleep mechanism.
-    //
-    // We implement a manual timeout with rt::select pattern:
-    // sleep fires → return false; next_frame fires → check ack.
-    let deadline = tokio::time::Instant::now() + ack_timeout;
+    // `tokio::time::Instant` panics on wasm32. Use the wasm-safe monotonic
+    // `Instant` alias from `crate::core::rt::clock` for the deadline.
+    // For the per-iteration sleep, cfg-split to gloo_timers on wasm.
+    let deadline = Instant::now() + ack_timeout;
     loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
+        let elapsed = deadline.saturating_duration_since(Instant::now());
+        if elapsed.is_zero() {
             warn!(target: "dig3::ws::auth", exchange, "auth ack timed out");
             return false;
         }
-        let frame_opt = tokio::select! {
-            f = conn.next_frame() => f,
-            _ = tokio::time::sleep(remaining) => {
-                warn!(target: "dig3::ws::auth", exchange, "auth ack timed out");
-                return false;
+        // Select between next_frame and a timeout sleep.
+        // `tokio::time::sleep` is not available on wasm32 — use gloo_timers there.
+        let frame_opt;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            frame_opt = tokio::select! {
+                f = conn.next_frame() => f,
+                _ = tokio::time::sleep(elapsed) => {
+                    warn!(target: "dig3::ws::auth", exchange, "auth ack timed out");
+                    return false;
+                }
+            };
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            use futures_util::future::Either;
+            let next = conn.next_frame();
+            let timer = gloo_sleep(elapsed);
+            futures_util::pin_mut!(next);
+            futures_util::pin_mut!(timer);
+            match futures_util::future::select(next, timer).await {
+                Either::Left((f, _)) => { frame_opt = f; }
+                Either::Right(_) => {
+                    warn!(target: "dig3::ws::auth", exchange, "auth ack timed out");
+                    return false;
+                }
             }
-        };
+        }
         match frame_opt {
             Some(Ok(WsFrame::Text(text))) => {
                 if let Ok(v) = serde_json::from_str::<Value>(&text) {
@@ -1126,10 +1215,7 @@ fn trace_raw_frame(exchange: &str, kind: &str, payload: &[u8]) {
     };
     if std::fs::create_dir_all(dir_path).is_err() { return; }
     let path = dir_path.join(format!("{}.jsonl", exchange));
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+    let ts = crate::core::utils::now_ms() as u64;
     let body = match std::str::from_utf8(payload) {
         Ok(s) => serde_json::Value::String(s.to_string()),
         Err(_) => serde_json::Value::String(format!("0x{}", hex_encode(payload))),

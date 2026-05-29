@@ -10,6 +10,8 @@
 
 use serde_json::Value;
 
+use crate::core::utils::now_ms;
+
 use crate::core::types::{
     ExchangeError, ExchangeResult, AccountType,
     Kline, OrderBook, OrderBookLevel, Ticker, Order, Balance, PublicTrade,
@@ -535,12 +537,7 @@ impl UpbitParser {
         let timestamp = data.get("timestamp")
             .and_then(|t| t.as_i64())
             .or_else(|| data.get("trade_timestamp").and_then(|t| t.as_i64()))
-            .unwrap_or_else(|| {
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0)
-            });
+            .unwrap_or_else(now_ms);
 
         Ok(Ticker {
             last_price: Self::get_f64(data, "trade_price").unwrap_or(0.0),
@@ -597,12 +594,7 @@ impl UpbitParser {
         let ask_price = Self::get_f64(best, "ask_price")?;
         let timestamp = data.get("timestamp")
             .and_then(|t| t.as_i64())
-            .unwrap_or_else(|| {
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0)
-            });
+            .unwrap_or_else(now_ms);
 
         Some(Ticker {
             // Orderbook frames carry no last-trade price.  Use bid/ask midpoint

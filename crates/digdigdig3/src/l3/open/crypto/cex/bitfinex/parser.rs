@@ -10,7 +10,6 @@
 //! - Position: `[SYMBOL, STATUS, AMOUNT, BASE_PRICE, ...]` (18 fields)
 
 use serde_json::Value;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::core::types::{
     ExchangeError, ExchangeResult, AccountType,
@@ -19,13 +18,8 @@ use crate::core::types::{
     OrderbookDelta as OrderbookDeltaData,
 };
 
-#[inline]
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
+// Shared wasm-safe wall-clock helper.
+use crate::core::utils::now_ms;
 
 /// Parser for Bitfinex API v2 responses
 pub struct BitfinexParser;

@@ -527,10 +527,7 @@ impl MarketData for DeribitConnector {
         };
 
         let count = limit.unwrap_or(2000).min(10000) as u64;
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let now_ms = crate::core::utils::now_ms() as u64;
         let end_ms = end_time.map(|t| t as u64).unwrap_or(now_ms);
         let start_ms = end_ms.saturating_sub(count * interval_ms);
 

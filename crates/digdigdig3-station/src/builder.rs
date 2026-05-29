@@ -8,7 +8,6 @@ pub struct StationBuilder {
     pub(crate) storage_root: PathBuf,
     pub(crate) persistence: PersistenceConfig,
     pub(crate) warm_start: usize,
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) gap_heal: crate::GapHealConfig,
 }
 
@@ -19,7 +18,6 @@ impl Default for StationBuilder {
             storage_root: env_root.unwrap_or_else(|| PathBuf::from("./dig3_storage")),
             persistence: PersistenceConfig::default(),
             warm_start: 0,
-            #[cfg(not(target_arch = "wasm32"))]
             gap_heal: crate::GapHealConfig::default(),
         }
     }
@@ -52,8 +50,12 @@ impl StationBuilder {
     /// Configure proactive gap-heal: when a live event arrives whose timestamp
     /// jumps further than the configured threshold past the last seen event,
     /// the station REST-backfills the missing window before emitting the live
-    /// event. Off by default. Native-only.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// event. Off by default.
+    ///
+    /// On wasm32 the REST pull uses browser fetch; it succeeds for the 9
+    /// proxy-override venues (Binance/Bybit/OKX/Bitget/Bitstamp/Coinbase/Kraken/
+    /// Deribit/HTX) and silently returns an empty window for other venues until
+    /// their REST CORS proxies are wired (Wave 4-C).
     pub fn gap_heal(mut self, cfg: crate::GapHealConfig) -> Self {
         self.gap_heal = cfg;
         self

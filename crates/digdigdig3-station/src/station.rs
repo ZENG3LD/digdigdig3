@@ -25,7 +25,6 @@ use crate::data::{
 use crate::derived::{BasisDerived, DerivedStream, FundingSettlementDerived};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::polling;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::series::DiskStore;
 use crate::series::{DataPoint, Kind, Series, SeriesKey};
 use crate::subscription::{Entry, Event, FailedStream, MultiplexRef, Stream};
@@ -48,7 +47,6 @@ pub(crate) struct StationInner {
     pub(crate) persistence: PersistenceConfig,
     pub(crate) muxes: DashMap<SeriesKey, Multiplexer>,
     pub(crate) warm_start_capacity: usize,
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) gap_heal: crate::GapHealConfig,
 }
 
@@ -110,7 +108,6 @@ impl Station {
                 persistence: b.persistence,
                 muxes: DashMap::new(),
                 warm_start_capacity: b.warm_start.max(1),
-                #[cfg(not(target_arch = "wasm32"))]
                 gap_heal: b.gap_heal,
             }),
         })
@@ -785,14 +782,13 @@ fn spawn_forwarder<T: DataPoint + 'static>(
     let persistence = inner.persistence.clone();
     let warm = inner.warm_start_capacity;
     let exchange = key.exchange;
-    #[cfg(not(target_arch = "wasm32"))]
     let gap_cfg = inner.gap_heal;
-    #[cfg(not(target_arch = "wasm32"))]
     let hub_for_heal = inner.hub.clone();
 
     {
     let forwarder_fut = Box::pin(async move {
-        // Open disk store if persistence is on for this kind (native only).
+        // Open disk store if persistence is on for this kind.
+        // Native: std::fs-backed DiskStore. Wasm: OPFS-backed DiskStore.
         #[cfg(not(target_arch = "wasm32"))]
         let mut disk: Option<DiskStore<T>> = None;
         #[cfg(not(target_arch = "wasm32"))]
@@ -802,9 +798,19 @@ fn spawn_forwarder<T: DataPoint + 'static>(
                 Err(e) => tracing::warn!(?e, ?key, "disk store open failed"),
             }
         }
-        // On wasm, no disk store.
+        // Wasm: OPFS DiskStore (Wave 4-E).
         #[cfg(target_arch = "wasm32")]
-        let _ = (&storage_root, &persistence);
+        let mut disk: Option<DiskStore<T>> = None;
+        #[cfg(target_arch = "wasm32")]
+        if persistence.is_enabled_for(&key.kind) {
+            match DiskStore::<T>::new(key.clone()).await {
+                Ok(store) => disk = Some(store),
+                Err(e) => tracing::warn!(?e, ?key, "wasm OPFS disk store open failed"),
+            }
+        }
+        // Suppress unused warning on wasm when persistence is disabled.
+        #[cfg(target_arch = "wasm32")]
+        let _ = &storage_root;
 
         // In-memory ring (warm capacity).
         let mut series = Series::<T>::new(warm);
@@ -814,14 +820,12 @@ fn spawn_forwarder<T: DataPoint + 'static>(
 
         // Warm-start. Priority: disk tail > REST seed.
         if warm > 0 {
-            #[cfg(not(target_arch = "wasm32"))]
+            // Wave 4-D: both native and wasm read real disk/OPFS tail.
             let disk_tail: Vec<T> = if let Some(d) = disk.as_ref() {
                 d.read_tail(warm).await.unwrap_or_default()
             } else {
                 Vec::new()
             };
-            #[cfg(target_arch = "wasm32")]
-            let disk_tail: Vec<T> = Vec::new();
             let seed_points: Vec<T> = if disk_tail.is_empty() && !rest_seed.is_empty() {
                 rest_seed
             } else {
@@ -838,11 +842,15 @@ fn spawn_forwarder<T: DataPoint + 'static>(
         // Silence threshold: if `event_stream().next()` produces no event for
         // this long, the underlying WS is presumed dropped. Mirrors MLC
         // `ws_manager` behaviour (60s). Tunable via env for tests.
-        // Native-only: tokio::time::timeout not available on wasm.
         #[cfg(not(target_arch = "wasm32"))]
         let silence_timeout = std::time::Duration::from_secs(
             std::env::var("DIG3_WS_SILENCE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(60),
         );
+        // Wasm (Wave 4-F): 60s silence watchdog via gloo_timers.
+        // DIG3_WS_SILENCE_SECS is not readable on wasm32 (std::env absent);
+        // default 60 s is hardcoded. Configurable at compile time if needed.
+        #[cfg(target_arch = "wasm32")]
+        let silence_timeout_ms: u32 = 60_000;
         // Debug-only: artificially slow down the per-event loop. Used by e2e
         // tests to force broadcast-channel overflow → `Lagged` error →
         // `stream_err` branch. Production callers leave this unset (0 ms).
@@ -851,39 +859,43 @@ fn spawn_forwarder<T: DataPoint + 'static>(
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
+        // Wasm (Wave 4-E): flush OPFS every N events to bound data loss.
+        // A periodic gloo interval is not used here — instead a simple
+        // flush-every-N-appends strategy matches the forwarder's sync
+        // append pattern without an extra concurrent task.
+        #[cfg(target_arch = "wasm32")]
+        let mut wasm_flush_counter: u32 = 0;
+        #[cfg(target_arch = "wasm32")]
+        const WASM_FLUSH_EVERY: u32 = 64;
 
         loop {
-            // Single tokio::select! arm — exits via the shutdown branch or
-            // detects (None / Err / silence). All three = disconnect = heal.
-            // Native: uses tokio::time::timeout for silence detection.
-            // Wasm: no timeout — just wait for next event or shutdown.
+            // Single select arm — exits via shutdown or detects disconnect
+            // (None / Err / silence). All three cases = disconnect = heal.
+            // Native: tokio::time::timeout for silence detection.
+            // Wasm (4-F): gloo_timers::future::sleep race for silence detection.
             #[cfg(not(target_arch = "wasm32"))]
             let item_opt = tokio::select! {
                 _ = &mut shutdown_rx => break,
                 res = tokio::time::timeout(silence_timeout, stream.next()) => res,
             };
             #[cfg(target_arch = "wasm32")]
-            // On wasm we can't use tokio::time::timeout (no "time" feature).
-            // Map the Option<Result<...>> to a Result<Option<Result<...>>, !>
-            // so downstream code sees the same Ok(...) shape.
+            // On wasm: race stream.next() against a gloo_timers sleep.
+            // Returns Ok(Some(...)) for a real event, Ok(None) for stream end,
+            // Err(()) for the silence timeout expiring.
             let item_opt: std::result::Result<
                 Option<std::result::Result<_, digdigdig3::core::types::WebSocketError>>,
-                std::convert::Infallible,
+                (),
             > = tokio::select! {
                 _ = &mut shutdown_rx => break,
+                _ = gloo_timers::future::sleep(std::time::Duration::from_millis(silence_timeout_ms as u64)) => Err(()),
                 item = stream.next() => Ok(item),
             };
 
             let trigger_heal_reason: Option<&'static str> = match &item_opt {
-                #[cfg(not(target_arch = "wasm32"))]
                 Err(_) => Some("silence_timeout"),
                 Ok(None) => Some("stream_ended"),
                 Ok(Some(Err(_))) => Some("stream_err"),
                 Ok(Some(Ok(_))) => None,
-                // Infallible branch on wasm — the Err arm cannot happen but
-                // the match must be exhaustive.
-                #[cfg(target_arch = "wasm32")]
-                Err(_infallible) => unreachable!(),
             };
 
             if let Some(reason) = trigger_heal_reason {
@@ -915,9 +927,9 @@ fn spawn_forwarder<T: DataPoint + 'static>(
 
                 tracing::info!(target: "dig3::gap_heal", ?key, reason, "ws disconnect detected → heal + resub");
                 // 1. REST heal (kline-only; no-op for non-kline kinds, which
-                //    have already returned above). Native-only: gap_heal uses
-                //    tokio::time + DiskStore which are not available on wasm.
-                #[cfg(not(target_arch = "wasm32"))]
+                //    have already returned above). Wave 4-B: enabled on both
+                //    targets. On wasm REST succeeds for the 9 proxy-override
+                //    venues; silently returns empty for others until Wave 4-C.
                 run_kline_heal::<T>(
                     &hub_for_heal, &key, &gap_cfg, &symbol_label,
                     last_emitted_ms, exchange,
@@ -968,10 +980,28 @@ fn spawn_forwarder<T: DataPoint + 'static>(
                 continue;
             };
 
+            // Wave 4-E: append on both targets (native std::fs, wasm OPFS).
+            // Native append returns Result; wasm append returns () (infallible — buffers in memory).
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(d) = disk.as_mut() {
                 if let Err(e) = d.append(&point) {
                     tracing::warn!(?e, "disk store append failed");
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            if let Some(d) = disk.as_mut() {
+                d.append(&point);
+            }
+            // Wasm (Wave 4-E): flush OPFS buffer periodically to bound data loss.
+            #[cfg(target_arch = "wasm32")]
+            {
+                wasm_flush_counter = wasm_flush_counter.wrapping_add(1);
+                if wasm_flush_counter % WASM_FLUSH_EVERY == 0 {
+                    if let Some(d) = disk.as_mut() {
+                        if let Err(e) = d.flush().await {
+                            tracing::warn!(?e, "wasm OPFS periodic flush failed");
+                        }
+                    }
                 }
             }
             let pt_ts = point.timestamp_ms();
@@ -992,7 +1022,7 @@ fn spawn_forwarder<T: DataPoint + 'static>(
             }
         }
 
-        #[cfg(not(target_arch = "wasm32"))]
+        // Final flush on both targets (Wave 4-E: wasm flushes OPFS on shutdown).
         if let Some(mut d) = disk { let _ = d.flush().await; }
         let _ = series; // dropped
         // Remove the mux entry so a subsequent `subscribe` for the same key
@@ -1022,8 +1052,7 @@ fn spawn_forwarder<T: DataPoint + 'static>(
 }
 
 /// Run a kline auto-heal triggered by WS disconnect. Called only for
-/// `Kind::Kline`; no-op for other kinds. Native-only (requires DiskStore + gap_heal).
-#[cfg(not(target_arch = "wasm32"))]
+/// `Kind::Kline`; no-op for other kinds. Wave 4-B: enabled on both targets.
 async fn run_kline_heal<T: DataPoint + 'static>(
     hub: &Arc<ExchangeHub>,
     key: &SeriesKey,
@@ -1087,8 +1116,7 @@ async fn run_kline_heal<T: DataPoint + 'static>(
 /// Cast `Vec<A>` to `Vec<B>` when A == B at runtime via TypeId. Used to
 /// bridge the kind-specific REST return type (`Vec<BarPoint>`) back to the
 /// generic forwarder's `Vec<T>`. Safe when called at a site where the kind
-/// match arm guarantees A == B. Native-only: called from `run_kline_heal`.
-#[cfg(not(target_arch = "wasm32"))]
+/// match arm guarantees A == B.
 fn cast_vec<A: 'static, B: 'static>(v: Vec<A>) -> Vec<B> {
     if std::any::TypeId::of::<A>() == std::any::TypeId::of::<B>() {
         // SAFETY: confirmed TypeId equality immediately above; memory layout

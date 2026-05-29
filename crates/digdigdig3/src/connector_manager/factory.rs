@@ -1148,9 +1148,10 @@ impl ConnectorFactory {
 
     /// Create a WebSocket connector for browser (wasm32) targets.
     ///
-    /// Supports Binance, Bybit, OKX — the three exchanges whose WS
-    /// implementations use `UniversalWsTransport` with browser-native WS
-    /// (`web-sys`). Other exchanges return `UnsupportedOperation`.
+    /// Supports 11 venues via `UniversalWsTransport` with browser-native WS
+    /// (`web-sys`): Binance, Bybit, OKX, HyperLiquid, Gemini, CryptoCom,
+    /// Bitfinex, BingX, Upbit, Dydx, Lighter. Other exchanges return
+    /// `UnsupportedOperation`.
     #[cfg(target_arch = "wasm32")]
     pub(crate) async fn create_websocket(
         id: ExchangeId,

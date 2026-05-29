@@ -103,7 +103,9 @@ impl ExchangeHub {
     /// Connect ONLY the WebSocket for a specific (exchange, account_type).
     ///
     /// On native: full factory — supports all 47 exchanges.
-    /// On wasm32: browser subset — Binance, Bybit, OKX (UniversalWsTransport+web-sys).
+    /// On wasm32: browser subset — Binance, Bybit, OKX, HyperLiquid, Gemini,
+    /// CryptoCom, Bitfinex, BingX, Upbit, Dydx, Lighter (11 venues,
+    /// all via UniversalWsTransport+web-sys).
     pub async fn connect_websocket(
         &self,
         id: ExchangeId,
@@ -127,7 +129,8 @@ impl ExchangeHub {
     /// REST connection is required (fails if it errors). WS connections are
     /// best-effort — if a particular (id, account_type) doesn't support WS
     /// on the current target, that one is silently skipped and the REST half
-    /// remains. On wasm32 only Binance/Bybit/OKX support WS.
+    /// remains. On wasm32 11 venues support WS (Binance/Bybit/OKX/HyperLiquid/
+    /// Gemini/CryptoCom/Bitfinex/BingX/Upbit/Dydx/Lighter).
     pub async fn connect_full(
         &self,
         id: ExchangeId,

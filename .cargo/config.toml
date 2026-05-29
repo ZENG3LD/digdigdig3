@@ -4,22 +4,29 @@
 # which auto-detects Chrome/Edge/Firefox, downloads the matching WebDriver,
 # spawns headless browser, runs tests, returns exit code. No PATH setup.
 #
-# Install: `cargo install dig2browser` (provides dig2-wasm-test binary).
+# Install (pin the version with the GAP-1..6 runner fixes):
+#   cargo install dig2browser@0.4.13 --bin dig2-wasm-test --force
+#
+# Supported since 0.4.13 (see dig2browser README):
+#   - test-name filter:  cargo test --target wasm32-unknown-unknown -- ws_binance
+#   - console output:    add `-- --nocapture` to surface web_sys::console::log_*
+#                        (the e2e matrix prints its table this way)
+#   - per-test timeout:  DIG2_WASM_PER_TEST_TIMEOUT=120 (opt-in)
+#   - headed debugging:  DIG2_WASM_HEADLESS=0
+#   - preset driver:     CHROMEDRIVER/MSEDGEDRIVER/GECKODRIVER=<path>
+#   - browser pick:      DIG2_WASM_BROWSER=chrome|edge|firefox
 [target.wasm32-unknown-unknown]
 runner = "dig2-wasm-test"
 
-# WASM_BINDGEN_TEST_TIMEOUT: default is 20s which is too short for station
-# tests that poll live WebSocket streams for up to 15s per test.
-# Station smoke tests need ~120s (existing tests × ~27s average including WS wait).
+# WASM_BINDGEN_TEST_TIMEOUT is the GLOBAL session budget. Tests run strictly
+# sequentially (single-threaded wasm), so it must cover the whole selected set.
 #
-# wasm_e2e_matrix runs 4 test groups in one session (wasm is single-threaded):
-#   Group A (Binance/Bybit/OKX, full 9 streams): ~465s
-#   Group B (HyperLiquid/Dydx/Lighter, full 9 streams): ~465s
-#   Group C (Gemini/CryptoCom/Bitfinex, 4 core streams): ~210s
-#   Group D (BingX/Upbit, 4 core streams): ~140s
-#   Total: ~1280s + driver startup overhead.
-# Set 1800s (30min) to cover the full 4-group matrix with headroom.
-# Per-group runs complete in ~465s each — use individual test filtering if
-# the full session is too slow for iterative development.
+# wasm_e2e_matrix is now ONE aggregate test `ws_matrix` (all venues concurrent
+# via join_all in chunks of 7) plus 21 per-venue tests `ws_<venue>` for isolated
+# debugging. Native windows: ticker 60s / others 30s / liq 60s.
+#   - `ws_matrix` alone (3 concurrent waves):           ~3-5 min
+#   - all 21 per-venue tests sequentially:              ~20+ min
+#   - subset:  cargo test ... -- ws_binance ws_bybit -- --nocapture
+# 1800s (30min) covers the worst case (all per-venue tests) with headroom.
 [env]
 WASM_BINDGEN_TEST_TIMEOUT = { value = "1800", force = true }

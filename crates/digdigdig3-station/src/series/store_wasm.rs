@@ -27,51 +27,36 @@
 //! This is documented behaviour; not a bug. The trading terminal has a
 //! station-level periodic flush that covers the hot path.
 
-use wasm_bindgen::JsCast;
-use wasm_bindgen_futures::JsFuture;
-use web_sys::{
-    FileSystemCreateWritableOptions, FileSystemDirectoryHandle, FileSystemFileHandle,
-    FileSystemGetDirectoryOptions, FileSystemGetFileOptions, FileSystemWritableFileStream,
-    WriteCommandType, WriteParams,
+use web_sys::FileSystemDirectoryHandle;
+
+use crate::opfs_helpers::{
+    opfs_append_quota_guard, opfs_file_size, opfs_read_all, opfs_root,
 };
+
+pub use crate::opfs_helpers::OpfsError;
 
 use super::{DataPoint, SeriesKey};
 
-// ─── Error type ──────────────────────────────────────────────────────────────
+// ─── Walk helper (SeriesKey layout) ──────────────────────────────────────────
 
-/// Errors from the wasm OPFS DiskStore.
-#[derive(Debug)]
-pub enum OpfsError {
-    /// `window()` returned `None` — called outside browser context.
-    NoWindow,
-    /// An OPFS operation returned a JS exception (`JsValue`).
-    Js(wasm_bindgen::JsValue),
-    /// File not found in OPFS (not a hard error; read returns empty Vec).
-    FileNotFound,
-    /// Day rotation failed during flush.
-    RotationFailed(Box<OpfsError>),
+/// Walk (or create) the four-segment directory for a `SeriesKey`.
+///
+/// Path: `<root>/<kind-slug>/<exchange>/<account>/<symbol-lowercase>/`
+async fn opfs_walk_or_create(
+    root: &FileSystemDirectoryHandle,
+    key: &SeriesKey,
+) -> Result<FileSystemDirectoryHandle, OpfsError> {
+    crate::opfs_helpers::opfs_walk_or_create_stream(
+        root,
+        &key.kind.slug(),
+        &key.exchange_label(),
+        &key.account_label(),
+        &key.symbol,
+    )
+    .await
 }
 
-impl std::fmt::Display for OpfsError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            OpfsError::NoWindow => write!(f, "OPFS: no browser window"),
-            OpfsError::Js(v) => write!(f, "OPFS JS error: {:?}", v),
-            OpfsError::FileNotFound => write!(f, "OPFS: file not found"),
-            OpfsError::RotationFailed(inner) => write!(f, "OPFS: day rotation failed: {inner}"),
-        }
-    }
-}
-
-impl std::error::Error for OpfsError {}
-
-impl From<wasm_bindgen::JsValue> for OpfsError {
-    fn from(v: wasm_bindgen::JsValue) -> Self {
-        OpfsError::Js(v)
-    }
-}
-
-// ─── Main struct ─────────────────────────────────────────────────────────────
+// ─── Main struct ──────────────────────────────────────────────────────────────
 
 /// OPFS-backed binary time-series store for wasm32.
 ///
@@ -128,12 +113,10 @@ impl<T: DataPoint> DiskStore<T> {
 
         // Request persistent storage (best-effort; browsers may silently deny).
         if let Ok(p) = storage.persist() {
-            let _ = JsFuture::from(p).await; // ignore grant/deny result
+            let _ = wasm_bindgen_futures::JsFuture::from(p).await;
         }
 
-        let root: FileSystemDirectoryHandle =
-            JsFuture::from(storage.get_directory()).await?.dyn_into()?;
-
+        let root = opfs_root().await?;
         let day = utc_today_wasm();
         let sym_dir = opfs_walk_or_create(&root, &key).await?;
 
@@ -329,7 +312,6 @@ impl<T: DataPoint> DiskStore<T> {
     /// Rotate to a new UTC day: flush pending buffers to old day, then acquire
     /// new OPFS handles and reset offset tracking.
     async fn rotate_day(&mut self, new_day: &str) -> Result<(), OpfsError> {
-        // Flush remaining old-day data before switching handles.
         if !self.dat_buf.is_empty() {
             opfs_append_quota_guard(
                 &self.sym_dir,
@@ -363,13 +345,9 @@ impl<T: DataPoint> DiskStore<T> {
             }
         }
 
-        // Acquire the OPFS root again for the new day (same directory path).
-        let storage = web_sys::window()
-            .ok_or(OpfsError::NoWindow)?
-            .navigator()
-            .storage();
-        let root: FileSystemDirectoryHandle =
-            JsFuture::from(storage.get_directory()).await?.dyn_into()?;
+        let root = opfs_root()
+            .await
+            .map_err(|e| OpfsError::RotationFailed(Box::new(e)))?;
 
         let new_sym_dir = opfs_walk_or_create(&root, &self.key)
             .await
@@ -395,201 +373,9 @@ impl<T: DataPoint> DiskStore<T> {
     }
 }
 
-// ─── OPFS helper functions ────────────────────────────────────────────────────
+// ─── helpers ──────────────────────────────────────────────────────────────────
 
-/// Walk (or create) the four-segment directory path for `key` under `root`.
-///
-/// Path structure mirrors the native `paths()` helper:
-/// `<root>/<kind-slug>/<exchange>/<account>/<symbol-lowercase>/`
-async fn opfs_walk_or_create(
-    root: &FileSystemDirectoryHandle,
-    key: &SeriesKey,
-) -> Result<FileSystemDirectoryHandle, OpfsError> {
-    let opts = FileSystemGetDirectoryOptions::new();
-    opts.set_create(true);
-
-    let kind_slug = key.kind.slug();
-    let kind_dir: FileSystemDirectoryHandle = JsFuture::from(
-        root.get_directory_handle_with_options(&kind_slug, &opts),
-    )
-    .await?
-    .dyn_into()?;
-
-    let exch_dir: FileSystemDirectoryHandle = JsFuture::from(
-        kind_dir.get_directory_handle_with_options(&key.exchange_label(), &opts),
-    )
-    .await?
-    .dyn_into()?;
-
-    let acct_dir: FileSystemDirectoryHandle = JsFuture::from(
-        exch_dir.get_directory_handle_with_options(&key.account_label(), &opts),
-    )
-    .await?
-    .dyn_into()?;
-
-    let sym_dir: FileSystemDirectoryHandle = JsFuture::from(
-        acct_dir.get_directory_handle_with_options(&key.symbol.to_lowercase(), &opts),
-    )
-    .await?
-    .dyn_into()?;
-
-    Ok(sym_dir)
-}
-
-/// Append `data` to `name` inside `dir` via `createWritable(keepExistingData:
-/// true)` + seek-to-end + write + close.
-///
-/// `keepExistingData: true` preserves existing file bytes but positions the
-/// write cursor at byte 0. We explicitly seek to `file.size()` before writing
-/// to avoid overwriting existing data.
-///
-/// This is the correct OPFS append pattern on the main thread (no
-/// `FileSystemSyncAccessHandle` available outside of DedicatedWorker).
-async fn opfs_append(
-    dir: &FileSystemDirectoryHandle,
-    name: &str,
-    data: &[u8],
-) -> Result<(), OpfsError> {
-    let fopts = FileSystemGetFileOptions::new();
-    fopts.set_create(true);
-
-    let fh: FileSystemFileHandle =
-        JsFuture::from(dir.get_file_handle_with_options(name, &fopts))
-            .await?
-            .dyn_into()?;
-
-    // Read current file size BEFORE opening writable (createWritable opens a
-    // swap copy — file.size() on the swap copy reflects the pre-write size).
-    let file_obj: web_sys::File = JsFuture::from(fh.get_file()).await?.dyn_into()?;
-    let existing_size = file_obj.size() as u64;
-
-    let write_opts = FileSystemCreateWritableOptions::new();
-    write_opts.set_keep_existing_data(true);
-
-    let writable: FileSystemWritableFileStream =
-        JsFuture::from(fh.create_writable_with_options(&write_opts))
-            .await?
-            .dyn_into()?;
-
-    // Seek to end — required because keepExistingData starts cursor at 0.
-    // Use the typed WriteParams dictionary with WriteCommandType::Seek.
-    let seek_params = WriteParams::new(WriteCommandType::Seek);
-    seek_params.set_position(Some(existing_size as f64));
-    JsFuture::from(
-        writable
-            .write_with_write_params(&seek_params)
-            .map_err(|e| OpfsError::Js(e))?,
-    )
-    .await?;
-
-    // Write the buffered bytes.
-    let arr = js_sys::Uint8Array::from(data);
-    JsFuture::from(
-        writable
-            .write_with_buffer_source(&arr)
-            .map_err(|e| OpfsError::Js(e))?,
-    )
-    .await?;
-
-    // Commit (close atomically swaps the temp file into place).
-    JsFuture::from(writable.close()).await?;
-    Ok(())
-}
-
-/// Wrapper around `opfs_append` that catches `QuotaExceededError` and logs a
-/// warning instead of propagating it. Any other error is returned.
-async fn opfs_append_quota_guard(
-    dir: &FileSystemDirectoryHandle,
-    name: &str,
-    data: &[u8],
-) -> Result<(), OpfsError> {
-    match opfs_append(dir, name, data).await {
-        Ok(()) => Ok(()),
-        Err(OpfsError::Js(ref jsval)) => {
-            // Check for QuotaExceededError by name.
-            let is_quota = js_sys::Reflect::get(jsval, &"name".into())
-                .ok()
-                .and_then(|v| v.as_string())
-                .map(|n| n == "QuotaExceededError")
-                .unwrap_or(false);
-            if is_quota {
-                tracing::warn!(
-                    target: "dig3_station::disk_store_wasm",
-                    file = name,
-                    bytes = data.len(),
-                    "OPFS write skipped: QuotaExceededError — browser storage quota exceeded"
-                );
-                Ok(()) // drop the record, continue
-            } else {
-                Err(OpfsError::Js(jsval.clone()))
-            }
-        }
-        Err(e) => Err(e),
-    }
-}
-
-/// Read the entire content of `name` in `dir` as `Vec<u8>`.
-///
-/// Returns `Err(OpfsError::FileNotFound)` when the file does not exist (the
-/// OPFS `getFileHandle` call rejects with `NotFoundError`).
-async fn opfs_read_all(
-    dir: &FileSystemDirectoryHandle,
-    name: &str,
-) -> Result<Vec<u8>, OpfsError> {
-    let fh_result = JsFuture::from(dir.get_file_handle(name)).await;
-    let fh: FileSystemFileHandle = match fh_result {
-        Ok(v) => v.dyn_into().map_err(OpfsError::Js)?,
-        Err(jsval) => {
-            // NotFoundError → FileNotFound; anything else is a real error.
-            let is_not_found = js_sys::Reflect::get(&jsval, &"name".into())
-                .ok()
-                .and_then(|v| v.as_string())
-                .map(|n| n == "NotFoundError")
-                .unwrap_or(false);
-            if is_not_found {
-                return Err(OpfsError::FileNotFound);
-            }
-            return Err(OpfsError::Js(jsval));
-        }
-    };
-
-    let file: web_sys::File = JsFuture::from(fh.get_file()).await?.dyn_into()?;
-    let ab: js_sys::ArrayBuffer = JsFuture::from(file.array_buffer()).await?.dyn_into()?;
-    Ok(js_sys::Uint8Array::new(&ab).to_vec())
-}
-
-/// Return the current byte size of `name` in `dir`.
-///
-/// Returns `0` when the file does not exist (i.e. fresh session).
-async fn opfs_file_size(
-    dir: &FileSystemDirectoryHandle,
-    name: &str,
-) -> Result<u64, OpfsError> {
-    let fh_result = JsFuture::from(dir.get_file_handle(name)).await;
-    let fh: FileSystemFileHandle = match fh_result {
-        Ok(v) => v.dyn_into().map_err(OpfsError::Js)?,
-        Err(jsval) => {
-            let is_not_found = js_sys::Reflect::get(&jsval, &"name".into())
-                .ok()
-                .and_then(|v| v.as_string())
-                .map(|n| n == "NotFoundError")
-                .unwrap_or(false);
-            if is_not_found {
-                return Ok(0);
-            }
-            return Err(OpfsError::Js(jsval));
-        }
-    };
-
-    let file: web_sys::File = JsFuture::from(fh.get_file()).await?.dyn_into()?;
-    Ok(file.size() as u64)
-}
-
-/// Return today's UTC date as `YYYY-MM-DD` string via `js_sys::Date`.
-///
-/// Uses `Date.now()` which reflects UTC time. Mirrors native `utc_today()` but
-/// without `chrono` stdlib — `chrono` with `wasmbind` feature is available in
-/// this crate's wasm32 dep block, so we use it for consistency.
+/// Return today's UTC date as `YYYY-MM-DD` string via chrono + wasmbind.
 fn utc_today_wasm() -> String {
     use chrono::Utc;
     Utc::now().format("%Y-%m-%d").to_string()

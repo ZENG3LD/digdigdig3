@@ -1,13 +1,17 @@
 //! ReplayWebSocket — implements `WebSocketConnector` for stored events.
 //!
-//! Each `subscribe` call spawns a tokio task that reads records from
+//! Each `subscribe` call spawns a task that reads records from
 //! `StorageManager`, optionally sleeps according to `ReplayRate`, then sends
 //! decoded `StreamEvent`s on the broadcast channel.
+//!
+//! On wasm32:
+//! - `tokio::spawn` → `wasm_bindgen_futures::spawn_local`
+//! - `tokio::time::sleep` → `gloo_timers::future::sleep`
+//! - `std::time::Instant::now()` → `js_sys::Date::now()` (f64 ms counter)
 
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
-use async_trait::async_trait;
 use futures_util::Stream;
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
@@ -62,7 +66,8 @@ impl ReplayWebSocket {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl WebSocketConnector for ReplayWebSocket {
     async fn connect(&self, _account_type: AccountType) -> WebSocketResult<()> {
         *self
@@ -112,9 +117,14 @@ impl WebSocketConnector for ReplayWebSocket {
         let config = self.config.clone();
         let event_tx = self.event_tx.clone();
 
-        tokio::spawn(async move {
+        let fut = async move {
             replay_task(storage, config, key, event_tx).await;
-        });
+        };
+
+        #[cfg(not(target_arch = "wasm32"))]
+        tokio::spawn(fut);
+        #[cfg(target_arch = "wasm32")]
+        wasm_bindgen_futures::spawn_local(fut);
 
         Ok(())
     }
@@ -175,7 +185,12 @@ async fn replay_task(
         return;
     }
 
+    // Record the real-time start point in a platform-compatible way.
+    #[cfg(not(target_arch = "wasm32"))]
     let start_real = std::time::Instant::now();
+    #[cfg(target_arch = "wasm32")]
+    let start_real_ms = js_sys::Date::now();
+
     let start_sim = records[0].0;
 
     for (ts_ms, payload) in records {
@@ -191,10 +206,17 @@ async fn replay_task(
         };
 
         let sim_elapsed = ts_ms - start_sim;
+
+        #[cfg(not(target_arch = "wasm32"))]
         let real_elapsed = start_real.elapsed().as_millis() as i64;
+        #[cfg(target_arch = "wasm32")]
+        let real_elapsed = (js_sys::Date::now() - start_real_ms) as i64;
 
         if let Some(delay) = config.rate.delay_for(sim_elapsed, real_elapsed) {
+            #[cfg(not(target_arch = "wasm32"))]
             tokio::time::sleep(delay).await;
+            #[cfg(target_arch = "wasm32")]
+            gloo_timers::future::sleep(delay).await;
         }
 
         // No receivers left — no point continuing.

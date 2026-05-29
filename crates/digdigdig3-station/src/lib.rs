@@ -25,15 +25,21 @@ pub mod rest_cache;
 #[cfg(feature = "reconnect")]
 pub mod reconnect;
 
-// native-only — file I/O, sled, zstd
-#[cfg(not(target_arch = "wasm32"))]
+// OPFS helpers — wasm32 only, shared by store_wasm + manager_wasm.
+#[cfg(target_arch = "wasm32")]
+pub(crate) mod opfs_helpers;
+
+// storage: native uses std::fs; wasm32 uses OPFS-backed manager.
+// On wasm32 only StorageManager / StorageConfig / StreamKey are available;
+// the sub-modules that use std::fs (event_log, rotation, retention, snapshot,
+// index) remain native-only inside storage/mod.rs.
 pub mod storage;
 
-// cure/replay depend on StorageManager (sled + tokio::fs) — native-only.
-#[cfg(not(target_arch = "wasm32"))]
+// cure: pure logic over StorageManager — compiles on both targets.
 pub mod cure;
 
-#[cfg(not(target_arch = "wasm32"))]
+// replay: backed by StorageManager; ws.rs has cfg-split for tokio::spawn /
+// wasm_bindgen_futures::spawn_local and tokio::time::sleep / gloo_timers.
 pub mod replay;
 
 // polling + gap_heal: REST-based; work on wasm via rest_override (Workstream A).
@@ -62,17 +68,18 @@ pub use series::PollSpec;
 pub use polling::PollSource;
 pub use gap_heal::GapHealConfig;
 
-// Re-exports for moved modules (mirror what core used to expose)
-#[cfg(not(target_arch = "wasm32"))]
-pub use storage::{EventLog, EventLogIter, EventRecord, StorageManager, StorageConfig, StreamKey};
+// StorageManager and friends — available on both targets now.
+pub use storage::{StorageConfig, StorageManager, StreamKey};
 
+// EventLog is native-only (std::fs backed).
 #[cfg(not(target_arch = "wasm32"))]
+pub use storage::{EventLog, EventLogIter, EventRecord};
+
 pub use replay::{ReplayHub, ReplayConfig, ReplayRate};
 
 pub use orderbook::{OrderBookTracker, OrderBookError};
 pub use rest_cache::RestCache;
 
-#[cfg(not(target_arch = "wasm32"))]
 pub use cure::{
     IntegrityChecker, IntegrityReport,
     Deduper,

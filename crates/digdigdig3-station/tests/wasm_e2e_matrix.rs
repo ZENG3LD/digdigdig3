@@ -751,3 +751,46 @@ async fn ws_bybit_trade_only() {
         cell.label()
     );
 }
+
+// Isolation: does the full-depth L2 orderbook channel ALONE crash the renderer?
+// If this crashes solo → it's the orderbook (volume or a parse loop). If it passes
+// → the 9-channel crash is aggregate concurrency, not one bad channel.
+#[wasm_bindgen_test]
+async fn ws_bybit_ob_only() {
+    let cell = probe_channel(
+        ExchangeId::Bybit,
+        StreamType::Orderbook,
+        Symbol::with_raw("BTC", "USDT", "BTCUSDT".to_string()),
+        AccountType::FuturesCross,
+        Duration::from_secs(20),
+    )
+    .await;
+    assert!(
+        cell.is_data_ok(),
+        "Bybit Orderbook-only (futures) flow check; got {}",
+        cell.label()
+    );
+}
+
+// Bisection: the 5 FUTURES channels concurrently (mark/funding/OI/aggTrade/liq).
+// If this crashes → culprit is in the futures group (incl. the loop suspects
+// OI/aggTrade/liq). If it passes → the 9-channel crash is the full aggregate.
+#[wasm_bindgen_test]
+async fn ws_bybit_futs_group() {
+    let fut = Symbol::with_raw("BTC", "USDT", "BTCUSDT".to_string());
+    let at = AccountType::FuturesCross;
+    let w = Duration::from_secs(15);
+    let res = futures_util::future::join_all(vec![
+        probe_channel(ExchangeId::Bybit, StreamType::MarkPrice, fut.clone(), at, w),
+        probe_channel(ExchangeId::Bybit, StreamType::FundingRate, fut.clone(), at, w),
+        probe_channel(ExchangeId::Bybit, StreamType::OpenInterest, fut.clone(), at, w),
+        probe_channel(ExchangeId::Bybit, StreamType::AggTrade, fut.clone(), at, w),
+        probe_channel(ExchangeId::Bybit, StreamType::Liquidation, fut, at, w),
+    ])
+    .await;
+    web_sys::console::log_1(
+        &format!("[bybit-futs] {:?}", res.iter().map(|c| c.label()).collect::<Vec<_>>()).into(),
+    );
+    // Pass if it didn't crash the renderer (reaching here = no crash).
+    assert!(!res.is_empty());
+}

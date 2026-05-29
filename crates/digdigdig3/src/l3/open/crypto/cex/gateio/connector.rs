@@ -17,7 +17,7 @@ use reqwest::header::HeaderMap;
 use serde_json::{json, Value};
 
 use crate::core::{
-    HttpClient, Credentials,
+    HttpClient, Credentials, assemble_rest_url,
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
@@ -105,6 +105,9 @@ pub struct GateioConnector {
     urls: GateioUrls,
     /// Testnet mode
     testnet: bool,
+    /// REST base URL override for proxy / CORS routing on wasm32.
+    /// When set, replaces the exchange's native base URL at every REST call site.
+    rest_override: Option<String>,
     /// Runtime rate limiter (Group model: spot 200/10s + futures 200/10s)
     limiter: Arc<Mutex<RuntimeLimiter>>,
     /// Pressure monitor
@@ -116,6 +119,15 @@ pub struct GateioConnector {
 impl GateioConnector {
     /// Create new connector
     pub async fn new(credentials: Option<Credentials>, testnet: bool) -> ExchangeResult<Self> {
+        Self::new_with_override(credentials, testnet, None).await
+    }
+
+    /// Create connector with optional REST base URL override.
+    ///
+    /// When `rest_override` is `Some(url)`, all REST requests use that URL as
+    /// the base instead of the exchange's native endpoint. Intended for proxy
+    /// and CORS routing on wasm32 (e.g. `ExchangeHub::set_rest_base_override`).
+    pub async fn new_with_override(credentials: Option<Credentials>, testnet: bool, rest_override: Option<String>) -> ExchangeResult<Self> {
         let urls = if testnet {
             GateioUrls::TESTNET
         } else {
@@ -150,6 +162,7 @@ impl GateioConnector {
             auth,
             urls,
             testnet,
+            rest_override,
             limiter,
             monitor,
             precision: PrecisionCache::new(),
@@ -157,8 +170,8 @@ impl GateioConnector {
     }
 
     /// Create connector for public methods only
-    pub async fn public(testnet: bool) -> ExchangeResult<Self> {
-        Self::new(None, testnet).await
+    pub async fn public(testnet: bool, rest_override: Option<String>) -> ExchangeResult<Self> {
+        Self::new_with_override(None, testnet, rest_override).await
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -235,7 +248,7 @@ impl GateioConnector {
             });
         }
 
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
         let settle = if matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated) {
             Some(self.urls.settle(account_type))
         } else {
@@ -253,11 +266,13 @@ impl GateioConnector {
             qs.join("&")
         };
 
-        let url = if query_string.is_empty() {
-            format!("{}{}", base_url, path)
+        let query_pfx = if query_string.is_empty() {
+            String::new()
         } else {
-            format!("{}{}?{}", base_url, path, query_string)
+            format!("?{}", query_string)
         };
+
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, &query_pfx);
 
         // Add auth headers if needed
         let headers = if endpoint.requires_auth() {
@@ -284,14 +299,14 @@ impl GateioConnector {
         // POST requests are order operations — always wait (essential)
         self.rate_limit_wait(1, account_type, true).await;
 
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
         let settle = if matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated) {
             Some(self.urls.settle(account_type))
         } else {
             None
         };
         let path = endpoint.path(settle);
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
 
         // Auth headers
         let auth = self.auth.as_ref()
@@ -316,7 +331,7 @@ impl GateioConnector {
         // DELETE requests are typically order cancellations (order operations)
         self.rate_limit_wait(1, account_type, true).await;
 
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
         let settle = if matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated) {
             Some(self.urls.settle(account_type))
         } else {
@@ -339,11 +354,13 @@ impl GateioConnector {
             qs.join("&")
         };
 
-        let url = if query_string.is_empty() {
-            format!("{}{}", base_url, path)
+        let query_pfx = if query_string.is_empty() {
+            String::new()
         } else {
-            format!("{}{}?{}", base_url, path, query_string)
+            format!("?{}", query_string)
         };
+
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, &query_pfx);
 
         // Auth headers
         let auth = self.auth.as_ref()
@@ -369,8 +386,8 @@ impl GateioConnector {
     ) -> ExchangeResult<Value> {
         self.rate_limit_wait(1, account_type, true).await;
 
-        let base_url = self.urls.rest_url(account_type);
-        let url = format!("{}{}", base_url, path);
+        let real_base = self.urls.rest_url(account_type);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, "");
 
         let auth = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
@@ -845,10 +862,10 @@ impl Trading for GateioConnector {
                             },
                         });
                         let _ = trigger_rule;
-                        let base_url = self.urls.rest_url(account_type);
+                        let real_base = self.urls.rest_url(account_type);
                         let settle = self.urls.settle(account_type);
                         let path = format!("/futures/{}/price_orders", settle);
-                        let url = format!("{}{}", base_url, path);
+                        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
                         let auth = self.auth.as_ref()
                             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
                         let body_str = body.to_string();
@@ -908,10 +925,10 @@ impl Trading for GateioConnector {
                                 "text": text.clone(),
                             },
                         });
-                        let base_url = self.urls.rest_url(account_type);
+                        let real_base = self.urls.rest_url(account_type);
                         let settle = self.urls.settle(account_type);
                         let path = format!("/futures/{}/price_orders", settle);
-                        let url = format!("{}{}", base_url, path);
+                        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
                         let auth = self.auth.as_ref()
                             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
                         let body_str = body.to_string();
@@ -1115,7 +1132,7 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
         };
         params.insert(key.to_string(), format_symbol(&symbol.base, &symbol.quote, account_type));
 
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
         let settle = if matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated) {
             Some(self.urls.settle(account_type))
         } else {
@@ -1132,11 +1149,8 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
             qs.join("&")
         };
 
-        let url = if query_string.is_empty() {
-            format!("{}{}", base_url, path)
-        } else {
-            format!("{}{}?{}", base_url, path, query_string)
-        };
+        let query_pfx = if query_string.is_empty() { String::new() } else { format!("?{}", query_string) };
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, &query_pfx);
 
         let auth = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
@@ -1323,7 +1337,7 @@ impl Account for GateioConnector {
             params.insert("currency_pair".to_string(), formatted);
         }
 
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
         let path = "/spot/fee";
         let query_string = if params.is_empty() {
             String::new()
@@ -1334,11 +1348,8 @@ impl Account for GateioConnector {
             qs.join("&")
         };
 
-        let url = if query_string.is_empty() {
-            format!("{}{}", base_url, path)
-        } else {
-            format!("{}{}?{}", base_url, path, query_string)
-        };
+        let query_pfx = if query_string.is_empty() { String::new() } else { format!("?{}", query_string) };
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, &query_pfx);
 
         let auth = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
@@ -1518,11 +1529,11 @@ impl Positions for GateioConnector {
                 let body = json!({ "leverage": leverage.to_string() });
 
                 let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
-                let base_url = self.urls.rest_url(account_type);
+                let real_base = self.urls.rest_url(account_type);
                 let settle = self.urls.settle(account_type);
                 let path = GateioEndpoint::FuturesSetLeverage.path(Some(settle))
                     .replace("{contract}", &formatted);
-                let url = format!("{}{}", base_url, path);
+                let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
 
                 let auth = self.auth.as_ref()
                     .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
@@ -1553,11 +1564,11 @@ impl Positions for GateioConnector {
 
                 let body = json!({ "leverage": leverage });
                 let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
-                let base_url = self.urls.rest_url(account_type);
+                let real_base = self.urls.rest_url(account_type);
                 let settle = self.urls.settle(account_type);
                 let path = GateioEndpoint::FuturesSetLeverage.path(Some(settle))
                     .replace("{contract}", &formatted);
-                let url = format!("{}{}", base_url, path);
+                let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
 
                 let auth = self.auth.as_ref()
                     .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
@@ -1581,10 +1592,10 @@ impl Positions for GateioConnector {
 
                 // Gate.io: POST /futures/{settle}/positions/{contract}/margin
                 let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
-                let base_url = self.urls.rest_url(account_type);
+                let real_base = self.urls.rest_url(account_type);
                 let settle = self.urls.settle(account_type);
                 let path = format!("/futures/{}/positions/{}/margin", settle, formatted);
-                let url = format!("{}{}", base_url, path);
+                let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
 
                 let body = json!({ "change": amount.to_string() });
                 let auth = self.auth.as_ref()
@@ -1609,10 +1620,10 @@ impl Positions for GateioConnector {
 
                 // Gate.io: same margin endpoint as AddMargin but with negative change
                 let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
-                let base_url = self.urls.rest_url(account_type);
+                let real_base = self.urls.rest_url(account_type);
                 let settle = self.urls.settle(account_type);
                 let path = format!("/futures/{}/positions/{}/margin", settle, formatted);
-                let url = format!("{}{}", base_url, path);
+                let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
 
                 let body = json!({ "change": (-amount).to_string() });
                 let auth = self.auth.as_ref()
@@ -1665,10 +1676,10 @@ impl Positions for GateioConnector {
 
                 // Gate.io: PATCH /futures/{settle}/positions/{contract} with take_profit and/or stop_loss
                 let formatted = format_symbol(&symbol.base, &symbol.quote, account_type);
-                let base_url = self.urls.rest_url(account_type);
+                let real_base = self.urls.rest_url(account_type);
                 let settle = self.urls.settle(account_type);
                 let path = format!("/futures/{}/positions/{}", settle, formatted);
-                let url = format!("{}{}", base_url, path);
+                let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
 
                 let mut body = json!({});
                 if let Some(tp) = take_profit {
@@ -2031,9 +2042,9 @@ impl AccountTransfers for GateioConnector {
         }
 
         let account_type = AccountType::Spot; // transfers use spot base URL
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
         let path = GateioEndpoint::WalletTransfer.path(None);
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
 
         let body = json!({
             "currency": req.asset,
@@ -2067,7 +2078,7 @@ impl AccountTransfers for GateioConnector {
         filter: TransferHistoryFilter,
     ) -> ExchangeResult<Vec<TransferResponse>> {
         let account_type = AccountType::Spot;
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
         let path = GateioEndpoint::WalletTransferHistory.path(None);
 
         let mut params: HashMap<String, String> = HashMap::new();
@@ -2090,11 +2101,8 @@ impl AccountTransfers for GateioConnector {
             qs.join("&")
         };
 
-        let url = if query_string.is_empty() {
-            format!("{}{}", base_url, path)
-        } else {
-            format!("{}{}?{}", base_url, path, query_string)
-        };
+        let query_pfx = if query_string.is_empty() { String::new() } else { format!("?{}", query_string) };
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, &query_pfx);
 
         let auth = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
@@ -2155,7 +2163,7 @@ impl CustodialFunds for GateioConnector {
         network: Option<&str>,
     ) -> ExchangeResult<DepositAddress> {
         let account_type = AccountType::Spot;
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
         let path = GateioEndpoint::DepositAddress.path(None);
 
         let mut params = HashMap::new();
@@ -2168,7 +2176,8 @@ impl CustodialFunds for GateioConnector {
             .map(|(k, v)| format!("{}={}", k, v))
             .collect();
         let qs = query_string.join("&");
-        let url = format!("{}{}?{}", base_url, path, qs);
+        let qs_pfx = format!("?{}", qs);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, &qs_pfx);
 
         let auth = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
@@ -2200,9 +2209,9 @@ impl CustodialFunds for GateioConnector {
 
     async fn withdraw(&self, req: WithdrawRequest) -> ExchangeResult<WithdrawResponse> {
         let account_type = AccountType::Spot;
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
         let path = GateioEndpoint::Withdraw.path(None);
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
 
         let mut body = json!({
             "currency": req.asset,
@@ -2249,7 +2258,7 @@ impl CustodialFunds for GateioConnector {
         filter: FundsHistoryFilter,
     ) -> ExchangeResult<Vec<FundsRecord>> {
         let account_type = AccountType::Spot;
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
 
         let endpoint = match filter.record_type {
             FundsRecordType::Deposit => GateioEndpoint::DepositHistory,
@@ -2282,11 +2291,8 @@ impl CustodialFunds for GateioConnector {
             qs.join("&")
         };
 
-        let url = if query_string.is_empty() {
-            format!("{}{}", base_url, path)
-        } else {
-            format!("{}{}?{}", base_url, path, query_string)
-        };
+        let query_pfx = if query_string.is_empty() { String::new() } else { format!("?{}", query_string) };
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, &query_pfx);
 
         let auth = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
@@ -2389,7 +2395,7 @@ impl SubAccounts for GateioConnector {
         op: SubAccountOperation,
     ) -> ExchangeResult<SubAccountResult> {
         let account_type = AccountType::Spot;
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
 
         let auth = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
@@ -2397,7 +2403,7 @@ impl SubAccounts for GateioConnector {
         match op {
             SubAccountOperation::Create { label } => {
                 let path = GateioEndpoint::SubAccountCreate.path(None);
-                let url = format!("{}{}", base_url, path);
+                let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
                 let body = json!({ "login_name": label });
                 let body_str = body.to_string();
                 let headers = auth.sign_request("POST", &path, "", &body_str);
@@ -2423,7 +2429,7 @@ impl SubAccounts for GateioConnector {
 
             SubAccountOperation::List => {
                 let path = GateioEndpoint::SubAccountList.path(None);
-                let url = format!("{}{}", base_url, path);
+                let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
                 let headers = auth.sign_request("GET", &path, "", "");
                 let response = self.http.get_with_headers(&url, &HashMap::new(), &headers).await?;
                 GateioParser::check_error(&response)?;
@@ -2457,7 +2463,7 @@ impl SubAccounts for GateioConnector {
 
             SubAccountOperation::Transfer { sub_account_id, asset, amount, to_sub } => {
                 let path = GateioEndpoint::SubAccountTransfer.path(None);
-                let url = format!("{}{}", base_url, path);
+                let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
                 let direction = if to_sub { "to" } else { "from" };
                 let body = json!({
                     "currency": asset,
@@ -2485,7 +2491,7 @@ impl SubAccounts for GateioConnector {
             SubAccountOperation::GetBalance { sub_account_id } => {
                 let path = GateioEndpoint::SubAccountBalance.path(None)
                     .replace("{user_id}", &sub_account_id);
-                let url = format!("{}{}", base_url, path);
+                let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
                 let headers = auth.sign_request("GET", &path, "", "");
                 let response = self.http.get_with_headers(&url, &HashMap::new(), &headers).await?;
                 GateioParser::check_error(&response)?;

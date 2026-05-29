@@ -19,7 +19,7 @@ use reqwest::header::HeaderMap;
 use serde_json::{json, Value};
 
 use crate::core::{
-    HttpClient, Credentials,
+    HttpClient, Credentials, assemble_rest_url,
     ExchangeId, ExchangeType, AccountType,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
@@ -85,6 +85,9 @@ pub struct MexcConnector {
     http: HttpClient,
     /// Authentication (None for public methods)
     auth: Option<MexcAuth>,
+    /// REST base URL override for proxy / CORS routing on wasm32.
+    /// When set, replaces the exchange's native base URL at every REST call site.
+    rest_override: Option<String>,
     /// Runtime rate limiter (Weight model: 500 weight per 10 seconds)
     limiter: Arc<Mutex<RuntimeLimiter>>,
     /// Pressure monitor — gates non-essential requests at >= 90%
@@ -96,6 +99,15 @@ pub struct MexcConnector {
 impl MexcConnector {
     /// Create new connector
     pub async fn new(credentials: Option<Credentials>) -> ExchangeResult<Self> {
+        Self::new_with_override(credentials, None).await
+    }
+
+    /// Create connector with optional REST base URL override.
+    ///
+    /// When `rest_override` is `Some(url)`, all REST requests use that URL as
+    /// the base instead of the exchange's native endpoint. Intended for proxy
+    /// and CORS routing on wasm32 (e.g. `ExchangeHub::set_rest_base_override`).
+    pub async fn new_with_override(credentials: Option<Credentials>, rest_override: Option<String>) -> ExchangeResult<Self> {
         let http = HttpClient::new(30_000)?; // 30 sec timeout
 
         let mut auth = credentials.as_ref().map(MexcAuth::new);
@@ -121,6 +133,7 @@ impl MexcConnector {
         Ok(Self {
             http,
             auth,
+            rest_override,
             limiter,
             monitor,
             precision: crate::core::utils::precision::PrecisionCache::new(),
@@ -128,8 +141,8 @@ impl MexcConnector {
     }
 
     /// Create connector only for public methods
-    pub async fn public() -> ExchangeResult<Self> {
-        Self::new(None).await
+    pub async fn public(rest_override: Option<String>) -> ExchangeResult<Self> {
+        Self::new_with_override(None, rest_override).await
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -194,7 +207,7 @@ impl MexcConnector {
             });
         }
 
-        let base_url = if endpoint.is_futures() {
+        let real_base = if endpoint.is_futures() {
             MexcUrls::futures_base_url()
         } else {
             MexcUrls::base_url()
@@ -210,9 +223,9 @@ impl MexcConnector {
             let query_parts: Vec<String> = signed_params.iter()
                 .map(|(k, v)| format!("{}={}", k, v))
                 .collect();
-            let query_string = query_parts.join("&");
+            let query_string = format!("?{}", query_parts.join("&"));
 
-            let url = format!("{}{}?{}", base_url, path, query_string);
+            let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, &query_string);
             (url, headers)
         } else {
             let query = if params.is_empty() {
@@ -221,14 +234,10 @@ impl MexcConnector {
                 let qs: Vec<String> = params.iter()
                     .map(|(k, v)| format!("{}={}", k, v))
                     .collect();
-                qs.join("&")
+                format!("?{}", qs.join("&"))
             };
 
-            let url = if query.is_empty() {
-                format!("{}{}", base_url, path)
-            } else {
-                format!("{}{}?{}", base_url, path, query)
-            };
+            let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, &query);
             (url, HashMap::new())
         };
 
@@ -247,7 +256,7 @@ impl MexcConnector {
         // Order placement = essential: always wait, never drop
         self.rate_limit_wait(1, true).await;
 
-        let base_url = MexcUrls::base_url();
+        let real_base = MexcUrls::base_url();
         let path = endpoint.path();
 
         let auth = self.auth.as_ref()
@@ -258,9 +267,9 @@ impl MexcConnector {
         let query_parts: Vec<String> = signed_params.iter()
             .map(|(k, v)| format!("{}={}", k, v))
             .collect();
-        let query_string = query_parts.join("&");
+        let query_string = format!("?{}", query_parts.join("&"));
 
-        let url = format!("{}{}?{}", base_url, path, query_string);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, &query_string);
 
         let (response, resp_headers) = self.http.post_with_response_headers(&url, &json!({}), &headers).await?;
         self.update_weight_from_headers(&resp_headers);
@@ -277,7 +286,7 @@ impl MexcConnector {
         // Order cancellation = essential: always wait, never drop
         self.rate_limit_wait(1, true).await;
 
-        let base_url = MexcUrls::base_url();
+        let real_base = MexcUrls::base_url();
         let path = endpoint.path();
 
         let auth = self.auth.as_ref()
@@ -288,9 +297,9 @@ impl MexcConnector {
         let query_parts: Vec<String> = signed_params.iter()
             .map(|(k, v)| format!("{}={}", k, v))
             .collect();
-        let query_string = query_parts.join("&");
+        let query_string = format!("?{}", query_parts.join("&"));
 
-        let url = format!("{}{}?{}", base_url, path, query_string);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, &query_string);
 
         let (response, resp_headers) = self.http.delete_with_response_headers(&url, &HashMap::new(), &headers).await?;
         self.update_weight_from_headers(&resp_headers);
@@ -452,9 +461,9 @@ impl MarketData for MexcConnector {
                 MexcParser::parse_orderbook(&response)
             },
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
-                let base_url = MexcUrls::futures_base_url();
+                let real_base = MexcUrls::futures_base_url();
                 let path = format!("/api/v1/contract/depth/{}", symbol);
-                let url = format!("{}{}", base_url, path);
+                let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
 
                 if !self.rate_limit_wait(1, false).await {
                     return Err(ExchangeError::RateLimitExceeded {
@@ -508,7 +517,7 @@ impl MarketData for MexcConnector {
                 MexcParser::parse_klines(&response)
             },
             AccountType::FuturesCross | AccountType::FuturesIsolated => {
-                let base_url = MexcUrls::futures_base_url();
+                let real_base = MexcUrls::futures_base_url();
                 let path = format!("/api/v1/contract/kline/{}", symbol);
 
                 let futures_interval = match interval {
@@ -532,12 +541,13 @@ impl MarketData for MexcConnector {
                     params.insert("endTime".to_string(), et.to_string());
                 }
 
-                let query = params.iter()
+                let query_str = params.iter()
                     .map(|(k, v)| format!("{}={}", k, v))
                     .collect::<Vec<_>>()
                     .join("&");
+                let query = format!("?{}", query_str);
 
-                let url = format!("{}{}?{}", base_url, path, query);
+                let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, &query);
 
                 if !self.rate_limit_wait(1, false).await {
                     return Err(ExchangeError::RateLimitExceeded {
@@ -1282,9 +1292,9 @@ impl BatchOrders for MexcConnector {
         let params = HashMap::new();
         let (headers, _) = auth.sign_request(params);
 
-        let base_url = MexcUrls::base_url();
+        let real_base = MexcUrls::base_url();
         let path = MexcEndpoint::BatchOrders.path();
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, "");
 
         self.rate_limit_wait(1, true).await;
         let body = json!({ "batchOrders": batch_orders });
@@ -1809,9 +1819,9 @@ impl MexcConnector {
     /// Returns the current mark price and index price for the given futures contract.
     pub async fn get_futures_mark_price(&self, symbol: &str) -> ExchangeResult<Value> {
         // MEXC futures endpoints use path-based symbol: /api/v1/contract/index_price/{symbol}
-        let base_url = MexcUrls::futures_base_url();
+        let real_base = MexcUrls::futures_base_url();
         let path = format!("{}/{}", MexcEndpoint::FuturesMarkPrice.path(), symbol);
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
         if !self.rate_limit_wait(1, false).await {
             return Err(ExchangeError::RateLimitExceeded {
                 retry_after: None,
@@ -1830,9 +1840,9 @@ impl MexcConnector {
     /// # TODO
     /// Verify exact endpoint path against live MEXC contract API documentation.
     pub async fn get_funding_rate(&self, symbol: &str) -> ExchangeResult<Value> {
-        let base_url = MexcUrls::futures_base_url();
+        let real_base = MexcUrls::futures_base_url();
         let path = format!("{}/{}", MexcEndpoint::FuturesFundingRate.path(), symbol);
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
         if !self.rate_limit_wait(1, false).await {
             return Err(ExchangeError::RateLimitExceeded {
                 retry_after: None,
@@ -1850,8 +1860,8 @@ impl MexcConnector {
     /// returns 404. OI is embedded in the ticker response as `data.holdVol`.
     /// See: `GET /api/v1/contract/ticker?symbol={symbol}` (MEXC futures domain)
     pub async fn get_futures_ticker_raw(&self, symbol: &str) -> ExchangeResult<Value> {
-        let base_url = MexcUrls::futures_base_url();
-        let url = format!("{}{}", base_url, MexcEndpoint::FuturesTicker.path());
+        let real_base = MexcUrls::futures_base_url();
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, MexcEndpoint::FuturesTicker.path(), "");
         if !self.rate_limit_wait(1, false).await {
             return Err(ExchangeError::RateLimitExceeded {
                 retry_after: None,

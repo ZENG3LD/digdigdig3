@@ -19,7 +19,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::core::{
-    HttpClient, Credentials,
+    HttpClient, Credentials, assemble_rest_url,
     ExchangeId, AccountType,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
@@ -101,6 +101,9 @@ pub struct GeminiConnector {
     urls: GeminiUrls,
     /// Testnet mode
     testnet: bool,
+    /// REST base URL override for proxy / CORS routing on wasm32.
+    /// When set, replaces the exchange's native base URL at every REST call site.
+    rest_override: Option<String>,
     /// Runtime rate limiter (Group model: public 120/60s + private 600/60s)
     limiter: Arc<Mutex<RuntimeLimiter>>,
     /// Pressure monitor
@@ -112,6 +115,15 @@ pub struct GeminiConnector {
 impl GeminiConnector {
     /// Создать новый коннектор
     pub async fn new(credentials: Option<Credentials>, testnet: bool) -> ExchangeResult<Self> {
+        Self::new_with_override(credentials, testnet, None).await
+    }
+
+    /// Create connector with optional REST base URL override.
+    ///
+    /// When `rest_override` is `Some(url)`, all REST requests use that URL as
+    /// the base instead of the exchange's native endpoint. Intended for proxy
+    /// and CORS routing on wasm32 (e.g. `ExchangeHub::set_rest_base_override`).
+    pub async fn new_with_override(credentials: Option<Credentials>, testnet: bool, rest_override: Option<String>) -> ExchangeResult<Self> {
         let urls = if testnet {
             GeminiUrls::TESTNET
         } else {
@@ -133,6 +145,7 @@ impl GeminiConnector {
             auth,
             urls,
             testnet,
+            rest_override,
             limiter,
             monitor,
             precision: PrecisionCache::new(),
@@ -140,8 +153,8 @@ impl GeminiConnector {
     }
 
     /// Создать коннектор только для публичных методов
-    pub async fn public(testnet: bool) -> ExchangeResult<Self> {
-        Self::new(None, testnet).await
+    pub async fn public(testnet: bool, rest_override: Option<String>) -> ExchangeResult<Self> {
+        Self::new_with_override(None, testnet, rest_override).await
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -187,7 +200,7 @@ impl GeminiConnector {
             });
         }
 
-        let base_url = self.urls.rest_url(AccountType::Spot);
+        let real_base = self.urls.rest_url(AccountType::Spot);
         let mut path = endpoint.path().to_string();
 
         // Replace path parameters
@@ -195,7 +208,7 @@ impl GeminiConnector {
             path = path.replace(&format!("{{{}}}", key), value);
         }
 
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
 
         let response = self.http.get(&url, &HashMap::new()).await?;
         GeminiParser::check_error(&response)?;
@@ -216,7 +229,7 @@ impl GeminiConnector {
             });
         }
 
-        let base_url = self.urls.rest_url(AccountType::Spot);
+        let real_base = self.urls.rest_url(AccountType::Spot);
         let mut path = endpoint.path().to_string();
 
         for (key, value) in path_params {
@@ -226,11 +239,8 @@ impl GeminiConnector {
         let query_str: Vec<String> = query.iter()
             .map(|(k, v)| format!("{}={}", k, v))
             .collect();
-        let url = if query_str.is_empty() {
-            format!("{}{}", base_url, path)
-        } else {
-            format!("{}{}?{}", base_url, path, query_str.join("&"))
-        };
+        let query_pfx = if query_str.is_empty() { String::new() } else { format!("?{}", query_str.join("&")) };
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, &query_pfx);
 
         let response = self.http.get(&url, &HashMap::new()).await?;
         GeminiParser::check_error(&response)?;
@@ -247,7 +257,7 @@ impl GeminiConnector {
         // POST is always private + essential
         self.rate_limit_wait(true).await;
 
-        let base_url = self.urls.rest_url(AccountType::Spot);
+        let real_base = self.urls.rest_url(AccountType::Spot);
         let mut path = endpoint.path().to_string();
 
         // Replace path parameters
@@ -255,7 +265,7 @@ impl GeminiConnector {
             path = path.replace(&format!("{{{}}}", key), value);
         }
 
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
 
         // Auth headers
         let auth = self.auth.as_ref()
@@ -1145,7 +1155,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_connector_creation() {
-        let connector = GeminiConnector::public(false).await.unwrap();
+        let connector = GeminiConnector::public(false, None).await.unwrap();
         assert_eq!(connector.exchange_id(), ExchangeId::Gemini);
         assert!(!connector.is_testnet());
     }

@@ -261,7 +261,7 @@ impl ConnectorFactory {
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::KuCoin => {
-                let c = KuCoinConnector::public(testnet).await?;
+                let c = KuCoinConnector::public(testnet, rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Kraken => {
@@ -269,15 +269,15 @@ impl ConnectorFactory {
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::GateIO => {
-                let c = GateioConnector::public(testnet).await?;
+                let c = GateioConnector::public(testnet, rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Bitfinex => {
-                let c = BitfinexConnector::public(testnet).await?;
+                let c = BitfinexConnector::public(testnet, rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::MEXC => {
-                let c = MexcConnector::public().await?;
+                let c = MexcConnector::public(rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::HTX => {
@@ -285,15 +285,15 @@ impl ConnectorFactory {
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::BingX => {
-                let c = BingxConnector::public(testnet).await?;
+                let c = BingxConnector::public(testnet, rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::CryptoCom => {
-                let c = CryptoComConnector::public(testnet).await?;
+                let c = CryptoComConnector::public(testnet, rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Upbit => {
-                let c = UpbitConnector::public().await?;
+                let c = UpbitConnector::public(rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Deribit => {
@@ -302,7 +302,7 @@ impl ConnectorFactory {
             }
             #[cfg(feature = "onchain-evm")]
             ExchangeId::HyperLiquid => {
-                let c = HyperliquidConnector::public(testnet).await?;
+                let c = HyperliquidConnector::public(testnet, rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             #[cfg(not(feature = "onchain-evm"))]
@@ -336,7 +336,7 @@ impl ConnectorFactory {
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Gemini => {
-                let c = GeminiConnector::public(testnet).await?;
+                let c = GeminiConnector::public(testnet, rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
 

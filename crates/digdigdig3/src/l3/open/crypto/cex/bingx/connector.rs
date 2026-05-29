@@ -20,7 +20,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::core::{
-    HttpClient, Credentials,
+    HttpClient, Credentials, assemble_rest_url,
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
     Price, Quantity, Kline, Ticker, OrderBook,
@@ -92,6 +92,9 @@ pub struct BingxConnector {
     auth: Option<BingxAuth>,
     /// URL'ы
     urls: BingxUrls,
+    /// REST base URL override for proxy / CORS routing on wasm32.
+    /// When set, replaces the exchange's native base URL at every REST call site.
+    rest_override: Option<String>,
     /// Testnet / VST mode flag.
     /// BingX has no separate testnet URLs; VST (Virtual Simulated Trading) uses
     /// the same mainnet endpoints with "-VST" pair suffixes (e.g., BTC-USDT-VST).
@@ -113,6 +116,15 @@ impl BingxConnector {
     /// (Virtual Simulated Trading) pairs use a "-VST" suffix on the symbol
     /// level (e.g. "BTC-USDT-VST") rather than a different base URL.
     pub async fn new(credentials: Option<Credentials>, testnet: bool) -> ExchangeResult<Self> {
+        Self::new_with_override(credentials, testnet, None).await
+    }
+
+    /// Create connector with optional REST base URL override.
+    ///
+    /// When `rest_override` is `Some(url)`, all REST requests use that URL as
+    /// the base instead of the exchange's native endpoint. Intended for proxy
+    /// and CORS routing on wasm32 (e.g. `ExchangeHub::set_rest_base_override`).
+    pub async fn new_with_override(credentials: Option<Credentials>, testnet: bool, rest_override: Option<String>) -> ExchangeResult<Self> {
         // BingX uses the same base URL for both mainnet and VST mode
         let urls = BingxUrls::MAINNET;
         let http = HttpClient::new(30_000)?; // 30 sec timeout
@@ -129,6 +141,7 @@ impl BingxConnector {
             http,
             auth,
             urls,
+            rest_override,
             testnet,
             limiter,
             monitor,
@@ -137,8 +150,8 @@ impl BingxConnector {
     }
 
     /// Создать коннектор только для публичных методов
-    pub async fn public(testnet: bool) -> ExchangeResult<Self> {
-        Self::new(None, testnet).await
+    pub async fn public(testnet: bool, rest_override: Option<String>) -> ExchangeResult<Self> {
+        Self::new_with_override(None, testnet, rest_override).await
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -187,7 +200,7 @@ impl BingxConnector {
             });
         }
 
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
         let path = endpoint.path();
 
         // Add auth signature if needed
@@ -209,7 +222,7 @@ impl BingxConnector {
             format!("?{}", qs.join("&"))
         };
 
-        let url = format!("{}{}{}", base_url, path, query);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, &query);
 
         let response = self.http.get_with_headers(&url, &HashMap::new(), &headers).await?;
         Ok(response)
@@ -224,7 +237,7 @@ impl BingxConnector {
     ) -> ExchangeResult<Value> {
         self.rate_limit_wait(1, true).await;
 
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
         let path = endpoint.path();
 
         // Add auth signature
@@ -233,12 +246,13 @@ impl BingxConnector {
         let headers = auth.sign_request(&mut params);
 
         // Build form body
-        let query = params.iter()
+        let query_raw = params.iter()
             .map(|(k, v)| format!("{}={}", k, v))
             .collect::<Vec<_>>()
             .join("&");
+        let query = format!("?{}", query_raw);
 
-        let url = format!("{}{}?{}", base_url, path, query);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, &query);
 
         let response = self.http.post(&url, &json!({}), &headers).await?;
         Ok(response)
@@ -253,7 +267,7 @@ impl BingxConnector {
     ) -> ExchangeResult<Value> {
         self.rate_limit_wait(1, true).await;
 
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
         let path = endpoint.path();
 
         // Add auth signature
@@ -262,12 +276,13 @@ impl BingxConnector {
         let headers = auth.sign_request(&mut params);
 
         // Build query string
-        let query = params.iter()
+        let query_raw = params.iter()
             .map(|(k, v)| format!("{}={}", k, v))
             .collect::<Vec<_>>()
             .join("&");
+        let query = format!("?{}", query_raw);
 
-        let url = format!("{}{}?{}", base_url, path, query);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, &query);
 
         let response = self.http.delete(&url, &HashMap::new(), &headers).await?;
         Ok(response)
@@ -1466,16 +1481,17 @@ impl BatchOrders for BingxConnector {
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
         let headers = auth.sign_request(&mut params);
 
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
         let path = BingxEndpoint::SwapBatchOrders.path();
 
         // Build query string with signed params
-        let query = params.iter()
+        let query_raw = params.iter()
             .map(|(k, v)| format!("{}={}", k, v))
             .collect::<Vec<_>>()
             .join("&");
+        let query = format!("?{}", query_raw);
 
-        let url = format!("{}{}?{}", base_url, path, query);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, &query);
 
         // Batch order placement = essential: always wait, never drop
         self.rate_limit_wait(1, true).await;

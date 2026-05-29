@@ -16,7 +16,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::core::{
-    HttpClient, Credentials,
+    HttpClient, Credentials, assemble_rest_url,
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
@@ -101,6 +101,9 @@ pub struct BitfinexConnector {
     /// (e.g., tTESTBTC:TESTUSD) on the same mainnet endpoints.
     /// Stored here for future paper trading symbol routing support.
     testnet: bool,
+    /// REST base URL override for proxy / CORS routing on wasm32.
+    /// When set, replaces the exchange's native base URL at every REST call site.
+    rest_override: Option<String>,
     /// Runtime rate limiter (Simple model: 90 req/60s)
     limiter: Arc<Mutex<RuntimeLimiter>>,
     /// Pressure monitor — logs transitions, gates non-essential requests at >= 90%
@@ -116,6 +119,15 @@ impl BitfinexConnector {
     /// the connector still connects to the same mainnet endpoints; paper trading
     /// requires using prefixed symbols like `tTESTBTC:TESTUSD`.
     pub async fn new(credentials: Option<Credentials>, testnet: bool) -> ExchangeResult<Self> {
+        Self::new_with_override(credentials, testnet, None).await
+    }
+
+    /// Create connector with optional REST base URL override.
+    ///
+    /// When `rest_override` is `Some(url)`, all REST requests use that URL as
+    /// the base instead of the exchange's native endpoint. Intended for proxy
+    /// and CORS routing on wasm32 (e.g. `ExchangeHub::set_rest_base_override`).
+    pub async fn new_with_override(credentials: Option<Credentials>, testnet: bool, rest_override: Option<String>) -> ExchangeResult<Self> {
         let urls = BitfinexUrls::MAINNET;
         let http = HttpClient::new(30_000)?; // 30 sec timeout
 
@@ -132,6 +144,7 @@ impl BitfinexConnector {
             auth,
             urls,
             testnet,
+            rest_override,
             limiter,
             monitor,
             precision: PrecisionCache::new(),
@@ -139,8 +152,8 @@ impl BitfinexConnector {
     }
 
     /// Create connector for public methods only
-    pub async fn public(testnet: bool) -> ExchangeResult<Self> {
-        Self::new(None, testnet).await
+    pub async fn public(testnet: bool, rest_override: Option<String>) -> ExchangeResult<Self> {
+        Self::new_with_override(None, testnet, rest_override).await
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -189,7 +202,7 @@ impl BitfinexConnector {
             });
         }
 
-        let base_url = self.urls.rest_url(endpoint.requires_auth());
+        let real_base = self.urls.rest_url(endpoint.requires_auth());
         let mut path = endpoint.path().to_string();
 
         // Replace path parameters
@@ -207,7 +220,7 @@ impl BitfinexConnector {
             format!("?{}", qs.join("&"))
         };
 
-        let url = format!("{}{}{}", base_url, path, query);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, &query);
 
         let response = self.http.get(&url, &HashMap::new()).await?;
         BitfinexParser::check_error(&response)?;
@@ -223,7 +236,7 @@ impl BitfinexConnector {
     ) -> ExchangeResult<Value> {
         self.rate_limit_wait(1, true).await;
 
-        let base_url = self.urls.rest_url(true); // Always use auth URL for POST
+        let real_base = self.urls.rest_url(true); // Always use auth URL for POST
         let mut path = endpoint.path().to_string();
 
         // Replace path parameters
@@ -231,7 +244,7 @@ impl BitfinexConnector {
             path = path.replace(&format!("{{{}}}", key), value);
         }
 
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
 
         // Get auth headers
         let auth = self.auth.as_ref()

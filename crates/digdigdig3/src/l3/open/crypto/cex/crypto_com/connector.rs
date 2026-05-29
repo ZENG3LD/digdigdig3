@@ -16,7 +16,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::core::{
-    HttpClient, Credentials,
+    HttpClient, Credentials, assemble_rest_url,
     ExchangeId, ExchangeType, AccountType,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
@@ -89,6 +89,9 @@ pub struct CryptoComConnector {
     urls: CryptoComUrls,
     /// Testnet mode
     testnet: bool,
+    /// REST base URL override for proxy / CORS routing on wasm32.
+    /// When set, replaces the exchange's native base URL at every REST call site.
+    rest_override: Option<String>,
     /// Runtime rate limiter (Simple model: 100 req/1s)
     limiter: Arc<Mutex<RuntimeLimiter>>,
     /// Pressure monitor — logs transitions, gates non-essential requests at >= 90%
@@ -102,6 +105,15 @@ pub struct CryptoComConnector {
 impl CryptoComConnector {
     /// Create new connector
     pub async fn new(credentials: Option<Credentials>, testnet: bool) -> ExchangeResult<Self> {
+        Self::new_with_override(credentials, testnet, None).await
+    }
+
+    /// Create connector with optional REST base URL override.
+    ///
+    /// When `rest_override` is `Some(url)`, all REST requests use that URL as
+    /// the base instead of the exchange's native endpoint. Intended for proxy
+    /// and CORS routing on wasm32 (e.g. `ExchangeHub::set_rest_base_override`).
+    pub async fn new_with_override(credentials: Option<Credentials>, testnet: bool, rest_override: Option<String>) -> ExchangeResult<Self> {
         let urls = if testnet {
             CryptoComUrls::TESTNET
         } else {
@@ -123,6 +135,7 @@ impl CryptoComConnector {
             auth,
             urls,
             testnet,
+            rest_override,
             limiter,
             monitor,
             request_id: Arc::new(AtomicI64::new(1)),
@@ -131,8 +144,8 @@ impl CryptoComConnector {
     }
 
     /// Create connector for public methods only
-    pub async fn public(testnet: bool) -> ExchangeResult<Self> {
-        Self::new(None, testnet).await
+    pub async fn public(testnet: bool, rest_override: Option<String>) -> ExchangeResult<Self> {
+        Self::new_with_override(None, testnet, rest_override).await
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -189,8 +202,9 @@ impl CryptoComConnector {
         }
 
         let method = endpoint.method();
-        let base_url = self.urls.rest_url();
-        let url = format!("{}/{}", base_url, method);
+        let real_base = self.urls.rest_url();
+        let method_path = format!("/{}", method);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &method_path, "");
 
         let response = if endpoint.requires_auth() {
             // Private endpoints use POST with JSON body

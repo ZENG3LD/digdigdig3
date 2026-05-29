@@ -19,7 +19,7 @@ use reqwest::header::HeaderMap;
 use serde_json::{json, Value};
 
 use crate::core::{
-    HttpClient, Credentials,
+    HttpClient, Credentials, assemble_rest_url,
     ExchangeId, AccountType,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
@@ -111,6 +111,9 @@ pub struct UpbitConnector {
     auth: Option<UpbitAuth>,
     /// URL'ы (регион)
     urls: UpbitUrls,
+    /// REST base URL override for proxy / CORS routing on wasm32.
+    /// When set, replaces the exchange's native base URL at every REST call site.
+    rest_override: Option<String>,
     /// Runtime rate limiter (Group model: market 10/1s + account 30/1s + order 8/1s)
     limiter: Arc<Mutex<RuntimeLimiter>>,
     /// Pressure monitor
@@ -123,6 +126,15 @@ impl UpbitConnector {
     /// Создать новый коннектор
     /// region: "kr"/"korea" (Korea, KRW markets), "sg" (Singapore), "id" (Indonesia), "th" (Thailand)
     pub async fn new(credentials: Option<Credentials>, region: &str) -> ExchangeResult<Self> {
+        Self::new_with_override(credentials, region, None).await
+    }
+
+    /// Create connector with optional REST base URL override.
+    ///
+    /// When `rest_override` is `Some(url)`, all REST requests use that URL as
+    /// the base instead of the exchange's native endpoint. Intended for proxy
+    /// and CORS routing on wasm32 (e.g. `ExchangeHub::set_rest_base_override`).
+    pub async fn new_with_override(credentials: Option<Credentials>, region: &str, rest_override: Option<String>) -> ExchangeResult<Self> {
         let urls = match region {
             "kr" | "korea" => UpbitUrls::KOREA,
             "sg" | "singapore" => UpbitUrls::SINGAPORE,
@@ -145,6 +157,7 @@ impl UpbitConnector {
             http,
             auth,
             urls,
+            rest_override,
             limiter,
             monitor,
             precision: PrecisionCache::new(),
@@ -152,8 +165,8 @@ impl UpbitConnector {
     }
 
     /// Создать коннектор только для публичных методов (Korea region, KRW markets)
-    pub async fn public() -> ExchangeResult<Self> {
-        Self::new(None, "kr").await
+    pub async fn public(rest_override: Option<String>) -> ExchangeResult<Self> {
+        Self::new_with_override(None, "kr", rest_override).await
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -243,7 +256,7 @@ impl UpbitConnector {
             });
         }
 
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
         let mut path = endpoint.path().to_string();
 
         // For CandlesMinutes, add unit to path
@@ -266,11 +279,8 @@ impl UpbitConnector {
                 .finish()
         };
 
-        let url = if query_string.is_empty() {
-            format!("{}{}", base_url, path)
-        } else {
-            format!("{}{}?{}", base_url, path, query_string)
-        };
+        let query_pfx = if query_string.is_empty() { String::new() } else { format!("?{}", query_string) };
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, &query_pfx);
 
         // Add auth headers if needed
         let headers = if endpoint.requires_auth() {
@@ -296,9 +306,9 @@ impl UpbitConnector {
         // Order operations are always essential
         self.rate_limit_wait("order", 1, true).await;
 
-        let base_url = self.urls.rest;
+        let real_base = self.urls.rest;
         let path = endpoint.path();
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, "");
 
         // Auth headers
         let auth = self.auth.as_ref()
@@ -324,7 +334,7 @@ impl UpbitConnector {
         // Order operations are always essential
         self.rate_limit_wait("order", 1, true).await;
 
-        let base_url = self.urls.rest;
+        let real_base = self.urls.rest;
         let path = endpoint.path();
 
         // Build query string
@@ -339,11 +349,8 @@ impl UpbitConnector {
                 .finish()
         };
 
-        let url = if query_string.is_empty() {
-            format!("{}{}", base_url, path)
-        } else {
-            format!("{}{}?{}", base_url, path, query_string)
-        };
+        let query_pfx = if query_string.is_empty() { String::new() } else { format!("?{}", query_string) };
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, &query_pfx);
 
         // Auth headers
         let auth = self.auth.as_ref()

@@ -308,7 +308,7 @@ async fn test_hyperliquid_rest() -> RestTally {
     println!("\n── Hyperliquid REST ─────────────────────────────────────────");
     let mut tally = RestTally { exchange: "Hyperliquid".into(), tested: 0, passed: 0, failed: 0 };
 
-    let conn = match HyperliquidConnector::public(false).await {
+    let conn = match HyperliquidConnector::public(false, None).await {
         Ok(c) => c,
         Err(e) => {
             println!("  FAIL: connector init -> {}", e);
@@ -530,7 +530,7 @@ async fn test_kucoin_rest() -> RestTally {
     println!("\n── KuCoin REST ──────────────────────────────────────────────");
     let mut tally = RestTally { exchange: "KuCoin".into(), tested: 0, passed: 0, failed: 0 };
 
-    let conn = match KuCoinConnector::public(false).await {
+    let conn = match KuCoinConnector::public(false, None).await {
         Ok(c) => c,
         Err(e) => {
             println!("  FAIL: connector init -> {}", e);
@@ -566,7 +566,7 @@ async fn test_gateio_rest() -> RestTally {
     println!("\n── Gate.io REST ─────────────────────────────────────────────");
     let mut tally = RestTally { exchange: "Gate.io".into(), tested: 0, passed: 0, failed: 0 };
 
-    let conn = match GateioConnector::public(false).await {
+    let conn = match GateioConnector::public(false, None).await {
         Ok(c) => c,
         Err(e) => {
             println!("  FAIL: connector init -> {}", e);
@@ -634,7 +634,7 @@ async fn test_bitfinex_rest() -> RestTally {
     println!("\n── Bitfinex REST ────────────────────────────────────────────");
     let mut tally = RestTally { exchange: "Bitfinex".into(), tested: 0, passed: 0, failed: 0 };
 
-    let conn = match BitfinexConnector::public(false).await {
+    let conn = match BitfinexConnector::public(false, None).await {
         Ok(c) => c,
         Err(e) => {
             println!("  FAIL: connector init -> {}", e);
@@ -689,7 +689,7 @@ async fn test_gemini_rest() -> RestTally {
     println!("\n── Gemini REST ──────────────────────────────────────────────");
     let mut tally = RestTally { exchange: "Gemini".into(), tested: 0, passed: 0, failed: 0 };
 
-    let conn = match GeminiConnector::public(false).await {
+    let conn = match GeminiConnector::public(false, None).await {
         Ok(c) => c,
         Err(e) => {
             println!("  FAIL: connector init -> {}", e);
@@ -737,7 +737,7 @@ async fn test_upbit_rest() -> RestTally {
     println!("\n── Upbit REST ───────────────────────────────────────────────");
     let mut tally = RestTally { exchange: "Upbit".into(), tested: 0, passed: 0, failed: 0 };
 
-    let conn = match UpbitConnector::public().await {
+    let conn = match UpbitConnector::public(None).await {
         Ok(c) => c,
         Err(e) => {
             println!("  FAIL: connector init -> {}", e);
@@ -764,7 +764,7 @@ async fn test_crypto_com_rest() -> RestTally {
     println!("\n── Crypto.com REST ──────────────────────────────────────────");
     let mut tally = RestTally { exchange: "Crypto.com".into(), tested: 0, passed: 0, failed: 0 };
 
-    let conn = match CryptoComConnector::public(false).await {
+    let conn = match CryptoComConnector::public(false, None).await {
         Ok(c) => c,
         Err(e) => {
             println!("  FAIL: connector init -> {}", e);
@@ -795,7 +795,7 @@ async fn test_bingx_rest() -> RestTally {
     println!("\n── BingX REST ───────────────────────────────────────────────");
     let mut tally = RestTally { exchange: "BingX".into(), tested: 0, passed: 0, failed: 0 };
 
-    let conn = match BingxConnector::public(false).await {
+    let conn = match BingxConnector::public(false, None).await {
         Ok(c) => c,
         Err(e) => {
             println!("  FAIL: connector init -> {}", e);

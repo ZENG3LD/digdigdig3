@@ -20,7 +20,7 @@ use reqwest::header::HeaderMap;
 use serde_json::{json, Value};
 
 use crate::core::{
-    HttpClient, Credentials,
+    HttpClient, Credentials, assemble_rest_url,
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
@@ -107,6 +107,9 @@ pub struct KuCoinConnector {
     urls: KuCoinUrls,
     /// Testnet mode
     testnet: bool,
+    /// REST base URL override for proxy / CORS routing on wasm32.
+    /// When set, replaces the exchange's native base URL at every REST call site.
+    rest_override: Option<String>,
     /// Runtime rate limiter (Weight model: 4000 weight per 30 seconds)
     limiter: Arc<Mutex<RuntimeLimiter>>,
     /// Pressure monitor — gates non-essential requests at >= 90%
@@ -118,6 +121,15 @@ pub struct KuCoinConnector {
 impl KuCoinConnector {
     /// Создать новый коннектор
     pub async fn new(credentials: Option<Credentials>, testnet: bool) -> ExchangeResult<Self> {
+        Self::new_with_override(credentials, testnet, None).await
+    }
+
+    /// Создать коннектор с необязательным REST base URL override.
+    ///
+    /// When `rest_override` is `Some(url)`, all REST requests use that URL as
+    /// the base instead of the exchange's native endpoint. Intended for proxy
+    /// and CORS routing on wasm32 (e.g. `ExchangeHub::set_rest_base_override`).
+    pub async fn new_with_override(credentials: Option<Credentials>, testnet: bool, rest_override: Option<String>) -> ExchangeResult<Self> {
         let urls = if testnet {
             KuCoinUrls::TESTNET
         } else {
@@ -152,6 +164,7 @@ impl KuCoinConnector {
             auth,
             urls,
             testnet,
+            rest_override,
             limiter,
             monitor,
             precision: crate::core::utils::precision::PrecisionCache::new(),
@@ -159,8 +172,8 @@ impl KuCoinConnector {
     }
 
     /// Создать коннектор только для публичных методов
-    pub async fn public(testnet: bool) -> ExchangeResult<Self> {
-        Self::new(None, testnet).await
+    pub async fn public(testnet: bool, rest_override: Option<String>) -> ExchangeResult<Self> {
+        Self::new_with_override(None, testnet, rest_override).await
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -232,7 +245,7 @@ impl KuCoinConnector {
             });
         }
 
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
         let path = endpoint.path();
 
         // Build query string
@@ -245,7 +258,7 @@ impl KuCoinConnector {
             format!("?{}", qs.join("&"))
         };
 
-        let url = format!("{}{}{}", base_url, path, query);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, &query);
         let full_path = format!("{}{}", path, query);
 
         // Add auth headers if needed
@@ -278,9 +291,9 @@ impl KuCoinConnector {
         // Order placement = essential: always wait, never drop
         self.rate_limit_wait(weight, true).await;
 
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
         let path = endpoint.path();
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, "");
 
         // Auth headers
         let auth = self.auth.as_ref()
@@ -309,7 +322,7 @@ impl KuCoinConnector {
         // Order management = essential: always wait, never drop
         self.rate_limit_wait(weight, true).await;
 
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
         let mut path = endpoint.path().to_string();
 
         // Replace path parameters
@@ -317,7 +330,7 @@ impl KuCoinConnector {
             path = path.replace(&format!("{{{}}}", key), value);
         }
 
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
 
         // Auth headers
         let auth = self.auth.as_ref()
@@ -433,7 +446,7 @@ impl KuCoinConnector {
         }
 
         // DELETE with query params
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
         let path = endpoint.path();
         let query = if params.is_empty() {
             String::new()
@@ -444,7 +457,7 @@ impl KuCoinConnector {
             format!("?{}", qs.join("&"))
         };
 
-        let url = format!("{}{}{}", base_url, path, query);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, &query);
         let full_path = format!("{}{}", path, query);
 
         let auth = self.auth.as_ref()
@@ -532,9 +545,9 @@ impl KuCoinConnector {
     /// Get current mark price for a futures symbol.
     pub async fn get_futures_mark_price(&self, symbol: &str) -> ExchangeResult<Value> {
         self.rate_limit_wait(weights::DEFAULT, false).await;
-        let base_url = self.urls.rest_url(AccountType::FuturesCross);
+        let real_base = self.urls.rest_url(AccountType::FuturesCross);
         let path = format!("/api/v1/mark-price/{}/current", symbol);
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
         let (response, _) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
         self.check_response(&response)?;
         Ok(response)
@@ -543,9 +556,9 @@ impl KuCoinConnector {
     /// Get current index price for a futures symbol.
     pub async fn get_futures_index_price(&self, symbol: &str) -> ExchangeResult<Value> {
         self.rate_limit_wait(weights::DEFAULT, false).await;
-        let base_url = self.urls.rest_url(AccountType::FuturesCross);
+        let real_base = self.urls.rest_url(AccountType::FuturesCross);
         let path = format!("/api/v1/index-price/{}/current", symbol);
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
         let (response, _) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
         self.check_response(&response)?;
         Ok(response)
@@ -554,9 +567,9 @@ impl KuCoinConnector {
     /// Get current premium index for a futures symbol.
     pub async fn get_futures_premium_index(&self, symbol: &str) -> ExchangeResult<Value> {
         self.rate_limit_wait(weights::DEFAULT, false).await;
-        let base_url = self.urls.rest_url(AccountType::FuturesCross);
+        let real_base = self.urls.rest_url(AccountType::FuturesCross);
         let path = format!("/api/v1/premium-index/{}/current", symbol);
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
         let (response, _) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
         self.check_response(&response)?;
         Ok(response)
@@ -570,9 +583,9 @@ impl KuCoinConnector {
     /// (number of open contracts) and `openInterestValue` (in USD).
     pub async fn get_open_interest(&self, symbol: &str) -> ExchangeResult<Value> {
         self.rate_limit_wait(weights::DEFAULT, false).await;
-        let base_url = self.urls.rest_url(AccountType::FuturesCross);
+        let real_base = self.urls.rest_url(AccountType::FuturesCross);
         let path = format!("/api/v1/contracts/{}", symbol);
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
         let (response, _) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
         self.check_response(&response)?;
         Ok(response)
@@ -586,9 +599,9 @@ impl KuCoinConnector {
     /// minRiskLimit, maxLeverage, initialMargin, maintainMargin}, ...]}`.
     pub async fn get_risk_limit(&self, symbol: &str) -> ExchangeResult<Value> {
         self.rate_limit_wait(weights::DEFAULT, false).await;
-        let base_url = self.urls.rest_url(AccountType::FuturesCross);
+        let real_base = self.urls.rest_url(AccountType::FuturesCross);
         let path = format!("/api/v1/contracts/risk-limit/{}", symbol);
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
         let (response, _) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
         self.check_response(&response)?;
         Ok(response)
@@ -1164,9 +1177,9 @@ impl Trading for KuCoinConnector {
                     "limitPrice": self.precision.price(&formatted_symbol, limit_price),
                     "tradeType": "TRADE",
                 });
-                let base_url = self.urls.rest_url(account_type);
+                let real_base = self.urls.rest_url(account_type);
                 let path = KuCoinEndpoint::SpotOcoOrder.path();
-                let url = format!("{}{}", base_url, path);
+                let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, "");
                 let auth = self.auth.as_ref()
                     .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
                 let body_str = oco_body.to_string();
@@ -1417,9 +1430,9 @@ async fn cancel_order(&self, req: CancelRequest) -> ExchangeResult<Order> {
             _ => KuCoinEndpoint::FuturesGetOrder,
         };
 
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
         let path = endpoint.path().replace("{orderId}", order_id);
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
 
         let auth = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
@@ -1605,9 +1618,9 @@ impl Account for KuCoinConnector {
         }
 
         // Use base-fee endpoint (no symbol needed for account-wide fees)
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
         let path = "/api/v1/base-fee";
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, "");
 
         let auth = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
@@ -1711,9 +1724,9 @@ impl Positions for KuCoinConnector {
     ) -> ExchangeResult<FundingRate> {
         // Funding rate is futures-only — always use futures domain + XBTUSDTM symbol form.
         let formatted = to_futures_symbol(symbol);
-        let base_url = self.urls.futures_rest;
+        let real_base = self.urls.futures_rest;
         let path = KuCoinEndpoint::FundingRate.path().replace("{symbol}", &formatted);
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
 
         let response = self.http.get(&url, &HashMap::new()).await?;
         self.check_response(&response)?;
@@ -1728,11 +1741,11 @@ impl Positions for KuCoinConnector {
         // GET /api/v1/mark-price/{symbol}/current (futures domain, no auth)
         // Response: {code, data: {symbol, granularity, timePoint, value, indexPrice}}
         let formatted = to_futures_symbol(symbol);
-        let base_url = self.urls.futures_rest;
+        let real_base = self.urls.futures_rest;
         let path = KuCoinEndpoint::FuturesMarkPrice
             .path()
             .replace("{symbol}", &formatted);
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
 
         let response = self.http.get(&url, &HashMap::new()).await?;
         self.check_response(&response)?;
@@ -1805,9 +1818,9 @@ impl Positions for KuCoinConnector {
                 });
 
                 // KuCoin auto-deposit endpoint: POST /api/v1/position/margin/auto-deposit-status
-                let base_url = self.urls.rest_url(account_type);
+                let real_base = self.urls.rest_url(account_type);
                 let path = "/api/v1/position/margin/auto-deposit-status";
-                let url = format!("{}{}", base_url, path);
+                let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, "");
 
                 let auth = self.auth.as_ref()
                     .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
@@ -1836,9 +1849,9 @@ impl Positions for KuCoinConnector {
                 });
 
                 // KuCoin: POST /api/v1/position/margin/deposit-margin
-                let base_url = self.urls.rest_url(account_type);
+                let real_base = self.urls.rest_url(account_type);
                 let path = "/api/v1/position/margin/deposit-margin";
-                let url = format!("{}{}", base_url, path);
+                let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, "");
 
                 let auth = self.auth.as_ref()
                     .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
@@ -2006,7 +2019,7 @@ impl CancelAll for KuCoinConnector {
         }
 
         // Build DELETE request with query params
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
         let path = endpoint.path();
         let query = if params.is_empty() {
             String::new()
@@ -2017,7 +2030,7 @@ impl CancelAll for KuCoinConnector {
             format!("?{}", qs.join("&"))
         };
 
-        let url = format!("{}{}{}", base_url, path, query);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, &query);
         let full_path = format!("{}{}", path, query);
 
         let auth = self.auth.as_ref()
@@ -2187,11 +2200,11 @@ impl AmendOrder for KuCoinConnector {
 
         let account_type = req.account_type;
         let symbol_str = format_symbol(&req.symbol.base, &req.symbol.quote, account_type);
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
         // Substitute orderId in the path
         let path = KuCoinEndpoint::FuturesAmendOrder.path()
             .replace("{orderId}", &req.order_id);
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
 
         let mut body = json!({});
         if let Some(price) = req.fields.price {
@@ -2251,9 +2264,9 @@ impl AccountTransfers for KuCoinConnector {
         });
 
         let account_type = AccountType::Spot; // transfers use spot base URL
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
         let path = KuCoinEndpoint::InnerTransfer.path();
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, "");
 
         let auth = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
@@ -2283,7 +2296,7 @@ impl AccountTransfers for KuCoinConnector {
         filter: TransferHistoryFilter,
     ) -> ExchangeResult<Vec<TransferResponse>> {
         let account_type = AccountType::Spot;
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
         let path = KuCoinEndpoint::TransferHistory.path();
 
         let mut params: HashMap<String, String> = HashMap::new();
@@ -2306,7 +2319,7 @@ impl AccountTransfers for KuCoinConnector {
             format!("?{}", qs.join("&"))
         };
 
-        let url = format!("{}{}{}", base_url, path, query);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, &query);
         let full_path = format!("{}{}", path, query);
 
         let auth = self.auth.as_ref()
@@ -2374,7 +2387,7 @@ impl CustodialFunds for KuCoinConnector {
         network: Option<&str>,
     ) -> ExchangeResult<DepositAddress> {
         let account_type = AccountType::Spot;
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
         let path = KuCoinEndpoint::DepositAddress.path();
 
         let mut params = HashMap::new();
@@ -2387,7 +2400,8 @@ impl CustodialFunds for KuCoinConnector {
             .map(|(k, v)| format!("{}={}", k, v))
             .collect();
         let query_str = query.join("&");
-        let url = format!("{}{}?{}", base_url, path, query_str);
+        let query_with_prefix = format!("?{}", query_str);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, &query_with_prefix);
         let full_path = format!("{}?{}", path, query_str);
 
         let auth = self.auth.as_ref()
@@ -2421,9 +2435,9 @@ impl CustodialFunds for KuCoinConnector {
 
     async fn withdraw(&self, req: WithdrawRequest) -> ExchangeResult<WithdrawResponse> {
         let account_type = AccountType::Spot;
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
         let path = KuCoinEndpoint::Withdraw.path();
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, "");
 
         let mut body = json!({
             "currency": req.asset,
@@ -2463,7 +2477,7 @@ impl CustodialFunds for KuCoinConnector {
         filter: FundsHistoryFilter,
     ) -> ExchangeResult<Vec<FundsRecord>> {
         let account_type = AccountType::Spot;
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
 
         let endpoint = match filter.record_type {
             FundsRecordType::Deposit => KuCoinEndpoint::DepositHistory,
@@ -2496,7 +2510,7 @@ impl CustodialFunds for KuCoinConnector {
             format!("?{}", qs.join("&"))
         };
 
-        let url = format!("{}{}{}", base_url, path, query);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, &query);
         let full_path = format!("{}{}", path, query);
 
         let auth = self.auth.as_ref()
@@ -2603,7 +2617,7 @@ impl SubAccounts for KuCoinConnector {
         op: SubAccountOperation,
     ) -> ExchangeResult<SubAccountResult> {
         let account_type = AccountType::Spot;
-        let base_url = self.urls.rest_url(account_type);
+        let real_base = self.urls.rest_url(account_type);
 
         let auth = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
@@ -2611,7 +2625,7 @@ impl SubAccounts for KuCoinConnector {
         match op {
             SubAccountOperation::Create { label } => {
                 let path = KuCoinEndpoint::SubAccountCreate.path();
-                let url = format!("{}{}", base_url, path);
+                let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, "");
                 let body = json!({
                     "subName": label,
                     "access": "All",
@@ -2642,7 +2656,7 @@ impl SubAccounts for KuCoinConnector {
 
             SubAccountOperation::List => {
                 let path = KuCoinEndpoint::SubAccountList.path();
-                let url = format!("{}{}", base_url, path);
+                let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, "");
                 let headers = auth.sign_request("GET", path, "");
                 let response = self.http.get_with_headers(&url, &HashMap::new(), &headers).await?;
                 self.check_response(&response)?;
@@ -2677,7 +2691,7 @@ impl SubAccounts for KuCoinConnector {
 
             SubAccountOperation::Transfer { sub_account_id, asset, amount, to_sub } => {
                 let path = KuCoinEndpoint::SubAccountTransfer.path();
-                let url = format!("{}{}", base_url, path);
+                let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, "");
                 let direction = if to_sub { "OUT" } else { "IN" };
                 let client_oid = format!("cc_{}", crate::core::timestamp_millis());
                 let body = json!({
@@ -2710,7 +2724,7 @@ impl SubAccounts for KuCoinConnector {
             SubAccountOperation::GetBalance { sub_account_id } => {
                 let path = KuCoinEndpoint::SubAccountBalance.path()
                     .replace("{subUserId}", &sub_account_id);
-                let url = format!("{}{}", base_url, path);
+                let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
                 let headers = auth.sign_request("GET", &path, "");
                 let response = self.http.get_with_headers(&url, &HashMap::new(), &headers).await?;
                 self.check_response(&response)?;

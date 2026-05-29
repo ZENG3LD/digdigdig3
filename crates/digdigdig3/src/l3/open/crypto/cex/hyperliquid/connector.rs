@@ -22,7 +22,7 @@ use std::time::Duration;
 use tokio::sync::OnceCell;
 
 use crate::core::{
-    HttpClient, Credentials, ExchangeResult, ExchangeError,
+    HttpClient, Credentials, assemble_rest_url, ExchangeResult, ExchangeError,
     ExchangeId, ExchangeType, AccountType,
     Price, Ticker, OrderBook, Kline,
     ExchangeIdentity, MarketData,
@@ -85,6 +85,9 @@ pub struct HyperliquidConnector {
     auth: Option<HyperliquidAuth>,
     /// Is testnet
     is_testnet: bool,
+    /// REST base URL override for proxy / CORS routing on wasm32.
+    /// When set, replaces the exchange's native base URL at every REST call site.
+    rest_override: Option<String>,
     /// Runtime rate limiter (Weight model: 1200 weight per 60 seconds)
     limiter: Arc<Mutex<RuntimeLimiter>>,
     /// Pressure monitor — gates non-essential requests at >= 90%
@@ -104,6 +107,19 @@ impl HyperliquidConnector {
     pub async fn new(
         credentials: Option<Credentials>,
         is_testnet: bool,
+    ) -> ExchangeResult<Self> {
+        Self::new_with_override(credentials, is_testnet, None).await
+    }
+
+    /// Create connector with optional REST base URL override.
+    ///
+    /// When `rest_override` is `Some(url)`, all REST requests use that URL as
+    /// the base instead of the exchange's native endpoint. Intended for proxy
+    /// and CORS routing on wasm32 (e.g. `ExchangeHub::set_rest_base_override`).
+    pub async fn new_with_override(
+        credentials: Option<Credentials>,
+        is_testnet: bool,
+        rest_override: Option<String>,
     ) -> ExchangeResult<Self> {
         let urls = if is_testnet {
             HyperliquidUrls::TESTNET
@@ -126,6 +142,7 @@ impl HyperliquidConnector {
             urls,
             auth,
             is_testnet,
+            rest_override,
             limiter,
             monitor,
             precision: PrecisionCache::new(),
@@ -134,8 +151,8 @@ impl HyperliquidConnector {
     }
 
     /// Create public connector (no authentication, market data only)
-    pub async fn public(is_testnet: bool) -> ExchangeResult<Self> {
-        Self::new(None, is_testnet).await
+    pub async fn public(is_testnet: bool, rest_override: Option<String>) -> ExchangeResult<Self> {
+        Self::new_with_override(None, is_testnet, rest_override).await
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -209,7 +226,7 @@ impl HyperliquidConnector {
             });
         }
 
-        let url = format!("{}{}", self.urls.rest_url(), HyperliquidEndpoint::Info.path());
+        let url = assemble_rest_url(self.rest_override.as_deref(), self.urls.rest_url(), HyperliquidEndpoint::Info.path(), "");
 
         let mut body = serde_json::json!({ "type": info_type.as_str() });
         if let Some(obj) = body.as_object_mut() {
@@ -228,7 +245,7 @@ impl HyperliquidConnector {
     ) -> ExchangeResult<serde_json::Value> {
         // Order placement = essential: always wait, never drop
         self.rate_limit_wait(20, true).await;
-        let url = format!("{}{}", self.urls.rest_url(), HyperliquidEndpoint::Exchange.path());
+        let url = assemble_rest_url(self.rest_override.as_deref(), self.urls.rest_url(), HyperliquidEndpoint::Exchange.path(), "");
         let headers = self.require_auth()?.get_headers();
         let response = self.http.post(&url, body, &headers).await?;
         HyperliquidParser::check_exchange_response(&response)?;

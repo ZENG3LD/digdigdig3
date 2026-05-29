@@ -16,7 +16,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::core::{
-    HttpClient, Credentials,
+    HttpClient, Credentials, assemble_rest_url,
     ExchangeId, ExchangeType, AccountType,
     ExchangeError, ExchangeResult,
     Price, Quantity, Kline, Ticker, OrderBook,
@@ -218,8 +218,7 @@ impl OkxConnector {
             });
         }
 
-        let base_url: &str = self.rest_override.as_deref()
-            .unwrap_or_else(|| self.urls.rest_url());
+        let real_base = self.urls.rest_url();
         let path = endpoint.path();
 
         // Build query string
@@ -232,7 +231,7 @@ impl OkxConnector {
             format!("?{}", qs.join("&"))
         };
 
-        let url = format!("{}{}{}", base_url, path, query);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, &query);
         let full_path = format!("{}{}", path, query);
 
         // Add auth headers if needed
@@ -259,10 +258,9 @@ impl OkxConnector {
     ) -> ExchangeResult<Value> {
         self.rate_limit_wait(1, true).await;
 
-        let base_url: &str = self.rest_override.as_deref()
-            .unwrap_or_else(|| self.urls.rest_url());
+        let real_base = self.urls.rest_url();
         let path = endpoint.path();
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, "");
 
         // Auth headers
         let auth = self.auth.as_ref()
@@ -1638,10 +1636,9 @@ impl Positions for OkxConnector {
                 // OKX doesn't have a specific endpoint in our enum for this; use AccountConfig as fallback
                 // We need to call the raw endpoint
                 self.rate_limit_wait(1, true).await;
-                let base_url: &str = self.rest_override.as_deref()
-            .unwrap_or_else(|| self.urls.rest_url());
+                let real_base = self.urls.rest_url();
                 let path = "/api/v5/account/position/margin-balance";
-                let url = format!("{}{}", base_url, path);
+                let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, "");
                 let auth = self.auth.as_ref()
                     .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
                 let body_str = body.to_string();
@@ -1675,10 +1672,9 @@ impl Positions for OkxConnector {
                 });
 
                 self.rate_limit_wait(1, true).await;
-                let base_url: &str = self.rest_override.as_deref()
-            .unwrap_or_else(|| self.urls.rest_url());
+                let real_base = self.urls.rest_url();
                 let path = "/api/v5/account/position/margin-balance";
-                let url = format!("{}{}", base_url, path);
+                let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, "");
                 let auth = self.auth.as_ref()
                     .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
                 let body_str = body.to_string();
@@ -1715,10 +1711,9 @@ impl Positions for OkxConnector {
                 });
 
                 self.rate_limit_wait(1, true).await;
-                let base_url: &str = self.rest_override.as_deref()
-            .unwrap_or_else(|| self.urls.rest_url());
+                let real_base = self.urls.rest_url();
                 let path = "/api/v5/trade/close-position";
-                let url = format!("{}{}", base_url, path);
+                let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, "");
                 let auth = self.auth.as_ref()
                     .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
                 let body_str = body.to_string();

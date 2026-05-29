@@ -18,7 +18,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::core::{
-    HttpClient, Credentials,
+    HttpClient, Credentials, assemble_rest_url,
     ExchangeId, ExchangeType, AccountType,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
@@ -185,10 +185,7 @@ impl BitstampConnector {
             });
         }
 
-        let base_url: &str = match self.rest_override.as_deref() {
-            Some(ov) => ov,
-            None => BitstampUrls::base_url(),
-        };
+        let real_base = BitstampUrls::base_url();
         let path = if let Some(p) = pair {
             endpoint.path_with_pair(p)
         } else {
@@ -205,11 +202,8 @@ impl BitstampConnector {
             qs.join("&")
         };
 
-        let url = if query.is_empty() {
-            format!("{}{}", base_url, path)
-        } else {
-            format!("{}{}?{}", base_url, path, query)
-        };
+        let query_sfx = if query.is_empty() { String::new() } else { format!("?{}", query) };
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, &query_sfx);
 
         let response = self.http.get(&url, &HashMap::new()).await?;
         Ok(response)
@@ -224,10 +218,7 @@ impl BitstampConnector {
     ) -> ExchangeResult<Value> {
         self.rate_limit_wait(1, true).await;
 
-        let base_url: &str = match self.rest_override.as_deref() {
-            Some(ov) => ov,
-            None => BitstampUrls::base_url(),
-        };
+        let real_base = BitstampUrls::base_url();
         let path = if let Some(p) = pair {
             endpoint.path_with_pair(p)
         } else {
@@ -249,7 +240,7 @@ impl BitstampConnector {
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
         let headers = auth.sign_request("POST", &path, "", &body);
 
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
 
         // Use reqwest directly for form-encoded POST
         let mut request = self.reqwest_client
@@ -303,10 +294,7 @@ impl BitstampConnector {
     ) -> ExchangeResult<Value> {
         self.rate_limit_wait(1, true).await;
 
-        let base_url: &str = match self.rest_override.as_deref() {
-            Some(ov) => ov,
-            None => BitstampUrls::base_url(),
-        };
+        let real_base = BitstampUrls::base_url();
 
         let body = if body_params.is_empty() {
             String::new()
@@ -321,7 +309,7 @@ impl BitstampConnector {
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
         let headers = auth.sign_request("POST", path, "", &body);
 
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, "");
 
         let mut request = self.reqwest_client
             .post(&url)
@@ -536,11 +524,8 @@ impl MarketData for BitstampConnector {
                 message: "Rate limit budget >= 90% used; non-essential market data request dropped".to_string(),
             });
         }
-        let base_url: &str = match self.rest_override.as_deref() {
-            Some(ov) => ov,
-            None => BitstampUrls::base_url(),
-        };
-        let url = format!("{}/api/v2/trading-pairs-info/", base_url);
+        let real_base = BitstampUrls::base_url();
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, "/api/v2/trading-pairs-info/", "");
         let response = self.http.get(&url, &HashMap::new()).await?;
         let info = BitstampParser::parse_exchange_info(&response, account_type)?;
         self.precision.load_from_symbols(&info);

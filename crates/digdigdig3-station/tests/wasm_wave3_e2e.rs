@@ -3,8 +3,10 @@
 //! Tests Wave 3 features through the public Station / ExchangeHub API in a
 //! real browser context.  Covers:
 //!
-//! - `rest_via_corsproxy_get_klines`   — REST override end-to-end: Binance
-//!   klines fetched from the browser through a public CORS proxy.
+//! - `rest_via_encoded_proxy_get_klines` — REST override end-to-end: Binance
+//!   klines fetched from the browser through the codetabs encoded-proxy.
+//!   Uses the `{url}` placeholder mode added in this wave: the full real target
+//!   URL is percent-encoded and substituted into the proxy template.
 //! - `polling_lsr_returns_unsupported_on_wasm` — negative test: LSR subscribe
 //!   lands in `report.failed` with `StreamNotSupported` on wasm (native-only
 //!   timer dependency; Station gracefully degrades).
@@ -33,40 +35,51 @@ use digdigdig3::connector_manager::ExchangeHub;
 use digdigdig3::core::types::{AccountType, ExchangeId, SymbolInput};
 use digdigdig3_station::{Station, Stream, SubscriptionSet};
 
-// ─── Test 1: REST via CORS proxy — end-to-end klines fetch ───────────────────
+// ─── Test 1: REST via encoded-proxy — end-to-end klines fetch ────────────────
 
-/// Set `rest_base_override` to a public CORS proxy, call `get_klines` for
-/// Binance BTCUSDT, assert the returned Vec is non-empty.
+/// Set `rest_base_override` to an encoded-proxy template and call `get_klines`
+/// for Binance BTCUSDT.  Asserts ≥1 real kline is returned.
 ///
-/// Proves the full path:
-///   ExchangeHub::set_rest_base_override
-///     → ConnectorFactory::create_public (picks up override)
-///       → BinanceConnector REST methods use override URL
-///         → browser fetch via reqwest-wasm succeeds through CORS proxy
-///           → parser produces ≥1 `Kline`
+/// ## How the `{url}` template mode works
 ///
-/// The proxy URL `https://corsproxy.io/?<encoded>` is a free public relay; it
-/// may be temporarily unavailable.  If the REST call errors, the test fails
-/// with the raw error message so the coordinator can distinguish "proxy down"
-/// from "override not wired".
+/// When the override string contains the literal `{url}`, `assemble_rest_url`
+/// percent-encodes the full real target (`real_base + path + query`) and
+/// substitutes it for `{url}` before making the request.  Example:
 ///
-/// This test REPLACES the compile-only `rest_via_proxy_override_plumbing` test
-/// that shipped in Wave 2 — that test only verified storage; this one verifies
-/// the full request-response path.
+/// ```text
+/// override:     "https://api.codetabs.com/v1/proxy/?quest={url}"
+/// real target:  "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&..."
+/// final URL:    "https://api.codetabs.com/v1/proxy/?quest=https%3A%2F%2Fapi.binance.com%2F..."
+/// ```
+///
+/// `api.codetabs.com/v1/proxy/` returns the upstream body verbatim with
+/// `Access-Control-Allow-Origin: *`, which satisfies the browser's preflight
+/// check.
+///
+/// ## Failure modes
+///
+/// If the test fails at the REST call the error message distinguishes:
+/// - Network error / wrong encoding → the encoded URL was malformed or
+///   codetabs rejected it.
+/// - Parse error → our JSON parser failed on the upstream body.
+/// - HTTP 4xx/5xx → codetabs is down or Binance returned an error.
+///
+/// Prints kline count on success as proof that real data flowed through Chrome.
 #[wasm_bindgen_test]
-async fn rest_via_corsproxy_get_klines() {
+async fn rest_via_encoded_proxy_get_klines() {
     let hub = ExchangeHub::new();
 
-    // corsproxy.io rewrites the URL so Binance CORS headers satisfy the browser.
-    // The encoded target is https://api.binance.com.
+    // Encoded-proxy template: api.codetabs.com/v1/proxy/ returns the upstream
+    // body verbatim with Access-Control-Allow-Origin: *.  The {url} placeholder
+    // is replaced at request time with the percent-encoded full Binance target.
     hub.set_rest_base_override(
         ExchangeId::Binance,
-        "https://corsproxy.io/?https%3A%2F%2Fapi.binance.com".to_string(),
+        "https://api.codetabs.com/v1/proxy/?quest={url}".to_string(),
     );
 
     hub.connect_public(ExchangeId::Binance, false)
         .await
-        .expect("connect_public must succeed with override set");
+        .expect("connect_public must succeed with codetabs encoded-proxy override set");
 
     let rest = hub
         .rest(ExchangeId::Binance)
@@ -82,11 +95,16 @@ async fn rest_via_corsproxy_get_klines() {
             None,
         )
         .await
-        .expect("get_klines via CORS proxy must succeed");
+        .expect("get_klines via codetabs encoded-proxy must succeed");
+
+    // Print kline count as proof that real data flowed through Chrome.
+    web_sys::console::log_1(
+        &format!("rest_via_encoded_proxy_get_klines: {} kline(s) received", klines.len()).into()
+    );
 
     assert!(
         !klines.is_empty(),
-        "expected ≥1 kline from Binance BTCUSDT via CORS proxy; got 0"
+        "expected ≥1 kline from Binance BTCUSDT via codetabs encoded proxy; got 0"
     );
 
     // Verify the kline has sensible data (open > 0).
@@ -255,7 +273,7 @@ async fn gap_heal_module_compiles_and_config_constructs() {
 async fn rest_override_persists_after_connect_public() {
     let hub = ExchangeHub::new();
 
-    let proxy = "https://corsproxy.io/?https%3A%2F%2Fapi.binance.com".to_string();
+    let proxy = "https://api.codetabs.com/v1/proxy/?quest={url}".to_string();
     hub.set_rest_base_override(ExchangeId::Binance, proxy.clone());
 
     hub.connect_public(ExchangeId::Binance, false)

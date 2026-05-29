@@ -95,6 +95,7 @@ lzma-rs = "0.3"
 # URL encoding (HTX auth, Polygon)
 url = "2.5"
 urlencoding = "2.1"
+percent-encoding = "2.3"
 
 # Base58 (Raydium pubkey parsing)
 bs58 = "0.5"

@@ -19,7 +19,7 @@ use reqwest::header::HeaderMap;
 use serde_json::{json, Value};
 
 use crate::core::{
-    HttpClient, Credentials,
+    HttpClient, Credentials, assemble_rest_url,
     ExchangeId, ExchangeType, AccountType,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
@@ -270,22 +270,18 @@ impl HtxConnector {
         }
 
         // Route to correct base URL based on endpoint; override replaces both spot and futures bases.
-        let base_url: &str = if let Some(ov) = self.rest_override.as_deref() {
-            ov
-        } else {
-            match endpoint {
-                HtxEndpoint::FuturesTicker
-                | HtxEndpoint::FuturesOrderbook
-                | HtxEndpoint::FuturesKlines
-                | HtxEndpoint::FuturesTrades
-                | HtxEndpoint::OpenInterest
-                | HtxEndpoint::FundingRateHistory
-                | HtxEndpoint::MarkPrice
-                | HtxEndpoint::MarkPriceKline
-                | HtxEndpoint::EliteAccountRatio
-                | HtxEndpoint::HistoricalFundingRate => HtxUrls::futures_base_url(self.testnet),
-                _ => HtxUrls::base_url(self.testnet),
-            }
+        let real_base = match endpoint {
+            HtxEndpoint::FuturesTicker
+            | HtxEndpoint::FuturesOrderbook
+            | HtxEndpoint::FuturesKlines
+            | HtxEndpoint::FuturesTrades
+            | HtxEndpoint::OpenInterest
+            | HtxEndpoint::FundingRateHistory
+            | HtxEndpoint::MarkPrice
+            | HtxEndpoint::MarkPriceKline
+            | HtxEndpoint::EliteAccountRatio
+            | HtxEndpoint::HistoricalFundingRate => HtxUrls::futures_base_url(self.testnet),
+            _ => HtxUrls::base_url(self.testnet),
         };
         let path = endpoint.path();
 
@@ -306,11 +302,8 @@ impl HtxConnector {
             }
         };
 
-        let url = if query.is_empty() {
-            format!("{}{}", base_url, path)
-        } else {
-            format!("{}{}?{}", base_url, path, query)
-        };
+        let query_sfx = if query.is_empty() { String::new() } else { format!("?{}", query) };
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, &query_sfx);
 
         let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
         self.update_rate_from_headers(&resp_headers);
@@ -325,8 +318,7 @@ impl HtxConnector {
     ) -> ExchangeResult<Value> {
         self.rate_limit_wait(1, true).await;
 
-        let base_url: &str = self.rest_override.as_deref()
-            .unwrap_or_else(|| HtxUrls::base_url(self.testnet));
+        let real_base = HtxUrls::base_url(self.testnet);
         let path = endpoint.path();
 
         // HTX requires auth params in query string even for POST
@@ -336,7 +328,7 @@ impl HtxConnector {
         // Empty params for signature (business params go in body)
         let query = auth.build_signed_query("POST", "api.huobi.pro", path, &HashMap::new());
 
-        let url = format!("{}{}?{}", base_url, path, query);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, &format!("?{}", query));
 
         // Add Content-Type header
         let mut headers = HashMap::new();
@@ -1023,13 +1015,12 @@ impl Trading for HtxConnector {
                 // HTX uses path variable for order ID
                 let path = HtxEndpoint::CancelOrder.path_with_vars(&[("order-id", order_id)]);
 
-                let base_url: &str = self.rest_override.as_deref()
-            .unwrap_or_else(|| HtxUrls::base_url(self.testnet));
+                let real_base = HtxUrls::base_url(self.testnet);
                 let auth = self.auth.as_ref()
                     .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
                 let query = auth.build_signed_query("POST", "api.huobi.pro", &path, &HashMap::new());
 
-                let url = format!("{}{}?{}", base_url, path, query);
+                let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, &format!("?{}", query));
 
                 let body = json!({});
                 let mut headers = HashMap::new();
@@ -1128,13 +1119,12 @@ impl Trading for HtxConnector {
     ) -> ExchangeResult<Order> {
         let path = HtxEndpoint::OrderStatus.path_with_vars(&[("order-id", order_id)]);
 
-        let base_url: &str = self.rest_override.as_deref()
-            .unwrap_or_else(|| HtxUrls::base_url(self.testnet));
+        let real_base = HtxUrls::base_url(self.testnet);
         let auth = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
         let query = auth.build_signed_query("GET", "api.huobi.pro", &path, &HashMap::new());
 
-        let url = format!("{}{}?{}", base_url, path, query);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, &format!("?{}", query));
 
         self.rate_limit_wait(1, true).await;
         let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
@@ -1275,13 +1265,12 @@ impl Account for HtxConnector {
         // Replace path variable
         let path = HtxEndpoint::Balance.path_with_vars(&[("account-id", &account_id.to_string())]);
 
-        let base_url: &str = self.rest_override.as_deref()
-            .unwrap_or_else(|| HtxUrls::base_url(self.testnet));
+        let real_base = HtxUrls::base_url(self.testnet);
         let auth = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
         let query = auth.build_signed_query("GET", "api.huobi.pro", &path, &HashMap::new());
 
-        let url = format!("{}{}?{}", base_url, path, query);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, &format!("?{}", query));
 
         self.rate_limit_wait(1, true).await;
         let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
@@ -2045,13 +2034,12 @@ impl SubAccounts for HtxConnector {
                 // GET /v1/account/accounts/{sub-uid}
                 let path = HtxEndpoint::SubAccountBalance.path_with_vars(&[("sub-uid", &sub_account_id)]);
 
-                let base_url: &str = self.rest_override.as_deref()
-            .unwrap_or_else(|| HtxUrls::base_url(self.testnet));
+                let real_base = HtxUrls::base_url(self.testnet);
                 let auth = self.auth.as_ref()
                     .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
                 let query = auth.build_signed_query("GET", "api.huobi.pro", &path, &HashMap::new());
 
-                let url = format!("{}{}?{}", base_url, path, query);
+                let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, &format!("?{}", query));
 
                 self.rate_limit_wait(1, true).await;
                 let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
@@ -2086,9 +2074,8 @@ impl HtxConnector {
         let auth = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
         let query = auth.build_signed_query("GET", "api.huobi.pro", &path, &HashMap::new());
-        let base_url: &str = self.rest_override.as_deref()
-            .unwrap_or_else(|| HtxUrls::base_url(self.testnet));
-        let url = format!("{}{}?{}", base_url, path, query);
+        let real_base = HtxUrls::base_url(self.testnet);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, &format!("?{}", query));
         self.rate_limit_wait(1, true).await;
         let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
         self.update_rate_from_headers(&resp_headers);

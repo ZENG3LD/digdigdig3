@@ -169,6 +169,7 @@ pub use utils::{
 // Re-exports transport
 pub use http::HttpClient;
 pub use http::GraphQlClient;
+pub use http::assemble_rest_url;
 
 // Re-exports chain types
 pub use chain::{ChainFamily, ChainProvider, TxStatus};

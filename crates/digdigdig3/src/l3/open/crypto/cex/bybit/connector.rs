@@ -20,7 +20,7 @@ use reqwest::header::HeaderMap;
 use serde_json::{json, Value};
 
 use crate::core::{
-    HttpClient, Credentials,
+    HttpClient, Credentials, assemble_rest_url,
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
@@ -231,8 +231,7 @@ impl BybitConnector {
             });
         }
 
-        let base_url: &str = self.rest_override.as_deref()
-            .unwrap_or_else(|| BybitUrls::base_url(self.testnet));
+        let real_base = BybitUrls::base_url(self.testnet);
         let path = endpoint.path();
 
         // Build query string
@@ -245,11 +244,8 @@ impl BybitConnector {
             qs.join("&")
         };
 
-        let url = if query.is_empty() {
-            format!("{}{}", base_url, path)
-        } else {
-            format!("{}{}?{}", base_url, path, query)
-        };
+        let query_sfx = if query.is_empty() { String::new() } else { format!("?{}", query) };
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, &query_sfx);
 
         // Add auth headers if needed
         let headers = if endpoint.is_private() {
@@ -275,10 +271,9 @@ impl BybitConnector {
         // Order placement = essential: always wait, never drop
         self.rate_limit_wait(1, true).await;
 
-        let base_url: &str = self.rest_override.as_deref()
-            .unwrap_or_else(|| BybitUrls::base_url(self.testnet));
+        let real_base = BybitUrls::base_url(self.testnet);
         let path = endpoint.path();
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, "");
 
         // Auth headers
         let auth = self.auth.as_ref()

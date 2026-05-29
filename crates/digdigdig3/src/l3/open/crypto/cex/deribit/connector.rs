@@ -19,7 +19,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::core::{
-    HttpClient, Credentials,
+    HttpClient, Credentials, assemble_rest_url,
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
@@ -274,8 +274,7 @@ impl DeribitConnector {
         self.rate_limit_wait(true).await;
 
         let id = self.next_id();
-        let url: &str = self.rest_override.as_deref()
-            .unwrap_or_else(|| self.urls.rest_url());
+        let url_str = assemble_rest_url(self.rest_override.as_deref(), self.urls.rest_url(), "", "");
 
         // Build JSON-RPC request
         let request = json!({
@@ -290,7 +289,7 @@ impl DeribitConnector {
         headers.insert("Content-Type".to_string(), "application/json".to_string());
 
         // Make request (all Deribit requests use POST)
-        let response = self.http.post(url, &request, &headers).await?;
+        let response = self.http.post(&url_str, &request, &headers).await?;
 
         Ok(response)
     }
@@ -317,8 +316,7 @@ impl DeribitConnector {
         self.rate_limit_wait(true).await;
 
         let id = self.next_id();
-        let url: &str = self.rest_override.as_deref()
-            .unwrap_or_else(|| self.urls.rest_url());
+        let url_str = assemble_rest_url(self.rest_override.as_deref(), self.urls.rest_url(), "", "");
 
         // Build JSON-RPC request
         let request = json!({
@@ -347,7 +345,7 @@ impl DeribitConnector {
         }
 
         // Make request (all Deribit requests use POST)
-        let response = self.http.post(url, &request, &headers).await?;
+        let response = self.http.post(&url_str, &request, &headers).await?;
 
         // Check for JSON-RPC errors (handled by parser)
         Ok(response)

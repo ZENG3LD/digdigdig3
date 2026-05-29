@@ -16,7 +16,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::core::{
-    HttpClient, Credentials,
+    HttpClient, Credentials, assemble_rest_url,
     ExchangeId, ExchangeType, AccountType,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
@@ -361,8 +361,7 @@ impl BinanceConnector {
             });
         }
 
-        let base_url: &str = self.rest_override.as_deref()
-            .unwrap_or_else(|| self.urls.rest_url(account_type));
+        let real_base = self.urls.rest_url(account_type);
         let path = endpoint.path();
 
         // Add auth if needed
@@ -384,7 +383,7 @@ impl BinanceConnector {
             format!("?{}", qs.join("&"))
         };
 
-        let url = format!("{}{}{}", base_url, path, query);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, &query);
 
         let (response, resp_headers) = self.http.get_with_response_headers(&url, &HashMap::new(), &headers).await?;
         self.update_weight_from_headers(&resp_headers);
@@ -408,8 +407,7 @@ impl BinanceConnector {
         // Order placement = essential: always wait, never drop
         self.rate_limit_wait(weight, true).await;
 
-        let base_url: &str = self.rest_override.as_deref()
-            .unwrap_or_else(|| self.urls.rest_url(account_type));
+        let real_base = self.urls.rest_url(account_type);
         let path = endpoint.path();
 
         // Auth required for POST
@@ -428,7 +426,7 @@ impl BinanceConnector {
             format!("?{}", qs.join("&"))
         };
 
-        let url = format!("{}{}{}", base_url, path, query);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, &query);
 
         // POST with empty body, params in query string
         let (response, resp_headers) = self.http.post_with_response_headers(&url, &json!({}), &headers).await?;
@@ -447,8 +445,7 @@ impl BinanceConnector {
         // Order amend = essential: always wait, never drop
         self.rate_limit_wait(weights::ORDER, true).await;
 
-        let base_url: &str = self.rest_override.as_deref()
-            .unwrap_or_else(|| self.urls.rest_url(account_type));
+        let real_base = self.urls.rest_url(account_type);
         let path = endpoint.path();
 
         let auth = self.auth.as_ref()
@@ -465,7 +462,7 @@ impl BinanceConnector {
             format!("?{}", qs.join("&"))
         };
 
-        let url = format!("{}{}{}", base_url, path, query);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, &query);
 
         // HttpClient::put does not return headers; use it directly
         let response = self.http.put(&url, &json!({}), &headers).await?;
@@ -483,8 +480,7 @@ impl BinanceConnector {
         // Batch amend = essential: always wait, never drop
         self.rate_limit_wait(weights::DEFAULT, true).await;
 
-        let base_url: &str = self.rest_override.as_deref()
-            .unwrap_or_else(|| self.urls.rest_url(account_type));
+        let real_base = self.urls.rest_url(account_type);
         let path = endpoint.path();
 
         let auth = self.auth.as_ref()
@@ -501,7 +497,7 @@ impl BinanceConnector {
             format!("?{}", qs.join("&"))
         };
 
-        let url = format!("{}{}{}", base_url, path, query);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, &query);
 
         let response = self.http.patch(&url, &json!({}), &headers).await?;
         BinanceParser::check_error(&response)?;
@@ -522,8 +518,7 @@ impl BinanceConnector {
         };
         self.rate_limit_wait(weight, true).await;
 
-        let base_url: &str = self.rest_override.as_deref()
-            .unwrap_or_else(|| self.urls.rest_url(account_type));
+        let real_base = self.urls.rest_url(account_type);
         let path = endpoint.path();
 
         // Auth required for DELETE
@@ -542,7 +537,7 @@ impl BinanceConnector {
             format!("?{}", qs.join("&"))
         };
 
-        let url = format!("{}{}{}", base_url, path, query);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, &query);
 
         let (response, resp_headers) = self.http.delete_with_response_headers(&url, &HashMap::new(), &headers).await?;
         self.update_weight_from_headers(&resp_headers);
@@ -1101,15 +1096,14 @@ impl BinanceConnector {
     pub async fn keepalive_listen_key(&self, listen_key: &str) -> ExchangeResult<Value> {
         // Listen key keepalive is essential — losing it kills the user data stream
         self.rate_limit_wait(weights::DEFAULT, true).await;
-        let base_url: &str = self.rest_override.as_deref()
-            .unwrap_or_else(|| self.urls.rest_url(AccountType::Spot));
+        let real_base = self.urls.rest_url(AccountType::Spot);
         let auth = self.auth.as_ref()
             .ok_or_else(|| ExchangeError::Auth("Authentication required".to_string()))?;
         let mut params = HashMap::new();
         params.insert("listenKey".to_string(), listen_key.to_string());
         let headers = auth.sign_request(&mut params);
         let query = format!("?listenKey={}", listen_key);
-        let url = format!("{}{}{}", base_url, BinanceEndpoint::ListenKeyKeepAlive.path(), query);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, BinanceEndpoint::ListenKeyKeepAlive.path(), &query);
         let response = self.http.put(&url, &json!({}), &headers).await?;
         BinanceParser::check_error(&response)?;
         Ok(response)

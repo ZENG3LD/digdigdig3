@@ -16,7 +16,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::core::{
-    HttpClient, Credentials,
+    HttpClient, Credentials, assemble_rest_url,
     ExchangeId, ExchangeType, AccountType,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook,
@@ -182,8 +182,7 @@ impl KrakenConnector {
             });
         }
 
-        let base_url: &str = self.rest_override.as_deref()
-            .unwrap_or_else(|| self.urls.rest_url(account_type));
+        let real_base = self.urls.rest_url(account_type);
         let path = endpoint.path();
 
         // Build query string
@@ -196,7 +195,7 @@ impl KrakenConnector {
             format!("?{}", qs.join("&"))
         };
 
-        let url = format!("{}{}{}", base_url, path, query);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, &query);
 
         let response = self.http.get(&url, &HashMap::new()).await?;
         Ok(response)
@@ -216,8 +215,7 @@ impl KrakenConnector {
         // POST requests are trading operations — always essential
         self.rate_limit_wait(true).await;
 
-        let base_url: &str = self.rest_override.as_deref()
-            .unwrap_or_else(|| self.urls.rest_url(account_type));
+        let real_base = self.urls.rest_url(account_type);
         let path = endpoint.path();
 
         if endpoint.requires_auth() {
@@ -228,14 +226,14 @@ impl KrakenConnector {
             let (headers, _body_str) = auth.sign_request(path, &params);
 
             // Build URL with path
-            let url = format!("{}{}", base_url, path);
+            let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, "");
 
             // Use post_with_params - sends params as query string
             // The signature covers the POST body, but Kraken also accepts params in URL
             self.http.post_with_params(&url, &params, &json!({}), &headers).await
         } else {
             // Public POST endpoints (rare for Kraken)
-            let url = format!("{}{}", base_url, path);
+            let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, "");
             self.http.post_with_params(&url, &params, &json!({}), &HashMap::new()).await
         }
     }

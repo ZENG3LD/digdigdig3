@@ -22,7 +22,7 @@ use reqwest::header::HeaderMap;
 use serde_json::{json, Value};
 
 use crate::core::{
-    HttpClient, Credentials,
+    HttpClient, Credentials, assemble_rest_url,
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
     Price, Quantity, Kline, Ticker, OrderBook,
@@ -275,8 +275,7 @@ impl BitgetConnector {
             });
         }
 
-        let base_url: &str = self.rest_override.as_deref()
-            .unwrap_or_else(|| self.urls.rest_url(account_type));
+        let real_base = self.urls.rest_url(account_type);
         let path = endpoint.path();
 
         // Build query string
@@ -289,7 +288,7 @@ impl BitgetConnector {
             format!("?{}", qs.join("&"))
         };
 
-        let url = format!("{}{}{}", base_url, path, query);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, &query);
 
         // Add auth headers if needed
         let mut headers = if endpoint.requires_auth() {
@@ -322,10 +321,9 @@ impl BitgetConnector {
         // POST endpoints are always trading-related (essential)
         self.rate_limit_wait(true, true).await;
 
-        let base_url: &str = self.rest_override.as_deref()
-            .unwrap_or_else(|| self.urls.rest_url(account_type));
+        let real_base = self.urls.rest_url(account_type);
         let path = endpoint.path();
-        let url = format!("{}{}", base_url, path);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, "");
 
         // Auth headers
         let auth = self.auth.as_ref()

@@ -343,3 +343,61 @@ async fn rest_override_persists_after_connect_public() {
 // `compile_error!` body would fail to compile; a no-op test would give a
 // misleading "passed" count. The deferred state is correctly captured here in
 // documentation only.
+
+// ─── KuCoin WS via CORS proxy ────────────────────────────────────────────────
+//
+// KuCoin is the only WS venue that needs a pre-WS REST POST (/bullet-public) for
+// its token; in-browser that's CORS-blocked unless proxied. This drives it through
+// the same encoded-proxy used for REST. Reports the concrete failure mode if it
+// can't (POST through a GET-only proxy / {url} encoding) so the limitation is exact.
+#[wasm_bindgen_test]
+async fn ws_kucoin_via_proxy() {
+    use digdigdig3::core::types::{StreamType, SubscriptionRequest, Symbol};
+    use futures_util::future::{select, Either};
+    use futures_util::{pin_mut, StreamExt};
+    use std::time::Duration;
+
+    let hub = ExchangeHub::new();
+    hub.set_rest_base_override(ExchangeId::KuCoin, cors_proxy_template().to_string());
+
+    let connect = hub.connect_websocket(ExchangeId::KuCoin, AccountType::Spot, false);
+    let ct = gloo_timers::future::sleep(Duration::from_secs(20));
+    pin_mut!(connect, ct);
+    match select(connect, ct).await {
+        Either::Left((Ok(()), _)) => {}
+        Either::Left((Err(e), _)) => panic!("KuCoin WS connect (bullet-token via proxy) failed: {e}"),
+        Either::Right(_) => panic!("KuCoin WS connect timed out"),
+    }
+
+    let ws = hub
+        .ws(ExchangeId::KuCoin, AccountType::Spot)
+        .expect("ws present after connect_websocket");
+    ws.subscribe(SubscriptionRequest {
+        symbol: Symbol::with_raw("BTC", "USDT", "BTC-USDT".to_string()),
+        stream_type: StreamType::Trade,
+        account_type: AccountType::Spot,
+        depth: None,
+        update_speed_ms: None,
+    })
+    .await
+    .expect("KuCoin WS subscribe");
+
+    let mut stream = ws.event_stream();
+    let deadline = gloo_timers::future::sleep(Duration::from_secs(20));
+    pin_mut!(deadline);
+    let mut got = false;
+    loop {
+        let next = stream.next();
+        pin_mut!(next);
+        match select(next, &mut deadline).await {
+            Either::Left((Some(Ok(_)), _)) => {
+                got = true;
+                break;
+            }
+            Either::Left((_, _)) => break,
+            Either::Right(_) => break,
+        }
+    }
+    web_sys::console::log_1(&format!("[kucoin-proxy] got_event={got}").into());
+    assert!(got, "KuCoin WS via proxy should deliver >=1 event");
+}

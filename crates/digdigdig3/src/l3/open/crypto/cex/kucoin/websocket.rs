@@ -209,7 +209,6 @@ async fn fetch_bullet_token(
 ) -> ExchangeResult<(Url, u64)> {
     let urls = if testnet { KuCoinUrls::TESTNET } else { KuCoinUrls::MAINNET };
     let native_base = urls.rest_url(account_type);
-    let base: &str = rest_override.as_deref().unwrap_or(native_base);
     let use_private = credentials.is_some();
 
     let endpoint_path = if use_private {
@@ -218,7 +217,15 @@ async fn fetch_bullet_token(
         KuCoinEndpoint::WsPublicToken.path()
     };
 
-    let url = format!("{}{}", base, endpoint_path);
+    // Honour the override in BOTH modes: prefix proxy AND `{url}` encoded-proxy
+    // (same helper the REST connectors use). Prefix-only `format!` left `{url}`
+    // literal → malformed proxy URL for codetabs-style proxies.
+    let url = crate::core::http::url_override::assemble_rest_url(
+        rest_override.as_deref(),
+        native_base,
+        endpoint_path,
+        "",
+    );
     let http = HttpClient::new(30_000)?;
 
     let response = if use_private {

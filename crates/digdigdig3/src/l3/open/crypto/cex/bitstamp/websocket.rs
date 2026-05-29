@@ -119,7 +119,19 @@ impl WebSocketConnector for BitstampWebSocket {
                 drop(done);
                 let transport = self.inner.clone();
                 let client = self.rest_client.clone();
+                #[cfg(not(target_arch = "wasm32"))]
                 tokio::spawn(async move {
+                    if let Err(e) = emit_l3_snapshot(&transport, &client, &pair).await {
+                        tracing::warn!(
+                            target: "dig3::bitstamp::l3",
+                            pair = %pair,
+                            error = ?e,
+                            "L3 REST snapshot bootstrap failed"
+                        );
+                    }
+                });
+                #[cfg(target_arch = "wasm32")]
+                wasm_bindgen_futures::spawn_local(async move {
                     if let Err(e) = emit_l3_snapshot(&transport, &client, &pair).await {
                         tracing::warn!(
                             target: "dig3::bitstamp::l3",

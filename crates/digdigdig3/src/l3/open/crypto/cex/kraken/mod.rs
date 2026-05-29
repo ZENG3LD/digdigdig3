@@ -30,7 +30,6 @@ mod auth;
 mod parser;
 mod connector;
 pub(crate) mod protocol;
-#[cfg(not(target_arch = "wasm32"))]
 mod websocket;
 
 pub use endpoints::{KrakenEndpoint, KrakenUrls};
@@ -38,5 +37,4 @@ pub use auth::KrakenAuth;
 pub use parser::KrakenParser;
 pub use connector::KrakenConnector;
 pub use protocol::KrakenProtocol;
-#[cfg(not(target_arch = "wasm32"))]
 pub use websocket::KrakenWebSocket;

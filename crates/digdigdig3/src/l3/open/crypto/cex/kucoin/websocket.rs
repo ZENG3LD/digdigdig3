@@ -71,8 +71,23 @@ impl KuCoinWebSocket {
         testnet: bool,
         account_type: AccountType,
     ) -> ExchangeResult<Self> {
+        Self::new_with_override(credentials, testnet, account_type, None).await
+    }
+
+    /// Create a new connector, optionally overriding the REST base URL.
+    ///
+    /// `rest_override` replaces the default `https://api.kucoin.com` base when
+    /// POSTing to bullet-public for the WS token.  Pass `None` for the default
+    /// behavior (byte-identical to `new()`).  On wasm32 this is required to route
+    /// the token fetch through a CORS proxy.
+    pub async fn new_with_override(
+        credentials: Option<Credentials>,
+        testnet: bool,
+        account_type: AccountType,
+        rest_override: Option<String>,
+    ) -> ExchangeResult<Self> {
         let (resolved_url, ping_interval_ms) =
-            fetch_bullet_token(testnet, account_type, credentials.as_ref()).await?;
+            fetch_bullet_token(testnet, account_type, credentials.as_ref(), rest_override).await?;
 
         let protocol = KuCoinProtocol::new(account_type, testnet, resolved_url, ping_interval_ms);
         let inner = UniversalWsTransport::new(protocol, account_type, testnet, credentials);
@@ -190,9 +205,11 @@ async fn fetch_bullet_token(
     testnet: bool,
     account_type: AccountType,
     credentials: Option<&Credentials>,
+    rest_override: Option<String>,
 ) -> ExchangeResult<(Url, u64)> {
     let urls = if testnet { KuCoinUrls::TESTNET } else { KuCoinUrls::MAINNET };
-    let base = urls.rest_url(account_type);
+    let native_base = urls.rest_url(account_type);
+    let base: &str = rest_override.as_deref().unwrap_or(native_base);
     let use_private = credentials.is_some();
 
     let endpoint_path = if use_private {

@@ -127,42 +127,30 @@ use crate::l1::free::yahoo::YahooFinanceConnector;
 use crate::l2::paid::cryptocompare::CryptoCompareConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// WEBSOCKET IMPORTS - CEX (native-only)
+// WEBSOCKET IMPORTS - CEX (all targets: all use UniversalWsTransport, wasm32-safe)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::binance::BinanceWebSocket;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::bybit::BybitWebSocket;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::okx::OkxWebSocket;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::kucoin::KuCoinWebSocket;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::kraken::KrakenWebSocket;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::gateio::GateioWebSocket;
 use crate::l3::open::crypto::cex::bitfinex::BitfinexWebSocket;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::bitstamp::BitstampWebSocket;
 use crate::l3::open::crypto::cex::gemini::GeminiWebSocket;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::mexc::MexcWebSocket;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::htx::HtxWebSocket;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::bitget::BitgetWebSocket;
 use crate::l3::open::crypto::cex::bingx::BingxWebSocket;
 use crate::l3::open::crypto::cex::crypto_com::CryptoComWebSocket;
 use crate::l3::open::crypto::cex::upbit::UpbitWebSocket;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::deribit::DeribitWebSocket;
 // HyperLiquid WS: public subscribe (`l2Book`/`trades`/`candle`) sends NO auth,
 // `EvmWallet` is only built inside `HyperliquidConnector::new(Some(creds), _)`.
 // Public path is wasm-eligible; k256+sha3 from `onchain-evm` compile to wasm.
 #[cfg(feature = "onchain-evm")]
 use crate::l3::open::crypto::cex::hyperliquid::HyperliquidWebSocket;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::l3::open::crypto::cex::coinbase::CoinbaseWebSocket;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -182,16 +170,6 @@ use crate::l3::open::crypto::dex::lighter::LighterWebSocket;
 use crate::l1::free::yahoo::YahooFinanceWebSocket;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::l2::paid::cryptocompare::CryptoCompareWebSocket;
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// WEBSOCKET IMPORTS — wasm32 (subset: Binance/Bybit/OKX via UniversalWsTransport)
-// ═══════════════════════════════════════════════════════════════════════════════
-#[cfg(target_arch = "wasm32")]
-use crate::l3::open::crypto::cex::binance::BinanceWebSocket;
-#[cfg(target_arch = "wasm32")]
-use crate::l3::open::crypto::cex::bybit::BybitWebSocket;
-#[cfg(target_arch = "wasm32")]
-use crate::l3::open::crypto::cex::okx::OkxWebSocket;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR FACTORY
@@ -1148,9 +1126,10 @@ impl ConnectorFactory {
 
     /// Create a WebSocket connector for browser (wasm32) targets.
     ///
-    /// Supports 11 venues via `UniversalWsTransport` with browser-native WS
+    /// Supports 20 venues via `UniversalWsTransport` with browser-native WS
     /// (`web-sys`): Binance, Bybit, OKX, HyperLiquid, Gemini, CryptoCom,
-    /// Bitfinex, BingX, Upbit, Dydx, Lighter. Other exchanges return
+    /// Bitfinex, BingX, Upbit, Dydx, Lighter, Kraken, GateIO, MEXC, HTX,
+    /// Bitget, Deribit, Coinbase, Bitstamp, KuCoin. Other exchanges return
     /// `UnsupportedOperation`.
     #[cfg(target_arch = "wasm32")]
     pub(crate) async fn create_websocket(
@@ -1214,9 +1193,54 @@ impl ConnectorFactory {
                 let ws = LighterWebSocket::public(testnet);
                 Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
             }
+            // ═══════════════════════════════════════════════════════════════════
+            // Tier 1 — simple un-gate (no pre-WS REST, no native deps)
+            // ═══════════════════════════════════════════════════════════════════
+            ExchangeId::Kraken => {
+                Ok(Arc::new(KrakenWebSocket::new()) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::GateIO => {
+                let ws = GateioWebSocket::new(None, testnet, account_type).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::MEXC => {
+                let ws = MexcWebSocket::new(None, account_type).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::HTX => {
+                let ws = HtxWebSocket::new(None, testnet, account_type)?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::Bitget => {
+                let ws = BitgetWebSocket::new(None, testnet, account_type).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::Deribit => {
+                let ws = DeribitWebSocket::new(None, testnet, account_type).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::Coinbase => {
+                Ok(Arc::new(CoinbaseWebSocket::public()) as Arc<dyn WebSocketConnector>)
+            }
+            // ═══════════════════════════════════════════════════════════════════
+            // Tier 2 — Bitstamp: tokio::spawn→spawn_local fix applied in websocket.rs
+            // ═══════════════════════════════════════════════════════════════════
+            ExchangeId::Bitstamp => {
+                Ok(Arc::new(BitstampWebSocket::new()) as Arc<dyn WebSocketConnector>)
+            }
+            // ═══════════════════════════════════════════════════════════════════
+            // Tier 3 — KuCoin: rest_override=None (no proxy wired into create_websocket).
+            // On wasm32, bullet-public POST will route via browser fetch; CORS
+            // must be handled at the proxy layer before calling this factory.
+            // Pass rest_override via KuCoinWebSocket::new_with_override() directly
+            // when a proxy URL is known at the call site.
+            // ═══════════════════════════════════════════════════════════════════
+            ExchangeId::KuCoin => {
+                let ws = KuCoinWebSocket::new(None, testnet, account_type).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
             other => Err(ExchangeError::UnsupportedOperation(format!(
-                "{other:?} WebSocket not enabled on wasm32; \
-                 only Binance/Bybit/OKX/HyperLiquid/Gemini/CryptoCom/Bitfinex/BingX/Upbit/Dydx/Lighter use UniversalWsTransport+browser-WS"
+                "{other:?} WebSocket not supported on wasm32"
             ))),
         }
     }

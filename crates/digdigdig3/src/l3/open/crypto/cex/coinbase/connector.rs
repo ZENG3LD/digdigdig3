@@ -143,9 +143,10 @@ pub struct CoinbaseConnector {
     http: HttpClient,
     /// Authentication (None for public methods)
     auth: Option<CoinbaseAuth>,
-    /// REST base URL override for proxy / Path-B routing.
-    /// Replaces `CoinbaseUrls::base_url()` only — `market_url()` and `v2_url()`
-    /// are separate path spaces and are not overridden.
+    /// REST base URL override for proxy / Path-B routing (wasm CORS).
+    /// Applies to `CoinbaseUrls::base_url()` AND `market_url()` (same host,
+    /// CORS-blocked alike in-browser). `v2_url()` is a separate path space and
+    /// is not overridden (no public wasm-eligible method uses it).
     rest_override: Option<String>,
     /// Runtime rate limiter (Group model: public 10/1s + private 30/1s)
     limiter: Arc<Mutex<RuntimeLimiter>>,
@@ -163,8 +164,9 @@ impl CoinbaseConnector {
 
     /// Create new connector with optional REST base URL override.
     ///
-    /// Override applies to `CoinbaseUrls::base_url()` only (`/api/v3/brokerage`).
-    /// `market_url()` and `v2_url()` are separate path spaces and are not overridden.
+    /// Override applies to `CoinbaseUrls::base_url()` (`/api/v3/brokerage`) AND
+    /// the public `market_url()` path (same host, CORS-blocked alike in-browser).
+    /// `v2_url()` is a separate path space and is not overridden.
     pub async fn new_with_override(credentials: Option<Credentials>, rest_override: Option<String>) -> ExchangeResult<Self> {
         let http = HttpClient::new(30_000)?; // 30 sec timeout
 
@@ -294,10 +296,13 @@ impl CoinbaseConnector {
         };
 
         let full_path = format!("{}{}", final_path, query);
-        // When routing through the public market CDN, the override does not apply
-        // (market_url is a separate CDN; override targets the brokerage base only).
+        // Apply the override to BOTH the brokerage base AND the public market path.
+        // market_url() is the same host (api.coinbase.com), just a different path
+        // prefix — in a browser it is CORS-blocked exactly like the brokerage base,
+        // so the proxy must cover it too. With override=None this is byte-identical
+        // to the old `format!` (assemble_rest_url None-mode == real_base + path).
         let url = if use_market_url {
-            format!("{}{}", CoinbaseUrls::market_url(), full_path)
+            assemble_rest_url(self.rest_override.as_deref(), CoinbaseUrls::market_url(), &full_path, "")
         } else {
             assemble_rest_url(self.rest_override.as_deref(), url_base_for_override, &full_path, "")
         };
@@ -527,7 +532,15 @@ impl MarketData for CoinbaseConnector {
         } else {
             // Public: GET /api/v3/brokerage/market/products/{product_id}/ticker?limit=1
             // Returns best_bid, best_ask, and trades[0].price for last_price.
-            let url = format!("{}/products/{}/ticker?limit=1", CoinbaseUrls::market_url(), product_id);
+            // Route through assemble_rest_url so the proxy/CORS override applies
+            // (market_url is CORS-blocked in-browser). None-mode == old format!.
+            let path = format!("/products/{}/ticker", product_id);
+            let url = assemble_rest_url(
+                self.rest_override.as_deref(),
+                CoinbaseUrls::market_url(),
+                &path,
+                "?limit=1",
+            );
             let response = self.http.get(&url, &HashMap::new()).await?;
             // Response: { "trades": [{"price": "..."}], "best_bid": "...", "best_ask": "..." }
             let bid_price = response.get("best_bid")
@@ -638,7 +651,7 @@ impl MarketData for CoinbaseConnector {
         let url = if self.auth.is_some() {
             assemble_rest_url(self.rest_override.as_deref(), CoinbaseUrls::base_url(), &base_path, &query_str)
         } else {
-            format!("{}{}{}", CoinbaseUrls::market_url(), base_path, query_str)
+            assemble_rest_url(self.rest_override.as_deref(), CoinbaseUrls::market_url(), &base_path, &query_str)
         };
 
         let headers = if let Some(auth) = &self.auth {
@@ -1663,10 +1676,17 @@ impl MarketDataPublic for CoinbaseConnector {
         let product_id = symbol.resolve(ExchangeId::Coinbase, account_type)?;
         let mut params = HashMap::new();
         params.insert("limit".to_string(), limit.unwrap_or(100).to_string());
-        // Build URL: /products/{product_id}/ticker
+        // Build URL: /products/{product_id}/ticker — route through assemble_rest_url
+        // so the proxy/CORS override applies (market_url is CORS-blocked in-browser).
         let path = format!("/products/{}/ticker", product_id);
-        let url = format!("{}{}?{}", CoinbaseUrls::market_url(), path,
+        let query_str = format!("?{}",
             params.iter().map(|(k, v)| format!("{}={}", k, v)).collect::<Vec<_>>().join("&"));
+        let url = assemble_rest_url(
+            self.rest_override.as_deref(),
+            CoinbaseUrls::market_url(),
+            &path,
+            &query_str,
+        );
         let (raw, _) = self.http.get_with_response_headers(&url, &HashMap::new(), &HashMap::new()).await?;
         let trades_arr = raw.get("trades")
             .and_then(|v| v.as_array())

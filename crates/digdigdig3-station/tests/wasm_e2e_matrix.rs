@@ -554,7 +554,11 @@ async fn test_venue(id: ExchangeId) -> VenueRow {
             probe_channel(id, StreamType::AggTrade, fut_sym.clone(), fut_at, w),
             probe_channel(id, StreamType::Liquidation, liq_sym, fut_at, liq_w),
         ]);
-        let (mut core_res, mut futs_res) = futures_util::join!(core_fut, futs_fut);
+        // Run the two channel groups SEQUENTIALLY (not join!) — headless Edge's
+        // renderer crashes ("tab crashed") under ~9 concurrent high-volume WS in one
+        // tab. Peak concurrency becomes 5 instead of 9; each group stays parallel.
+        let mut core_res = core_fut.await;
+        let mut futs_res = futs_fut.await;
         // drain in order: core[0..4] = ticker/trade/ob/kline, futs[0..5] = mark/fund/oi/agg/liq
         let liquidation = futs_res.pop().unwrap_or(Cell::Err("missing".into()));
         let agg_trade = futs_res.pop().unwrap_or(Cell::Err("missing".into()));

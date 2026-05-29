@@ -769,3 +769,40 @@ async fn rest_lighter() {
         klines[0].open
     );
 }
+
+// ─── dYdX v4 (Indexer REST via CORS proxy) ───────────────────────────────────
+//
+// dYdX v4 is a perps DEX; its public Indexer REST (https://indexer.dydx.trade/v4)
+// is CORS-blocked in-browser like any CEX, so it needs the proxy override. Until
+// 2026-05-30 the DydxConnector had NO rest_override field at all (the factory
+// dropped the override on the Dydx arm) — wired now so dYdX reaches REST parity.
+// Canonical BTC/USD FuturesCross → normalizer → "BTC-USD" perpetual market.
+
+#[wasm_bindgen_test]
+async fn rest_dydx() {
+    let hub = ExchangeHub::new();
+    hub.set_rest_base_override(ExchangeId::Dydx, cors_proxy_template().to_string());
+    hub.connect_public(ExchangeId::Dydx, false)
+        .await
+        .expect("dYdX connect_public via CORS proxy");
+
+    let rest = hub
+        .rest(ExchangeId::Dydx)
+        .expect("dYdX REST connector present after connect_public");
+
+    let sym = btc_usd();
+    let ticker = rest
+        .get_ticker(SymbolInput::Canonical(&sym), AccountType::FuturesCross)
+        .await
+        .expect("dYdX get_ticker via CORS proxy");
+
+    web_sys::console::log_1(
+        &format!("rest_dydx: last={:.4}", ticker.last_price).into(),
+    );
+
+    assert!(
+        ticker.last_price > 0.0,
+        "dYdX: ticker.last_price must be positive; got {}",
+        ticker.last_price
+    );
+}

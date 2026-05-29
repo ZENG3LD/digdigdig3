@@ -597,7 +597,7 @@ async fn test_dydx_rest() -> RestTally {
     println!("\n── dYdX REST ────────────────────────────────────────────────");
     let mut tally = RestTally { exchange: "dYdX".into(), tested: 0, passed: 0, failed: 0 };
 
-    let conn = match DydxConnector::public(false).await {
+    let conn = match DydxConnector::public(false, None).await {
         Ok(c) => c,
         Err(e) => {
             println!("  FAIL: connector init -> {}", e);

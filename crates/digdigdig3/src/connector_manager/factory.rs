@@ -290,7 +290,7 @@ impl ConnectorFactory {
                 ))
             }
             ExchangeId::Dydx => {
-                let c = DydxConnector::public(testnet).await?;
+                let c = DydxConnector::public(testnet, rest_override).await?;
                 Ok(Arc::new(c) as Arc<dyn CoreConnector>)
             }
             ExchangeId::Bitmex => {

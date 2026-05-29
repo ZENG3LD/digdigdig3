@@ -20,7 +20,7 @@ use tokio::sync::OnceCell;
 use serde_json::Value;
 
 use crate::core::{
-    HttpClient, Credentials,
+    HttpClient, Credentials, assemble_rest_url,
     ExchangeId, ExchangeType, AccountType,
     ExchangeError, ExchangeResult,
     Price, Kline, Ticker, OrderBook, Balance, AccountInfo,
@@ -162,11 +162,24 @@ pub struct DydxConnector {
     /// `GET /v4/perpetualMarkets`. Subsequent calls return the cached value
     /// without a network round-trip.
     market_config_cache: Arc<MarketConfigCache>,
+    /// Optional REST base URL override for proxy / CORS routing (wasm).
+    /// Applied to the Indexer REST base at every request. `None` = direct
+    /// (byte-identical to the old behaviour).
+    rest_override: Option<String>,
 }
 
 impl DydxConnector {
     /// Создать новый коннектор
     pub async fn new(credentials: Option<Credentials>, testnet: bool) -> ExchangeResult<Self> {
+        Self::new_with_override(credentials, testnet, None).await
+    }
+
+    /// Создать новый коннектор с опциональным REST base override (proxy / wasm CORS).
+    pub async fn new_with_override(
+        credentials: Option<Credentials>,
+        testnet: bool,
+        rest_override: Option<String>,
+    ) -> ExchangeResult<Self> {
         let urls = if testnet {
             DydxUrls::TESTNET
         } else {
@@ -191,12 +204,13 @@ impl DydxConnector {
             #[cfg(feature = "onchain-cosmos")]
             cosmos_provider: None,
             market_config_cache: Arc::new(OnceCell::new()),
+            rest_override,
         })
     }
 
     /// Создать коннектор только для публичных методов
-    pub async fn public(testnet: bool) -> ExchangeResult<Self> {
-        Self::new(None, testnet).await
+    pub async fn public(testnet: bool, rest_override: Option<String>) -> ExchangeResult<Self> {
+        Self::new_with_override(None, testnet, rest_override).await
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -266,7 +280,9 @@ impl DydxConnector {
             format!("?{}", query_params.join("&"))
         };
 
-        let url = format!("{}{}{}", base_url, path, query);
+        // Route through assemble_rest_url so the proxy/CORS override applies on
+        // wasm (Indexer REST is CORS-blocked in-browser). None == old format!.
+        let url = assemble_rest_url(self.rest_override.as_deref(), base_url, &path, &query);
         let headers = self.auth.sign_request("GET", &path, "");
 
         self.http.get_with_headers(&url, &HashMap::new(), &headers).await

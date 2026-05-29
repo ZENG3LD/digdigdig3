@@ -35,6 +35,28 @@ use digdigdig3::connector_manager::ExchangeHub;
 use digdigdig3::core::types::{AccountType, ExchangeId, SymbolInput};
 use digdigdig3_station::{Station, Stream, SubscriptionSet};
 
+// ─── CORS proxy template ──────────────────────────────────────────────────────
+
+/// Returns the CORS proxy URL template for REST calls in browser context.
+///
+/// The template MUST contain `{url}` — `assemble_rest_url` percent-encodes the
+/// full target URL and substitutes it into `{url}` before the request is made.
+///
+/// ## Configuring a custom proxy (compile-time):
+///
+///   ```sh
+///   DIG3_CORS_PROXY="https://my-proxy.example.com/?url={url}" \
+///     cargo test --target wasm32-unknown-unknown -p digdigdig3-station
+///   ```
+///
+/// Production consumers should pass their own backend proxy via
+/// `DIG3_CORS_PROXY` at build time, or call `ExchangeHub::set_rest_base_override`
+/// at runtime. The public codetabs.com default is for unattended CI only and
+/// may be rate-limited.
+fn cors_proxy_template() -> &'static str {
+    option_env!("DIG3_CORS_PROXY").unwrap_or("https://api.codetabs.com/v1/proxy/?quest={url}")
+}
+
 // ─── Test 1: REST via encoded-proxy — end-to-end klines fetch ────────────────
 
 /// Set `rest_base_override` to an encoded-proxy template and call `get_klines`
@@ -72,9 +94,10 @@ async fn rest_via_encoded_proxy_get_klines() {
     // Encoded-proxy template: api.codetabs.com/v1/proxy/ returns the upstream
     // body verbatim with Access-Control-Allow-Origin: *.  The {url} placeholder
     // is replaced at request time with the percent-encoded full Binance target.
+    // Template is configurable at build time via DIG3_CORS_PROXY env var.
     hub.set_rest_base_override(
         ExchangeId::Binance,
-        "https://api.codetabs.com/v1/proxy/?quest={url}".to_string(),
+        cors_proxy_template().to_string(),
     );
 
     hub.connect_public(ExchangeId::Binance, false)
@@ -273,7 +296,7 @@ async fn gap_heal_module_compiles_and_config_constructs() {
 async fn rest_override_persists_after_connect_public() {
     let hub = ExchangeHub::new();
 
-    let proxy = "https://api.codetabs.com/v1/proxy/?quest={url}".to_string();
+    let proxy = cors_proxy_template().to_string();
     hub.set_rest_base_override(ExchangeId::Binance, proxy.clone());
 
     hub.connect_public(ExchangeId::Binance, false)

@@ -10,7 +10,16 @@ runner = "dig2-wasm-test"
 
 # WASM_BINDGEN_TEST_TIMEOUT: default is 20s which is too short for station
 # tests that poll live WebSocket streams for up to 15s per test.
-# Station tests need ~80s total (3 tests × ~27s average including WS wait).
-# Set 120s to be safe for the full test suite.
+# Station smoke tests need ~120s (existing tests × ~27s average including WS wait).
+#
+# wasm_e2e_matrix runs 4 test groups in one session (wasm is single-threaded):
+#   Group A (Binance/Bybit/OKX, full 9 streams): ~465s
+#   Group B (HyperLiquid/Dydx/Lighter, full 9 streams): ~465s
+#   Group C (Gemini/CryptoCom/Bitfinex, 4 core streams): ~210s
+#   Group D (BingX/Upbit, 4 core streams): ~140s
+#   Total: ~1280s + driver startup overhead.
+# Set 1800s (30min) to cover the full 4-group matrix with headroom.
+# Per-group runs complete in ~465s each — use individual test filtering if
+# the full session is too slow for iterative development.
 [env]
-WASM_BINDGEN_TEST_TIMEOUT = { value = "120", force = false }
+WASM_BINDGEN_TEST_TIMEOUT = { value = "1800", force = true }

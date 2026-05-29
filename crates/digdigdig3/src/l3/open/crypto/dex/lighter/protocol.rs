@@ -21,6 +21,33 @@
 //! - `"update/trade"` — trade executions (`trades` plural array).
 //! - `"update/market_stats"` — market statistics (price, volume, funding).
 //! - `"update/ticker"` — lightweight best-bid/ask snapshot.
+//! - `"update/candle"` — OHLCV candle update for `candle/{market_id}/{resolution}`.
+//!
+//! ## Candle subscribe
+//!
+//! ```json
+//! {"type":"subscribe","channel":"candle/1/1m"}
+//! ```
+//!
+//! Supported resolutions: `1m`, `5m`, `15m`, `1h`, `4h`, `1d`.
+//!
+//! Server data frame:
+//! ```json
+//! {
+//!   "type": "update/candle",
+//!   "channel": "candle:1:1m",
+//!   "candle": {
+//!     "market_id": 1,
+//!     "resolution": "1m",
+//!     "open": "76500.0",
+//!     "high": "76600.0",
+//!     "low": "76400.0",
+//!     "close": "76550.0",
+//!     "base_token_volume": "1.5",
+//!     "open_time": 1700000000
+//!   }
+//! }
+//! ```
 //!
 //! ## Topic key
 //!
@@ -28,11 +55,16 @@
 //! `channel_type` is taken from the `type` field of the incoming frame.
 //! `market_id` is extracted from the `channel` field using `rsplit(':')` or `rsplit('/')`.
 //!
+//! For candles the channel is `"candle:{market_id}:{resolution}"` (3-part colon form).
+//! Topic key strips the resolution: `"update/candle:{market_id}"`. The resolution is
+//! stored in a thread-local (set during `extract_topic`) and consumed by the parser.
+//!
 //! ## Ping / pong
 //!
 //! Lighter uses standard WebSocket Ping/Pong at protocol level.
 //! No application-level ping frame needed. `ping_frame()` returns `None`.
 
+use std::cell::Cell;
 use std::sync::OnceLock;
 
 use serde_json::{json, Value};
@@ -43,12 +75,29 @@ use crate::core::traits::Credentials;
 use crate::core::types::{
     AccountType, StreamEvent, WebSocketError, WebSocketResult,
 };
-use crate::core::websocket::{StreamKind, StreamSpec, TopicKey, TopicRegistry, WsProtocol};
+use crate::core::websocket::{KlineInterval, StreamKind, StreamSpec, TopicKey, TopicRegistry, WsProtocol};
 
-use super::endpoints::{LighterUrls, symbol_to_market_id};
+use super::endpoints::{LighterUrls, map_kline_interval, symbol_to_market_id};
 use super::websocket::{
-    parse_orderbook, parse_ticker_channel, parse_trade, parse_market_stats,
+    parse_candle, parse_orderbook, parse_ticker_channel, parse_trade, parse_market_stats,
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Thread-local: kline resolution for the current candle frame.
+// Set by extract_topic; consumed by wrap_kline parser bridge.
+// ─────────────────────────────────────────────────────────────────────────────
+
+thread_local! {
+    static CURRENT_RESOLUTION: Cell<Option<String>> = const { Cell::new(None) };
+}
+
+fn set_current_resolution(res: impl Into<String>) {
+    CURRENT_RESOLUTION.with(|c| c.set(Some(res.into())));
+}
+
+pub(super) fn take_current_resolution() -> String {
+    CURRENT_RESOLUTION.with(|c| c.take()).unwrap_or_default()
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Registry cache — single registry (Lighter perp-only, single account type)
@@ -114,12 +163,11 @@ impl LighterProtocol {
             StreamKind::FundingRate | StreamKind::MarkPrice => {
                 ("market_stats", "update/market_stats")
             }
-            StreamKind::Kline { .. } => {
-                return Err(WebSocketError::UnsupportedOperation(
-                    "not yet implemented — candle/<market_id>/<resolution> channel exists \
-                     (resolutions: 1m, 5m, 15m, 30m, 1h, 4h, 12h, 1d)"
-                        .into(),
-                ));
+            StreamKind::Kline { interval } => {
+                let res = map_kline_interval(interval.as_str());
+                // subscribe channel: "candle/<market_id>/<resolution>"
+                let subscribe_channel = format!("candle/{}/{}", market_id, res);
+                return Ok((subscribe_channel, "update/candle"));
             }
             other => {
                 return Err(WebSocketError::NotSupported(format!(
@@ -229,15 +277,35 @@ impl WsProtocol for LighterProtocol {
     ///
     /// The `type` field (e.g. `"update/order_book"`) combined with the
     /// market_id extracted from the `channel` field forms the routing key.
+    ///
+    /// For candle frames the channel is `"candle:{market_id}:{resolution}"`.
+    /// The resolution is stored in a thread-local so `wrap_kline` can read it.
     fn extract_topic(&self, raw: &Value) -> Option<TopicKey> {
         let msg_type = raw.get("type").and_then(|v| v.as_str())?;
 
-        // Only route `update/*` frames.
+        let channel = raw.get("channel").and_then(|v| v.as_str()).unwrap_or("");
+
+        // Candle frames come in two types:
+        //   "update/candle"     — live per-resolution updates
+        //   "subscribed/candle" — initial snapshot on first subscribe
+        // Both carry candle data in the "candles" array.
+        // Route both under the "update/candle:*" registry key.
+        if msg_type == "update/candle" || msg_type == "subscribed/candle" {
+            // Channel format: "candle:{market_id}:{resolution}" or "candle/{market_id}/{resolution}".
+            let sep = if channel.contains(':') { ':' } else { '/' };
+            let mut parts = channel.splitn(3, sep);
+            let _name = parts.next(); // "candle"
+            let market_id = parts.next().unwrap_or("0");
+            let resolution = parts.next().unwrap_or("");
+            set_current_resolution(resolution);
+            return Some(TopicKey::new(&format!("update/candle:{}", market_id)));
+        }
+
+        // Only route remaining `update/*` frames.
         if !msg_type.starts_with("update/") {
             return None;
         }
 
-        let channel = raw.get("channel").and_then(|v| v.as_str()).unwrap_or("");
         let market_id = extract_market_id_from_channel(channel);
 
         Some(TopicKey::new(&format!("{}:{}", msg_type, market_id)))
@@ -269,6 +337,12 @@ fn build_registry() -> TopicRegistry {
         .register(StreamKind::Ticker, at, "update/ticker:*", wrap_ticker)
         .register(StreamKind::FundingRate, at, "update/market_stats:*", wrap_market_stats)
         .register(StreamKind::MarkPrice, at, "update/market_stats:*", wrap_market_stats)
+        .register(
+            StreamKind::Kline { interval: KlineInterval::new("") },
+            at,
+            "update/candle:*",
+            wrap_kline,
+        )
         .build()
 }
 
@@ -308,6 +382,14 @@ fn wrap_market_stats(raw: &Value) -> WebSocketResult<StreamEvent> {
     let channel = raw.get("channel").and_then(|v| v.as_str()).unwrap_or("");
     parse_market_stats(raw, channel)
         .ok_or_else(|| WebSocketError::Parse("lighter: market_stats parse returned None".into()))
+}
+
+fn wrap_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
+    let channel = raw.get("channel").and_then(|v| v.as_str()).unwrap_or("");
+    // Resolution was stored in thread-local by extract_topic (same task context).
+    let resolution = take_current_resolution();
+    parse_candle(raw, channel, &resolution)
+        .ok_or_else(|| WebSocketError::Parse("lighter: candle parse returned None".into()))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -558,6 +640,81 @@ mod tests {
     // ── topic_registry ────────────────────────────────────────────────────────
 
     #[test]
+    fn subscribe_kline_btc_1m() {
+        let spec = make_spec(
+            StreamKind::Kline { interval: KlineInterval::new("1m") },
+            "BTC",
+        );
+        let frame = proto().subscribe_frame(&spec).expect("subscribe frame");
+        if let WsFrame::Text(s) = frame {
+            let v: Value = serde_json::from_str(&s).unwrap();
+            assert_eq!(v["type"], "subscribe");
+            // BTC = market_id 1, resolution = 1m
+            assert_eq!(v["channel"], "candle/1/1m");
+        } else {
+            panic!("expected Text frame");
+        }
+    }
+
+    #[test]
+    fn subscribe_kline_eth_4h() {
+        let spec = make_spec(
+            StreamKind::Kline { interval: KlineInterval::new("4h") },
+            "ETH",
+        );
+        let frame = proto().subscribe_frame(&spec).expect("subscribe frame");
+        if let WsFrame::Text(s) = frame {
+            let v: Value = serde_json::from_str(&s).unwrap();
+            // ETH = market_id 0, resolution = 4h
+            assert_eq!(v["channel"], "candle/0/4h");
+        } else {
+            panic!("expected Text frame");
+        }
+    }
+
+    #[test]
+    fn extract_topic_update_candle() {
+        // Live frame format: "candles" array with short field names.
+        let raw = serde_json::json!({
+            "type": "update/candle",
+            "channel": "candle:1:1m",
+            "timestamp": 1780012392587i64,
+            "candles": [{"t": 1780012380000i64, "o": 73517.4, "h": 73522.1, "l": 73517.4, "c": 73520.5, "v": 0.14261}]
+        });
+        assert_eq!(
+            proto().extract_topic(&raw),
+            Some(TopicKey::new("update/candle:1"))
+        );
+    }
+
+    #[test]
+    fn extract_topic_subscribed_candle_routes_same_key() {
+        // Initial snapshot frame type "subscribed/candle" — must route as "update/candle:*".
+        let raw = serde_json::json!({
+            "type": "subscribed/candle",
+            "channel": "candle:1:1m",
+            "candles": [{"t": 1780012380000i64, "o": 73517.4, "h": 73522.1, "l": 73517.4, "c": 73520.5, "v": 0.14261}]
+        });
+        assert_eq!(
+            proto().extract_topic(&raw),
+            Some(TopicKey::new("update/candle:1"))
+        );
+    }
+
+    #[test]
+    fn extract_topic_candle_stores_resolution() {
+        let raw = serde_json::json!({
+            "type": "update/candle",
+            "channel": "candle:1:4h",
+            "candles": []
+        });
+        proto().extract_topic(&raw);
+        // Resolution should be stored in thread-local.
+        let res = take_current_resolution();
+        assert_eq!(res, "4h");
+    }
+
+    #[test]
     fn registry_supports_public_channels() {
         let p = proto();
         let reg = p.topic_registry(AccountType::FuturesCross);
@@ -567,6 +724,10 @@ mod tests {
         assert!(reg.supports(&StreamKind::Ticker, at), "Ticker");
         assert!(reg.supports(&StreamKind::FundingRate, at), "FundingRate");
         assert!(reg.supports(&StreamKind::MarkPrice, at), "MarkPrice");
+        assert!(
+            reg.supports(&StreamKind::Kline { interval: KlineInterval::new("") }, at),
+            "Kline"
+        );
         // AggTrade intentionally absent from registry — Lighter has no aggregate-trade channel.
         assert!(!reg.supports(&StreamKind::AggTrade, at), "AggTrade must NOT be registered");
     }
@@ -579,5 +740,6 @@ mod tests {
         assert!(reg.dispatch(&TopicKey::new("update/trade:1")).is_some());
         assert!(reg.dispatch(&TopicKey::new("update/ticker:0")).is_some());
         assert!(reg.dispatch(&TopicKey::new("update/market_stats:2")).is_some());
+        assert!(reg.dispatch(&TopicKey::new("update/candle:1")).is_some());
     }
 }

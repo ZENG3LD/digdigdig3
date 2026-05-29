@@ -27,12 +27,12 @@ use tokio::sync::Mutex;
 
 use crate::core::traits::WebSocketConnector;
 use crate::core::types::{
-    AccountType, ConnectionStatus, OrderBook, OrderbookCapabilities, PublicTrade,
+    AccountType, ConnectionStatus, Kline, OrderBook, OrderbookCapabilities, PublicTrade,
     StreamEvent, SubscriptionRequest, Ticker, TradeSide, WebSocketResult,
     WsBookChannel,
 };
 use crate::core::types::OrderBookLevel;
-use crate::core::websocket::{StreamSpec, UniversalWsTransport};
+use crate::core::websocket::{KlineInterval, StreamSpec, UniversalWsTransport};
 
 use super::protocol::LighterProtocol;
 
@@ -424,6 +424,79 @@ pub(super) fn parse_ticker_channel(raw: &Value, channel: &str) -> Option<StreamE
     })
 }
 
+/// Parse `update/candle` or `subscribed/candle` frame → `StreamEvent::Kline`.
+///
+/// Lighter sends candle data inside a `"candles"` array with short field names.
+/// Frame shape (live verified 2026-05-29):
+/// ```json
+/// {
+///   "type": "update/candle",
+///   "channel": "candle:1:1m",
+///   "timestamp": 1780012392587,
+///   "candles": [
+///     {
+///       "t": 1780012380000,
+///       "o": 73517.4,
+///       "h": 73522.1,
+///       "l": 73517.4,
+///       "c": 73520.5,
+///       "v": 0.14261,
+///       "V": 10485.53,
+///       "i": 21019917923
+///     }
+///   ]
+/// }
+/// ```
+///
+/// `t` = open_time in milliseconds (already ms — no scaling needed).
+/// `o`/`h`/`l`/`c` = OHLC as f64. `v` = base volume, `V` = quote volume.
+///
+/// `resolution` is passed from the thread-local set by `extract_topic`.
+pub(super) fn parse_candle(raw: &Value, channel: &str, resolution: &str) -> Option<StreamEvent> {
+    use super::protocol::extract_market_id_from_channel;
+
+    // Primary: "candles" array with short-field candle objects (live format).
+    let candles_arr = raw.get("candles").and_then(|v| v.as_array())?;
+    let entry = candles_arr.first()?;
+
+    // Short field names: t, o, h, l, c, v, V
+    let open_time = entry.get("t").and_then(|v| v.as_i64())?;
+    let open = entry.get("o").and_then(|v| v.as_f64())?;
+    let high = entry.get("h").and_then(|v| v.as_f64())?;
+    let low = entry.get("l").and_then(|v| v.as_f64())?;
+    let close = entry.get("c").and_then(|v| v.as_f64())?;
+    let volume = entry.get("v").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let quote_volume = entry.get("V").and_then(|v| v.as_f64());
+
+    // Channel format for candles: "candle:{market_id}:{resolution}" (3 parts).
+    // `extract_market_id_from_channel` takes the LAST segment, which for a 3-part
+    // candle channel gives the resolution, not the market_id. Extract market_id
+    // explicitly as the second segment.
+    let market_id = {
+        let sep = if channel.contains(':') { ':' } else { '/' };
+        let mut parts = channel.splitn(3, sep);
+        parts.next(); // "candle"
+        parts.next().unwrap_or_else(|| extract_market_id_from_channel(channel))
+    };
+
+    Some(StreamEvent::Kline {
+        symbol: market_id.to_string(),
+        interval: KlineInterval::new(resolution),
+        kline: Kline {
+            // open_time is already in milliseconds (live-verified).
+            open_time,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            quote_volume,
+            close_time: None,
+            trades: None,
+        },
+    })
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -518,6 +591,65 @@ mod tests {
     }
 
     // ── parse_ticker_channel ──────────────────────────────────────────────────
+
+    // ── parse_candle ──────────────────────────────────────────────────────────
+
+    /// Sample frame captured live from Lighter WS on 2026-05-29.
+    /// Short field names: t=open_time (ms), o/h/l/c=OHLC, v=base_vol, V=quote_vol, i=trade_id.
+    #[test]
+    fn parse_candle_live_format() {
+        let raw = serde_json::json!({
+            "type": "update/candle",
+            "channel": "candle:1:1m",
+            "timestamp": 1780012392587i64,
+            "candles": [
+                {
+                    "t": 1780012380000i64,
+                    "o": 73517.4,
+                    "h": 73522.1,
+                    "l": 73517.4,
+                    "c": 73520.5,
+                    "v": 0.14261,
+                    "V": 10485.53,
+                    "i": 21019917923i64
+                }
+            ]
+        });
+        let event = parse_candle(&raw, "candle:1:1m", "1m").expect("should parse");
+        if let StreamEvent::Kline { symbol, interval, kline } = event {
+            assert_eq!(symbol, "1");
+            assert_eq!(interval.as_str(), "1m");
+            assert!((kline.open - 73517.4).abs() < 1e-3);
+            assert!((kline.high - 73522.1).abs() < 1e-3);
+            assert!((kline.low - 73517.4).abs() < 1e-3);
+            assert!((kline.close - 73520.5).abs() < 1e-3);
+            assert!((kline.volume - 0.14261).abs() < 1e-5);
+            // open_time is already in milliseconds (no conversion)
+            assert_eq!(kline.open_time, 1780012380000);
+            assert!(kline.quote_volume.is_some());
+        } else {
+            panic!("expected Kline event, got {:?}", event);
+        }
+    }
+
+    #[test]
+    fn parse_candle_missing_candles_array_returns_none() {
+        let raw = serde_json::json!({
+            "type": "update/candle",
+            "channel": "candle:1:1m",
+        });
+        assert!(parse_candle(&raw, "candle:1:1m", "1m").is_none());
+    }
+
+    #[test]
+    fn parse_candle_empty_candles_array_returns_none() {
+        let raw = serde_json::json!({
+            "type": "update/candle",
+            "channel": "candle:1:1m",
+            "candles": []
+        });
+        assert!(parse_candle(&raw, "candle:1:1m", "1m").is_none());
+    }
 
     #[test]
     fn parse_ticker_bid_ask_midpoint() {

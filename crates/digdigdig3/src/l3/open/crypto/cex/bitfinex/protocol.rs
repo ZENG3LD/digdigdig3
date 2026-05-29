@@ -70,8 +70,8 @@ use url::Url;
 use crate::core::rt::WsFrame;
 use crate::core::traits::Credentials;
 use crate::core::types::{
-    AccountType, Kline, OrderbookDelta as OrderbookDeltaData, StreamEvent, WebSocketError,
-    WebSocketResult,
+    AccountType, Kline, OrderbookDelta as OrderbookDeltaData, StreamEvent, TradeSide,
+    WebSocketError, WebSocketResult,
 };
 use crate::core::websocket::{KlineInterval, StreamKind, StreamSpec, TopicKey, TopicRegistry, WsProtocol};
 
@@ -185,8 +185,10 @@ impl BitfinexProtocol {
                 Some(TopicKey::new(format!("candles:{}", stripped)))
             }
             "status" => {
-                // status channel (deriv:, liq:global) — not in basic public WS scope.
-                None
+                // status channel: key is e.g. "liq:global".
+                // Topic: "status:<key>" e.g. "status:liq:global".
+                let k = key?;
+                Some(TopicKey::new(format!("status:{}", k)))
             }
             _ => None,
         }
@@ -269,13 +271,11 @@ impl WsProtocol for BitfinexProtocol {
                     "key": key,
                 })
             }
-            StreamKind::Liquidation => {
-                return Err(WebSocketError::UnsupportedOperation(
-                    "not yet implemented — public status channel key liq:global \
-                     ({\"event\":\"subscribe\",\"channel\":\"status\",\"key\":\"liq:global\"})"
-                        .into(),
-                ))
-            }
+            StreamKind::Liquidation => json!({
+                "event": "subscribe",
+                "channel": "status",
+                "key": "liq:global",
+            }),
             other => {
                 return Err(WebSocketError::NotSupported(format!(
                     "Bitfinex public WS has no channel for {:?}",
@@ -295,13 +295,7 @@ impl WsProtocol for BitfinexProtocol {
             StreamKind::Kline { interval } => {
                 format!("candles:{}:{}", interval.as_str(), sym)
             }
-            StreamKind::Liquidation => {
-                return Err(WebSocketError::UnsupportedOperation(
-                    "not yet implemented — public status channel key liq:global \
-                     ({\"event\":\"subscribe\",\"channel\":\"status\",\"key\":\"liq:global\"})"
-                        .into(),
-                ))
-            }
+            StreamKind::Liquidation => "status:liq:global".to_string(),
             other => {
                 return Err(WebSocketError::NotSupported(format!(
                     "Bitfinex public WS has no channel for {:?}",
@@ -455,6 +449,7 @@ fn build_registry() -> TopicRegistry {
             "candles:*",
             parse_candle_frame,
         )
+        .register(StreamKind::Liquidation, at, "status:*", parse_liq_frame)
         .build()
 }
 
@@ -606,6 +601,108 @@ pub(crate) fn parse_candle_frame(raw: &Value) -> WebSocketResult<StreamEvent> {
         .map_err(|e| WebSocketError::Parse(format!("bitfinex candle: {}", e)))?;
 
     Ok(StreamEvent::Kline { symbol, interval, kline })
+}
+
+/// Parse `[chanId, [[liq_entry, ...], ...]]` → Liquidation.
+///
+/// Bitfinex `liq:global` status channel data frame (live-verified 2026-05-29):
+/// ```json
+/// [5410, [["pos", 191941265, 1779998542354, null, "tETHF0:USTF0", 19.00019049, 2027.1,
+///          null, 1, 1, null, 2013.5]]]
+/// ```
+///
+/// Entry array layout (index-based):
+/// - 0: `"pos"` (type tag)
+/// - 1: POS_ID (position ID)
+/// - 2: MTS (timestamp, milliseconds)
+/// - 3: null (unused)
+/// - 4: SYMBOL (`"tETHF0:USTF0"`)
+/// - 5: AMOUNT (size; positive = long/buy, negative = short/sell)
+/// - 6: BASE_PRICE (entry/fill price)
+/// - 7: null (unused)
+/// - 8: IS_MATCH (1 = matched)
+/// - 9: IS_MARKET_SOLD (1 = sold at market)
+/// - 10: null (unused)
+/// - 11: LIQUIDATION_PRICE (price at which position was liquidated)
+///
+/// When the outer array's second element is `[entry...]` (single entry),
+/// we emit one Liquidation event. When it is `[[entry,...], ...]` we take
+/// the first entry.
+pub(crate) fn parse_liq_frame(raw: &Value) -> WebSocketResult<StreamEvent> {
+    let arr = raw
+        .as_array()
+        .ok_or_else(|| WebSocketError::Parse("bitfinex liq: expected array".into()))?;
+
+    if arr.len() < 2 {
+        return Err(WebSocketError::FieldAbsent("liq data".into()));
+    }
+
+    // arr[1] is either [[entry...], ...] (array of entries) or [entry...] (single flat entry).
+    let outer = arr[1]
+        .as_array()
+        .ok_or_else(|| WebSocketError::FieldAbsent("liq outer data not array".into()))?;
+
+    if outer.is_empty() {
+        return Err(WebSocketError::FieldAbsent("liq: empty entries".into()));
+    }
+
+    // If the first element is also an array, we have [[entry...], ...]; take the first.
+    // Otherwise the outer IS the single entry array.
+    let entry: &[Value] = if outer[0].is_array() {
+        outer[0]
+            .as_array()
+            .ok_or_else(|| WebSocketError::FieldAbsent("liq inner entry not array".into()))?
+    } else {
+        outer
+    };
+
+    // Entry must have at least 12 fields (indices 0-11).
+    if entry.len() < 12 {
+        return Err(WebSocketError::Parse(format!(
+            "bitfinex liq: entry too short ({} fields, need 12)",
+            entry.len()
+        )));
+    }
+
+    // idx 4: SYMBOL
+    let symbol = entry[4]
+        .as_str()
+        .ok_or_else(|| WebSocketError::FieldAbsent("liq entry[4] symbol".into()))?
+        .to_string();
+
+    // idx 5: AMOUNT (signed; positive = long/buy liquidation, negative = short/sell)
+    let amount = entry[5]
+        .as_f64()
+        .ok_or_else(|| WebSocketError::FieldAbsent("liq entry[5] amount".into()))?;
+
+    let side = if amount >= 0.0 {
+        TradeSide::Buy  // long position being liquidated
+    } else {
+        TradeSide::Sell // short position being liquidated
+    };
+
+    // idx 11: LIQUIDATION_PRICE
+    let price = entry[11]
+        .as_f64()
+        .ok_or_else(|| WebSocketError::FieldAbsent("liq entry[11] liquidation_price".into()))?;
+
+    // idx 6: BASE_PRICE (entry price, used as value reference)
+    let base_price = entry[6].as_f64();
+
+    // idx 2: MTS (millisecond timestamp)
+    let timestamp = entry[2].as_i64().unwrap_or(0);
+
+    let quantity = amount.abs();
+    let value = base_price.map(|bp| bp * quantity);
+
+    Ok(StreamEvent::Liquidation {
+        symbol,
+        side,
+        price,
+        quantity,
+        timestamp,
+        value,
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -889,14 +986,18 @@ mod tests {
     }
 
     #[test]
-    fn subscribe_frame_liquidation_returns_unsupported_operation() {
-        // Bitfinex public status channel liq:global exists — not yet implemented.
+    fn subscribe_frame_liquidation_emits_status_liq_global() {
         let proto = make_proto();
         let spec = make_spec(StreamKind::Liquidation, "tBTCUSD");
-        assert!(matches!(
-            proto.subscribe_frame(&spec),
-            Err(WebSocketError::UnsupportedOperation(_))
-        ));
+        let frame = proto.subscribe_frame(&spec).expect("subscribe frame");
+        if let WsFrame::Text(s) = frame {
+            let v: Value = serde_json::from_str(&s).expect("valid json");
+            assert_eq!(v["event"], "subscribe");
+            assert_eq!(v["channel"], "status");
+            assert_eq!(v["key"], "liq:global");
+        } else {
+            panic!("expected Text frame");
+        }
     }
 
     #[test]
@@ -913,6 +1014,84 @@ mod tests {
     // ── topic_registry ────────────────────────────────────────────────────────
 
     #[test]
+    fn is_subscribe_ack_status_liq_global_maps_chan_id() {
+        let proto = make_proto();
+        let ack = serde_json::json!({
+            "event": "subscribed",
+            "channel": "status",
+            "chanId": 5410,
+            "key": "liq:global"
+        });
+        proto.is_subscribe_ack(&ack);
+        let map = proto.chan_map.lock().unwrap();
+        assert_eq!(map.get(&5410), Some(&TopicKey::new("status:liq:global")));
+    }
+
+    #[test]
+    fn extract_topic_status_liq_global() {
+        let proto = make_proto();
+        let ack = serde_json::json!({
+            "event": "subscribed",
+            "channel": "status",
+            "chanId": 5410,
+            "key": "liq:global"
+        });
+        proto.is_subscribe_ack(&ack);
+
+        let data = serde_json::json!([5410, [["pos", 191941265, 1779998542354i64, null, "tETHF0:USTF0", 19.0, 2027.1, null, 1, 1, null, 2013.5]]]);
+        assert_eq!(
+            proto.extract_topic(&data),
+            Some(TopicKey::new("status:liq:global"))
+        );
+    }
+
+    // ── parse_liq_frame ───────────────────────────────────────────────────────
+
+    /// Live frame captured from Bitfinex liq:global on 2026-05-29.
+    #[test]
+    fn parse_liq_frame_live_format() {
+        // [chanId, [[entry...]]]
+        let raw = serde_json::json!([
+            5410,
+            [["pos", 191941265, 1779998542354i64, null, "tETHF0:USTF0", 19.00019049, 2027.1, null, 1, 1, null, 2013.5]]
+        ]);
+        let event = parse_liq_frame(&raw).expect("should parse");
+        if let StreamEvent::Liquidation { symbol, side, price, quantity, timestamp, value } = event {
+            assert_eq!(symbol, "tETHF0:USTF0");
+            assert_eq!(side, TradeSide::Buy); // positive amount = long = buy
+            assert!((price - 2013.5).abs() < 1e-6);
+            assert!((quantity - 19.00019049).abs() < 1e-6);
+            assert_eq!(timestamp, 1779998542354);
+            assert!(value.is_some());
+        } else {
+            panic!("expected Liquidation event");
+        }
+    }
+
+    #[test]
+    fn parse_liq_frame_negative_amount_is_sell() {
+        let raw = serde_json::json!([
+            5410,
+            [["pos", 12345, 1780000000000i64, null, "tBTCUSD", -0.5, 95000.0, null, 1, 1, null, 94500.0]]
+        ]);
+        let event = parse_liq_frame(&raw).expect("should parse");
+        if let StreamEvent::Liquidation { side, quantity, price, .. } = event {
+            assert_eq!(side, TradeSide::Sell);
+            assert!((quantity - 0.5).abs() < 1e-9);
+            assert!((price - 94500.0).abs() < 1e-6);
+        } else {
+            panic!("expected Liquidation event");
+        }
+    }
+
+    #[test]
+    fn parse_liq_frame_short_entry_returns_err() {
+        // Entry has fewer than 12 fields — should return error.
+        let raw = serde_json::json!([5410, [["pos", 1, 2, null, "tBTCUSD", 1.0]]]);
+        assert!(parse_liq_frame(&raw).is_err());
+    }
+
+    #[test]
     fn topic_registry_covers_public_channels() {
         let proto = make_proto();
         let reg = proto.topic_registry(AccountType::Spot);
@@ -925,6 +1104,7 @@ mod tests {
             reg.supports(&StreamKind::Kline { interval: KlineInterval::new("") }, at),
             "Kline"
         );
+        assert!(reg.supports(&StreamKind::Liquidation, at), "Liquidation");
     }
 
     #[test]
@@ -948,6 +1128,10 @@ mod tests {
         assert!(
             reg.dispatch(&TopicKey::new("candles:1m:tBTCUSD")).is_some(),
             "candles:1m:tBTCUSD"
+        );
+        assert!(
+            reg.dispatch(&TopicKey::new("status:liq:global")).is_some(),
+            "status:liq:global"
         );
     }
 }

@@ -8,6 +8,7 @@
 
 pub mod backfill;
 pub mod builder;
+pub mod settings;
 pub mod cache;
 pub mod data;
 pub(crate) mod derived;
@@ -79,6 +80,9 @@ pub use replay::{ReplayHub, ReplayConfig, ReplayRate};
 
 pub use orderbook::{OrderBookTracker, OrderBookError};
 pub use rest_cache::RestCache;
+
+// Settings store — native (file) and wasm32 (OPFS) at API parity.
+pub use settings::{SettingsError, SettingsStore};
 
 pub use cure::{
     IntegrityChecker, IntegrityReport,

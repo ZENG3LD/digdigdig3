@@ -77,12 +77,41 @@ NOT per-connector — a **transport-level deadlock**:
 their `--ignored` live tests. Wasm smoke still 2/2 in headless Chrome (the
 timeout-poll is wasm-safe).
 
-Remaining non-bugs in the matrix: Binance/Bybit `WS_ticker connect_timeout` is
-an IP-level rate-limit from repeated test runs (raw probe returns AWS/CloudFront
-`403 too many requests` — clears on cooldown), NOT code. dYdX ticker uses the
-low-frequency `v4_markets` channel. Gemini/Upbit/Lighter Ticker is intentionally
-`NotSupported` (synthetic ticker deferred). GateIO `WS_liq` silence is a
-low-frequency feed (~25 liq/hr), channel verified correct.
+### Flag audit + channel completion (2026-05-29)
+
+Audited every `NotSupported` vs `UnsupportedOperation` flag in all 21 WS
+protocols against the OFFICIAL exchange docs (4 reports in
+`docs/research/wave3-debug/flag-audit-group{1..4}.md`). Convention:
+`NotSupported` = exchange has no such public WS channel (wire-absent);
+`UnsupportedOperation` = exchange HAS it, we haven't implemented (TODO).
+Migrating agents had mislabeled 18 channels as `NotSupported` that actually
+exist — reclassified to `UnsupportedOperation` (commit beebe40), then
+**implemented** the genuinely-public ones, each LIVE-verified (real data on the
+wire, not just `cargo check`):
+
+| Venue | Channel | Live result |
+|---|---|---|
+| Upbit | native Ticker | `last=108665000` |
+| Gemini | synthetic Ticker (from l2 changes+trades, stateful) | `bid<ask<last` |
+| GateIO | OpenInterest (`futures.contract_stats`, 1m) | `oi=640374112` |
+| HTX | IndexPriceKline (`market.<c>.index.<p>`, separate `ws_index` endpoint) | `open=73706` |
+| KuCoin | Liquidation (`/contractMarket/liquidationOrders`, PUBLIC — old "needs auth" comment was wrong) | wired (sparse) |
+| Bitfinex | Liquidation (public `status` `key:liq:global`) | caught live `ETHF0 Buy 19@2013.5` |
+| Lighter | Kline (`candle/<mkt>/<res>`) | `open=73665 close=73633` |
+
+**BingX funding/forceOrder/openInterest/aggTrade**: the doc-audit agent CLAIMED
+these exist (trusted an unofficial GitHub repo) — but a live raw probe returned
+`code 80015 "dataType not support"` for all four. They are genuinely wire-absent
+→ kept/corrected to `NotSupported` (commit 1b9fd5c). Lesson reinforced: even a
+docs audit is not authoritative — the live wire is. dYdX/Crypto.com
+account-scoped Balance/Position/Order updates stay `UnsupportedOperation`
+(exist on `v4_subaccounts` / `user.*`, out of public-data scope).
+
+Confirmed-correct-NotSupported (left as-is): Binance OI (REST-only), Bitget liq
+(UTA-V3-only), HyperLiquid liq/aggTrade, Bitstamp/Coinbase/Kraken catch-alls.
+
+Native after channel work: 25 test-suites ok, 0 failed, `-D warnings` clean.
+Wasm Chrome smoke 2/2.
 
 **Lesson (durable):** a connector migration is not done at `cargo check` — it
 is done when a live `e2e_smoke` / `--ignored` test shows real data flowing.

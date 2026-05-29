@@ -40,7 +40,16 @@ use dashmap::DashMap;
 use std::future::Future;
 use std::hash::Hash;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+// Monotonic clock: std::time::Instant on native, instant::Instant on wasm32.
+// std::time::Instant panics at runtime on wasm32-unknown-unknown (no monotonic
+// clock without a shim). The `instant` crate provides a drop-in replacement
+// backed by js_sys::Date::now() on wasm32.
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use instant::Instant;
 
 #[derive(Debug, Clone)]
 struct Entry<V> {

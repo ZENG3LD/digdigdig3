@@ -76,6 +76,11 @@ sled = { version = "0.34", optional = true }
 tokio = { version = "1", default-features = false, features = ["sync", "macros"] }
 tokio-stream = { version = "0.1", default-features = false, features = ["sync"] }
 
+# Monotonic clock drop-in for wasm32. std::time::Instant panics at runtime on
+# wasm32-unknown-unknown; this crate re-exports a wasm-compatible Instant backed
+# by js_sys::Date::now(). Mirrors the same dep in digdigdig3/Cargo.toml.
+instant = { version = "0.1", features = ["wasm-bindgen"] }
+
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"

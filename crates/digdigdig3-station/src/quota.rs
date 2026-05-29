@@ -34,7 +34,15 @@ use std::time::Duration;
 use digdigdig3::core::types::ExchangeId;
 use thiserror::Error;
 use tokio::sync::Mutex;
+
+// Monotonic clock: std::time::Instant on native, instant::Instant on wasm32.
+// std::time::Instant panics at runtime on wasm32-unknown-unknown (no monotonic
+// clock without a shim). The `instant` crate provides a drop-in replacement
+// backed by js_sys::Date::now() on wasm32.
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use instant::Instant;
 
 use crate::series::Kind;
 use crate::station::StationInner;
@@ -190,7 +198,7 @@ pub enum QuotaError {
 // Token bucket (REST rate limiting)
 // ---------------------------------------------------------------------------
 
-/// Simple fixed-window token bucket. Uses `std::time::Instant` for
+/// Simple fixed-window token bucket. Uses `instant::Instant` for
 /// monotonic time (cross-target: compiles on native and wasm32).
 pub(crate) struct TokenBucket {
     capacity: u32,

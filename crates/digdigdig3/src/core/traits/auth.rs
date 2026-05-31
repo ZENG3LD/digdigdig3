@@ -23,7 +23,7 @@ use crate::core::types::ExchangeResult;
 ///
 /// Used by connector constructors for the common HMAC-SHA256 case.
 /// For the full multi-scheme credential model, use `ExchangeCredentials`.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Credentials {
     pub api_key: String,
     pub api_secret: String,

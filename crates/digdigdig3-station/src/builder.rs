@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::{PersistenceConfig, Result, Station};
 
@@ -9,6 +10,13 @@ pub struct StationBuilder {
     pub(crate) persistence: PersistenceConfig,
     pub(crate) warm_start: usize,
     pub(crate) gap_heal: crate::GapHealConfig,
+    pub(crate) unsubscribe_grace: Duration,
+    /// Whether to issue a one-shot REST `get_orderbook` seed on first subscribe
+    /// to an `Orderbook` or `OrderbookDelta` stream. Default: `false`.
+    pub(crate) orderbook_rest_seed: bool,
+    /// Depth passed to `get_orderbook` when `orderbook_rest_seed` is `true`.
+    /// Default: `1000`.
+    pub(crate) orderbook_seed_depth: usize,
 }
 
 impl Default for StationBuilder {
@@ -19,6 +27,9 @@ impl Default for StationBuilder {
             persistence: PersistenceConfig::default(),
             warm_start: 0,
             gap_heal: crate::GapHealConfig::default(),
+            unsubscribe_grace: Duration::ZERO,
+            orderbook_rest_seed: false,
+            orderbook_seed_depth: 1000,
         }
     }
 }
@@ -58,6 +69,46 @@ impl StationBuilder {
     /// their REST CORS proxies are wired (Wave 4-C).
     pub fn gap_heal(mut self, cfg: crate::GapHealConfig) -> Self {
         self.gap_heal = cfg;
+        self
+    }
+
+    /// How long to keep a WS forwarder alive after its last consumer drops.
+    /// During this window a new subscription for the same key reuses the live
+    /// connection — no reconnect, no REST re-seed.
+    ///
+    /// Default: `Duration::ZERO` (immediate drop, current behaviour).
+    ///
+    /// Typical UI value: `Duration::from_secs(30)` so a quick symbol-flip
+    /// (BTC → ETH → BTC) stays on the same socket.
+    pub fn unsubscribe_grace(mut self, grace: Duration) -> Self {
+        self.unsubscribe_grace = grace;
+        self
+    }
+
+    /// On first subscribe to an [`Stream::Orderbook`] or [`Stream::OrderbookDelta`]
+    /// stream for a `(exchange, symbol, account)` key, also issue a one-shot REST
+    /// `get_orderbook` call so the live book is seeded with up to `depth` levels
+    /// before WS deltas start applying.
+    ///
+    /// Default: `false` (WS-only — matches pre-0.3.13 behaviour).
+    ///
+    /// On failure (REST not connected, exchange returns error, empty snapshot)
+    /// the station continues with WS-only and logs a warning. Never aborts the
+    /// subscribe.
+    pub fn orderbook_rest_seed(mut self, enable: bool) -> Self {
+        self.orderbook_rest_seed = enable;
+        self
+    }
+
+    /// Depth of the REST seed snapshot. Only meaningful when
+    /// [`Self::orderbook_rest_seed`] is `true`.
+    ///
+    /// Passed directly to `get_orderbook(symbol, Some(depth as u16), account)`.
+    /// Clamped to `1..=u16::MAX` internally.
+    ///
+    /// Default: `1000`.
+    pub fn orderbook_seed_depth(mut self, depth: usize) -> Self {
+        self.orderbook_seed_depth = depth;
         self
     }
 

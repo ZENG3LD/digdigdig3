@@ -310,6 +310,32 @@ fn print_event(event: &Event, ob_depth: usize, seq: u64) {
                 ts = point.open_time, ex = exchange, sym = symbol, tf = timeframe,
                 o = point.open, h = point.high, l = point.low, c = point.close);
         }
+        Event::OrderUpdate { exchange, account_type, symbol, point } => {
+            println!("{ts} {ex:?}/{at:?} {sym} ORDER id={id:016x} {side} {status} qty={qty} filled={filled} price={price}",
+                ts = point.ts_ms, ex = exchange, at = account_type, sym = symbol,
+                id = point.order_id_hash, side = point.side_label(),
+                status = point.status_label(), qty = point.qty,
+                filled = point.filled_qty, price = point.price);
+        }
+        Event::BalanceUpdate { exchange, account_type, symbol, point } => {
+            println!("{ts} {ex:?}/{at:?} BALANCE asset_hash={ah:016x} free={free} locked={locked} total={total} delta={delta}",
+                ts = point.ts_ms, ex = exchange, at = account_type,
+                ah = point.asset_hash, free = point.free, locked = point.locked,
+                total = point.total, delta = point.delta);
+            let _ = symbol;
+        }
+        Event::PositionUpdate { exchange, account_type, symbol, point } => {
+            println!("{ts} {ex:?}/{at:?} {sym} POSITION {side} qty={qty} entry={entry} upnl={upnl}",
+                ts = point.ts_ms, ex = exchange, at = account_type, sym = symbol,
+                side = point.side_label(), qty = point.qty,
+                entry = point.entry_price, upnl = point.unrealized_pnl);
+        }
+        Event::ConnectorReady { exchange } => {
+            println!("CONNECTOR_READY {exchange:?}");
+        }
+        Event::SymbolsLoaded { exchange, account_type, symbols } => {
+            println!("SYMBOLS_LOADED {exchange:?}/{account_type:?} count={}", symbols.len());
+        }
     }
 }
 

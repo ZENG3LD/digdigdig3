@@ -22,7 +22,7 @@ use std::sync::Arc;
 use dashmap::DashMap;
 
 use crate::connector_manager::{ConnectorFactory, ConnectorPool, WebSocketPool};
-use crate::core::traits::{CoreConnector, WebSocketConnector};
+use crate::core::traits::{CoreConnector, Credentials, WebSocketConnector};
 use crate::core::types::{AccountType, ConnectorCapabilities, ExchangeError, ExchangeId, ExchangeResult};
 
 /// Unified holder of REST and WS connector pools.
@@ -117,6 +117,32 @@ impl ExchangeHub {
     ) -> ExchangeResult<()> {
         let rest_override = self.rest_overrides.get(&id).map(|v| v.clone());
         let ws = ConnectorFactory::create_websocket(id, account_type, testnet, rest_override).await?;
+        self.ws.insert(id, account_type, ws);
+        Ok(())
+    }
+
+    /// Connect a WebSocket with credentials for private-stream subscriptions.
+    ///
+    /// The resulting connector is stored under the same `(id, account_type)`
+    /// key as public WS; if one is already connected for this pair it is
+    /// **replaced** (authenticated connector takes precedence).
+    ///
+    /// Available on native only — wasm32 private WS auth is CORS-blocked.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn connect_websocket_with_credentials(
+        &self,
+        id: ExchangeId,
+        account_type: AccountType,
+        credentials: Credentials,
+    ) -> ExchangeResult<()> {
+        let rest_override = self.rest_overrides.get(&id).map(|v| v.clone());
+        let ws = ConnectorFactory::create_websocket_authenticated(
+            id,
+            account_type,
+            credentials,
+            rest_override,
+        )
+        .await?;
         self.ws.insert(id, account_type, ws);
         Ok(())
     }

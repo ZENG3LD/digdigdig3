@@ -38,6 +38,13 @@ pub enum Kind {
     MarkPriceKline(KlineInterval),
     IndexPriceKline(KlineInterval),
     PremiumIndexKline(KlineInterval),
+    // --- private (auth-required) stream types ---
+    /// Order lifecycle events (create/fill/cancel/expire).  Auth-required.
+    OrderUpdate,
+    /// Account balance changes.  Auth-required.
+    BalanceUpdate,
+    /// Futures position changes.  Auth-required.
+    PositionUpdate,
 }
 
 /// Polling cadence + anti-alignment jitter for REST-only stream kinds.
@@ -114,6 +121,9 @@ impl Kind {
             Kind::MarkPriceKline(iv) => format!("mark_price_klines_{}", iv.as_str()),
             Kind::IndexPriceKline(iv) => format!("index_price_klines_{}", iv.as_str()),
             Kind::PremiumIndexKline(iv) => format!("premium_index_klines_{}", iv.as_str()),
+            Kind::OrderUpdate => "order_updates".to_string(),
+            Kind::BalanceUpdate => "balance_updates".to_string(),
+            Kind::PositionUpdate => "position_updates".to_string(),
         }
     }
 }

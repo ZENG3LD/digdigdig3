@@ -13,8 +13,10 @@ use std::sync::Arc;
 
 use digdigdig3::connector_manager::ExchangeHub;
 use digdigdig3::core::types::{AccountType, ExchangeId, SymbolInput};
+use digdigdig3::core::websocket::KlineInterval;
 
 use crate::data::{BarPoint, TradePoint};
+use crate::error::{Result, StationError};
 
 /// Pull up to `limit` recent trades from REST for (exchange, account, symbol).
 /// Returns oldest→newest. Empty vec on any error or unsupported.
@@ -37,6 +39,53 @@ pub async fn trades_recent(
             Vec::new()
         }
     }
+}
+
+/// Fetch up to `limit` historical bars ending at `end_time_ms` (exclusive)
+/// for the given series. Used by chart UIs for scroll-left pagination past
+/// the warm-start window.
+///
+/// Bypasses Station's persisted Series (pure REST through the shared
+/// `ExchangeHub`). Caller decides what to do with the result — typically
+/// merge into a local cache and re-render.
+///
+/// `end_time_ms` is exclusive: bars with `open_time >= end_time_ms` are
+/// excluded (matches the existing dig3-core `get_klines` semantic).
+///
+/// `symbol` must be in raw exchange-native form — no `SymbolNormalizer`
+/// is applied internally. The caller is responsible for normalization,
+/// matching the `SubscriptionSet::add_raw` convention.
+///
+/// Returns the raw `BarPoint` Vec sorted oldest-first.
+/// Returns `Ok(Vec::new())` if REST returns zero bars.
+/// Returns `Err(StationError::Core(...))` if `exchange` is not connected
+/// in `hub`.
+pub async fn fetch_history(
+    hub: &Arc<ExchangeHub>,
+    exchange: ExchangeId,
+    symbol: &str,
+    account_type: AccountType,
+    interval: &KlineInterval,
+    end_time_ms: i64,
+    limit: u16,
+) -> Result<Vec<BarPoint>> {
+    let rest = hub
+        .rest(exchange)
+        .ok_or_else(|| StationError::Core(format!("{exchange:?} not connected in hub")))?;
+    let limit = limit.min(1000).max(1);
+    let bars = rest
+        .get_klines(
+            SymbolInput::Raw(symbol),
+            interval.as_str(),
+            Some(limit),
+            account_type,
+            Some(end_time_ms),
+        )
+        .await
+        .map_err(|e| StationError::Core(format!("get_klines failed: {e}")))?;
+    let mut points: Vec<BarPoint> = bars.iter().map(BarPoint::from_kline).collect();
+    points.sort_unstable_by_key(|p| p.open_time);
+    Ok(points)
 }
 
 /// Pull up to `limit` klines (interval = `interval`) from REST for

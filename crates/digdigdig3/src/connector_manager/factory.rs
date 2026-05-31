@@ -1129,6 +1129,99 @@ impl ConnectorFactory {
         }
     }
 
+    /// Create an **authenticated** WebSocket connector (native only).
+    ///
+    /// Identical to [`Self::create_websocket`] except that `credentials` are
+    /// forwarded to the connector constructor so it can authenticate for
+    /// private-channel subscriptions (`OrderUpdate`, `BalanceUpdate`,
+    /// `PositionUpdate`).
+    ///
+    /// Exchanges that do not support private WS channels (or where the
+    /// individual connector ignores credentials) will still connect and
+    /// subscribe successfully — private-stream subscribes for those venues
+    /// return `UnsupportedOperation`, which Station maps to `SubscribeReport::failed`.
+    ///
+    /// Not available on wasm32 (private WS auth requires native net I/O and
+    /// server-side listen-key APIs that are CORS-blocked in browsers).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn create_websocket_authenticated(
+        id: ExchangeId,
+        account_type: AccountType,
+        credentials: Credentials,
+        rest_override: Option<String>,
+    ) -> ExchangeResult<Arc<dyn WebSocketConnector>> {
+        let testnet = credentials.testnet;
+        match id {
+            ExchangeId::Binance => {
+                let ws = BinanceWebSocket::new(Some(credentials), testnet, account_type).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::Bybit => {
+                let ws = BybitWebSocket::new(Some(credentials), testnet, account_type).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::OKX => {
+                let ws = OkxWebSocket::new(Some(credentials), testnet, account_type).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::KuCoin => {
+                let ws = KuCoinWebSocket::new_with_override(Some(credentials), testnet, account_type, rest_override).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::GateIO => {
+                let ws = GateioWebSocket::new(Some(credentials), testnet, account_type).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::Bitfinex => {
+                let _ = account_type;
+                Ok(Arc::new(BitfinexWebSocket::new(testnet)) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::Bitget => {
+                let ws = BitgetWebSocket::new(Some(credentials), testnet, account_type).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::BingX => {
+                let ws = BingxWebSocket::new(Some(credentials), testnet, account_type);
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::Deribit => {
+                let ws = DeribitWebSocket::new(Some(credentials), testnet, account_type).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::HTX => {
+                let ws = HtxWebSocket::new(Some(credentials), testnet, account_type)?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::MEXC => {
+                let ws = MexcWebSocket::new(Some(credentials), account_type).await?;
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::Upbit => {
+                let ws = UpbitWebSocket::new(Some(credentials), testnet, account_type);
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::Kraken => {
+                Ok(Arc::new(KrakenWebSocket::new()) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::Gemini => {
+                let ws = GeminiWebSocket::new(testnet);
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::Bitstamp => {
+                Ok(Arc::new(BitstampWebSocket::new()) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::Coinbase => {
+                Ok(Arc::new(CoinbaseWebSocket::public()) as Arc<dyn WebSocketConnector>)
+            }
+            ExchangeId::Bitmex => {
+                let ws = BitmexWebSocket::new(testnet);
+                Ok(Arc::new(ws) as Arc<dyn WebSocketConnector>)
+            }
+            // For all other exchanges, fall back to public WS (no private channels).
+            _ => Self::create_websocket(id, account_type, testnet, None).await,
+        }
+    }
+
     /// Create a WebSocket connector for browser (wasm32) targets.
     ///
     /// Supports 20 venues via `UniversalWsTransport` with browser-native WS

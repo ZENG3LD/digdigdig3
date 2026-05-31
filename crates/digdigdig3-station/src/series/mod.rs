@@ -40,7 +40,7 @@ pub mod store;
 pub use data_point::DataPoint;
 pub use key::{Kind, SeriesKey};
 pub use map::SharedSeriesMap;
-pub use series::Series;
+pub use series::{Series, SharedSeries};
 
 // PollSpec is wasm-safe (pure Duration + u8).
 pub use key::PollSpec;

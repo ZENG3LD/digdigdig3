@@ -1,13 +1,15 @@
-use digdigdig3::core::types::{AccountType, ExchangeId};
+use digdigdig3::core::traits::Credentials;
+use digdigdig3::core::types::{AccountType, ExchangeId, SymbolInfo};
 use digdigdig3::core::websocket::KlineInterval;
 
 use crate::data::{
-    AggTradePoint, BarPoint, BasisPoint, BlockTradePoint, CompositeIndexPoint,
+    AggTradePoint, BalanceUpdatePoint, BarPoint, BasisPoint, BlockTradePoint, CompositeIndexPoint,
     FundingRatePoint, FundingSettlementPoint, HistoricalVolatilityPoint, IndexPriceKlinePoint,
     IndexPricePoint, InsuranceFundPoint, LiquidationPoint, LongShortRatioPoint,
     MarkPriceKlinePoint, MarkPricePoint,
     MarketWarningPoint, ObDeltaPoint, ObSnapshotPoint, OpenInterestPoint, OptionGreeksPoint,
-    OrderbookL3Point, PredictedFundingPoint, PremiumIndexKlinePoint, RiskLimitPoint,
+    OrderUpdatePoint, OrderbookL3Point, PositionUpdatePoint, PredictedFundingPoint,
+    PremiumIndexKlinePoint, RiskLimitPoint,
     SettlementEventPoint, TickerPoint, TradePoint, VolatilityIndexPoint,
 };
 use crate::series::{Kind, SeriesKey};
@@ -47,6 +49,13 @@ pub enum Stream {
     MarkPriceKline(KlineInterval),
     IndexPriceKline(KlineInterval),
     PremiumIndexKline(KlineInterval),
+    // --- private (auth-required) streams ---
+    /// Order lifecycle events (create/fill/cancel/expire).  Requires credentials.
+    OrderUpdate,
+    /// Account balance changes.  Requires credentials.
+    BalanceUpdate,
+    /// Futures position changes.  Requires credentials.
+    PositionUpdate,
 }
 
 impl Stream {
@@ -80,7 +89,15 @@ impl Stream {
             Stream::MarkPriceKline(iv) => Kind::MarkPriceKline(iv.clone()),
             Stream::IndexPriceKline(iv) => Kind::IndexPriceKline(iv.clone()),
             Stream::PremiumIndexKline(iv) => Kind::PremiumIndexKline(iv.clone()),
+            Stream::OrderUpdate => Kind::OrderUpdate,
+            Stream::BalanceUpdate => Kind::BalanceUpdate,
+            Stream::PositionUpdate => Kind::PositionUpdate,
         }
+    }
+
+    /// True if this stream requires authentication credentials.
+    pub fn is_private(&self) -> bool {
+        matches!(self, Stream::OrderUpdate | Stream::BalanceUpdate | Stream::PositionUpdate)
     }
 }
 
@@ -97,6 +114,9 @@ pub(crate) struct Entry {
     /// (Deribit options like `BTC-23MAY26-86000-C`, exchange-specific
     /// suffixes, etc.).
     pub(crate) is_raw: bool,
+    /// Credentials for private (auth-required) streams.  `None` for public
+    /// streams.  Set by [`SubscriptionSet::add_authenticated`].
+    pub(crate) credentials: Option<Credentials>,
 }
 
 /// Declarative subscription request — built up fluently, consumed by
@@ -128,6 +148,7 @@ impl SubscriptionSet {
             account_type,
             streams: streams.into_iter().collect(),
             is_raw: false,
+            credentials: None,
         });
         self
     }
@@ -156,6 +177,36 @@ impl SubscriptionSet {
             account_type,
             streams: streams.into_iter().collect(),
             is_raw: true,
+            credentials: None,
+        });
+        self
+    }
+
+    /// Add authenticated (private) streams for `(exchange, account_type)`.
+    ///
+    /// Credentials are forwarded to the WS connector so it can open an
+    /// authenticated channel.  Multiple `add_authenticated` calls for the
+    /// same `(exchange, account_type)` pair will create separate entries;
+    /// Station's `acquire_or_spawn` reuses an already-connected authenticated
+    /// WS if one is present in the hub for that pair.
+    ///
+    /// `symbol` is ignored for account-wide private streams (`BalanceUpdate`).
+    /// Pass an empty string (`""`) or any placeholder — `Event::symbol()` for
+    /// those variants returns `""` or the asset identifier.
+    pub fn add_authenticated(
+        mut self,
+        exchange: ExchangeId,
+        account_type: AccountType,
+        credentials: Credentials,
+        streams: impl IntoIterator<Item = Stream>,
+    ) -> Self {
+        self.entries.push(Entry {
+            exchange,
+            symbol: String::new(),
+            account_type,
+            streams: streams.into_iter().collect(),
+            is_raw: true,
+            credentials: Some(credentials),
         });
         self
     }
@@ -312,6 +363,46 @@ pub enum Event {
         timeframe: KlineInterval,
         point: PremiumIndexKlinePoint,
     },
+    // --- connector lifecycle events (meta, not data stream) ---
+    /// Emitted once when `hub.connect_public(exchange)` succeeds, or
+    /// immediately if it was already connected when `warmup()` called.
+    ConnectorReady {
+        exchange: ExchangeId,
+    },
+    /// Emitted once per `(exchange, account_type)` after REST
+    /// `get_exchange_info` succeeds. Multiple emits per exchange if both
+    /// Spot and Futures resolve. `symbols` is the raw exchange response.
+    SymbolsLoaded {
+        exchange: ExchangeId,
+        account_type: AccountType,
+        symbols: Vec<SymbolInfo>,
+    },
+    // --- private (auth-required) events ---
+    /// Order lifecycle event (create/fill/cancel/expire).
+    /// `symbol` is the instrument symbol from the order, or `""` if the
+    /// exchange did not include it in this event.
+    OrderUpdate {
+        exchange: ExchangeId,
+        account_type: AccountType,
+        symbol: String,
+        point: OrderUpdatePoint,
+    },
+    /// Account balance change event.
+    /// `symbol` is the asset ticker (e.g. `"USDT"`), not a trading pair.
+    BalanceUpdate {
+        exchange: ExchangeId,
+        account_type: AccountType,
+        symbol: String,
+        point: BalanceUpdatePoint,
+    },
+    /// Futures position change event.
+    /// `symbol` is the instrument symbol for the position.
+    PositionUpdate {
+        exchange: ExchangeId,
+        account_type: AccountType,
+        symbol: String,
+        point: PositionUpdatePoint,
+    },
 }
 
 impl Event {
@@ -333,7 +424,11 @@ impl Event {
             Event::RiskLimit { exchange, .. } | Event::PredictedFunding { exchange, .. } |
             Event::FundingSettlement { exchange, .. } |
             Event::MarkPriceKline { exchange, .. } | Event::IndexPriceKline { exchange, .. } |
-            Event::PremiumIndexKline { exchange, .. } => *exchange,
+            Event::PremiumIndexKline { exchange, .. } |
+            Event::OrderUpdate { exchange, .. } | Event::BalanceUpdate { exchange, .. } |
+            Event::PositionUpdate { exchange, .. } => *exchange,
+            Event::ConnectorReady { exchange } => *exchange,
+            Event::SymbolsLoaded { exchange, .. } => *exchange,
         }
     }
     pub fn symbol(&self) -> &str {
@@ -354,7 +449,11 @@ impl Event {
             Event::RiskLimit { symbol, .. } | Event::PredictedFunding { symbol, .. } |
             Event::FundingSettlement { symbol, .. } |
             Event::MarkPriceKline { symbol, .. } | Event::IndexPriceKline { symbol, .. } |
-            Event::PremiumIndexKline { symbol, .. } => symbol,
+            Event::PremiumIndexKline { symbol, .. } |
+            Event::OrderUpdate { symbol, .. } | Event::BalanceUpdate { symbol, .. } |
+            Event::PositionUpdate { symbol, .. } => symbol,
+            // Lifecycle events carry no symbol.
+            Event::ConnectorReady { .. } | Event::SymbolsLoaded { .. } => "",
         }
     }
 
@@ -394,7 +493,12 @@ impl Event {
             | Event::FundingSettlement { symbol, .. }
             | Event::MarkPriceKline { symbol, .. }
             | Event::IndexPriceKline { symbol, .. }
-            | Event::PremiumIndexKline { symbol, .. } => *symbol = new_symbol,
+            | Event::PremiumIndexKline { symbol, .. }
+            | Event::OrderUpdate { symbol, .. }
+            | Event::BalanceUpdate { symbol, .. }
+            | Event::PositionUpdate { symbol, .. } => *symbol = new_symbol,
+            // Lifecycle events have no symbol field — no-op.
+            Event::ConnectorReady { .. } | Event::SymbolsLoaded { .. } => {}
         }
     }
     pub fn timestamp_ms(&self) -> i64 {
@@ -428,8 +532,29 @@ impl Event {
             Event::MarkPriceKline { point, .. } => point.timestamp_ms(),
             Event::IndexPriceKline { point, .. } => point.timestamp_ms(),
             Event::PremiumIndexKline { point, .. } => point.timestamp_ms(),
+            Event::OrderUpdate { point, .. } => point.timestamp_ms(),
+            Event::BalanceUpdate { point, .. } => point.timestamp_ms(),
+            Event::PositionUpdate { point, .. } => point.timestamp_ms(),
+            // Lifecycle events: use current epoch ms.
+            Event::ConnectorReady { .. } | Event::SymbolsLoaded { .. } => {
+                chrono::Utc::now().timestamp_millis()
+            }
         }
     }
+}
+
+/// Outcome of [`crate::Station::warmup`].
+///
+/// `ok` holds every exchange that connected and had its exchange-info fetched
+/// successfully. `failed` holds exchanges that failed at either the connect or
+/// the REST stage.
+#[derive(Debug, Clone)]
+pub struct WarmupReport {
+    /// Exchanges that connected (and had `get_exchange_info` succeed for at
+    /// least one `AccountType`, if the connector supports it).
+    pub ok: Vec<ExchangeId>,
+    /// Exchanges that failed at connect or REST stage.
+    pub failed: Vec<(ExchangeId, String)>,
 }
 
 /// RAII handle returned from `Station::subscribe`. Dropping releases the

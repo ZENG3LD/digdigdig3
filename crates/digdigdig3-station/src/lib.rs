@@ -7,6 +7,9 @@
 //! Phase 1 scope (current): skeleton only. Modules below are stubs.
 
 pub mod backfill;
+pub use backfill::fetch_history;
+pub mod ws_health;
+pub use ws_health::WsHealth;
 pub mod builder;
 pub mod settings;
 pub mod cache;
@@ -53,11 +56,12 @@ pub use builder::StationBuilder;
 pub use cache::{ticker_cache, CacheConfig, TickerKey};
 pub use error::{Result, StationError};
 pub use persistence::PersistenceConfig;
-pub use series::{DataPoint, Kind, Series, SeriesKey, SharedSeriesMap};
+pub use series::{DataPoint, Kind, Series, SeriesKey, SharedSeries, SharedSeriesMap};
 pub use quota::{ConsumerHandle, ConsumerQuota, ConsumerWhitelist, QuotaError};
 pub use station::Station;
 pub use subscription::{
     Event, FailedStream, Stream, SubscribeReport, SubscriptionHandle, SubscriptionSet,
+    WarmupReport,
 };
 
 // DiskStore is available on both targets (native: std::fs; wasm32: OPFS).
@@ -94,3 +98,9 @@ pub use cure::{
 // Re-export common core types so consumers can build a SubscriptionSet without
 // pulling `digdigdig3` directly.
 pub use digdigdig3::core::types::{AccountType, ExchangeId};
+pub use digdigdig3::SymbolInfo;
+// Re-export Credentials so callers can use add_authenticated without a direct
+// digdigdig3 dependency.
+pub use digdigdig3::core::traits::Credentials;
+// Re-export private DataPoint types for consumers that inspect private events.
+pub use data::{BalanceUpdatePoint, OrderUpdatePoint, PositionUpdatePoint};

@@ -1,24 +1,27 @@
+use std::any::Any;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use crate::ws_health::WsHealth;
+
 use dashmap::DashMap;
 use digdigdig3::connector_manager::ExchangeHub;
 use digdigdig3::core::types::{
-    StreamEvent, StreamType, SubscriptionRequest, Symbol,
+    AccountType, ExchangeId, StreamEvent, StreamType, SubscriptionRequest, Symbol, SymbolInfo,
 };
 use digdigdig3::core::websocket::KlineInterval;
 use digdigdig3::core::utils::SymbolNormalizer;
 use futures_util::StreamExt;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot, RwLock};
 
 use crate::data::{
-    AggTradePoint, BarPoint, BasisPoint, BlockTradePoint, CompositeIndexPoint,
+    AggTradePoint, BalanceUpdatePoint, BarPoint, BasisPoint, BlockTradePoint, CompositeIndexPoint,
     FundingRatePoint, FundingSettlementPoint, HistoricalVolatilityPoint, IndexPriceKlinePoint,
     IndexPricePoint, InsuranceFundPoint, LiquidationPoint, LongShortRatioPoint,
     MarkPriceKlinePoint, MarkPricePoint,
     MarketWarningPoint, ObDeltaPoint, ObSnapshotPoint, OpenInterestPoint, OptionGreeksPoint,
-    OrderbookL3Point,
+    OrderUpdatePoint, OrderbookL3Point, PositionUpdatePoint,
     PredictedFundingPoint, PremiumIndexKlinePoint, RiskLimitPoint, SettlementEventPoint,
     TickerPoint, TradePoint, VolatilityIndexPoint,
 };
@@ -46,8 +49,30 @@ pub(crate) struct StationInner {
     pub(crate) storage_root: PathBuf,
     pub(crate) persistence: PersistenceConfig,
     pub(crate) muxes: DashMap<SeriesKey, Multiplexer>,
+    /// Sync-accessible series handles for render-time consumers.
+    ///
+    /// Each active forwarder stores `Arc<RwLock<Series<T>>>` here (type-erased
+    /// to `Arc<dyn Any + Send + Sync>`). `Station::series<T>()` retrieves and
+    /// downcasts. Entries are removed when the forwarder exits (same lifecycle
+    /// as `muxes`).
+    pub(crate) series_handles: DashMap<SeriesKey, Arc<dyn Any + Send + Sync>>,
     pub(crate) warm_start_capacity: usize,
     pub(crate) gap_heal: crate::GapHealConfig,
+    /// How long to keep a forwarder alive after its last consumer drops.
+    /// `Duration::ZERO` = immediate shutdown (default).
+    pub(crate) unsubscribe_grace: std::time::Duration,
+    /// Issue a one-shot REST `get_orderbook` seed on first subscribe to
+    /// `Orderbook` / `OrderbookDelta`. False = WS-only (default).
+    pub(crate) orderbook_rest_seed: bool,
+    /// Depth for the REST seed. Passed as `Some(depth as u16)` to `get_orderbook`.
+    pub(crate) orderbook_seed_depth: usize,
+    /// Broadcast channel for connector lifecycle events (`ConnectorReady`,
+    /// `SymbolsLoaded`). Independent of per-`SeriesKey` data muxes.
+    /// Capacity 256 — lag drops oldest.
+    pub(crate) connector_tx: broadcast::Sender<crate::subscription::Event>,
+    /// Cache for `get_exchange_info` results, keyed by `(exchange, account_type)`.
+    /// Populated by `warmup()`; re-emits without REST on repeated calls.
+    pub(crate) exchange_info_cache: DashMap<(ExchangeId, AccountType), Vec<SymbolInfo>>,
 }
 
 /// One broadcast-fanout actor per `SeriesKey`. Each consumer increments
@@ -56,6 +81,13 @@ pub(crate) struct Multiplexer {
     pub(crate) tx: broadcast::Sender<Event>,
     pub(crate) consumers: Arc<AtomicUsize>,
     pub(crate) shutdown: Option<oneshot::Sender<()>>,
+    /// Cancel sender for a pending grace-period timer task.
+    /// `Some` only while the forwarder is in the grace window
+    /// (refcount == 0 but shutdown not yet fired). Sending `()` on this
+    /// channel cancels the timer and keeps the forwarder alive.
+    /// A new subscribe arriving before the timer fires sends on this channel
+    /// and increments consumers.
+    pub(crate) grace_cancel: Option<oneshot::Sender<()>>,
 }
 
 impl std::fmt::Debug for Station {
@@ -72,6 +104,30 @@ impl Station {
     pub fn builder() -> StationBuilder { StationBuilder::new() }
     pub fn storage_root(&self) -> &std::path::Path { &self.inner.storage_root }
     pub fn active_streams(&self) -> usize { self.inner.muxes.len() }
+
+    /// Return a sync handle to the in-memory ring for `key`.
+    ///
+    /// Returns `Some(Arc<RwLock<Series<T>>>)` when a forwarder for `key` is
+    /// currently live (active subscription or within the 30 s grace window) and
+    /// the concrete element type matches `T`.  Returns `None` when no active
+    /// forwarder exists for this key or when the stored type differs from `T`
+    /// (type mismatch is silently treated as absent rather than panicking).
+    ///
+    /// Render-time consumers (chart panels, dashboards) use this to peek at the
+    /// running ring without awaiting an `Event`.  The handle is independent of
+    /// `SubscriptionHandle::recv()` — events still flow through there for
+    /// state-mutation paths; this getter is read-only.
+    pub fn series<T: DataPoint + 'static>(&self, key: &SeriesKey)
+        -> Option<Arc<RwLock<Series<T>>>>
+    {
+        let erased = self.inner.series_handles.get(key)?;
+        // Downcast Arc<dyn Any + Send + Sync> → Arc<RwLock<Series<T>>>.
+        // `Arc::downcast` is not available for trait objects; use `Any::downcast_ref`
+        // on the inner value to verify the type, then clone the concrete Arc.
+        erased
+            .downcast_ref::<Arc<RwLock<Series<T>>>>()
+            .map(Arc::clone)
+    }
 
     /// Register a consumer with the given quota. Drop the returned
     /// [`ConsumerHandle`] to release all of the consumer's active
@@ -105,16 +161,252 @@ impl Station {
         if b.persistence.enabled {
             std::fs::create_dir_all(&b.storage_root).map_err(StationError::Io)?;
         }
+        let (connector_tx, _) = broadcast::channel(256);
         Ok(Self {
             inner: Arc::new(StationInner {
                 hub: Arc::new(ExchangeHub::new()),
                 storage_root: b.storage_root,
                 persistence: b.persistence,
                 muxes: DashMap::new(),
+                series_handles: DashMap::new(),
                 warm_start_capacity: b.warm_start.max(1),
                 gap_heal: b.gap_heal,
+                unsubscribe_grace: b.unsubscribe_grace,
+                orderbook_rest_seed: b.orderbook_rest_seed,
+                orderbook_seed_depth: b.orderbook_seed_depth,
+                connector_tx,
+                exchange_info_cache: DashMap::new(),
             }),
         })
+    }
+
+    /// A broadcast receiver for connector lifecycle events
+    /// (`ConnectorReady` / `SymbolsLoaded`). Returns events emitted from any
+    /// source — `warmup()`, on-demand subscribe-time connector init, REST
+    /// exchange-info refresh.
+    ///
+    /// Independent of `SubscriptionHandle` event streams. Capacity 256.
+    /// Lag drops oldest.
+    pub fn connector_events(&self) -> broadcast::Receiver<crate::subscription::Event> {
+        self.inner.connector_tx.subscribe()
+    }
+
+    /// Snapshot of cached `SymbolInfo` for `exchange` across all account types.
+    /// Empty if `warmup` hasn't yet been called or REST hasn't completed.
+    pub fn symbols(&self, exchange: ExchangeId) -> Vec<SymbolInfo> {
+        let mut out = Vec::new();
+        for entry in self.inner.exchange_info_cache.iter() {
+            if entry.key().0 == exchange {
+                out.extend_from_slice(entry.value());
+            }
+        }
+        out
+    }
+
+    /// Snapshot the live health metrics for the WS forwarder backing `key`.
+    ///
+    /// Returns `None` if no forwarder exists for this key (no active or
+    /// grace-window subscription).
+    ///
+    /// Sync, non-blocking — suitable for periodic diagnostics polls or
+    /// per-frame UI overlays (latency badges). Each field is a best-effort
+    /// snapshot:
+    ///
+    /// - `connected`: always accurate — derived from mux presence.
+    /// - `rtt_ms`: `None` until per-connector RTT handle wiring is added
+    ///   (incremental; OKX is the first candidate).
+    /// - `last_message_ms`: `None` until per-forwarder atomic timestamp
+    ///   wiring is added (incremental).
+    pub fn ws_health(&self, key: &SeriesKey) -> Option<WsHealth> {
+        // Presence in muxes == a live forwarder (active or grace-window).
+        self.inner.muxes.get(key)?;
+        Some(WsHealth {
+            connected: true,
+            rtt_ms: None,
+            last_message_ms: None,
+        })
+    }
+
+    /// Aggregate health across all forwarders for `exchange`.
+    ///
+    /// - `rtt_ms`: median of non-`None` RTT values across forwarders.
+    /// - `last_message_ms`: max of non-`None` last-message timestamps
+    ///   (most-recent message seen on any forwarder for this exchange).
+    /// - `connected`: `true` if at least one forwarder is connected.
+    ///
+    /// Returns `None` if there are no active forwarders for `exchange`.
+    pub fn ws_health_for_exchange(
+        &self,
+        exchange: ExchangeId,
+    ) -> Option<WsHealth> {
+        let mut any_connected = false;
+        let mut rtts: Vec<u64> = Vec::new();
+        let mut last_msgs: Vec<i64> = Vec::new();
+
+        for entry in self.inner.muxes.iter() {
+            if entry.key().exchange != exchange {
+                continue;
+            }
+            // Each mux entry == one live forwarder.
+            let h = WsHealth {
+                connected: true,
+                rtt_ms: None,
+                last_message_ms: None,
+            };
+            any_connected = true;
+            if let Some(rtt) = h.rtt_ms {
+                rtts.push(rtt);
+            }
+            if let Some(ts) = h.last_message_ms {
+                last_msgs.push(ts);
+            }
+        }
+
+        if !any_connected {
+            return None;
+        }
+
+        let rtt_ms = if rtts.is_empty() {
+            None
+        } else {
+            rtts.sort_unstable();
+            Some(rtts[rtts.len() / 2])
+        };
+
+        Some(WsHealth {
+            connected: true,
+            rtt_ms,
+            last_message_ms: last_msgs.into_iter().max(),
+        })
+    }
+
+    /// Eagerly connect to every exchange in `exchanges` and pre-load their
+    /// full symbol list. Subscribes nothing — produces only
+    /// `Event::ConnectorReady` (one per exchange that finishes
+    /// `connect_public`) and `Event::SymbolsLoaded` (one per exchange whose
+    /// REST `get_exchange_info` succeeds for at least one account type) on
+    /// the broadcast channel returned by `Station::connector_events()`.
+    ///
+    /// Idempotent: running concurrently or repeatedly is safe.
+    /// Already-connected exchanges short-circuit. Already-cached symbol lists
+    /// re-broadcast from cache without REST.
+    ///
+    /// Runs to completion — returns a [`WarmupReport`] of outcomes.
+    pub async fn warmup(&self, exchanges: &[ExchangeId]) -> crate::subscription::WarmupReport {
+        use crate::subscription::{Event, WarmupReport};
+
+        let mut ok = Vec::new();
+        let mut failed: Vec<(ExchangeId, String)> = Vec::new();
+
+        // Phase 1: connect all exchanges (spawn concurrent tasks).
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut join_set: tokio::task::JoinSet<(ExchangeId, Result<()>)> =
+                tokio::task::JoinSet::new();
+
+            for &eid in exchanges {
+                if self.inner.hub.is_connected(eid) {
+                    let _ = self.inner.connector_tx.send(Event::ConnectorReady { exchange: eid });
+                    ok.push(eid);
+                } else {
+                    let hub = Arc::clone(&self.inner.hub);
+                    join_set.spawn(async move {
+                        (eid, hub.connect_public(eid, false).await.map_err(|e| {
+                            crate::StationError::Core(e.to_string())
+                        }))
+                    });
+                }
+            }
+
+            while let Some(res) = join_set.join_next().await {
+                match res {
+                    Ok((eid, Ok(()))) => {
+                        let _ = self.inner.connector_tx.send(Event::ConnectorReady { exchange: eid });
+                        ok.push(eid);
+                    }
+                    Ok((eid, Err(e))) => {
+                        tracing::warn!(?eid, ?e, "warmup: connect_public failed");
+                        failed.push((eid, e.to_string()));
+                    }
+                    Err(join_err) => {
+                        tracing::warn!(?join_err, "warmup: task panicked");
+                    }
+                }
+            }
+        }
+        // wasm32: no JoinSet — run sequentially (wasm is single-threaded).
+        #[cfg(target_arch = "wasm32")]
+        {
+            for &eid in exchanges {
+                if self.inner.hub.is_connected(eid) {
+                    let _ = self.inner.connector_tx.send(Event::ConnectorReady { exchange: eid });
+                    ok.push(eid);
+                } else {
+                    match self.inner.hub.connect_public(eid, false).await {
+                        Ok(()) => {
+                            let _ = self.inner.connector_tx.send(Event::ConnectorReady { exchange: eid });
+                            ok.push(eid);
+                        }
+                        Err(e) => {
+                            tracing::warn!(?eid, ?e, "warmup: connect_public failed");
+                            failed.push((eid, e.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Phase 2: fetch exchange info for all successfully connected exchanges.
+        const ACCOUNT_TYPES: &[AccountType] = &[AccountType::Spot, AccountType::FuturesCross];
+
+        for eid in ok.iter().copied() {
+            let Some(connector) = self.inner.hub.rest(eid) else {
+                // REST connector absent — skip exchange-info silently.
+                continue;
+            };
+            for &at in ACCOUNT_TYPES {
+                // Cache hit: re-emit from cache, skip REST.
+                if let Some(cached) = self.inner.exchange_info_cache.get(&(eid, at)) {
+                    let symbols = cached.value().clone();
+                    let _ = self.inner.connector_tx.send(Event::SymbolsLoaded {
+                        exchange: eid,
+                        account_type: at,
+                        symbols,
+                    });
+                    continue;
+                }
+                // Cache miss: call REST.
+                match connector.get_exchange_info(at).await {
+                    Ok(symbols) if !symbols.is_empty() => {
+                        self.inner.exchange_info_cache.insert((eid, at), symbols.clone());
+                        let _ = self.inner.connector_tx.send(Event::SymbolsLoaded {
+                            exchange: eid,
+                            account_type: at,
+                            symbols,
+                        });
+                    }
+                    Ok(_empty) => {
+                        // Empty list — account type not supported by this exchange, skip.
+                    }
+                    Err(e) => {
+                        use digdigdig3::core::types::ExchangeError;
+                        match &e {
+                            ExchangeError::NotSupported(_)
+                            | ExchangeError::UnsupportedOperation(_) => {
+                                // Expected for exchanges without futures or without
+                                // exchange-info REST — silent skip.
+                            }
+                            other => {
+                                tracing::warn!(?eid, ?at, ?other, "warmup: get_exchange_info failed");
+                                failed.push((eid, other.to_string()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        WarmupReport { ok, failed }
     }
 
     /// Subscribe to every (exchange, symbol, account, stream) combination in
@@ -162,11 +454,35 @@ impl Station {
             });
 
             if needs_ws {
-                if let Err(e) = self
-                    .inner
-                    .hub
-                    .connect_websocket(entry.exchange, entry.account_type, false)
-                    .await
+                // For authenticated entries (private streams), open an
+                // authenticated WS connection.  Falls back to public WS on
+                // wasm32 where private WS auth is unavailable.
+                let ws_connect_result = if let Some(ref creds) = entry.credentials {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        self.inner
+                            .hub
+                            .connect_websocket_with_credentials(
+                                entry.exchange,
+                                entry.account_type,
+                                creds.clone(),
+                            )
+                            .await
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        let _ = creds;
+                        Err(digdigdig3::core::types::ExchangeError::UnsupportedOperation(
+                            "private WS streams not supported on wasm32".into(),
+                        ))
+                    }
+                } else {
+                    self.inner
+                        .hub
+                        .connect_websocket(entry.exchange, entry.account_type, false)
+                        .await
+                };
+                if let Err(e) = ws_connect_result
                 {
                     let err_msg = format!("connect_websocket: {e}");
                     for s in &entry.streams {
@@ -319,7 +635,14 @@ impl Station {
         raw_symbol: &str,
         stream: &Stream,
     ) -> Result<broadcast::Sender<Event>> {
-        if let Some(mux) = self.inner.muxes.get(key) {
+        if let Some(mut mux) = self.inner.muxes.get_mut(key) {
+            // Cancel any pending grace-period timer — the forwarder is being
+            // reused before the grace window expired. Sending on grace_cancel
+            // unblocks the timer task's select! arm, which then exits without
+            // firing the shutdown signal.
+            if let Some(cancel) = mux.grace_cancel.take() {
+                let _ = cancel.send(());
+            }
             mux.consumers.fetch_add(1, Ordering::SeqCst);
             return Ok(mux.tx.clone());
         }
@@ -410,8 +733,35 @@ impl Station {
             }
             Kind::AggTrade => spawn_forwarder::<AggTradePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::Ticker => spawn_forwarder::<TickerPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
-            Kind::Orderbook => spawn_forwarder::<ObSnapshotPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
-            Kind::OrderbookDelta => spawn_forwarder::<ObDeltaPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::Orderbook => {
+                let ob_seed = if self.inner.orderbook_rest_seed {
+                    ob_rest_seed(&hub, key.exchange, acct, &raw_s, self.inner.orderbook_seed_depth).await
+                } else {
+                    Vec::new()
+                };
+                spawn_forwarder::<ObSnapshotPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), ob_seed, req.clone());
+            }
+            Kind::OrderbookDelta => {
+                // Seed via REST snapshot: the same ObSnapshotPoint bootstrap gives
+                // consumers a seeded book state before deltas arrive. We emit the
+                // snapshot on the ObDeltaPoint forwarder's broadcast as an
+                // `Event::OrderbookSnapshot` by seeding the *Orderbook* forwarder
+                // separately — but that would require a second mux entry. Instead
+                // we seed the ObSnapshotPoint on a one-shot broadcast before the
+                // delta forwarder starts, so downstream assemblers can pre-load it.
+                //
+                // For OrderbookDelta the rest_seed Vec<ObDeltaPoint> stays empty
+                // (no REST delta history), but we emit the snapshot as a
+                // standalone broadcast event on the delta channel's sender.
+                if self.inner.orderbook_rest_seed {
+                    ob_emit_rest_seed_as_snapshot(
+                        &hub, key.exchange, acct, &raw_s,
+                        self.inner.orderbook_seed_depth,
+                        &bcast_tx,
+                    ).await;
+                }
+                spawn_forwarder::<ObDeltaPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone());
+            }
             Kind::MarkPrice => spawn_forwarder::<MarkPricePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::FundingRate => spawn_forwarder::<FundingRatePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::OpenInterest => spawn_forwarder::<OpenInterestPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
@@ -436,12 +786,16 @@ impl Station {
             Kind::FundingSettlement => spawn_forwarder::<FundingSettlementPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::MarkPriceKline(_) => spawn_forwarder::<MarkPriceKlinePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::IndexPriceKline(_) => spawn_forwarder::<IndexPriceKlinePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
-            Kind::PremiumIndexKline(_) => spawn_forwarder::<PremiumIndexKlinePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req),
+            Kind::PremiumIndexKline(_) => spawn_forwarder::<PremiumIndexKlinePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            // Private streams — no warm-start seed, no persistence (ephemeral by design).
+            Kind::OrderUpdate => spawn_forwarder::<OrderUpdatePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::BalanceUpdate => spawn_forwarder::<BalanceUpdatePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
+            Kind::PositionUpdate => spawn_forwarder::<PositionUpdatePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req),
         }
 
         self.inner.muxes.insert(
             key.clone(),
-            Multiplexer { tx: bcast_tx.clone(), consumers, shutdown: Some(shutdown_tx) },
+            Multiplexer { tx: bcast_tx.clone(), consumers, shutdown: Some(shutdown_tx), grace_cancel: None },
         );
 
         Ok(bcast_tx)
@@ -547,7 +901,7 @@ impl Station {
 
         self.inner.muxes.insert(
             key.clone(),
-            Multiplexer { tx: bcast_tx.clone(), consumers, shutdown: Some(shutdown_tx) },
+            Multiplexer { tx: bcast_tx.clone(), consumers, shutdown: Some(shutdown_tx), grace_cancel: None },
         );
 
         Ok(bcast_tx)
@@ -611,6 +965,7 @@ impl Station {
                 tx: bcast_tx.clone(),
                 consumers,
                 shutdown: Some(shutdown_tx),
+                grace_cancel: None,
             },
         );
         Ok(bcast_tx)
@@ -619,18 +974,79 @@ impl Station {
 
 impl StationInner {
     pub(crate) fn release_consumer(self: &Arc<Self>, key: &SeriesKey) {
-        let should_remove = {
+        let (became_zero, grace) = {
             let Some(mux) = self.muxes.get(key) else { return; };
             let prev = mux.consumers.fetch_sub(1, Ordering::SeqCst);
-            prev <= 1
+            (prev <= 1, self.unsubscribe_grace)
         };
-        if should_remove {
+
+        if !became_zero {
+            return;
+        }
+
+        if grace.is_zero() {
+            // Immediate shutdown — existing behaviour.
             if let Some((_, mut mux)) = self.muxes.remove(key) {
                 if let Some(tx) = mux.shutdown.take() {
                     let _ = tx.send(());
                 }
             }
+            return;
         }
+
+        // Grace period: spawn a timer task. Store a cancel channel in the mux
+        // so `acquire_or_spawn` can cancel it when a new subscriber arrives.
+        let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+
+        // Store cancel_tx in the mux before spawning to avoid a race where
+        // acquire_or_spawn could observe grace_cancel == None before the task
+        // starts (extremely unlikely but theoretically possible on native).
+        {
+            let Some(mut mux) = self.muxes.get_mut(key) else { return; };
+            mux.grace_cancel = Some(cancel_tx);
+        }
+
+        let inner = Arc::clone(self);
+        let key = key.clone();
+
+        let grace_fut = Box::pin(async move {
+            // Race: grace timer vs cancel signal from acquire_or_spawn.
+            #[cfg(not(target_arch = "wasm32"))]
+            let timed_out = tokio::select! {
+                _ = cancel_rx => false,
+                _ = tokio::time::sleep(grace) => true,
+            };
+            #[cfg(target_arch = "wasm32")]
+            let timed_out = tokio::select! {
+                _ = cancel_rx => false,
+                _ = gloo_timers::future::sleep(grace) => true,
+            };
+
+            if timed_out {
+                // Grace expired without a new subscriber — fire shutdown.
+                // Double-check consumers == 0 as a safety net (the cancel
+                // channel send happens before fetch_add, so a race that
+                // increments consumers before we reach here is possible in
+                // theory; the guard prevents a spurious kill).
+                let still_zero = inner
+                    .muxes
+                    .get(&key)
+                    .map(|m| m.consumers.load(Ordering::SeqCst) == 0)
+                    .unwrap_or(false);
+                if still_zero {
+                    if let Some((_, mut mux)) = inner.muxes.remove(&key) {
+                        if let Some(tx) = mux.shutdown.take() {
+                            let _ = tx.send(());
+                        }
+                    }
+                    inner.series_handles.remove(&key);
+                }
+            }
+        });
+        #[cfg(not(target_arch = "wasm32"))]
+        tokio::spawn(grace_fut);
+        #[cfg(target_arch = "wasm32")]
+        wasm_bindgen_futures::spawn_local(grace_fut);
     }
 }
 
@@ -724,7 +1140,7 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
                         }
                     }
                     series.push(point.clone());
-                    let _ = bcast_tx.send(Event::from_point(exchange, &symbol_label, &key.kind, point));
+                    let _ = bcast_tx.send(Event::from_point(exchange, key.account_type, &symbol_label, &key.kind, point));
                 }
             }
 
@@ -789,6 +1205,14 @@ fn spawn_forwarder<T: DataPoint + 'static>(
     let gap_cfg = inner.gap_heal;
     let hub_for_heal = inner.hub.clone();
 
+    // Create the shared series arc and register it in series_handles so
+    // Station::series<T>() can hand it to render-time consumers synchronously.
+    let shared_series: Arc<RwLock<Series<T>>> = Arc::new(RwLock::new(Series::new(warm)));
+    // Type-erase: store Arc<RwLock<Series<T>>> inside an Arc<dyn Any+Send+Sync>.
+    // The outer Arc is what Any::downcast_ref will find the concrete type on.
+    let erased: Arc<dyn Any + Send + Sync> = Arc::new(Arc::clone(&shared_series));
+    inner.series_handles.insert(key.clone(), erased);
+
     {
     let forwarder_fut = Box::pin(async move {
         // Open disk store if persistence is on for this kind.
@@ -816,10 +1240,9 @@ fn spawn_forwarder<T: DataPoint + 'static>(
         #[cfg(target_arch = "wasm32")]
         let _ = &storage_root;
 
-        // In-memory ring (warm capacity).
-        let mut series = Series::<T>::new(warm);
-        // Newest open_time emitted so far. Used to size disconnect heal and to
-        // skip already-delivered bars after REST returns overlapping window.
+        // In-memory ring (warm capacity) — shared with Station::series<T>().
+        // The forwarder is the sole writer; render-time consumers hold read
+        // guards for snapshot access without awaiting an Event.
         let mut last_emitted_ms: i64 = 0;
 
         // Warm-start. Priority: disk tail > REST seed.
@@ -836,10 +1259,10 @@ fn spawn_forwarder<T: DataPoint + 'static>(
                 disk_tail
             };
             for p in &seed_points {
-                let _ = bcast_tx.send(Event::from_point(exchange, &symbol_label, &key.kind, p.clone()));
+                let _ = bcast_tx.send(Event::from_point(exchange, key.account_type, &symbol_label, &key.kind, p.clone()));
                 last_emitted_ms = last_emitted_ms.max(p.timestamp_ms());
             }
-            series.seed(seed_points);
+            shared_series.write().await.seed(seed_points);
         }
 
         let mut stream = ws.event_stream();
@@ -934,14 +1357,17 @@ fn spawn_forwarder<T: DataPoint + 'static>(
                 //    have already returned above). Wave 4-B: enabled on both
                 //    targets. On wasm REST succeeds for the 9 proxy-override
                 //    venues; silently returns empty for others until Wave 4-C.
-                run_kline_heal::<T>(
-                    &hub_for_heal, &key, &gap_cfg, &symbol_label,
-                    last_emitted_ms, exchange,
-                    &mut series, &mut disk, &bcast_tx,
-                ).await;
-                last_emitted_ms = last_emitted_ms.max(
-                    series.last().map(|p| p.timestamp_ms()).unwrap_or(0)
-                );
+                {
+                    let mut series_guard = shared_series.write().await;
+                    run_kline_heal::<T>(
+                        &hub_for_heal, &key, &gap_cfg, &symbol_label,
+                        last_emitted_ms, exchange,
+                        &mut *series_guard, &mut disk, &bcast_tx,
+                    ).await;
+                    last_emitted_ms = last_emitted_ms.max(
+                        series_guard.last().map(|p| p.timestamp_ms()).unwrap_or(0)
+                    );
+                }
                 // 2. Force a fresh subscription state at the exchange.
                 //    Unsubscribe is best-effort (the server may have already
                 //    dropped us). Resubscribe must succeed or we log + retry
@@ -1011,14 +1437,17 @@ fn spawn_forwarder<T: DataPoint + 'static>(
             let pt_ts = point.timestamp_ms();
             // Klines: multiple in-flight updates share open_time — upsert
             // keeps the ring deduplicated. Other kinds are monotonic.
-            if matches!(&key.kind, Kind::Kline(_) | Kind::MarkPriceKline(_) | Kind::IndexPriceKline(_) | Kind::PremiumIndexKline(_)) {
-                series.upsert_by_ts(point.clone());
-            } else {
-                series.push(point.clone());
+            {
+                let mut series_guard = shared_series.write().await;
+                if matches!(&key.kind, Kind::Kline(_) | Kind::MarkPriceKline(_) | Kind::IndexPriceKline(_) | Kind::PremiumIndexKline(_)) {
+                    series_guard.upsert_by_ts(point.clone());
+                } else {
+                    series_guard.push(point.clone());
+                }
             }
             last_emitted_ms = last_emitted_ms.max(pt_ts);
 
-            let _ = bcast_tx.send(Event::from_point(exchange, &symbol_label, &key.kind, point));
+            let _ = bcast_tx.send(Event::from_point(exchange, key.account_type, &symbol_label, &key.kind, point));
 
             #[cfg(not(target_arch = "wasm32"))]
             if debug_slow_ms > 0 {
@@ -1028,7 +1457,6 @@ fn spawn_forwarder<T: DataPoint + 'static>(
 
         // Final flush on both targets (Wave 4-E: wasm flushes OPFS on shutdown).
         if let Some(mut d) = disk { let _ = d.flush().await; }
-        let _ = series; // dropped
         // Remove the mux entry so a subsequent `subscribe` for the same key
         // can re-spawn a fresh forwarder. Without this, the dead mux would
         // sit in `inner.muxes`, and re-subscribe would attach to a broadcast
@@ -1047,6 +1475,9 @@ fn spawn_forwarder<T: DataPoint + 'static>(
         if still_consumers == 0 {
             inner.muxes.remove(&key);
         }
+        // Remove the series handle so Station::series<T>() returns None once
+        // the forwarder is gone (same lifecycle as the mux entry).
+        inner.series_handles.remove(&key);
     });
     #[cfg(not(target_arch = "wasm32"))]
     tokio::spawn(forwarder_fut);
@@ -1104,7 +1535,7 @@ async fn run_kline_heal<T: DataPoint + 'static>(
         series.upsert_by_ts(p);
     }
     for p in new_to_emit {
-        let _ = bcast_tx.send(Event::from_point(exchange, symbol_label, &key.kind, p));
+        let _ = bcast_tx.send(Event::from_point(exchange, key.account_type, symbol_label, &key.kind, p));
     }
     if let Some(d) = disk.as_mut() { let _ = d.flush().await; }
 
@@ -1189,151 +1620,273 @@ fn event_raw_symbol(ev: &StreamEvent) -> Option<&str> {
 /// Trait wired by each `DataPoint` so the forwarder can build the right Event
 /// variant. `pub(crate)` so `polling.rs` can use it in `spawn_poller`.
 pub(crate) trait EventFrom<T> {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, kind: &Kind, p: T) -> Self;
+    fn from_point(
+        exchange: digdigdig3::core::types::ExchangeId,
+        account_type: digdigdig3::core::types::AccountType,
+        symbol: &str,
+        kind: &Kind,
+        p: T,
+    ) -> Self;
 }
 
 impl EventFrom<TradePoint> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: TradePoint) -> Self {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: TradePoint) -> Self {
         Event::Trade { exchange, symbol: symbol.to_string(), point }
     }
 }
 impl EventFrom<AggTradePoint> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: AggTradePoint) -> Self {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: AggTradePoint) -> Self {
         Event::AggTrade { exchange, symbol: symbol.to_string(), point }
     }
 }
 impl EventFrom<BarPoint> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, kind: &Kind, point: BarPoint) -> Self {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, kind: &Kind, point: BarPoint) -> Self {
         let timeframe = match kind { Kind::Kline(iv) => iv.clone(), _ => KlineInterval::new("") };
         Event::Bar { exchange, symbol: symbol.to_string(), timeframe, point }
     }
 }
 impl EventFrom<TickerPoint> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: TickerPoint) -> Self {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: TickerPoint) -> Self {
         Event::Ticker { exchange, symbol: symbol.to_string(), point }
     }
 }
 impl EventFrom<ObSnapshotPoint> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: ObSnapshotPoint) -> Self {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: ObSnapshotPoint) -> Self {
         Event::OrderbookSnapshot { exchange, symbol: symbol.to_string(), point }
     }
 }
 impl EventFrom<ObDeltaPoint> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: ObDeltaPoint) -> Self {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: ObDeltaPoint) -> Self {
         Event::OrderbookDelta { exchange, symbol: symbol.to_string(), point }
     }
 }
 impl EventFrom<MarkPricePoint> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: MarkPricePoint) -> Self {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: MarkPricePoint) -> Self {
         Event::MarkPrice { exchange, symbol: symbol.to_string(), point }
     }
 }
 impl EventFrom<FundingRatePoint> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: FundingRatePoint) -> Self {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: FundingRatePoint) -> Self {
         Event::FundingRate { exchange, symbol: symbol.to_string(), point }
     }
 }
 impl EventFrom<OpenInterestPoint> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: OpenInterestPoint) -> Self {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: OpenInterestPoint) -> Self {
         Event::OpenInterest { exchange, symbol: symbol.to_string(), point }
     }
 }
 impl EventFrom<LiquidationPoint> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: LiquidationPoint) -> Self {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: LiquidationPoint) -> Self {
         Event::Liquidation { exchange, symbol: symbol.to_string(), point }
     }
 }
 impl EventFrom<BlockTradePoint> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: BlockTradePoint) -> Self {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: BlockTradePoint) -> Self {
         Event::BlockTrade { exchange, symbol: symbol.to_string(), point }
     }
 }
 impl EventFrom<IndexPricePoint> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: IndexPricePoint) -> Self {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: IndexPricePoint) -> Self {
         Event::IndexPrice { exchange, symbol: symbol.to_string(), point }
     }
 }
 impl EventFrom<CompositeIndexPoint> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: CompositeIndexPoint) -> Self {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: CompositeIndexPoint) -> Self {
         Event::CompositeIndex { exchange, symbol: symbol.to_string(), point }
     }
 }
 impl EventFrom<OptionGreeksPoint> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: OptionGreeksPoint) -> Self {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: OptionGreeksPoint) -> Self {
         Event::OptionGreeks { exchange, symbol: symbol.to_string(), point }
     }
 }
 impl EventFrom<VolatilityIndexPoint> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: VolatilityIndexPoint) -> Self {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: VolatilityIndexPoint) -> Self {
         Event::VolatilityIndex { exchange, symbol: symbol.to_string(), point }
     }
 }
 impl EventFrom<HistoricalVolatilityPoint> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: HistoricalVolatilityPoint) -> Self {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: HistoricalVolatilityPoint) -> Self {
         Event::HistoricalVolatility { exchange, symbol: symbol.to_string(), point }
     }
 }
 impl EventFrom<LongShortRatioPoint> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: LongShortRatioPoint) -> Self {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: LongShortRatioPoint) -> Self {
         Event::LongShortRatio { exchange, symbol: symbol.to_string(), point }
     }
 }
 impl EventFrom<BasisPoint> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: BasisPoint) -> Self {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: BasisPoint) -> Self {
         Event::Basis { exchange, symbol: symbol.to_string(), point }
     }
 }
 impl EventFrom<InsuranceFundPoint> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: InsuranceFundPoint) -> Self {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: InsuranceFundPoint) -> Self {
         Event::InsuranceFund { exchange, symbol: symbol.to_string(), point }
     }
 }
 impl EventFrom<OrderbookL3Point> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: OrderbookL3Point) -> Self {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: OrderbookL3Point) -> Self {
         Event::OrderbookL3 { exchange, symbol: symbol.to_string(), point }
     }
 }
 impl EventFrom<SettlementEventPoint> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: SettlementEventPoint) -> Self {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: SettlementEventPoint) -> Self {
         Event::SettlementEvent { exchange, symbol: symbol.to_string(), point }
     }
 }
 impl EventFrom<MarketWarningPoint> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: MarketWarningPoint) -> Self {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: MarketWarningPoint) -> Self {
         Event::MarketWarning { exchange, symbol: symbol.to_string(), point }
     }
 }
 impl EventFrom<RiskLimitPoint> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: RiskLimitPoint) -> Self {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: RiskLimitPoint) -> Self {
         Event::RiskLimit { exchange, symbol: symbol.to_string(), point }
     }
 }
 impl EventFrom<PredictedFundingPoint> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: PredictedFundingPoint) -> Self {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: PredictedFundingPoint) -> Self {
         Event::PredictedFunding { exchange, symbol: symbol.to_string(), point }
     }
 }
 impl EventFrom<FundingSettlementPoint> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, _kind: &Kind, point: FundingSettlementPoint) -> Self {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: FundingSettlementPoint) -> Self {
         Event::FundingSettlement { exchange, symbol: symbol.to_string(), point }
     }
 }
 impl EventFrom<MarkPriceKlinePoint> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, kind: &Kind, point: MarkPriceKlinePoint) -> Self {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, kind: &Kind, point: MarkPriceKlinePoint) -> Self {
         let timeframe = match kind { Kind::MarkPriceKline(iv) => iv.clone(), _ => KlineInterval::new("") };
         Event::MarkPriceKline { exchange, symbol: symbol.to_string(), timeframe, point }
     }
 }
 impl EventFrom<IndexPriceKlinePoint> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, kind: &Kind, point: IndexPriceKlinePoint) -> Self {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, kind: &Kind, point: IndexPriceKlinePoint) -> Self {
         let timeframe = match kind { Kind::IndexPriceKline(iv) => iv.clone(), _ => KlineInterval::new("") };
         Event::IndexPriceKline { exchange, symbol: symbol.to_string(), timeframe, point }
     }
 }
 impl EventFrom<PremiumIndexKlinePoint> for Event {
-    fn from_point(exchange: digdigdig3::core::types::ExchangeId, symbol: &str, kind: &Kind, point: PremiumIndexKlinePoint) -> Self {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, kind: &Kind, point: PremiumIndexKlinePoint) -> Self {
         let timeframe = match kind { Kind::PremiumIndexKline(iv) => iv.clone(), _ => KlineInterval::new("") };
         Event::PremiumIndexKline { exchange, symbol: symbol.to_string(), timeframe, point }
+    }
+}
+impl EventFrom<OrderUpdatePoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: OrderUpdatePoint) -> Self {
+        Event::OrderUpdate { exchange, account_type, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<BalanceUpdatePoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: BalanceUpdatePoint) -> Self {
+        Event::BalanceUpdate { exchange, account_type, symbol: symbol.to_string(), point }
+    }
+}
+impl EventFrom<PositionUpdatePoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: PositionUpdatePoint) -> Self {
+        Event::PositionUpdate { exchange, account_type, symbol: symbol.to_string(), point }
+    }
+}
+
+/// Fetch a REST orderbook snapshot and convert to `Vec<ObSnapshotPoint>`.
+/// Returns an empty Vec on any failure (no REST, exchange error, empty book).
+async fn ob_rest_seed(
+    hub: &Arc<digdigdig3::connector_manager::ExchangeHub>,
+    exchange: digdigdig3::core::types::ExchangeId,
+    account: digdigdig3::core::types::AccountType,
+    symbol: &str,
+    depth: usize,
+) -> Vec<ObSnapshotPoint> {
+    let Some(rest) = hub.rest(exchange) else {
+        tracing::warn!(
+            target: "dig3::ob_seed",
+            ?exchange, symbol,
+            "orderbook REST seed: connector not initialized — continuing WS-only"
+        );
+        return Vec::new();
+    };
+    let depth_u16 = depth.min(u16::MAX as usize) as u16;
+    match rest
+        .get_orderbook(
+            digdigdig3::core::types::SymbolInput::Raw(symbol),
+            Some(depth_u16),
+            account,
+        )
+        .await
+    {
+        Ok(ob) if ob.bids.is_empty() && ob.asks.is_empty() => {
+            tracing::warn!(
+                target: "dig3::ob_seed",
+                ?exchange, symbol,
+                "orderbook REST seed returned empty snapshot — continuing WS-only"
+            );
+            Vec::new()
+        }
+        Ok(ob) => {
+            tracing::debug!(
+                target: "dig3::ob_seed",
+                ?exchange, symbol,
+                bids = ob.bids.len(),
+                asks = ob.asks.len(),
+                "orderbook REST seed ok"
+            );
+            vec![ObSnapshotPoint::from_orderbook(&ob)]
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "dig3::ob_seed",
+                ?exchange, symbol, ?e,
+                "orderbook REST seed failed — continuing WS-only"
+            );
+            Vec::new()
+        }
+    }
+}
+
+/// For `OrderbookDelta` streams: fetch a REST snapshot and emit it as a
+/// leading `Event::OrderbookSnapshot` on the delta broadcast channel.
+/// This gives downstream assemblers a seeded full-book state before deltas arrive.
+/// No-op on wasm32 (CORS may block REST for some exchanges) — logs a warning
+/// and continues WS-only instead.
+async fn ob_emit_rest_seed_as_snapshot(
+    hub: &Arc<digdigdig3::connector_manager::ExchangeHub>,
+    exchange: digdigdig3::core::types::ExchangeId,
+    account: digdigdig3::core::types::AccountType,
+    symbol: &str,
+    depth: usize,
+    bcast_tx: &broadcast::Sender<Event>,
+) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        tracing::warn!(
+            target: "dig3::ob_seed",
+            ?exchange, symbol,
+            "orderbook REST seed for delta stream skipped on wasm32 (possible CORS) — continuing WS-only"
+        );
+        let _ = (hub, account, depth, bcast_tx);
+        return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let snapshots = ob_rest_seed(hub, exchange, account, symbol, depth).await;
+        for point in snapshots {
+            let ev = Event::OrderbookSnapshot {
+                exchange,
+                symbol: symbol.to_string(),
+                point,
+            };
+            // Best-effort: no active consumers yet is fine — they attach after
+            // this returns. If the channel is full (unlikely at spawn time) we
+            // log and continue rather than blocking.
+            if bcast_tx.send(ev).is_err() {
+                tracing::debug!(
+                    target: "dig3::ob_seed",
+                    ?exchange, symbol,
+                    "ob delta seed: no active receivers (normal at spawn time)"
+                );
+            }
+        }
     }
 }
 
@@ -1374,6 +1927,9 @@ fn ws_request_for(
         Kind::MarkPriceKline(iv) => StreamType::MarkPriceKline { interval: iv.as_str().to_string() },
         Kind::IndexPriceKline(iv) => StreamType::IndexPriceKline { interval: iv.as_str().to_string() },
         Kind::PremiumIndexKline(iv) => StreamType::PremiumIndexKline { interval: iv.as_str().to_string() },
+        Kind::OrderUpdate => StreamType::OrderUpdate,
+        Kind::BalanceUpdate => StreamType::BalanceUpdate,
+        Kind::PositionUpdate => StreamType::PositionUpdate,
     };
     SubscriptionRequest {
         symbol: sym,

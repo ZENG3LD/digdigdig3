@@ -148,7 +148,7 @@ pub(crate) fn spawn_poller<T, S>(
             if let Ok(tail) = d.read_tail(500).await {
                 for p in &tail {
                     let _ = bcast_tx
-                        .send(Event::from_point(exchange, &symbol_label, &key.kind, p.clone()));
+                        .send(Event::from_point(exchange, key.account_type, &symbol_label, &key.kind, p.clone()));
                     last_emitted_ms = last_emitted_ms.max(p.timestamp_ms());
                 }
             }
@@ -222,7 +222,7 @@ pub(crate) fn spawn_poller<T, S>(
                 }
                 last_emitted_ms = pt.timestamp_ms();
                 let _ =
-                    bcast_tx.send(Event::from_point(exchange, &symbol_label, &key.kind, pt));
+                    bcast_tx.send(Event::from_point(exchange, key.account_type, &symbol_label, &key.kind, pt));
             }
         }
 

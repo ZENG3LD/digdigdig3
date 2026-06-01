@@ -214,6 +214,17 @@ impl ExchangeHub {
         self.rest.get(&id).map(|c| c.capabilities())
     }
 
+    /// Returns the per-request kline limit for `id`, falling back to `default` if the exchange
+    /// does not declare one (or is not connected).
+    ///
+    /// Reads [`MarketDataCapabilities::max_kline_limit`] declared per-connector via
+    /// [`MarketData::market_data_capabilities`].
+    pub fn max_kline_limit(&self, id: ExchangeId, default: u16) -> u16 {
+        self.rest(id)
+            .and_then(|c| c.market_data_capabilities(AccountType::Spot).max_kline_limit)
+            .unwrap_or(default)
+    }
+
     /// List exchange IDs currently connected (REST side).
     pub fn ids(&self) -> Vec<ExchangeId> {
         self.rest.ids()
@@ -273,5 +284,30 @@ impl ExchangeHub {
     /// List exchange IDs with REST entries (alias of `ids()`).
     pub fn list_connected(&self) -> Vec<ExchangeId> {
         self.rest.ids()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn max_kline_limit_returns_default_when_not_connected() {
+        let hub = ExchangeHub::new();
+        assert_eq!(hub.max_kline_limit(ExchangeId::OKX, 1000), 1000);
+        assert_eq!(hub.max_kline_limit(ExchangeId::Binance, 500), 500);
+    }
+
+    /// Verifies that OKX reports 300 and KuCoin reports 1500 via live connector.
+    /// Requires network access — run with `cargo test -- --include-ignored`.
+    #[tokio::test]
+    #[ignore = "requires network access to OKX / KuCoin REST"]
+    async fn max_kline_limit_live_okx_kucoin() {
+        let hub = ExchangeHub::new();
+        hub.connect_public(ExchangeId::OKX, false).await.unwrap();
+        assert_eq!(hub.max_kline_limit(ExchangeId::OKX, 1000), 300);
+
+        hub.connect_public(ExchangeId::KuCoin, false).await.unwrap();
+        assert_eq!(hub.max_kline_limit(ExchangeId::KuCoin, 1000), 1500);
     }
 }

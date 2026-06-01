@@ -288,7 +288,12 @@ pub fn normalize_symbol(input: &str) -> String {
 ///
 /// This is a static mapping derived from actual API data.
 pub fn symbol_to_market_id(base: &str) -> Option<u16> {
-    match base.to_uppercase().as_str() {
+    // Tolerate both bare ("ETH") and slash-pair ("ETH/USDC") inputs — Lighter
+    // exchange_info emits the slash form for Spot symbols, so callers that
+    // pass the raw SymbolInfo.symbol back as-is end up here with "ETH/USDC".
+    // Strip the quote part before matching against the static market table.
+    let coin = base.split('/').next().unwrap_or(base);
+    match coin.to_uppercase().as_str() {
         "ETH" => Some(0),
         "BTC" => Some(1),
         "SOL" => Some(2),

@@ -560,11 +560,11 @@ impl Station {
                     kind: kind.clone(),
                 };
 
-                let bcast_tx = match self
+                let (bcast_tx, pending_seed) = match self
                     .acquire_or_spawn(&key, &entry, &canonical, &raw, s)
                     .await
                 {
-                    Ok(tx) => tx,
+                    Ok(pair) => pair,
                     Err(e) => {
                         // NotSupported on a per-(exchange, kind) basis: log
                         // at debug, record in `failed`, move on. Other errors
@@ -608,6 +608,21 @@ impl Station {
                     wasm_bindgen_futures::spawn_local(relay_fut);
                 }
 
+                // For OrderbookDelta with REST seed: emit the snapshot NOW,
+                // after the relay task has subscribed to the broadcast channel.
+                // This guarantees the snapshot reaches the consumer's
+                // SubscriptionHandle::recv() — previously it was sent before
+                // any receiver existed and was silently dropped.
+                if let Some(seed_ev) = pending_seed {
+                    if bcast_tx.send(seed_ev).is_err() {
+                        tracing::debug!(
+                            target: "dig3::ob_seed",
+                            ?key,
+                            "ob delta seed: send failed after relay wired (unexpected)"
+                        );
+                    }
+                }
+
                 refs.push(MultiplexRef {
                     station: Arc::downgrade(&self.inner),
                     key: key.clone(),
@@ -634,7 +649,7 @@ impl Station {
         canonical: &Symbol,
         raw_symbol: &str,
         stream: &Stream,
-    ) -> Result<broadcast::Sender<Event>> {
+    ) -> Result<(broadcast::Sender<Event>, Option<Event>)> {
         if let Some(mut mux) = self.inner.muxes.get_mut(key) {
             // Cancel any pending grace-period timer — the forwarder is being
             // reused before the grace window expired. Sending on grace_cancel
@@ -644,7 +659,7 @@ impl Station {
                 let _ = cancel.send(());
             }
             mux.consumers.fetch_add(1, Ordering::SeqCst);
-            return Ok(mux.tx.clone());
+            return Ok((mux.tx.clone(), None));
         }
 
         // --- Derived stream path (no WS, no REST) ---
@@ -653,10 +668,10 @@ impl Station {
         if key.kind.is_derived() {
             return match &key.kind {
                 Kind::Basis => {
-                    self.acquire_or_spawn_derived::<BasisDerived>(key, entry, canonical, raw_symbol).await
+                    self.acquire_or_spawn_derived::<BasisDerived>(key, entry, canonical, raw_symbol).await.map(|tx| (tx, None))
                 }
                 Kind::FundingSettlement => {
-                    self.acquire_or_spawn_derived::<FundingSettlementDerived>(key, entry, canonical, raw_symbol).await
+                    self.acquire_or_spawn_derived::<FundingSettlementDerived>(key, entry, canonical, raw_symbol).await.map(|tx| (tx, None))
                 }
                 _ => unreachable!("is_derived() returned true for non-derived kind"),
             };
@@ -667,7 +682,7 @@ impl Station {
         // a WS channel for streams that have no WS feed.
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(poll_spec) = key.kind.is_poll_only() {
-            return self.acquire_or_spawn_polled(key, entry, poll_spec, raw_symbol).await;
+            return self.acquire_or_spawn_polled(key, entry, poll_spec, raw_symbol).await.map(|tx| (tx, None));
         }
         // On wasm, poll-only kinds are not supported (no tokio::time::interval).
         #[cfg(target_arch = "wasm32")]
@@ -718,6 +733,12 @@ impl Station {
         let acct = entry.account_type;
         let raw_s = raw_symbol.to_string();
 
+        // Populated by Kind::OrderbookDelta when orderbook_rest_seed=true.
+        // Returned to Station::subscribe so it can be sent AFTER the relay task
+        // has subscribed to the broadcast channel (fixes the race where the snapshot
+        // was dropped because no receivers existed yet).
+        let mut pending_seed: Option<Event> = None;
+
         match &key.kind {
             Kind::Trade => {
                 let seed = if warm_n > 0 {
@@ -742,24 +763,36 @@ impl Station {
                 spawn_forwarder::<ObSnapshotPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), ob_seed, req.clone());
             }
             Kind::OrderbookDelta => {
-                // Seed via REST snapshot: the same ObSnapshotPoint bootstrap gives
-                // consumers a seeded book state before deltas arrive. We emit the
-                // snapshot on the ObDeltaPoint forwarder's broadcast as an
-                // `Event::OrderbookSnapshot` by seeding the *Orderbook* forwarder
-                // separately — but that would require a second mux entry. Instead
-                // we seed the ObSnapshotPoint on a one-shot broadcast before the
-                // delta forwarder starts, so downstream assemblers can pre-load it.
+                // Seed via REST snapshot: gives downstream assemblers a seeded
+                // full-book state before deltas arrive. The seed event is NOT
+                // emitted here — it is returned as `pending_seed` and emitted by
+                // `Station::subscribe` AFTER the consumer's relay task has subscribed
+                // to the broadcast channel. Emitting before any receiver exists (the
+                // old behaviour) caused the snapshot to be silently dropped.
                 //
-                // For OrderbookDelta the rest_seed Vec<ObDeltaPoint> stays empty
-                // (no REST delta history), but we emit the snapshot as a
-                // standalone broadcast event on the delta channel's sender.
-                if self.inner.orderbook_rest_seed {
-                    ob_emit_rest_seed_as_snapshot(
-                        &hub, key.exchange, acct, &raw_s,
-                        self.inner.orderbook_seed_depth,
-                        &bcast_tx,
-                    ).await;
-                }
+                // Note: wasm32 skips REST seed (possible CORS), same as before.
+                pending_seed = if self.inner.orderbook_rest_seed {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        let snapshots = ob_rest_seed(&hub, key.exchange, acct, &raw_s, self.inner.orderbook_seed_depth).await;
+                        snapshots.into_iter().next().map(|point| Event::OrderbookSnapshot {
+                            exchange: key.exchange,
+                            symbol: raw_s.clone(),
+                            point,
+                        })
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        tracing::warn!(
+                            target: "dig3::ob_seed",
+                            exchange = ?key.exchange, symbol = raw_s.as_str(),
+                            "orderbook REST seed for delta stream skipped on wasm32 (possible CORS) — continuing WS-only"
+                        );
+                        None
+                    }
+                } else {
+                    None
+                };
                 spawn_forwarder::<ObDeltaPoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone());
             }
             Kind::MarkPrice => spawn_forwarder::<MarkPricePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
@@ -798,7 +831,7 @@ impl Station {
             Multiplexer { tx: bcast_tx.clone(), consumers, shutdown: Some(shutdown_tx), grace_cancel: None },
         );
 
-        Ok(bcast_tx)
+        Ok((bcast_tx, pending_seed))
     }
 }
 
@@ -878,7 +911,11 @@ impl Station {
                 kind: dep_kind,
             };
             // Recursive call — follows the normal WS path for each upstream kind.
-            let up_tx = self
+            // The pending_seed (second tuple element) is intentionally ignored here:
+            // derived streams subscribe to the upstream broadcast directly, not through
+            // a consumer relay, so the seed will be replayed naturally through the
+            // upstream forwarder's warm-start mechanism.
+            let (up_tx, _) = self
                 .acquire_or_spawn(&dep_key, entry, canonical, raw_symbol, dep_stream)
                 .await?;
             upstream_rxs.push(up_tx.subscribe());
@@ -1840,52 +1877,6 @@ async fn ob_rest_seed(
                 "orderbook REST seed failed — continuing WS-only"
             );
             Vec::new()
-        }
-    }
-}
-
-/// For `OrderbookDelta` streams: fetch a REST snapshot and emit it as a
-/// leading `Event::OrderbookSnapshot` on the delta broadcast channel.
-/// This gives downstream assemblers a seeded full-book state before deltas arrive.
-/// No-op on wasm32 (CORS may block REST for some exchanges) — logs a warning
-/// and continues WS-only instead.
-async fn ob_emit_rest_seed_as_snapshot(
-    hub: &Arc<digdigdig3::connector_manager::ExchangeHub>,
-    exchange: digdigdig3::core::types::ExchangeId,
-    account: digdigdig3::core::types::AccountType,
-    symbol: &str,
-    depth: usize,
-    bcast_tx: &broadcast::Sender<Event>,
-) {
-    #[cfg(target_arch = "wasm32")]
-    {
-        tracing::warn!(
-            target: "dig3::ob_seed",
-            ?exchange, symbol,
-            "orderbook REST seed for delta stream skipped on wasm32 (possible CORS) — continuing WS-only"
-        );
-        let _ = (hub, account, depth, bcast_tx);
-        return;
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let snapshots = ob_rest_seed(hub, exchange, account, symbol, depth).await;
-        for point in snapshots {
-            let ev = Event::OrderbookSnapshot {
-                exchange,
-                symbol: symbol.to_string(),
-                point,
-            };
-            // Best-effort: no active consumers yet is fine — they attach after
-            // this returns. If the channel is full (unlikely at spawn time) we
-            // log and continue rather than blocking.
-            if bcast_tx.send(ev).is_err() {
-                tracing::debug!(
-                    target: "dig3::ob_seed",
-                    ?exchange, symbol,
-                    "ob delta seed: no active receivers (normal at spawn time)"
-                );
-            }
         }
     }
 }

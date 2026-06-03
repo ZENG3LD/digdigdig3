@@ -655,7 +655,13 @@ impl BinanceConnector {
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
+        // Binance quirk: indexPriceKlines keys the instrument as `pair` (the
+        // underlying index pair); markPriceKlines + premiumIndexKlines use `symbol`.
+        let sym_key = match endpoint {
+            BinanceEndpoint::FuturesIndexPriceKlines => "pair",
+            _ => "symbol",
+        };
+        params.insert(sym_key.to_string(), symbol.to_string());
         params.insert("interval".to_string(), map_kline_interval(interval).to_string());
         if let Some(l) = limit {
             params.insert("limit".to_string(), l.min(1500).to_string());

@@ -6,6 +6,36 @@ Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major cr
 - **`digdigdig3-station`** — high-level builder over `ExchangeHub`. OWNS: unified `Series<T>` / `DiskStore<T>` over 27 `DataPoint` impls (9 core + 18 extended for MLI), `SeriesKey { exchange, account, symbol, kind }`, multiplexed `Station` (N consumers share one WS per StreamKey), warm-start, REST cache, replay, cure, **auto-heal on WS disconnect** (kline-only — see below). String-bearing variants (BlockTrade, AuctionEvent, MarketWarning, OrderbookL3) persist via fixed header + companion `.blob` file.
 - **`digdigdig3-cli`** — `dig3` binary (watch trades/orderbook/kline/ticker/mark/funding/open-interest/liquidations/agg-trades) + `dig3-inspect` post-mortem analyzer + legacy `dig3-catcher` / `dig3-cure` bins.
 
+## Bar-aligned non-OHLCV loader (2026-06-04, local — not bumped/published)
+
+dig3's side of the mlq data-handoff (`nemo/docs/mlq/data-handoff-dig3-2026-06-04.md`):
+deliver non-OHLCV market data as **bar-aligned historical series** so the mlq
+backtester can warmup the ~130 non-OHLCV mli indicators. Three commits, all LOCAL:
+
+- **Track A — derived kline REST (`feat(binance)` cb82864 + `fix` 808426f):**
+  wired `markPriceKlines` / `indexPriceKlines` / `premiumIndexKlines` (3 new
+  `BinanceEndpoint` variants + shared `get_derived_klines` helper reusing
+  `parse_klines` — identical 12-elem array). New `MarketDataPublic::
+  get_premium_index_klines` trait method (mark/index already existed as stubs).
+  New `has_premium_index_klines` capability flag (Binance=true, false elsewhere).
+  **Quirk:** `indexPriceKlines` keys the instrument as `pair`, not `symbol`
+  (mark/premium use `symbol`) — found by the live e2e.
+- **Track B — station bar-align loader (`feat(station)` 4764599):**
+  `bar_align::load_bar_aligned(exchange, account, symbol, kind, interval, range)
+  -> BarAlignedSeries` (`Klines(Vec<BarPoint>)` | `Scalar(Vec<ScalarBar>)`).
+  Fill policy by stream nature (`Kind::fill_policy`): **state** streams
+  (funding/OI/mark/index/LSR) carry-forward into empty bars; **flow** streams
+  (liq/aggTrade) bucket-sum, gap=0. Kline-family returns native bars (paginated
+  backwards over the range, deduped); scalars resample onto the interval grid.
+  Flow + book streams return `StreamNotSupported` (daemon-required, Track C TODO).
+- **Tests:** 5 resampler unit tests + `examples/bar_align_e2e.rs` LIVE e2e —
+  **9/9 green** vs Binance USDⓈ-M (mark/index/premium klines + funding + OI +
+  LSR + mark-scalar all valid & bar-grid-aligned; liq/aggTrade daemon-gated).
+  Run: `cargo run -p digdigdig3-station --example bar_align_e2e`.
+- **NOT done (Track C):** daemon resample of recorded L2/liq into the same
+  bar-aligned shape (forward-only; Tardis bootstrap optional). Basis/taker still
+  need lifting into `MarketDataPublic` for polymorphic access.
+
 ## WASM Wave 3 (2026-05-28, in-flight — NOT yet bumped/published)
 
 Full wasm parity for the 0.4.0 target. Local commits only, no push/publish/bump

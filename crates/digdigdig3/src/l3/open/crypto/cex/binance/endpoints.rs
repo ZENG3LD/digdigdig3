@@ -102,6 +102,12 @@ pub enum BinanceEndpoint {
     FuturesPrice,
     FuturesOrderbook,
     FuturesKlines,
+    /// GET /fapi/v1/markPriceKlines — mark-price OHLCV klines (unlimited history)
+    FuturesMarkPriceKlines,
+    /// GET /fapi/v1/indexPriceKlines — index-price OHLCV klines (unlimited history)
+    FuturesIndexPriceKlines,
+    /// GET /fapi/v1/premiumIndexKlines — premium-index (funding-basis) OHLCV klines
+    FuturesPremiumIndexKlines,
     FuturesTicker,
     FuturesExchangeInfo,
     FundingRate,
@@ -262,6 +268,9 @@ impl BinanceEndpoint {
             Self::FuturesPrice => "/fapi/v1/ticker/price",
             Self::FuturesOrderbook => "/fapi/v1/depth",
             Self::FuturesKlines => "/fapi/v1/klines",
+            Self::FuturesMarkPriceKlines => "/fapi/v1/markPriceKlines",
+            Self::FuturesIndexPriceKlines => "/fapi/v1/indexPriceKlines",
+            Self::FuturesPremiumIndexKlines => "/fapi/v1/premiumIndexKlines",
             Self::FuturesTicker => "/fapi/v1/ticker/24hr",
             Self::FuturesExchangeInfo => "/fapi/v1/exchangeInfo",
             Self::FundingRate => "/fapi/v1/fundingRate",
@@ -362,6 +371,9 @@ impl BinanceEndpoint {
             | Self::FuturesPrice
             | Self::FuturesOrderbook
             | Self::FuturesKlines
+            | Self::FuturesMarkPriceKlines
+            | Self::FuturesIndexPriceKlines
+            | Self::FuturesPremiumIndexKlines
             | Self::FuturesTicker
             | Self::FuturesExchangeInfo
             | Self::FundingRate

@@ -338,7 +338,11 @@ impl BinanceConnector {
         // Rate limit check with per-endpoint weights
         let weight = match endpoint {
             BinanceEndpoint::Ping => weights::PING,
-            BinanceEndpoint::SpotKlines | BinanceEndpoint::FuturesKlines => weights::KLINES,
+            BinanceEndpoint::SpotKlines
+            | BinanceEndpoint::FuturesKlines
+            | BinanceEndpoint::FuturesMarkPriceKlines
+            | BinanceEndpoint::FuturesIndexPriceKlines
+            | BinanceEndpoint::FuturesPremiumIndexKlines => weights::KLINES,
             BinanceEndpoint::SpotOrderbook | BinanceEndpoint::FuturesOrderbook => {
                 let limit: u16 = params.get("limit")
                     .and_then(|v| v.parse().ok())
@@ -636,6 +640,31 @@ impl BinanceConnector {
         }
         let v = self.get(BinanceEndpoint::FundingRate, params, AccountType::FuturesCross).await?;
         BinanceParser::parse_funding_rates(&v)
+    }
+
+    /// Shared fetch for the three derived-kline endpoints (mark / index / premium
+    /// index price klines). All three share the standard 12-element kline array
+    /// shape, so `parse_klines` is reused. `symbol` must already be exchange-native
+    /// (e.g. `"BTCUSDT"`). Unlimited historical depth; `limit` default 500, max 1500.
+    async fn get_derived_klines(
+        &self,
+        endpoint: BinanceEndpoint,
+        symbol: &str,
+        interval: &str,
+        limit: Option<u32>,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("interval".to_string(), map_kline_interval(interval).to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.min(1500).to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("endTime".to_string(), et.to_string());
+        }
+        let v = self.get(endpoint, params, AccountType::FuturesCross).await?;
+        BinanceParser::parse_klines(&v)
     }
 
     /// Get public liquidation orders (force-close events) for futures.
@@ -3170,6 +3199,48 @@ impl MarketDataPublic for BinanceConnector {
         let symbol = symbol.resolve(ExchangeId::Binance, account_type)?;
         self.get_funding_rate_history(&symbol, start_time, end_time, limit).await
     }
+
+    async fn get_mark_price_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::Binance, account_type)?;
+        self.get_derived_klines(
+            BinanceEndpoint::FuturesMarkPriceKlines, &symbol, interval, limit, end_time,
+        ).await
+    }
+
+    async fn get_index_price_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::Binance, account_type)?;
+        self.get_derived_klines(
+            BinanceEndpoint::FuturesIndexPriceKlines, &symbol, interval, limit, end_time,
+        ).await
+    }
+
+    async fn get_premium_index_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::Binance, account_type)?;
+        self.get_derived_klines(
+            BinanceEndpoint::FuturesPremiumIndexKlines, &symbol, interval, limit, end_time,
+        ).await
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -3194,8 +3265,9 @@ impl crate::core::traits::HasCapabilities for BinanceConnector {
             has_premium_index: true,
             has_long_short_ratio_history: true,
             has_funding_rate_history: true,
-            has_mark_price_klines: false,
-            has_index_price_klines: false,
+            has_mark_price_klines: true,
+            has_index_price_klines: true,
+            has_premium_index_klines: true,
             // Trading
             has_market_order: true,
             has_limit_order: true,

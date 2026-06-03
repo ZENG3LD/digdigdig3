@@ -2935,6 +2935,7 @@ impl crate::core::traits::HasCapabilities for BybitConnector {
             has_open_interest_history: true,
             has_mark_price_klines: true,
             has_index_price_klines: true,
+            has_premium_index_klines: false,
             has_long_short_ratio_history: true,
             has_funding_rate_history: true,
             has_liquidation_history: false,

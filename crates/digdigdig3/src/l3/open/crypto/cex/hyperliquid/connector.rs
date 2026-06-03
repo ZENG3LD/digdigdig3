@@ -2249,6 +2249,7 @@ impl crate::core::traits::HasCapabilities for HyperliquidConnector {
             has_premium_index: false, has_long_short_ratio_history: false,
             has_funding_rate_history: false, has_mark_price_klines: false,
             has_index_price_klines: false,
+            has_premium_index_klines: false,
             has_market_order: true, has_limit_order: true,
             has_open_orders: true, has_order_history: true, has_user_trades: true,
             // DEX: positions exist, mark price available via websocket, no position modify

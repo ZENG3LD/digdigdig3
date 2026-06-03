@@ -121,6 +121,21 @@ pub trait MarketDataPublic: Send + Sync {
         ))
     }
 
+    /// Premium-index klines (OHLCV of the funding-basis premium index).
+    async fn get_premium_index_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
+        let _ = (symbol, interval, limit, account_type, end_time);
+        Err(ExchangeError::UnsupportedOperation(
+            "get_premium_index_klines not supported".into(),
+        ))
+    }
+
     /// Historical realized volatility series — trailing window (≈15 days, hourly buckets).
     ///
     /// `currency` is the base asset in exchange-native form (e.g. `"BTC"`, `"ETH"`

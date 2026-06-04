@@ -686,9 +686,13 @@ impl UpbitParser {
             let quote_asset = parts[0].to_string();
             let base_asset = parts[1].to_string();
 
-            // Filter caution symbols if they have CAUTION warning (still tradeable but flag it)
-            // We include all by default
-            let status = "TRADING".to_string();
+            // RAW: Upbit /v1/market/all has no status field — use market_warning
+            // verbatim (e.g. "NONE", "CAUTION") or empty string if absent.
+            // Never fake "TRADING"; normalization is a Station concern.
+            let status = item.get("market_warning")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
 
             symbols.push(SymbolInfo {
                 symbol: market.to_string(),
@@ -703,7 +707,10 @@ impl UpbitParser {
                 step_size: None,
                 min_notional: None,
                 account_type,
-                ..Default::default()
+                // Upbit is spot-only; no native instrument_type field.
+                instrument_type: None,
+                // RAW passthrough — full native symbol record.
+                extra: item.clone(),
             });
         }
 

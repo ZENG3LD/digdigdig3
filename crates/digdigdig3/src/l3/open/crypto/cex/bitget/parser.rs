@@ -254,14 +254,13 @@ impl BitgetParser {
                     .unwrap_or("")
                     .to_string();
 
-                // Filter inactive symbols
-                let status_raw = Self::get_str(item, "status").unwrap_or("offline");
-                match status_raw {
-                    "online" | "normal" | "NORMAL" => {}
-                    _ => return None,
-                }
+                // RAW: keep native status verbatim (e.g. "online", "normal", "offline"), no filter
+                let status = Self::get_str(item, "status").unwrap_or("").to_string();
 
-                let status = "TRADING".to_string();
+                // RAW native instrument/symbol type (spot: "symbolType"; futures: "productType")
+                let instrument_type = Self::get_str(item, "symbolType")
+                    .or_else(|| Self::get_str(item, "productType"))
+                    .map(|v| v.to_string());
 
                 // Precision fields differ between spot and futures
                 let price_precision = item.get("pricePrecision")
@@ -330,7 +329,8 @@ impl BitgetParser {
                     step_size,
                     min_notional: None,
                     account_type,
-                    ..Default::default()
+                    instrument_type,
+                    extra: item.clone(),
                 })
             })
             .collect();

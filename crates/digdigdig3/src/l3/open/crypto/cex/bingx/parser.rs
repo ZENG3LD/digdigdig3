@@ -810,12 +810,6 @@ impl BingxParser {
         let mut symbols = Vec::with_capacity(items.len());
 
         for item in items {
-            // status: 1 = trading
-            let status = item.get("status").and_then(|v| v.as_i64()).unwrap_or(1);
-            if status != 1 {
-                continue;
-            }
-
             let symbol = match item.get("symbol").and_then(|v| v.as_str()) {
                 Some(s) => s.to_string(),
                 None => continue,
@@ -834,6 +828,11 @@ impl BingxParser {
             if base_asset.is_empty() {
                 continue;
             }
+
+            // RAW native status (1 = trading, 0 = not trading — keep verbatim as string)
+            let status = item.get("status")
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "1".to_string());
 
             let price_precision = item.get("tickSize")
                 .and_then(|v| v.as_f64())
@@ -863,7 +862,7 @@ impl BingxParser {
                 symbol,
                 base_asset,
                 quote_asset,
-                status: "TRADING".to_string(),
+                status,
                 price_precision,
                 quantity_precision,
                 min_quantity,
@@ -872,7 +871,9 @@ impl BingxParser {
                 step_size,
                 min_notional: None,
                 account_type,
-                ..Default::default()
+                // BingX swap = perpetual (no instType field, derive from endpoint)
+                instrument_type: Some("PERPETUAL".to_string()),
+                extra: item.clone(),
             });
         }
 
@@ -895,11 +896,6 @@ impl BingxParser {
         let mut symbols = Vec::with_capacity(symbols_arr.len());
 
         for item in symbols_arr {
-            let status = item.get("status").and_then(|v| v.as_i64()).unwrap_or(1);
-            if status != 1 {
-                continue;
-            }
-
             let raw_symbol = match item.get("symbol").and_then(|v| v.as_str()) {
                 Some(s) => s,
                 None => continue,
@@ -952,11 +948,16 @@ impl BingxParser {
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<f64>().ok());
 
+            // RAW native status (1 = trading — keep verbatim as string)
+            let status = item.get("status")
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "1".to_string());
+
             symbols.push(SymbolInfo {
                 symbol: raw_symbol.to_string(),
                 base_asset,
                 quote_asset,
-                status: "TRADING".to_string(),
+                status,
                 price_precision,
                 quantity_precision,
                 min_quantity,
@@ -965,7 +966,9 @@ impl BingxParser {
                 step_size,
                 min_notional,
                 account_type,
-                ..Default::default()
+                // BingX spot has no instrument_type field
+                instrument_type: None,
+                extra: item.clone(),
             });
         }
 

@@ -608,11 +608,11 @@ impl KrakenParser {
                 continue;
             }
 
-            // Only include pairs with "online" status (if present)
-            let status = data.get("status").and_then(|v| v.as_str()).unwrap_or("online");
-            if status != "online" && !status.is_empty() {
-                continue;
-            }
+            // RAW native status verbatim ("online" / "cancel_only" / "post_only" / "limit_only" / "reduce_only")
+            let status = data.get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("online")
+                .to_string();
 
             let price_precision = data.get("pair_decimals")
                 .and_then(|v| v.as_u64())
@@ -644,7 +644,7 @@ impl KrakenParser {
                 symbol: pair_name.clone(),
                 base_asset,
                 quote_asset,
-                status: "TRADING".to_string(),
+                status,
                 price_precision,
                 quantity_precision,
                 min_quantity,
@@ -653,7 +653,9 @@ impl KrakenParser {
                 step_size,
                 min_notional: None,
                 account_type,
-                ..Default::default()
+                // Kraken spot has no instrument_type field
+                instrument_type: None,
+                extra: pair_data.clone(),
             });
         }
 

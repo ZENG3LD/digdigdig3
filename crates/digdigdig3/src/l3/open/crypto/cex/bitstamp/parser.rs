@@ -768,11 +768,8 @@ impl BitstampParser {
         let mut symbols = Vec::with_capacity(items.len());
 
         for item in items {
-            // Only include enabled pairs
+            // RAW: keep all pairs, native status verbatim.
             let trading = item.get("trading").and_then(|v| v.as_str()).unwrap_or("");
-            if trading != "Enabled" {
-                continue;
-            }
 
             // "name" is "BTC/USD" format
             let name = match item.get("name").and_then(|v| v.as_str()) {
@@ -818,7 +815,7 @@ impl BitstampParser {
                 symbol,
                 base_asset,
                 quote_asset,
-                status: "TRADING".to_string(),
+                status: trading.to_string(),
                 price_precision,
                 quantity_precision,
                 min_quantity: None,
@@ -827,7 +824,9 @@ impl BitstampParser {
                 step_size,
                 min_notional,
                 account_type,
-                ..Default::default()
+                // Bitstamp is spot-only; no instrument_type field.
+                instrument_type: None,
+                extra: item.clone(),
             });
         }
 

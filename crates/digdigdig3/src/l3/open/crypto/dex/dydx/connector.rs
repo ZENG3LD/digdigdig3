@@ -632,9 +632,10 @@ impl MarketData for DydxConnector {
             let base = parts.first().copied().unwrap_or(ticker).to_string();
             let quote = parts.get(1).copied().unwrap_or("USD").to_string();
 
+            // Native venue status verbatim (e.g. "ACTIVE", "INACTIVE", "PAUSED")
             let status = data.get("status")
                 .and_then(|s| s.as_str())
-                .unwrap_or("ACTIVE")
+                .unwrap_or("")
                 .to_string();
 
             // Parse step size / tick size for precision hints
@@ -650,6 +651,12 @@ impl MarketData for DydxConnector {
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<f64>().ok());
 
+            // All dYdX v4 markets are perpetuals
+            let instrument_type = Some("PERPETUAL".to_string());
+
+            // RAW passthrough — full market object
+            let extra = data.clone();
+
             SymbolInfo {
                 symbol: ticker.clone(),
                 base_asset: base,
@@ -663,7 +670,8 @@ impl MarketData for DydxConnector {
                 step_size,
                 min_notional: None,
                 account_type,
-                ..Default::default()
+                instrument_type,
+                extra,
             }
         }).collect();
 

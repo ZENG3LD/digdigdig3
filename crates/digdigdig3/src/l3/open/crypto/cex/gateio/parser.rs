@@ -287,22 +287,23 @@ impl GateioParser {
                     .unwrap_or("")
                     .to_string();
 
-                // Status: spot uses trade_status ("tradable"/"untradable"), futures uses "in_delisting"
+                // RAW: keep native status verbatim, never filter.
+                // Spot uses trade_status ("tradable"/"untradable").
+                // Futures uses "in_delisting" bool (true means delisting).
                 let trade_status = Self::get_str(item, "trade_status");
                 let in_delisting = item.get("in_delisting")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
 
-                if let Some(ts) = trade_status {
-                    if ts != "tradable" {
-                        return None;
-                    }
-                }
-                if in_delisting {
-                    return None;
-                }
-
-                let status = "TRADING".to_string();
+                // Native status: if trade_status present use it; if in_delisting
+                // flag is set on a futures item use "delisting"; else "tradable".
+                let status = if let Some(ts) = trade_status {
+                    ts.to_string()
+                } else if in_delisting {
+                    "delisting".to_string()
+                } else {
+                    "tradable".to_string()
+                };
 
                 // Spot: amount_precision (integer) for quantity, precision for price
                 let qty_precision_int = item.get("amount_precision")
@@ -354,7 +355,10 @@ impl GateioParser {
                     step_size: None,
                     min_notional: Self::get_f64(item, "min_quote_amount"),
                     account_type,
-                    ..Default::default()
+                    // Futures items carry a "type" field ("direct"/"inverse");
+                    // spot items do not. Passthrough verbatim.
+                    instrument_type: Self::get_str(item, "type").map(|s| s.to_string()),
+                    extra: item.clone(),
                 })
             })
             .collect();

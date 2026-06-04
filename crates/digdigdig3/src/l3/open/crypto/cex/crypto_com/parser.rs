@@ -540,11 +540,8 @@ impl CryptoComParser {
         let mut symbols = Vec::with_capacity(data.len());
 
         for item in data {
-            // Only include tradable instruments
-            let tradable = item.get("tradable").and_then(|v| v.as_bool()).unwrap_or(true);
-            if !tradable {
-                continue;
-            }
+            // RAW: no tradable filter — return every instrument the exchange lists.
+            // Station owns normalization / filtering.
 
             let symbol = match item.get("symbol").and_then(|v| v.as_str()) {
                 Some(s) => s.to_string(),
@@ -565,6 +562,11 @@ impl CryptoComParser {
                 continue;
             }
 
+            // RAW: Crypto.com get-instruments has no dedicated status field.
+            // The `tradable` bool is the closest proxy; carry it in `extra`.
+            // Use empty string rather than faking "TRADING".
+            let status = String::new();
+
             let price_precision = item.get("quote_decimals")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(2) as u8;
@@ -583,11 +585,16 @@ impl CryptoComParser {
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<f64>().ok());
 
+            // RAW native instrument type: "CCY_PAIR", "PERPETUAL_SWAP", "FUTURE", etc.
+            let instrument_type = item.get("inst_type")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
             symbols.push(SymbolInfo {
                 symbol,
                 base_asset,
                 quote_asset,
-                status: "TRADING".to_string(),
+                status,
                 price_precision,
                 quantity_precision,
                 min_quantity,
@@ -596,7 +603,9 @@ impl CryptoComParser {
                 step_size,
                 min_notional: None,
                 account_type,
-                ..Default::default()
+                instrument_type,
+                // RAW passthrough — full native instrument record.
+                extra: item.clone(),
             });
         }
 

@@ -784,11 +784,23 @@ impl HyperliquidParser {
 
             let _ = idx; // index used if needed for ordering
 
+            // Native status from `isDelisted` flag — include ALL symbols (no filter)
+            let is_delisted = item.get("isDelisted")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let status = if is_delisted { "delisted".to_string() } else { "active".to_string() };
+
+            // All HL universe entries are PERP
+            let instrument_type = Some("PERP".to_string());
+
+            // RAW passthrough — full universe entry
+            let extra = item.clone();
+
             symbols.push(SymbolInfo {
                 symbol,
                 base_asset,
                 quote_asset,
-                status: "TRADING".to_string(),
+                status,
                 price_precision: 6,
                 quantity_precision: sz_decimals,
                 min_quantity: step_size,
@@ -797,7 +809,8 @@ impl HyperliquidParser {
                 step_size,
                 min_notional: None,
                 account_type,
-                ..Default::default()
+                instrument_type,
+                extra,
             });
         }
 
@@ -923,11 +936,20 @@ impl HyperliquidParser {
 
             let _ = market_name;
 
+            // HL spot meta has no `isDelisted` flag — all entries treated as active
+            let status = "active".to_string();
+
+            // All HL spot universe entries are SPOT
+            let instrument_type = Some("SPOT".to_string());
+
+            // RAW passthrough — full market object from universe
+            let extra = market.clone();
+
             symbols.push(SymbolInfo {
                 symbol,
                 base_asset,
                 quote_asset,
-                status: "TRADING".to_string(),
+                status,
                 price_precision: 6,
                 quantity_precision: sz_decimals,
                 min_quantity: step_size,
@@ -936,7 +958,8 @@ impl HyperliquidParser {
                 step_size,
                 min_notional: None,
                 account_type,
-                ..Default::default()
+                instrument_type,
+                extra,
             });
         }
 

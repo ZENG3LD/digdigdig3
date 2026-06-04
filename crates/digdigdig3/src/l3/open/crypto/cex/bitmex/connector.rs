@@ -246,10 +246,69 @@ impl MarketData for BitmexConnector {
         Ok(())
     }
 
-    async fn get_exchange_info(&self, _account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
-        Err(ExchangeError::UnsupportedOperation(
-            "bitmex: get_exchange_info not implemented — use /instrument/active REST endpoint directly".into(),
-        ))
+    async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
+        // GET /instrument?count=500 — returns all instruments (no status filter).
+        // BitMEX paginates at 500; a second call with start=500 would be needed for
+        // very large results, but the active set is well under 500 instruments.
+        let v = self.get_json("/instrument", &[("count", "500")]).await?;
+        let arr = v.as_array()
+            .ok_or_else(|| ExchangeError::Parse("bitmex get_exchange_info: expected array".into()))?;
+
+        let mut result = Vec::with_capacity(arr.len());
+        for item in arr {
+            let symbol = item.get("symbol")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if symbol.is_empty() {
+                continue;
+            }
+
+            // Native venue status verbatim (e.g. "Open", "Closed", "Settled", "Unlisted")
+            let status = item.get("state")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let base_asset = item.get("underlying")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let quote_asset = item.get("quoteCurrency")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let tick_size = item.get("tickSize").and_then(|v| v.as_f64());
+            let lot_size  = item.get("lotSize").and_then(|v| v.as_f64());
+
+            // Native instrument type (e.g. "FFWCSX", "BIQUSD", "OPECCS", "FFICSX")
+            let instrument_type = item.get("typ")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            // RAW passthrough — full instrument object
+            let extra = item.clone();
+
+            result.push(SymbolInfo {
+                symbol,
+                base_asset,
+                quote_asset,
+                status,
+                price_precision: 8,
+                quantity_precision: 0,
+                min_quantity: lot_size,
+                max_quantity: None,
+                tick_size,
+                step_size: lot_size,
+                min_notional: None,
+                account_type,
+                instrument_type,
+                extra,
+            });
+        }
+        Ok(result)
     }
 
     fn market_data_capabilities(&self, _account_type: AccountType) -> MarketDataCapabilities {
@@ -259,7 +318,7 @@ impl MarketData for BitmexConnector {
             has_ticker: true,
             has_orderbook: false,
             has_klines: false,
-            has_exchange_info: false,
+            has_exchange_info: true,
             has_recent_trades: false,
             has_ws_klines: false,
             has_ws_trades: true,

@@ -654,11 +654,16 @@ impl BitfinexParser {
             // Use symbol format that Bitfinex API uses (e.g. "tBTCUSD")
             let symbol = format!("t{}", pair.to_uppercase());
 
+            // RAW: Bitfinex v1/symbols_details has no status field.
+            // Use empty string rather than faking "TRADING".
+            // The `margin` bool and `expiration` field are carried raw in `extra`.
+            let status = String::new();
+
             symbols.push(SymbolInfo {
                 symbol,
                 base_asset,
                 quote_asset,
-                status: "TRADING".to_string(),
+                status,
                 price_precision,
                 quantity_precision: 8,
                 min_quantity,
@@ -667,7 +672,11 @@ impl BitfinexParser {
                 step_size: None,
                 min_notional: None,
                 account_type,
-                ..Default::default()
+                // Bitfinex v1/symbols_details carries no instrument_type token.
+                // Margin-eligible flag and "expiration" are in `extra`.
+                instrument_type: None,
+                // RAW passthrough — full native symbol record.
+                extra: item.clone(),
             });
         }
 

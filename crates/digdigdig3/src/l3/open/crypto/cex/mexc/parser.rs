@@ -393,28 +393,14 @@ impl MexcParser {
                 let base_asset = item["baseAsset"].as_str().unwrap_or("").to_string();
                 let quote_asset = item["quoteAsset"].as_str().unwrap_or("").to_string();
 
-                // MEXC uses "1" (string) for active status, not "TRADING".
-                // Accept both formats for forward-compatibility.
-                let status_raw = item["status"].as_str()
-                    .or_else(|| item["status"].as_i64().map(|_| ""))
-                    .unwrap_or("");
-
-                // status "1" = active trading on MEXC
-                let is_active = status_raw == "1"
-                    || status_raw == "TRADING"
-                    || status_raw == "ENABLED"
-                    || item["status"].as_i64() == Some(1);
-
-                if !is_active {
-                    return None;
-                }
-
-                // Normalize status to a human-readable string
-                let status = if status_raw == "1" || item["status"].as_i64() == Some(1) {
-                    "TRADING".to_string()
-                } else {
-                    status_raw.to_string()
-                };
+                // RAW: keep native status verbatim (MEXC uses "1"/"0" strings or integers), no filter
+                let status = item["status"].as_str()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| {
+                        item["status"].as_i64()
+                            .map(|n| n.to_string())
+                            .unwrap_or_default()
+                    });
 
                 // MEXC provides precision directly on the symbol object.
                 // baseAssetPrecision / quoteAssetPrecision are integer decimal places.
@@ -459,7 +445,9 @@ impl MexcParser {
                     step_size,
                     min_notional,
                     account_type,
-                    ..Default::default()
+                    // MEXC exchangeInfo does not expose a contract/instrument-type field
+                    instrument_type: None,
+                    extra: item.clone(),
                 })
             })
             .collect();

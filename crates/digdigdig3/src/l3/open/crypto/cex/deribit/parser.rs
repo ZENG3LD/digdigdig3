@@ -770,14 +770,6 @@ impl DeribitParser {
         let mut symbols = Vec::with_capacity(items.len());
 
         for item in items {
-            // Only include active instruments
-            let is_active = item.get("is_active")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
-            if !is_active {
-                continue;
-            }
-
             let instrument_name = match item.get("instrument_name").and_then(|v| v.as_str()) {
                 Some(n) => n.to_string(),
                 None => continue,
@@ -797,6 +789,13 @@ impl DeribitParser {
                 continue;
             }
 
+            // RAW native status: derive from is_active bool verbatim
+            let status = match item.get("is_active").and_then(|v| v.as_bool()) {
+                Some(true)  => "active".to_string(),
+                Some(false) => "inactive".to_string(),
+                None        => "unknown".to_string(),
+            };
+
             let raw_tick_size = item.get("tick_size")
                 .and_then(|v| v.as_f64());
 
@@ -813,11 +812,17 @@ impl DeribitParser {
             let step_size = item.get("contract_size")
                 .and_then(|v| v.as_f64());
 
+            // instrument_type: native "kind" field (future/option/spot/future_combo/option_combo)
+            // also note option_type (call/put) is inside extra
+            let instrument_type = item.get("kind")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
             symbols.push(SymbolInfo {
                 symbol: instrument_name,
                 base_asset,
                 quote_asset,
-                status: "TRADING".to_string(),
+                status,
                 price_precision,
                 quantity_precision: 8,
                 min_quantity,
@@ -826,7 +831,8 @@ impl DeribitParser {
                 step_size,
                 min_notional: None,
                 account_type,
-                ..Default::default()
+                instrument_type,
+                extra: item.clone(),
             });
         }
 

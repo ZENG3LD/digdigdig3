@@ -409,12 +409,8 @@ impl BybitParser {
                 let symbol = item["symbol"].as_str()?.to_string();
                 let base_asset = item["baseCoin"].as_str().unwrap_or("").to_string();
                 let quote_asset = item["quoteCoin"].as_str().unwrap_or("").to_string();
+                // RAW: keep native status verbatim, no filter
                 let status = item["status"].as_str().unwrap_or("").to_string();
-
-                // Filter to active symbols only
-                if status != "Trading" {
-                    return None;
-                }
 
                 // Parse lot size filter
                 let lot_filter = item.get("lotSizeFilter");
@@ -460,6 +456,9 @@ impl BybitParser {
                     })
                     .unwrap_or(8);
 
+                // RAW native contract type (e.g. "LinearPerpetual", "InversePerpetual", absent on spot)
+                let instrument_type = item["contractType"].as_str().map(|v| v.to_string());
+
                 Some(crate::core::types::SymbolInfo {
                     symbol,
                     base_asset,
@@ -473,7 +472,8 @@ impl BybitParser {
                     step_size,
                     min_notional: None,
                     account_type,
-                    ..Default::default()
+                    instrument_type,
+                    extra: item.clone(),
                 })
             })
             .collect();

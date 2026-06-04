@@ -229,22 +229,21 @@ impl KuCoinParser {
                     .to_string();
 
                 // Spot: enableTrading bool; Futures: status string ("Open", etc.)
+                // RAW: keep native status verbatim, no filter
                 let enable_trading = item.get("enableTrading").and_then(|v| v.as_bool());
                 let status_str = Self::get_str(item, "status");
 
-                // Filter inactive symbols
-                if let Some(enabled) = enable_trading {
-                    if !enabled {
-                        return None;
-                    }
-                }
-                if let Some(s) = status_str {
-                    if s != "Open" && s != "BeingReplenished" {
-                        return None;
-                    }
-                }
+                // Build raw status: prefer explicit "status" field; fall back to bool flag
+                let status = if let Some(s) = status_str {
+                    s.to_string()
+                } else if let Some(enabled) = enable_trading {
+                    if enabled { "enableTrading".to_string() } else { "disableTrading".to_string() }
+                } else {
+                    String::new()
+                };
 
-                let status = "TRADING".to_string();
+                // RAW native type: futures carries "type" field (e.g. "FFWCSX"); spot = None
+                let instrument_type = Self::get_str(item, "type").map(|v| v.to_string());
 
                 // Quantity precision/step from baseIncrement (spot) or lotSize (futures)
                 let step_size = Self::get_f64(item, "baseIncrement")
@@ -296,7 +295,8 @@ impl KuCoinParser {
                     step_size,
                     min_notional,
                     account_type,
-                    ..Default::default()
+                    instrument_type,
+                    extra: item.clone(),
                 })
             })
             .collect();

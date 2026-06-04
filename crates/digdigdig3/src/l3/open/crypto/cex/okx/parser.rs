@@ -239,9 +239,13 @@ impl OkxParser {
             let step_size = Self::get_f64(item, "lotSz");
             let min_notional = None; // OKX doesn't provide this directly
 
+            // RAW native status: "live" / "suspend" / "preopen" / "expired"
             let status = Self::get_str(item, "state").unwrap_or("").to_string();
             let price_precision = 8; // Default
             let quantity_precision = 8; // Default
+
+            // instrument_type: native OKX instType (SPOT/SWAP/FUTURES/OPTION/MARGIN)
+            let instrument_type = Self::get_str(item, "instType").map(|s| s.to_string());
 
             symbols.push(SymbolInfo {
                 symbol,
@@ -256,7 +260,8 @@ impl OkxParser {
                 step_size,
                 min_notional,
                 account_type,
-                ..Default::default()
+                instrument_type,
+                extra: item.clone(),
             });
         }
 

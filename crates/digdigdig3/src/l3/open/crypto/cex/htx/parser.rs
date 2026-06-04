@@ -461,13 +461,6 @@ impl HtxParser {
                     .to_uppercase();
                 let state = item["state"].as_str().unwrap_or("");
 
-                // Filter to active symbols only
-                if state != "online" {
-                    return None;
-                }
-
-                let status = "TRADING".to_string();
-
                 // HTX provides integer precision fields
                 let price_precision = item["price-precision"].as_i64()
                     .map(|p| p as u8)
@@ -500,7 +493,7 @@ impl HtxParser {
                     symbol: symbol_raw,
                     base_asset,
                     quote_asset,
-                    status,
+                    status: state.to_string(),
                     price_precision,
                     quantity_precision,
                     min_quantity,
@@ -509,7 +502,10 @@ impl HtxParser {
                     step_size,
                     min_notional,
                     account_type,
-                    ..Default::default()
+                    // HTX spot has no contract type field; futures/swaps would need
+                    // a separate endpoint. Leave None for spot symbols.
+                    instrument_type: None,
+                    extra: item.clone(),
                 })
             })
             .collect();

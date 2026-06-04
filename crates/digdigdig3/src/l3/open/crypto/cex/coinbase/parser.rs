@@ -774,11 +774,8 @@ impl CoinbaseParser {
         let mut symbols = Vec::with_capacity(products.len());
 
         for product in products {
+            // RAW: keep all products, native status verbatim.
             let status = product.get("status").and_then(|s| s.as_str()).unwrap_or("");
-            // Only include online/trading products
-            if status != "online" && !status.is_empty() {
-                continue;
-            }
 
             let symbol = match product.get("product_id").and_then(|v| v.as_str()) {
                 Some(s) => s.to_string(),
@@ -836,7 +833,7 @@ impl CoinbaseParser {
                 symbol,
                 base_asset,
                 quote_asset,
-                status: "TRADING".to_string(),
+                status: status.to_string(),
                 price_precision,
                 quantity_precision,
                 min_quantity,
@@ -845,7 +842,9 @@ impl CoinbaseParser {
                 step_size,
                 min_notional,
                 account_type,
-                ..Default::default()
+                // Coinbase Advanced Trade exposes product_type ("SPOT", "FUTURE", etc.)
+                instrument_type: product.get("product_type").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                extra: product.clone(),
             });
         }
 

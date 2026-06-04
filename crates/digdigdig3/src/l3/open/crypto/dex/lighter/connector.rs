@@ -514,17 +514,34 @@ impl MarketData for LighterConnector {
 
         let is_spot = matches!(account_type, AccountType::Spot);
 
-        let infos = known_symbols.iter().map(|(base, _market_id)| {
+        let infos = known_symbols.iter().map(|(base, market_id)| {
             let (symbol, quote_asset) = if is_spot {
                 (format!("{}/USDC", base), "USDC".to_string())
             } else {
                 (base.to_string(), "USDC".to_string())
             };
+
+            // Lighter perps have no live status endpoint (OrderBookDetails geo-blocked);
+            // use "active" as the native representation for all static-map entries.
+            let status = "active".to_string();
+
+            // All Lighter markets are perpetuals
+            let instrument_type = Some("PERPETUAL".to_string());
+
+            // RAW extra — static market record (market_id + symbol + type)
+            let extra = serde_json::json!({
+                "market_id": market_id,
+                "symbol": symbol.clone(),
+                "base": base,
+                "quote": quote_asset.clone(),
+                "market_type": if is_spot { "spot" } else { "perp" }
+            });
+
             SymbolInfo {
                 symbol,
                 base_asset: base.to_string(),
                 quote_asset,
-                status: "TRADING".to_string(),
+                status,
                 price_precision: 8,
                 quantity_precision: 8,
                 min_quantity: None,
@@ -533,7 +550,8 @@ impl MarketData for LighterConnector {
                 step_size: None,
                 min_notional: None,
                 account_type,
-                ..Default::default()
+                instrument_type,
+                extra,
             }
         }).collect();
 

@@ -736,10 +736,13 @@ impl GeminiParser {
     /// {"symbol":"BTCUSD","base_currency":"BTC","quote_currency":"USD","tick_size":1e-8,"quote_increment":0.01,"min_order_size":"0.00001","status":"open","wrap_enabled":false}
     /// ```
     pub fn parse_symbol_details(response: &Value, symbol_lower: &str, account_type: AccountType) -> Option<SymbolInfo> {
-        let status = response.get("status").and_then(|v| v.as_str()).unwrap_or("");
-        if status != "open" && !status.is_empty() {
-            return None;
-        }
+        // RAW: no status filter — return every symbol the exchange lists.
+        // Native Gemini status values: "open", "closed", "cancel-only", "post-only", "limit-only".
+        // Station owns normalization / filtering.
+        let status = response.get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
 
         let base_asset = response.get("base_currency")
             .and_then(|v| v.as_str())
@@ -795,7 +798,8 @@ impl GeminiParser {
             symbol,
             base_asset,
             quote_asset,
-            status: "TRADING".to_string(),
+            // RAW native status verbatim — never "TRADING".
+            status,
             price_precision,
             quantity_precision,
             min_quantity,
@@ -804,7 +808,10 @@ impl GeminiParser {
             step_size,
             min_notional: None,
             account_type,
-            ..Default::default()
+            // Gemini spot-only; no native instrument_type field.
+            instrument_type: None,
+            // RAW passthrough — full native symbol record.
+            extra: response.clone(),
         })
     }
 

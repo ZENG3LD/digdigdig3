@@ -784,16 +784,24 @@ pub fn clob_market_to_symbol_info(market: &ClobMarket, account_type: AccountType
         .take(50)
         .collect::<String>();
 
+    // Native status: derive from the raw boolean flags the venue exposes.
+    // active=true && !closed → "active"; closed=true → "closed"; else → "unknown"
+    let status = if market.active.unwrap_or(false) && !market.closed.unwrap_or(true) {
+        "active".to_string()
+    } else if market.closed.unwrap_or(false) {
+        "closed".to_string()
+    } else {
+        "unknown".to_string()
+    };
+
+    // RAW passthrough — full ClobMarket serialised back to Value
+    let extra = serde_json::to_value(market).unwrap_or(serde_json::Value::Null);
+
     SymbolInfo {
         symbol: market.condition_id.clone(),
         base_asset: question_short,
         quote_asset: "USDC".to_string(),
-        status: if market.active.unwrap_or(false) && !market.closed.unwrap_or(true) {
-            "TRADING"
-        } else {
-            "BREAK"
-        }
-        .to_string(),
+        status,
         price_precision: 4,
         quantity_precision: 2,
         min_quantity: market
@@ -812,7 +820,8 @@ pub fn clob_market_to_symbol_info(market: &ClobMarket, account_type: AccountType
             .and_then(|s| s.parse::<f64>().ok()),
         min_notional: None,
         account_type,
-        ..Default::default()
+        instrument_type: Some("prediction".to_string()),
+        extra,
     }
 }
 
@@ -832,16 +841,24 @@ pub fn poly_market_to_symbol_info(market: &PolyMarket, account_type: AccountType
         .take(50)
         .collect::<String>();
 
+    // Native status: derive from the raw boolean flags the venue exposes.
+    // active=true && !closed → "active"; closed=true → "closed"; else → "unknown"
+    let status = if market.active.unwrap_or(false) && !market.closed.unwrap_or(true) {
+        "active".to_string()
+    } else if market.closed.unwrap_or(false) {
+        "closed".to_string()
+    } else {
+        "unknown".to_string()
+    };
+
+    // RAW passthrough — full PolyMarket serialised back to Value
+    let extra = serde_json::to_value(market).unwrap_or(serde_json::Value::Null);
+
     SymbolInfo {
         symbol: condition_id,
         base_asset: question,
         quote_asset: "USDC".to_string(),
-        status: if market.active.unwrap_or(false) && !market.closed.unwrap_or(true) {
-            "TRADING"
-        } else {
-            "BREAK"
-        }
-        .to_string(),
+        status,
         price_precision: 4,
         quantity_precision: 2,
         min_quantity: market.order_min_size,
@@ -851,7 +868,8 @@ pub fn poly_market_to_symbol_info(market: &PolyMarket, account_type: AccountType
         step_size: market.order_price_min_tick_size,
         min_notional: None,
         account_type,
-        ..Default::default()
+        instrument_type: Some("prediction".to_string()),
+        extra,
     }
 }
 

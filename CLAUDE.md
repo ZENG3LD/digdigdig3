@@ -56,12 +56,35 @@ backtester can warmup the ~130 non-OHLCV mli indicators. Three commits, all LOCA
   (NOT `/linear-swap-ex/`), no index-price kline exists; Kraken charts/v1 `to`-only
   returns from-genesis (must bound `from`) and its candle `time` is already ms.
 
-- **NOT done (Track C):** daemon resample of recorded L2/liq into the same
-  bar-aligned shape (forward-only; Tardis bootstrap optional). Basis/taker still
-  need lifting into `MarketDataPublic` for polymorphic access. Kraken OI/LSR
-  analytics endpoint (unverified API strings) left as `UnsupportedOperation`.
-  BingX/MEXC/Crypto.com/dYdX/HyperLiquid/Lighter/Bitfinex/Deribit not yet wired
-  (research docs exist; thin/snapshot-heavy — lower priority).
+- **Full rollout landed (2026-06-04, commits 669ac45 + 597102d).** All researched
+  venues wired + live-debugged. `bar_align_matrix.rs` extended to **15 venues +
+  taker direct-checks → PASS**. Additions since the 7-venue table above:
+  - **Kraken OI/LSR** — `charts/v1/analytics/{open-interest,long-short-info}`
+    (analytics_type strings live-verified); flags true.
+  - **basis/taker lifted into `MarketDataPublic`** — new `TakerVolume` core type +
+    `get_basis_history` / `get_taker_volume_history`. Implemented: basis on
+    Binance + HTX; taker on Binance + OKX + Gate.io + Bitget (all live-green).
+    `Kind::Basis` wired into the station loader (state/ffill). Bybit basis =
+    wire-absent (v5/market/basis 404).
+  - **Thin venues** — MEXC (mark/index/funding), Crypto.com (funding; mark/index
+    are minute-tick valuations, NOT bar-aligned klines → not loader-routed),
+    BingX (mark/funding; index/premium/LSR unverified→default), dYdX (funding),
+    HyperLiquid (funding), Lighter (mark/funding; market_id int map), Bitfinex
+    (funding/OI/LSR via status/deriv — parser indices were off-by-one, fixed),
+    Deribit (funding + historical_volatility).
+  - **Track C** — `bar_align_points<T: DataPoint>` resamples daemon-recorded
+    streams onto the grid (recording already exists via `dig3 watch`→DiskStore).
+  - **Live-debug lessons** (cargo-check-clean ≠ correct — found ONLY by live e2e):
+    OKX funding before/after was swapped; OKX mark path + OI instId/period; HTX
+    history endpoints live under `/index/market/history/` (not `/linear-swap-ex/`);
+    Bybit derived-kline rows have no volume idx; Kraken charts `to`-only =
+    from-genesis + ms `time`; Bitfinex `{key}/hist` has no leading key element.
+
+- **Still open (low-priority):** Crypto.com/MEXC interval-bucketing for klines
+  (currently raw venue cadence); BingX index/premium/LSR (official docs
+  unfetchable — need live probe); Kraken premium (derivable mark−spot); full
+  daemon auto-serve loop for Track-C recorded streams; Tardis bootstrap. NOT
+  bumped/published (awaiting command).
 
 ## WASM Wave 3 (2026-05-28, in-flight — NOT yet bumped/published)
 

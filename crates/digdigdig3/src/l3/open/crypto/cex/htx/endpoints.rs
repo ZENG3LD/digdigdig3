@@ -137,6 +137,14 @@ pub enum HtxEndpoint {
     EliteAccountRatio,
     /// GET /linear-swap-api/v1/swap_historical_funding_rate — actual paid funding rates
     HistoricalFundingRate,
+    /// GET /index/market/history/linear_swap_mark_price_kline — mark price klines (size max 2000)
+    MarkPriceKlineHistory,
+    /// GET /index/market/history/linear_swap_premium_index_kline — premium index klines (size max 2000)
+    PremiumIndexKlineHistory,
+    /// GET /linear-swap-api/v1/swap_his_open_interest — historical open interest (max 200 per call)
+    OpenInterestHistory,
+    /// GET /linear-swap-api/v1/swap_elite_position_ratio — elite trader position L/S ratio
+    ElitePositionRatio,
 
     // === ALGO ORDERS ===
     /// POST /v2/algo-orders — place trailing stop or other algo orders
@@ -208,6 +216,10 @@ impl HtxEndpoint {
             Self::MarkPriceKline => "/index/market/history/linear_swap_mark_price_kline",
             Self::EliteAccountRatio => "/linear-swap-api/v1/swap_elite_account_ratio",
             Self::HistoricalFundingRate => "/linear-swap-api/v1/swap_historical_funding_rate",
+            Self::MarkPriceKlineHistory => "/index/market/history/linear_swap_mark_price_kline",
+            Self::PremiumIndexKlineHistory => "/index/market/history/linear_swap_premium_index_kline",
+            Self::OpenInterestHistory => "/linear-swap-api/v1/swap_his_open_interest",
+            Self::ElitePositionRatio => "/linear-swap-api/v1/swap_elite_position_ratio",
 
             // Algo Orders
             Self::AlgoOrders => "/v2/algo-orders",
@@ -266,7 +278,11 @@ impl HtxEndpoint {
             | Self::MarkPrice
             | Self::MarkPriceKline
             | Self::EliteAccountRatio
-            | Self::HistoricalFundingRate => false,
+            | Self::HistoricalFundingRate
+            | Self::MarkPriceKlineHistory
+            | Self::PremiumIndexKlineHistory
+            | Self::OpenInterestHistory
+            | Self::ElitePositionRatio => false,
 
             // Private endpoints
             _ => true,

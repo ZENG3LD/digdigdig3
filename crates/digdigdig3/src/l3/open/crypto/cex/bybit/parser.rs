@@ -186,7 +186,11 @@ impl BybitParser {
                 let high = arr.get(2)?.as_str()?.parse::<f64>().ok()?;
                 let low = arr.get(3)?.as_str()?.parse::<f64>().ok()?;
                 let close = arr.get(4)?.as_str()?.parse::<f64>().ok()?;
-                let volume = arr.get(5)?.as_str()?.parse::<f64>().ok()?;
+                // mark/index/premium-index klines return only [t,o,h,l,c] (no volume/turnover);
+                // regular klines add volume at idx 5. Default missing volume to 0.0 instead of
+                // dropping the row via `?`.
+                let volume = arr.get(5).and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
                 let quote_volume = arr.get(6).and_then(|v| v.as_str())
                     .and_then(|s| s.parse::<f64>().ok());
 

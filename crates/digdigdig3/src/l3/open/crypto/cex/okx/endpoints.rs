@@ -115,6 +115,14 @@ pub enum OkxEndpoint {
     PublicLiquidationOrders,
     /// GET /api/v5/public/mark-price
     MarkPrice,
+    /// GET /api/v5/market/mark-price-candles-history — mark price kline history
+    MarkPriceCandlesHistory,
+    /// GET /api/v5/market/history-index-candles — index price kline history.
+    /// NOTE: requires the INDEX instId (e.g. `BTC-USD`), NOT the swap instId (`BTC-USDT-SWAP`).
+    HistoryIndexCandles,
+    /// GET /api/v5/rubik/stat/contracts/open-interest-history — OI history (~3mo depth).
+    /// Uses `ccy` param (base currency, e.g. `BTC`), not `instId`.
+    OpenInterestHistory,
 
     // === FILL/TRADE HISTORY ===
     /// GET /api/v5/trade/fills — recent fills (signed)
@@ -214,6 +222,9 @@ impl OkxEndpoint {
             Self::LongShortRatio => "/api/v5/rubik/stat/contracts/long-short-account-ratio",
             Self::PublicLiquidationOrders => "/api/v5/public/liquidation-orders",
             Self::MarkPrice => "/api/v5/public/mark-price",
+            Self::MarkPriceCandlesHistory => "/api/v5/market/history-mark-price-candles",
+            Self::HistoryIndexCandles => "/api/v5/market/history-index-candles",
+            Self::OpenInterestHistory => "/api/v5/rubik/stat/contracts/open-interest-history",
 
             // Fill/Trade History
             Self::FillsHistory => "/api/v5/trade/fills",
@@ -275,6 +286,9 @@ impl OkxEndpoint {
             | Self::LongShortRatio
             | Self::PublicLiquidationOrders
             | Self::MarkPrice
+            | Self::MarkPriceCandlesHistory
+            | Self::HistoryIndexCandles
+            | Self::OpenInterestHistory
             | Self::PositionTiers
             | Self::LendingRateHistory => false,
 

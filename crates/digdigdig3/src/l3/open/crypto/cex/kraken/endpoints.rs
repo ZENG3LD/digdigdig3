@@ -109,6 +109,15 @@ pub enum KrakenEndpoint {
     // === FUTURES LEVERAGE ===
     FuturesSetLeverage,
 
+    // === FUTURES CHARTS (mark/index price klines — charts/v1 host prefix) ===
+    /// GET /api/charts/v1/mark/{symbol}/{resolution}
+    FuturesChartsMarkKlines,
+    /// GET /api/charts/v1/spot/{symbol}/{resolution}
+    FuturesChartsIndexKlines,
+
+    // === FUTURES PUBLIC FUNDING RATE HISTORY ===
+    /// GET /derivatives/api/v3/historical-funding-rates
+    FuturesHistoricalFundingRates,
 
     // === CUSTODIAL FUNDS (Spot) ===
     SpotDepositAddresses,   // POST /0/private/DepositAddresses
@@ -178,6 +187,13 @@ impl KrakenEndpoint {
             // Futures Leverage
             Self::FuturesSetLeverage => "/derivatives/api/v3/leveragepreferences",
 
+            // Futures Charts (dynamic path — connector builds full path via charts_klines_path())
+            Self::FuturesChartsMarkKlines => "/api/charts/v1/mark",
+            Self::FuturesChartsIndexKlines => "/api/charts/v1/spot",
+
+            // Futures Historical Funding Rates (public, v3)
+            Self::FuturesHistoricalFundingRates => "/derivatives/api/v3/historical-funding-rates",
+
 
             // Custodial Funds
             Self::SpotDepositAddresses => "/0/private/DepositAddresses",
@@ -207,7 +223,10 @@ impl KrakenEndpoint {
             | Self::FuturesTickers
             | Self::FuturesOrderbook
             | Self::FuturesInstruments
-            | Self::FuturesHistory => false,
+            | Self::FuturesHistory
+            | Self::FuturesChartsMarkKlines
+            | Self::FuturesChartsIndexKlines
+            | Self::FuturesHistoricalFundingRates => false,
 
             // Private endpoints
             _ => true,
@@ -298,6 +317,26 @@ pub fn format_symbol(base: &str, quote: &str, account_type: AccountType) -> Stri
     }
 }
 
+
+/// Map kline interval string to Kraken Futures charts/v1 resolution string.
+///
+/// Kraken Futures charts API uses minute-integer or abbreviated strings as the
+/// `{resolution}` path segment.  Supported values per docs:
+/// `1m`, `5m`, `15m`, `30m`, `1h`, `4h`, `12h`, `1d`, `1w`.
+pub fn map_futures_chart_resolution(interval: &str) -> &'static str {
+    match interval {
+        "1m"  => "1m",
+        "5m"  => "5m",
+        "15m" => "15m",
+        "30m" => "30m",
+        "1h"  => "1h",
+        "4h"  => "4h",
+        "12h" => "12h",
+        "1d"  => "1d",
+        "1w"  => "1w",
+        _     => "1h", // default
+    }
+}
 
 /// Map kline interval to Kraken OHLC interval
 ///

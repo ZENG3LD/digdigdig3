@@ -8,12 +8,11 @@ use super::MarketDataPublic;
 
 // CEX — Binance, Bybit, OKX, Lighter, Bitstamp, Coinbase, Deribit, Gemini, Upbit have real impls in their connector.rs files
 use crate::l3::open::crypto::cex::kucoin::KuCoinConnector;
-use crate::l3::open::crypto::cex::kraken::KrakenConnector;
-use crate::l3::open::crypto::cex::gateio::GateioConnector;
+// GateioConnector — real impl in connector.rs
 use crate::l3::open::crypto::cex::bitfinex::BitfinexConnector;
 use crate::l3::open::crypto::cex::mexc::MexcConnector;
-use crate::l3::open::crypto::cex::htx::HtxConnector;
-use crate::l3::open::crypto::cex::bitget::BitgetConnector;
+// HtxConnector — real impl in connector.rs
+// BitgetConnector — real impl in connector.rs
 use crate::l3::open::crypto::cex::bingx::BingxConnector;
 use crate::l3::open::crypto::cex::crypto_com::CryptoComConnector;
 // DEX — Lighter, dYdX, HyperLiquid have real impls in their connector.rs files
@@ -58,15 +57,15 @@ use crate::l2::paid::cryptocompare::CryptoCompareConnector;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 impl MarketDataPublic for KuCoinConnector {}
-impl MarketDataPublic for KrakenConnector {}
+// KrakenConnector — real impl in connector.rs
 // CoinbaseConnector — real impl in connector.rs
-impl MarketDataPublic for GateioConnector {}
+// GateioConnector — real impl in connector.rs
 impl MarketDataPublic for BitfinexConnector {}
 // BitstampConnector — real impl in connector.rs
 // GeminiConnector — real impl in connector.rs
 impl MarketDataPublic for MexcConnector {}
-impl MarketDataPublic for HtxConnector {}
-impl MarketDataPublic for BitgetConnector {}
+// HtxConnector — real impl in connector.rs
+// BitgetConnector — real impl in connector.rs
 impl MarketDataPublic for BingxConnector {}
 impl MarketDataPublic for CryptoComConnector {}
 // UpbitConnector — real impl in connector.rs

@@ -172,6 +172,12 @@ pub enum BitgetEndpoint {
     FuturesMarketFills,
     /// GET /api/v2/mix/market/history-mark-candles — mark price OHLCV history
     FuturesMarkCandles,
+    /// GET /api/v2/mix/market/history-index-candles — index price OHLCV history
+    FuturesIndexCandles,
+    /// GET /api/v2/mix/market/long-short — global long/short ratio history
+    FuturesLongShort,
+    /// GET /api/v2/mix/market/account-long-short — account-count long/short ratio history
+    FuturesAccountLongShort,
 }
 
 impl BitgetEndpoint {
@@ -273,6 +279,9 @@ impl BitgetEndpoint {
 
             Self::FuturesMarketFills => "/api/v2/mix/market/fills-history",
             Self::FuturesMarkCandles => "/api/v2/mix/market/history-mark-candles",
+            Self::FuturesIndexCandles => "/api/v2/mix/market/history-index-candles",
+            Self::FuturesLongShort => "/api/v2/mix/market/long-short",
+            Self::FuturesAccountLongShort => "/api/v2/mix/market/account-long-short",
         }
     }
 
@@ -300,7 +309,10 @@ impl BitgetEndpoint {
             | Self::FuturesFundingRateHistory
             | Self::FuturesSymbolPrice
             | Self::FuturesMarketFills
-            | Self::FuturesMarkCandles => false,
+            | Self::FuturesMarkCandles
+            | Self::FuturesIndexCandles
+            | Self::FuturesLongShort
+            | Self::FuturesAccountLongShort => false,
 
             // Private endpoints
             _ => true,
@@ -409,6 +421,40 @@ pub fn map_kline_interval(interval: &str) -> &'static str {
         "1w" => "1week",
         "1M" => "1M",
         _ => "1h",
+    }
+}
+
+/// Map long/short ratio `period` param.
+///
+/// Bitget 2025 breaking change: daily period is `1Dutc` (not `1d` or `1D`).
+/// Other granularities follow the same naming as futures granularity.
+///
+/// Ref: Bitget changelog 2025 — daily `period` renamed from `1d` → `1Dutc`.
+pub fn map_ls_period(period: &str) -> &'static str {
+    match period {
+        "1d" | "1D" | "1Dutc" => "1Dutc",
+        "5m" => "5m",
+        "15m" => "15m",
+        "30m" => "30m",
+        "1h" | "1H" => "1H",
+        "4h" | "4H" => "4H",
+        _ => period_static_fallback(period),
+    }
+}
+
+/// Helper: static fallback for period values not in the match table.
+/// Returns the input unchanged if it is already a known Bitget period string,
+/// otherwise defaults to `"1H"`.
+fn period_static_fallback(period: &str) -> &'static str {
+    // Bitget documented periods for L/S endpoints: 5m 15m 30m 1H 4H 1Dutc
+    match period {
+        "5m" => "5m",
+        "15m" => "15m",
+        "30m" => "30m",
+        "1H" => "1H",
+        "4H" => "4H",
+        "1Dutc" => "1Dutc",
+        _ => "1H",
     }
 }
 

@@ -179,6 +179,14 @@ pub enum GateioEndpoint {
     FuturesContractStats,
     /// GET /futures/{settle}/insurance — insurance fund balance history
     FuturesInsurance,
+
+    // === DERIVED KLINES ===
+    /// GET /futures/{settle}/candlesticks with mark_ prefix — mark price klines
+    FuturesMarkPriceKlines,
+    /// GET /futures/{settle}/candlesticks with index_ prefix — index price klines
+    FuturesIndexPriceKlines,
+    /// GET /futures/{settle}/premium_index — premium index klines
+    FuturesPremiumIndexKlines,
 }
 
 impl GateioEndpoint {
@@ -274,6 +282,11 @@ impl GateioEndpoint {
             // New Market Data
             Self::FuturesContractStats => format!("/futures/{}/contract_stats", settle.unwrap_or("usdt")),
             Self::FuturesInsurance => format!("/futures/{}/insurance", settle.unwrap_or("usdt")),
+
+            // Derived Klines — all share /candlesticks path; contract prefix drives the variant
+            Self::FuturesMarkPriceKlines => format!("/futures/{}/candlesticks", settle.unwrap_or("usdt")),
+            Self::FuturesIndexPriceKlines => format!("/futures/{}/candlesticks", settle.unwrap_or("usdt")),
+            Self::FuturesPremiumIndexKlines => format!("/futures/{}/premium_index", settle.unwrap_or("usdt")),
         }
     }
 
@@ -296,7 +309,10 @@ impl GateioEndpoint {
             | Self::FuturesOpenInterest
             | Self::FuturesFundingRateHistory
             | Self::FuturesContractStats
-            | Self::FuturesInsurance => false,
+            | Self::FuturesInsurance
+            | Self::FuturesMarkPriceKlines
+            | Self::FuturesIndexPriceKlines
+            | Self::FuturesPremiumIndexKlines => false,
 
             // Private endpoints
             _ => true,

@@ -40,14 +40,14 @@ use crate::core::types::SymbolInfo;
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
     CancelAll, AmendOrder, BatchOrders, CustodialFunds, SubAccounts,
-    FundingHistory, AccountLedger,
+    FundingHistory, AccountLedger, MarketDataPublic,
 };
 use crate::core::types::ConnectorStats;
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight, DecayingLimitConfig, OrderbookCapabilities, WsBookChannel, ChecksumInfo, ChecksumAlgorithm};
 use crate::core::utils::precision::PrecisionCache;
 
-use super::endpoints::{KrakenUrls, KrakenEndpoint, format_symbol, map_ohlc_interval};
+use super::endpoints::{KrakenUrls, KrakenEndpoint, format_symbol, map_ohlc_interval, map_futures_chart_resolution};
 use super::auth::KrakenAuth;
 use super::parser::KrakenParser;
 
@@ -322,6 +322,77 @@ impl KrakenConnector {
             params,
             AccountType::FuturesCross,
         ).await
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FUTURES CHARTS (mark/index price klines — charts/v1)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// GET request to Kraken Futures with a fully-formed path string.
+    ///
+    /// Used for charts/v1 endpoints where the path contains dynamic segments
+    /// (`/api/charts/v1/{tick_type}/{symbol}/{resolution}`).  The base URL is
+    /// always `https://futures.kraken.com` regardless of account type.
+    async fn get_futures_path(
+        &self,
+        path: &str,
+        params: HashMap<String, String>,
+    ) -> ExchangeResult<Value> {
+        if !self.rate_limit_wait(false).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; futures charts request dropped".to_string(),
+            });
+        }
+
+        let real_base = self.urls.futures_rest;
+        let query = if params.is_empty() {
+            String::new()
+        } else {
+            let qs: Vec<String> = params.iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect();
+            format!("?{}", qs.join("&"))
+        };
+
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, &query);
+        self.http.get(&url, &HashMap::new()).await
+    }
+
+    /// Fetch mark or index price klines from Kraken Futures charts/v1.
+    ///
+    /// `tick_type`: `"mark"` or `"spot"` (spot = index price).
+    /// `symbol`: Futures native symbol, e.g. `"PF_XBTUSD"`.
+    /// `interval`: canonical interval string, e.g. `"1h"`.
+    /// `from` / `to`: Unix timestamps in seconds (optional).
+    async fn get_futures_chart_klines(
+        &self,
+        tick_type: &str,
+        symbol: &str,
+        interval: &str,
+        from: Option<i64>,
+        to: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
+        let resolution = map_futures_chart_resolution(interval);
+        let path = format!("/api/charts/v1/{}/{}/{}", tick_type, symbol, resolution);
+
+        // charts/v1 with only `to` returns candles from genesis (oldest-first,
+        // default cap) — NOT the window ending at `to`. Bound `from` to a recent
+        // window (≈1000 bars of `interval`) so the result actually covers [.., to].
+        let from = from.or_else(|| {
+            to.map(|t| t - (map_ohlc_interval(interval) as i64) * 60 * 1000)
+        });
+
+        let mut params = HashMap::new();
+        if let Some(f) = from {
+            params.insert("from".to_string(), f.to_string());
+        }
+        if let Some(t) = to {
+            params.insert("to".to_string(), t.to_string());
+        }
+
+        let response = self.get_futures_path(&path, params).await?;
+        KrakenParser::parse_charts_candles(&response)
     }
 }
 
@@ -1808,16 +1879,103 @@ impl AccountLedger for KrakenConnector {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// MARKET DATA PUBLIC (Kraken Futures non-OHLCV REST historical)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Kraken Futures confirmed REST-historical non-OHLCV endpoints.
+///
+/// Hosts / paths:
+/// - Mark price klines:  `GET https://futures.kraken.com/api/charts/v1/mark/{symbol}/{resolution}`
+/// - Index price klines: `GET https://futures.kraken.com/api/charts/v1/spot/{symbol}/{resolution}`
+/// - Funding rate hist:  `GET https://futures.kraken.com/derivatives/api/v3/historical-funding-rates?symbol=PF_XBTUSD`
+///
+/// NOT overridden (unverified analytics_type strings — TODO, not NotSupported):
+/// - `get_open_interest_history` — path confirmed (`/api/charts/v1/analytics/{symbol}/open_interest`),
+///   type string unverified (JS-rendered docs). Left as default UnsupportedOperation.
+/// - `get_long_short_ratio_history` — same caveat. Left as default UnsupportedOperation.
+///
+/// NOT overridden (no dedicated endpoint):
+/// - `get_premium_index_klines` — derivable from mark−spot, no native endpoint.
+///   Left as default UnsupportedOperation (trait default).
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+impl MarketDataPublic for KrakenConnector {
+    /// Mark price klines via `GET /api/charts/v1/mark/{symbol}/{resolution}`.
+    ///
+    /// `symbol` must be a Kraken Futures native symbol (e.g. `"PF_XBTUSD"`).
+    /// Canonical `Symbol` input is normalised via `SymbolNormalizer`.
+    /// `end_time` (ms) is converted to Unix seconds for the `to` query param.
+    /// `limit` is not supported by the charts/v1 endpoint — the API returns all
+    /// candles in the requested time window; pass `from`/`end_time` to page.
+    async fn get_mark_price_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        _limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::Kraken, account_type)?;
+        let to = end_time.map(|ms| ms / 1000);
+        self.get_futures_chart_klines("mark", &symbol, interval, None, to).await
+    }
+
+    /// Index price klines via `GET /api/charts/v1/spot/{symbol}/{resolution}`.
+    ///
+    /// `spot` = index / reference price in Kraken Futures charts terminology.
+    async fn get_index_price_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        _limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::Kraken, account_type)?;
+        let to = end_time.map(|ms| ms / 1000);
+        self.get_futures_chart_klines("spot", &symbol, interval, None, to).await
+    }
+
+    /// Historical funding rates via `GET /derivatives/api/v3/historical-funding-rates`.
+    ///
+    /// Perpetual-only endpoint: symbol MUST use `PF_` prefix (e.g. `"PF_XBTUSD"`).
+    /// Fixed-maturity futures (`PI_` prefix) return HTTP 400.
+    /// `start_time` / `end_time` are not documented query params for this endpoint —
+    /// only `symbol` is confirmed; the API returns all historic events for the symbol.
+    async fn get_funding_rate_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        _start_time: Option<i64>,
+        _end_time: Option<i64>,
+        _limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<FundingRate>> {
+        let symbol = symbol.resolve(ExchangeId::Kraken, account_type)?;
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        let response = self.get(
+            KrakenEndpoint::FuturesHistoricalFundingRates,
+            params,
+            AccountType::FuturesCross,
+        ).await?;
+        KrakenParser::parse_historical_funding_rates(&response)
+    }
+}
+
 impl crate::core::traits::HasCapabilities for KrakenConnector {
     fn capabilities(&self) -> crate::core::types::ConnectorCapabilities {
         crate::core::types::ConnectorCapabilities {
             has_ticker: true, has_orderbook: true, has_klines: true,
             has_recent_trades: false, has_exchange_info: true,
-            // MarketDataPublic stub only
+            // Confirmed REST-historical futures endpoints implemented above.
+            // OI/LSR: path confirmed, analytics_type strings unverified → left as
+            //   default UnsupportedOperation (NOT NotSupported — they likely exist).
             has_liquidation_history: false, has_open_interest_history: false,
             has_premium_index: false, has_long_short_ratio_history: false,
-            has_funding_rate_history: false, has_mark_price_klines: false,
-            has_index_price_klines: false,
+            has_funding_rate_history: true, has_mark_price_klines: true,
+            has_index_price_klines: true,
+            // No dedicated premium-index endpoint; derivable from mark−spot.
             has_premium_index_klines: false,
             has_market_order: true, has_limit_order: true,
             has_open_orders: true, has_order_history: true, has_user_trades: true,

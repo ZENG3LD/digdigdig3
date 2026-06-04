@@ -23,6 +23,7 @@ use crate::core::types::{
     CancelAllResponse, OrderResult,
     UserTrade,
     FundingPayment, LedgerEntry, LedgerEntryType,
+    LongShortRatio, OpenInterest,
 };
 
 /// Parser for Gate.io API responses
@@ -987,6 +988,131 @@ impl GateioParser {
             "set_collateral" | "pnl" => LedgerEntryType::Settlement,
             other => LedgerEntryType::Other(other.to_string()),
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // DERIVED KLINES (mark price, index price, premium index)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse mark/index price klines from `GET /futures/{settle}/candlesticks`
+    /// with the `mark_` or `index_` prefix on the `contract` param.
+    ///
+    /// Gate.io returns the futures object format: `{"t":ts,"v":vol,"c":"close","h":"high","l":"low","o":"open","sum":"quote_vol"}`
+    /// Volume is not meaningful for derived price series (often 0), but we reuse `parse_klines`
+    /// because the wire shape is identical to regular futures candlesticks.
+    pub fn parse_derived_klines(response: &Value) -> ExchangeResult<Vec<Kline>> {
+        // Same wire shape as regular futures klines — reuse parse_klines
+        Self::parse_klines(response)
+    }
+
+    /// Parse premium index klines from `GET /futures/{settle}/premium_index`.
+    ///
+    /// Gate.io returns the same futures object format as candlesticks:
+    /// `{"t":ts,"v":vol,"c":"close","h":"high","l":"low","o":"open","sum":"quote_vol"}`.
+    pub fn parse_premium_index_klines(response: &Value) -> ExchangeResult<Vec<Kline>> {
+        // Same wire shape as futures candlesticks — reuse parse_klines
+        Self::parse_klines(response)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FUNDING RATE HISTORY
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse funding rate history from `GET /futures/{settle}/funding_rate`.
+    ///
+    /// Gate.io returns an array:
+    /// `[{"contract":"BTC_USDT","t":1234567890,"r":"0.000100"}]`
+    /// - `t`: Unix seconds
+    /// - `r`: funding rate as string (e.g. `"0.000100"`)
+    pub fn parse_funding_rate_history(response: &Value) -> ExchangeResult<Vec<FundingRate>> {
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array for funding rate history".to_string()))?;
+
+        let result = arr.iter().map(|item| FundingRate {
+            rate: Self::get_f64(item, "r").unwrap_or(0.0),
+            next_funding_time: None,
+            timestamp: item.get("t")
+                .and_then(|v| v.as_i64())
+                .map(|t| t * 1000)
+                .unwrap_or(0),
+        }).collect();
+
+        Ok(result)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // CONTRACT STATS (open interest history + long/short ratio)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse open interest history from `GET /futures/{settle}/contract_stats`.
+    ///
+    /// Gate.io ContractStat response fields (relevant):
+    /// - `time`: Unix seconds
+    /// - `open_interest`: OI in contracts (string or number)
+    /// - `open_interest_usd`: OI in USD notional (string or number, may be absent)
+    pub fn parse_open_interest_history(response: &Value) -> ExchangeResult<Vec<OpenInterest>> {
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array for open interest history".to_string()))?;
+
+        let result = arr.iter().map(|item| {
+            let oi = Self::get_f64(item, "open_interest").unwrap_or(0.0);
+            let oi_usd = Self::get_f64(item, "open_interest_usd");
+            let ts = item.get("time")
+                .and_then(|v| v.as_i64())
+                .map(|t| t * 1000)
+                .unwrap_or(0);
+            OpenInterest {
+                open_interest: oi,
+                open_interest_value: oi_usd,
+                timestamp: ts,
+            }
+        }).collect();
+
+        Ok(result)
+    }
+
+    /// Parse long/short ratio history from `GET /futures/{settle}/contract_stats`.
+    ///
+    /// Gate.io ContractStat response fields:
+    /// - `lsr_taker`: taker long/short ratio
+    /// - `lsr_account`: account long/short ratio
+    /// - `top_lsr_size`: top-trader position L/S ratio
+    /// - `top_lsr_account`: top-trader account L/S ratio
+    ///
+    /// We expose the `lsr_account` field as the primary long/short ratio
+    /// (global account-based, same semantics as Binance global LSR).
+    /// `lsr_taker` is mapped to the `ratio` field for convenience.
+    pub fn parse_long_short_ratio_history(response: &Value, contract: &str) -> ExchangeResult<Vec<LongShortRatio>> {
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array for long/short ratio history".to_string()))?;
+
+        let result = arr.iter().map(|item| {
+            // lsr_account: ratio of accounts with long vs total (value > 1 = more longs)
+            let lsr = Self::get_f64(item, "lsr_account").unwrap_or(1.0);
+            // Derive long_ratio / short_ratio from the L/S ratio: lsr = long/short → long_pct = lsr/(1+lsr)
+            let (long_ratio, short_ratio) = if lsr > 0.0 {
+                let lp = lsr / (1.0 + lsr);
+                (lp, 1.0 - lp)
+            } else {
+                (0.5, 0.5)
+            };
+
+            let ts = item.get("time")
+                .and_then(|v| v.as_i64())
+                .map(|t| t * 1000)
+                .unwrap_or(0);
+
+            LongShortRatio {
+                symbol: contract.to_string(),
+                ratio_type: "account".to_string(),
+                long_ratio,
+                short_ratio,
+                ratio: Some(lsr),
+                timestamp: ts,
+            }
+        }).collect();
+
+        Ok(result)
     }
 }
 

@@ -596,6 +596,167 @@ impl HtxParser {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════
+    // EXTENDED MARKET DATA PARSERS (REST — non-OHLCV derived series)
+    // ═══════════════════════════════════════════════════════════════════════════════
+
+    /// Parse HTX kline-form responses for mark/index/estimated-rate kline endpoints.
+    ///
+    /// HTX kline JSON uses keyed-object form `{data: [{id, open, close, high, low, vol, ...}]}`,
+    /// NOT the Binance 12-element array.  Each `id` is a Unix timestamp in **seconds**.
+    ///
+    /// Shared by `get_mark_price_klines`, `get_index_price_klines`, and
+    /// `get_premium_index_klines` (estimated funding rate kline).
+    pub fn parse_derived_klines(json: &Value) -> ExchangeResult<Vec<Kline>> {
+        // These endpoints return the standard HTX V1 envelope:
+        // { "status": "ok", "data": [ {id, open, close, high, low, vol, ...}, ... ] }
+        let data = Self::extract_result_v1(json)?;
+        let list = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("HTX derived klines: data is not an array".into()))?;
+
+        let mut klines: Vec<Kline> = list.iter()
+            .filter_map(|entry| {
+                // id is timestamp in SECONDS — multiply to ms.
+                let open_time = entry["id"].as_i64()? * 1000;
+                // open/close/high/low may be numeric or numeric-string (f64 preferred by HTX).
+                let parse_f64 = |v: &Value| -> Option<f64> {
+                    v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+                };
+                let open  = parse_f64(&entry["open"])?;
+                let high  = parse_f64(&entry["high"])?;
+                let low   = parse_f64(&entry["low"])?;
+                let close = parse_f64(&entry["close"])?;
+                // vol = contract volume (base-asset units); quote vol absent on these endpoints.
+                let volume = parse_f64(&entry["vol"]).or_else(|| parse_f64(&entry["amount"])).unwrap_or(0.0);
+
+                Some(Kline {
+                    open_time,
+                    open,
+                    high,
+                    low,
+                    close,
+                    volume,
+                    quote_volume: None,
+                    close_time: None,
+                    trades: entry["count"].as_i64().map(|c| c as u64),
+                })
+            })
+            .collect();
+
+        // HTX returns newest-first; reverse to ascending open_time order.
+        klines.reverse();
+        Ok(klines)
+    }
+
+    /// Parse historical open interest from `GET /linear-swap-api/v1/swap_his_open_interest`.
+    ///
+    /// Response envelope:
+    /// ```json
+    /// { "status": "ok", "data": { "symbol": "BTC", "contract_type": "swap",
+    ///   "tick": [ { "volume": 12345.0, "amount_type": 1, "ts": 1716000000000 }, ... ] } }
+    /// ```
+    /// `amount_type`: 1 = contracts, 2 = crypto token quantity.
+    /// We return the raw `volume` value.  `ts` is **milliseconds**.
+    pub fn parse_open_interest_history(json: &Value) -> ExchangeResult<Vec<OpenInterest>> {
+        let data = Self::extract_result_v1(json)?;
+        // Nested: data.tick is the array.
+        let tick_arr = data.get("tick")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("HTX OI history: missing data.tick array".into()))?;
+
+        let records = tick_arr.iter()
+            .filter_map(|entry| {
+                let parse_f64 = |v: &Value| -> Option<f64> {
+                    v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+                };
+                let volume    = parse_f64(&entry["volume"])?;
+                let timestamp = entry["ts"].as_i64()?;
+                Some(OpenInterest {
+                    open_interest: volume,
+                    open_interest_value: None,
+                    timestamp,
+                })
+            })
+            .collect();
+
+        Ok(records)
+    }
+
+    /// Parse elite trader long/short ratio from `GET /linear-swap-api/v1/swap_elite_account_ratio`.
+    ///
+    /// Response envelope:
+    /// ```json
+    /// { "status": "ok", "data": { "list": [
+    ///     { "buy_ratio": 0.52, "sell_ratio": 0.48, "locked_ratio": 0.0, "ts": 1716000000000 }
+    ///   ], "symbol": "BTC", "contract_code": "BTC-USDT" } }
+    /// ```
+    /// `buy_ratio` + `sell_ratio` are fractions in [0, 1] from the **elite (top-trader)** cohort.
+    /// HTX has NO global account ratio endpoint for linear swap — this is top-trader only.
+    pub fn parse_long_short_ratio(json: &Value, symbol: &str, ratio_type: &str) -> ExchangeResult<Vec<LongShortRatio>> {
+        let data = Self::extract_result_v1(json)?;
+        let list = data.get("list")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("HTX LSR: missing data.list array".into()))?;
+
+        let records = list.iter()
+            .filter_map(|entry| {
+                let parse_f64 = |v: &Value| -> Option<f64> {
+                    v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+                };
+                let buy_ratio  = parse_f64(&entry["buy_ratio"])?;
+                let sell_ratio = parse_f64(&entry["sell_ratio"])?;
+                let timestamp  = entry["ts"].as_i64()?;
+                // Ratio = long / short; guard against zero denominator.
+                let ratio = if sell_ratio > 0.0 { Some(buy_ratio / sell_ratio) } else { None };
+
+                Some(LongShortRatio {
+                    symbol: symbol.to_string(),
+                    ratio_type: ratio_type.to_string(),
+                    long_ratio: buy_ratio,
+                    short_ratio: sell_ratio,
+                    ratio,
+                    timestamp,
+                })
+            })
+            .collect();
+
+        Ok(records)
+    }
+
+    /// Parse historical funding rates from `GET /linear-swap-api/v1/swap_historical_funding_rate`.
+    ///
+    /// Response envelope:
+    /// ```json
+    /// { "status": "ok", "data": { "data": [
+    ///     { "funding_rate": "0.0001", "funding_time": "1716000000000", ... }
+    ///   ], "total_page": 10, "current_page": 1, "total_size": 200 } }
+    /// ```
+    pub fn parse_funding_rate_history(json: &Value) -> ExchangeResult<Vec<FundingRate>> {
+        let data = Self::extract_result_v1(json)?;
+        // Nested: data.data is the array.
+        let inner = data.get("data")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("HTX funding history: missing data.data array".into()))?;
+
+        let records = inner.iter()
+            .filter_map(|entry| {
+                let parse_f64 = |v: &Value| -> Option<f64> {
+                    v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+                };
+                let rate      = parse_f64(&entry["funding_rate"])?;
+                let timestamp = entry["funding_time"].as_i64()
+                    .or_else(|| entry["funding_time"].as_str().and_then(|s| s.parse().ok()))?;
+                Some(FundingRate {
+                    rate,
+                    next_funding_time: None,
+                    timestamp,
+                })
+            })
+            .collect();
+
+        Ok(records)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════
     // WEBSOCKET PARSERS
     // ═══════════════════════════════════════════════════════════════════════════════
 

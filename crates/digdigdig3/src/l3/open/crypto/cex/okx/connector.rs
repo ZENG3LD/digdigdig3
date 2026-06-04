@@ -79,6 +79,32 @@ fn to_okx_swap_instid(raw: &str) -> String {
     }
 }
 
+/// Convert a swap instId to the corresponding OKX index instId.
+///
+/// OKX index instruments use the USD-quoted form, not USDT.
+/// The `history-index-candles` endpoint requires the INDEX instId — e.g.
+/// `BTC-USD` — NOT the swap instrument `BTC-USDT-SWAP`.
+///
+/// Mapping rules:
+/// - `BTC-USDT-SWAP` → `BTC-USD`
+/// - `ETH-USDT-SWAP` → `ETH-USD`
+/// - `BTC-USD-SWAP`  → `BTC-USD`  (coin-margined swap — already USD-based)
+/// - `BTC-USD`       → `BTC-USD`  (no-op: already index form)
+/// - `BTC/USDT`      → `BTC-USD`  (slash-separated canonical form)
+///
+/// The OKX index naming convention is `BASE-USD` regardless of whether the
+/// underlying swap settles in USDT or USDC.
+fn swap_inst_id_to_index(raw: &str) -> String {
+    let normalised = raw.replace('/', "-").to_uppercase();
+    let parts: Vec<&str> = normalised.split('-').collect();
+    // Any form with ≥ 2 dash-segments: take only the base (first segment).
+    // Index instId is always BASE-USD.
+    match parts.first() {
+        Some(base) if !base.is_empty() => format!("{}-USD", base),
+        _ => normalised,
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // RATE LIMIT CAPABILITIES (static — embedded in binary, no allocation)
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2397,11 +2423,14 @@ impl MarketDataPublic for OkxConnector {
         // OKX long/short ratio uses base currency (ccy), not inst_id.
         // Extract base from raw symbol: "BTC-USDT" → "BTC", "BTC-USDT-SWAP" → "BTC".
         let ccy = symbol.split('-').next().unwrap_or(&symbol).to_uppercase();
+        // OKX rubik LSR period vocabulary is [5m,1H,1D] (upper-cased) — map the
+        // canonical interval ("1h" → "1H") or OKX rejects with a period error.
+        let period = map_kline_interval(period).to_string();
         let begin_str = start_time.map(|t| t.to_string());
         let end_str = end_time.map(|t| t.to_string());
         self.get_long_short_ratio(
             &ccy,
-            Some(period),
+            Some(&period),
             begin_str.as_deref(),
             end_str.as_deref(),
             limit,
@@ -2420,7 +2449,145 @@ impl MarketDataPublic for OkxConnector {
         // OKX uses before/after cursors by fundingTime:
         //   after  = only records with fundingTime < after  (upper bound → end_time)
         //   before = only records with fundingTime > before (lower bound → start_time)
-        self.get_funding_rate_history(&symbol, end_time, start_time, limit).await
+        // funding-rate-history caps limit at 100 — a larger value errors and the
+        // parse then yields an empty vec. Clamp it.
+        let limit = Some(limit.unwrap_or(100).min(100));
+        // OKX cursors: before = fundingTime > before (lower bound = start_time),
+        // after = fundingTime < after (upper bound = end_time). The inherent
+        // helper takes (before, after) — pass (start, end), NOT (end, start)
+        // (the swap returned an empty window).
+        self.get_funding_rate_history(&symbol, start_time, end_time, limit).await
+    }
+
+    /// Mark price klines via `GET /api/v5/market/mark-price-candles-history`.
+    ///
+    /// Response shape: `[ts, open, high, low, close, confirm]` — no volume fields.
+    /// Reuses `parse_ws_price_candle` which handles the 6-element array (first 5 used).
+    /// OKX `after`/`before` pagination is inverted: `after` = older-than (paginate backward).
+    async fn get_mark_price_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::OKX, account_type)?;
+        let mut params = HashMap::new();
+        params.insert("instId".to_string(), symbol.to_string());
+        params.insert("bar".to_string(), map_kline_interval(interval).to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.min(100).to_string());
+        }
+        if let Some(et) = end_time {
+            // OKX `after` = records with ts < after (paginate backward)
+            params.insert("after".to_string(), et.to_string());
+        }
+        let response = self.get(OkxEndpoint::MarkPriceCandlesHistory, params).await?;
+        // data is an array of candle arrays: [ts, o, h, l, c, confirm]
+        let data = OkxParser::extract_data(&response)?;
+        let arr = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("mark-price-candles: 'data' is not an array".to_string()))?;
+        let mut klines: Vec<Kline> = arr.iter()
+            .filter_map(|item| OkxParser::parse_ws_price_candle(item).ok())
+            .collect();
+        // OKX returns newest first — reverse to oldest first (consistent with parse_klines)
+        klines.reverse();
+        Ok(klines)
+    }
+
+    /// Index price klines via `GET /api/v5/market/history-index-candles`.
+    ///
+    /// QUIRK: This endpoint requires the INDEX instId (e.g. `BTC-USD`), NOT the
+    /// swap instId (`BTC-USDT-SWAP`). OKX index instruments use the USD-quoted form.
+    /// Mapping: strip the quote currency suffix and the `-SWAP` suffix, then append `-USD`.
+    /// Example: `BTC-USDT-SWAP` → `BTC-USD`, `ETH-USDT-SWAP` → `ETH-USD`.
+    /// For already-index-form inputs (e.g. `BTC-USD`) the mapping is a no-op.
+    ///
+    /// Response shape: `[ts, open, high, low, close, confirm]` — no volume fields.
+    async fn get_index_price_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::OKX, account_type)?;
+        // Convert swap instId to index instId.
+        // BTC-USDT-SWAP → BTC-USD  |  ETH-USDT-SWAP → ETH-USD  |  BTC-USD → BTC-USD (no-op)
+        let index_inst_id = swap_inst_id_to_index(&symbol);
+        let mut params = HashMap::new();
+        params.insert("instId".to_string(), index_inst_id);
+        params.insert("bar".to_string(), map_kline_interval(interval).to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.min(100).to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("after".to_string(), et.to_string());
+        }
+        let response = self.get(OkxEndpoint::HistoryIndexCandles, params).await?;
+        let data = OkxParser::extract_data(&response)?;
+        let arr = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("history-index-candles: 'data' is not an array".to_string()))?;
+        let mut klines: Vec<Kline> = arr.iter()
+            .filter_map(|item| OkxParser::parse_ws_price_candle(item).ok())
+            .collect();
+        klines.reverse();
+        Ok(klines)
+    }
+
+    /// Premium index klines — NOT SUPPORTED on OKX.
+    ///
+    /// OKX exposes premium history as raw ticks (`/api/v5/public/premium-history`),
+    /// not OHLCV klines. There is no OHLCV-format premium-index candle endpoint.
+    async fn get_premium_index_klines(
+        &self,
+        _symbol: SymbolInput<'_>,
+        _interval: &str,
+        _limit: Option<u32>,
+        _account_type: AccountType,
+        _end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
+        Err(ExchangeError::NotSupported(
+            "OKX exposes premium history as raw ticks (public/premium-history), not OHLCV klines".to_string()
+        ))
+    }
+
+    /// Open interest history via `GET /api/v5/rubik/stat/contracts/open-interest-history`.
+    ///
+    /// Depth: ~3 months (typical for rubik/stat endpoints).
+    /// Param quirk: uses `ccy` (base currency, e.g. `"BTC"`), not `instId` —
+    /// data is currency-level aggregation, not per-instrument.
+    /// `period` values: `"5m"`, `"1H"`, `"1D"`.
+    async fn get_open_interest_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        period: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<OpenInterest>> {
+        let symbol = symbol.resolve(ExchangeId::OKX, account_type)?;
+        // OKX open-interest-history is per-instrument: requires `instId` (the full
+        // swap id, e.g. BTC-USDT-SWAP), NOT `ccy` (verified live — `ccy` yields
+        // "instId can't be empty"). `period` must be OKX-cased (1H/1D), so route
+        // the canonical interval through map_kline_interval.
+        let mut params = HashMap::new();
+        params.insert("instId".to_string(), symbol.to_string());
+        params.insert("period".to_string(), map_kline_interval(period).to_string());
+        if let Some(b) = start_time {
+            params.insert("begin".to_string(), b.to_string());
+        }
+        if let Some(e) = end_time {
+            params.insert("end".to_string(), e.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        let response = self.get(OkxEndpoint::OpenInterestHistory, params).await?;
+        OkxParser::parse_open_interest_history(&response)
     }
 }
 
@@ -2438,14 +2605,17 @@ impl crate::core::traits::HasCapabilities for OkxConnector {
             has_recent_trades: false,
             has_exchange_info: true,
             // MarketDataPublic (verified overrides: get_liquidation_history,
-            //   get_long_short_ratio_history, get_funding_rate_history)
+            //   get_long_short_ratio_history, get_funding_rate_history,
+            //   get_mark_price_klines, get_index_price_klines, get_open_interest_history)
+            // get_premium_index_klines: NotSupported — OKX exposes premium history as raw
+            //   ticks (/api/v5/public/premium-history), not OHLCV klines.
             has_liquidation_history: true,
             has_long_short_ratio_history: true,
             has_funding_rate_history: true,
-            has_open_interest_history: false,
+            has_open_interest_history: true,
             has_premium_index: false,
-            has_mark_price_klines: false,
-            has_index_price_klines: false,
+            has_mark_price_klines: true,
+            has_index_price_klines: true,
             has_premium_index_klines: false,
             // Trading
             has_market_order: true,

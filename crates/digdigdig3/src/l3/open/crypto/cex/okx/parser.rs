@@ -1459,6 +1459,48 @@ impl OkxParser {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // OPEN INTEREST HISTORY
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse `GET /api/v5/rubik/stat/contracts/open-interest-history` response.
+    ///
+    /// OKX returns positional arrays: `[ts_str, oi_str, oiCcy_str]`.
+    /// - `ts`    — Unix timestamp in ms (string)
+    /// - `oi`    — open interest in contracts (string)
+    /// - `oiCcy` — open interest in base currency (string, may be "0")
+    ///
+    /// Param quirk: endpoint uses `ccy` (base currency, e.g. `"BTC"`),
+    /// not `instId` — currency-level aggregation, not per-instrument.
+    pub fn parse_open_interest_history(response: &Value) -> ExchangeResult<Vec<OpenInterest>> {
+        let data = Self::extract_data(response)?;
+        let arr = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("'data' is not an array".to_string()))?;
+
+        let mut result = Vec::with_capacity(arr.len());
+        for item in arr {
+            // Positional array: [ts, oi, oiCcy]
+            let timestamp = item.get(0)
+                .and_then(Value::as_str)
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(0);
+            let open_interest = item.get(1)
+                .and_then(Value::as_str)
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let open_interest_value = item.get(2)
+                .and_then(Value::as_str)
+                .and_then(|s| s.parse::<f64>().ok())
+                .filter(|&v| v != 0.0);
+            result.push(OpenInterest {
+                open_interest,
+                open_interest_value,
+                timestamp,
+            });
+        }
+        Ok(result)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // LONG/SHORT RATIO
     // ═══════════════════════════════════════════════════════════════════════════
 

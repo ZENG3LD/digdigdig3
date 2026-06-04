@@ -36,7 +36,7 @@ use crate::core::{
     SymbolInput,
 };
 use crate::core::traits::{
-    ExchangeIdentity, MarketData, Trading, Account, Positions, AccountLedger,
+    ExchangeIdentity, MarketData, MarketDataPublic, Trading, Account, Positions, AccountLedger,
 };
 use crate::core::{CancelAll, AmendOrder, BatchOrders, AccountTransfers, CustodialFunds, SubAccounts};
 use crate::core::types::{
@@ -51,7 +51,7 @@ use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLim
 
 use super::endpoints::{
     BitgetUrls, BitgetEndpoint, format_symbol, map_kline_interval,
-    map_futures_granularity, get_product_type
+    map_futures_granularity, map_ls_period, get_product_type
 };
 use super::auth::BitgetAuth;
 use super::parser::BitgetParser;
@@ -2981,15 +2981,186 @@ fn bitget_account_type_str(account_type: AccountType) -> &'static str {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// MARKET DATA PUBLIC (non-OHLCV REST historical)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+impl MarketDataPublic for BitgetConnector {
+    // ── Mark price klines ────────────────────────────────────────────────────
+    // GET /api/v2/mix/market/history-mark-candles
+    // Same 7-element array format as regular klines; parse_klines reused.
+    // Depth cap: 1m→1mo, 1H→83d, 4H→240d (granularity-dependent).
+    async fn get_mark_price_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::Bitget, account_type)?;
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("productType".to_string(), product_type_from_raw(&symbol).to_string());
+        params.insert("granularity".to_string(), map_futures_granularity(interval).to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.min(200).to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("endTime".to_string(), et.to_string());
+        }
+        let response = self.get(BitgetEndpoint::FuturesMarkCandles, params, AccountType::FuturesCross).await?;
+        BitgetParser::parse_klines(&response)
+    }
+
+    // ── Index price klines ───────────────────────────────────────────────────
+    // GET /api/v2/mix/market/history-index-candles
+    // Same candle shape as mark candles; parse_klines reused.
+    async fn get_index_price_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::Bitget, account_type)?;
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("productType".to_string(), product_type_from_raw(&symbol).to_string());
+        params.insert("granularity".to_string(), map_futures_granularity(interval).to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.min(200).to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("endTime".to_string(), et.to_string());
+        }
+        let response = self.get(BitgetEndpoint::FuturesIndexCandles, params, AccountType::FuturesCross).await?;
+        BitgetParser::parse_klines(&response)
+    }
+
+    // ── Premium index klines — NOT SUPPORTED ────────────────────────────────
+    // Bitget has no premium index kline endpoint (no funding-basis OHLCV series).
+    // Alternative: use get_funding_rate_history for per-settlement funding rates.
+    async fn get_premium_index_klines(
+        &self,
+        _symbol: SymbolInput<'_>,
+        _interval: &str,
+        _limit: Option<u32>,
+        _account_type: AccountType,
+        _end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
+        Err(ExchangeError::NotSupported(
+            "NotSupported: Bitget has no premium index kline endpoint. \
+             Bitget does not expose funding-basis OHLCV history. \
+             Alternative: use get_funding_rate_history for per-settlement funding rates. \
+             Ref: https://www.bitget.com/api-doc/contract/market/"
+                .into(),
+        ))
+    }
+
+    // ── Open interest history — NOT SUPPORTED (snapshot-only) ───────────────
+    // GET /api/v2/mix/market/open-interest is a SNAPSHOT endpoint with no
+    // startTime/endTime params. No historical OI time-series REST endpoint exists
+    // in Bitget V2 API.
+    async fn get_open_interest_history(
+        &self,
+        _symbol: SymbolInput<'_>,
+        _period: &str,
+        _start_time: Option<i64>,
+        _end_time: Option<i64>,
+        _limit: Option<u32>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::OpenInterest>> {
+        Err(ExchangeError::NotSupported(
+            "NotSupported: Bitget open interest is snapshot-only \
+             (GET /api/v2/mix/market/open-interest has no time-series params). \
+             No historical OI REST endpoint exists in Bitget V2 API. \
+             Alternative: use get_open_interest (snapshot) via the Positions trait. \
+             Ref: https://www.bitget.com/api-doc/contract/market/Get-Open-Interest"
+                .into(),
+        ))
+    }
+
+    // ── Funding rate history ─────────────────────────────────────────────────
+    // GET /api/v2/mix/market/history-fund-rate
+    // Cursor-paginated; limit varies. idLessThan pagination not wired here
+    // (single-page call; callers paginate via end_time).
+    async fn get_funding_rate_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<FundingRate>> {
+        let symbol = symbol.resolve(ExchangeId::Bitget, account_type)?;
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("productType".to_string(), product_type_from_raw(&symbol).to_string());
+        if let Some(st) = start_time {
+            params.insert("startTime".to_string(), st.to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("endTime".to_string(), et.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("pageSize".to_string(), l.min(100).to_string());
+        }
+        let response = self.get(BitgetEndpoint::FuturesFundingRateHistory, params, AccountType::FuturesCross).await?;
+        BitgetParser::parse_funding_rate_history(&response)
+    }
+
+    // ── Long/short ratio history ─────────────────────────────────────────────
+    // Bitget has 3 variants; we route to the global variant by default
+    // (GET /api/v2/mix/market/long-short).
+    // NOTE: daily `period` param is `1Dutc` (not `1d` / `1D`) — 2025 breaking change.
+    // map_ls_period handles the translation.
+    async fn get_long_short_ratio_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        period: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::LongShortRatio>> {
+        let symbol = symbol.resolve(ExchangeId::Bitget, account_type)?;
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("productType".to_string(), product_type_from_raw(&symbol).to_string());
+        // Apply 1Dutc mapping — 2025 breaking change for daily period.
+        params.insert("period".to_string(), map_ls_period(period).to_string());
+        if let Some(st) = start_time {
+            params.insert("startTime".to_string(), st.to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("endTime".to_string(), et.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        let response = self.get(BitgetEndpoint::FuturesLongShort, params, AccountType::FuturesCross).await?;
+        BitgetParser::parse_long_short_ratio(&response, &symbol, "globalLongShortRatio")
+    }
+}
+
 impl crate::core::traits::HasCapabilities for BitgetConnector {
     fn capabilities(&self) -> crate::core::types::ConnectorCapabilities {
         crate::core::types::ConnectorCapabilities {
             has_ticker: true, has_orderbook: true, has_klines: true,
             has_recent_trades: false, has_exchange_info: true,
-            has_liquidation_history: false, has_open_interest_history: false,
-            has_premium_index: false, has_long_short_ratio_history: false,
-            has_funding_rate_history: false, has_mark_price_klines: false,
-            has_index_price_klines: false,
+            has_liquidation_history: false,
+            // Snapshot-only — no time-series. NotSupported override documents this.
+            has_open_interest_history: false,
+            has_premium_index: false,
+            has_long_short_ratio_history: true,
+            has_funding_rate_history: true,
+            has_mark_price_klines: true,
+            has_index_price_klines: true,
+            // Wire-absent on Bitget. NotSupported override documents this.
             has_premium_index_klines: false,
             has_market_order: true, has_limit_order: true,
             has_open_orders: true, has_order_history: true, has_user_trades: true,

@@ -2887,6 +2887,19 @@ impl MarketDataPublic for BybitConnector {
         self.get_index_price_kline(category, &symbol, interval, limit, None, end_time).await
     }
 
+    async fn get_premium_index_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::Bybit, account_type)?;
+        let category = account_type_to_category(account_type);
+        self.get_premium_index_kline(category, &symbol, interval, limit, None, end_time).await
+    }
+
     async fn get_long_short_ratio_history(
         &self,
         symbol: SymbolInput<'_>,
@@ -2935,7 +2948,7 @@ impl crate::core::traits::HasCapabilities for BybitConnector {
             has_open_interest_history: true,
             has_mark_price_klines: true,
             has_index_price_klines: true,
-            has_premium_index_klines: false,
+            has_premium_index_klines: true,
             has_long_short_ratio_history: true,
             has_funding_rate_history: true,
             has_liquidation_history: false,

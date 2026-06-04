@@ -36,6 +36,7 @@ use crate::core::traits::{
     CancelAll, AmendOrder, BatchOrders,
     AccountTransfers, CustodialFunds, SubAccounts,
     FundingHistory, AccountLedger,
+    MarketDataPublic,
 };
 use crate::core::types::{
     TransferRequest, TransferHistoryFilter, WithdrawRequest,
@@ -43,7 +44,7 @@ use crate::core::types::{
     SubAccount, ConnectorStats,
     FundingPayment, FundingFilter, LedgerEntry, LedgerFilter,
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
-    OpenInterest, MarkPrice,
+    OpenInterest, MarkPrice, LongShortRatio,
 };
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight, OrderbookCapabilities, WsBookChannel};
@@ -2786,17 +2787,200 @@ impl AccountLedger for GateioConnector {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// MARKET DATA PUBLIC
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+impl MarketDataPublic for GateioConnector {
+    /// Mark price klines: `GET /futures/{settle}/candlesticks?contract=mark_BTC_USDT`
+    async fn get_mark_price_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::GateIO, account_type)?;
+        self.get_derived_klines_inner(
+            GateioEndpoint::FuturesMarkPriceKlines,
+            &format!("mark_{}", symbol),
+            interval,
+            limit,
+            end_time,
+            account_type,
+        ).await
+    }
+
+    /// Index price klines: `GET /futures/{settle}/candlesticks?contract=index_BTC_USDT`
+    async fn get_index_price_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::GateIO, account_type)?;
+        self.get_derived_klines_inner(
+            GateioEndpoint::FuturesIndexPriceKlines,
+            &format!("index_{}", symbol),
+            interval,
+            limit,
+            end_time,
+            account_type,
+        ).await
+    }
+
+    /// Premium index klines: `GET /futures/{settle}/premium_index?contract=BTC_USDT`
+    async fn get_premium_index_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::GateIO, account_type)?;
+        self.get_derived_klines_inner(
+            GateioEndpoint::FuturesPremiumIndexKlines,
+            &symbol,
+            interval,
+            limit,
+            end_time,
+            account_type,
+        ).await
+    }
+
+    /// Funding rate history: `GET /futures/{settle}/funding_rate`
+    async fn get_funding_rate_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::FundingRate>> {
+        let symbol = symbol.resolve(ExchangeId::GateIO, account_type)?;
+        let mut params = HashMap::new();
+        params.insert("contract".to_string(), symbol.to_string());
+        if let Some(st) = start_time {
+            params.insert("from".to_string(), (st / 1000).to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("to".to_string(), (et / 1000).to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.min(1000).to_string());
+        }
+        let response = self.get(GateioEndpoint::FuturesFundingRateHistory, params, account_type).await?;
+        GateioParser::parse_funding_rate_history(&response)
+    }
+
+    /// Open interest history: `GET /futures/{settle}/contract_stats`
+    async fn get_open_interest_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        period: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<OpenInterest>> {
+        let symbol = symbol.resolve(ExchangeId::GateIO, account_type)?;
+        let response = self.fetch_contract_stats(&symbol, period, start_time, end_time, limit, account_type).await?;
+        GateioParser::parse_open_interest_history(&response)
+    }
+
+    /// Long/short ratio history: `GET /futures/{settle}/contract_stats` (lsr_account field)
+    async fn get_long_short_ratio_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        period: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<LongShortRatio>> {
+        let symbol = symbol.resolve(ExchangeId::GateIO, account_type)?;
+        let response = self.fetch_contract_stats(&symbol, period, start_time, end_time, limit, account_type).await?;
+        GateioParser::parse_long_short_ratio_history(&response, &symbol)
+    }
+}
+
+impl GateioConnector {
+    /// Shared helper for mark/index/premium-index klines.
+    ///
+    /// `contract` must already carry the appropriate prefix (e.g. `"mark_BTC_USDT"`,
+    /// `"index_BTC_USDT"`) or be plain (e.g. `"BTC_USDT"` for premium index).
+    async fn get_derived_klines_inner(
+        &self,
+        endpoint: GateioEndpoint,
+        contract: &str,
+        interval: &str,
+        limit: Option<u32>,
+        end_time: Option<i64>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Kline>> {
+        let mut params = HashMap::new();
+        params.insert("contract".to_string(), contract.to_string());
+        params.insert("interval".to_string(), map_kline_interval(interval).to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.min(2000).to_string());
+        }
+        if let Some(et) = end_time {
+            // Gate.io uses Unix seconds
+            params.insert("to".to_string(), (et / 1000).to_string());
+        }
+        let response = self.get(endpoint, params, account_type).await?;
+        GateioParser::parse_derived_klines(&response)
+    }
+
+    /// Shared helper for `contract_stats` — used by both OI and LSR trait methods.
+    async fn fetch_contract_stats(
+        &self,
+        contract: &str,
+        interval: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<serde_json::Value> {
+        let mut params = HashMap::new();
+        params.insert("contract".to_string(), contract.to_string());
+        params.insert("interval".to_string(), map_kline_interval(interval).to_string());
+        if let Some(st) = start_time {
+            params.insert("from".to_string(), (st / 1000).to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.min(1000).to_string());
+        }
+        // Note: per docs, `limit` conflicts with `from`/`to` — use one or the other.
+        // We prefer from/to when start_time is provided; otherwise use limit.
+        // end_time is not a separate param for contract_stats; the window is
+        // [from, from + limit*interval]. Passing both from+limit is fine per the SDK.
+        let _ = end_time; // Gate.io contract_stats does not have a `to` param
+        self.get(GateioEndpoint::FuturesContractStats, params, account_type).await
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HAS CAPABILITIES
+// ═══════════════════════════════════════════════════════════════════════════════
+
 impl crate::core::traits::HasCapabilities for GateioConnector {
     fn capabilities(&self) -> crate::core::types::ConnectorCapabilities {
         crate::core::types::ConnectorCapabilities {
             has_ticker: true, has_orderbook: true, has_klines: true,
             has_recent_trades: false, has_exchange_info: true,
-            // MarketDataPublic stub only
-            has_liquidation_history: false, has_open_interest_history: false,
-            has_premium_index: false, has_long_short_ratio_history: false,
-            has_funding_rate_history: false, has_mark_price_klines: false,
-            has_index_price_klines: false,
-            has_premium_index_klines: false,
+            // MarketDataPublic — real implementations
+            has_liquidation_history: false, has_open_interest_history: true,
+            has_premium_index: false, has_long_short_ratio_history: true,
+            has_funding_rate_history: true, has_mark_price_klines: true,
+            has_index_price_klines: true,
+            has_premium_index_klines: true,
             has_market_order: true, has_limit_order: true,
             has_open_orders: true, has_order_history: true, has_user_trades: true,
             has_positions: true, has_mark_price: true, has_modify_position: true,

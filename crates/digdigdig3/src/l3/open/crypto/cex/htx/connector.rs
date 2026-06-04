@@ -280,7 +280,11 @@ impl HtxConnector {
             | HtxEndpoint::MarkPrice
             | HtxEndpoint::MarkPriceKline
             | HtxEndpoint::EliteAccountRatio
-            | HtxEndpoint::HistoricalFundingRate => HtxUrls::futures_base_url(self.testnet),
+            | HtxEndpoint::HistoricalFundingRate
+            | HtxEndpoint::MarkPriceKlineHistory
+            | HtxEndpoint::PremiumIndexKlineHistory
+            | HtxEndpoint::OpenInterestHistory
+            | HtxEndpoint::ElitePositionRatio => HtxUrls::futures_base_url(self.testnet),
             _ => HtxUrls::base_url(self.testnet),
         };
         let path = endpoint.path();
@@ -2203,17 +2207,177 @@ impl HtxConnector {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// MARKET DATA PUBLIC (REST-historical non-OHLCV)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+impl crate::core::traits::MarketDataPublic for HtxConnector {
+    /// Mark price klines.
+    ///
+    /// `GET /index/market/history/linear_swap_mark_price_kline`
+    /// Params: `contract_code`, `period`, `size` (max 2000).
+    /// 9 periods: 1min 5min 15min 30min 60min 4hour 1day 1week 1mon.
+    async fn get_mark_price_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+        _end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<crate::core::types::Kline>> {
+        let symbol = symbol.resolve(ExchangeId::HTX, account_type)?;
+        let contract_code = to_linear_swap_code(&symbol);
+        let mut params = HashMap::new();
+        params.insert("contract_code".to_string(), contract_code);
+        params.insert("period".to_string(), map_kline_interval(interval).to_string());
+        if let Some(sz) = limit {
+            params.insert("size".to_string(), sz.min(2000).to_string());
+        }
+        let resp = self.get(HtxEndpoint::MarkPriceKlineHistory, params).await?;
+        HtxParser::parse_derived_klines(&resp)
+    }
+
+    /// Index price klines — NOT SUPPORTED on HTX linear swap.
+    ///
+    /// HTX exposes mark-price, premium-index and estimated-rate klines under
+    /// `/index/market/history/` but has no `linear_swap_index_price_kline`
+    /// endpoint (verified live: 404). Use index price via the WS `ws_index`
+    /// feed or derive from mark/premium.
+    async fn get_index_price_klines(
+        &self,
+        _symbol: SymbolInput<'_>,
+        _interval: &str,
+        _limit: Option<u32>,
+        _account_type: AccountType,
+        _end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<crate::core::types::Kline>> {
+        Err(ExchangeError::NotSupported(
+            "HTX linear swap has no index-price kline REST endpoint (only mark / \
+             premium-index / estimated-rate klines exist); use WS ws_index feed".to_string()
+        ))
+    }
+
+    /// Premium index klines.
+    ///
+    /// `GET /index/market/history/linear_swap_premium_index_kline`
+    /// Params: `contract_code`, `period`, `size` (max 2000). OHLCV of the
+    /// premium index (mark vs index basis) — HTX's true premium-index series.
+    async fn get_premium_index_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+        _end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<crate::core::types::Kline>> {
+        let symbol = symbol.resolve(ExchangeId::HTX, account_type)?;
+        let contract_code = to_linear_swap_code(&symbol);
+        let mut params = HashMap::new();
+        params.insert("contract_code".to_string(), contract_code);
+        params.insert("period".to_string(), map_kline_interval(interval).to_string());
+        if let Some(sz) = limit {
+            params.insert("size".to_string(), sz.min(2000).to_string());
+        }
+        let resp = self.get(HtxEndpoint::PremiumIndexKlineHistory, params).await?;
+        HtxParser::parse_derived_klines(&resp)
+    }
+
+    /// Historical open interest.
+    ///
+    /// `GET /linear-swap-api/v1/swap_his_open_interest`
+    /// Params: `contract_code`, `period`, `size` (max 200), `amount_type` (1=cont, 2=crypto).
+    /// Note: max 200 pts per call — much smaller than the kline endpoints (2000).
+    async fn get_open_interest_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        period: &str,
+        _start_time: Option<i64>,
+        _end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::OpenInterest>> {
+        let symbol = symbol.resolve(ExchangeId::HTX, account_type)?;
+        let contract_code = to_linear_swap_code(&symbol);
+        let mut params = HashMap::new();
+        params.insert("contract_code".to_string(), contract_code);
+        params.insert("period".to_string(), map_kline_interval(period).to_string());
+        // amount_type 1 = contracts (default)
+        params.insert("amount_type".to_string(), "1".to_string());
+        if let Some(sz) = limit {
+            params.insert("size".to_string(), sz.min(200).to_string());
+        }
+        let resp = self.get(HtxEndpoint::OpenInterestHistory, params).await?;
+        HtxParser::parse_open_interest_history(&resp)
+    }
+
+    /// Historical long/short ratio — **elite (top-trader) accounts only**.
+    ///
+    /// `GET /linear-swap-api/v1/swap_elite_account_ratio`
+    /// Params: `contract_code`, `period` (5min buckets confirmed via Tardis).
+    ///
+    /// # Important
+    /// HTX exposes **only elite/top-trader** variants for linear swap (`swap_elite_account_ratio`
+    /// + `swap_elite_position_ratio`).  There is **no global account ratio** endpoint for
+    /// USDT-margined perpetuals — the global variant is absent from the official docs and
+    /// Tardis channel inventory.  `ratio_type` is set to `"eliteAccountRatio"` so callers can
+    /// distinguish this from a global sentiment index.
+    async fn get_long_short_ratio_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        period: &str,
+        _start_time: Option<i64>,
+        _end_time: Option<i64>,
+        _limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::LongShortRatio>> {
+        let symbol = symbol.resolve(ExchangeId::HTX, account_type)?;
+        let contract_code = to_linear_swap_code(&symbol);
+        let mut params = HashMap::new();
+        params.insert("contract_code".to_string(), contract_code.clone());
+        // HTX period strings for elite ratio: 5min 15min 30min 60min 4hour 1day
+        params.insert("period".to_string(), map_kline_interval(period).to_string());
+        let resp = self.get(HtxEndpoint::EliteAccountRatio, params).await?;
+        HtxParser::parse_long_short_ratio(&resp, &contract_code, "eliteAccountRatio")
+    }
+
+    /// Historical funding rates (actual settled rates).
+    ///
+    /// `GET /linear-swap-api/v1/swap_historical_funding_rate`
+    /// Paginated via `page_index` / `page_size` (max 50 per page).
+    /// The `start_time`, `end_time`, and `limit` params are approximated:
+    /// limit drives `page_size` (capped at 50); time filters are not natively
+    /// supported by this endpoint (page-based only) — first page is returned.
+    async fn get_funding_rate_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        _start_time: Option<i64>,
+        _end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::FundingRate>> {
+        let symbol = symbol.resolve(ExchangeId::HTX, account_type)?;
+        let contract_code = to_linear_swap_code(&symbol);
+        let page_size = limit.map(|l| l.min(50)).unwrap_or(20);
+        let resp = self.get_historical_funding_rate(&contract_code, Some(1), Some(page_size)).await?;
+        HtxParser::parse_funding_rate_history(&resp)
+    }
+}
+
 impl crate::core::traits::HasCapabilities for HtxConnector {
     fn capabilities(&self) -> crate::core::types::ConnectorCapabilities {
         crate::core::types::ConnectorCapabilities {
             has_ticker: true, has_orderbook: true, has_klines: true,
             has_recent_trades: false, has_exchange_info: true,
-            // HTX has funding_rate_history via inherent method but no MarketDataPublic override
-            has_liquidation_history: false, has_open_interest_history: false,
-            has_premium_index: false, has_long_short_ratio_history: false,
-            has_funding_rate_history: false, has_mark_price_klines: false,
+            // MarketDataPublic — all 5 REST-historical methods implemented.
+            // has_premium_index is false: HTX has no snapshot premium-index endpoint;
+            // estimated-rate kline is served via has_premium_index_klines instead.
+            has_liquidation_history: false, has_open_interest_history: true,
+            has_premium_index: false, has_long_short_ratio_history: true,
+            has_funding_rate_history: true, has_mark_price_klines: true,
             has_index_price_klines: false,
-            has_premium_index_klines: false,
+            has_premium_index_klines: true,
             has_market_order: true, has_limit_order: true,
             has_open_orders: true, has_order_history: true, has_user_trades: true,
             has_positions: true, has_mark_price: true, has_modify_position: true,

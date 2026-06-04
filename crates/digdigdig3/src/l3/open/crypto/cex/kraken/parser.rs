@@ -1315,6 +1315,157 @@ impl KrakenParser {
         }
         asset.to_string()
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FUTURES CHARTS v1 — mark/index price klines
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse Kraken Futures charts/v1 candle response.
+    ///
+    /// Response shape from `GET /api/charts/v1/{tick_type}/{symbol}/{resolution}`:
+    /// ```json
+    /// {
+    ///   "candles": [
+    ///     { "time": 1700000000, "open": "30000.0", "high": "30100.0",
+    ///       "low": "29900.0", "close": "30050.0", "volume": "1.5" },
+    ///     ...
+    ///   ],
+    ///   "more_candles": false
+    /// }
+    /// ```
+    /// `time` is a Unix second timestamp; we convert to milliseconds.
+    pub fn parse_charts_candles(response: &Value) -> ExchangeResult<Vec<Kline>> {
+        let candles = response
+            .get("candles")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse(
+                "Kraken charts/v1: missing 'candles' array".to_string()
+            ))?;
+
+        let mut result = Vec::with_capacity(candles.len());
+        for (i, c) in candles.iter().enumerate() {
+            let parse_f64 = |field: &str| -> ExchangeResult<f64> {
+                c.get(field)
+                    .and_then(|v| {
+                        // Accept both number and string representations.
+                        v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+                    })
+                    .ok_or_else(|| ExchangeError::Parse(
+                        format!("Kraken charts/v1 candle[{}]: missing or invalid '{}'", i, field)
+                    ))
+            };
+
+            // charts/v1 candle `time` is already epoch MILLISECONDS (13-digit),
+            // even though the from/to QUERY params are in seconds. Do not scale.
+            let time_ms = c.get("time")
+                .and_then(|v| v.as_i64())
+                .ok_or_else(|| ExchangeError::Parse(
+                    format!("Kraken charts/v1 candle[{}]: missing 'time'", i)
+                ))?;
+
+            result.push(Kline {
+                open_time: time_ms,
+                open: parse_f64("open")?,
+                high: parse_f64("high")?,
+                low: parse_f64("low")?,
+                close: parse_f64("close")?,
+                volume: parse_f64("volume")?,
+                quote_volume: None,
+                close_time: None,
+                trades: None,
+            });
+        }
+        Ok(result)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FUTURES HISTORICAL FUNDING RATES (MarketDataPublic)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse Kraken Futures `GET /derivatives/api/v3/historical-funding-rates` response.
+    ///
+    /// Response shape:
+    /// ```json
+    /// {
+    ///   "rates": [
+    ///     { "timestamp": "2024-01-01T00:00:00.000Z", "fundingRate": 0.0001,
+    ///       "relativeFundingRate": 0.0001 },
+    ///     ...
+    ///   ]
+    /// }
+    /// ```
+    /// Timestamps are ISO-8601 strings; we parse to Unix milliseconds.
+    pub fn parse_historical_funding_rates(response: &Value) -> ExchangeResult<Vec<FundingRate>> {
+        let rates = response
+            .get("rates")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse(
+                "Kraken /derivatives/api/v3/historical-funding-rates: missing 'rates' array".to_string()
+            ))?;
+
+        let mut result = Vec::with_capacity(rates.len());
+        for (i, r) in rates.iter().enumerate() {
+            // Parse ISO-8601 timestamp string → Unix ms.
+            // Format: "2024-01-01T00:00:00.000Z"
+            let ts_ms = r.get("timestamp")
+                .and_then(|v| v.as_str())
+                .and_then(|s| {
+                    // Parse manually: strip trailing 'Z', split on 'T', parse date+time parts.
+                    let s = s.trim_end_matches('Z');
+                    let parts: Vec<&str> = s.splitn(2, 'T').collect();
+                    if parts.len() != 2 { return None; }
+                    let date_parts: Vec<u32> = parts[0].split('-')
+                        .filter_map(|p| p.parse().ok()).collect();
+                    let time_parts: Vec<f64> = parts[1].split(':')
+                        .filter_map(|p| p.parse().ok()).collect();
+                    if date_parts.len() != 3 || time_parts.len() != 3 { return None; }
+                    // Days from epoch approximation using a simple formula.
+                    // For precise parsing we rely on the chrono-like arithmetic below.
+                    let y = date_parts[0];
+                    let m = date_parts[1];
+                    let d = date_parts[2];
+                    // Zeller/Julian day number → days since Unix epoch (1970-01-01).
+                    let jdn = {
+                        let a = (14 - m) / 12;
+                        let y2 = y as i64 + 4800 - a as i64;
+                        let m2 = m as i64 + 12 * a as i64 - 3;
+                        d as i64 + (153 * m2 + 2) / 5 + 365 * y2
+                            + y2 / 4 - y2 / 100 + y2 / 400 - 32045
+                    };
+                    // Unix epoch = JDN 2440588
+                    let days_since_epoch = jdn - 2_440_588;
+                    let secs = days_since_epoch * 86400
+                        + time_parts[0] as i64 * 3600
+                        + time_parts[1] as i64 * 60
+                        + time_parts[2] as i64;
+                    // Fractional seconds from the .000 part of time_parts[2] (already included above as truncated int).
+                    Some(secs * 1000)
+                })
+                .unwrap_or_else(|| {
+                    // Fallback: try integer milliseconds directly.
+                    r.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0)
+                });
+
+            let rate = r.get("fundingRate")
+                .or_else(|| r.get("relativeFundingRate"))
+                .and_then(|v| v.as_f64())
+                .unwrap_or_else(|| {
+                    // Try string parse.
+                    r.get("fundingRate")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0.0)
+                });
+
+            let _ = i; // suppress unused warning if logging removed
+            result.push(FundingRate {
+                rate,
+                next_funding_time: None,
+                timestamp: ts_ms,
+            });
+        }
+        Ok(result)
+    }
 }
 
 #[cfg(test)]

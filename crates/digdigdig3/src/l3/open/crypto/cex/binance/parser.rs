@@ -539,8 +539,10 @@ impl BinanceParser {
 
         let mut result = Vec::with_capacity(symbols.len());
         for s in symbols {
+            // RAW: keep the native status verbatim, never filter — emitting only
+            // TRADING symbols hid PRE_TRADING/BREAK/HALT/delisting etc. (a STATION
+            // concern). Return every symbol the exchange listed.
             let status = s["status"].as_str().unwrap_or("").to_string();
-            if status != "TRADING" { continue; }
 
             let filters = s["filters"].as_array();
 
@@ -587,6 +589,11 @@ impl BinanceParser {
                 step_size,
                 min_notional,
                 account_type,
+                // RAW native instrument type (futures: PERPETUAL/CURRENT_QUARTER/
+                // NEXT_QUARTER; spot: absent → None). Not normalized.
+                instrument_type: s["contractType"].as_str().map(|v| v.to_string()),
+                // RAW passthrough of the full native symbol record — nothing lost.
+                extra: s.clone(),
             });
         }
         Ok(result)

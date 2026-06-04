@@ -367,6 +367,7 @@ impl MarketData for KrxConnector {
             step_size: Some(1.0),
             min_notional: None,
             account_type,
+            ..Default::default()
         }).collect();
 
         Ok(infos)

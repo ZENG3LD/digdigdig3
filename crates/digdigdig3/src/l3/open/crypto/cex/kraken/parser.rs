@@ -653,6 +653,7 @@ impl KrakenParser {
                 step_size,
                 min_notional: None,
                 account_type,
+                ..Default::default()
             });
         }
 

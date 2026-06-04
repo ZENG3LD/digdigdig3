@@ -330,6 +330,7 @@ impl BitgetParser {
                     step_size,
                     min_notional: None,
                     account_type,
+                    ..Default::default()
                 })
             })
             .collect();

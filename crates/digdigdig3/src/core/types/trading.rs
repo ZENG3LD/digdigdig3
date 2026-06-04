@@ -1148,8 +1148,15 @@ pub struct UserTradeFilter {
 // EXCHANGE INFO TYPES
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Информация о символе
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Информация о символе.
+///
+/// RAW contract: connectors fill the typed fields as a convenience subset and
+/// MUST NOT drop, filter, or canonicalize anything the exchange returned —
+/// `status` carries the venue-native value verbatim, and `extra` is a raw
+/// passthrough of the full native symbol record so nothing is lost. Any
+/// normalization / active-only filtering / asset clustering is a STATION
+/// concern, never core.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SymbolInfo {
     /// Символ (как на бирже)
     pub symbol: String,
@@ -1176,6 +1183,18 @@ pub struct SymbolInfo {
     /// Account / market type this symbol belongs to (Spot, FuturesCross, etc.)
     #[serde(default)]
     pub account_type: super::AccountType,
+    /// Native instrument/contract-type token exactly as the exchange reports it,
+    /// RAW (e.g. `"PERPETUAL"`, `"SWAP"`, `"linear"`, `"FUTURE"`, `"OPTION"`,
+    /// `"spot"`). `None` when the venue does not distinguish. NOT normalized —
+    /// station maps it if a consumer wants a canonical enum.
+    #[serde(default)]
+    pub instrument_type: Option<String>,
+    /// RAW passthrough of the exchange's native symbol record — every field the
+    /// venue returned, verbatim. The typed fields above are a convenience subset;
+    /// `extra` guarantees nothing the exchange said is lost. `Null` only if a
+    /// connector hasn't been wired for passthrough yet.
+    #[serde(default)]
+    pub extra: serde_json::Value,
 }
 
 /// Информация о бирже

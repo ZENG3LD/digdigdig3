@@ -252,6 +252,7 @@ impl MarketData for CryptoCompareConnector {
                 step_size: None,
                 min_notional: None,
                 account_type,
+                ..Default::default()
             })
             .collect();
 

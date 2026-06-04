@@ -16,7 +16,7 @@ use tokio::time::timeout;
 use digdigdig3::l3::open::crypto::cex::binance::{BinanceConnector, BinanceWebSocket};
 use digdigdig3::l3::open::crypto::cex::bybit::{BybitConnector, BybitWebSocket};
 use digdigdig3::l3::open::crypto::cex::okx::{OkxConnector, OkxWebSocket};
-use digdigdig3::l3::open::crypto::cex::hyperliquid::{HyperliquidConnector, HyperliquidWebSocket};
+use digdigdig3::l3::open::crypto::dex::hyperliquid::{HyperliquidConnector, HyperliquidWebSocket};
 use digdigdig3::l3::open::crypto::cex::deribit::{DeribitConnector, DeribitWebSocket};
 use digdigdig3::l3::open::crypto::cex::bitget::BitgetConnector;
 use digdigdig3::l3::open::crypto::cex::htx::{HtxConnector, HtxWebSocket};

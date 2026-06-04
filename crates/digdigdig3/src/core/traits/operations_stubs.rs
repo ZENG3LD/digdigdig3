@@ -18,7 +18,7 @@ use crate::l3::open::crypto::cex::crypto_com::CryptoComConnector;
 use crate::l3::open::crypto::cex::upbit::UpbitConnector;
 use crate::l3::open::crypto::cex::deribit::DeribitConnector;
 #[cfg(feature = "onchain-evm")]
-use crate::l3::open::crypto::cex::hyperliquid::HyperliquidConnector;
+use crate::l3::open::crypto::dex::hyperliquid::HyperliquidConnector;
 use crate::l3::open::crypto::cex::kraken::KrakenConnector;
 use crate::l3::open::crypto::cex::bitstamp::BitstampConnector;
 use crate::l3::open::crypto::cex::bingx::BingxConnector;

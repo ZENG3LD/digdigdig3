@@ -45,7 +45,7 @@
 //! | CryptoCom | `src/l3/open/crypto/cex/crypto_com/endpoints.rs` |
 //! | Upbit | `src/l3/open/crypto/cex/upbit/endpoints.rs` |
 //! | Bitfinex | `src/l3/open/crypto/cex/bitfinex/endpoints.rs` |
-//! | HyperLiquid | `src/l3/open/crypto/cex/hyperliquid/endpoints.rs` |
+//! | HyperLiquid | `src/l3/open/crypto/dex/hyperliquid/endpoints.rs` |
 //! | dYdX | `src/l3/open/crypto/dex/dydx/endpoints.rs` |
 //! | Lighter | `src/l3/open/crypto/dex/lighter/endpoints.rs` |
 

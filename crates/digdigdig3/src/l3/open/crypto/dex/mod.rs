@@ -5,3 +5,5 @@
 
 pub mod lighter;
 pub mod dydx;
+#[cfg(feature = "onchain-evm")]
+pub mod hyperliquid;

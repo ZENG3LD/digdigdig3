@@ -72,7 +72,7 @@ use crate::l3::open::crypto::cex::crypto_com::CryptoComConnector;
 use crate::l3::open::crypto::cex::upbit::UpbitConnector;
 use crate::l3::open::crypto::cex::deribit::DeribitConnector;
 #[cfg(feature = "onchain-evm")]
-use crate::l3::open::crypto::cex::hyperliquid::HyperliquidConnector;
+use crate::l3::open::crypto::dex::hyperliquid::HyperliquidConnector;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONNECTOR IMPORTS - DEX
@@ -150,7 +150,7 @@ use crate::l3::open::crypto::cex::deribit::DeribitWebSocket;
 // `EvmWallet` is only built inside `HyperliquidConnector::new(Some(creds), _)`.
 // Public path is wasm-eligible; k256+sha3 from `onchain-evm` compile to wasm.
 #[cfg(feature = "onchain-evm")]
-use crate::l3::open::crypto::cex::hyperliquid::HyperliquidWebSocket;
+use crate::l3::open::crypto::dex::hyperliquid::HyperliquidWebSocket;
 use crate::l3::open::crypto::cex::coinbase::CoinbaseWebSocket;
 
 // ═══════════════════════════════════════════════════════════════════════════════

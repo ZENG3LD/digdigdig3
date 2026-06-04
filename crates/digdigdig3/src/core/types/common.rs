@@ -201,8 +201,7 @@ impl ExchangeId {
 
     pub fn exchange_type(&self) -> ExchangeType {
         match self {
-            Self::HyperLiquid => ExchangeType::Hybrid,
-            Self::Lighter | Self::Dydx => ExchangeType::Dex,
+            Self::HyperLiquid | Self::Lighter | Self::Dydx => ExchangeType::Dex,
             Self::Polymarket | Self::Polygon | Self::Finnhub | Self::Tiingo | Self::Twelvedata | Self::Coinglass | Self::CryptoCompare | Self::WhaleAlert | Self::Bitquery | Self::DefiLlama | Self::Dukascopy | Self::JQuants | Self::Krx | Self::Fred | Self::Bls | Self::YahooFinance => ExchangeType::DataProvider,
             Self::Alpaca | Self::Oanda | Self::AngelOne | Self::Zerodha | Self::Fyers | Self::Dhan | Self::Upstox | Self::Tinkoff | Self::AlphaVantage | Self::Moex | Self::Ib | Self::Futu => ExchangeType::Cex, // Brokers/providers with trading capabilities
             Self::Custom(_) => ExchangeType::Cex, // default

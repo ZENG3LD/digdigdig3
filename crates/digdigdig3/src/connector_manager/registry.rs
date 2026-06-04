@@ -1196,8 +1196,8 @@ static CONNECTOR_METADATA_ARRAY: &[ConnectorMetadata] = &[
     ConnectorMetadata {
         id: ExchangeId::HyperLiquid,
         name: "HyperLiquid",
-        exchange_type: ExchangeType::Hybrid,
-        category: ConnectorCategory::CryptoExchangeCex,
+        exchange_type: ExchangeType::Dex,
+        category: ConnectorCategory::CryptoExchangeDex,
         supported_features: Features {
             market_data: true,
             trading: true,
@@ -2295,7 +2295,7 @@ mod tests {
 
         let cex = registry.list_by_category(ConnectorCategory::CryptoExchangeCex);
 
-        // 17 CEX + derivatives (Deribit, HyperLiquid). Bithumb is currently
+        // 18 CEX + derivatives (Deribit); HyperLiquid moved to DEX. Bithumb is currently
         // disabled (SSL hang, 403 geo-block); other disabled exchanges may
         // come and go — assert a soft floor instead of an exact number.
         assert!(cex.len() >= 17, "expected at least 17 CEX/Hybrid connectors, got {}", cex.len());
@@ -2317,7 +2317,7 @@ mod tests {
 
         let dex = registry.list_by_category(ConnectorCategory::CryptoExchangeDex);
 
-        assert_eq!(dex.len(), 2, "Should have exactly 2 DEX connectors");
+        assert_eq!(dex.len(), 3, "Should have exactly 3 DEX connectors (Lighter, dYdX, HyperLiquid)");
 
         // Verify all are DEX type
         for meta in &dex {

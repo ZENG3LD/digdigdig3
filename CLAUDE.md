@@ -32,9 +32,36 @@ backtester can warmup the ~130 non-OHLCV mli indicators. Three commits, all LOCA
   **9/9 green** vs Binance USDⓈ-M (mark/index/premium klines + funding + OI +
   LSR + mark-scalar all valid & bar-grid-aligned; liq/aggTrade daemon-gated).
   Run: `cargo run -p digdigdig3-station --example bar_align_e2e`.
+- **Multi-exchange coverage (2026-06-04, commit dd4a616):** after a per-venue
+  internet research pass (`nemo/docs/mlq/validation/rest-history-*.md`, 1 agent
+  per 3 exchanges against official docs), the non-OHLCV history methods were
+  wired + live-debugged to green across **7 venues**. `examples/bar_align_matrix.rs`
+  = the live gate (7 exchanges × up-to-6 streams, all PASS).
+
+  | Venue | mark | index | premium | funding | OI | LSR |
+  |---|---|---|---|---|---|---|
+  | Binance | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+  | Bybit | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+  | Gate.io | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+  | OKX | ✓ | ✓ | NS(tick) | ✓ | ✓ | ✓ |
+  | HTX | ✓ | NS | ✓ | ✓ | ✓ | ✓(elite) |
+  | Bitget | ✓ | ✓ | NS | ✓ | NS(snap) | ✓ |
+  | Kraken-fut | ✓ | ✓ | — | ✓ | TODO | TODO |
+
+  Live-debug findings worth remembering: Bybit derived-kline rows are
+  `[t,o,h,l,c]` (no volume) — `parse_klines` must not `?`-drop on missing idx5;
+  OKX index klines need the index instId (`BTC-USD`), OI needs `instId` (not
+  `ccy`), LSR/OI period must be upper-cased (`1H`), funding uses before=start/
+  after=end; HTX mark/premium/estimated klines live under `/index/market/history/`
+  (NOT `/linear-swap-ex/`), no index-price kline exists; Kraken charts/v1 `to`-only
+  returns from-genesis (must bound `from`) and its candle `time` is already ms.
+
 - **NOT done (Track C):** daemon resample of recorded L2/liq into the same
   bar-aligned shape (forward-only; Tardis bootstrap optional). Basis/taker still
-  need lifting into `MarketDataPublic` for polymorphic access.
+  need lifting into `MarketDataPublic` for polymorphic access. Kraken OI/LSR
+  analytics endpoint (unverified API strings) left as `UnsupportedOperation`.
+  BingX/MEXC/Crypto.com/dYdX/HyperLiquid/Lighter/Bitfinex/Deribit not yet wired
+  (research docs exist; thin/snapshot-heavy — lower priority).
 
 ## WASM Wave 3 (2026-05-28, in-flight — NOT yet bumped/published)
 

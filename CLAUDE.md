@@ -314,6 +314,41 @@ Workspace follows the uzor pattern: every sub-crate's `[package]` block uses `ve
 
 Storage root resolves: `--storage-root` flag > `DIG3_STORAGE_ROOT` env > `./dig3_storage`. Harness artefacts (e2e_smoke JSON, WS frame trace) default to `target/harness_out/` when `--json-out auto` / `DIG3_WS_TRACE=1`.
 
+## RAW core / normalized station boundary (2026-06-04)
+
+**Invariant: dig3-core is RAW + most-complete ALWAYS. All normalization,
+active-only filtering, and asset clustering live in `digdigdig3-station`
+(opt-in). The raw↔non-raw boundary is localized ONLY in station.** The
+connector folder (`cex/`/`dex/`/`gated/`) is OUR storage convenience and does
+NOT imply a ticker's asset class — that's per-`SymbolInfo` exchange data.
+
+- **`get_exchange_info` is RAW**: every connector returns ALL symbols (incl
+  pre-launch / delisting / expired / settled / halted) with the venue-NATIVE
+  `status` string verbatim. The old `status != "TRADING"` filters were removed
+  everywhere (commits fbfab2b/5e48fe4/e23c634). Consumers that want a live-only
+  universe call `digdigdig3_station::active_only(...)`.
+- **`SymbolInfo` carries native fields + raw passthrough**: `instrument_type:
+  Option<String>` (native token — okx instType, deribit kind, bybit contractType,
+  alpaca `class`, tinkoff instrumentKind, ...) + `extra: serde_json::Value` (the
+  full native symbol record, nothing lost). The typed fields are a convenience
+  subset; `extra` is the guarantee. `#[derive(Default)]` — new construction sites
+  may `..Default::default()`.
+- **Station normalized-mode** (`station/src/normalize.rs`): `SymbolStatus` enum +
+  `canonical_status()` (maps native tokens → Trading/Halted/PreLaunch/Closed/
+  Unknown) + `active_only()` filter. Opt-in; never mutates the raw SymbolInfo.
+- **Pragmatic exception (stays in core)**: lossless deterministic unit
+  canonicalization — sec→ms timestamp `*1000`. Test for "may stay in core":
+  reversible + lossless ⇒ core; lossy/inventive/restrictive ⇒ station.
+- **Still in core, SHOULD move to station** (deferred, lower priority): the dead
+  `Canonicalize`/`CanonicalEvent` machinery in `core/normalization.rs` (dead
+  code, only tests/examples use it); HEURISTIC fixups — `now_ms()` stamping when
+  the wire has no timestamp + Gemini synthetic ticker + CryptoCompare interval-
+  multiplier loss (these INVENT data → belong in a station repair layer; the
+  move is invasive — changes event timestamps — so it's a separate pass).
+- Live proof: `examples/symbolinfo_raw_e2e.rs` — 7 venues, all return raw native
+  status + native instrument_type + populated `extra` (Deribit 5164 = full
+  un-filtered options universe).
+
 ## Architectural principles
 
 ### 1. Hub-first API surface

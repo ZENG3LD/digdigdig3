@@ -372,8 +372,6 @@ impl MarketData for OandaConnector {
             .iter()
             .filter_map(|inst| {
                 let name = inst.get("name").and_then(|n| n.as_str())?; // e.g. "EUR_USD"
-                let _inst_type = inst.get("type").and_then(|t| t.as_str()).unwrap_or("CURRENCY");
-                let _display = inst.get("displayName").and_then(|d| d.as_str()).unwrap_or(name);
 
                 // OANDA format: "EUR_USD" → base="EUR", quote="USD"
                 let parts: Vec<&str> = name.splitn(2, '_').collect();
@@ -395,11 +393,23 @@ impl MarketData for OandaConnector {
                     .unwrap_or_else(|| pip_location.map(|pl| pl.unsigned_abs()).unwrap_or(5))
                     as u8;
 
+                // Native status verbatim — OANDA does not include a top-level status field
+                // on instrument records; use empty string (not a synthetic "TRADING").
+                let status = inst.get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                // instrument_type = OANDA native `type` field ("CURRENCY" / "CFD" / "METAL") verbatim.
+                let instrument_type = inst.get("type")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
                 Some(SymbolInfo {
                     symbol: name.to_string(),
                     base_asset: base,
                     quote_asset: quote,
-                    status: "TRADING".to_string(),
+                    status,
                     price_precision,
                     quantity_precision: 0,
                     min_quantity: Some(1.0),
@@ -408,7 +418,10 @@ impl MarketData for OandaConnector {
                     step_size: Some(1.0),
                     min_notional: None,
                     account_type,
-                    ..Default::default()
+                    instrument_type,
+                    // RAW passthrough — full instrument record verbatim (displayName,
+                    // pipLocation, marginRate, tradeUnitsPrecision, etc.).
+                    extra: inst.clone(),
                 })
             })
             .collect::<Vec<SymbolInfo>>();

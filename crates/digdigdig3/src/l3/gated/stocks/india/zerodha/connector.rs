@@ -315,11 +315,14 @@ impl MarketData for ZerodhaConnector {
         Ok(())
     }
 
-    /// Get exchange info — returns NSE equity instruments from Zerodha
+    /// Get exchange info — returns ALL instruments from Zerodha (all exchanges, all types)
     ///
-    /// The /instruments endpoint returns CSV data. We parse it here.
+    /// RAW: no active-only or EQ-only filter. Native instrument_type/segment verbatim.
+    /// No status field in Zerodha CSV — status left empty. Full row cloned into extra
+    /// as a JSON object keyed by the CSV header names.
     async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
-        let url = format!("{}{}", self.endpoints.rest_base, ZerodhaEndpoint::InstrumentsExchange("NSE".to_string()).path());
+        // Fetch ALL instruments (no exchange filter = full master)
+        let url = format!("{}{}", self.endpoints.rest_base, ZerodhaEndpoint::Instruments.path());
 
         // Add auth headers
         let mut headers = HashMap::new();
@@ -329,44 +332,81 @@ impl MarketData for ZerodhaConnector {
         let csv_text = String::from_utf8(bytes)
             .map_err(|e| ExchangeError::Parse(format!("Invalid UTF-8 in instruments CSV: {}", e)))?;
 
-        // CSV format: instrument_token,exchange_token,tradingsymbol,name,last_price,expiry,strike,tick_size,lot_size,instrument_type,segment,exchange
+        // CSV format: instrument_token,exchange_token,tradingsymbol,name,last_price,
+        //             expiry,strike,tick_size,lot_size,instrument_type,segment,exchange
+        let mut lines = csv_text.lines();
+        let header_line = lines.next().unwrap_or("");
+        let header_cols: Vec<&str> = header_line.split(',').collect();
+
         let mut infos = Vec::new();
-        for (i, line) in csv_text.lines().enumerate() {
-            if i == 0 {
-                continue; // skip header
-            }
+        for line in lines {
             let cols: Vec<&str> = line.split(',').collect();
-            if cols.len() < 12 {
-                continue;
-            }
-            let symbol = cols[2].trim().to_string();
-            let instrument_type = cols[9].trim();
-            let exchange = cols[11].trim();
-
-            // Only EQ (equity) instruments from NSE
-            if instrument_type != "EQ" || exchange != "NSE" {
+            if cols.len() < 10 {
                 continue;
             }
 
-            // CSV column 7 is tick_size (minimum price movement)
+            let symbol = cols.get(2).map(|s| s.trim()).unwrap_or("").to_string();
+            if symbol.is_empty() {
+                continue;
+            }
+
+            // Native instrument_type verbatim (e.g. "EQ", "FUT", "CE", "PE", "BE", etc.)
+            let native_instrument_type = cols.get(9)
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+
+            // Native segment verbatim (e.g. "NSE", "BSE", "NFO-FUT", "NFO-OPT", etc.)
+            let segment = cols.get(10).map(|s| s.trim()).unwrap_or("").to_string();
+
+            // Prefer instrument_type; fall back to segment
+            let instrument_type_field = native_instrument_type.clone()
+                .or_else(|| if !segment.is_empty() { Some(segment.clone()) } else { None });
+
+            // Zerodha CSV has no status column — leave empty
+            let status = String::new();
+
+            // CSV column 7 is tick_size
             let tick_size = cols.get(7)
                 .and_then(|s| s.trim().parse::<f64>().ok())
                 .filter(|&v| v > 0.0);
 
+            // CSV column 8 is lot_size
+            let lot_size = cols.get(8)
+                .and_then(|s| s.trim().parse::<f64>().ok())
+                .filter(|&v| v > 0.0);
+
+            // quote_asset: derive from exchange/segment
+            let exchange_col = cols.get(11).map(|s| s.trim()).unwrap_or("");
+            let quote_asset = match exchange_col {
+                "NSE" | "BSE" | "NFO" | "BFO" | "MCX" | "CDS" => "INR",
+                _ => "INR",
+            }.to_string();
+
+            // Build extra as JSON object using header keys
+            let extra: serde_json::Value = {
+                let mut map = serde_json::Map::new();
+                for (i, key) in header_cols.iter().enumerate() {
+                    let val = cols.get(i).copied().unwrap_or("").trim();
+                    map.insert(key.trim().to_string(), serde_json::Value::String(val.to_string()));
+                }
+                serde_json::Value::Object(map)
+            };
+
             infos.push(SymbolInfo {
                 symbol: symbol.clone(),
                 base_asset: symbol,
-                quote_asset: "INR".to_string(),
-                status: "TRADING".to_string(),
+                quote_asset,
+                status,
                 price_precision: 2,
                 quantity_precision: 0,
-                min_quantity: Some(1.0),
+                min_quantity: lot_size.or(Some(1.0)),
                 max_quantity: None,
                 tick_size,
-                step_size: Some(1.0),
+                step_size: lot_size.or(Some(1.0)),
                 min_notional: None,
                 account_type,
-                ..Default::default()
+                instrument_type: instrument_type_field,
+                extra,
             });
         }
 

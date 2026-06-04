@@ -352,22 +352,44 @@ impl MarketData for KrxConnector {
         });
 
         let response = self.post_openapi(KrxEndpoint::KospiBaseInfo, body).await?;
-        let symbols = KrxParser::parse_symbols(&response)?;
 
-        let infos = symbols.into_iter().map(|code| SymbolInfo {
-            symbol: code.clone(),
-            base_asset: code,
-            quote_asset: "KRW".to_string(),
-            status: "TRADING".to_string(),
-            price_precision: 0,
-            quantity_precision: 0,
-            min_quantity: Some(1.0),
-            max_quantity: None,
-            tick_size: None,
-            step_size: Some(1.0),
-            min_notional: None,
-            account_type,
-            ..Default::default()
+        // Iterate raw items directly so each SymbolInfo gets its native record in `extra`.
+        // KRX Open API wraps items in "OutBlock_1", "data", or "items".
+        let array = response
+            .get("OutBlock_1")
+            .or_else(|| response.get("data"))
+            .or_else(|| response.get("items"))
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing data array in KRX symbol list".to_string()))?;
+
+        let infos = array.iter().filter_map(|item| {
+            let code = item.get("ISU_SRT_CD")
+                .or_else(|| item.get("srtnCd"))
+                .or_else(|| item.get("ticker"))
+                .and_then(|v| v.as_str())?.to_string();
+
+            // KRX Open API has no per-symbol status field in the base info endpoint
+            let status = String::new();
+
+            // instrument_type: KRX does not expose a typed instrument class here
+            let instrument_type: Option<String> = None;
+
+            Some(SymbolInfo {
+                symbol: code.clone(),
+                base_asset: code,
+                quote_asset: "KRW".to_string(),
+                status,
+                price_precision: 0,
+                quantity_precision: 0,
+                min_quantity: Some(1.0),
+                max_quantity: None,
+                tick_size: None,
+                step_size: Some(1.0),
+                min_notional: None,
+                account_type,
+                instrument_type,
+                extra: item.clone(),
+            })
         }).collect();
 
         Ok(infos)

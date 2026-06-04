@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{json, Value};
+use reqwest;
 
 use crate::core::{
     HttpClient,
@@ -543,45 +544,84 @@ impl MarketData for AngelOneConnector {
         self.check_response(&response)
     }
 
-    /// Get exchange info — search NSE equity symbols (Angel One uses search-based approach)
+    /// Get exchange info — full Angel One instrument master (all segments, no filter).
+    ///
+    /// Uses the public OpenAPI ScripMaster JSON file which contains all listed
+    /// instruments across NSE/BSE/NFO/BFO/MCX/CDS/NCDEX.  No active-only filter
+    /// is applied — every row in the master is returned verbatim so that station
+    /// can perform its own active/segment/type filtering.
+    ///
+    /// Key native fields surfaced:
+    /// - `exch_seg`       → `instrument_type` (e.g. "NSE", "NFO", "MCX", "CDS")
+    /// - `instrumenttype` → present for derivatives ("FUTSTK","OPTIDX","FUTIDX",…)
+    /// - `extra`          → raw per-instrument JSON object (lossless)
     async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
-        // Angel One doesn't have a bulk symbol listing endpoint.
-        // Use SearchScrip with a broad search on NSE exchange.
-        // In practice, callers should use `search_scrip()` for targeted searches.
-        let body = serde_json::json!({
-            "exchange": "NSE",
-            "searchscrip": ""
-        });
+        // Public scrip master — no auth required, covers all ~60k instruments.
+        let url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json";
 
-        let response = self.post(AngelOneEndpoint::SearchScrip, body).await?;
-        let data = AngelOneParser::extract_data(&response)?;
+        let response_text = reqwest::Client::new()
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| ExchangeError::Network(format!("ScripMaster fetch failed: {}", e)))?
+            .text()
+            .await
+            .map_err(|e| ExchangeError::Network(format!("ScripMaster read failed: {}", e)))?;
 
-        let arr = data.as_array()
-            .ok_or_else(|| ExchangeError::Parse("Expected array from SearchScrip".to_string()))?;
+        let arr: Vec<serde_json::Value> = serde_json::from_str(&response_text)
+            .map_err(|e| ExchangeError::Parse(format!("ScripMaster parse failed: {}", e)))?;
 
-        let infos = arr.iter().filter_map(|item| {
-            let symbol = item.get("tradingsymbol")?.as_str()?.to_string();
-            let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let exchange = item.get("exch_seg").and_then(|v| v.as_str()).unwrap_or("NSE").to_string();
-            let _ = name;
-            let _ = exchange;
+        let mut infos = Vec::with_capacity(arr.len());
+        for item in &arr {
+            let symbol = match item.get("symbol").and_then(|v| v.as_str()) {
+                Some(s) if !s.is_empty() => s.to_string(),
+                _ => continue,
+            };
 
-            Some(SymbolInfo {
+            // Native status: scrip master does not carry a status field.
+            // Use empty string — no invented "TRADING".
+            let status = String::new();
+
+            // instrument_type: use `exch_seg` as the primary segment token
+            // (e.g. "NSE", "BSE", "NFO", "BFO", "MCX", "CDS", "NCDEX").
+            // If `instrumenttype` is present and non-empty, include it too
+            // (e.g. "EQ", "FUTSTK", "OPTIDX", "FUTIDX", "OPTFUT", …).
+            let exch_seg = item.get("exch_seg").and_then(|v| v.as_str()).unwrap_or("");
+            let instrument_type_field = item.get("instrumenttype").and_then(|v| v.as_str()).unwrap_or("");
+            let instrument_type = if instrument_type_field.is_empty() {
+                if exch_seg.is_empty() { None } else { Some(exch_seg.to_string()) }
+            } else {
+                // Combine both: "NSE/EQ", "NFO/FUTSTK", etc. — unambiguous.
+                Some(format!("{}/{}", exch_seg, instrument_type_field))
+            };
+
+            let tick_size = item.get("tick_size")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .or_else(|| item.get("tick_size").and_then(|v| v.as_f64()));
+
+            let lot_size = item.get("lotsize")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .or_else(|| item.get("lotsize").and_then(|v| v.as_f64()));
+
+            infos.push(SymbolInfo {
                 symbol: symbol.clone(),
                 base_asset: symbol,
                 quote_asset: "INR".to_string(),
-                status: "TRADING".to_string(),
+                status,
                 price_precision: 2,
                 quantity_precision: 0,
-                min_quantity: Some(1.0),
+                min_quantity: lot_size.or(Some(1.0)),
                 max_quantity: None,
-                tick_size: None,
-                step_size: Some(1.0),
+                tick_size,
+                step_size: lot_size.or(Some(1.0)),
                 min_notional: None,
                 account_type,
-                ..Default::default()
-            })
-        }).collect();
+                instrument_type,
+                extra: item.clone(),
+            });
+        }
 
         Ok(infos)
     }

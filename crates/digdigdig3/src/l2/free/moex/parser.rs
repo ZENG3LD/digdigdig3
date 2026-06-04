@@ -348,6 +348,66 @@ impl MoexParser {
             })
             .collect())
     }
+
+    /// Parse full per-symbol records from MOEX response — ALL symbols, no filter.
+    ///
+    /// Returns `(secid, status, boardid, raw_object)` for every row.
+    /// `status` is the raw MOEX `STATUS` column value (e.g. "A" = admitted,
+    /// "S" = suspended — NOT canonicalized).  `boardid` is the native board
+    /// class token used as `instrument_type`.  `raw_object` is a JSON object
+    /// reconstructed from the column-array row so callers can store it verbatim
+    /// in `SymbolInfo::extra`.
+    pub fn parse_symbols_full(
+        response: &Value,
+    ) -> ParseResult<Vec<(String, String, Option<String>, serde_json::Value)>> {
+        let block = Self::get_block(response, "securities")?;
+        let columns = Self::get_columns(block)?;
+        let data = Self::get_data(block)?;
+
+        let col_names: Vec<&str> = columns
+            .iter()
+            .filter_map(|c| c.as_str())
+            .collect();
+
+        let mut out = Vec::with_capacity(data.len());
+        for row in data {
+            // SECID is required; skip rows that lack it
+            let secid = match Self::get_value(row, columns, "SECID")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+            {
+                Some(s) => s,
+                None => continue,
+            };
+
+            // STATUS column — native value verbatim; empty string if absent
+            let status = Self::get_value(row, columns, "STATUS")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            // BOARDID (board class) as instrument_type; None if absent
+            let boardid = Self::get_value(row, columns, "BOARDID")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            // Reconstruct column→value object for lossless passthrough
+            let extra = if let Some(row_arr) = row.as_array() {
+                let mut obj = serde_json::Map::new();
+                for (i, name) in col_names.iter().enumerate() {
+                    if let Some(val) = row_arr.get(i) {
+                        obj.insert(name.to_string(), val.clone());
+                    }
+                }
+                serde_json::Value::Object(obj)
+            } else {
+                serde_json::Value::Null
+            };
+
+            out.push((secid, status, boardid, extra));
+        }
+        Ok(out)
+    }
 }
 
 #[cfg(test)]

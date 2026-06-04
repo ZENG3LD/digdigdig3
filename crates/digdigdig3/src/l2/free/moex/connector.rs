@@ -312,10 +312,11 @@ impl MarketData for MoexConnector {
         }
     }
 
-    /// Get exchange info — returns listed securities from MOEX
+    /// Get exchange info — returns ALL listed securities from MOEX, no status filter.
     ///
-    /// Delegates to the same MarketSecurities endpoint used by `get_symbols()`
-    /// which reliably returns all actively-trading instruments on the stock/shares market.
+    /// Native MOEX STATUS column is passed through verbatim (e.g. "A", "S", "").
+    /// instrument_type = native BOARDID (board class token, e.g. "TQBR", "TQDE").
+    /// extra = full column→value object for each row (lossless passthrough).
     async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let (engine, market, _) = default_stock_params();
 
@@ -328,14 +329,14 @@ impl MarketData for MoexConnector {
             .get(MoexEndpoint::MarketSecurities, path_params, HashMap::new())
             .await?;
 
-        let symbols = MoexParser::parse_symbols(&response)
+        let rows = MoexParser::parse_symbols_full(&response)
             .map_err(ExchangeError::Parse)?;
 
-        let infos = symbols.into_iter().map(|sec_id| SymbolInfo {
+        let infos = rows.into_iter().map(|(sec_id, status, boardid, extra)| SymbolInfo {
             symbol: sec_id.clone(),
             base_asset: sec_id,
             quote_asset: "RUB".to_string(),
-            status: "TRADING".to_string(),
+            status,
             price_precision: 2,
             quantity_precision: 0,
             min_quantity: Some(1.0),
@@ -344,7 +345,8 @@ impl MarketData for MoexConnector {
             step_size: Some(1.0),
             min_notional: None,
             account_type,
-            ..Default::default()
+            instrument_type: boardid,
+            extra,
         }).collect();
 
         Ok(infos)

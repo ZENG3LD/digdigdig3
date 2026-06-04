@@ -210,6 +210,26 @@ impl CryptoCompareParser {
             .collect())
     }
 
+    /// Parse full per-coin records from coinlist endpoint — ALL coins, no filter.
+    ///
+    /// Returns `(symbol_key, raw_coin_object)`.  CryptoCompare coinlist has no
+    /// status field — callers set `status = String::new()`.  There is no native
+    /// instrument_type token either — callers set `instrument_type = None`.
+    /// `raw_coin_object` is the full JSON object for each coin, verbatim.
+    pub fn parse_symbols_full(response: &Value) -> ExchangeResult<Vec<(String, serde_json::Value)>> {
+        Self::check_error(response)?;
+
+        let data = response
+            .get("Data")
+            .and_then(|v| v.as_object())
+            .ok_or_else(|| ExchangeError::Parse("Missing or invalid 'Data' object".to_string()))?;
+
+        Ok(data
+            .iter()
+            .map(|(key, val)| (key.clone(), val.clone()))
+            .collect())
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════════
     // HELPER METHODS
     // ═══════════════════════════════════════════════════════════════════════════════

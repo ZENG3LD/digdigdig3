@@ -321,79 +321,158 @@ impl MarketData for FyersConnector {
         Ok(())
     }
 
-    /// Get exchange info — returns NSE equity instruments from Fyers SymbolMaster
+    /// Get exchange info — full Fyers SymbolMaster across all exchanges/segments.
+    ///
+    /// Fetches ALL exchange × segment combinations from the Fyers data API (no
+    /// active-only filter, no segment filter).  The SymbolMaster covers:
+    /// NSE/BSE × CM/FO/CD + MCX/NCDEX commodity segments.
+    ///
+    /// CSV column layout (0-indexed):
+    ///   0  fytoken
+    ///   1  symbol        (full Fyers symbol, e.g. "NSE:SBIN-EQ")
+    ///   2  exchange       (e.g. "NSE", "BSE", "MCX")
+    ///   3  segment        (e.g. "CM", "FO", "CD") → instrument_type
+    ///   4  description
+    ///   5  lot_size
+    ///   6  tick_size
+    ///   7  isin
+    ///   8  series         (e.g. "EQ", "BE", "FUTSTK", "OPTIDX")
+    ///  (columns 9+ vary)
+    ///
+    /// Native status: SymbolMaster carries no status column → `String::new()`.
     async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
-        // SymbolMaster returns a CSV file: fytoken,symbol,exchange,segment,description,lot_size,tick_size,...
-        let base_url = self.urls.rest_url(true); // data endpoint
-        let url = format!(
-            "{}/data/symbol-master?exchange=NSE&segment=CM",
-            base_url
-        );
+        // Known Fyers exchange × segment combinations.
+        // The API requires both parameters; no wildcard or all-in-one endpoint.
+        let combos: &[(&str, &str)] = &[
+            ("NSE", "CM"),
+            ("NSE", "FO"),
+            ("NSE", "CD"),
+            ("BSE", "CM"),
+            ("BSE", "FO"),
+            ("BSE", "CD"),
+            ("MCX", "COM"),
+            ("NCDEX", "COM"),
+        ];
 
-        // Add auth headers
+        let base_url = self.urls.rest_url(true); // data endpoint
+
         let mut headers = HashMap::new();
         if FyersEndpoint::SymbolMaster.requires_auth() {
             self.auth.sign_headers(&mut headers);
         }
 
-        // Use reqwest directly to get text response
         let client = reqwest::Client::new();
-        let mut req = client.get(&url);
-        for (k, v) in &headers {
-            req = req.header(k.as_str(), v.as_str());
-        }
-        let response = req.send().await
-            .map_err(|e| ExchangeError::Network(format!("Request failed: {}", e)))?;
+        let mut infos: Vec<SymbolInfo> = Vec::new();
 
-        let csv_text = response.text().await
-            .map_err(|e| ExchangeError::Network(format!("Failed to read text: {}", e)))?;
+        for &(exchange, segment) in combos {
+            let url = format!(
+                "{}/data/symbol-master?exchange={}&segment={}",
+                base_url, exchange, segment
+            );
 
-        // CSV format: fytoken,symbol,exchange,segment,description,lot_size,tick_size,isin,series,...
-        let mut infos = Vec::new();
-        for (i, line) in csv_text.lines().enumerate() {
-            if i == 0 {
-                continue; // skip header
-            }
-            let cols: Vec<&str> = line.split(',').collect();
-            if cols.len() < 4 {
-                continue;
+            let mut req = client.get(&url);
+            for (k, v) in &headers {
+                req = req.header(k.as_str(), v.as_str());
             }
 
-            let symbol = cols[1].trim().trim_matches('"').to_string();
-            let segment = cols[3].trim();
-
-            // Only Capital Market (equity) segment
-            if segment != "CM" {
-                continue;
-            }
-
-            // Symbol format is "NSE:SBIN-EQ", extract the ticker part
-            let display_symbol = if let Some(colon_pos) = symbol.find(':') {
-                symbol[colon_pos + 1..].to_string()
-            } else {
-                symbol.clone()
+            let resp = match req.send().await {
+                Ok(r) => r,
+                Err(_) => continue, // some combos may 404 — skip silently
             };
 
-            // CSV column 6 is tick_size (Fyers format: fytoken,symbol,exchange,segment,description,lot_size,tick_size,...)
-            let tick_size = cols.get(6)
-                .and_then(|s| s.trim().parse::<f64>().ok())
-                .filter(|&v| v > 0.0);
+            let csv_text = match resp.text().await {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
 
-            infos.push(SymbolInfo {
-                symbol: display_symbol.clone(),
-                base_asset: display_symbol,
-                quote_asset: "INR".to_string(),
-                status: "TRADING".to_string(),
-                price_precision: 2,
-                quantity_precision: 0,
-                min_quantity: Some(1.0),
-                max_quantity: None,
-                tick_size,
-                step_size: Some(1.0),
-                min_notional: None,
-                account_type,
-                ..Default::default()
-            });
+            let mut lines = csv_text.lines();
+            let header_line = match lines.next() {
+                Some(h) => h,
+                None => continue,
+            };
+            // Parse header row for named-column access.
+            let col_names: Vec<&str> = header_line.split(',')
+                .map(|s| s.trim().trim_matches('"'))
+                .collect();
+
+            let col = |name: &str| -> Option<usize> {
+                col_names.iter().position(|&h| h.eq_ignore_ascii_case(name))
+            };
+
+            // Positional fallbacks match the documented CSV layout.
+            let i_fytoken = col("fytoken").unwrap_or(0);
+            let i_symbol  = col("symbol").unwrap_or(1);
+            let i_exch    = col("exchange").unwrap_or(2);
+            let i_seg     = col("segment").unwrap_or(3);
+            let i_desc    = col("description").unwrap_or(4);
+            let i_lot     = col("lot_size").unwrap_or(5);
+            let i_tick    = col("tick_size").unwrap_or(6);
+            let i_series  = col("series").unwrap_or(8);
+
+            for line in lines {
+                let cols: Vec<&str> = line.split(',').collect();
+                let ncols = cols.len();
+                if ncols < 4 {
+                    continue;
+                }
+
+                let get = |i: usize| -> &str {
+                    if i < ncols { cols[i].trim().trim_matches('"') } else { "" }
+                };
+
+                let raw_symbol = get(i_symbol);
+                if raw_symbol.is_empty() {
+                    continue;
+                }
+
+                // Native status: SymbolMaster has no status field.
+                let status = String::new();
+
+                // instrument_type: segment verbatim from the `segment` column
+                // (e.g. "CM", "FO", "CD", "COM").  Append series if present and
+                // distinct (e.g. "FO/FUTSTK", "FO/OPTIDX", "CM/EQ", "CM/BE").
+                let seg_val    = get(i_seg);
+                let series_val = get(i_series);
+                let instrument_type = if series_val.is_empty() || series_val == seg_val {
+                    if seg_val.is_empty() { None } else { Some(seg_val.to_string()) }
+                } else {
+                    Some(format!("{}/{}", seg_val, series_val))
+                };
+
+                let tick_size = get(i_tick).parse::<f64>().ok().filter(|&v| v > 0.0);
+                let lot_size  = get(i_lot).parse::<f64>().ok().filter(|&v| v > 0.0);
+
+                // Build raw JSON object from all columns keyed by header name.
+                let mut obj = serde_json::Map::with_capacity(ncols);
+                for (idx, &hdr) in col_names.iter().enumerate() {
+                    let val = if idx < ncols {
+                        serde_json::Value::String(cols[idx].trim().trim_matches('"').to_string())
+                    } else {
+                        serde_json::Value::Null
+                    };
+                    obj.insert(hdr.to_string(), val);
+                }
+                let extra = serde_json::Value::Object(obj);
+
+                let _ = (i_fytoken, i_exch, i_desc); // suppress unused warnings
+
+                infos.push(SymbolInfo {
+                    symbol: raw_symbol.to_string(),
+                    base_asset: raw_symbol.to_string(),
+                    quote_asset: "INR".to_string(),
+                    status,
+                    price_precision: 2,
+                    quantity_precision: 0,
+                    min_quantity: lot_size.or(Some(1.0)),
+                    max_quantity: None,
+                    tick_size,
+                    step_size: lot_size.or(Some(1.0)),
+                    min_notional: None,
+                    account_type,
+                    instrument_type,
+                    extra,
+                });
+            }
         }
 
         Ok(infos)

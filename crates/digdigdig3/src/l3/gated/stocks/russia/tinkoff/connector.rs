@@ -410,30 +410,98 @@ impl MarketData for TinkoffConnector {
         Ok(())
     }
 
-    /// Get exchange info — returns list of available MOEX shares from Tinkoff
+    /// Get exchange info — returns ALL instruments from Tinkoff across all asset classes.
+    ///
+    /// RAW: no status filter, no asset-class filter. Fetches Shares + Bonds + Futures +
+    /// Currencies + Etfs with INSTRUMENT_STATUS_ALL. Native tradingStatus verbatim in
+    /// status, native instrumentKind/type token in instrument_type, full item in extra.
     async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
-        let body = serde_json::json!({
-            "instrumentStatus": "INSTRUMENT_STATUS_BASE",
-        });
+        // INSTRUMENT_STATUS_ALL = every instrument regardless of trading state
+        let body_all = serde_json::json!({ "instrumentStatus": "INSTRUMENT_STATUS_ALL" });
 
-        let response = self.post(TinkoffEndpoint::Shares, body).await?;
-        let symbols = TinkoffParser::parse_symbols(&response)?;
+        // Fetch all 5 instrument classes in sequence
+        let endpoints = [
+            (TinkoffEndpoint::Shares,     "share"),
+            (TinkoffEndpoint::Bonds,      "bond"),
+            (TinkoffEndpoint::Futures,    "future"),
+            (TinkoffEndpoint::Currencies, "currency"),
+            (TinkoffEndpoint::Etfs,       "etf"),
+        ];
 
-        let infos = symbols.into_iter().map(|ticker| SymbolInfo {
-            symbol: ticker.clone(),
-            base_asset: ticker,
-            quote_asset: "RUB".to_string(),
-            status: "TRADING".to_string(),
-            price_precision: 2,
-            quantity_precision: 0,
-            min_quantity: Some(1.0),
-            max_quantity: None,
-            tick_size: None,
-            step_size: Some(1.0),
-            min_notional: None,
-            account_type,
-            ..Default::default()
-        }).collect();
+        let mut infos = Vec::new();
+
+        for (endpoint, kind_hint) in endpoints {
+            let response = self.post(endpoint, body_all.clone()).await?;
+            let instruments = response
+                .get("instruments")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            for inst in instruments {
+                let ticker = match inst.get("ticker").and_then(|v| v.as_str()) {
+                    Some(t) if !t.is_empty() => t.to_string(),
+                    // fall back to figi when ticker absent (e.g. some currencies)
+                    _ => match inst.get("figi").and_then(|v| v.as_str()) {
+                        Some(f) if !f.is_empty() => f.to_string(),
+                        _ => continue,
+                    },
+                };
+
+                // Native trading status verbatim (e.g. "SECURITY_TRADING_STATUS_NORMAL_TRADING",
+                // "SECURITY_TRADING_STATUS_NOT_AVAILABLE_FOR_TRADING", etc.)
+                let status = inst.get("tradingStatus")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                // Native instrument kind: prefer instrumentKind field (present in v2 API),
+                // fall back to the static kind_hint derived from which endpoint we called
+                let native_instrument_type = inst.get("instrumentKind")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| kind_hint.to_string());
+
+                // Currency of the instrument (usually "rub", "usd", etc.)
+                let quote_asset = inst.get("currency")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("rub")
+                    .to_uppercase();
+
+                // Tick size from minPriceIncrement quotation field
+                let tick_size = inst.get("minPriceIncrement").and_then(|q| {
+                    let units = q.get("units").and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .unwrap_or(0.0);
+                    let nano = q.get("nano").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let val = units + nano / 1_000_000_000.0;
+                    if val > 0.0 { Some(val) } else { None }
+                });
+
+                // Lot size
+                let lot_size = inst.get("lot")
+                    .and_then(|v| v.as_f64())
+                    .filter(|&v| v > 0.0);
+
+                infos.push(SymbolInfo {
+                    symbol: ticker.clone(),
+                    base_asset: ticker,
+                    quote_asset,
+                    status,
+                    price_precision: 2,
+                    quantity_precision: 0,
+                    min_quantity: lot_size.or(Some(1.0)),
+                    max_quantity: None,
+                    tick_size,
+                    step_size: lot_size.or(Some(1.0)),
+                    min_notional: None,
+                    account_type,
+                    instrument_type: Some(native_instrument_type),
+                    extra: inst.clone(),
+                });
+            }
+        }
 
         Ok(infos)
     }

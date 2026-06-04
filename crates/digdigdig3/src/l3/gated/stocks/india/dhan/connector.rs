@@ -414,60 +414,135 @@ impl MarketData for DhanConnector {
         Ok(())
     }
 
-    /// Get exchange info — returns NSE equity instruments from Dhan
+    /// Get exchange info — full Dhan instrument master (all segments, no filter).
+    ///
+    /// Uses the public Dhan scrip-master CSV which covers all exchange segments:
+    /// NSE_EQ, NSE_FNO, NSE_CURRENCY, BSE_EQ, BSE_FNO, MCX_COMM, etc.
+    /// No active-only filter — every row is returned verbatim.
+    ///
+    /// CSV columns (0-indexed):
+    ///   0 SEM_EXM_EXCH_ID  (exchange, e.g. "NSE"/"BSE"/"MCX")
+    ///   1 SEM_SEGMENT       (segment token, e.g. "NSE_EQ"/"NSE_FNO" → instrument_type)
+    ///   2 SEM_SMST_SECURITY_ID  (numeric security ID)
+    ///   3 SEM_INSTRUMENT_NAME   (instrument class, e.g. "EQUITY","FUTIDX","OPTIDX")
+    ///   4 SEM_CUSTOM_SYMBOL     (display symbol used in order API)
+    ///   5 SEM_EXPIRY_FLAG
+    ///   6 SM_SYMBOL_NAME
+    ///   7 SEM_SERIES
+    ///   8 SEM_STRIKE_PRICE
+    ///   9 SEM_OPTION_TYPE
+    ///  10 SEM_FUT_FLAG
+    ///  11 SEM_LOT_UNITS
+    ///  12 SEM_CUSTOM_SYMBOL (alias / display form)
+    ///  13 SEM_EXPIRY_DATE
+    ///  14 SEM_TICK_SIZE
+    ///  15 SEM_TRADING_SYMBOL
     async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
-        // Dhan's InstrumentList endpoint: /v2/instrument/{exchangeSegment}
-        // Returns CSV with columns: SEM_EXM_EXCH_ID, SEM_SEGMENT, SEM_SMST_SECURITY_ID, SEM_INSTRUMENT_NAME, SEM_CUSTOM_SYMBOL, ...
-        let base_url = self.urls.rest_url();
-        let url = format!("{}/v2/instrument/NSE_EQ", base_url);
+        // Public master CSV — no auth required, all segments in one file.
+        let url = "https://images.dhan.co/api-data/api-scrip-master.csv";
 
-        let base_url_owned = base_url.to_string();
-        let mut auth = self.auth.lock().await;
-        let headers = auth.build_headers(&base_url_owned, &self.http).await?;
-        drop(auth);
+        let csv_text = reqwest::Client::new()
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| ExchangeError::Network(format!("Dhan scrip-master fetch failed: {}", e)))?
+            .text()
+            .await
+            .map_err(|e| ExchangeError::Network(format!("Dhan scrip-master read failed: {}", e)))?;
 
-        // Use reqwest directly for text response with auth headers
-        let client = reqwest::Client::new();
-        let mut req = client.get(&url);
-        for (k, v) in &headers {
-            req = req.header(k.as_str(), v.as_str());
-        }
-        let response = req.send().await
-            .map_err(|e| ExchangeError::Network(format!("Request failed: {}", e)))?;
+        // Parse header row to build a name→index map for robust column access.
+        let mut lines = csv_text.lines();
+        let header_line = match lines.next() {
+            Some(h) => h,
+            None => return Ok(Vec::new()),
+        };
+        let headers: Vec<&str> = header_line.split(',')
+            .map(|s| s.trim().trim_matches('"'))
+            .collect();
 
-        let csv_text = response.text().await
-            .map_err(|e| ExchangeError::Network(format!("Failed to read text: {}", e)))?;
+        let col = |name: &str| -> Option<usize> {
+            headers.iter().position(|&h| h.eq_ignore_ascii_case(name))
+        };
+
+        // Column indices — fall back to positional defaults when CSV evolves.
+        let i_exch   = col("SEM_EXM_EXCH_ID").unwrap_or(0);
+        let i_seg    = col("SEM_SEGMENT").unwrap_or(1);
+        let i_sec_id = col("SEM_SMST_SECURITY_ID").unwrap_or(2);
+        let i_inst   = col("SEM_INSTRUMENT_NAME").unwrap_or(3);
+        let i_sym    = col("SEM_CUSTOM_SYMBOL").unwrap_or(4);
+        let i_lot    = col("SEM_LOT_UNITS").unwrap_or(11);
+        let i_tick   = col("SEM_TICK_SIZE").unwrap_or(14);
 
         let mut infos = Vec::new();
-        for (i, line) in csv_text.lines().enumerate() {
-            if i == 0 {
-                continue; // skip header
-            }
+        for line in lines {
             let cols: Vec<&str> = line.split(',').collect();
-            if cols.len() < 5 {
+            let ncols = cols.len();
+            if ncols < 5 {
                 continue;
             }
 
-            let symbol = cols[4].trim().trim_matches('"').to_string();
+            let get = |i: usize| -> &str {
+                if i < ncols { cols[i].trim().trim_matches('"') } else { "" }
+            };
+
+            let symbol = get(i_sym);
             if symbol.is_empty() {
                 continue;
             }
 
+            // Native status: Dhan scrip-master has no status column.
+            let status = String::new();
+
+            // instrument_type: segment token verbatim (e.g. "NSE_EQ", "NSE_FNO",
+            // "BSE_EQ", "MCX_COMM").  If SEM_INSTRUMENT_NAME is non-empty and
+            // distinct, combine: "NSE_FNO/FUTIDX".
+            let seg  = get(i_seg);
+            let inst = get(i_inst);
+            let instrument_type = if inst.is_empty() || inst == seg {
+                if seg.is_empty() { None } else { Some(seg.to_string()) }
+            } else {
+                Some(format!("{}/{}", seg, inst))
+            };
+
+            let tick_size = get(i_tick).parse::<f64>().ok().filter(|&v| v > 0.0);
+            let lot_size  = get(i_lot).parse::<f64>().ok().filter(|&v| v > 0.0);
+
+            // Build the raw JSON object from all columns keyed by header name.
+            let mut obj = serde_json::Map::with_capacity(ncols);
+            for (idx, &hdr) in headers.iter().enumerate() {
+                let val = if idx < ncols {
+                    serde_json::Value::String(cols[idx].trim().trim_matches('"').to_string())
+                } else {
+                    serde_json::Value::Null
+                };
+                obj.insert(hdr.to_string(), val);
+            }
+            let extra = serde_json::Value::Object(obj);
+
             infos.push(SymbolInfo {
-                symbol: symbol.clone(),
-                base_asset: symbol,
+                symbol: symbol.to_string(),
+                base_asset: get(i_exch).to_string(),
                 quote_asset: "INR".to_string(),
-                status: "TRADING".to_string(),
+                status,
                 price_precision: 2,
                 quantity_precision: 0,
-                min_quantity: Some(1.0),
+                min_quantity: lot_size.or(Some(1.0)),
                 max_quantity: None,
-                tick_size: None,
-                step_size: Some(1.0),
+                tick_size,
+                step_size: lot_size.or(Some(1.0)),
                 min_notional: None,
                 account_type,
-                ..Default::default()
+                instrument_type,
+                extra,
             });
+
+            // Use `i_sec_id` as the security ID in `base_asset` instead of exchange.
+            // Patch the already-pushed entry.
+            let last = infos.last_mut().unwrap();
+            let sec_id = get(i_sec_id).to_string();
+            if !sec_id.is_empty() {
+                last.base_asset = sec_id;
+            }
         }
 
         Ok(infos)

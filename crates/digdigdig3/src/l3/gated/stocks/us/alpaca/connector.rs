@@ -697,14 +697,12 @@ impl MarketData for AlpacaConnector {
         }
     }
 
-    /// Get exchange info — returns list of active, tradable US equity assets
+    /// Get exchange info — returns ALL assets (no request-side filter).
+    /// RAW: native status verbatim, instrument_type = Alpaca `class` field,
+    /// extra = full raw asset record. Active-only filtering is a STATION concern.
     async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
-        let mut params = HashMap::new();
-        params.insert("status".to_string(), "active".to_string());
-        params.insert("tradable".to_string(), "true".to_string());
-        params.insert("asset_class".to_string(), "us_equity".to_string());
-
-        let response = self.get_trading(AlpacaEndpoint::Assets, params).await?;
+        // No status/tradable/asset_class filter — return everything Alpaca knows.
+        let response = self.get_trading(AlpacaEndpoint::Assets, HashMap::new()).await?;
 
         // Response is an array of asset objects
         let arr = response.as_array()
@@ -712,14 +710,12 @@ impl MarketData for AlpacaConnector {
 
         let infos: Vec<SymbolInfo> = arr.iter().filter_map(|item| {
             let symbol = item.get("symbol")?.as_str()?.to_string();
-            let tradable = item.get("tradable").and_then(|v| v.as_bool()).unwrap_or(false);
-            if !tradable {
-                return None;
-            }
+
+            // Native status verbatim ("active" / "inactive") — no canonicalization.
             let status = item.get("status")
                 .and_then(|v| v.as_str())
-                .unwrap_or("active")
-                .to_uppercase();
+                .unwrap_or("")
+                .to_string();
 
             // Alpaca provides price_increment (tick size) and min_trade_increment (qty step)
             // Both are string-encoded floats in the assets response
@@ -732,6 +728,11 @@ impl MarketData for AlpacaConnector {
                 .and_then(|s| s.parse::<f64>().ok())
                 .filter(|&v| v > 0.0)
                 .or(Some(1.0));
+
+            // instrument_type = Alpaca native `class` field ("us_equity" / "crypto") verbatim.
+            let instrument_type = item.get("class")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
 
             Some(SymbolInfo {
                 symbol: symbol.clone(),
@@ -746,7 +747,10 @@ impl MarketData for AlpacaConnector {
                 step_size,
                 min_notional: None,
                 account_type,
-                ..Default::default()
+                instrument_type,
+                // RAW passthrough — full asset record verbatim (exchange, tradable,
+                // marginable, shortable, fractionable, etc.).
+                extra: item.clone(),
             })
         }).collect();
 

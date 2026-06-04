@@ -476,11 +476,14 @@ impl MarketData for PolygonConnector {
         }
     }
 
-    /// Get exchange info — returns a paginated list of US stock tickers
+    /// Get exchange info — returns ALL tickers across all markets, no active filter.
+    ///
+    /// Native Polygon `active` bool → status "active" / "inactive" verbatim.
+    /// instrument_type = native `type` field (e.g. "CS", "ETF", "FX", "crypto").
+    /// extra = full raw ticker object (lossless passthrough).
     async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let mut params = HashMap::new();
-        params.insert("market".to_string(), "stocks".to_string());
-        params.insert("active".to_string(), "true".to_string());
+        // No `active` filter — return all symbols regardless of active/inactive state.
         params.insert("limit".to_string(), "1000".to_string());
 
         let response = self.get(PolygonEndpoint::Tickers, params).await?;
@@ -491,17 +494,28 @@ impl MarketData for PolygonConnector {
 
         let infos = results.iter().filter_map(|item| {
             let ticker = item.get("ticker")?.as_str()?.to_string();
-            let _name = item.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let currency = item.get("currency_name")
                 .and_then(|v| v.as_str())
                 .unwrap_or("USD")
                 .to_uppercase();
 
+            // Native active bool → verbatim string "active" / "inactive"
+            let status = match item.get("active").and_then(|v| v.as_bool()) {
+                Some(true)  => "active".to_string(),
+                Some(false) => "inactive".to_string(),
+                None        => String::new(),
+            };
+
+            // Native type token verbatim (e.g. "CS", "ETF", "FX", "crypto")
+            let instrument_type = item.get("type")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
             Some(SymbolInfo {
                 symbol: ticker.clone(),
                 base_asset: ticker,
                 quote_asset: currency,
-                status: "TRADING".to_string(),
+                status,
                 price_precision: 2,
                 quantity_precision: 0,
                 min_quantity: Some(1.0),
@@ -510,7 +524,8 @@ impl MarketData for PolygonConnector {
                 step_size: Some(1.0),
                 min_notional: None,
                 account_type,
-                ..Default::default()
+                instrument_type,
+                extra: item.clone(),
             })
         }).collect();
 

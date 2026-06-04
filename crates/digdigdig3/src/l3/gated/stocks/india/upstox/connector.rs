@@ -473,6 +473,9 @@ impl MarketData for UpstoxConnector {
     }
 
     /// Get exchange info — downloads NSE instruments JSON from Upstox CDN (gzip)
+    ///
+    /// RAW: all instruments returned, no active-only filter, native instrument_type/segment
+    /// verbatim, full item clone in extra.
     async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         // Upstox provides instrument master as public gzip JSON files
         let url = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz";
@@ -490,29 +493,43 @@ impl MarketData for UpstoxConnector {
         let arr: Vec<Value> = serde_json::from_str(&json_text)
             .map_err(|e| ExchangeError::Parse(format!("Failed to parse instruments JSON: {}", e)))?;
 
+        // RAW: no filter — return ALL instruments
         let infos = arr.iter().filter_map(|item| {
             let symbol = item.get("tradingsymbol")?.as_str()?.to_string();
-            let instrument_type = item.get("instrument_type").and_then(|v| v.as_str()).unwrap_or("");
 
-            // Only equity instruments
-            if instrument_type != "EQ" {
-                return None;
-            }
+            // Native instrument_type verbatim (e.g. "EQ", "FUT", "CE", "PE", "BE", etc.)
+            // Use segment as fallback when instrument_type absent
+            let native_instrument_type = item.get("instrument_type")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| item.get("segment").and_then(|v| v.as_str()).map(|s| s.to_string()));
+
+            // Upstox instrument master has no status field — leave empty
+            let status = String::new();
+
+            let tick_size = item.get("tick_size")
+                .and_then(|v| v.as_f64())
+                .filter(|&v| v > 0.0);
+
+            let lot_size = item.get("lot_size")
+                .and_then(|v| v.as_f64())
+                .filter(|&v| v > 0.0);
 
             Some(SymbolInfo {
                 symbol: symbol.clone(),
                 base_asset: symbol,
                 quote_asset: "INR".to_string(),
-                status: "TRADING".to_string(),
+                status,
                 price_precision: 2,
                 quantity_precision: 0,
-                min_quantity: Some(1.0),
+                min_quantity: lot_size.or(Some(1.0)),
                 max_quantity: None,
-                tick_size: None,
-                step_size: Some(1.0),
+                tick_size,
+                step_size: lot_size.or(Some(1.0)),
                 min_notional: None,
                 account_type,
-                ..Default::default()
+                instrument_type: native_instrument_type,
+                extra: item.clone(),
             })
         }).collect();
 

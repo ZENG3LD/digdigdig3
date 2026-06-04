@@ -259,22 +259,40 @@ impl MarketData for JQuantsConnector {
     async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let params = HashMap::new();
         let response = self.get(JQuantsEndpoint::ListedInfo, params).await?;
-        let symbols = JQuantsParser::parse_symbols(&response)?;
 
-        let infos = symbols.into_iter().map(|code| SymbolInfo {
-            symbol: code.clone(),
-            base_asset: code,
-            quote_asset: "JPY".to_string(),
-            status: "TRADING".to_string(),
-            price_precision: 0,
-            quantity_precision: 0,
-            min_quantity: Some(1.0),
-            max_quantity: None,
-            tick_size: None,
-            step_size: Some(1.0),
-            min_notional: None,
-            account_type,
-            ..Default::default()
+        // Iterate the raw "info" array directly so each SymbolInfo carries its full
+        // native record in `extra`. JQuantsParser::parse_symbols only returns String codes.
+        let info_array = response
+            .get("info")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'info' array in JQuants listed info".to_string()))?;
+
+        let infos = info_array.iter().filter_map(|item| {
+            let code = item.get("Code").and_then(|v| v.as_str())?.to_string();
+
+            // JQuants /listed/info has no per-symbol trading-status field
+            let status = String::new();
+
+            // instrument_type: use native "MarketCode" if present (e.g. "0111" = Prime)
+            // or "Scale" / "ScaleCategory". No canonical type token, so None.
+            let instrument_type: Option<String> = None;
+
+            Some(SymbolInfo {
+                symbol: code.clone(),
+                base_asset: code,
+                quote_asset: "JPY".to_string(),
+                status,
+                price_precision: 0,
+                quantity_precision: 0,
+                min_quantity: Some(1.0),
+                max_quantity: None,
+                tick_size: None,
+                step_size: Some(1.0),
+                min_notional: None,
+                account_type,
+                instrument_type,
+                extra: item.clone(),
+            })
         }).collect();
 
         Ok(infos)

@@ -308,11 +308,15 @@ impl MarketData for TiingoConnector {
                 .unwrap_or("USD")
                 .to_uppercase();
 
+            // Tiingo CryptoMeta has no per-symbol status or instrument-type field
+            let status = String::new();
+            let instrument_type: Option<String> = None;
+
             Some(SymbolInfo {
                 symbol: ticker,
                 base_asset: base,
                 quote_asset: quote,
-                status: "TRADING".to_string(),
+                status,
                 price_precision: 8,
                 quantity_precision: 8,
                 min_quantity: None,
@@ -321,7 +325,8 @@ impl MarketData for TiingoConnector {
                 step_size: None,
                 min_notional: None,
                 account_type,
-                ..Default::default()
+                instrument_type,
+                extra: item.clone(),
             })
         }).collect();
 

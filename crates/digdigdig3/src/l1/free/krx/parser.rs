@@ -164,6 +164,7 @@ impl KrxParser {
     ///   ]
     /// }
     /// ```
+    #[allow(dead_code)]
     pub fn parse_symbols(response: &Value) -> ExchangeResult<Vec<String>> {
         let array = response
             .get("OutBlock_1")

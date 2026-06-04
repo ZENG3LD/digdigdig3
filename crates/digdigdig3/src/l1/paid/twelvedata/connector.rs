@@ -319,11 +319,19 @@ impl MarketData for TwelvedataConnector {
                 .unwrap_or("USD")
                 .to_uppercase();
 
+            // Twelvedata /stocks has no per-symbol status field
+            let status = String::new();
+
+            // instrument_type: native "type" field (e.g. "Common Stock", "ETF", "ADR")
+            let instrument_type = item.get("type")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
             Some(SymbolInfo {
                 symbol: symbol.clone(),
                 base_asset: symbol,
                 quote_asset: currency,
-                status: "TRADING".to_string(),
+                status,
                 price_precision: 2,
                 quantity_precision: 0,
                 min_quantity: Some(1.0),
@@ -332,7 +340,8 @@ impl MarketData for TwelvedataConnector {
                 step_size: Some(1.0),
                 min_notional: None,
                 account_type,
-                ..Default::default()
+                instrument_type,
+                extra: item.clone(),
             })
         }).collect();
 

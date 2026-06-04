@@ -232,18 +232,22 @@ impl MarketData for CryptoCompareConnector {
         Ok(())
     }
 
-    /// Get all coins listed on CryptoCompare
+    /// Get all coins listed on CryptoCompare — ALL coins, no filter.
+    ///
+    /// CryptoCompare coinlist has no status field → status = "".
+    /// There is no native instrument_type token → instrument_type = None.
+    /// extra = full raw coin object from the API (lossless passthrough).
     async fn get_exchange_info(&self, account_type: AccountType) -> ExchangeResult<Vec<SymbolInfo>> {
         let response = self.get_with_rate_limit_retry(CryptoCompareEndpoint::CoinList, HashMap::new()).await?;
-        let symbols = CryptoCompareParser::parse_symbols(&response)?;
+        let coins = CryptoCompareParser::parse_symbols_full(&response)?;
 
-        let infos = symbols
+        let infos = coins
             .into_iter()
-            .map(|symbol| SymbolInfo {
+            .map(|(symbol, extra)| SymbolInfo {
                 symbol: symbol.clone(),
                 base_asset: symbol,
-                quote_asset: "USD".to_string(), // CryptoCompare tracks crypto vs USD by default
-                status: "TRADING".to_string(),
+                quote_asset: "USD".to_string(),
+                status: String::new(),
                 price_precision: 8,
                 quantity_precision: 8,
                 min_quantity: None,
@@ -252,7 +256,8 @@ impl MarketData for CryptoCompareConnector {
                 step_size: None,
                 min_notional: None,
                 account_type,
-                ..Default::default()
+                instrument_type: None,
+                extra,
             })
             .collect();
 

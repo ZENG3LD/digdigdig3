@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Unit tests for per-consumer subscription + REST quotas.
 //!
 //! All tests here are offline — they exercise the pre-flight logic and

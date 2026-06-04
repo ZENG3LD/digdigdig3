@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Pure-logic auto-heal helpers (no live network).
 
 use std::time::Duration;

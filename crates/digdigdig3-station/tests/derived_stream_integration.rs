@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Integration tests for the derived-stream layer.
 //!
 //! The state-machine unit tests live in `src/derived.rs` (they need

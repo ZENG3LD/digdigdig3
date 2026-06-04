@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Live integration test: Bitstamp Stream::OrderbookL3 emits create + changed/delete events.
 //!
 //! Subscribes to BTC-USD on Bitstamp via `live_orders_btcusd` (after REST snapshot bootstrap)

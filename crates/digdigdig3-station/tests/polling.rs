@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Tests for the polling subscription layer.
 //!
 //! Unit tests (always run):

@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! `Station::subscribe` continue-on-error semantics and per-stream
 //! NotSupported propagation. These tests focus on the API surface that
 //! does NOT require a live WS connection.

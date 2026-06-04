@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Tests for `EventLog` binary persistence.
 //!
 //! Pure file I/O — no network, no async runtime. No new crate dependencies.

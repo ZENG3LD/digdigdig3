@@ -750,6 +750,29 @@ impl CryptoComParser {
     // VALUATIONS PARSERS (mark price klines, index price klines, funding history)
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /// Map a canonical interval string to milliseconds.
+    ///
+    /// Supported: `"1m"`, `"5m"`, `"15m"`, `"30m"`, `"1h"`, `"2h"`, `"4h"`,
+    /// `"6h"`, `"12h"`, `"1d"`.
+    ///
+    /// Returns `None` for unrecognised strings (caller should fall back to
+    /// raw tick output or return an error).
+    pub fn interval_to_ms(interval: &str) -> Option<i64> {
+        match interval {
+            "1m"  => Some(60_000),
+            "5m"  => Some(300_000),
+            "15m" => Some(900_000),
+            "30m" => Some(1_800_000),
+            "1h"  => Some(3_600_000),
+            "2h"  => Some(7_200_000),
+            "4h"  => Some(14_400_000),
+            "6h"  => Some(21_600_000),
+            "12h" => Some(43_200_000),
+            "1d"  => Some(86_400_000),
+            _ => None,
+        }
+    }
+
     /// Parse `public/get-valuations` response as a `Vec<Kline>`.
     ///
     /// Used for `valuation_type=mark_price` and `valuation_type=index_price`.
@@ -788,6 +811,99 @@ impl CryptoComParser {
                 trades:       None,
             });
         }
+        Ok(klines)
+    }
+
+    /// Parse `public/get-valuations` response as OHLC klines bucketed to `interval_ms`.
+    ///
+    /// Crypto.com returns per-minute tick points `{"v": "<price>", "t": <unix_ms>}`.
+    /// This function buckets those ticks into proper OHLC candles of the requested
+    /// `interval_ms` width so that `open_time % interval_ms == 0` for every output bar.
+    ///
+    /// Bucketing rule:
+    /// - `bar_open = floor(t / interval_ms) * interval_ms`
+    /// - `open`  = `v` of the earliest tick in the bucket
+    /// - `high`  = max `v` across all ticks in the bucket
+    /// - `low`   = min `v` across all ticks in the bucket
+    /// - `close` = `v` of the latest tick in the bucket
+    /// - `volume` = 0 (valuations carry no volume)
+    ///
+    /// Output is sorted oldest-first. Empty buckets are omitted.
+    pub fn parse_valuations_as_klines_bucketed(response: &Value, interval_ms: i64) -> ExchangeResult<Vec<Kline>> {
+        Self::check_response(response)?;
+        let result = Self::extract_result(response)?;
+        let data = result.get("data")
+            .and_then(|d| d.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Crypto.com valuations: missing 'result.data'".into()))?;
+
+        // Collect (timestamp_ms, price) pairs, skipping malformed entries.
+        let ticks: Vec<(i64, f64)> = data.iter()
+            .filter_map(|item| {
+                let ts = Self::get_i64(item, "t")?;
+                let v  = Self::get_f64(item, "v")?;
+                Some((ts, v))
+            })
+            .collect();
+
+        if ticks.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Use a BTreeMap keyed by bar_open so buckets are auto-sorted oldest-first.
+        use std::collections::BTreeMap;
+
+        struct BucketState {
+            high:  f64,
+            low:   f64,
+            // Track earliest/latest tick timestamp to resolve open/close correctly
+            // when the API does not guarantee ordering within a bucket.
+            first_ts: i64,
+            last_ts:  i64,
+            first_v:  f64,
+            last_v:   f64,
+        }
+
+        let mut buckets: BTreeMap<i64, BucketState> = BTreeMap::new();
+
+        for (ts, v) in &ticks {
+            let bar_open = (ts / interval_ms) * interval_ms;
+            let entry = buckets.entry(bar_open).or_insert(BucketState {
+                high:     *v,
+                low:      *v,
+                first_ts: *ts,
+                last_ts:  *ts,
+                first_v:  *v,
+                last_v:   *v,
+            });
+
+            if *v > entry.high { entry.high = *v; }
+            if *v < entry.low  { entry.low  = *v; }
+
+            if *ts < entry.first_ts {
+                entry.first_ts = *ts;
+                entry.first_v  = *v;
+            }
+            if *ts > entry.last_ts {
+                entry.last_ts = *ts;
+                entry.last_v  = *v;
+            }
+        }
+
+        let klines = buckets
+            .into_iter()
+            .map(|(bar_open, b)| Kline {
+                open_time:    bar_open,
+                open:         b.first_v,
+                high:         b.high,
+                low:          b.low,
+                close:        b.last_v,
+                volume:       0.0,
+                quote_volume: None,
+                close_time:   None,
+                trades:       None,
+            })
+            .collect();
+
         Ok(klines)
     }
 

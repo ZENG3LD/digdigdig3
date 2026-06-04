@@ -1964,6 +1964,41 @@ impl MarketDataPublic for KrakenConnector {
         self.get_futures_chart_klines("spot", &symbol, interval, None, to).await
     }
 
+    /// Premium-index klines — Kraken has no dedicated endpoint, so it's derived
+    /// field-wise as `mark − spot` on matching bars (the futures basis OHLC).
+    async fn get_premium_index_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        _limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::Kraken, account_type)?;
+        let to = end_time.map(|ms| ms / 1000);
+        let mark = self.get_futures_chart_klines("mark", &symbol, interval, None, to).await?;
+        let spot = self.get_futures_chart_klines("spot", &symbol, interval, None, to).await?;
+        let spot_by_t: std::collections::HashMap<i64, &Kline> =
+            spot.iter().map(|k| (k.open_time, k)).collect();
+        let mut out = Vec::with_capacity(mark.len());
+        for m in &mark {
+            if let Some(s) = spot_by_t.get(&m.open_time) {
+                out.push(Kline {
+                    open_time: m.open_time,
+                    open: m.open - s.open,
+                    high: m.high - s.high,
+                    low: m.low - s.low,
+                    close: m.close - s.close,
+                    volume: 0.0,
+                    quote_volume: None,
+                    close_time: m.close_time,
+                    trades: None,
+                });
+            }
+        }
+        Ok(out)
+    }
+
     /// Historical funding rates via `GET /derivatives/api/v3/historical-funding-rates`.
     ///
     /// Perpetual-only endpoint: symbol MUST use `PF_` prefix (e.g. `"PF_XBTUSD"`).
@@ -2044,8 +2079,8 @@ impl crate::core::traits::HasCapabilities for KrakenConnector {
             has_basis_history: false,
             has_taker_volume_history: false,
             has_index_price_klines: true,
-            // No dedicated premium-index endpoint; derivable from mark−spot.
-            has_premium_index_klines: false,
+            // Derived field-wise as mark−spot klines.
+            has_premium_index_klines: true,
             has_market_order: true, has_limit_order: true,
             has_open_orders: true, has_order_history: true, has_user_trades: true,
             has_positions: true, has_mark_price: false, has_modify_position: false,

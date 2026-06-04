@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Live integration tests for the 4 scenarios mlc-bridge will hit when wrapping Station.
 //!
 //! Target venue: Binance Spot BTCUSDT (raw exchange-native symbol via `add_raw`).

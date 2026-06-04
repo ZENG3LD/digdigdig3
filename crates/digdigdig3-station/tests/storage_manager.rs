@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Tests for StorageManager — Phase μ.
 //!
 //! Pure file I/O + tokio runtime. No network, no exchange calls.

@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! E2E for the pure auto-heal logic — kline only.
 //!
 //! Auto-heal model:

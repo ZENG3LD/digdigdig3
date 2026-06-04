@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Header + companion `.blob` round-trip for the 4 string-bearing DataPoint
 //! types. Also regression-checks that fixed-size types never create a
 //! `.blob` file.

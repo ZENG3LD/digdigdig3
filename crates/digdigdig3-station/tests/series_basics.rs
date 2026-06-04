@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Series<T> + DiskStore<T> round-trip basics.
 
 use digdigdig3_station::{

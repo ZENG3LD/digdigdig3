@@ -2052,15 +2052,20 @@ impl AccountLedger for CryptoComConnector {
 impl MarketDataPublic for CryptoComConnector {
     /// Mark price klines via `public/get-valuations?valuation_type=mark_price`.
     ///
-    /// Returns per-minute bar data. Each point has a single `v` (value) and `t` (timestamp ms);
-    /// open/high/low/close are all set to `v`. Volume = 0.
+    /// Raw API returns per-minute tick points `{"v": "<price>", "t": <unix_ms>}`.
+    /// This method buckets the ticks into proper OHLC candles aligned to `interval`
+    /// so that every output `open_time % interval_ms == 0`.
+    ///
+    /// Supported intervals: `"1m"`, `"5m"`, `"15m"`, `"30m"`, `"1h"`, `"2h"`,
+    /// `"4h"`, `"6h"`, `"12h"`, `"1d"`. Unrecognised intervals fall back to raw
+    /// per-minute tick output (o=h=l=c=v, one kline per tick).
     ///
     /// `instrument_name` must be the **perpetual contract** e.g. `BTCUSD-PERP`.
     /// Source: https://exchange-docs.crypto.com/exchange/v1/rest-ws/index.html
     async fn get_mark_price_klines(
         &self,
         symbol: SymbolInput<'_>,
-        _interval: &str,
+        interval: &str,
         limit: Option<u32>,
         account_type: AccountType,
         end_time: Option<i64>,
@@ -2077,10 +2082,21 @@ impl MarketDataPublic for CryptoComConnector {
             params["end_ts"] = serde_json::json!(et);
         }
         let response = self.request(CryptoComEndpoint::GetValuations, params).await?;
-        CryptoComParser::parse_valuations_as_klines(&response)
+        match CryptoComParser::interval_to_ms(interval) {
+            Some(interval_ms) => CryptoComParser::parse_valuations_as_klines_bucketed(&response, interval_ms),
+            None              => CryptoComParser::parse_valuations_as_klines(&response),
+        }
     }
 
     /// Index price klines via `public/get-valuations?valuation_type=index_price`.
+    ///
+    /// Raw API returns per-minute tick points `{"v": "<price>", "t": <unix_ms>}`.
+    /// This method buckets the ticks into proper OHLC candles aligned to `interval`
+    /// so that every output `open_time % interval_ms == 0`.
+    ///
+    /// Supported intervals: `"1m"`, `"5m"`, `"15m"`, `"30m"`, `"1h"`, `"2h"`,
+    /// `"4h"`, `"6h"`, `"12h"`, `"1d"`. Unrecognised intervals fall back to raw
+    /// per-minute tick output (o=h=l=c=v, one kline per tick).
     ///
     /// # IMPORTANT QUIRK
     /// `instrument_name` must be the **index symbol** e.g. `BTCUSD-INDEX`,
@@ -2089,7 +2105,7 @@ impl MarketDataPublic for CryptoComConnector {
     async fn get_index_price_klines(
         &self,
         symbol: SymbolInput<'_>,
-        _interval: &str,
+        interval: &str,
         limit: Option<u32>,
         account_type: AccountType,
         end_time: Option<i64>,
@@ -2108,7 +2124,10 @@ impl MarketDataPublic for CryptoComConnector {
             params["end_ts"] = serde_json::json!(et);
         }
         let response = self.request(CryptoComEndpoint::GetValuations, params).await?;
-        CryptoComParser::parse_valuations_as_klines(&response)
+        match CryptoComParser::interval_to_ms(interval) {
+            Some(interval_ms) => CryptoComParser::parse_valuations_as_klines_bucketed(&response, interval_ms),
+            None              => CryptoComParser::parse_valuations_as_klines(&response),
+        }
     }
 
     /// Premium index klines — NOT SUPPORTED by Crypto.com Exchange v1 API.

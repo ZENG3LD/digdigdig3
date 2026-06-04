@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Integration tests for Phase ν — ReplayHub + ReplayWebSocket.
 //!
 //! Tests write real events to a temp StorageManager, then replay them

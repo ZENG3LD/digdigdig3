@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Native round-trip tests for `SettingsStore` (file-backed).
 //!
 //! Run with:

@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Phase λ.C — TTL cache unit tests.
 //!
 //! Pure logic tests — no network. TTL expiry tested via tokio::time::sleep.

@@ -99,6 +99,9 @@ async fn main() {
         (ExchangeId::BingX, "BTC-USDT", vec![
             (Kind::MarkPriceKline(interval.clone()), Expect::Data),
             (Kind::FundingRate, Expect::Data),
+            (Kind::IndexPriceKline(interval.clone()), Expect::NotSupp),
+            (Kind::PremiumIndexKline(interval.clone()), Expect::NotSupp),
+            (Kind::LongShortRatio, Expect::NotSupp),
         ]),
         (ExchangeId::Bitfinex, "tBTCF0:USTF0", vec![
             (Kind::FundingRate, Expect::Data),
@@ -117,9 +120,10 @@ async fn main() {
         (ExchangeId::HyperLiquid, "BTC", vec![
             (Kind::FundingRate, Expect::Data),
         ]),
-        // Crypto.com get-valuations returns per-minute tick points (not interval
-        // klines), so mark is not bar-grid-aligned — only funding tested here.
+        // Crypto.com get-valuations are per-minute ticks; the connector now
+        // buckets them into interval OHLC, so mark is bar-grid-aligned.
         (ExchangeId::CryptoCom, "BTCUSD-PERP", vec![
+            (Kind::MarkPriceKline(interval.clone()), Expect::Data),
             (Kind::FundingRate, Expect::Data),
         ]),
         (ExchangeId::Bitget, "BTCUSDT", vec![
@@ -133,7 +137,10 @@ async fn main() {
         (ExchangeId::Kraken, "PF_XBTUSD", vec![
             (Kind::MarkPriceKline(interval.clone()), Expect::Data),
             (Kind::IndexPriceKline(interval.clone()), Expect::Data),
+            (Kind::PremiumIndexKline(interval.clone()), Expect::Data),
             (Kind::FundingRate, Expect::Data),
+            (Kind::OpenInterest, Expect::Data),
+            (Kind::LongShortRatio, Expect::Data),
         ]),
     ];
 

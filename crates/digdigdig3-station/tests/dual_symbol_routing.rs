@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Dual-symbol routing test — confirms two consumers subscribed to different
 //! symbols on the SAME Station receive ONLY their own events.
 //!

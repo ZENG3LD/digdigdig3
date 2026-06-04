@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Live integration test: BitMEX `instrument` WS channel emits
 //! `StreamEvent::PredictedFunding` via `indicativeFundingRate` field.
 //!

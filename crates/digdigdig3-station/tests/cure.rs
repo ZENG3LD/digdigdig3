@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Tests for the cure module — Phase ξ.
 //!
 //! Pure in-memory storage + tokio runtime. No network.

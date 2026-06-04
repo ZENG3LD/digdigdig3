@@ -39,7 +39,7 @@ use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions, MarketDataPublic,
 };
 use crate::core::{CancelAll, AmendOrder, BatchOrders, AccountTransfers, CustodialFunds, SubAccounts};
-use crate::core::types::{ConnectorStats, CancelAllResponse, OrderResult, MarkPrice};
+use crate::core::types::{ConnectorStats, CancelAllResponse, OrderResult, MarkPrice, LongShortRatio};
 use crate::core::types::{
     TransferRequest, TransferHistoryFilter, TransferResponse,
     DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord, FundsHistoryFilter, FundsRecordType,
@@ -2270,6 +2270,37 @@ impl MarketDataPublic for BingxConnector {
              Source: bingx_py (https://bingx-py.readthedocs.io)"
                 .into(),
         ))
+    }
+
+    // index/premium-index klines + long/short ratio — NOT SUPPORTED (wire-absent).
+    // Live probe 2026-06-04: every candidate path returns code 100400
+    // "this api is not exist". BingX exposes only mark-price klines + funding
+    // history among the derived non-OHLCV families.
+    async fn get_index_price_klines(
+        &self,
+        _symbol: SymbolInput<'_>, _interval: &str, _limit: Option<u32>,
+        _account_type: AccountType, _end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
+        Err(ExchangeError::NotSupported(
+            "NotSupported: BingX has no index-price kline endpoint (code 100400 'api not exist', verified 2026-06-04)".into()))
+    }
+
+    async fn get_premium_index_klines(
+        &self,
+        _symbol: SymbolInput<'_>, _interval: &str, _limit: Option<u32>,
+        _account_type: AccountType, _end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
+        Err(ExchangeError::NotSupported(
+            "NotSupported: BingX has no premium-index kline endpoint (code 100400 'api not exist', verified 2026-06-04)".into()))
+    }
+
+    async fn get_long_short_ratio_history(
+        &self,
+        _symbol: SymbolInput<'_>, _period: &str, _start_time: Option<i64>,
+        _end_time: Option<i64>, _limit: Option<u32>, _account_type: AccountType,
+    ) -> ExchangeResult<Vec<LongShortRatio>> {
+        Err(ExchangeError::NotSupported(
+            "NotSupported: BingX has no long/short ratio history endpoint (code 100400 'api not exist', verified 2026-06-04)".into()))
     }
 }
 

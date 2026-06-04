@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Live regression: NotSupported subscribe MUST NOT spawn a forwarder.
 //!
 //! Reproduces MLI's 0.3.6 OOM trigger (see docs/plans/mli-0.3.6-findings.md):

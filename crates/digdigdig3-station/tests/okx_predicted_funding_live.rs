@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Live integration test: OKX funding-rate channel emits StreamEvent::PredictedFunding
 //! for coin-margined inverse SWAPs (BTC-USD-SWAP, ETH-USD-SWAP).
 //!

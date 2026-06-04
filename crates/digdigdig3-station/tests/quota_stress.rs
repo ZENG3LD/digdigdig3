@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Stress test: 1000 ConsumerHandles, concurrent register + cap checks.
 //!
 //! No live exchange calls — all pre-flight only. Verifies the quota math

@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Label-per-subscriber regression test.
 //!
 //! Two SubscriptionHandles on the SAME Station, subscribed to the SAME

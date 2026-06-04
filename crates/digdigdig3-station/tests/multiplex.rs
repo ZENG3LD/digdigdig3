@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Phase 2 in-process multi-consumer test.
 //!
 //! Two SubscriptionHandles from the SAME Station to the same (exchange, symbol,

@@ -198,6 +198,33 @@ where
     Ok(resample(src, start_ms, end_ms, step, policy))
 }
 
+/// Track-C read-path: read a recorded stream off its `DiskStore` and bar-align
+/// it in one call. Reads the last `max_points` records (the daemon appends
+/// forward-only, so the tail is the captured window), range-filters, and
+/// resamples per `project`/`policy`. Native-only — the wasm OPFS store has a
+/// divergent read error type; wasm consumers read points then call
+/// [`bar_align_points`] directly.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn bar_align_from_disk<T, F>(
+    store: &crate::series::DiskStore<T>,
+    project: F,
+    start_ms: i64,
+    end_ms: i64,
+    interval: &KlineInterval,
+    policy: FillPolicy,
+    max_points: usize,
+) -> Result<Vec<ScalarBar>>
+where
+    T: crate::series::DataPoint,
+    F: Fn(&T) -> f64,
+{
+    let pts = store
+        .read_tail(max_points)
+        .await
+        .map_err(|e| StationError::Core(format!("DiskStore read_tail failed: {e}")))?;
+    bar_align_points(&pts, project, start_ms, end_ms, interval, policy)
+}
+
 /// Cap a REST kline `limit` to the per-call exchange ceiling.
 const KLINE_PAGE: u16 = 1000;
 

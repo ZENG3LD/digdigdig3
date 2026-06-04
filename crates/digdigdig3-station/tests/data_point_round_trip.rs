@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Round-trip encode/decode for every DataPoint.
 
 use digdigdig3_station::data::{

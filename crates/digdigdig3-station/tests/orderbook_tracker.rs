@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Unit tests for OrderBookTracker.
 
 use digdigdig3_station::orderbook::{OrderBookError, OrderBookTracker};

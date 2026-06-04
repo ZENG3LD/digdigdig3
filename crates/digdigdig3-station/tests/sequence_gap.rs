@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Phase ι.4 — orderbook delta continuity / sequence-gap test.
 //!
 //! Validates that orderbook delta streams produce contiguous sequence numbers.

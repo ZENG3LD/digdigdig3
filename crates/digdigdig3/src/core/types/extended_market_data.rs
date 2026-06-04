@@ -80,6 +80,21 @@ pub struct Basis {
     pub timestamp: i64,
 }
 
+/// Taker buy/sell volume over a time bucket.
+///
+/// Aggressor-side flow: `buy_volume` = taker-buy (market buys lifting the ask),
+/// `sell_volume` = taker-sell (market sells hitting the bid). The buy/sell ratio
+/// is a common order-flow imbalance signal.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TakerVolume {
+    /// Taker buy (aggressor-buy) volume in the bucket.
+    pub buy_volume: f64,
+    /// Taker sell (aggressor-sell) volume in the bucket.
+    pub sell_volume: f64,
+    /// Bucket timestamp in milliseconds.
+    pub timestamp: i64,
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // INDEX PRICE
 // ═══════════════════════════════════════════════════════════════════════════════

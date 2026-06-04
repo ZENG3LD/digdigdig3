@@ -100,6 +100,10 @@ pub enum LighterEndpoint {
     FundingRates,
     /// GET /api/v1/exchangeMetrics — aggregate exchange metrics
     ExchangeMetrics,
+    /// GET /api/v1/markPriceCandles — historical mark price OHLC candles per market.
+    /// Params: `market_id` (int), `resolution` (1m/5m/15m/30m/1h/4h/12h/1d),
+    /// `start_timestamp`, `end_timestamp`, `count_back`; ≤500 candles/call.
+    MarkPriceCandles,
 
     // === ACCOUNT (Extended) ===
     /// GET /api/v1/accountLimits — account-level trading limits
@@ -169,6 +173,7 @@ impl LighterEndpoint {
             // Market Data (Extended)
             Self::FundingRates => "/api/v1/funding-rates",
             Self::ExchangeMetrics => "/api/v1/exchangeMetrics",
+            Self::MarkPriceCandles => "/api/v1/markPriceCandles",
 
             // Account (Extended)
             Self::AccountLimits => "/api/v1/accountLimits",
@@ -205,7 +210,8 @@ impl LighterEndpoint {
             | Self::PublicPools
             | Self::TransferFeeInfo
             | Self::FundingRates
-            | Self::ExchangeMetrics => false,
+            | Self::ExchangeMetrics
+            | Self::MarkPriceCandles => false,
 
             // Private endpoints
             _ => true,
@@ -334,6 +340,35 @@ pub fn map_kline_interval(interval: &str) -> &'static str {
         "4h" | "240m" => "4h",
         "1d" | "1D" => "1d",
         _ => "1h", // default
+    }
+}
+
+/// Map kline interval to Lighter mark price candle resolution.
+///
+/// `GET /api/v1/markPriceCandles` supports `1m`, `5m`, `15m`, `30m`, `1h`, `4h`, `12h`, `1d`.
+/// Returns the nearest supported resolution; defaults to `1h`.
+pub fn map_mark_price_kline_interval(interval: &str) -> &'static str {
+    match interval {
+        "1m" => "1m",
+        "5m" => "5m",
+        "15m" => "15m",
+        "30m" => "30m",
+        "1h" | "60m" => "1h",
+        "4h" | "240m" => "4h",
+        "12h" | "720m" => "12h",
+        "1d" | "1D" => "1d",
+        _ => "1h",
+    }
+}
+
+/// Map interval to Lighter funding-rate candle resolution.
+///
+/// `GET /api/v1/funding-rates` only accepts `1h` or `1d`.
+/// Any sub-hourly interval is rounded up to `1h`; anything ≥ 1 day maps to `1d`.
+pub fn map_funding_rate_interval(interval: &str) -> &'static str {
+    match interval {
+        "1d" | "1D" => "1d",
+        _ => "1h",
     }
 }
 

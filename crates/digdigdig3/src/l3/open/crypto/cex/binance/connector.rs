@@ -3247,6 +3247,50 @@ impl MarketDataPublic for BinanceConnector {
             BinanceEndpoint::FuturesPremiumIndexKlines, &symbol, interval, limit, end_time,
         ).await
     }
+
+    async fn get_basis_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        period: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::Basis>> {
+        let symbol = symbol.resolve(ExchangeId::Binance, account_type)?;
+        // /futures/data/basis keys the instrument as `pair` + a `contractType`
+        // (PERPETUAL for the perpetual swap). 30-day rolling window, ≥5m.
+        let v = self.get_basis_history(&symbol, "PERPETUAL", period, limit, start_time, end_time).await?;
+        BinanceParser::parse_basis_history(&v)
+    }
+
+    async fn get_taker_volume_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        period: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::TakerVolume>> {
+        let symbol = symbol.resolve(ExchangeId::Binance, account_type)?;
+        // /futures/data/takerlongshortRatio carries buyVol/sellVol (taker flow)
+        // alongside the ratio. 30-day rolling window, ≥5m.
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("period".to_string(), period.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        if let Some(s) = start_time {
+            params.insert("startTime".to_string(), s.to_string());
+        }
+        if let Some(e) = end_time {
+            params.insert("endTime".to_string(), e.to_string());
+        }
+        let v = self.get(BinanceEndpoint::FuturesTakerLongShortRatio, params, AccountType::FuturesCross).await?;
+        BinanceParser::parse_taker_volume(&v)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -3271,6 +3315,8 @@ impl crate::core::traits::HasCapabilities for BinanceConnector {
             has_premium_index: true,
             has_long_short_ratio_history: true,
             has_funding_rate_history: true,
+            has_basis_history: true,
+            has_taker_volume_history: true,
             has_mark_price_klines: true,
             has_index_price_klines: true,
             has_premium_index_klines: true,

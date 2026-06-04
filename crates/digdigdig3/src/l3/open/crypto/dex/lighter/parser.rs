@@ -320,6 +320,69 @@ impl LighterParser {
         })
     }
 
+    /// Parse historical mark price candles from `GET /api/v1/markPriceCandles`.
+    ///
+    /// Response shape: `{"c":[{t,o,h,l,c}, ...]}`
+    /// where `t` = Unix milliseconds (i64), OHLC are f64 numbers.
+    /// ≤500 candles per call; resolutions: 1m/5m/15m/30m/1h/4h/12h/1d.
+    ///
+    /// Ref: <https://apidocs.lighter.xyz/reference/markPriceCandles>
+    pub fn parse_mark_price_candles(response: &Value) -> ExchangeResult<Vec<Kline>> {
+        Self::check_success(response)?;
+
+        let candles = response.get("c")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse(
+                "markPriceCandles: missing 'c' array in response".to_string(),
+            ))?;
+
+        let mut klines = Vec::with_capacity(candles.len());
+        for candle in candles {
+            klines.push(Kline {
+                open_time: candle.get("t").and_then(|v| v.as_i64()).unwrap_or(0),
+                open:  candle.get("o").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                high:  candle.get("h").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                low:   candle.get("l").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                close: candle.get("c").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                volume: 0.0,     // mark price candles carry no volume
+                quote_volume: None,
+                close_time: None,
+                trades: None,
+            });
+        }
+        Ok(klines)
+    }
+
+    /// Parse historical funding rates from `GET /api/v1/funding-rates`.
+    ///
+    /// Response shape: `{"funding_rates":[{market_id,funding_rate,timestamp,...}, ...]}`
+    /// where `timestamp` is Unix **seconds** (i64); `funding_rate` is a decimal string or f64.
+    /// Resolutions: `1h` or `1d` only.
+    ///
+    /// Ref: <https://apidocs.lighter.xyz/reference/funding-rates>
+    pub fn parse_funding_rate_history(response: &Value) -> ExchangeResult<Vec<FundingRate>> {
+        Self::check_success(response)?;
+
+        let arr = response.get("funding_rates")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse(
+                "funding-rates: missing 'funding_rates' array in response".to_string(),
+            ))?;
+
+        let mut rates = Vec::with_capacity(arr.len());
+        for item in arr {
+            let rate = Self::get_f64(item, "funding_rate").unwrap_or(0.0);
+            // timestamp is Unix seconds on Lighter
+            let ts_sec = Self::get_i64(item, "timestamp").unwrap_or(0);
+            rates.push(FundingRate {
+                rate,
+                next_funding_time: None,
+                timestamp: ts_sec * 1000, // seconds → milliseconds
+            });
+        }
+        Ok(rates)
+    }
+
     /// Parse trading pairs from orderBooks or orderBookDetails
     pub fn parse_trading_pairs(response: &Value) -> ExchangeResult<Vec<String>> {
         Self::check_success(response)?;

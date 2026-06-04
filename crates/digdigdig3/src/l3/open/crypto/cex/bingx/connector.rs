@@ -36,14 +36,14 @@ use crate::core::{
 };
 use crate::core::types::SymbolInfo;
 use crate::core::traits::{
-    ExchangeIdentity, MarketData, Trading, Account, Positions,
+    ExchangeIdentity, MarketData, Trading, Account, Positions, MarketDataPublic,
 };
 use crate::core::{CancelAll, AmendOrder, BatchOrders, AccountTransfers, CustodialFunds, SubAccounts};
 use crate::core::types::{ConnectorStats, CancelAllResponse, OrderResult, MarkPrice};
 use crate::core::types::{
     TransferRequest, TransferHistoryFilter, TransferResponse,
     DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord, FundsHistoryFilter, FundsRecordType,
-    SubAccountOperation, SubAccountResult, SubAccount,
+    SubAccountOperation, SubAccountResult, SubAccount, OpenInterest,
 };
 use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, OrderbookCapabilities, WsBookChannel};
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
@@ -2191,6 +2191,88 @@ impl BingxConnector {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// MarketDataPublic
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+impl MarketDataPublic for BingxConnector {
+    // Mark price klines — confirmed path: /openApi/swap/v1/market/markPriceKlines
+    // Source: bingx_py client (bingx-py.readthedocs.io)
+    async fn get_mark_price_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
+        let sym = symbol.resolve(ExchangeId::BingX, account_type)?;
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), sym.to_string());
+        params.insert("interval".to_string(), map_kline_interval(interval).to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.min(1000).to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("endTime".to_string(), et.to_string());
+        }
+        let response = self.get(BingxEndpoint::SwapMarkPriceKlines, params, account_type).await?;
+        BingxParser::parse_mark_price_klines(&response)
+    }
+
+    // index_price_klines, premium_index_klines, long_short_ratio_history:
+    // NOT overridden — paths are unverified (official doc site unfetchable 2026-06-04).
+    // Trait default returns UnsupportedOperation.
+
+    // Funding rate history — confirmed path: /openApi/swap/v2/quote/fundingRate
+    // Source: bingx_py client (bingx-py.readthedocs.io)
+    async fn get_funding_rate_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<FundingRate>> {
+        let sym = symbol.resolve(ExchangeId::BingX, account_type)?;
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), sym.to_string());
+        if let Some(st) = start_time {
+            params.insert("startTime".to_string(), st.to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("endTime".to_string(), et.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.min(1000).to_string());
+        }
+        let response = self.get(BingxEndpoint::SwapFundingRateHistoryV2, params, account_type).await?;
+        BingxParser::parse_funding_rate_history(&response)
+    }
+
+    // Open interest history — NOT SUPPORTED (snapshot only).
+    // Source: bingx_py model OpenInterestStatisticsData (no period/range params).
+    async fn get_open_interest_history(
+        &self,
+        _symbol: SymbolInput<'_>,
+        _period: &str,
+        _start_time: Option<i64>,
+        _end_time: Option<i64>,
+        _limit: Option<u32>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<OpenInterest>> {
+        Err(ExchangeError::NotSupported(
+            "NotSupported: BingX provides only a current OI snapshot \
+             (GET /openApi/swap/v2/quote/openInterest). \
+             No historical OI time-series endpoint found. \
+             Source: bingx_py (https://bingx-py.readthedocs.io)"
+                .into(),
+        ))
+    }
+}
+
 impl crate::core::traits::HasCapabilities for BingxConnector {
     fn capabilities(&self) -> crate::core::types::ConnectorCapabilities {
         crate::core::types::ConnectorCapabilities {
@@ -2198,7 +2280,9 @@ impl crate::core::traits::HasCapabilities for BingxConnector {
             has_recent_trades: false, has_exchange_info: true,
             has_liquidation_history: false, has_open_interest_history: false,
             has_premium_index: false, has_long_short_ratio_history: false,
-            has_funding_rate_history: false, has_mark_price_klines: false,
+            has_funding_rate_history: true, has_mark_price_klines: true,
+            has_basis_history: false,
+            has_taker_volume_history: false,
             has_index_price_klines: false,
             has_premium_index_klines: false,
             has_market_order: true, has_limit_order: true,

@@ -1267,6 +1267,139 @@ impl MexcParser {
             })
             .collect()
     }
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // DERIVED KLINE PARSERS (contract API — fair_price / index_price klines)
+    // ═══════════════════════════════════════════════════════════════════════════════
+
+    /// Parse MEXC contract fair-price (mark price) or index-price klines.
+    ///
+    /// Endpoint responses for `/api/v1/contract/kline/fair_price/{symbol}` and
+    /// `/api/v1/contract/kline/index_price/{symbol}` share the same structure:
+    ///
+    /// ```json
+    /// {
+    ///   "success": true,
+    ///   "code": 0,
+    ///   "data": {
+    ///     "time":   [unix_sec, ...],
+    ///     "open":   [f64, ...],
+    ///     "close":  [f64, ...],
+    ///     "high":   [f64, ...],
+    ///     "low":    [f64, ...],
+    ///     "amount": [0.0, ...],
+    ///     "vol":    [0.0, ...]
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Timestamps from MEXC are Unix **seconds** — we convert to ms by ×1000.
+    /// vol/amount are always 0.0 per the API docs.
+    pub fn parse_derived_klines_futures(response: &Value) -> ExchangeResult<Vec<Kline>> {
+        // MEXC contract API wraps in { "success": true, "code": 0, "data": {...} }
+        if let Some(code) = response.get("code").and_then(|c| c.as_i64()) {
+            if code != 0 {
+                let msg = response.get("message")
+                    .or_else(|| response.get("msg"))
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown error");
+                return Err(ExchangeError::Api { code: code as i32, message: msg.to_string() });
+            }
+        }
+
+        let data = response.get("data")
+            .ok_or_else(|| ExchangeError::Parse("MEXC kline: missing 'data' field".into()))?;
+
+        let times = data.get("time").and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("MEXC kline: missing 'data.time' array".into()))?;
+        let opens  = data.get("open").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let closes = data.get("close").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let highs  = data.get("high").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let lows   = data.get("low").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+
+        let parse_val = |arr: &[Value], idx: usize| -> f64 {
+            arr.get(idx)
+                .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+                .unwrap_or(0.0)
+        };
+
+        let mut klines = Vec::with_capacity(times.len());
+        for (i, ts_val) in times.iter().enumerate() {
+            // MEXC timestamps are Unix seconds → convert to ms
+            let ts_sec = ts_val.as_i64().unwrap_or(0);
+            klines.push(Kline {
+                open_time: ts_sec * 1000,
+                open:  parse_val(&opens,  i),
+                high:  parse_val(&highs,  i),
+                low:   parse_val(&lows,   i),
+                close: parse_val(&closes, i),
+                volume: 0.0, // vol always 0.0 per MEXC contract API docs
+                quote_volume: None,
+                close_time: None,
+                trades: None,
+            });
+        }
+
+        Ok(klines)
+    }
+
+    /// Parse MEXC contract funding rate history.
+    ///
+    /// Endpoint: `GET /api/v1/contract/funding_rate/history`
+    /// Response:
+    /// ```json
+    /// {
+    ///   "success": true,
+    ///   "code": 0,
+    ///   "data": {
+    ///     "resultList": [
+    ///       { "symbol": "BTC_USDT", "fundingRate": 0.0001, "settleTime": 1648800000000 },
+    ///       ...
+    ///     ],
+    ///     "pageSize": 20,
+    ///     "totalPage": 5,
+    ///     "totalCount": 100
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// `settleTime` is in Unix **milliseconds**.
+    /// Note: no date filter exists on this endpoint — use `page_num`/`page_size` pagination.
+    pub fn parse_funding_rate_history_futures(response: &Value) -> ExchangeResult<Vec<FundingRate>> {
+        if let Some(code) = response.get("code").and_then(|c| c.as_i64()) {
+            if code != 0 {
+                let msg = response.get("message")
+                    .or_else(|| response.get("msg"))
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown error");
+                return Err(ExchangeError::Api { code: code as i32, message: msg.to_string() });
+            }
+        }
+
+        let data = response.get("data")
+            .ok_or_else(|| ExchangeError::Parse("MEXC funding history: missing 'data'".into()))?;
+
+        let list = data.get("resultList")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("MEXC funding history: missing 'data.resultList'".into()))?;
+
+        let mut rates = Vec::with_capacity(list.len());
+        for item in list {
+            let rate = item.get("fundingRate")
+                .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+                .unwrap_or(0.0);
+            // settleTime is ms
+            let timestamp = item.get("settleTime")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            rates.push(FundingRate {
+                rate,
+                next_funding_time: None,
+                timestamp,
+            });
+        }
+
+        Ok(rates)
+    }
 }
 
 #[cfg(test)]

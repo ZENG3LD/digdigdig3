@@ -23,7 +23,7 @@ pub use capabilities::{
 pub use common::*;
 pub use extended_market_data::{
     AggTrade,
-    HistoricalVolatility, VolatilityIndex, Basis, IndexPrice, CompositeIndex,
+    HistoricalVolatility, VolatilityIndex, Basis, TakerVolume, IndexPrice, CompositeIndex,
     InsuranceFund, SettlementEvent, BlockTrade,
     OrderBookSide, L3Action, OrderbookL3Event,
     RiskLimit, PredictedFunding, FundingSettlement,

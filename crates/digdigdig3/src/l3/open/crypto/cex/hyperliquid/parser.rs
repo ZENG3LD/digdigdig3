@@ -309,6 +309,32 @@ impl HyperliquidParser {
         })
     }
 
+    /// Parse full funding rate history from a `fundingHistory` POST /info response.
+    ///
+    /// Wire format: JSON array `[{coin, fundingRate, premium, time}, ...]`
+    /// where `time` is Unix milliseconds (i64), `fundingRate` is a decimal string.
+    /// Per-event (~hourly). Full chain history available via `startTime`/`endTime` ms params.
+    ///
+    /// Ref: <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals>
+    pub fn parse_funding_history(response: &Value) -> ExchangeResult<Vec<FundingRate>> {
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse(
+                "fundingHistory: expected top-level JSON array".to_string(),
+            ))?;
+
+        let mut rates = Vec::with_capacity(arr.len());
+        for item in arr {
+            let rate = Self::get_f64(item, "fundingRate").unwrap_or(0.0);
+            let timestamp = Self::get_i64(item, "time").unwrap_or(0);
+            rates.push(FundingRate {
+                rate,
+                next_funding_time: None,
+                timestamp,
+            });
+        }
+        Ok(rates)
+    }
+
     /// Parse recent trades
     pub fn parse_recent_trades(response: &Value) -> ExchangeResult<Vec<PublicTrade>> {
         let trades = response.as_array()

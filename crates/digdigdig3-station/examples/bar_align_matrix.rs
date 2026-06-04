@@ -54,6 +54,7 @@ async fn main() {
             (Kind::FundingRate, Expect::Data),
             (Kind::OpenInterest, Expect::Data),
             (Kind::LongShortRatio, Expect::Data),
+            (Kind::Basis, Expect::Data),
         ]),
         (ExchangeId::Bybit, "BTCUSDT", vec![
             (Kind::MarkPriceKline(interval.clone()), Expect::Data),
@@ -156,6 +157,26 @@ async fn main() {
                     failures += 1;
                 }
             }
+        }
+    }
+
+    // Taker buy/sell volume is not a station Kind (no loader path) — verify the
+    // connector trait method directly for Binance.
+    {
+        use digdigdig3::core::types::SymbolInput;
+        let hub = Arc::new(ExchangeHub::new());
+        hub.connect_full(ExchangeId::Binance, &[acct], false).await.expect("connect binance");
+        let rest = hub.rest(ExchangeId::Binance).expect("binance rest");
+        println!("\nBinance taker_volume_history (direct trait call):");
+        match rest.get_taker_volume_history(SymbolInput::Raw("BTCUSDT"), "1h", Some(start), Some(end), Some(500), acct).await {
+            Ok(v) if !v.is_empty()
+                && v.windows(2).all(|w| w[1].timestamp > w[0].timestamp)
+                && v.iter().all(|t| t.timestamp % step == 0) => {
+                println!("  OK   taker_volume {} buckets | first buy={:.2} sell={:.2}",
+                    v.len(), v.first().unwrap().buy_volume, v.first().unwrap().sell_volume);
+            }
+            Ok(v) => { println!("  FAIL taker_volume invalid/empty ({} buckets)", v.len()); failures += 1; }
+            Err(e) => { println!("  FAIL taker_volume error: {e}"); failures += 1; }
         }
     }
 

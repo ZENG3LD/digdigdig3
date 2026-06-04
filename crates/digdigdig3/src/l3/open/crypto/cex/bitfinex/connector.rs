@@ -30,8 +30,9 @@ use crate::core::{
 use crate::core::types::SymbolInput;
 use crate::core::types::SymbolInfo;
 use crate::core::traits::{
-    ExchangeIdentity, MarketData, Trading, Account, Positions,
+    ExchangeIdentity, MarketData, Trading, Account, Positions, MarketDataPublic,
 };
+use crate::core::types::{FundingRate, OpenInterest, LongShortRatio};
 use crate::core::types::{MarketDataCapabilities, TradingCapabilities, AccountCapabilities};
 use crate::core::{CancelAll, AmendOrder, BatchOrders, AccountTransfers, CustodialFunds, SubAccounts};
 use crate::core::traits::{FundingHistory, AccountLedger};
@@ -363,6 +364,242 @@ impl BitfinexConnector {
             &[("symbol", symbol)],
             query,
         ).await
+    }
+
+    /// Position-size history for long/short ratio computation.
+    ///
+    /// Endpoint: `GET /v2/stats1/pos.size:1m:{key}/{section}`
+    ///
+    /// where `key` encodes the symbol and side:
+    /// - For long positions: `pos.size:1m:{sym}:long`
+    /// - For short positions: `pos.size:1m:{sym}:short`
+    ///
+    /// `sym` is a trading-pair symbol such as `tBTCUSD` (spot) or `tBTCF0:USTF0`
+    /// (perp). Note: spot pairs are confirmed; perp pairs are **unverified** —
+    /// see `get_long_short_ratio_history` doc comment.
+    ///
+    /// Returns `[[MTS, VALUE], ...]` arrays (i.e. position size in base units).
+    pub async fn get_pos_size_hist(
+        &self,
+        sym: &str,
+        side: &str,   // "long" or "short"
+        start: Option<i64>,
+        end: Option<i64>,
+        limit: Option<u32>,
+        sort: Option<i8>,
+    ) -> ExchangeResult<serde_json::Value> {
+        // Build the stats1 key: pos.size:1m:{sym}:{side}
+        let key = format!("pos.size:1m:{}:{}", sym, side);
+
+        let mut query = HashMap::new();
+        if let Some(s) = start {
+            query.insert("start".to_string(), s.to_string());
+        }
+        if let Some(e) = end {
+            query.insert("end".to_string(), e.to_string());
+        }
+        if let Some(l) = limit {
+            query.insert("limit".to_string(), l.min(10000).to_string());
+        }
+        if let Some(s) = sort {
+            query.insert("sort".to_string(), s.to_string());
+        }
+
+        self.get(
+            BitfinexEndpoint::Stats1PosSize,
+            &[("key", &key)],
+            query,
+        ).await
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MARKET DATA PUBLIC
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+impl MarketDataPublic for BitfinexConnector {
+    // ── Mark / Index / Premium klines: wire-absent ───────────────────────────
+    //
+    // Bitfinex has NO dedicated kline (OHLC) endpoints for mark price, index
+    // price, or premium index. The `/v2/status/deriv/{key}/hist` endpoint carries
+    // MARK_PRICE (idx 15) and SPOT_PRICE (idx 4) as event snapshots at irregular
+    // intervals — NOT as bar-aligned OHLC candles. There is no kline section
+    // (`trade:{tf}:{sym}` only applies to trade-price candles).
+    // Source: https://docs.bitfinex.com/reference/rest-public-derivatives-status-history
+
+    async fn get_mark_price_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> crate::core::ExchangeResult<Vec<crate::core::types::Kline>> {
+        let _ = (symbol, interval, limit, account_type, end_time);
+        Err(crate::core::ExchangeError::NotSupported(
+            "Bitfinex: no mark-price kline endpoint — MARK_PRICE appears only as irregular \
+             event snapshots in /v2/status/deriv/{key}/hist, not as OHLC candles"
+                .into(),
+        ))
+    }
+
+    async fn get_index_price_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> crate::core::ExchangeResult<Vec<crate::core::types::Kline>> {
+        let _ = (symbol, interval, limit, account_type, end_time);
+        Err(crate::core::ExchangeError::NotSupported(
+            "Bitfinex: no index-price kline endpoint — SPOT_PRICE (index reference) appears \
+             only as irregular event snapshots in /v2/status/deriv/{key}/hist, not as OHLC candles"
+                .into(),
+        ))
+    }
+
+    async fn get_premium_index_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> crate::core::ExchangeResult<Vec<crate::core::types::Kline>> {
+        let _ = (symbol, interval, limit, account_type, end_time);
+        Err(crate::core::ExchangeError::NotSupported(
+            "Bitfinex: no premium-index kline endpoint — CURRENT_FUNDING/NEXT_FUNDING_ACCRUED \
+             in /v2/status/deriv/{key}/hist are funding-rate snapshots, not premium-index OHLC"
+                .into(),
+        ))
+    }
+
+    // ── Funding rate history ──────────────────────────────────────────────────
+    //
+    // Source: GET /v2/status/deriv/{key}/hist — CURRENT_FUNDING at index 12.
+    // Event-based snapshots; `start`/`end` in ms; ≤ 5000 per call.
+    // Source: https://docs.bitfinex.com/reference/rest-public-derivatives-status-history
+
+    async fn get_funding_rate_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> crate::core::ExchangeResult<Vec<FundingRate>> {
+        let sym = symbol.resolve(crate::core::ExchangeId::Bitfinex, account_type)?;
+        let raw = self
+            .get_derivative_status_history(
+                &sym,
+                start_time,
+                end_time,
+                limit.map(|l| l.min(5000)),
+                None,
+            )
+            .await?;
+        BitfinexParser::parse_deriv_funding_rate_history(&raw, &sym)
+    }
+
+    // ── Open interest history ─────────────────────────────────────────────────
+    //
+    // Source: GET /v2/status/deriv/{key}/hist — OPEN_INTEREST at index 18.
+    // Same endpoint as funding rate history; same depth/granularity.
+
+    async fn get_open_interest_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        _period: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> crate::core::ExchangeResult<Vec<OpenInterest>> {
+        let sym = symbol.resolve(crate::core::ExchangeId::Bitfinex, account_type)?;
+        let raw = self
+            .get_derivative_status_history(
+                &sym,
+                start_time,
+                end_time,
+                limit.map(|l| l.min(5000)),
+                None,
+            )
+            .await?;
+        BitfinexParser::parse_deriv_open_interest_history(&raw)
+    }
+
+    // ── Long/short ratio history ──────────────────────────────────────────────
+    //
+    // Source: GET /v2/stats1/pos.size:1m:{sym}:{side}/hist
+    // Returns POSITION SIZES (not a pre-computed ratio). This method fetches
+    // both long and short size series and computes the ratio in-process.
+    //
+    // NOTE: `period` is ignored — Bitfinex stats1 pos.size is fixed at 1-minute
+    // granularity. `limit` caps at 10 000.
+    //
+    // IMPORTANT — perp-pair uncertainty: the Bitfinex docs confirm this endpoint
+    // for spot pairs (e.g. `tBTCUSD`). Support for perpetual pairs
+    // (`tBTCF0:USTF0`) is **unverified** — the endpoint may return empty arrays
+    // or an error for perp symbols. Callers should handle empty results gracefully.
+    // Source: https://docs.bitfinex.com/reference/rest-public-stats
+
+    async fn get_long_short_ratio_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        _period: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> crate::core::ExchangeResult<Vec<LongShortRatio>> {
+        let sym = symbol.resolve(crate::core::ExchangeId::Bitfinex, account_type)?;
+        let cap = limit.map(|l| l.min(10000));
+
+        // Fetch long-side position sizes
+        let long_raw = self
+            .get_pos_size_hist(&sym, "long", start_time, end_time, cap, None)
+            .await?;
+        let long_series = BitfinexParser::parse_pos_size_hist(&long_raw)?;
+
+        // Fetch short-side position sizes
+        let short_raw = self
+            .get_pos_size_hist(&sym, "short", start_time, end_time, cap, None)
+            .await?;
+        let short_series = BitfinexParser::parse_pos_size_hist(&short_raw)?;
+
+        // Join on timestamp and compute ratio.
+        // Build a map from the shorter series for O(n log n) join.
+        use std::collections::BTreeMap;
+        let short_map: BTreeMap<i64, f64> = short_series.into_iter().collect();
+
+        let mut out = Vec::with_capacity(long_series.len());
+        for (ts, long_size) in long_series {
+            let short_size = match short_map.get(&ts) {
+                Some(&s) => s,
+                None => continue,
+            };
+            let total = long_size + short_size;
+            let (long_ratio, short_ratio, ratio) = if total > 0.0 {
+                let lr = long_size / total;
+                let sr = short_size / total;
+                let r = if sr > 0.0 { long_size / short_size } else { f64::INFINITY };
+                (lr, sr, Some(r))
+            } else {
+                (0.0, 0.0, None)
+            };
+            out.push(LongShortRatio {
+                symbol: sym.to_string(),
+                ratio_type: "pos_size_1m".to_string(),
+                long_ratio,
+                short_ratio,
+                ratio,
+                timestamp: ts,
+            });
+        }
+        Ok(out)
     }
 }
 
@@ -1971,10 +2208,19 @@ impl crate::core::traits::HasCapabilities for BitfinexConnector {
         crate::core::types::ConnectorCapabilities {
             has_ticker: true, has_orderbook: true, has_klines: true,
             has_recent_trades: false, has_exchange_info: true,
-            // MarketDataPublic stub only
-            has_liquidation_history: false, has_open_interest_history: false,
-            has_premium_index: false, has_long_short_ratio_history: false,
-            has_funding_rate_history: false, has_mark_price_klines: false,
+            // MarketDataPublic
+            has_liquidation_history: false,
+            // OI from /v2/status/deriv/{key}/hist idx 18 — event snapshots
+            has_open_interest_history: true,
+            has_premium_index: false,
+            // LSR from /v2/stats1/pos.size:1m:{sym}:{side}/hist (spot confirmed; perp unverified)
+            has_long_short_ratio_history: true,
+            // Funding from /v2/status/deriv/{key}/hist idx 12 — event snapshots
+            has_funding_rate_history: true,
+            has_basis_history: false,
+            has_taker_volume_history: false,
+            // No dedicated kline endpoints for mark/index/premium — wire-absent
+            has_mark_price_klines: false,
             has_index_price_klines: false,
             has_premium_index_klines: false,
             has_market_order: true, has_limit_order: true,

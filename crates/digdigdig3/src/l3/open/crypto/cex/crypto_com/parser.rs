@@ -746,6 +746,77 @@ impl CryptoComParser {
             }
         }
     }
+    // ═══════════════════════════════════════════════════════════════════════════
+    // VALUATIONS PARSERS (mark price klines, index price klines, funding history)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse `public/get-valuations` response as a `Vec<Kline>`.
+    ///
+    /// Used for `valuation_type=mark_price` and `valuation_type=index_price`.
+    /// Each data point is `{"v": "<price>", "t": <unix_ms>}` — no OHLC spread,
+    /// so open/high/low/close are all set to the single value `v`.
+    ///
+    /// Response structure:
+    /// ```json
+    /// {
+    ///   "code": 0,
+    ///   "result": {
+    ///     "data": [{"v": "45000.00", "t": 1700000000000}, ...]
+    ///   }
+    /// }
+    /// ```
+    pub fn parse_valuations_as_klines(response: &Value) -> ExchangeResult<Vec<Kline>> {
+        Self::check_response(response)?;
+        let result = Self::extract_result(response)?;
+        let data = result.get("data")
+            .and_then(|d| d.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Crypto.com valuations: missing 'result.data'".into()))?;
+
+        let mut klines = Vec::with_capacity(data.len());
+        for item in data {
+            let ts = Self::get_i64(item, "t").unwrap_or(0);
+            let price = Self::get_f64(item, "v").unwrap_or(0.0);
+            klines.push(Kline {
+                open_time: ts,
+                open:   price,
+                high:   price,
+                low:    price,
+                close:  price,
+                volume: 0.0,
+                quote_volume: None,
+                close_time:   None,
+                trades:       None,
+            });
+        }
+        Ok(klines)
+    }
+
+    /// Parse `public/get-valuations` response as a `Vec<FundingRate>`.
+    ///
+    /// Used for `valuation_type=funding_hist`.
+    /// Each data point is `{"v": "<rate>", "t": <unix_ms>}` where `v` is the
+    /// settled funding rate (hourly).
+    ///
+    /// Response structure mirrors `parse_valuations_as_klines`.
+    pub fn parse_valuations_as_funding_rates(response: &Value) -> ExchangeResult<Vec<FundingRate>> {
+        Self::check_response(response)?;
+        let result = Self::extract_result(response)?;
+        let data = result.get("data")
+            .and_then(|d| d.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Crypto.com funding hist: missing 'result.data'".into()))?;
+
+        let mut rates = Vec::with_capacity(data.len());
+        for item in data {
+            let ts = Self::get_i64(item, "t").unwrap_or(0);
+            let rate = Self::get_f64(item, "v").unwrap_or(0.0);
+            rates.push(FundingRate {
+                rate,
+                next_funding_time: None,
+                timestamp: ts,
+            });
+        }
+        Ok(rates)
+    }
 }
 
 #[cfg(test)]

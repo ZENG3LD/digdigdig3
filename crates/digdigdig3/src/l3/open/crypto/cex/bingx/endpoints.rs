@@ -118,6 +118,16 @@ pub enum BingxEndpoint {
     SwapFundingRateHistory,
     /// GET /openApi/swap/v2/quote/premiumIndex
     SwapPremiumIndex,
+
+    // === MARK PRICE KLINES (confirmed path — bingx_py source) ===
+    /// GET /openApi/swap/v1/market/markPriceKlines
+    /// Params: symbol, interval, startTime, endTime (ms), limit (max 1000)
+    SwapMarkPriceKlines,
+
+    // === FUNDING RATE HISTORY (confirmed path — bingx_py source) ===
+    /// GET /openApi/swap/v2/quote/fundingRate
+    /// Params: symbol, startTime, endTime (ms), limit (max 1000)
+    SwapFundingRateHistoryV2,
 }
 
 impl BingxEndpoint {
@@ -196,6 +206,10 @@ impl BingxEndpoint {
             Self::SwapOpenInterest => "/openApi/swap/v2/quote/openInterest",
             Self::SwapFundingRateHistory => "/openApi/swap/v2/quote/fundingRateHistory",
             Self::SwapPremiumIndex => "/openApi/swap/v2/quote/premiumIndex",
+
+            // Mark price klines / funding rate history v2
+            Self::SwapMarkPriceKlines => "/openApi/swap/v1/market/markPriceKlines",
+            Self::SwapFundingRateHistoryV2 => "/openApi/swap/v2/quote/fundingRate",
         }
     }
 
@@ -217,7 +231,9 @@ impl BingxEndpoint {
             | Self::SwapTicker
             | Self::SwapOpenInterest
             | Self::SwapFundingRateHistory
-            | Self::SwapPremiumIndex => false,
+            | Self::SwapPremiumIndex
+            | Self::SwapMarkPriceKlines
+            | Self::SwapFundingRateHistoryV2 => false,
 
             // Private endpoints
             _ => true,

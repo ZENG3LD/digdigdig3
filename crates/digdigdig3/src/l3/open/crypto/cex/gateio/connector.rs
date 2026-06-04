@@ -2979,6 +2979,8 @@ impl crate::core::traits::HasCapabilities for GateioConnector {
             has_liquidation_history: false, has_open_interest_history: true,
             has_premium_index: false, has_long_short_ratio_history: true,
             has_funding_rate_history: true, has_mark_price_klines: true,
+            has_basis_history: false,
+            has_taker_volume_history: false,
             has_index_price_klines: true,
             has_premium_index_klines: true,
             has_market_order: true, has_limit_order: true,

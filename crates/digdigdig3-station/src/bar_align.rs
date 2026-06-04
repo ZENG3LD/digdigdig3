@@ -159,6 +159,45 @@ fn resample(mut src: Vec<(i64, f64)>, start: i64, end: i64, step: i64, policy: F
     out
 }
 
+/// Bar-align an in-memory series of recorded [`DataPoint`]s onto the OHLCV grid
+/// (Track C — daemon-recorded streams with no REST history: liquidations, L2,
+/// aggTrades). The forward-recording daemon (`dig3 watch` / Station persistence)
+/// writes typed points to a `DiskStore<T>`; a consumer reads them back
+/// (`DiskStore::read_tail` / `Series`) and feeds the slice here with a scalar
+/// projection to get the same bar-aligned shape the REST loader produces.
+///
+/// `project` extracts the scalar per point (e.g. liquidation notional, aggTrade
+/// size). Fill policy is the caller's choice: `ZeroFlow` for event flows
+/// (liq/aggTrade — sum per bar, gap=0), `ForwardFill` for recorded levels.
+///
+/// This is the in-process resample step; reading the points off disk and
+/// choosing the range is the caller's job (the recording is forward-only — you
+/// can only bar-align what the daemon has captured).
+pub fn bar_align_points<T, F>(
+    points: &[T],
+    project: F,
+    start_ms: i64,
+    end_ms: i64,
+    interval: &KlineInterval,
+    policy: FillPolicy,
+) -> Result<Vec<ScalarBar>>
+where
+    T: crate::series::DataPoint,
+    F: Fn(&T) -> f64,
+{
+    let step = interval_millis(interval.as_str())
+        .ok_or_else(|| StationError::Core(format!("interval {interval} has no fixed ms width for resample")))?;
+    let src: Vec<(i64, f64)> = points
+        .iter()
+        .filter(|p| {
+            let t = p.timestamp_ms();
+            t >= start_ms && t < end_ms
+        })
+        .map(|p| (p.timestamp_ms(), project(p)))
+        .collect();
+    Ok(resample(src, start_ms, end_ms, step, policy))
+}
+
 /// Cap a REST kline `limit` to the per-call exchange ceiling.
 const KLINE_PAGE: u16 = 1000;
 
@@ -284,6 +323,14 @@ pub async fn load_bar_aligned(
             .map_err(|e| StationError::Core(format!("open interest history failed: {e}")))?
             .into_iter()
             .map(|oi| (oi.timestamp, oi.open_interest))
+            .collect(),
+
+        Kind::Basis => rest
+            .get_basis_history(SymbolInput::Raw(symbol), interval.as_str(), Some(start_ms), Some(end_ms), Some(500), account)
+            .await
+            .map_err(|e| StationError::Core(format!("basis history failed: {e}")))?
+            .into_iter()
+            .map(|b| (b.timestamp, b.basis))
             .collect(),
 
         Kind::LongShortRatio => rest
@@ -419,6 +466,24 @@ mod tests {
         assert_eq!(out[0], ScalarBar { bar_open_time: 0, value: 7.0, filled: false });
         assert_eq!(out[1], ScalarBar { bar_open_time: 60_000, value: 0.0, filled: false });
         assert_eq!(out[2], ScalarBar { bar_open_time: 120_000, value: 9.0, filled: false });
+    }
+
+    #[test]
+    fn bar_align_points_flow_from_recorded() {
+        use crate::data::LiquidationPoint;
+        // Recorded liquidations: two in bar 0, none in bar 60k, one in bar 120k.
+        let pts = vec![
+            LiquidationPoint { ts_ms: 1_000, price: 100.0, quantity: 1.0, value: 5_000.0, side: 0 },
+            LiquidationPoint { ts_ms: 40_000, price: 100.0, quantity: 1.0, value: 3_000.0, side: 1 },
+            LiquidationPoint { ts_ms: 125_000, price: 100.0, quantity: 1.0, value: 9_000.0, side: 0 },
+        ];
+        let out = bar_align_points(
+            &pts, |p| p.value, 0, 180_000, &KlineInterval::new("1m"), FillPolicy::ZeroFlow,
+        ).unwrap();
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0], ScalarBar { bar_open_time: 0, value: 8_000.0, filled: false });
+        assert_eq!(out[1], ScalarBar { bar_open_time: 60_000, value: 0.0, filled: false });
+        assert_eq!(out[2], ScalarBar { bar_open_time: 120_000, value: 9_000.0, filled: false });
     }
 
     #[test]

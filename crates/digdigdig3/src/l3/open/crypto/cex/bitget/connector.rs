@@ -3158,6 +3158,8 @@ impl crate::core::traits::HasCapabilities for BitgetConnector {
             has_premium_index: false,
             has_long_short_ratio_history: true,
             has_funding_rate_history: true,
+            has_basis_history: false,
+            has_taker_volume_history: false,
             has_mark_price_klines: true,
             has_index_price_klines: true,
             // Wire-absent on Bitget. NotSupported override documents this.

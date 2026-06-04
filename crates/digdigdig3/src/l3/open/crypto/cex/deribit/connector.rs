@@ -40,6 +40,7 @@ use crate::core::types::{
     HistoricalVolatility,
     LedgerEntry, LedgerEntryType, LedgerFilter,
     OpenInterest, MarkPrice,
+    LongShortRatio,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
@@ -1998,6 +1999,170 @@ impl MarketDataPublic for DeribitConnector {
         }
         Ok(out)
     }
+
+    // ── Funding rate history ──────────────────────────────────────────────────
+    //
+    // Source: public/get_funding_rate_history
+    // PERPETUAL instruments only (e.g. BTC-PERPETUAL, ETH-PERPETUAL).
+    // Both start_timestamp and end_timestamp are MANDATORY on Deribit.
+    // Granularity: hourly. No pagination documented.
+    // Source: https://docs.deribit.com/api-reference/market-data/public-get_funding_rate_history
+
+    async fn get_funding_rate_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<FundingRate>> {
+        let _ = limit; // Deribit does not accept a count/limit param here
+        let instrument = symbol.resolve(ExchangeId::Deribit, account_type)?;
+
+        // Both timestamps are mandatory for Deribit's get_funding_rate_history.
+        // Default to a reasonable window (last 30 days) when not provided.
+        let now_ms = crate::core::utils::now_ms() as i64;
+        let end_ms = end_time.unwrap_or(now_ms);
+        let start_ms = start_time.unwrap_or(end_ms - 30 * 24 * 3_600_000);
+
+        let raw = DeribitConnector::get_funding_rate_history(self, &instrument, start_ms, end_ms).await?;
+
+        // Response: { "result": [{ "timestamp": ms, "interest_1h": f64, "interest_8h": f64,
+        //                          "index_price": f64, "prev_index_price": f64 }, ...] }
+        let arr = raw
+            .get("result")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse(
+                "deribit get_funding_rate_history: expected result array".into(),
+            ))?;
+
+        let mut out = Vec::with_capacity(arr.len());
+        for item in arr {
+            let timestamp = item.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+            // interest_1h is the hourly rate; use it as the primary rate value
+            let rate = item.get("interest_1h")
+                .or_else(|| item.get("interest_8h"))
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            out.push(FundingRate {
+                rate,
+                next_funding_time: None, // not provided in history response
+                timestamp,
+            });
+        }
+        Ok(out)
+    }
+
+    // ── Wire-absent: mark_price_klines ────────────────────────────────────────
+    //
+    // public/get_mark_price_history exists but returns empty list `[]` for
+    // futures and perpetuals — only certain options instruments are supported.
+    // It cannot serve as a bar-aligned klines source for perps/futures.
+    // Source: https://docs.deribit.com/api-reference/market-data/public-get_mark_price_history
+
+    async fn get_mark_price_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<crate::core::types::Kline>> {
+        let _ = (symbol, interval, limit, account_type, end_time);
+        Err(ExchangeError::NotSupported(
+            "Deribit: get_mark_price_history returns empty [] for futures/perpetuals; \
+             supported only for certain options instruments participating in vol-index calculation"
+                .into(),
+        ))
+    }
+
+    // ── Wire-absent: index_price_klines ───────────────────────────────────────
+    //
+    // public/get_index_chart_data exists but accepts only a FIXED range enum
+    // (1h/1d/2d/1m/1y/all) — no arbitrary start/end timestamps. Cannot be used
+    // to honour a bar-aligned arbitrary (start, end) range.
+    // Source: https://docs.deribit.com/api-reference/market-data/public-get_index_chart_data
+
+    async fn get_index_price_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<crate::core::types::Kline>> {
+        let _ = (symbol, interval, limit, account_type, end_time);
+        Err(ExchangeError::NotSupported(
+            "Deribit: get_index_chart_data uses a fixed range enum (1h/1d/2d/1m/1y/all) \
+             with no start/end timestamp params — cannot produce bar-aligned output \
+             for an arbitrary time range"
+                .into(),
+        ))
+    }
+
+    // ── Wire-absent: premium_index_klines ─────────────────────────────────────
+    //
+    // No premium-index kline endpoint exists on Deribit.
+    // Source: https://docs.deribit.com/
+
+    async fn get_premium_index_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<crate::core::types::Kline>> {
+        let _ = (symbol, interval, limit, account_type, end_time);
+        Err(ExchangeError::NotSupported(
+            "Deribit: no premium-index kline endpoint; no basis/premium series available"
+                .into(),
+        ))
+    }
+
+    // ── Wire-absent: open_interest_history ────────────────────────────────────
+    //
+    // open_interest appears only as a snapshot field in /public/ticker and
+    // /public/get_book_summary_by_instrument — no historical OI time-series.
+    // Source: https://docs.deribit.com/
+
+    async fn get_open_interest_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        period: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<OpenInterest>> {
+        let _ = (symbol, period, start_time, end_time, limit, account_type);
+        Err(ExchangeError::NotSupported(
+            "Deribit: no open-interest history endpoint — open_interest is snapshot-only \
+             in /public/ticker; no historical OI time-series exists"
+                .into(),
+        ))
+    }
+
+    // ── Wire-absent: long_short_ratio_history ─────────────────────────────────
+    //
+    // No long/short ratio endpoint on Deribit.
+    // Source: https://docs.deribit.com/
+
+    async fn get_long_short_ratio_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        period: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<LongShortRatio>> {
+        let _ = (symbol, period, start_time, end_time, limit, account_type);
+        Err(ExchangeError::NotSupported(
+            "Deribit: no long/short ratio endpoint — this metric is not available on Deribit"
+                .into(),
+        ))
+    }
 }
 
 impl crate::core::traits::HasCapabilities for DeribitConnector {
@@ -2008,6 +2173,8 @@ impl crate::core::traits::HasCapabilities for DeribitConnector {
             has_liquidation_history: false, has_open_interest_history: false,
             has_premium_index: false, has_long_short_ratio_history: false,
             has_funding_rate_history: true, has_mark_price_klines: false,
+            has_basis_history: false,
+            has_taker_volume_history: false,
             has_index_price_klines: false,
             has_premium_index_klines: false,
             has_market_order: true, has_limit_order: true,

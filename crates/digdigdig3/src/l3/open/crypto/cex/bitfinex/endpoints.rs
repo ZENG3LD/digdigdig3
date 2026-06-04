@@ -100,6 +100,13 @@ pub enum BitfinexEndpoint {
     /// GET /v2/status/deriv/{symbol}/hist — historical derivative status
     /// (mark price, OI, funding per snapshot). Public endpoint.
     DerivativeStatusHist,
+
+    /// GET /v2/stats1/{key}:{size}:{sym}:{side}/hist — position size history.
+    ///
+    /// Used for long/short ratio: call twice with `side=long` and `side=short`,
+    /// then compute the ratio from the two position-size series.
+    /// Public endpoint. Granularity: 1m. Max 10 000 records per call.
+    Stats1PosSize,
 }
 
 impl BitfinexEndpoint {
@@ -156,6 +163,8 @@ impl BitfinexEndpoint {
             // Derivatives / Funding
             Self::FundingStats => "/funding/stats/{symbol}/hist",
             Self::DerivativeStatusHist => "/status/deriv/{symbol}/hist",
+            // path is built dynamically; placeholder here for completeness
+            Self::Stats1PosSize => "/stats1/{key}/hist",
         }
     }
 
@@ -171,7 +180,8 @@ impl BitfinexEndpoint {
             | Self::Candles
             | Self::Symbols
             | Self::FundingStats
-            | Self::DerivativeStatusHist => false,
+            | Self::DerivativeStatusHist
+            | Self::Stats1PosSize => false,
 
             // Private endpoints
             _ => true,

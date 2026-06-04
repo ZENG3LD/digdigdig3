@@ -35,6 +35,7 @@ use crate::core::types::{
     SubAccountOperation, SubAccountResult,
     UserTrade, UserTradeFilter,
     FundingPayment, FundingFilter, LedgerEntry, LedgerFilter,
+    OpenInterest, LongShortRatio,
 };
 use crate::core::types::SymbolInfo;
 use crate::core::traits::{
@@ -393,6 +394,32 @@ impl KrakenConnector {
 
         let response = self.get_futures_path(&path, params).await?;
         KrakenParser::parse_charts_candles(&response)
+    }
+
+    /// Fetch a Kraken Futures analytics series.
+    ///
+    /// `GET https://futures.kraken.com/api/charts/v1/analytics/{symbol}/{analytics_type}`
+    /// `analytics_type` (live-verified): `"open-interest"`, `"long-short-info"`.
+    /// `interval_secs`: bucket width in seconds. `from`/`to`: Unix seconds.
+    /// Returns `{result:{timestamp:[secs], data:..}}` for a typed parser.
+    async fn get_futures_analytics(
+        &self,
+        symbol: &str,
+        analytics_type: &str,
+        from: Option<i64>,
+        to: Option<i64>,
+        interval_secs: i64,
+    ) -> ExchangeResult<serde_json::Value> {
+        let path = format!("/api/charts/v1/analytics/{}/{}", symbol, analytics_type);
+        let mut params = HashMap::new();
+        params.insert("interval".to_string(), interval_secs.to_string());
+        if let Some(f) = from {
+            params.insert("from".to_string(), f.to_string());
+        }
+        if let Some(t) = to {
+            params.insert("to".to_string(), t.to_string());
+        }
+        self.get_futures_path(&path, params).await
     }
 }
 
@@ -1961,6 +1988,46 @@ impl MarketDataPublic for KrakenConnector {
         ).await?;
         KrakenParser::parse_historical_funding_rates(&response)
     }
+
+    /// Open interest history via charts/v1 analytics (`open-interest`).
+    /// Live-verified: `result.timestamp[]` (secs) + `result.data[]` rows of
+    /// OHLC-of-OI string arrays — the close (last) is taken as the bar's OI.
+    async fn get_open_interest_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        period: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        _limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<OpenInterest>> {
+        let symbol = symbol.resolve(ExchangeId::Kraken, account_type)?;
+        let interval_secs = (map_ohlc_interval(period) as i64) * 60;
+        let from = start_time.map(|ms| ms / 1000);
+        let to = end_time.map(|ms| ms / 1000);
+        let resp = self.get_futures_analytics(&symbol, "open-interest", from, to, interval_secs).await?;
+        KrakenParser::parse_analytics_open_interest(&resp)
+    }
+
+    /// Long/short ratio history via charts/v1 analytics (`long-short-info`).
+    /// Live-verified: `result.timestamp[]` (secs) + `result.data.{longCount,
+    /// shortCount}[]` — ratio = long/short.
+    async fn get_long_short_ratio_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        period: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        _limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<LongShortRatio>> {
+        let symbol = symbol.resolve(ExchangeId::Kraken, account_type)?;
+        let interval_secs = (map_ohlc_interval(period) as i64) * 60;
+        let from = start_time.map(|ms| ms / 1000);
+        let to = end_time.map(|ms| ms / 1000);
+        let resp = self.get_futures_analytics(&symbol, "long-short-info", from, to, interval_secs).await?;
+        KrakenParser::parse_analytics_long_short(&resp, &symbol)
+    }
 }
 
 impl crate::core::traits::HasCapabilities for KrakenConnector {
@@ -1969,11 +2036,13 @@ impl crate::core::traits::HasCapabilities for KrakenConnector {
             has_ticker: true, has_orderbook: true, has_klines: true,
             has_recent_trades: false, has_exchange_info: true,
             // Confirmed REST-historical futures endpoints implemented above.
-            // OI/LSR: path confirmed, analytics_type strings unverified → left as
-            //   default UnsupportedOperation (NOT NotSupported — they likely exist).
-            has_liquidation_history: false, has_open_interest_history: false,
-            has_premium_index: false, has_long_short_ratio_history: false,
+            // OI/LSR via charts/v1 analytics (open-interest / long-short-info) —
+            //   analytics_type strings live-verified 2026-06-04.
+            has_liquidation_history: false, has_open_interest_history: true,
+            has_premium_index: false, has_long_short_ratio_history: true,
             has_funding_rate_history: true, has_mark_price_klines: true,
+            has_basis_history: false,
+            has_taker_volume_history: false,
             has_index_price_klines: true,
             // No dedicated premium-index endpoint; derivable from mark−spot.
             has_premium_index_klines: false,

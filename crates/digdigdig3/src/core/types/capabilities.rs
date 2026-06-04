@@ -834,6 +834,8 @@ pub struct ConnectorCapabilities {
     pub has_index_price_klines: bool,
     pub has_premium_index_klines: bool,
     pub has_funding_rate_history: bool,
+    pub has_basis_history: bool,
+    pub has_taker_volume_history: bool,
 
     // ── Trading ───────────────────────────────────────────────────────────────
     pub has_market_order: bool,

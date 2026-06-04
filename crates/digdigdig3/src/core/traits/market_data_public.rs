@@ -6,8 +6,8 @@
 
 
 use crate::core::types::{
-    AccountType, ExchangeError, ExchangeResult, FundingRate, HistoricalVolatility, Kline,
-    Liquidation, LongShortRatio, MarkPrice, OpenInterest, PublicTrade, SymbolInput,
+    AccountType, Basis, ExchangeError, ExchangeResult, FundingRate, HistoricalVolatility, Kline,
+    Liquidation, LongShortRatio, MarkPrice, OpenInterest, PublicTrade, SymbolInput, TakerVolume,
 };
 
 /// Extended public market data — derivatives analytics, liquidations, OI, funding history.
@@ -151,6 +151,38 @@ pub trait MarketDataPublic: Send + Sync {
             "get_historical_volatility: not available on this exchange \
              (Deribit-only: public/get_historical_volatility)"
                 .into(),
+        ))
+    }
+
+    /// Historical futures basis (futures − spot index) time series.
+    async fn get_basis_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        period: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Basis>> {
+        let _ = (symbol, period, start_time, end_time, limit, account_type);
+        Err(ExchangeError::UnsupportedOperation(
+            "get_basis_history not supported".into(),
+        ))
+    }
+
+    /// Historical taker buy/sell volume time series (aggressor-side flow).
+    async fn get_taker_volume_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        period: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<TakerVolume>> {
+        let _ = (symbol, period, start_time, end_time, limit, account_type);
+        Err(ExchangeError::UnsupportedOperation(
+            "get_taker_volume_history not supported".into(),
         ))
     }
 

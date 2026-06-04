@@ -33,10 +33,11 @@ use crate::core::{
     UserTrade, UserTradeFilter,
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
 };
+use crate::core::traits::MarketDataPublic;
 use crate::core::types::{
     DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord, FundsHistoryFilter, FundsRecordType,
     SubAccountOperation, SubAccountResult, SubAccount,
-    OpenInterest,
+    OpenInterest, LongShortRatio,
 };
 use crate::core::types::{SymbolInfo, OrderResult};
 use crate::core::types::ConnectorStats;
@@ -2042,6 +2043,170 @@ impl AccountLedger for CryptoComConnector {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// MarketDataPublic trait impl
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+impl MarketDataPublic for CryptoComConnector {
+    /// Mark price klines via `public/get-valuations?valuation_type=mark_price`.
+    ///
+    /// Returns per-minute bar data. Each point has a single `v` (value) and `t` (timestamp ms);
+    /// open/high/low/close are all set to `v`. Volume = 0.
+    ///
+    /// `instrument_name` must be the **perpetual contract** e.g. `BTCUSD-PERP`.
+    /// Source: https://exchange-docs.crypto.com/exchange/v1/rest-ws/index.html
+    async fn get_mark_price_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        _interval: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
+        let instrument = symbol.resolve(ExchangeId::CryptoCom, account_type)?;
+        let mut params = serde_json::json!({
+            "instrument_name": instrument,
+            "valuation_type": "mark_price"
+        });
+        if let Some(l) = limit {
+            params["count"] = serde_json::json!(l);
+        }
+        if let Some(et) = end_time {
+            params["end_ts"] = serde_json::json!(et);
+        }
+        let response = self.request(CryptoComEndpoint::GetValuations, params).await?;
+        CryptoComParser::parse_valuations_as_klines(&response)
+    }
+
+    /// Index price klines via `public/get-valuations?valuation_type=index_price`.
+    ///
+    /// # IMPORTANT QUIRK
+    /// `instrument_name` must be the **index symbol** e.g. `BTCUSD-INDEX`,
+    /// NOT the perpetual contract `BTCUSD-PERP`.
+    /// Source: https://exchange-docs.crypto.com/exchange/v1/rest-ws/index.html
+    async fn get_index_price_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        _interval: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
+        // For index price, callers must pass the index instrument (e.g. BTCUSD-INDEX).
+        // We accept the raw symbol as-is — the caller is responsible for the correct format.
+        let instrument = symbol.resolve(ExchangeId::CryptoCom, account_type)?;
+        let mut params = serde_json::json!({
+            "instrument_name": instrument,
+            "valuation_type": "index_price"
+        });
+        if let Some(l) = limit {
+            params["count"] = serde_json::json!(l);
+        }
+        if let Some(et) = end_time {
+            params["end_ts"] = serde_json::json!(et);
+        }
+        let response = self.request(CryptoComEndpoint::GetValuations, params).await?;
+        CryptoComParser::parse_valuations_as_klines(&response)
+    }
+
+    /// Premium index klines — NOT SUPPORTED by Crypto.com Exchange v1 API.
+    ///
+    /// `valuation_type=funding_rate` returns the current-interval instantaneous
+    /// funding rate (not a premium-index OHLCV candle series).
+    /// No standalone premium-index kline exists.
+    /// Source: https://exchange-docs.crypto.com/exchange/v1/rest-ws/index.html
+    async fn get_premium_index_klines(
+        &self,
+        _symbol: SymbolInput<'_>,
+        _interval: &str,
+        _limit: Option<u32>,
+        _account_type: AccountType,
+        _end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<Kline>> {
+        Err(ExchangeError::NotSupported(
+            "NotSupported: Crypto.com Exchange v1 has no premium-index kline endpoint. \
+             'valuation_type=funding_rate' returns per-minute instantaneous rate only, \
+             not a true premium-index OHLCV candle series. \
+             Source: https://exchange-docs.crypto.com/exchange/v1/rest-ws/index.html"
+                .into(),
+        ))
+    }
+
+    /// Funding rate history via `public/get-valuations?valuation_type=funding_hist`.
+    ///
+    /// Returns settled (hourly) funding rates. Default lookback = 30 days.
+    /// Source: https://exchange-docs.crypto.com/exchange/v1/rest-ws/index.html
+    async fn get_funding_rate_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<FundingRate>> {
+        let instrument = symbol.resolve(ExchangeId::CryptoCom, account_type)?;
+        let mut params = serde_json::json!({
+            "instrument_name": instrument,
+            "valuation_type": "funding_hist"
+        });
+        if let Some(l) = limit {
+            params["count"] = serde_json::json!(l);
+        }
+        if let Some(st) = start_time {
+            params["start_ts"] = serde_json::json!(st);
+        }
+        if let Some(et) = end_time {
+            params["end_ts"] = serde_json::json!(et);
+        }
+        let response = self.request(CryptoComEndpoint::GetValuations, params).await?;
+        CryptoComParser::parse_valuations_as_funding_rates(&response)
+    }
+
+    /// Open interest history — NOT SUPPORTED by Crypto.com Exchange v1 API.
+    ///
+    /// OI is available only as a snapshot via the `oi` field in `public/get-tickers`.
+    /// No time-series OI history endpoint exists.
+    /// Source: https://exchange-docs.crypto.com/exchange/v1/rest-ws/index.html
+    async fn get_open_interest_history(
+        &self,
+        _symbol: SymbolInput<'_>,
+        _period: &str,
+        _start_time: Option<i64>,
+        _end_time: Option<i64>,
+        _limit: Option<u32>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<OpenInterest>> {
+        Err(ExchangeError::NotSupported(
+            "NotSupported: Crypto.com Exchange v1 has no OI history endpoint. \
+             OI is snapshot-only via 'oi' field in public/get-tickers. \
+             Source: https://exchange-docs.crypto.com/exchange/v1/rest-ws/index.html"
+                .into(),
+        ))
+    }
+
+    /// Long/short ratio history — NOT SUPPORTED by Crypto.com Exchange v1 API.
+    ///
+    /// No such endpoint exists in the Crypto.com Exchange v1 API.
+    /// Source: https://exchange-docs.crypto.com/exchange/v1/rest-ws/index.html
+    async fn get_long_short_ratio_history(
+        &self,
+        _symbol: SymbolInput<'_>,
+        _period: &str,
+        _start_time: Option<i64>,
+        _end_time: Option<i64>,
+        _limit: Option<u32>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<LongShortRatio>> {
+        Err(ExchangeError::NotSupported(
+            "NotSupported: Crypto.com Exchange v1 does not expose a long/short ratio history endpoint. \
+             Source: https://exchange-docs.crypto.com/exchange/v1/rest-ws/index.html"
+                .into(),
+        ))
+    }
+}
+
 impl crate::core::traits::HasCapabilities for CryptoComConnector {
     fn capabilities(&self) -> crate::core::types::ConnectorCapabilities {
         crate::core::types::ConnectorCapabilities {
@@ -2049,8 +2214,10 @@ impl crate::core::traits::HasCapabilities for CryptoComConnector {
             has_recent_trades: false, has_exchange_info: true,
             has_liquidation_history: false, has_open_interest_history: false,
             has_premium_index: false, has_long_short_ratio_history: false,
-            has_funding_rate_history: false, has_mark_price_klines: false,
-            has_index_price_klines: false,
+            has_funding_rate_history: true, has_mark_price_klines: true,
+            has_basis_history: false,
+            has_taker_volume_history: false,
+            has_index_price_klines: true,
             has_premium_index_klines: false,
             has_market_order: true, has_limit_order: true,
             has_open_orders: true, has_order_history: true, has_user_trades: true,

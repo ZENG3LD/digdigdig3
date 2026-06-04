@@ -1424,6 +1424,37 @@ impl BinanceParser {
         Ok(result)
     }
 
+    /// Parse basis history array from `GET /futures/data/basis`.
+    /// Each record: `{ "basis":"...", "basisRate":"...", "pair":"...",
+    /// "contractType":"...", "timestamp": ms }`.
+    pub fn parse_basis_history(value: &Value) -> ExchangeResult<Vec<crate::core::types::Basis>> {
+        let arr = value.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected JSON array for basis history".to_string()))?;
+        let mut result = Vec::with_capacity(arr.len());
+        for item in arr {
+            let basis = Self::get_f64(item, "basis").unwrap_or(0.0);
+            let timestamp = item.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0);
+            result.push(crate::core::types::Basis { basis, timestamp });
+        }
+        Ok(result)
+    }
+
+    /// Parse taker buy/sell volume array from `GET /futures/data/takerlongshortRatio`.
+    /// Each record: `{ "buySellRatio":"...", "buyVol":"...", "sellVol":"...",
+    /// "timestamp": ms }`.
+    pub fn parse_taker_volume(value: &Value) -> ExchangeResult<Vec<crate::core::types::TakerVolume>> {
+        let arr = value.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected JSON array for taker volume".to_string()))?;
+        let mut result = Vec::with_capacity(arr.len());
+        for item in arr {
+            let buy_volume = Self::get_f64(item, "buyVol").unwrap_or(0.0);
+            let sell_volume = Self::get_f64(item, "sellVol").unwrap_or(0.0);
+            let timestamp = item.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0);
+            result.push(crate::core::types::TakerVolume { buy_volume, sell_volume, timestamp });
+        }
+        Ok(result)
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // OPEN INTEREST (SINGULAR)
     // ═══════════════════════════════════════════════════════════════════════════

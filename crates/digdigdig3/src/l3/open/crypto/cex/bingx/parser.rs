@@ -8,7 +8,7 @@ use crate::core::types::{
     ExchangeError, ExchangeResult,
     Kline, OrderBook, OrderBookLevel, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide, SymbolInfo,
-    UserTrade,
+    UserTrade, FundingRate,
     OrderbookDelta as OrderbookDeltaData,
 };
 
@@ -1061,6 +1061,91 @@ impl BingxParser {
                 })
             })
             .collect()
+    }
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MARK PRICE KLINES (confirmed path: /openApi/swap/v1/market/markPriceKlines)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse BingX mark price klines response.
+    ///
+    /// Endpoint: `GET /openApi/swap/v1/market/markPriceKlines`
+    ///
+    /// Response structure (same `data` array as regular klines):
+    /// ```json
+    /// {
+    ///   "code": 0,
+    ///   "data": [
+    ///     {"time": 1700000000000, "open": "43250.00", "high": "43350.00",
+    ///      "low": "43200.00", "close": "43300.00", "volume": "0"}
+    ///   ]
+    /// }
+    /// ```
+    ///
+    /// Timestamps are Unix milliseconds. The parser reuses the existing
+    /// `parse_klines` logic (same shape as regular swap klines).
+    pub fn parse_mark_price_klines(response: &Value) -> ExchangeResult<Vec<Kline>> {
+        // BingX mark price klines share the same response shape as regular klines
+        Self::parse_klines(response)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FUNDING RATE HISTORY (confirmed path: /openApi/swap/v2/quote/fundingRate)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse BingX funding rate history response.
+    ///
+    /// Endpoint: `GET /openApi/swap/v2/quote/fundingRate`
+    ///
+    /// Response structure:
+    /// ```json
+    /// {
+    ///   "code": 0,
+    ///   "data": {
+    ///     "list": [
+    ///       {"symbol": "BTC-USDT", "fundingRate": "0.0001", "fundingTime": 1700000000000}
+    ///     ]
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// `fundingTime` is Unix milliseconds.
+    pub fn parse_funding_rate_history(response: &Value) -> ExchangeResult<Vec<FundingRate>> {
+        // BingX error check
+        if let Some(code) = response.get("code").and_then(|c| c.as_i64()) {
+            if code != 0 {
+                let msg = response.get("msg")
+                    .or_else(|| response.get("message"))
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown error");
+                return Err(ExchangeError::Api { code: code as i32, message: msg.to_string() });
+            }
+        }
+
+        // Try data.list first, then data as array directly
+        let list_opt = response.get("data")
+            .and_then(|d| d.get("list").and_then(|l| l.as_array()).or_else(|| d.as_array()));
+
+        let list = match list_opt {
+            Some(l) => l,
+            None => {
+                // empty or unexpected shape — return empty
+                return Ok(Vec::new());
+            }
+        };
+
+        let mut rates = Vec::with_capacity(list.len());
+        for item in list {
+            let rate = Self::get_f64(item, "fundingRate").unwrap_or(0.0);
+            let timestamp = item.get("fundingTime")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            rates.push(FundingRate {
+                rate,
+                next_funding_time: None,
+                timestamp,
+            });
+        }
+        Ok(rates)
     }
 }
 

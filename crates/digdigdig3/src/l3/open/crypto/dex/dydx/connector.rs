@@ -2296,6 +2296,164 @@ impl MarketDataPublic for DydxConnector {
         }
         Ok(result)
     }
+
+    /// Historical funding rate events for a dYdX v4 perpetual market.
+    ///
+    /// `GET /v4/historicalFunding/{ticker}`
+    /// Query params: `limit` (u32), `effectiveBeforeOrAt` (ISO datetime).
+    /// Response: `{historicalFunding:[{rate,price,effectiveAt,effectiveAtHeight}]}`
+    /// Granularity: ~hourly (per funding event). Full chain history, no auth.
+    ///
+    /// Ref: <https://docs.dydx.xyz/indexer-client/http>
+    async fn get_funding_rate_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::FundingRate>> {
+        let market = symbol.resolve(ExchangeId::Dydx, account_type)?;
+        // Normalize: "BTC" → "BTC-USD", already-hyphenated → uppercase as-is
+        let ticker = if market.contains('-') {
+            market.to_uppercase()
+        } else {
+            format!("{}-USD", market.to_uppercase())
+        };
+
+        let mut params = HashMap::new();
+        params.insert("market".to_string(), ticker);
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        // effectiveBeforeOrAt acts as an upper-bound cursor (ISO8601).
+        // We map end_time (ms) → ISO string when provided.
+        if let Some(et) = end_time {
+            if let Some(dt) = chrono::DateTime::from_timestamp_millis(et) {
+                params.insert(
+                    "effectiveBeforeOrAt".to_string(),
+                    dt.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                );
+            }
+        }
+        // start_time: dYdX has no lower-bound query param — callers must paginate
+        // backwards using effectiveBeforeOrAt and filter results client-side.
+        let _ = start_time;
+
+        let response = self.get(DydxEndpoint::HistoricalFunding, params).await?;
+        DydxParser::parse_historical_funding(&response)
+    }
+
+    /// Mark price klines — NOT supported on dYdX v4.
+    ///
+    /// `markPrice` in `GET /perpetualMarkets` is a current snapshot only.
+    /// The indexer REST does not store historical mark price series.
+    /// Ref: <https://docs.dydx.xyz/indexer-client/http>
+    async fn get_mark_price_klines(
+        &self,
+        _symbol: SymbolInput<'_>,
+        _interval: &str,
+        _limit: Option<u32>,
+        _account_type: AccountType,
+        _end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<crate::core::types::Kline>> {
+        Err(ExchangeError::NotSupported(
+            "NotSupported: dYdX v4 indexer REST has no historical mark price series. \
+             `markPrice` in GET /perpetualMarkets is a snapshot only. \
+             Use real-time WS channel v4_markets for streaming oraclePrice updates. \
+             Ref: https://docs.dydx.xyz/indexer-client/http"
+                .into(),
+        ))
+    }
+
+    /// Index price klines — NOT supported on dYdX v4.
+    ///
+    /// `oraclePrice` in `/perpetualMarkets` is a snapshot. Historical oracle/index
+    /// prices are available only at funding-event granularity via the `price` field
+    /// in `GET /historicalFunding/{ticker}` (~hourly), not as a continuous kline series.
+    /// Ref: <https://docs.dydx.xyz/indexer-client/http>
+    async fn get_index_price_klines(
+        &self,
+        _symbol: SymbolInput<'_>,
+        _interval: &str,
+        _limit: Option<u32>,
+        _account_type: AccountType,
+        _end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<crate::core::types::Kline>> {
+        Err(ExchangeError::NotSupported(
+            "NotSupported: dYdX v4 indexer REST has no historical index price kline series. \
+             `oraclePrice` in GET /perpetualMarkets is a snapshot. \
+             Historical oracle price is available only as the `price` field in \
+             GET /historicalFunding/{ticker} (~hourly, per-event — not a kline series). \
+             Ref: https://docs.dydx.xyz/indexer-client/http"
+                .into(),
+        ))
+    }
+
+    /// Premium index klines — NOT supported on dYdX v4.
+    ///
+    /// `nextFundingRate` in `/perpetualMarkets` is a snapshot only.
+    /// No premium index kline series exists in the indexer REST.
+    /// Ref: <https://docs.dydx.xyz/indexer-client/http>
+    async fn get_premium_index_klines(
+        &self,
+        _symbol: SymbolInput<'_>,
+        _interval: &str,
+        _limit: Option<u32>,
+        _account_type: AccountType,
+        _end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<crate::core::types::Kline>> {
+        Err(ExchangeError::NotSupported(
+            "NotSupported: dYdX v4 indexer REST has no premium index kline series. \
+             `nextFundingRate` in GET /perpetualMarkets is a current-interval snapshot only. \
+             Ref: https://docs.dydx.xyz/indexer-client/http"
+                .into(),
+        ))
+    }
+
+    /// Open interest history — NOT supported as a standalone series on dYdX v4.
+    ///
+    /// `startingOpenInterest` is embedded in candle records from
+    /// `GET /candles/perpetualMarkets/{ticker}` but there is no dedicated OI time-series
+    /// endpoint. Use `get_klines` and extract the `startingOpenInterest` field manually.
+    /// Ref: https://github.com/dydxprotocol/v4-chain/blob/main/indexer/services/comlink/public/api-documentation.md
+    async fn get_open_interest_history(
+        &self,
+        _symbol: SymbolInput<'_>,
+        _period: &str,
+        _start_time: Option<i64>,
+        _end_time: Option<i64>,
+        _limit: Option<u32>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::OpenInterest>> {
+        Err(ExchangeError::NotSupported(
+            "NotSupported: dYdX v4 has no standalone open interest history endpoint. \
+             `startingOpenInterest` is embedded in candle records from \
+             GET /candles/perpetualMarkets/{ticker} — use get_klines and parse the field manually. \
+             Ref: https://github.com/dydxprotocol/v4-chain/blob/main/indexer/services/comlink/public/api-documentation.md"
+                .into(),
+        ))
+    }
+
+    /// Long/short ratio history — NOT supported on dYdX v4.
+    ///
+    /// No such endpoint exists in the dYdX v4 indexer REST API.
+    /// Ref: <https://docs.dydx.xyz/indexer-client/http>
+    async fn get_long_short_ratio_history(
+        &self,
+        _symbol: SymbolInput<'_>,
+        _period: &str,
+        _start_time: Option<i64>,
+        _end_time: Option<i64>,
+        _limit: Option<u32>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::LongShortRatio>> {
+        Err(ExchangeError::NotSupported(
+            "NotSupported: dYdX v4 indexer REST has no long/short ratio endpoint. \
+             Ref: https://docs.dydx.xyz/indexer-client/http"
+                .into(),
+        ))
+    }
 }
 
 impl crate::core::traits::HasCapabilities for DydxConnector {
@@ -2303,9 +2461,15 @@ impl crate::core::traits::HasCapabilities for DydxConnector {
         crate::core::types::ConnectorCapabilities {
             has_ticker: true, has_orderbook: true, has_klines: true,
             has_recent_trades: true, has_exchange_info: true,
+            // MarketDataPublic: funding history wired (GET /historicalFunding/{ticker}).
+            // mark/index/premium klines absent from indexer REST (snapshot-only fields).
+            // OI history: startingOpenInterest embedded in candles only, no standalone series.
+            // LSR: absent from dYdX v4 indexer.
             has_liquidation_history: false, has_open_interest_history: false,
             has_premium_index: false, has_long_short_ratio_history: false,
             has_funding_rate_history: true, has_mark_price_klines: false,
+            has_basis_history: false,
+            has_taker_volume_history: false,
             has_index_price_klines: false,
             has_premium_index_klines: false,
             has_market_order: true, has_limit_order: true,

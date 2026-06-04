@@ -2870,6 +2870,8 @@ impl crate::core::traits::HasCapabilities for KuCoinConnector {
             has_liquidation_history: false, has_open_interest_history: false,
             has_premium_index: false, has_long_short_ratio_history: false,
             has_funding_rate_history: false, has_mark_price_klines: false,
+            has_basis_history: false,
+            has_taker_volume_history: false,
             has_index_price_klines: false,
             has_premium_index_klines: false,
             has_market_order: true, has_limit_order: true,

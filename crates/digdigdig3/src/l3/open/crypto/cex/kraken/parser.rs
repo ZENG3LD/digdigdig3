@@ -26,7 +26,7 @@ use crate::core::types::{
     ExchangeError, ExchangeResult, AccountType,
     Kline, OrderBook, OrderBookLevel, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide,
-    FundingRate, SymbolInfo,
+    FundingRate, SymbolInfo, OpenInterest, LongShortRatio,
     CancelAllResponse, OrderResult,
     DepositAddress, WithdrawResponse, FundsRecord,
     SubAccountResult, SubAccount,
@@ -1465,6 +1465,62 @@ impl KrakenParser {
             });
         }
         Ok(result)
+    }
+
+    /// Parse Kraken Futures `analytics/{symbol}/open-interest`.
+    ///
+    /// Shape: `{result:{timestamp:[secs], data:[[o,h,l,c],...]}}` — each `data`
+    /// row is an OHLC bar of OI (strings); the close (last element) is the bar's
+    /// OI level. Timestamps are seconds → ms.
+    pub fn parse_analytics_open_interest(response: &Value) -> ExchangeResult<Vec<OpenInterest>> {
+        let result = response.get("result")
+            .ok_or_else(|| ExchangeError::Parse("kraken analytics OI: missing result".into()))?;
+        let ts = result.get("timestamp").and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("kraken analytics OI: missing timestamp".into()))?;
+        let data = result.get("data").and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("kraken analytics OI: data not array".into()))?;
+        let mut out = Vec::with_capacity(ts.len());
+        for (t, d) in ts.iter().zip(data.iter()) {
+            let t_ms = t.as_i64().unwrap_or(0) * 1000;
+            let close = d.as_array()
+                .and_then(|a| a.last())
+                .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| v.as_f64()));
+            if let Some(oi) = close {
+                out.push(OpenInterest { open_interest: oi, open_interest_value: None, timestamp: t_ms });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Parse Kraken Futures `analytics/{symbol}/long-short-info`.
+    ///
+    /// Shape: `{result:{timestamp:[secs], data:{longCount:[],shortCount:[]}}}`.
+    /// ratio = longCount/shortCount; long_ratio/short_ratio are fractions of total.
+    pub fn parse_analytics_long_short(response: &Value, symbol: &str) -> ExchangeResult<Vec<LongShortRatio>> {
+        let result = response.get("result")
+            .ok_or_else(|| ExchangeError::Parse("kraken analytics LSR: missing result".into()))?;
+        let ts = result.get("timestamp").and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("kraken analytics LSR: missing timestamp".into()))?;
+        let data = result.get("data")
+            .ok_or_else(|| ExchangeError::Parse("kraken analytics LSR: missing data".into()))?;
+        let longs = data.get("longCount").and_then(|v| v.as_array());
+        let shorts = data.get("shortCount").and_then(|v| v.as_array());
+        let mut out = Vec::with_capacity(ts.len());
+        for (i, t) in ts.iter().enumerate() {
+            let t_ms = t.as_i64().unwrap_or(0) * 1000;
+            let l = longs.and_then(|a| a.get(i)).and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let s = shorts.and_then(|a| a.get(i)).and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let total = l + s;
+            out.push(LongShortRatio {
+                symbol: symbol.to_string(),
+                ratio_type: "globalAccountCount".to_string(),
+                long_ratio: if total > 0.0 { l / total } else { 0.0 },
+                short_ratio: if total > 0.0 { s / total } else { 0.0 },
+                ratio: if s > 0.0 { Some(l / s) } else { None },
+                timestamp: t_ms,
+            });
+        }
+        Ok(out)
     }
 }
 

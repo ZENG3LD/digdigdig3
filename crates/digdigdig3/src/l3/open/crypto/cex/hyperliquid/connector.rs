@@ -2238,6 +2238,146 @@ impl MarketDataPublic for HyperliquidConnector {
             .await?;
         HyperliquidParser::parse_recent_trades(&response)
     }
+
+    /// Historical funding rate events for a HyperLiquid perpetual.
+    ///
+    /// `POST /info {"type":"fundingHistory","coin":"BTC","startTime":<ms>,"endTime":<ms>}`
+    /// Response: `[{coin, fundingRate, premium, time}, ...]` (per-event ~hourly).
+    /// Full chain history available; `startTime` required, `endTime` defaults to now.
+    /// HIP-3 dex coins use `"xyz:XYZ100"` prefix — pass coin name raw via `SymbolInput::Raw`.
+    ///
+    /// Ref: <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals>
+    async fn get_funding_rate_history(
+        &self,
+        symbol: crate::core::types::SymbolInput<'_>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        _limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::FundingRate>> {
+        let coin = symbol.resolve(ExchangeId::HyperLiquid, account_type)?;
+
+        // startTime is required by the HL API; default to 0 (chain genesis) when absent.
+        let start_ms = start_time.unwrap_or(0);
+
+        let mut body = serde_json::json!({
+            "coin": &*coin,
+            "startTime": start_ms,
+        });
+        if let Some(et) = end_time {
+            body["endTime"] = serde_json::json!(et);
+        }
+
+        let response = self
+            .info_request(InfoType::FundingHistory, body)
+            .await?;
+        HyperliquidParser::parse_funding_history(&response)
+    }
+
+    /// Mark price klines — NOT supported on HyperLiquid.
+    ///
+    /// `markPx` in `metaAndAssetCtxs` is a current snapshot per asset.
+    /// No historical mark price kline series exists in the HyperLiquid /info API.
+    /// Ref: <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals>
+    async fn get_mark_price_klines(
+        &self,
+        _symbol: crate::core::types::SymbolInput<'_>,
+        _interval: &str,
+        _limit: Option<u32>,
+        _account_type: AccountType,
+        _end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<crate::core::types::Kline>> {
+        Err(ExchangeError::NotSupported(
+            "NotSupported: HyperLiquid POST /info has no historical mark price series. \
+             `markPx` in metaAndAssetCtxs is a current snapshot only. \
+             Ref: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals"
+                .into(),
+        ))
+    }
+
+    /// Index price klines — NOT supported on HyperLiquid.
+    ///
+    /// `oraclePx` in `metaAndAssetCtxs` is a current snapshot.
+    /// No historical oracle/index price series exists in the HyperLiquid /info API.
+    /// Ref: <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals>
+    async fn get_index_price_klines(
+        &self,
+        _symbol: crate::core::types::SymbolInput<'_>,
+        _interval: &str,
+        _limit: Option<u32>,
+        _account_type: AccountType,
+        _end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<crate::core::types::Kline>> {
+        Err(ExchangeError::NotSupported(
+            "NotSupported: HyperLiquid POST /info has no historical oracle/index price series. \
+             `oraclePx` in metaAndAssetCtxs is a current snapshot only. \
+             Ref: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals"
+                .into(),
+        ))
+    }
+
+    /// Premium index klines — NOT supported on HyperLiquid.
+    ///
+    /// The `premium` field in `fundingHistory` is per-funding-event only (not a kline series).
+    /// There is no dedicated premium index candle endpoint.
+    /// Ref: <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals>
+    async fn get_premium_index_klines(
+        &self,
+        _symbol: crate::core::types::SymbolInput<'_>,
+        _interval: &str,
+        _limit: Option<u32>,
+        _account_type: AccountType,
+        _end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<crate::core::types::Kline>> {
+        Err(ExchangeError::NotSupported(
+            "NotSupported: HyperLiquid has no premium index kline series. \
+             The `premium` field in fundingHistory is per-event only, not a OHLC candle series. \
+             Ref: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals"
+                .into(),
+        ))
+    }
+
+    /// Open interest history — NOT supported as a time series on HyperLiquid.
+    ///
+    /// `openInterest` in `metaAndAssetCtxs` is a current snapshot per asset.
+    /// No historical OI time series exists in the HyperLiquid /info API.
+    /// Ref: <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals>
+    async fn get_open_interest_history(
+        &self,
+        _symbol: crate::core::types::SymbolInput<'_>,
+        _period: &str,
+        _start_time: Option<i64>,
+        _end_time: Option<i64>,
+        _limit: Option<u32>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::OpenInterest>> {
+        Err(ExchangeError::NotSupported(
+            "NotSupported: HyperLiquid has no historical open interest time series. \
+             `openInterest` in metaAndAssetCtxs is a current snapshot per asset only. \
+             Ref: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals"
+                .into(),
+        ))
+    }
+
+    /// Long/short ratio history — NOT supported on HyperLiquid.
+    ///
+    /// No such endpoint exists in the HyperLiquid /info API.
+    /// Ref: <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint>
+    async fn get_long_short_ratio_history(
+        &self,
+        _symbol: crate::core::types::SymbolInput<'_>,
+        _period: &str,
+        _start_time: Option<i64>,
+        _end_time: Option<i64>,
+        _limit: Option<u32>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::LongShortRatio>> {
+        Err(ExchangeError::NotSupported(
+            "NotSupported: HyperLiquid POST /info has no long/short ratio endpoint. \
+             Ref: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint"
+                .into(),
+        ))
+    }
 }
 
 impl crate::core::traits::HasCapabilities for HyperliquidConnector {
@@ -2245,9 +2385,15 @@ impl crate::core::traits::HasCapabilities for HyperliquidConnector {
         crate::core::types::ConnectorCapabilities {
             has_ticker: true, has_orderbook: true, has_klines: true,
             has_recent_trades: true, has_exchange_info: true,
+            // MarketDataPublic: funding history wired (POST /info fundingHistory, per-event ~hourly).
+            // mark/index/premium klines: absent (metaAndAssetCtxs snapshot only).
+            // OI history: snapshot only in metaAndAssetCtxs, no time series.
+            // LSR: absent from HyperLiquid /info API.
             has_liquidation_history: false, has_open_interest_history: false,
             has_premium_index: false, has_long_short_ratio_history: false,
-            has_funding_rate_history: false, has_mark_price_klines: false,
+            has_funding_rate_history: true, has_mark_price_klines: false,
+            has_basis_history: false,
+            has_taker_volume_history: false,
             has_index_price_klines: false,
             has_premium_index_klines: false,
             has_market_order: true, has_limit_order: true,

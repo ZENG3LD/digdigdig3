@@ -9,12 +9,12 @@ use super::MarketDataPublic;
 // CEX — Binance, Bybit, OKX, Lighter, Bitstamp, Coinbase, Deribit, Gemini, Upbit have real impls in their connector.rs files
 use crate::l3::open::crypto::cex::kucoin::KuCoinConnector;
 // GateioConnector — real impl in connector.rs
-use crate::l3::open::crypto::cex::bitfinex::BitfinexConnector;
-use crate::l3::open::crypto::cex::mexc::MexcConnector;
+// BitfinexConnector — real impl in connector.rs (funding_rate_history, open_interest_history, long_short_ratio_history)
+// MexcConnector — real impl in connector.rs
 // HtxConnector — real impl in connector.rs
 // BitgetConnector — real impl in connector.rs
-use crate::l3::open::crypto::cex::bingx::BingxConnector;
-use crate::l3::open::crypto::cex::crypto_com::CryptoComConnector;
+// BingxConnector — real impl in connector.rs
+// CryptoComConnector — real impl in connector.rs
 // DEX — Lighter, dYdX, HyperLiquid have real impls in their connector.rs files
 
 // Stocks US
@@ -60,14 +60,14 @@ impl MarketDataPublic for KuCoinConnector {}
 // KrakenConnector — real impl in connector.rs
 // CoinbaseConnector — real impl in connector.rs
 // GateioConnector — real impl in connector.rs
-impl MarketDataPublic for BitfinexConnector {}
+// BitfinexConnector — real impl in connector.rs
 // BitstampConnector — real impl in connector.rs
 // GeminiConnector — real impl in connector.rs
-impl MarketDataPublic for MexcConnector {}
+// MexcConnector — real impl in connector.rs
 // HtxConnector — real impl in connector.rs
 // BitgetConnector — real impl in connector.rs
-impl MarketDataPublic for BingxConnector {}
-impl MarketDataPublic for CryptoComConnector {}
+// BingxConnector — real impl in connector.rs
+// CryptoComConnector — real impl in connector.rs (mark_price_klines, index_price_klines, funding_rate_history)
 // UpbitConnector — real impl in connector.rs
 // DeribitConnector — real impl in connector.rs
 // HyperliquidConnector — real impl in connector.rs (get_recent_trades overridden)

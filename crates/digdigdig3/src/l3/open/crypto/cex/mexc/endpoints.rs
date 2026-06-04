@@ -109,6 +109,19 @@ pub enum MexcEndpoint {
     /// GET /api/v1/contract/open_interest/{symbol} — open interest for a contract
     /// TODO: verify exact path against live MEXC contract API
     FuturesOpenInterest,
+
+    // === DERIVED KLINE ENDPOINTS (contract API) ===
+    /// GET /api/v1/contract/kline/fair_price/{symbol} — mark/fair price klines
+    /// Params: interval, start (Unix seconds), end (Unix seconds)
+    /// Max 2000 per request. vol/amount always 0.0.
+    FuturesFairPriceKlines,
+    /// GET /api/v1/contract/kline/index_price/{symbol} — index price klines
+    /// Same params and limits as FuturesFairPriceKlines.
+    FuturesIndexPriceKlines,
+    /// GET /api/v1/contract/funding_rate/history — historical funding rates
+    /// Params: symbol, page_num (default 1), page_size (default 20, max 1000)
+    /// No date filter — pagination only.
+    FuturesFundingRateHistory,
 }
 
 impl MexcEndpoint {
@@ -171,6 +184,11 @@ impl MexcEndpoint {
             Self::FuturesMarkPrice => "/api/v1/contract/index_price", // Append /{symbol}
             Self::FuturesFundingRate => "/api/v1/contract/funding_rate", // Append /{symbol}
             Self::FuturesOpenInterest => "/api/v1/contract/open_interest", // Append /{symbol}
+
+            // Derived kline endpoints
+            Self::FuturesFairPriceKlines => "/api/v1/contract/kline/fair_price", // Append /{symbol}
+            Self::FuturesIndexPriceKlines => "/api/v1/contract/kline/index_price", // Append /{symbol}
+            Self::FuturesFundingRateHistory => "/api/v1/contract/funding_rate/history",
         }
     }
 
@@ -219,7 +237,10 @@ impl MexcEndpoint {
             | Self::FuturesContractInfo
             | Self::FuturesMarkPrice
             | Self::FuturesFundingRate
-            | Self::FuturesOpenInterest => false,
+            | Self::FuturesOpenInterest
+            | Self::FuturesFairPriceKlines
+            | Self::FuturesIndexPriceKlines
+            | Self::FuturesFundingRateHistory => false,
 
             // Private endpoints
             _ => true,
@@ -239,6 +260,9 @@ impl MexcEndpoint {
             | Self::FuturesMarkPrice
             | Self::FuturesFundingRate
             | Self::FuturesOpenInterest
+            | Self::FuturesFairPriceKlines
+            | Self::FuturesIndexPriceKlines
+            | Self::FuturesFundingRateHistory
         )
     }
 

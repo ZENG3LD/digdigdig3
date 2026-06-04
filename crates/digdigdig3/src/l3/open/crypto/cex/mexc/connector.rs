@@ -31,7 +31,7 @@ use crate::core::{
     SymbolInput,
 };
 use crate::core::traits::{
-    ExchangeIdentity, MarketData, Trading, Account,
+    ExchangeIdentity, MarketData, Trading, Account, MarketDataPublic,
 };
 use crate::core::{CancelAll, BatchOrders, AccountTransfers, CustodialFunds, SubAccounts};
 use crate::core::types::{
@@ -40,6 +40,7 @@ use crate::core::types::{
     DepositAddress, WithdrawRequest, WithdrawResponse, FundsRecord, FundsHistoryFilter, FundsRecordType,
     SubAccountOperation, SubAccountResult, SubAccount,
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
+    FundingRate,
 };
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, OrderbookCapabilities, WsBookChannel};
@@ -1988,6 +1989,244 @@ impl crate::core::traits::Positions for MexcConnector {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// MarketDataPublic trait impl
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+impl MarketDataPublic for MexcConnector {
+    /// Mark-price (fair price) klines from the MEXC contract API.
+    ///
+    /// Endpoint: `GET /api/v1/contract/kline/fair_price/{symbol}` on `contract.mexc.com`.
+    ///
+    /// # Quirks
+    /// - Symbol format: `BTC_USDT` (underscore, not `BTCUSDT`).
+    /// - `start`/`end` params are Unix **seconds** — `start_time`/`end_time` ms are ÷1000.
+    /// - Returned timestamps are also Unix seconds — parser converts to ms.
+    /// - `volume` is always 0.0 per API docs.
+    /// - Max 2000 records per request.
+    async fn get_mark_price_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> crate::core::ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::MEXC, account_type)?;
+        let futures_interval = map_mexc_futures_interval(interval);
+
+        let real_base = MexcUrls::futures_base_url();
+        let path = format!("{}/{}", MexcEndpoint::FuturesFairPriceKlines.path(), symbol);
+
+        let mut params = std::collections::HashMap::new();
+        params.insert("interval".to_string(), futures_interval.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.min(2000).to_string());
+        }
+        if let Some(et) = end_time {
+            // MEXC contract API expects Unix seconds
+            params.insert("end".to_string(), (et / 1000).to_string());
+        }
+
+        let query = build_query(&params);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, &query);
+
+        if !self.rate_limit_wait(1, false).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; non-essential market data request dropped"
+                    .to_string(),
+            });
+        }
+        let (response, resp_headers) = self.http
+            .get_with_response_headers(&url, &std::collections::HashMap::new(), &std::collections::HashMap::new())
+            .await?;
+        self.update_weight_from_headers(&resp_headers);
+        MexcParser::parse_derived_klines_futures(&response)
+    }
+
+    /// Index-price klines from the MEXC contract API.
+    ///
+    /// Endpoint: `GET /api/v1/contract/kline/index_price/{symbol}` on `contract.mexc.com`.
+    /// Same quirks as `get_mark_price_klines` (seconds, 2000/req, vol=0).
+    async fn get_index_price_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> crate::core::ExchangeResult<Vec<Kline>> {
+        let symbol = symbol.resolve(ExchangeId::MEXC, account_type)?;
+        let futures_interval = map_mexc_futures_interval(interval);
+
+        let real_base = MexcUrls::futures_base_url();
+        let path = format!("{}/{}", MexcEndpoint::FuturesIndexPriceKlines.path(), symbol);
+
+        let mut params = std::collections::HashMap::new();
+        params.insert("interval".to_string(), futures_interval.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.min(2000).to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("end".to_string(), (et / 1000).to_string());
+        }
+
+        let query = build_query(&params);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, &query);
+
+        if !self.rate_limit_wait(1, false).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; non-essential market data request dropped"
+                    .to_string(),
+            });
+        }
+        let (response, resp_headers) = self.http
+            .get_with_response_headers(&url, &std::collections::HashMap::new(), &std::collections::HashMap::new())
+            .await?;
+        self.update_weight_from_headers(&resp_headers);
+        MexcParser::parse_derived_klines_futures(&response)
+    }
+
+    /// Premium index klines — NOT SUPPORTED by MEXC contract API.
+    ///
+    /// MEXC has no premium-index kline endpoint. Premium can be derived manually
+    /// as `(fair_price_kline - index_price_kline) / index_price_kline`.
+    /// Source: https://mexcdevelop.github.io/apidocs/contract_v1_en/
+    async fn get_premium_index_klines(
+        &self,
+        _symbol: SymbolInput<'_>,
+        _interval: &str,
+        _limit: Option<u32>,
+        _account_type: AccountType,
+        _end_time: Option<i64>,
+    ) -> crate::core::ExchangeResult<Vec<Kline>> {
+        Err(ExchangeError::NotSupported(
+            "NotSupported: MEXC contract API has no premium-index kline endpoint. \
+             Premium index can be derived: (fair_price_kline − index_price_kline) / index_price_kline. \
+             Source: https://mexcdevelop.github.io/apidocs/contract_v1_en/"
+                .into(),
+        ))
+    }
+
+    /// Historical funding rates from the MEXC contract API.
+    ///
+    /// Endpoint: `GET /api/v1/contract/funding_rate/history` on `contract.mexc.com`.
+    ///
+    /// # Quirks
+    /// - **No date filter**: `start_time`/`end_time` are silently ignored.
+    ///   Pagination is page-based only (`page_num`/`page_size`, max 1000/page).
+    /// - `limit` maps to `page_size` (capped at 1000).
+    /// - To walk history, increment `page_num`; combine with external time filtering.
+    async fn get_funding_rate_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        _start_time: Option<i64>,
+        _end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> crate::core::ExchangeResult<Vec<FundingRate>> {
+        let symbol = symbol.resolve(ExchangeId::MEXC, account_type)?;
+
+        let real_base = MexcUrls::futures_base_url();
+        let path = MexcEndpoint::FuturesFundingRateHistory.path();
+
+        let mut params = std::collections::HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("page_num".to_string(), "1".to_string());
+        // page_size max 1000; default 20
+        let page_size = limit.unwrap_or(20).min(1000);
+        params.insert("page_size".to_string(), page_size.to_string());
+
+        let query = build_query(&params);
+        let url = assemble_rest_url(self.rest_override.as_deref(), real_base, path, &query);
+
+        if !self.rate_limit_wait(1, false).await {
+            return Err(ExchangeError::RateLimitExceeded {
+                retry_after: None,
+                message: "Rate limit budget >= 90% used; non-essential market data request dropped"
+                    .to_string(),
+            });
+        }
+        let (response, resp_headers) = self.http
+            .get_with_response_headers(&url, &std::collections::HashMap::new(), &std::collections::HashMap::new())
+            .await?;
+        self.update_weight_from_headers(&resp_headers);
+        MexcParser::parse_funding_rate_history_futures(&response)
+    }
+
+    /// Open interest history — NOT SUPPORTED by MEXC contract API.
+    ///
+    /// MEXC exposes open interest only as a snapshot via `holdVol` in the ticker
+    /// (`GET /api/v1/contract/ticker`). No time-series OI history endpoint exists.
+    /// Source: https://mexcdevelop.github.io/apidocs/contract_v1_en/
+    async fn get_open_interest_history(
+        &self,
+        _symbol: SymbolInput<'_>,
+        _period: &str,
+        _start_time: Option<i64>,
+        _end_time: Option<i64>,
+        _limit: Option<u32>,
+        _account_type: AccountType,
+    ) -> crate::core::ExchangeResult<Vec<crate::core::types::OpenInterest>> {
+        Err(ExchangeError::NotSupported(
+            "NotSupported: MEXC contract API has no OI history endpoint. \
+             OI is snapshot-only via 'holdVol' in GET /api/v1/contract/ticker. \
+             Source: https://mexcdevelop.github.io/apidocs/contract_v1_en/"
+                .into(),
+        ))
+    }
+
+    /// Long/short ratio history — NOT SUPPORTED by MEXC contract API.
+    ///
+    /// Not documented anywhere in the MEXC contract API.
+    /// Source: https://mexcdevelop.github.io/apidocs/contract_v1_en/
+    async fn get_long_short_ratio_history(
+        &self,
+        _symbol: SymbolInput<'_>,
+        _period: &str,
+        _start_time: Option<i64>,
+        _end_time: Option<i64>,
+        _limit: Option<u32>,
+        _account_type: AccountType,
+    ) -> crate::core::ExchangeResult<Vec<crate::core::types::LongShortRatio>> {
+        Err(ExchangeError::NotSupported(
+            "NotSupported: MEXC contract API does not expose a long/short ratio history endpoint. \
+             Source: https://mexcdevelop.github.io/apidocs/contract_v1_en/"
+                .into(),
+        ))
+    }
+}
+
+/// Map canonical kline interval to MEXC contract API interval string.
+fn map_mexc_futures_interval(interval: &str) -> &'static str {
+    match interval {
+        "1m"  => "Min1",
+        "5m"  => "Min5",
+        "15m" => "Min15",
+        "30m" => "Min30",
+        "1h"  => "Min60",
+        "4h"  => "Hour4",
+        "8h"  => "Hour8",
+        "1d"  => "Day1",
+        "1w"  => "Week1",
+        "1M"  => "Month1",
+        _     => "Min60",
+    }
+}
+
+/// Build URL query string from a HashMap (e.g. `?k1=v1&k2=v2`).
+fn build_query(params: &std::collections::HashMap<String, String>) -> String {
+    if params.is_empty() {
+        return String::new();
+    }
+    let qs: Vec<String> = params.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
+    format!("?{}", qs.join("&"))
+}
+
 impl crate::core::traits::HasCapabilities for MexcConnector {
     fn capabilities(&self) -> crate::core::types::ConnectorCapabilities {
         crate::core::types::ConnectorCapabilities {
@@ -1995,8 +2234,10 @@ impl crate::core::traits::HasCapabilities for MexcConnector {
             has_recent_trades: false, has_exchange_info: true,
             has_liquidation_history: false, has_open_interest_history: false,
             has_premium_index: false, has_long_short_ratio_history: false,
-            has_funding_rate_history: false, has_mark_price_klines: false,
-            has_index_price_klines: false,
+            has_funding_rate_history: true, has_mark_price_klines: true,
+            has_basis_history: false,
+            has_taker_volume_history: false,
+            has_index_price_klines: true,
             has_premium_index_klines: false,
             has_market_order: true, has_limit_order: true,
             has_open_orders: true, has_order_history: true, has_user_trades: true,

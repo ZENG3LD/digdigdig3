@@ -9,7 +9,7 @@
 pub mod backfill;
 pub use backfill::fetch_history;
 pub mod bar_align;
-pub use bar_align::{load_bar_aligned, load_for_key, BarAlignedSeries, FillPolicy, ScalarBar};
+pub use bar_align::{bar_align_points, load_bar_aligned, load_for_key, BarAlignedSeries, FillPolicy, ScalarBar};
 pub mod ws_health;
 pub use ws_health::WsHealth;
 pub mod builder;

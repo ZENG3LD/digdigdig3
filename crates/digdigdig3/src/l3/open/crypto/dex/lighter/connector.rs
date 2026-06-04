@@ -40,7 +40,7 @@ use crate::core::types::{ConnectorStats, SymbolInfo, MarketDataCapabilities, Tra
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, OrderbookCapabilities};
 
-use super::endpoints::{LighterUrls, LighterEndpoint, map_kline_interval, symbol_to_market_id};
+use super::endpoints::{LighterUrls, LighterEndpoint, map_kline_interval, map_mark_price_kline_interval, map_funding_rate_interval, symbol_to_market_id};
 use super::auth::LighterAuth;
 use super::parser::LighterParser;
 
@@ -1487,6 +1487,184 @@ impl MarketDataPublic for LighterConnector {
         let symbol = symbol.resolve(ExchangeId::Lighter, account_type)?;
         self.get_recent_trades(&symbol, account_type, limit).await
     }
+
+    /// Historical mark price candles for a Lighter perpetual market.
+    ///
+    /// `GET /api/v1/markPriceCandles?market_id=<int>&resolution=<str>&start_timestamp=<ms>&end_timestamp=<ms>&count_back=<n>`
+    /// Response: `{"c":[{t,o,h,l,c}, ...]}` — up to 500 candles per call.
+    /// Resolutions: `1m`, `5m`, `15m`, `30m`, `1h`, `4h`, `12h`, `1d`.
+    ///
+    /// QUIRK: Lighter uses integer `market_id`, not a symbol string.
+    /// `symbol` is resolved to `market_id` via the static `symbol_to_market_id` table
+    /// in `endpoints.rs`. Unknown symbols return `ExchangeError::InvalidRequest`.
+    ///
+    /// Ref: <https://apidocs.lighter.xyz/reference/markPriceCandles>
+    async fn get_mark_price_klines(
+        &self,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        limit: Option<u32>,
+        account_type: AccountType,
+        end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<crate::core::types::Kline>> {
+        let sym = symbol.resolve(ExchangeId::Lighter, account_type)?;
+        let market_id = self.resolve_market_id(&sym)?;
+        let resolution = map_mark_price_kline_interval(interval);
+
+        let mut params = HashMap::new();
+        params.insert("market_id".to_string(), market_id.to_string());
+        params.insert("resolution".to_string(), resolution.to_string());
+
+        // end_timestamp: Lighter bounds timestamps at 5_000_000_000_000 ms.
+        let end_ms = end_time.unwrap_or_else(|| crate::core::utils::now_ms() as i64);
+        params.insert("end_timestamp".to_string(), end_ms.to_string());
+
+        // count_back: how many candles to return (≤500).
+        let count = limit.unwrap_or(100).min(500);
+        params.insert("count_back".to_string(), count.to_string());
+
+        // start_timestamp is also required by the API; derive from count × interval width.
+        let interval_ms = interval_to_ms(resolution) as i64;
+        let start_ms = end_ms - (count as i64) * interval_ms;
+        params.insert("start_timestamp".to_string(), start_ms.to_string());
+
+        let response = self.get(LighterEndpoint::MarkPriceCandles, params, 100).await?;
+        LighterParser::parse_mark_price_candles(&response)
+    }
+
+    /// Historical funding rates for a Lighter perpetual market.
+    ///
+    /// `GET /api/v1/funding-rates?market_id=<int>&resolution=<1h|1d>&start_timestamp=<ms>&end_timestamp=<ms>&count_back=<n>`
+    /// Resolutions: `1h` or `1d` only. Full history from mainnet genesis.
+    ///
+    /// QUIRK: Lighter uses integer `market_id`, not a symbol string.
+    /// `symbol` is resolved via the static `symbol_to_market_id` table in `endpoints.rs`.
+    ///
+    /// Ref: <https://apidocs.lighter.xyz/reference/funding-rates>
+    async fn get_funding_rate_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::FundingRate>> {
+        let sym = symbol.resolve(ExchangeId::Lighter, account_type)?;
+        let market_id = self.resolve_market_id(&sym)?;
+
+        // funding-rates only supports 1h or 1d; derive resolution from period param convention.
+        // The MarketDataPublic trait passes `period` as a separate arg not exposed here —
+        // we default to 1h (finest available). Callers wanting 1d should pass `interval="1d"`
+        // but the trait `get_funding_rate_history` signature has no interval param.
+        let resolution = map_funding_rate_interval("1h");
+
+        let mut params = HashMap::new();
+        params.insert("market_id".to_string(), market_id.to_string());
+        params.insert("resolution".to_string(), resolution.to_string());
+
+        let end_ms = end_time.unwrap_or_else(|| crate::core::utils::now_ms() as i64);
+        params.insert("end_timestamp".to_string(), end_ms.to_string());
+
+        let count = limit.unwrap_or(100).min(500);
+        params.insert("count_back".to_string(), count.to_string());
+
+        // start_timestamp: derive from count_back × 1h when not provided.
+        let start_ms = start_time.unwrap_or_else(|| end_ms - (count as i64) * 3_600_000);
+        params.insert("start_timestamp".to_string(), start_ms.to_string());
+
+        let response = self.get(LighterEndpoint::FundingRates, params, 100).await?;
+        LighterParser::parse_funding_rate_history(&response)
+    }
+
+    /// Index price klines — NOT supported on Lighter.
+    ///
+    /// No `/indexPriceCandles` or equivalent endpoint exists in the Lighter API.
+    /// Index price is computed from Chainlink/Stork/Pyth oracles and is not stored
+    /// as a REST-queryable time series.
+    /// Ref: <https://apidocs.lighter.xyz/llms.txt>
+    async fn get_index_price_klines(
+        &self,
+        _symbol: SymbolInput<'_>,
+        _interval: &str,
+        _limit: Option<u32>,
+        _account_type: AccountType,
+        _end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<crate::core::types::Kline>> {
+        Err(ExchangeError::NotSupported(
+            "NotSupported: Lighter has no historical index price kline series. \
+             Index price is sourced from Chainlink/Stork/Pyth oracles and is not \
+             stored as a REST-queryable endpoint. \
+             Ref: https://apidocs.lighter.xyz/llms.txt"
+                .into(),
+        ))
+    }
+
+    /// Premium index klines — NOT supported on Lighter.
+    ///
+    /// No premium-index series endpoint exists. The funding rate implicitly
+    /// captures the mark-vs-index premium but there is no discrete premium kline series.
+    /// Ref: <https://apidocs.lighter.xyz/llms.txt>
+    async fn get_premium_index_klines(
+        &self,
+        _symbol: SymbolInput<'_>,
+        _interval: &str,
+        _limit: Option<u32>,
+        _account_type: AccountType,
+        _end_time: Option<i64>,
+    ) -> ExchangeResult<Vec<crate::core::types::Kline>> {
+        Err(ExchangeError::NotSupported(
+            "NotSupported: Lighter has no premium index kline series endpoint. \
+             Ref: https://apidocs.lighter.xyz/llms.txt"
+                .into(),
+        ))
+    }
+
+    /// Open interest history — NOT supported as a continuous ms-range series on Lighter.
+    ///
+    /// `GET /api/v1/exchangeMetrics?kind=open_interest` exists but uses a coarse
+    /// period-bucket enum (`h/d/w/m/q/y/all`) — it does NOT accept arbitrary
+    /// start/end timestamps aligned to a bar interval. This is incompatible with
+    /// the `get_open_interest_history` contract which expects a continuous ms-range series.
+    /// Ref: <https://apidocs.lighter.xyz/reference/exchangeMetrics>
+    async fn get_open_interest_history(
+        &self,
+        _symbol: SymbolInput<'_>,
+        _period: &str,
+        _start_time: Option<i64>,
+        _end_time: Option<i64>,
+        _limit: Option<u32>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::OpenInterest>> {
+        Err(ExchangeError::NotSupported(
+            "NotSupported: Lighter GET /api/v1/exchangeMetrics?kind=open_interest uses \
+             coarse period-bucket enumeration (h/d/w/m/q/y/all) with no continuous \
+             ms-range query — incompatible with bar-aligned historical series. \
+             Ref: https://apidocs.lighter.xyz/reference/exchangeMetrics"
+                .into(),
+        ))
+    }
+
+    /// Long/short ratio history — NOT supported on Lighter.
+    ///
+    /// No long/short ratio endpoint exists in the Lighter API reference.
+    /// `exchangeMetrics` kinds do not include a ratio metric.
+    /// Ref: <https://apidocs.lighter.xyz/llms.txt>
+    async fn get_long_short_ratio_history(
+        &self,
+        _symbol: SymbolInput<'_>,
+        _period: &str,
+        _start_time: Option<i64>,
+        _end_time: Option<i64>,
+        _limit: Option<u32>,
+        _account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::LongShortRatio>> {
+        Err(ExchangeError::NotSupported(
+            "NotSupported: Lighter has no long/short ratio endpoint. \
+             exchangeMetrics kinds do not include a ratio metric. \
+             Ref: https://apidocs.lighter.xyz/llms.txt"
+                .into(),
+        ))
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1516,12 +1694,16 @@ impl crate::core::traits::HasCapabilities for LighterConnector {
         crate::core::types::ConnectorCapabilities {
             has_ticker: true, has_orderbook: true, has_klines: true,
             has_recent_trades: true, has_exchange_info: true,
-            // Lighter has MarketDataPublic real impl: get_recent_trades
-            // get_liquidation_history: NOT exposed via MarketDataPublic override —
-            //   GET /api/v1/liquidations is account-scoped (wallet address required), not market-wide.
+            // MarketDataPublic: mark price klines wired (GET /markPriceCandles, market_id int quirk).
+            // funding history wired (GET /funding-rates, 1h/1d resolution, market_id int quirk).
+            // OI: exchangeMetrics period-bucket only — not bar-aligned ms-range, marked NotSupported.
+            // index/premium klines: absent. LSR: absent.
+            // liquidation: GET /api/v1/liquidations is account-scoped (wallet address required), not market-wide.
             has_liquidation_history: false, has_open_interest_history: false,
             has_premium_index: false, has_long_short_ratio_history: false,
-            has_funding_rate_history: false, has_mark_price_klines: false,
+            has_funding_rate_history: true, has_mark_price_klines: true,
+            has_basis_history: false,
+            has_taker_volume_history: false,
             has_index_price_klines: false,
             has_premium_index_klines: false,
             has_market_order: true, has_limit_order: true,

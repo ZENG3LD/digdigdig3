@@ -16,6 +16,7 @@ use crate::core::types::{
     Kline, OrderBook, OrderBookLevel, Ticker, Order, Balance, Position, PublicTrade, TradeSide,
     OrderSide, OrderType, OrderStatus, PositionSide, SymbolInfo, UserTrade,
     OrderbookDelta as OrderbookDeltaData,
+    FundingRate, OpenInterest,
 };
 
 // Shared wasm-safe wall-clock helper.
@@ -693,6 +694,150 @@ impl BitfinexParser {
             return (base, quote);
         }
         (String::new(), String::new())
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // DERIVATIVES STATUS HISTORY — field index reference
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
+    // Endpoint: GET /v2/status/deriv/{symbol}/hist
+    //
+    // Each element is a positional array. Confirmed field layout
+    // (from Bitfinex Python SDK source + live sampling):
+    //
+    // Idx  Field
+    // ---  -----
+    //  0   KEY                         (string, e.g. "tBTCF0:USTF0")
+    //  1   MTS                         (i64 ms timestamp)
+    //  2   null
+    //  3   DERIV_PRICE                 (f64, last derivative trade price)
+    //  4   SPOT_PRICE                  (f64, index / spot reference price)
+    //  5   null
+    //  6   INSURANCE_FUND_BALANCE      (f64)
+    //  7   null
+    //  8   NEXT_FUNDING_EVT_TIMESTAMP  (i64 ms, next funding event time)
+    //  9   NEXT_FUNDING_ACCRUED        (f64)
+    // 10   NEXT_FUNDING_STEP           (i64)
+    // 11   null
+    // 12   CURRENT_FUNDING             (f64, current hourly funding rate)
+    // 13   null
+    // 14   null
+    // 15   MARK_PRICE                  (f64)
+    // 16   null
+    // 17   null
+    // 18   OPEN_INTEREST               (f64, in base-currency units)
+    //
+    // Source: https://docs.bitfinex.com/reference/rest-public-derivatives-status-history
+
+    /// Parse funding rate history from `GET /v2/status/deriv/{symbol}/hist`.
+    ///
+    /// Extracts `CURRENT_FUNDING` (index 12) and `MTS` (index 1) from each
+    /// event snapshot. The response is an outer array of snapshot arrays.
+    pub fn parse_deriv_funding_rate_history(
+        response: &Value,
+        symbol: &str,
+    ) -> ExchangeResult<Vec<FundingRate>> {
+        Self::check_error(response)?;
+
+        let outer = response
+            .as_array()
+            .ok_or_else(|| ExchangeError::Parse(
+                "bitfinex deriv status hist: expected outer array".into(),
+            ))?;
+
+        let mut out = Vec::with_capacity(outer.len());
+        for item in outer {
+            let row = match item.as_array() {
+                Some(a) => a,
+                None => continue,
+            };
+            // idx 1 = MTS (ms timestamp)
+            let timestamp = match Self::get_i64(row, 1) {
+                Some(t) => t,
+                None => continue,
+            };
+            // idx 12 = CURRENT_FUNDING
+            let rate = match Self::get_f64(row, 12) {
+                Some(r) => r,
+                None => continue,
+            };
+            // idx 8 = NEXT_FUNDING_EVT_TIMESTAMP (ms)
+            let next_funding_time = Self::get_i64(row, 8);
+
+            let _ = symbol; // symbol used by caller for routing; not stored in FundingRate
+            out.push(FundingRate { rate, next_funding_time, timestamp });
+        }
+        Ok(out)
+    }
+
+    /// Parse open interest history from `GET /v2/status/deriv/{symbol}/hist`.
+    ///
+    /// Extracts `OPEN_INTEREST` (index 18) and `MTS` (index 1) from each
+    /// event snapshot.
+    pub fn parse_deriv_open_interest_history(
+        response: &Value,
+    ) -> ExchangeResult<Vec<OpenInterest>> {
+        Self::check_error(response)?;
+
+        let outer = response
+            .as_array()
+            .ok_or_else(|| ExchangeError::Parse(
+                "bitfinex deriv status hist: expected outer array".into(),
+            ))?;
+
+        let mut out = Vec::with_capacity(outer.len());
+        for item in outer {
+            let row = match item.as_array() {
+                Some(a) => a,
+                None => continue,
+            };
+            let timestamp = match Self::get_i64(row, 1) {
+                Some(t) => t,
+                None => continue,
+            };
+            // idx 18 = OPEN_INTEREST (base-currency units)
+            let oi = match Self::get_f64(row, 18) {
+                Some(v) => v,
+                None => continue,
+            };
+            out.push(OpenInterest {
+                open_interest: oi,
+                open_interest_value: None,
+                timestamp,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Parse position-size series from `GET /v2/stats1/pos.size:1m:{sym}:{side}/hist`.
+    ///
+    /// Each element: `[MTS, VALUE]`. Returns `(timestamp_ms, position_size)` pairs.
+    pub fn parse_pos_size_hist(response: &Value) -> ExchangeResult<Vec<(i64, f64)>> {
+        Self::check_error(response)?;
+
+        let outer = response
+            .as_array()
+            .ok_or_else(|| ExchangeError::Parse(
+                "bitfinex stats1 pos.size hist: expected array".into(),
+            ))?;
+
+        let mut out = Vec::with_capacity(outer.len());
+        for item in outer {
+            let row = match item.as_array() {
+                Some(a) => a,
+                None => continue,
+            };
+            let ts = match Self::get_i64(row, 0) {
+                Some(t) => t,
+                None => continue,
+            };
+            let val = match Self::get_f64(row, 1) {
+                Some(v) => v,
+                None => continue,
+            };
+            out.push((ts, val));
+        }
+        Ok(out)
     }
 }
 

@@ -80,11 +80,21 @@ backtester can warmup the ~130 non-OHLCV mli indicators. Three commits, all LOCA
     Bybit derived-kline rows have no volume idx; Kraken charts `to`-only =
     from-genesis + ms `time`; Bitfinex `{key}/hist` has no leading key element.
 
-- **Still open (low-priority):** Crypto.com/MEXC interval-bucketing for klines
-  (currently raw venue cadence); BingX index/premium/LSR (official docs
-  unfetchable — need live probe); Kraken premium (derivable mark−spot); full
-  daemon auto-serve loop for Track-C recorded streams; Tardis bootstrap. NOT
-  bumped/published (awaiting command).
+- **Scope closed (2026-06-04, commit 0b42140):** Crypto.com klines now
+  interval-bucketed (per-minute valuations → OHLC); BingX index/premium/LSR
+  confirmed wire-absent via live probe (code 100400) → NotSupported; Kraken
+  premium = derived mark−spot; Track-C read-path = `bar_align_from_disk`.
+  **Both e2e green: NATIVE (`bar_align_matrix`, 15 venues + taker) + WASM
+  (`wasm_bar_align`, headless Edge/msedgedriver, Lighter direct) 2/2.**
+- **Genuinely external / out-of-contract (NOT our TODO):** Tardis historical
+  archive ($350/mo, the only paywall — optional deep-history bootstrap);
+  a long-running HTTP auto-serve daemon (mlq links Station directly per the
+  handoff, so not needed). NOT bumped/published (awaiting command).
+- **WASM test note:** Windows usernames with a space (`VA PC`) break the
+  wasm-bindgen-test-runner path — run station wasm tests via 8.3 short paths
+  (`VAPC~1`) in `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER` + `CHROMEDRIVER`
+  (see `wasm_bar_align.rs` header). Native-only station tests are
+  `cfg(not(wasm32))`-gated so the wasm test target builds.
 
 ## WASM Wave 3 (2026-05-28, in-flight — NOT yet bumped/published)
 

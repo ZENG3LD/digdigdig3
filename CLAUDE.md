@@ -730,5 +730,8 @@ MLC reference architecture explored. Strong patterns borrowed (SharedMap dual-re
 - Windows codepage: prefix Windows-native commands with `chcp.com 65001 > $null 2>&1;` for UTF-8.
 - NEVER chain git commands with `&&`. Separate `git add` / `git commit` calls.
 - digdigdig3 is a git submodule with its own `.git`. `cd digdigdig3` before any git command.
-- Do NOT bump version unless explicitly asked.
+- Do NOT bump version unless explicitly asked. When asked to bump, the DEFAULT
+  is ALWAYS a patch bump (`x.x.+1`) — for any change, including public-API /
+  core-type / behavior breaks. A minor bump (`x.+1.x`) is done ONLY by agreement
+  with the user / on their explicit demand — never decide a minor yourself.
 - Do NOT push to remote unless explicitly asked.

@@ -1114,6 +1114,29 @@ impl GateioParser {
 
         Ok(result)
     }
+
+    /// Parse taker buy/sell volume from `GET /futures/{settle}/contract_stats`.
+    ///
+    /// Gate.io ContractStat response fields used:
+    /// - `time`: Unix **seconds** → multiply ×1000 to get ms
+    /// - `long_taker_size`: taker buy volume (longs hitting asks)
+    /// - `short_taker_size`: taker sell volume (shorts hitting bids)
+    pub fn parse_taker_volume_history(response: &Value) -> ExchangeResult<Vec<crate::core::types::TakerVolume>> {
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array for taker volume history".to_string()))?;
+
+        let result = arr.iter().map(|item| {
+            let buy_volume = Self::get_f64(item, "long_taker_size").unwrap_or(0.0);
+            let sell_volume = Self::get_f64(item, "short_taker_size").unwrap_or(0.0);
+            let timestamp = item.get("time")
+                .and_then(|v| v.as_i64())
+                .map(|t| t * 1000)
+                .unwrap_or(0);
+            crate::core::types::TakerVolume { buy_volume, sell_volume, timestamp }
+        }).collect();
+
+        Ok(result)
+    }
 }
 
 #[cfg(test)]

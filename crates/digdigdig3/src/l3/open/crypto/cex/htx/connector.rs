@@ -284,7 +284,8 @@ impl HtxConnector {
             | HtxEndpoint::MarkPriceKlineHistory
             | HtxEndpoint::PremiumIndexKlineHistory
             | HtxEndpoint::OpenInterestHistory
-            | HtxEndpoint::ElitePositionRatio => HtxUrls::futures_base_url(self.testnet),
+            | HtxEndpoint::ElitePositionRatio
+            | HtxEndpoint::BasisHistory => HtxUrls::futures_base_url(self.testnet),
             _ => HtxUrls::base_url(self.testnet),
         };
         let path = endpoint.path();
@@ -2363,6 +2364,34 @@ impl crate::core::traits::MarketDataPublic for HtxConnector {
         let resp = self.get_historical_funding_rate(&contract_code, Some(1), Some(page_size)).await?;
         HtxParser::parse_funding_rate_history(&resp)
     }
+
+    /// Historical basis (futures − index price) time series.
+    ///
+    /// `GET /linear-swap-ex/market/history/linear_swap_basis`
+    /// Params: `contract_code`, `period`, `size` (max 2000), `basis_price_type=close`.
+    /// `id` field in each record is seconds → multiplied to ms by the parser.
+    async fn get_basis_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        period: &str,
+        _start_time: Option<i64>,
+        _end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::Basis>> {
+        let symbol = symbol.resolve(ExchangeId::HTX, account_type)?;
+        let contract_code = to_linear_swap_code(&symbol);
+        let mut params = HashMap::new();
+        params.insert("contract_code".to_string(), contract_code);
+        params.insert("period".to_string(), map_kline_interval(period).to_string());
+        // basis_price_type: open/close/high/low/average — use close (settled bar close).
+        params.insert("basis_price_type".to_string(), "close".to_string());
+        if let Some(sz) = limit {
+            params.insert("size".to_string(), sz.min(2000).to_string());
+        }
+        let resp = self.get(HtxEndpoint::BasisHistory, params).await?;
+        HtxParser::parse_basis_history(&resp)
+    }
 }
 
 impl crate::core::traits::HasCapabilities for HtxConnector {
@@ -2370,13 +2399,13 @@ impl crate::core::traits::HasCapabilities for HtxConnector {
         crate::core::types::ConnectorCapabilities {
             has_ticker: true, has_orderbook: true, has_klines: true,
             has_recent_trades: false, has_exchange_info: true,
-            // MarketDataPublic — all 5 REST-historical methods implemented.
+            // MarketDataPublic — all 6 REST-historical methods implemented.
             // has_premium_index is false: HTX has no snapshot premium-index endpoint;
             // estimated-rate kline is served via has_premium_index_klines instead.
             has_liquidation_history: false, has_open_interest_history: true,
             has_premium_index: false, has_long_short_ratio_history: true,
             has_funding_rate_history: true, has_mark_price_klines: true,
-            has_basis_history: false,
+            has_basis_history: true,
             has_taker_volume_history: false,
             has_index_price_klines: false,
             has_premium_index_klines: true,

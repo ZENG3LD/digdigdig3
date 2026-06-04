@@ -756,6 +756,40 @@ impl HtxParser {
         Ok(records)
     }
 
+    /// Parse basis history from `GET /linear-swap-ex/market/history/linear_swap_basis`.
+    ///
+    /// Response envelope (V1 keyed-object form):
+    /// ```json
+    /// { "status": "ok", "data": [
+    ///     { "id": 1716000000, "contract_price": "70000.0",
+    ///       "index_price": "69950.0", "basis": "50.0", "basis_rate": "0.000714" },
+    ///     ...
+    /// ] }
+    /// ```
+    /// `id` is seconds — multiplied by 1000 to produce ms timestamp.
+    /// `basis` = futures_price − index_price.  Use `close` style (`basis_price_type=close`)
+    /// so the connector passes `close` to the request.
+    pub fn parse_basis_history(json: &Value) -> ExchangeResult<Vec<crate::core::types::Basis>> {
+        let data = Self::extract_result_v1(json)?;
+        let list = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("HTX basis history: data is not an array".into()))?;
+
+        let parse_f64 = |v: &Value| -> Option<f64> {
+            v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        };
+
+        let records = list.iter()
+            .filter_map(|entry| {
+                let basis     = parse_f64(&entry["basis"])?;
+                // `id` is seconds-epoch; multiply to ms.
+                let timestamp = entry["id"].as_i64()? * 1000;
+                Some(crate::core::types::Basis { basis, timestamp })
+            })
+            .collect();
+
+        Ok(records)
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════════
     // WEBSOCKET PARSERS
     // ═══════════════════════════════════════════════════════════════════════════════

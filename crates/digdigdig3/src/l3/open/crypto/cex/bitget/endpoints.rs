@@ -178,6 +178,9 @@ pub enum BitgetEndpoint {
     FuturesLongShort,
     /// GET /api/v2/mix/market/account-long-short — account-count long/short ratio history
     FuturesAccountLongShort,
+    /// GET /api/v2/mix/market/taker-buy-sell — taker buy/sell volume history.
+    /// Response fields: `{ sellVolume, buyVolume, ts }` (all string-encoded, ts in ms).
+    FuturesTakerBuySell,
 }
 
 impl BitgetEndpoint {
@@ -282,6 +285,7 @@ impl BitgetEndpoint {
             Self::FuturesIndexCandles => "/api/v2/mix/market/history-index-candles",
             Self::FuturesLongShort => "/api/v2/mix/market/long-short",
             Self::FuturesAccountLongShort => "/api/v2/mix/market/account-long-short",
+            Self::FuturesTakerBuySell => "/api/v2/mix/market/taker-buy-sell",
         }
     }
 
@@ -312,7 +316,8 @@ impl BitgetEndpoint {
             | Self::FuturesMarkCandles
             | Self::FuturesIndexCandles
             | Self::FuturesLongShort
-            | Self::FuturesAccountLongShort => false,
+            | Self::FuturesAccountLongShort
+            | Self::FuturesTakerBuySell => false,
 
             // Private endpoints
             _ => true,

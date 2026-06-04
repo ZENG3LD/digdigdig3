@@ -123,6 +123,10 @@ pub enum OkxEndpoint {
     /// GET /api/v5/rubik/stat/contracts/open-interest-history — OI history (~3mo depth).
     /// Uses `ccy` param (base currency, e.g. `BTC`), not `instId`.
     OpenInterestHistory,
+    /// GET /api/v5/rubik/stat/taker-volume-contract — per-contract taker buy/sell volume history (~3mo).
+    /// Uses `instId` param (e.g. `BTC-USDT-SWAP`); `instType=SWAP` required.
+    /// Response data rows: `[ts_ms_str, sellVol_str, buyVol_str]`.
+    TakerVolumeContract,
 
     // === FILL/TRADE HISTORY ===
     /// GET /api/v5/trade/fills — recent fills (signed)
@@ -225,6 +229,7 @@ impl OkxEndpoint {
             Self::MarkPriceCandlesHistory => "/api/v5/market/history-mark-price-candles",
             Self::HistoryIndexCandles => "/api/v5/market/history-index-candles",
             Self::OpenInterestHistory => "/api/v5/rubik/stat/contracts/open-interest-history",
+            Self::TakerVolumeContract => "/api/v5/rubik/stat/taker-volume-contract",
 
             // Fill/Trade History
             Self::FillsHistory => "/api/v5/trade/fills",
@@ -289,6 +294,7 @@ impl OkxEndpoint {
             | Self::MarkPriceCandlesHistory
             | Self::HistoryIndexCandles
             | Self::OpenInterestHistory
+            | Self::TakerVolumeContract
             | Self::PositionTiers
             | Self::LendingRateHistory => false,
 

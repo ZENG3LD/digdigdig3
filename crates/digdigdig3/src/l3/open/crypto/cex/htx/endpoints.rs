@@ -145,6 +145,8 @@ pub enum HtxEndpoint {
     OpenInterestHistory,
     /// GET /linear-swap-api/v1/swap_elite_position_ratio — elite trader position L/S ratio
     ElitePositionRatio,
+    /// GET /index/market/history/linear_swap_basis — basis history (size max 2000)
+    BasisHistory,
 
     // === ALGO ORDERS ===
     /// POST /v2/algo-orders — place trailing stop or other algo orders
@@ -220,6 +222,7 @@ impl HtxEndpoint {
             Self::PremiumIndexKlineHistory => "/index/market/history/linear_swap_premium_index_kline",
             Self::OpenInterestHistory => "/linear-swap-api/v1/swap_his_open_interest",
             Self::ElitePositionRatio => "/linear-swap-api/v1/swap_elite_position_ratio",
+            Self::BasisHistory => "/index/market/history/linear_swap_basis",
 
             // Algo Orders
             Self::AlgoOrders => "/v2/algo-orders",
@@ -282,7 +285,8 @@ impl HtxEndpoint {
             | Self::MarkPriceKlineHistory
             | Self::PremiumIndexKlineHistory
             | Self::OpenInterestHistory
-            | Self::ElitePositionRatio => false,
+            | Self::ElitePositionRatio
+            | Self::BasisHistory => false,
 
             // Private endpoints
             _ => true,

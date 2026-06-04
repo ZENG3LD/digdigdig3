@@ -631,6 +631,33 @@ impl BitgetParser {
         Ok(result)
     }
 
+    /// Parse taker buy/sell volume from `GET /api/v2/mix/market/taker-buy-sell`.
+    ///
+    /// Bitget returns:
+    /// ```json
+    /// {"code":"00000","data":[
+    ///   {"sellVolume":"763.3991","buyVolume":"757.7409","ts":"1780473600000"}
+    /// ]}
+    /// ```
+    ///
+    /// All values are string-encoded. `ts` is Unix ms.
+    pub fn parse_taker_volume(response: &Value) -> ExchangeResult<Vec<crate::core::types::TakerVolume>> {
+        let data = Self::extract_data(response)?;
+        let arr = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array for taker volume".to_string()))?;
+
+        let mut result = Vec::with_capacity(arr.len());
+        for item in arr {
+            let buy_volume = Self::get_f64(item, "buyVolume").unwrap_or(0.0);
+            let sell_volume = Self::get_f64(item, "sellVolume").unwrap_or(0.0);
+            let timestamp = Self::get_i64(item, "ts")
+                .or_else(|| Self::get_i64(item, "timestamp"))
+                .unwrap_or(0);
+            result.push(crate::core::types::TakerVolume { buy_volume, sell_volume, timestamp });
+        }
+        Ok(result)
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // WEBSOCKET PARSING
     // ═══════════════════════════════════════════════════════════════════════════

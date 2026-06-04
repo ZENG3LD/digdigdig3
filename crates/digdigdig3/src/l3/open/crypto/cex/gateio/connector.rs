@@ -2894,6 +2894,24 @@ impl MarketDataPublic for GateioConnector {
         GateioParser::parse_open_interest_history(&response)
     }
 
+    /// Taker buy/sell volume history: `GET /futures/{settle}/contract_stats` (long_taker_size + short_taker_size fields).
+    ///
+    /// Reuses `fetch_contract_stats` — same endpoint as OI and LSR.
+    /// `long_taker_size` → buy_volume (takers lifting asks), `short_taker_size` → sell_volume.
+    async fn get_taker_volume_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        period: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::TakerVolume>> {
+        let symbol = symbol.resolve(ExchangeId::GateIO, account_type)?;
+        let response = self.fetch_contract_stats(&symbol, period, start_time, end_time, limit, account_type).await?;
+        GateioParser::parse_taker_volume_history(&response)
+    }
+
     /// Long/short ratio history: `GET /futures/{settle}/contract_stats` (lsr_account field)
     async fn get_long_short_ratio_history(
         &self,
@@ -2980,7 +2998,7 @@ impl crate::core::traits::HasCapabilities for GateioConnector {
             has_premium_index: false, has_long_short_ratio_history: true,
             has_funding_rate_history: true, has_mark_price_klines: true,
             has_basis_history: false,
-            has_taker_volume_history: false,
+            has_taker_volume_history: true,
             has_index_price_klines: true,
             has_premium_index_klines: true,
             has_market_order: true, has_limit_order: true,

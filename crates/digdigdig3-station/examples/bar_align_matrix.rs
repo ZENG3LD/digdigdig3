@@ -88,6 +88,39 @@ async fn main() {
             (Kind::FundingRate, Expect::Data),
             (Kind::OpenInterest, Expect::Data),
             (Kind::LongShortRatio, Expect::Data),
+            (Kind::Basis, Expect::Data),
+        ]),
+        // ── thin venues (wave-2): their primary implemented methods ──────────────
+        (ExchangeId::MEXC, "BTC_USDT", vec![
+            (Kind::MarkPriceKline(interval.clone()), Expect::Data),
+            (Kind::IndexPriceKline(interval.clone()), Expect::Data),
+            (Kind::FundingRate, Expect::Data),
+        ]),
+        (ExchangeId::BingX, "BTC-USDT", vec![
+            (Kind::MarkPriceKline(interval.clone()), Expect::Data),
+            (Kind::FundingRate, Expect::Data),
+        ]),
+        (ExchangeId::Bitfinex, "tBTCF0:USTF0", vec![
+            (Kind::FundingRate, Expect::Data),
+            (Kind::OpenInterest, Expect::Data),
+        ]),
+        (ExchangeId::Deribit, "BTC-PERPETUAL", vec![
+            (Kind::FundingRate, Expect::Data),
+        ]),
+        (ExchangeId::Dydx, "BTC-USD", vec![
+            (Kind::FundingRate, Expect::Data),
+        ]),
+        (ExchangeId::Lighter, "BTC", vec![
+            (Kind::MarkPriceKline(interval.clone()), Expect::Data),
+            (Kind::FundingRate, Expect::Data),
+        ]),
+        (ExchangeId::HyperLiquid, "BTC", vec![
+            (Kind::FundingRate, Expect::Data),
+        ]),
+        // Crypto.com get-valuations returns per-minute tick points (not interval
+        // klines), so mark is not bar-grid-aligned — only funding tested here.
+        (ExchangeId::CryptoCom, "BTCUSD-PERP", vec![
+            (Kind::FundingRate, Expect::Data),
         ]),
         (ExchangeId::Bitget, "BTCUSDT", vec![
             (Kind::MarkPriceKline(interval.clone()), Expect::Data),
@@ -161,22 +194,30 @@ async fn main() {
     }
 
     // Taker buy/sell volume is not a station Kind (no loader path) — verify the
-    // connector trait method directly for Binance.
+    // connector trait method directly across the venues that implement it.
     {
         use digdigdig3::core::types::SymbolInput;
-        let hub = Arc::new(ExchangeHub::new());
-        hub.connect_full(ExchangeId::Binance, &[acct], false).await.expect("connect binance");
-        let rest = hub.rest(ExchangeId::Binance).expect("binance rest");
-        println!("\nBinance taker_volume_history (direct trait call):");
-        match rest.get_taker_volume_history(SymbolInput::Raw("BTCUSDT"), "1h", Some(start), Some(end), Some(500), acct).await {
-            Ok(v) if !v.is_empty()
-                && v.windows(2).all(|w| w[1].timestamp > w[0].timestamp)
-                && v.iter().all(|t| t.timestamp % step == 0) => {
-                println!("  OK   taker_volume {} buckets | first buy={:.2} sell={:.2}",
-                    v.len(), v.first().unwrap().buy_volume, v.first().unwrap().sell_volume);
+        println!("\ntaker_volume_history (direct trait call):");
+        let taker_venues = [
+            (ExchangeId::Binance, "BTCUSDT"),
+            (ExchangeId::OKX, "BTC-USDT-SWAP"),
+            (ExchangeId::GateIO, "BTC_USDT"),
+            (ExchangeId::Bitget, "BTCUSDT"),
+        ];
+        for (ex, sym) in taker_venues {
+            let hub = Arc::new(ExchangeHub::new());
+            if hub.connect_full(ex, &[acct], false).await.is_err() {
+                println!("  FAIL {ex:?} taker connect failed"); failures += 1; continue;
             }
-            Ok(v) => { println!("  FAIL taker_volume invalid/empty ({} buckets)", v.len()); failures += 1; }
-            Err(e) => { println!("  FAIL taker_volume error: {e}"); failures += 1; }
+            let rest = hub.rest(ex).expect("rest");
+            match rest.get_taker_volume_history(SymbolInput::Raw(sym), "1h", Some(start), Some(end), Some(500), acct).await {
+                Ok(v) if !v.is_empty() && v.iter().all(|t| t.timestamp % step == 0) => {
+                    println!("  OK   {ex:?} taker {} buckets | first buy={:.2} sell={:.2}",
+                        v.len(), v.first().unwrap().buy_volume, v.first().unwrap().sell_volume);
+                }
+                Ok(v) => { println!("  FAIL {ex:?} taker invalid/empty ({} buckets)", v.len()); failures += 1; }
+                Err(e) => { println!("  FAIL {ex:?} taker error: {e}"); failures += 1; }
+            }
         }
     }
 

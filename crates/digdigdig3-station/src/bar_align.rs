@@ -216,7 +216,12 @@ where
     let mut cursor = end;
     // Safety bound: never loop forever on a misbehaving venue.
     for _ in 0..256 {
-        let page = fetch(cursor).await?;
+        // One retry to absorb a transient gateway error (e.g. Gate.io's
+        // premium-index endpoint intermittently 504s on heavy pages).
+        let page = match fetch(cursor).await {
+            Ok(p) => p,
+            Err(_) => fetch(cursor).await?,
+        };
         if page.is_empty() {
             break;
         }

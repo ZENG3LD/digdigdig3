@@ -1501,6 +1501,42 @@ impl OkxParser {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // TAKER VOLUME
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse `GET /api/v5/rubik/stat/taker-volume-contract` response.
+    ///
+    /// OKX returns positional arrays under `data`: `[ts_str, sellVol_str, buyVol_str]`.
+    /// - `[0]` — Unix timestamp in ms (string)
+    /// - `[1]` — sell volume (string)
+    /// - `[2]` — buy volume (string)
+    ///
+    /// Column order confirmed via live API call 2026-06-04.
+    pub fn parse_taker_volume(response: &Value) -> ExchangeResult<Vec<crate::core::types::TakerVolume>> {
+        let data = Self::extract_data(response)?;
+        let arr = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("'data' is not an array".to_string()))?;
+
+        let mut result = Vec::with_capacity(arr.len());
+        for item in arr {
+            let timestamp = item.get(0)
+                .and_then(Value::as_str)
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(0);
+            let sell_volume = item.get(1)
+                .and_then(Value::as_str)
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let buy_volume = item.get(2)
+                .and_then(Value::as_str)
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            result.push(crate::core::types::TakerVolume { buy_volume, sell_volume, timestamp });
+        }
+        Ok(result)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // LONG/SHORT RATIO
     // ═══════════════════════════════════════════════════════════════════════════
 

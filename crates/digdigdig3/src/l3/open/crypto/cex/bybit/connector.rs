@@ -2951,6 +2951,8 @@ impl crate::core::traits::HasCapabilities for BybitConnector {
             has_premium_index_klines: true,
             has_long_short_ratio_history: true,
             has_funding_rate_history: true,
+            // has_basis_history: /v5/market/basis returns HTTP 404 on live wire
+            // (confirmed 2026-06-04); docs page also 404s. Not implemented.
             has_basis_history: false,
             has_taker_volume_history: false,
             has_liquidation_history: false,

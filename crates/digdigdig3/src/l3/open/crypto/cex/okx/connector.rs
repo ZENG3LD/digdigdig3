@@ -2589,6 +2589,40 @@ impl MarketDataPublic for OkxConnector {
         let response = self.get(OkxEndpoint::OpenInterestHistory, params).await?;
         OkxParser::parse_open_interest_history(&response)
     }
+
+    /// Taker buy/sell volume history via `GET /api/v5/rubik/stat/taker-volume-contract`.
+    ///
+    /// Depth: ~3 months (rubik/stat endpoint).
+    /// Uses `instId` (e.g. `BTC-USDT-SWAP`) and `instType=SWAP`.
+    /// `period` must be OKX-cased (`1H`/`1D`): routed through `map_kline_interval`.
+    /// Response rows: `[ts_ms_str, sellVol_str, buyVol_str]`.
+    async fn get_taker_volume_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        period: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::TakerVolume>> {
+        let symbol = symbol.resolve(ExchangeId::OKX, account_type)?;
+        let inst_id = to_okx_swap_instid(&symbol);
+        let mut params = HashMap::new();
+        params.insert("instId".to_string(), inst_id);
+        params.insert("instType".to_string(), "SWAP".to_string());
+        params.insert("period".to_string(), map_kline_interval(period).to_string());
+        if let Some(b) = start_time {
+            params.insert("begin".to_string(), b.to_string());
+        }
+        if let Some(e) = end_time {
+            params.insert("end".to_string(), e.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        let response = self.get(OkxEndpoint::TakerVolumeContract, params).await?;
+        OkxParser::parse_taker_volume(&response)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2606,14 +2640,15 @@ impl crate::core::traits::HasCapabilities for OkxConnector {
             has_exchange_info: true,
             // MarketDataPublic (verified overrides: get_liquidation_history,
             //   get_long_short_ratio_history, get_funding_rate_history,
-            //   get_mark_price_klines, get_index_price_klines, get_open_interest_history)
+            //   get_mark_price_klines, get_index_price_klines, get_open_interest_history,
+            //   get_taker_volume_history)
             // get_premium_index_klines: NotSupported — OKX exposes premium history as raw
             //   ticks (/api/v5/public/premium-history), not OHLCV klines.
             has_liquidation_history: true,
             has_long_short_ratio_history: true,
             has_funding_rate_history: true,
             has_basis_history: false,
-            has_taker_volume_history: false,
+            has_taker_volume_history: true,
             has_open_interest_history: true,
             has_premium_index: false,
             has_mark_price_klines: true,

@@ -751,18 +751,20 @@ impl BitfinexParser {
                 Some(a) => a,
                 None => continue,
             };
-            // idx 1 = MTS (ms timestamp)
-            let timestamp = match Self::get_i64(row, 1) {
+            // For the `{key}/hist` form the key is in the URL, so element 0 is
+            // MTS directly (no leading key field). Indices verified live 2026-06-04.
+            // idx 0 = MTS (ms timestamp)
+            let timestamp = match Self::get_i64(row, 0) {
                 Some(t) => t,
                 None => continue,
             };
-            // idx 12 = CURRENT_FUNDING
-            let rate = match Self::get_f64(row, 12) {
+            // idx 11 = CURRENT_FUNDING
+            let rate = match Self::get_f64(row, 11) {
                 Some(r) => r,
                 None => continue,
             };
-            // idx 8 = NEXT_FUNDING_EVT_TIMESTAMP (ms)
-            let next_funding_time = Self::get_i64(row, 8);
+            // idx 7 = NEXT_FUNDING_EVT_TIMESTAMP (ms)
+            let next_funding_time = Self::get_i64(row, 7);
 
             let _ = symbol; // symbol used by caller for routing; not stored in FundingRate
             out.push(FundingRate { rate, next_funding_time, timestamp });
@@ -772,8 +774,9 @@ impl BitfinexParser {
 
     /// Parse open interest history from `GET /v2/status/deriv/{symbol}/hist`.
     ///
-    /// Extracts `OPEN_INTEREST` (index 18) and `MTS` (index 1) from each
-    /// event snapshot.
+    /// Extracts `OPEN_INTEREST` (index 17) and `MTS` (index 0) from each
+    /// event snapshot. For `{key}/hist` element 0 is MTS (no leading key).
+    /// Indices verified live 2026-06-04.
     pub fn parse_deriv_open_interest_history(
         response: &Value,
     ) -> ExchangeResult<Vec<OpenInterest>> {
@@ -791,12 +794,12 @@ impl BitfinexParser {
                 Some(a) => a,
                 None => continue,
             };
-            let timestamp = match Self::get_i64(row, 1) {
+            let timestamp = match Self::get_i64(row, 0) {
                 Some(t) => t,
                 None => continue,
             };
-            // idx 18 = OPEN_INTEREST (base-currency units)
-            let oi = match Self::get_f64(row, 18) {
+            // idx 17 = OPEN_INTEREST (base-currency units)
+            let oi = match Self::get_f64(row, 17) {
                 Some(v) => v,
                 None => continue,
             };

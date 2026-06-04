@@ -3145,6 +3145,38 @@ impl MarketDataPublic for BitgetConnector {
         let response = self.get(BitgetEndpoint::FuturesLongShort, params, AccountType::FuturesCross).await?;
         BitgetParser::parse_long_short_ratio(&response, &symbol, "globalLongShortRatio")
     }
+
+    // ── Taker buy/sell volume history ────────────────────────────────────────
+    // GET /api/v2/mix/market/taker-buy-sell
+    // Response: { sellVolume, buyVolume, ts } — all string-encoded, ts in ms.
+    // Confirmed live 2026-06-04: symbol=BTCUSDT, productType=usdt-futures, period=1H.
+    async fn get_taker_volume_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        period: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::TakerVolume>> {
+        let symbol = symbol.resolve(ExchangeId::Bitget, account_type)?;
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_string());
+        params.insert("productType".to_string(), product_type_from_raw(&symbol).to_string());
+        // Use the same period mapping as L/S ratio (1Dutc for daily — 2025 breaking change).
+        params.insert("period".to_string(), map_ls_period(period).to_string());
+        if let Some(st) = start_time {
+            params.insert("startTime".to_string(), st.to_string());
+        }
+        if let Some(et) = end_time {
+            params.insert("endTime".to_string(), et.to_string());
+        }
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        let response = self.get(BitgetEndpoint::FuturesTakerBuySell, params, AccountType::FuturesCross).await?;
+        BitgetParser::parse_taker_volume(&response)
+    }
 }
 
 impl crate::core::traits::HasCapabilities for BitgetConnector {
@@ -3159,7 +3191,7 @@ impl crate::core::traits::HasCapabilities for BitgetConnector {
             has_long_short_ratio_history: true,
             has_funding_rate_history: true,
             has_basis_history: false,
-            has_taker_volume_history: false,
+            has_taker_volume_history: true,
             has_mark_price_klines: true,
             has_index_price_klines: true,
             // Wire-absent on Bitget. NotSupported override documents this.

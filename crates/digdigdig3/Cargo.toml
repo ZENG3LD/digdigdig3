@@ -52,6 +52,12 @@ starknet = ["onchain-starknet"]
 # ─── Shared dependencies (compile on BOTH targets) ────────────────────────────
 
 [dependencies]
+# The pure-data core (market-data + trading types, stream descriptors, symbol
+# normalizer) split out so light consumers don't compile the connectors. The
+# `core::types` / `core::websocket::{stream_kind,…}` / `core::utils::symbol_normalizer`
+# modules are re-exported from here under their ORIGINAL paths (see src/core/*).
+digdigdig3-core = { workspace = true }
+
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

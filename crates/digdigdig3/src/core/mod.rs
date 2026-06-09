@@ -63,7 +63,9 @@
 //! - `utils::time` - timestamp_millis, timestamp_seconds, timestamp_iso8601
 //! - `utils::rate_limiter` - SimpleRateLimiter, WeightRateLimiter
 
-pub mod types;
+// `types` lives in the digdigdig3-core crate now; re-export under the original
+// path so `crate::core::types::*` and `digdigdig3::core::types::*` keep working.
+pub use digdigdig3_core::core::types;
 pub mod traits;
 pub mod utils;
 pub mod http;

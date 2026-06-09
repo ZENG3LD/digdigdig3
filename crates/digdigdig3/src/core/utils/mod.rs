@@ -15,7 +15,9 @@ mod encoding;
 mod time;
 mod rate_limiter;
 pub mod precision;
-pub mod symbol_normalizer;
+// symbol_normalizer is pure string logic — extracted to digdigdig3-core and
+// re-exported here so `core::utils::symbol_normalizer::*` keeps working.
+pub use digdigdig3_core::core::utils::symbol_normalizer;
 pub mod validation_snapshot;
 #[cfg(feature = "onchain-evm")]
 pub mod crypto_evm;

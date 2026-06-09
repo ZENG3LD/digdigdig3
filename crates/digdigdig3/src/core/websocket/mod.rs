@@ -20,9 +20,10 @@
 pub mod capability_provider;
 pub mod protocol;
 pub mod reconnect;
-pub mod stream_kind;
-pub mod stream_spec;
-pub mod support_level;
+// stream_kind / stream_spec / support_level are pure TYPES — extracted to the
+// digdigdig3-core crate and re-exported here so `core::websocket::*` paths (and
+// the item re-exports below) keep working unchanged.
+pub use digdigdig3_core::core::websocket::{stream_kind, stream_spec, support_level};
 pub mod topic_registry;
 pub mod transport;
 

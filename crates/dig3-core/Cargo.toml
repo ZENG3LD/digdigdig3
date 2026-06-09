@@ -1,0 +1,21 @@
+[package]
+name = "digdigdig3-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Core data types for digdigdig3 — pure market-data + trading structs/enums (Kline/Ticker/OrderBook/Trade/StreamKind/Symbol/…). Zero connectors, zero network I/O. A light dependency for consumers that only need the types, not the 47 exchange connectors."
+documentation = "https://docs.rs/digdigdig3-core"
+readme = "../../README.md"
+
+[lib]
+name = "digdigdig3_core"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"

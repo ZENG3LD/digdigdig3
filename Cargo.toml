@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/dig3-core",
     "crates/digdigdig3",
     "crates/digdigdig3-station",
     "crates/digdigdig3-cli",
@@ -16,6 +17,9 @@ keywords = ["exchange", "trading", "crypto", "websocket", "connector"]
 categories = ["api-bindings", "asynchronous", "web-programming"]
 
 [workspace.dependencies]
+# Local dir is `dig3-core` (convenience shorthand); the published crates.io
+# name is `digdigdig3-core`.
+digdigdig3-core = { version = "0.3.16", path = "./crates/dig3-core" }
 digdigdig3 = { version = "0.3.15", path = "./crates/digdigdig3" }
 digdigdig3-station = { version = "0.3.15", path = "./crates/digdigdig3-station", default-features = true }
 digdigdig3-cli = { version = "0.3.15", path = "./crates/digdigdig3-cli" }

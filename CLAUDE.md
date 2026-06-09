@@ -1,12 +1,13 @@
 # digdigdig3 (dig3)
 
-Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major crypto + 4 DEX, full futures coverage). Three crates in one workspace — single version pin (uzor-style), currently `0.3.11`:
+Multi-exchange connector library covering 47 exchanges. 18 TRUSTED (all major crypto + 4 DEX, full futures coverage). Four crates in one workspace — single version pin (uzor-style), currently `0.3.17`:
 
-- **`digdigdig3`** — pure connector library. ONLY `ExchangeHub` + REST/WS connectors + capabilities + symbol normalization. No persistence, no replay, no cure/cache infrastructure.
+- **`digdigdig3-core`** — pure data types ONLY (dir `crates/dig3-core`, crates.io name `digdigdig3-core`). `core::types/*` + WS stream descriptors (`stream_kind`/`stream_spec`/`support_level`) + `core::utils::symbol_normalizer`. Deps = serde + serde_json + thiserror; ZERO connectors / network I/O. Light dependency for consumers that need only the types (mli/mlq/mls). The full `digdigdig3` crate re-exports it under the original `core::*` paths (backward-compatible superset).
+- **`digdigdig3`** — pure connector library. ONLY `ExchangeHub` + REST/WS connectors + capabilities + symbol normalization. No persistence, no replay, no cure/cache infrastructure. Depends on + re-exports `digdigdig3-core`.
 - **`digdigdig3-station`** — high-level builder over `ExchangeHub`. OWNS: unified `Series<T>` / `DiskStore<T>` over 27 `DataPoint` impls (9 core + 18 extended for MLI), `SeriesKey { exchange, account, symbol, kind }`, multiplexed `Station` (N consumers share one WS per StreamKey), warm-start, REST cache, replay, cure, **auto-heal on WS disconnect** (kline-only — see below). String-bearing variants (BlockTrade, AuctionEvent, MarketWarning, OrderbookL3) persist via fixed header + companion `.blob` file.
 - **`digdigdig3-cli`** — `dig3` binary (watch trades/orderbook/kline/ticker/mark/funding/open-interest/liquidations/agg-trades) + `dig3-inspect` post-mortem analyzer + legacy `dig3-catcher` / `dig3-cure` bins.
 
-## Bar-aligned non-OHLCV loader (2026-06-04, local — not bumped/published)
+## Bar-aligned non-OHLCV loader (2026-06-04)
 
 dig3's side of the mlq data-handoff (`nemo/docs/mlq/data-handoff-dig3-2026-06-04.md`):
 deliver non-OHLCV market data as **bar-aligned historical series** so the mlq
@@ -89,17 +90,16 @@ backtester can warmup the ~130 non-OHLCV mli indicators. Three commits, all LOCA
 - **Genuinely external / out-of-contract (NOT our TODO):** Tardis historical
   archive ($350/mo, the only paywall — optional deep-history bootstrap);
   a long-running HTTP auto-serve daemon (mlq links Station directly per the
-  handoff, so not needed). NOT bumped/published (awaiting command).
+  handoff, so not needed).
 - **WASM test note:** Windows usernames with a space (`VA PC`) break the
   wasm-bindgen-test-runner path — run station wasm tests via 8.3 short paths
   (`VAPC~1`) in `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER` + `CHROMEDRIVER`
   (see `wasm_bar_align.rs` header). Native-only station tests are
   `cfg(not(wasm32))`-gated so the wasm test target builds.
 
-## WASM Wave 3 (2026-05-28, in-flight — NOT yet bumped/published)
+## WASM Wave 3 (2026-05-28)
 
-Full wasm parity for the 0.4.0 target. Local commits only, no push/publish/bump
-until the whole wave is accepted. Plan: `docs/plans/wasm-wave3-master.md` +
+Full wasm parity for the 0.4.0 target. Plan: `docs/plans/wasm-wave3-master.md` +
 4 research reports under `docs/research/wasm-wave3/`.
 
 **What landed (15 commits on top of Wave 2's c9584a7..34858ba):**
@@ -726,7 +726,7 @@ MLC reference architecture explored. Strong patterns borrowed (SharedMap dual-re
 
 ## Gotchas
 
-- Cargo.toml is v0.2.2 (v0.2.3 anticipated post-θ.6 bump). README.md matches. Trust CLAUDE.md and code for architecture facts.
+- Workspace version lives in `Cargo.toml` (`[workspace.package] version`). Trust CLAUDE.md and code for architecture facts.
 - Windows codepage: prefix Windows-native commands with `chcp.com 65001 > $null 2>&1;` for UTF-8.
 - NEVER chain git commands with `&&`. Separate `git add` / `git commit` calls.
 - digdigdig3 is a git submodule with its own `.git`. `cd digdigdig3` before any git command.

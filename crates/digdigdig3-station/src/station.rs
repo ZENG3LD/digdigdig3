@@ -105,6 +105,19 @@ impl Station {
     pub fn storage_root(&self) -> &std::path::Path { &self.inner.storage_root }
     pub fn active_streams(&self) -> usize { self.inner.muxes.len() }
 
+    /// Shared `ExchangeHub` backing this Station's connectors.
+    ///
+    /// Exposed so a consumer that also needs raw REST history (e.g. a chart
+    /// doing scroll-left pagination) can route `backfill::fetch_history` /
+    /// `backfill::klines_recent` through the SAME connector pool the Station's
+    /// live subscriptions use — instead of dialing a second, parallel hub.
+    /// One pool means one dial-wave, one rate-limit budget, one warm-up.
+    ///
+    /// `ExchangeHub::clone` is O(1) (Arc-pooled internally).
+    pub fn hub(&self) -> Arc<ExchangeHub> {
+        self.inner.hub.clone()
+    }
+
     /// Return a sync handle to the in-memory ring for `key`.
     ///
     /// Returns `Some(Arc<RwLock<Series<T>>>)` when a forwarder for `key` is

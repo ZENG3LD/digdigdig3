@@ -96,6 +96,12 @@ pub struct HyperliquidConnector {
     precision: PrecisionCache,
     /// Lazy universe cache: coin name → asset index (0-based position in /info meta universe)
     universe_cache: OnceCell<HashMap<String, usize>>,
+    /// Lazy SPOT universe cache: display pair ("MU/USDC", uppercase) → wire
+    /// market name from spotMeta `universe[].name` ("@107", or sometimes the
+    /// pair itself e.g. "PURR/USDC"). HL market-data endpoints (candleSnapshot
+    /// etc.) address spot markets by that wire name, NOT by the display pair
+    /// that `get_exchange_info` reports in `SymbolInfo.symbol`.
+    spot_universe_cache: OnceCell<HashMap<String, String>>,
 }
 
 impl HyperliquidConnector {
@@ -147,6 +153,7 @@ impl HyperliquidConnector {
             monitor,
             precision: PrecisionCache::new(),
             universe_cache: OnceCell::new(),
+            spot_universe_cache: OnceCell::new(),
         })
     }
 
@@ -330,6 +337,72 @@ impl HyperliquidConnector {
             .ok_or_else(|| ExchangeError::InvalidRequest(
                 format!("Unknown HyperLiquid coin: {}", coin),
             ))
+    }
+
+    /// Fetch + cache the SPOT universe mapping on first use:
+    /// display pair (uppercase "BASE/QUOTE") → wire market name
+    /// (spotMeta `universe[].name`, e.g. "@107" or "PURR/USDC").
+    ///
+    /// Mirrors how `parse_spot_exchange_info` derives the display pair from
+    /// `universe[].tokens` + `tokens[].name`, so every `SymbolInfo.symbol`
+    /// it reports has exactly one entry here.
+    async fn ensure_spot_universe(&self) -> ExchangeResult<&HashMap<String, String>> {
+        self.spot_universe_cache.get_or_try_init(|| async {
+            let meta = self.info_request(InfoType::SpotMeta, serde_json::json!({})).await?;
+            let universe = meta.get("universe")
+                .and_then(|u| u.as_array())
+                .ok_or_else(|| ExchangeError::Parse(
+                    "Missing 'universe' array in spotMeta response".to_string(),
+                ))?;
+            let tokens = meta.get("tokens")
+                .and_then(|t| t.as_array())
+                .ok_or_else(|| ExchangeError::Parse(
+                    "Missing 'tokens' array in spotMeta response".to_string(),
+                ))?;
+
+            let token_name = |idx: usize| -> Option<&str> {
+                tokens.get(idx)?.get("name")?.as_str()
+            };
+
+            let mut map = HashMap::new();
+            for market in universe {
+                let Some(wire) = market.get("name").and_then(|v| v.as_str()) else { continue };
+                let Some(pair) = market.get("tokens").and_then(|t| t.as_array()) else { continue };
+                if pair.len() < 2 {
+                    continue;
+                }
+                let base_idx = pair[0].as_u64().unwrap_or(0) as usize;
+                let quote_idx = pair[1].as_u64().unwrap_or(0) as usize;
+                let (Some(base), Some(quote)) = (token_name(base_idx), token_name(quote_idx)) else {
+                    continue;
+                };
+                map.insert(
+                    format!("{}/{}", base, quote).to_uppercase(),
+                    wire.to_string(),
+                );
+            }
+            Ok(map)
+        }).await
+    }
+
+    /// Resolve a SPOT coin identifier to the wire market name HL market-data
+    /// endpoints expect. Accepts:
+    /// - wire names ("@107") — passed through;
+    /// - display pairs ("MU/USDC", as reported by `get_exchange_info`) —
+    ///   looked up in the spot universe;
+    /// - anything else — passed through unchanged (lets exotic raw input hit
+    ///   the wire verbatim rather than failing locally).
+    async fn resolve_spot_coin(&self, coin: &str) -> ExchangeResult<String> {
+        if coin.starts_with('@') {
+            return Ok(coin.to_string());
+        }
+        if coin.contains('/') {
+            let map = self.ensure_spot_universe().await?;
+            if let Some(wire) = map.get(&coin.to_uppercase()) {
+                return Ok(wire.clone());
+            }
+        }
+        Ok(coin.to_string())
     }
 }
 
@@ -645,6 +718,14 @@ impl MarketData for HyperliquidConnector {
         end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
         let symbol = symbol.resolve(ExchangeId::HyperLiquid, account_type)?;
+        // SPOT markets are addressed by the spotMeta wire name ("@107"), not
+        // the display pair ("MU/USDC") that get_exchange_info reports —
+        // translate before hitting candleSnapshot. Perps use the coin as-is.
+        let coin = if account_type == AccountType::Spot {
+            self.resolve_spot_coin(&symbol).await?
+        } else {
+            symbol.to_string()
+        };
         let now = crate::core::timestamp_millis() as i64;
         let end_ms = end_time.unwrap_or(now);
         let interval_ms = interval_to_ms(interval);
@@ -653,7 +734,7 @@ impl MarketData for HyperliquidConnector {
 
         let params = serde_json::json!({
             "req": {
-                "coin": &*symbol,
+                "coin": coin,
                 "interval": super::endpoints::map_kline_interval(interval),
                 "startTime": start_time,
                 "endTime": end_ms,

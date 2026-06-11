@@ -17,6 +17,25 @@ use crate::core::types::{
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait MarketDataPublic: Send + Sync {
+    /// Resolve the caller-facing display symbol to the wire id used for WS
+    /// subscribe frames and REST market-data parameters.
+    ///
+    /// Equals the display symbol everywhere **except** venues whose subscription
+    /// id differs from the display name (HyperLiquid spot: display "MU/USDC",
+    /// wire "@107"). The default implementation is a passthrough — every
+    /// connector that does not override this has zero extra cost.
+    ///
+    /// Called by the Station subscribe path after the canonical/raw pair is
+    /// determined, so WS subscribe frames carry the correct wire id. REST
+    /// market-data methods that self-resolve internally (e.g. `get_klines`)
+    /// do not need to call this externally — Station uses it only for the
+    /// subscribe frame and the SeriesKey symbol (so event routing back to
+    /// the subscriber works despite the display-vs-wire mismatch).
+    async fn resolve_market_symbol(&self, symbol: &str, account_type: AccountType) -> String {
+        let _ = account_type;
+        symbol.to_string()
+    }
+
     /// Recent public trades for a symbol.
     async fn get_recent_trades(
         &self,

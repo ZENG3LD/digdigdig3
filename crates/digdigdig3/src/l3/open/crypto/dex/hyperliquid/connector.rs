@@ -688,9 +688,15 @@ impl MarketData for HyperliquidConnector {
         symbol: SymbolInput<'_>,
         account_type: AccountType,
     ) -> ExchangeResult<Price> {
-        let symbol = symbol.resolve(ExchangeId::HyperLiquid, account_type)?;
+        let resolved = symbol.resolve(ExchangeId::HyperLiquid, account_type)?;
+        // allMids is keyed by wire name: "@107" for spot markets, "BTC" for perps.
+        let coin = if account_type == AccountType::Spot {
+            self.resolve_spot_coin(&resolved).await?
+        } else {
+            resolved.to_string()
+        };
         let response = self.get_all_mids().await?;
-        HyperliquidParser::parse_price(&response, &symbol)
+        HyperliquidParser::parse_price(&response, &coin)
     }
 
     async fn get_orderbook(
@@ -699,9 +705,14 @@ impl MarketData for HyperliquidConnector {
         _depth: Option<u16>,
         account_type: AccountType,
     ) -> ExchangeResult<OrderBook> {
-        let symbol = symbol.resolve(ExchangeId::HyperLiquid, account_type)?;
+        let resolved = symbol.resolve(ExchangeId::HyperLiquid, account_type)?;
+        let coin = if account_type == AccountType::Spot {
+            self.resolve_spot_coin(&resolved).await?
+        } else {
+            resolved.to_string()
+        };
         let params = serde_json::json!({
-            "coin": &*symbol,
+            "coin": coin,
             "nSigFigs": null,
             "mantissa": null,
         });
@@ -753,6 +764,46 @@ impl MarketData for HyperliquidConnector {
         // Raw("BTC") → "BTC"; Canonical({base:"BTC",...}) → exchange-native via normalizer
         let resolved = symbol.resolve(ExchangeId::HyperLiquid, account_type)
             .map_err(|e| ExchangeError::InvalidRequest(e.to_string()))?;
+
+        // Spot markets: resolve display pair → wire name ("@107"), then build
+        // ticker from allMids (price) + l2Book (bid/ask). metaAndAssetCtxs only
+        // covers perp assets; spot context lives in spotMetaAndAssetCtxs which
+        // does not have the same rich ctx fields, so we use the simpler path.
+        if account_type == AccountType::Spot {
+            let wire = self.resolve_spot_coin(&resolved).await?;
+            let now = crate::core::timestamp_millis() as i64;
+
+            let mids = self.info_request(InfoType::AllMids, serde_json::json!({})).await?;
+            let last_price = mids.get(&*wire)
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+
+            let mut ticker = Ticker {
+                last_price,
+                bid_price: None,
+                ask_price: None,
+                high_24h: None,
+                low_24h: None,
+                volume_24h: None,
+                quote_volume_24h: None,
+                price_change_24h: None,
+                price_change_percent_24h: None,
+                timestamp: now,
+            };
+
+            if let Ok(l2) = self.info_request(
+                InfoType::L2Book,
+                serde_json::json!({ "coin": &*wire, "nSigFigs": 5 }),
+            ).await {
+                let (bid, ask) = HyperliquidParser::parse_l2book_top(&l2);
+                if bid.is_some() { ticker.bid_price = bid; }
+                if ask.is_some() { ticker.ask_price = ask; }
+            }
+
+            return Ok(ticker);
+        }
+
         let coin = resolved.to_uppercase();
 
         // Resolve coin → asset index (uses lazy cache)
@@ -2307,15 +2358,36 @@ impl HyperliquidConnector {
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketDataPublic for HyperliquidConnector {
+    /// Resolve display symbol → wire id for HyperLiquid.
+    ///
+    /// - Perps ("BTC") and already-resolved wire names ("@107") are passed through unchanged.
+    /// - Spot display pairs ("MU/USDC") are looked up in the spotMeta universe cache and
+    ///   resolved to their wire market name (e.g. "@107"). On any resolution failure the
+    ///   input is returned verbatim so the caller can still attempt the request.
+    async fn resolve_market_symbol(&self, symbol: &str, account_type: AccountType) -> String {
+        if account_type != AccountType::Spot {
+            return symbol.to_string();
+        }
+        match self.resolve_spot_coin(symbol).await {
+            Ok(wire) => wire,
+            Err(_) => symbol.to_string(),
+        }
+    }
+
     async fn get_recent_trades(
         &self,
         symbol: crate::core::types::SymbolInput<'_>,
         _limit: Option<u32>,
         account_type: AccountType,
     ) -> ExchangeResult<Vec<PublicTrade>> {
-        let coin = symbol.resolve(ExchangeId::HyperLiquid, account_type)?;
+        let resolved = symbol.resolve(ExchangeId::HyperLiquid, account_type)?;
+        let coin = if account_type == AccountType::Spot {
+            self.resolve_spot_coin(&resolved).await?
+        } else {
+            resolved.to_string()
+        };
         let response = self
-            .info_request(InfoType::RecentTrades, serde_json::json!({ "coin": &*coin }))
+            .info_request(InfoType::RecentTrades, serde_json::json!({ "coin": coin }))
             .await?;
         HyperliquidParser::parse_recent_trades(&response)
     }

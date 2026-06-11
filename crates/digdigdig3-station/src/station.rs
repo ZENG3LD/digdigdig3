@@ -564,6 +564,19 @@ impl Station {
                 }
             };
 
+            // Part B seam: resolve display symbol → wire id for connectors where
+            // the WS subscribe frame coin differs from the caller-facing display
+            // name (HyperLiquid spot: "HYPE/USDC" → "@107"). The REST connector
+            // is always present before subscriptions (connect_public / connect_full
+            // is called before subscribe), and REST connectors self-warm their
+            // universe cache on first use (OnceCell). For all other venues the
+            // default impl is a passthrough (zero allocation, zero round-trip).
+            let raw = if let Some(rest) = self.inner.hub.rest(entry.exchange) {
+                rest.resolve_market_symbol(&raw, entry.account_type).await
+            } else {
+                raw
+            };
+
             for s in &entry.streams {
                 let kind = s.to_kind();
                 let key = SeriesKey {

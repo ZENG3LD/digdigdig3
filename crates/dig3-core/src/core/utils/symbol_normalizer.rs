@@ -1191,6 +1191,7 @@ mod hyperliquid {
     /// HyperLiquid coin name -> canonical Symbol.
     ///
     /// "BTC" -> Symbol { base: "BTC", quote: "USD" }.
+    /// "BTC-PERP" (emitted by some HL WS frames) -> Symbol { base: "BTC", quote: "USD" }.
     /// Quote is always "USD" -- HL perps are USD-settled (USDC).
     pub(super) fn from_exchange(raw: &str, _account_type: AccountType) -> Result<Symbol, NormalizerError> {
         if raw.is_empty() {
@@ -1199,7 +1200,10 @@ mod hyperliquid {
                 raw: raw.to_string(),
             });
         }
-        Ok(Symbol::new(&raw.to_uppercase(), "USD"))
+        // Some HL event frames carry "BTC-PERP" — strip the suffix so the
+        // canonical base is "BTC" rather than "BTC-PERP".
+        let base = raw.strip_suffix("-PERP").unwrap_or(raw);
+        Ok(Symbol::new(&base.to_uppercase(), "USD"))
     }
 
     /// Valid HyperLiquid symbol: non-empty, ASCII alphanumeric, no separator.
@@ -1759,6 +1763,20 @@ mod tests {
         assert_eq!(parsed_eth.quote, "USD");
 
         assert!(SymbolNormalizer::from_exchange(ExchangeId::HyperLiquid, "", AccountType::FuturesCross).is_err());
+    }
+
+    #[test]
+    fn hyperliquid_normalizer_strips_perp_suffix() {
+        // Some HL WS frames carry "BTC-PERP" — from_exchange must strip the
+        // suffix so the canonical base is "BTC" and not "BTC-PERP".
+        let parsed = SymbolNormalizer::from_exchange(
+            ExchangeId::HyperLiquid,
+            "BTC-PERP",
+            AccountType::FuturesCross,
+        )
+        .unwrap();
+        assert_eq!(parsed.base, "BTC");
+        assert_eq!(parsed.quote, "USD");
     }
 
     #[test]

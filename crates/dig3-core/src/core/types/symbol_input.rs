@@ -241,20 +241,8 @@ mod tests {
         assert_eq!(input, SymbolInput::Canonical(&sym));
     }
 
-    // sym! macro — Raw literal
-    #[test]
-    fn sym_macro_raw_literal() {
-        let input = crate::sym!("BTCUSDT");
-        assert_eq!(input, SymbolInput::Raw("BTCUSDT"));
-    }
-
-    // sym! macro — &canonical expr
-    #[test]
-    fn sym_macro_canonical() {
-        let sym = Symbol::new("BTC", "USDT");
-        let input = crate::sym!(&sym);
-        assert_eq!(input, SymbolInput::Canonical(&sym));
-    }
+    // sym! macro tests live in the full `digdigdig3` crate next to the macro
+    // (it stayed there in the 0.3.17 core extraction).
 
     // OwnedSymbolInput::Raw resolve → clone
     #[test]

@@ -19,3 +19,23 @@ macro_rules! sym {
         $crate::core::types::SymbolInput::Canonical(&$canonical)
     };
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::core::types::{Symbol, SymbolInput};
+
+    // Moved from dig3-core symbol_input.rs tests: the macro lives in THIS
+    // crate post-extraction, so its tests must too.
+    #[test]
+    fn sym_macro_raw_literal() {
+        let input = crate::sym!("BTCUSDT");
+        assert_eq!(input, SymbolInput::Raw("BTCUSDT"));
+    }
+
+    #[test]
+    fn sym_macro_canonical() {
+        let sym = Symbol::new("BTC", "USDT");
+        let input = crate::sym!(&sym);
+        assert_eq!(input, SymbolInput::Canonical(&sym));
+    }
+}

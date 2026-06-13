@@ -346,61 +346,45 @@ impl HyperliquidConnector {
     /// Mirrors how `parse_spot_exchange_info` derives the display pair from
     /// `universe[].tokens` + `tokens[].name`, so every `SymbolInfo.symbol`
     /// it reports has exactly one entry here.
+    ///
+    /// Each market is also keyed by its bare BASE token (uppercase). The
+    /// REST path reaches this map with the full "BASE/QUOTE" display pair
+    /// (via `SymbolInput::Raw`), but the WS subscribe seam in the station
+    /// runs the canonical symbol through `SymbolNormalizer::to_exchange`
+    /// FIRST, which for HyperLiquid reduces "MU/USDC" → "MU" (base only).
+    /// So both forms must resolve to the same wire name. HL spot bases are
+    /// unique within the universe; if a base ever collided we keep the
+    /// first-seen mapping (the BASE/QUOTE key is always exact).
     async fn ensure_spot_universe(&self) -> ExchangeResult<&HashMap<String, String>> {
         self.spot_universe_cache.get_or_try_init(|| async {
             let meta = self.info_request(InfoType::SpotMeta, serde_json::json!({})).await?;
-            let universe = meta.get("universe")
-                .and_then(|u| u.as_array())
-                .ok_or_else(|| ExchangeError::Parse(
-                    "Missing 'universe' array in spotMeta response".to_string(),
-                ))?;
-            let tokens = meta.get("tokens")
-                .and_then(|t| t.as_array())
-                .ok_or_else(|| ExchangeError::Parse(
-                    "Missing 'tokens' array in spotMeta response".to_string(),
-                ))?;
-
-            let token_name = |idx: usize| -> Option<&str> {
-                tokens.get(idx)?.get("name")?.as_str()
-            };
-
-            let mut map = HashMap::new();
-            for market in universe {
-                let Some(wire) = market.get("name").and_then(|v| v.as_str()) else { continue };
-                let Some(pair) = market.get("tokens").and_then(|t| t.as_array()) else { continue };
-                if pair.len() < 2 {
-                    continue;
-                }
-                let base_idx = pair[0].as_u64().unwrap_or(0) as usize;
-                let quote_idx = pair[1].as_u64().unwrap_or(0) as usize;
-                let (Some(base), Some(quote)) = (token_name(base_idx), token_name(quote_idx)) else {
-                    continue;
-                };
-                map.insert(
-                    format!("{}/{}", base, quote).to_uppercase(),
-                    wire.to_string(),
-                );
-            }
-            Ok(map)
+            build_spot_universe_map(&meta)
         }).await
     }
 
     /// Resolve a SPOT coin identifier to the wire market name HL market-data
     /// endpoints expect. Accepts:
     /// - wire names ("@107") — passed through;
-    /// - display pairs ("MU/USDC", as reported by `get_exchange_info`) —
-    ///   looked up in the spot universe;
+    /// - display pairs ("MU/USDC", as reported by `get_exchange_info`, REST
+    ///   path) — looked up in the spot universe;
+    /// - bare base tokens ("MU", the WS path: the station normalizer reduces
+    ///   "MU/USDC" → "MU" before this is called) — also looked up;
     /// - anything else — passed through unchanged (lets exotic raw input hit
     ///   the wire verbatim rather than failing locally).
+    ///
+    /// The spot universe is keyed by BOTH "BASE/QUOTE" and bare "BASE", so the
+    /// lookup is no longer gated on the presence of a `/` — gating on `/` was
+    /// the bug: the WS path arrives slash-free and silently fell through to
+    /// the verbatim base name, which HL rejects (it expects the "@{index}"
+    /// wire form for spot). Always consult the universe; passthrough only when
+    /// the symbol is genuinely unknown.
     async fn resolve_spot_coin(&self, coin: &str) -> ExchangeResult<String> {
         if coin.starts_with('@') {
             return Ok(coin.to_string());
         }
-        if coin.contains('/') {
-            let map = self.ensure_spot_universe().await?;
-            if let Some(wire) = map.get(&coin.to_uppercase()) {
-                return Ok(wire.clone());
-            }
+        let map = self.ensure_spot_universe().await?;
+        if let Some(wire) = map.get(&coin.to_uppercase()) {
+            return Ok(wire.clone());
         }
         Ok(coin.to_string())
     }
@@ -409,6 +393,57 @@ impl HyperliquidConnector {
 // ═══════════════════════════════════════════════════════════════════════════════
 // HELPERS
 // ═══════════════════════════════════════════════════════════════════════════════
+
+/// Build the SPOT universe map from a `spotMeta` response: every market is keyed
+/// by BOTH its display pair ("BASE/QUOTE", the REST path) and its bare base
+/// ("BASE", the WS path after the station normalizer strips the quote) → the
+/// wire market name (`universe[].name`, e.g. "@333").
+///
+/// A base is not unique — 13 of HL's ~306 spot markets share a base across
+/// quotes (HYPE has 4). HL's canonical spot quote is USDC and the normalizer
+/// only ever emits the base, so a USDC-quoted market wins the bare-base key
+/// deterministically; the first-seen market is the fallback when no USDC market
+/// exists for that base. This removes any dependency on `universe[]` ordering.
+fn build_spot_universe_map(meta: &serde_json::Value) -> ExchangeResult<HashMap<String, String>> {
+    let universe = meta.get("universe")
+        .and_then(|u| u.as_array())
+        .ok_or_else(|| ExchangeError::Parse(
+            "Missing 'universe' array in spotMeta response".to_string(),
+        ))?;
+    let tokens = meta.get("tokens")
+        .and_then(|t| t.as_array())
+        .ok_or_else(|| ExchangeError::Parse(
+            "Missing 'tokens' array in spotMeta response".to_string(),
+        ))?;
+
+    let token_name = |idx: usize| -> Option<&str> {
+        tokens.get(idx)?.get("name")?.as_str()
+    };
+
+    let mut map = HashMap::new();
+    for market in universe {
+        let Some(wire) = market.get("name").and_then(|v| v.as_str()) else { continue };
+        let Some(pair) = market.get("tokens").and_then(|t| t.as_array()) else { continue };
+        if pair.len() < 2 {
+            continue;
+        }
+        let base_idx = pair[0].as_u64().unwrap_or(0) as usize;
+        let quote_idx = pair[1].as_u64().unwrap_or(0) as usize;
+        let (Some(base), Some(quote)) = (token_name(base_idx), token_name(quote_idx)) else {
+            continue;
+        };
+        // Exact display-pair key (REST path).
+        map.insert(format!("{}/{}", base, quote).to_uppercase(), wire.to_string());
+        // Bare-base key (WS path, post-normalizer): USDC market wins, else first-seen.
+        let base_key = base.to_uppercase();
+        if quote.eq_ignore_ascii_case("USDC") {
+            map.insert(base_key, wire.to_string());
+        } else {
+            map.entry(base_key).or_insert_with(|| wire.to_string());
+        }
+    }
+    Ok(map)
+}
 
 fn interval_to_ms(interval: &str) -> i64 {
     match interval {
@@ -2570,5 +2605,51 @@ impl crate::core::traits::HasCapabilities for HyperliquidConnector {
 
     fn validation_status(&self) -> Option<&'static crate::core::types::ValidationStamp> {
         crate::core::utils::validation_snapshot::validation_for(crate::core::types::ExchangeId::HyperLiquid)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Minimal spotMeta shaped like HL's: `tokens[].name` + `universe[].{name,tokens:[baseIdx,quoteIdx]}`.
+    /// Token indices: 0=USDC 1=MU 2=HYPE 3=USDT.
+    fn meta() -> serde_json::Value {
+        serde_json::json!({
+            "tokens": [
+                {"name": "USDC"}, {"name": "MU"}, {"name": "HYPE"}, {"name": "USDT"}
+            ],
+            "universe": [
+                // HYPE/USDT comes FIRST on purpose — a naive first-seen map would
+                // bind bare "HYPE" to this non-USDC market.
+                {"name": "@9",   "tokens": [2, 3]},
+                {"name": "@107", "tokens": [2, 0]}, // HYPE/USDC
+                {"name": "@333", "tokens": [1, 0]}, // MU/USDC (unique base)
+            ]
+        })
+    }
+
+    #[test]
+    fn display_pair_keys_resolve_exactly() {
+        let m = build_spot_universe_map(&meta()).unwrap();
+        assert_eq!(m.get("MU/USDC").map(String::as_str), Some("@333"));
+        assert_eq!(m.get("HYPE/USDC").map(String::as_str), Some("@107"));
+        assert_eq!(m.get("HYPE/USDT").map(String::as_str), Some("@9"));
+    }
+
+    #[test]
+    fn bare_base_resolves_for_unique_base() {
+        // The WS path (post-normalizer) reaches the map with the bare base.
+        let m = build_spot_universe_map(&meta()).unwrap();
+        assert_eq!(m.get("MU").map(String::as_str), Some("@333"));
+    }
+
+    #[test]
+    fn bare_base_usdc_wins_collision_regardless_of_order() {
+        // HYPE has two markets and the USDC one is listed AFTER the USDT one.
+        // The bare "HYPE" key must still resolve to the USDC market (@107),
+        // not the first-seen USDT market (@9) — deterministic, order-independent.
+        let m = build_spot_universe_map(&meta()).unwrap();
+        assert_eq!(m.get("HYPE").map(String::as_str), Some("@107"));
     }
 }

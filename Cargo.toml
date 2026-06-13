@@ -8,7 +8,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.3.21"
+version = "0.3.22"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ZENG3LD/digdigdig3"
@@ -19,7 +19,7 @@ categories = ["api-bindings", "asynchronous", "web-programming"]
 [workspace.dependencies]
 # Local dir is `dig3-core` (convenience shorthand); the published crates.io
 # name is `digdigdig3-core`.
-digdigdig3-core = { version = "0.3.21", path = "./crates/dig3-core" }
-digdigdig3 = { version = "0.3.21", path = "./crates/digdigdig3" }
-digdigdig3-station = { version = "0.3.21", path = "./crates/digdigdig3-station", default-features = true }
-digdigdig3-cli = { version = "0.3.21", path = "./crates/digdigdig3-cli" }
+digdigdig3-core = { version = "0.3.22", path = "./crates/dig3-core" }
+digdigdig3 = { version = "0.3.22", path = "./crates/digdigdig3" }
+digdigdig3-station = { version = "0.3.22", path = "./crates/digdigdig3-station", default-features = true }
+digdigdig3-cli = { version = "0.3.22", path = "./crates/digdigdig3-cli" }

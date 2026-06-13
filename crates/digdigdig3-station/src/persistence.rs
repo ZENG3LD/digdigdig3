@@ -96,6 +96,10 @@ impl PersistenceConfig {
             | FundingSettlement | RiskLimit | OptionGreeks
             | MarkPriceKline(_) | IndexPriceKline(_) | PremiumIndexKline(_)
             | BlockTrade | OrderbookL3 | MarketWarning => self.enabled,
+            // Mechanical bar aggregators — derived from Trade stream.
+            // Blob-backed (FootprintPoint) or fixed-record (BarPoint variants).
+            // Persist when globally enabled, same policy as extended numeric types.
+            RangeBar(_) | TickBar(_) | VolumeBar(_) | Footprint(_) => self.enabled,
             // Private streams are ephemeral by default.  These are transient
             // account-state notifications, not time-series data suitable for
             // backtesting.  Persistence is opt-in via future dedicated toggles.

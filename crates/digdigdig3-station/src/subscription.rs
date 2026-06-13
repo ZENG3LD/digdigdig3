@@ -4,9 +4,9 @@ use digdigdig3::core::websocket::KlineInterval;
 
 use crate::data::{
     AggTradePoint, BalanceUpdatePoint, BarPoint, BasisPoint, BlockTradePoint, CompositeIndexPoint,
-    FundingRatePoint, FundingSettlementPoint, HistoricalVolatilityPoint, IndexPriceKlinePoint,
-    IndexPricePoint, InsuranceFundPoint, LiquidationPoint, LongShortRatioPoint,
-    MarkPriceKlinePoint, MarkPricePoint,
+    FootprintPoint, FundingRatePoint, FundingSettlementPoint, HistoricalVolatilityPoint,
+    IndexPriceKlinePoint, IndexPricePoint, InsuranceFundPoint, LiquidationPoint,
+    LongShortRatioPoint, MarkPriceKlinePoint, MarkPricePoint,
     MarketWarningPoint, ObDeltaPoint, ObSnapshotPoint, OpenInterestPoint, OptionGreeksPoint,
     OrderUpdatePoint, OrderbookL3Point, PositionUpdatePoint, PredictedFundingPoint,
     PremiumIndexKlinePoint, RiskLimitPoint,
@@ -49,6 +49,17 @@ pub enum Stream {
     MarkPriceKline(KlineInterval),
     IndexPriceKline(KlineInterval),
     PremiumIndexKline(KlineInterval),
+    // --- derived bar aggregators ---
+    /// Range bar: close when |trade.price − bar_open| ≥ range.
+    /// `range` = price × 1e8 (fixed-point integer, same unit as `Kind::RangeBar`).
+    RangeBar(u64),
+    /// Tick bar: close every `n` trades.
+    TickBar(u32),
+    /// Volume bar: close when cumulative volume ≥ threshold.
+    /// `threshold` = volume × 1e8 (fixed-point integer, same unit as `Kind::VolumeBar`).
+    VolumeBar(u64),
+    /// Footprint bar: time-bucketed OHLCV with per-price buy/sell breakdown.
+    Footprint(KlineInterval),
     // --- private (auth-required) streams ---
     /// Order lifecycle events (create/fill/cancel/expire).  Requires credentials.
     OrderUpdate,
@@ -89,6 +100,10 @@ impl Stream {
             Stream::MarkPriceKline(iv) => Kind::MarkPriceKline(iv.clone()),
             Stream::IndexPriceKline(iv) => Kind::IndexPriceKline(iv.clone()),
             Stream::PremiumIndexKline(iv) => Kind::PremiumIndexKline(iv.clone()),
+            Stream::RangeBar(r) => Kind::RangeBar(*r),
+            Stream::TickBar(n) => Kind::TickBar(*n),
+            Stream::VolumeBar(v) => Kind::VolumeBar(*v),
+            Stream::Footprint(iv) => Kind::Footprint(iv.clone()),
             Stream::OrderUpdate => Kind::OrderUpdate,
             Stream::BalanceUpdate => Kind::BalanceUpdate,
             Stream::PositionUpdate => Kind::PositionUpdate,
@@ -363,6 +378,14 @@ pub enum Event {
         timeframe: KlineInterval,
         point: PremiumIndexKlinePoint,
     },
+    // --- derived bar aggregator events ---
+    /// Footprint bar update. Emitted on every trade (open bar, same upsert
+    /// semantics as `Event::Bar`). `Kind::Footprint` carries the interval.
+    Footprint {
+        exchange: ExchangeId,
+        symbol: String,
+        point: FootprintPoint,
+    },
     // --- connector lifecycle events (meta, not data stream) ---
     /// Emitted once when `hub.connect_public(exchange)` succeeds, or
     /// immediately if it was already connected when `warmup()` called.
@@ -425,6 +448,7 @@ impl Event {
             Event::FundingSettlement { exchange, .. } |
             Event::MarkPriceKline { exchange, .. } | Event::IndexPriceKline { exchange, .. } |
             Event::PremiumIndexKline { exchange, .. } |
+            Event::Footprint { exchange, .. } => *exchange,
             Event::OrderUpdate { exchange, .. } | Event::BalanceUpdate { exchange, .. } |
             Event::PositionUpdate { exchange, .. } => *exchange,
             Event::ConnectorReady { exchange } => *exchange,
@@ -450,6 +474,7 @@ impl Event {
             Event::FundingSettlement { symbol, .. } |
             Event::MarkPriceKline { symbol, .. } | Event::IndexPriceKline { symbol, .. } |
             Event::PremiumIndexKline { symbol, .. } |
+            Event::Footprint { symbol, .. } => symbol,
             Event::OrderUpdate { symbol, .. } | Event::BalanceUpdate { symbol, .. } |
             Event::PositionUpdate { symbol, .. } => symbol,
             // Lifecycle events carry no symbol.
@@ -494,6 +519,7 @@ impl Event {
             | Event::MarkPriceKline { symbol, .. }
             | Event::IndexPriceKline { symbol, .. }
             | Event::PremiumIndexKline { symbol, .. }
+            | Event::Footprint { symbol, .. }
             | Event::OrderUpdate { symbol, .. }
             | Event::BalanceUpdate { symbol, .. }
             | Event::PositionUpdate { symbol, .. } => *symbol = new_symbol,
@@ -532,6 +558,7 @@ impl Event {
             Event::MarkPriceKline { point, .. } => point.timestamp_ms(),
             Event::IndexPriceKline { point, .. } => point.timestamp_ms(),
             Event::PremiumIndexKline { point, .. } => point.timestamp_ms(),
+            Event::Footprint { point, .. } => point.timestamp_ms(),
             Event::OrderUpdate { point, .. } => point.timestamp_ms(),
             Event::BalanceUpdate { point, .. } => point.timestamp_ms(),
             Event::PositionUpdate { point, .. } => point.timestamp_ms(),

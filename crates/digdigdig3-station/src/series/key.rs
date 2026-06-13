@@ -38,6 +38,25 @@ pub enum Kind {
     MarkPriceKline(KlineInterval),
     IndexPriceKline(KlineInterval),
     PremiumIndexKline(KlineInterval),
+    // --- derived bar aggregators (always computed from Stream::Trade) ---
+    /// Range bar: a new bar opens when |trade.price − bar_open| ≥ range.
+    ///
+    /// `range` is expressed as a **fixed-point integer: price × 1e8**.
+    /// Example: a $1.00 range on a dollar-denominated pair = `100_000_000u64`.
+    /// This avoids carrying floats in `Hash`/`Eq` while keeping the unit
+    /// explicit and independent of the minimum exchange tick.
+    RangeBar(u64),
+    /// Tick bar: a new bar closes every `n` trades.
+    TickBar(u32),
+    /// Volume bar: a new bar closes when cumulative volume ≥ threshold.
+    ///
+    /// `threshold` is expressed as a **fixed-point integer: volume × 1e8**.
+    /// Example: 0.5 BTC threshold = `50_000_000u64`.
+    VolumeBar(u64),
+    /// Footprint bar: time-bucketed OHLCV with per-price buy/sell breakdown.
+    ///
+    /// Reuses `KlineInterval` for the time bucket (e.g. `"1m"`, `"5m"`).
+    Footprint(KlineInterval),
     // --- private (auth-required) stream types ---
     /// Order lifecycle events (create/fill/cancel/expire).  Auth-required.
     OrderUpdate,
@@ -68,7 +87,15 @@ impl Kind {
     /// Derived kinds bypass the `ws.subscribe(req)` path in `acquire_or_spawn`
     /// and instead use `acquire_or_spawn_derived<D>(...)`.
     pub(crate) fn is_derived(&self) -> bool {
-        matches!(self, Kind::Basis | Kind::FundingSettlement)
+        matches!(
+            self,
+            Kind::Basis
+            | Kind::FundingSettlement
+            | Kind::RangeBar(_)
+            | Kind::TickBar(_)
+            | Kind::VolumeBar(_)
+            | Kind::Footprint(_)
+        )
     }
 
     /// If this kind has no WS feed and must be driven by REST polling,
@@ -121,6 +148,10 @@ impl Kind {
             Kind::MarkPriceKline(iv) => format!("mark_price_klines_{}", iv.as_str()),
             Kind::IndexPriceKline(iv) => format!("index_price_klines_{}", iv.as_str()),
             Kind::PremiumIndexKline(iv) => format!("premium_index_klines_{}", iv.as_str()),
+            Kind::RangeBar(r) => format!("range_bars_{r}"),
+            Kind::TickBar(n) => format!("tick_bars_{n}"),
+            Kind::VolumeBar(v) => format!("volume_bars_{v}"),
+            Kind::Footprint(iv) => format!("footprint_{}", iv.as_str()),
             Kind::OrderUpdate => "order_updates".to_string(),
             Kind::BalanceUpdate => "balance_updates".to_string(),
             Kind::PositionUpdate => "position_updates".to_string(),

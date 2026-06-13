@@ -6,7 +6,7 @@
 //! `DiskStore<T>` / `Series<T>` / `broadcast::channel<Event>` plumbing as
 //! regular WS forwarders. Consumers see no difference.
 //!
-//! Three concrete impls ship in this module:
+//! Concrete impls shipped in this module:
 //!
 //! - [`BasisDerived`] — joins `MarkPrice` + `IndexPrice`, emits
 //!   `BasisPoint { value = mark − index }`. Rejects pairs skewed > 2 seconds.
@@ -16,8 +16,21 @@
 //! - [`TradeToBarDerived`] — subscribes to `Trade` and aggregates individual
 //!   trades into OHLCV bars of a fixed interval. Used as a fallback when the
 //!   venue's WS does not natively offer the requested `Kind::Kline(interval)`.
+//! - [`TradeToRangeBarDerived`] — emits a new [`BarPoint`] when the price
+//!   moves ≥ `range` away from the current bar's open price.
+//! - [`TradeToTickBarDerived`] — closes a bar every `n` trades.
+//! - [`TradeToVolumeBarDerived`] — closes a bar when cumulative volume ≥ threshold.
+//! - [`TradeToFootprintDerived`] — time-bucketed OHLCV with per-price buy/sell breakdown.
+//! - [`TradeToRangeBarDerived`] — emits a new [`BarPoint`] when the price
+//!   moves ≥ `range` away from the current bar's open price.
+//! - [`TradeToTickBarDerived`] — closes a bar every `n` trades.
+//! - [`TradeToVolumeBarDerived`] — closes a bar when cumulative volume ≥ threshold.
+//! - [`TradeToFootprintDerived`] — time-bucketed OHLCV with per-price buy/sell breakdown.
 
-use crate::data::{BarPoint, BasisPoint, FundingRatePoint, FundingSettlementPoint, MarkPricePoint, IndexPricePoint, TradePoint};
+use crate::data::{
+    BarPoint, BasisPoint, FootprintPoint, FundingRatePoint, FundingSettlementPoint,
+    MarkPricePoint, IndexPricePoint, TradePoint,
+};
 use crate::series::{DataPoint, Kind};
 use crate::series::SeriesKey;
 use crate::subscription::{Event, Stream};
@@ -251,11 +264,376 @@ impl DerivedStream for TradeToBarDerived {
     }
 }
 
-// Silence dead-code lint: MarkPricePoint + IndexPricePoint are used via
-// Event destructuring; FundingRatePoint via FundingSettlementDerived below.
-// These use-less imports are needed to keep the type names in scope for docs
-// and to avoid the compiler complaining about the fields being unused.
-// Actually they are just suppressed at import level — not needed. Removed.
+// ---------------------------------------------------------------------------
+// TradeToRangeBarDerived
+// ---------------------------------------------------------------------------
+
+/// Aggregates `Trade` events into OHLCV [`BarPoint`] bars triggered by price movement.
+///
+/// ## Bar semantics
+///
+/// `range` (from `Kind::RangeBar(r)`) is stored as `r / 1e8` internally.
+/// A new bar opens when `|trade.price − bar_open| >= range`. The crossing trade
+/// belongs to the **new** bar (not the closing one).
+///
+/// ## Monotonic `open_time`
+///
+/// Range/tick/volume bars can close in the same millisecond. `Series::upsert_by_ts`
+/// keys on `open_time`, so two distinct bars with equal ms would collapse.
+/// To prevent this, `open_time` is `max(first_trade_ts, last_emitted_open_time + 1)`.
+/// This guarantees strict monotonicity across all emitted bars without altering
+/// the semantic meaning of `open_time` (it remains the timestamp of the first
+/// trade in the bar, or 1 ms later if that timestamp collides).
+///
+/// ## Emit semantics
+///
+/// The current open bar is emitted on **every trade** (same as `TradeToBarDerived`),
+/// so consumers see live intra-bar updates via upsert.
+///
+/// ## Disabled guard
+///
+/// If `range == 0` (key kind is not `RangeBar` or param is zero), `on_upstream_event`
+/// always returns `None` — safe and panic-free.
+pub(crate) struct TradeToRangeBarDerived {
+    /// Minimum price movement to close bar, in native price units (`param / 1e8`).
+    /// `0.0` means disabled.
+    range: f64,
+    /// Currently-open bar, if any.
+    current: Option<BarPoint>,
+    /// The `open_time` of the last bar that was finalized (emitted as a closed bar).
+    /// Used for monotonic open_time collision avoidance.
+    last_emitted_open_time: i64,
+}
+
+impl DerivedStream for TradeToRangeBarDerived {
+    type Output = BarPoint;
+
+    fn deps() -> &'static [Stream] { &[Stream::Trade] }
+
+    fn new_for_key(key: &SeriesKey) -> Self {
+        let range = match &key.kind {
+            Kind::RangeBar(r) if *r > 0 => *r as f64 / 1e8,
+            _ => 0.0,
+        };
+        Self { range, current: None, last_emitted_open_time: 0 }
+    }
+
+    fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<BarPoint> {
+        if self.range == 0.0 { return None; }
+        let Event::Trade { point, .. } = ev else { return None };
+
+        if let Some(ref mut bar) = self.current {
+            // Check close condition BEFORE updating.
+            if (point.price - bar.open).abs() >= self.range {
+                // Finalize current bar (no update with crossing trade — it starts the new bar).
+                let closed = bar.clone();
+                // Emit the closed bar. open_time is already set.
+
+                // Open new bar at crossing trade.
+                let new_open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
+                self.last_emitted_open_time = new_open_time;
+                self.current = Some(BarPoint {
+                    open_time:   new_open_time,
+                    open:        point.price,
+                    high:        point.price,
+                    low:         point.price,
+                    close:       point.price,
+                    volume:      point.quantity,
+                    quote_volume: point.price * point.quantity,
+                    trades_count: 1,
+                });
+                // Emit the new (open) bar rather than the closed one so callers
+                // receive the in-progress state immediately (same contract as
+                // TradeToBarDerived). The closed bar was already emitted on the
+                // previous trade call that reached bar.close == crossing trade.
+                // Returning the new bar gives the consumer one event per trade.
+                let _ = closed; // closed bar state committed
+                return Some(self.current.clone().unwrap());
+            }
+            // Update in-place.
+            if point.price > bar.high  { bar.high  = point.price; }
+            if point.price < bar.low   { bar.low   = point.price; }
+            bar.close        = point.price;
+            bar.volume       += point.quantity;
+            bar.quote_volume += point.price * point.quantity;
+            bar.trades_count += 1;
+            Some(bar.clone())
+        } else {
+            // First trade — open a new bar.
+            let open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
+            self.last_emitted_open_time = open_time;
+            let bar = BarPoint {
+                open_time,
+                open:        point.price,
+                high:        point.price,
+                low:         point.price,
+                close:       point.price,
+                volume:      point.quantity,
+                quote_volume: point.price * point.quantity,
+                trades_count: 1,
+            };
+            self.current = Some(bar.clone());
+            Some(bar)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TradeToTickBarDerived
+// ---------------------------------------------------------------------------
+
+/// Aggregates `Trade` events into OHLCV [`BarPoint`] bars triggered by trade count.
+///
+/// ## Bar semantics
+///
+/// Closes a bar every `n` trades (from `Kind::TickBar(n)`). The `n`-th trade
+/// belongs to the **closing** bar.
+///
+/// See [`TradeToRangeBarDerived`] for the monotonic `open_time` scheme and
+/// intra-bar emit semantics — both apply here.
+pub(crate) struct TradeToTickBarDerived {
+    /// Trades per bar. `0` means disabled.
+    n: u32,
+    /// Currently-open bar, if any.
+    current: Option<BarPoint>,
+    /// Trades accumulated in the current bar.
+    count: u32,
+    /// See [`TradeToRangeBarDerived`] doc.
+    last_emitted_open_time: i64,
+}
+
+impl DerivedStream for TradeToTickBarDerived {
+    type Output = BarPoint;
+
+    fn deps() -> &'static [Stream] { &[Stream::Trade] }
+
+    fn new_for_key(key: &SeriesKey) -> Self {
+        let n = match &key.kind {
+            Kind::TickBar(n) if *n > 0 => *n,
+            _ => 0,
+        };
+        Self { n, current: None, count: 0, last_emitted_open_time: 0 }
+    }
+
+    fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<BarPoint> {
+        if self.n == 0 { return None; }
+        let Event::Trade { point, .. } = ev else { return None };
+
+        if self.current.is_none() {
+            let open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
+            self.last_emitted_open_time = open_time;
+            self.current = Some(BarPoint {
+                open_time,
+                open:        point.price,
+                high:        point.price,
+                low:         point.price,
+                close:       point.price,
+                volume:      point.quantity,
+                quote_volume: point.price * point.quantity,
+                trades_count: 1,
+            });
+            self.count = 1;
+        } else {
+            let bar = self.current.as_mut()?;
+            if point.price > bar.high  { bar.high  = point.price; }
+            if point.price < bar.low   { bar.low   = point.price; }
+            bar.close        = point.price;
+            bar.volume       += point.quantity;
+            bar.quote_volume += point.price * point.quantity;
+            bar.trades_count += 1;
+            self.count += 1;
+        }
+
+        let bar = self.current.clone()?;
+
+        // Roll if we hit n trades.
+        if self.count >= self.n {
+            // Next bar will be opened on the next trade.
+            self.current = None;
+            self.count = 0;
+        }
+
+        Some(bar)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TradeToVolumeBarDerived
+// ---------------------------------------------------------------------------
+
+/// Aggregates `Trade` events into OHLCV [`BarPoint`] bars triggered by cumulative volume.
+///
+/// ## Bar semantics
+///
+/// `threshold` (from `Kind::VolumeBar(v)`) is stored as `v / 1e8` internally.
+/// The bar closes when `cumulative_volume >= threshold`. The trade that crosses
+/// the threshold belongs to the **closing** bar (no volume carry-over to the
+/// next bar — document: partial fills that split across bars are not tracked).
+///
+/// See [`TradeToRangeBarDerived`] for monotonic `open_time` and emit semantics.
+pub(crate) struct TradeToVolumeBarDerived {
+    /// Volume threshold in native units (`param / 1e8`). `0.0` means disabled.
+    threshold: f64,
+    /// Currently-open bar, if any.
+    current: Option<BarPoint>,
+    /// See [`TradeToRangeBarDerived`] doc.
+    last_emitted_open_time: i64,
+}
+
+impl DerivedStream for TradeToVolumeBarDerived {
+    type Output = BarPoint;
+
+    fn deps() -> &'static [Stream] { &[Stream::Trade] }
+
+    fn new_for_key(key: &SeriesKey) -> Self {
+        let threshold = match &key.kind {
+            Kind::VolumeBar(v) if *v > 0 => *v as f64 / 1e8,
+            _ => 0.0,
+        };
+        Self { threshold, current: None, last_emitted_open_time: 0 }
+    }
+
+    fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<BarPoint> {
+        if self.threshold == 0.0 { return None; }
+        let Event::Trade { point, .. } = ev else { return None };
+
+        if self.current.is_none() {
+            let open_time = point.ts_ms.max(self.last_emitted_open_time + 1);
+            self.last_emitted_open_time = open_time;
+            self.current = Some(BarPoint {
+                open_time,
+                open:        point.price,
+                high:        point.price,
+                low:         point.price,
+                close:       point.price,
+                volume:      point.quantity,
+                quote_volume: point.price * point.quantity,
+                trades_count: 1,
+            });
+        } else {
+            let bar = self.current.as_mut()?;
+            if point.price > bar.high  { bar.high  = point.price; }
+            if point.price < bar.low   { bar.low   = point.price; }
+            bar.close        = point.price;
+            bar.volume       += point.quantity;
+            bar.quote_volume += point.price * point.quantity;
+            bar.trades_count += 1;
+        }
+
+        let bar = self.current.clone()?;
+
+        // Roll if volume crossed threshold (crossing trade is in the closing bar).
+        if bar.volume >= self.threshold {
+            self.current = None;
+        }
+
+        Some(bar)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TradeToFootprintDerived
+// ---------------------------------------------------------------------------
+
+/// Aggregates `Trade` events into time-bucketed [`FootprintPoint`] bars with
+/// per-price buy/sell volume breakdown.
+///
+/// ## Time bucketing
+///
+/// Uses `KlineInterval` (from `Kind::Footprint(iv)`) aligned to UTC epoch:
+/// `bucket_start = (ts_ms / interval_ms) * interval_ms`. Same as `TradeToBarDerived`.
+///
+/// ## Per-price levels
+///
+/// Each trade's price maps to a `(buy_vol, sell_vol)` entry in a `BTreeMap`
+/// (ordered by price). Side `0` = Buy, `1` = Sell (matches `TradePoint::side`).
+/// Price key is the raw `f64` bit-pattern (`u64::from_le_bytes(price.to_le_bytes())`),
+/// which gives exact equality on repeated same-price trades without float precision loss.
+///
+/// ## Emit semantics
+///
+/// The current open footprint is emitted on **every trade** via `upsert_by_ts`
+/// (same contract as `TradeToBarDerived`). On bucket roll, the new bar is emitted.
+///
+/// ## Disabled guard
+///
+/// `interval_ms == 0` → always returns `None`.
+pub(crate) struct TradeToFootprintDerived {
+    /// Bucket width in milliseconds. `0` = disabled.
+    interval_ms: i64,
+    /// Current bucket start.
+    current_bucket_start: i64,
+    /// OHLCV of the current bucket.
+    current_ohlcv: Option<(f64, f64, f64, f64, f64)>, // open, high, low, close, volume
+    /// Per-price accumulator: price_bits → (buy_vol, sell_vol).
+    levels: std::collections::BTreeMap<u64, (f64, f64)>,
+}
+
+impl TradeToFootprintDerived {
+    fn price_bits(price: f64) -> u64 {
+        u64::from_le_bytes(price.to_le_bytes())
+    }
+
+    fn build_point(&self, open_time: i64) -> FootprintPoint {
+        let (open, high, low, close, volume) = self.current_ohlcv.unwrap_or((0.0, 0.0, 0.0, 0.0, 0.0));
+        // Convert BTreeMap (ordered by price bits, which for positive f64 matches
+        // ascending numeric order) to sorted-by-price Vec.
+        let levels: Vec<(f64, f64, f64)> = self.levels.iter().map(|(bits, (buy, sell))| {
+            let price = f64::from_le_bytes(bits.to_le_bytes());
+            (price, *buy, *sell)
+        }).collect();
+        FootprintPoint { open_time, open, high, low, close, volume, levels }
+    }
+}
+
+impl DerivedStream for TradeToFootprintDerived {
+    type Output = FootprintPoint;
+
+    fn deps() -> &'static [Stream] { &[Stream::Trade] }
+
+    fn new_for_key(key: &SeriesKey) -> Self {
+        let interval_ms = match &key.kind {
+            Kind::Footprint(iv) => interval_to_ms(iv.as_str()).unwrap_or(0),
+            _ => 0,
+        };
+        Self {
+            interval_ms,
+            current_bucket_start: 0,
+            current_ohlcv: None,
+            levels: std::collections::BTreeMap::new(),
+        }
+    }
+
+    fn on_upstream_event(&mut self, ev: &Event, _dep_idx: usize) -> Option<FootprintPoint> {
+        if self.interval_ms == 0 { return None; }
+        let Event::Trade { point, .. } = ev else { return None };
+
+        let bucket_start = (point.ts_ms / self.interval_ms) * self.interval_ms;
+
+        if self.current_ohlcv.is_none() || bucket_start > self.current_bucket_start {
+            // Roll to new bucket.
+            self.current_bucket_start = bucket_start;
+            self.current_ohlcv = Some((point.price, point.price, point.price, point.price, point.quantity));
+            self.levels.clear();
+            // First level entry.
+            let bits = Self::price_bits(point.price);
+            let entry = self.levels.entry(bits).or_insert((0.0, 0.0));
+            if point.side == 0 { entry.0 += point.quantity; } else { entry.1 += point.quantity; }
+        } else {
+            // Update current bucket.
+            let ohlcv = self.current_ohlcv.as_mut()?;
+            if point.price > ohlcv.1 { ohlcv.1 = point.price; } // high
+            if point.price < ohlcv.2 { ohlcv.2 = point.price; } // low
+            ohlcv.3 = point.price; // close
+            ohlcv.4 += point.quantity; // volume
+            let bits = Self::price_bits(point.price);
+            let entry = self.levels.entry(bits).or_insert((0.0, 0.0));
+            if point.side == 0 { entry.0 += point.quantity; } else { entry.1 += point.quantity; }
+        }
+
+        Some(self.build_point(self.current_bucket_start))
+    }
+}
 
 // ---------------------------------------------------------------------------
 // FundingSettlementDerived
@@ -359,6 +737,7 @@ const _: fn() = || {
     let _ = std::mem::size_of::<FundingRatePoint>();
     let _ = std::mem::size_of::<TradePoint>();
     let _ = std::mem::size_of::<BarPoint>();
+    let _ = std::mem::size_of::<FootprintPoint>();
 };
 
 // ---------------------------------------------------------------------------
@@ -695,5 +1074,298 @@ mod tests {
         let mut d = TradeToBarDerived::new_for_key(&key);
         let r = d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0);
         assert!(r.is_none(), "unknown interval → interval_ms=0 → no emission");
+    }
+
+    // -----------------------------------------------------------------------
+    // Helper for mechanical bar aggregator keys
+    // -----------------------------------------------------------------------
+
+    fn range_bar_key(range_fixed: u64) -> SeriesKey {
+        SeriesKey::new(ExchangeId::Binance, AccountType::FuturesCross, "BTCUSDT",
+            crate::series::Kind::RangeBar(range_fixed))
+    }
+
+    fn tick_bar_key(n: u32) -> SeriesKey {
+        SeriesKey::new(ExchangeId::Binance, AccountType::FuturesCross, "BTCUSDT",
+            crate::series::Kind::TickBar(n))
+    }
+
+    fn volume_bar_key(vol_fixed: u64) -> SeriesKey {
+        SeriesKey::new(ExchangeId::Binance, AccountType::FuturesCross, "BTCUSDT",
+            crate::series::Kind::VolumeBar(vol_fixed))
+    }
+
+    fn footprint_key(interval: &str) -> SeriesKey {
+        SeriesKey::new(ExchangeId::Binance, AccountType::FuturesCross, "BTCUSDT",
+            crate::series::Kind::Footprint(KlineInterval::new(interval)))
+    }
+
+    fn trade_event_side(ts_ms: i64, price: f64, quantity: f64, side: u8) -> Event {
+        Event::Trade {
+            exchange: ExchangeId::Binance,
+            symbol: "BTCUSDT".to_string(),
+            point: crate::data::TradePoint { ts_ms, price, quantity, side, trade_id_hash: 0 },
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // TradeToRangeBarDerived tests
+    // -----------------------------------------------------------------------
+
+    /// Trades within range stay in one bar.
+    #[test]
+    fn range_bar_stays_in_bar_while_within_range() {
+        // range = $1.00 = 1_0000_0000 fixed-point
+        let key = range_bar_key(100_000_000);
+        let mut d = TradeToRangeBarDerived::new_for_key(&key);
+
+        let p1 = d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
+        assert_eq!(p1.open, 100.0);
+
+        // Move 0.5 — within range.
+        let p2 = d.on_upstream_event(&trade_event(1, 100.5, 1.0), 0).unwrap();
+        assert_eq!(p2.open_time, p1.open_time, "same bar");
+        assert_eq!(p2.open, 100.0, "open unchanged");
+        assert_eq!(p2.high, 100.5, "high updated");
+        assert_eq!(p2.close, 100.5);
+        assert_eq!(p2.trades_count, 2);
+    }
+
+    /// Crossing range opens a new bar.
+    #[test]
+    fn range_bar_rolls_on_crossing() {
+        // range = $1.00
+        let key = range_bar_key(100_000_000);
+        let mut d = TradeToRangeBarDerived::new_for_key(&key);
+
+        d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
+        // Exactly $1 movement — crosses.
+        let p = d.on_upstream_event(&trade_event(10, 101.0, 2.0), 0).unwrap();
+        // New bar started at 101.0.
+        assert_eq!(p.open, 101.0, "new bar opens at crossing price");
+        assert_eq!(p.trades_count, 1, "first trade in new bar");
+    }
+
+    /// OHLC correctness across two bars.
+    #[test]
+    fn range_bar_ohlc_correct() {
+        let key = range_bar_key(100_000_000); // $1 range
+        let mut d = TradeToRangeBarDerived::new_for_key(&key);
+
+        // Bar 1: open 100, go up to 100.9, then cross with 101.
+        d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
+        d.on_upstream_event(&trade_event(1, 100.9, 1.0), 0).unwrap();
+        let bar1_last = d.on_upstream_event(&trade_event(2, 100.4, 0.5), 0).unwrap();
+        // bar1 still open (max deviation = 0.9 < 1.0)
+        assert_eq!(bar1_last.open, 100.0);
+        assert_eq!(bar1_last.high, 100.9);
+        assert_eq!(bar1_last.low,  100.0);
+        assert_eq!(bar1_last.close, 100.4);
+    }
+
+    /// Two bars closing at the same ms get distinct monotonic open_times.
+    #[test]
+    fn range_bar_monotonic_open_time_collision() {
+        let key = range_bar_key(100_000_000); // $1 range
+        let mut d = TradeToRangeBarDerived::new_for_key(&key);
+
+        // ts=0: open bar1 at 100.0.
+        let p1 = d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
+        let ot1 = p1.open_time;
+
+        // ts=0: cross at 101.0 — bar1 closes, bar2 opens. Same ms!
+        let p2 = d.on_upstream_event(&trade_event(0, 101.0, 1.0), 0).unwrap();
+        assert_ne!(p2.open_time, ot1, "bar2 must not share open_time with bar1");
+        assert!(p2.open_time > ot1, "bar2 open_time must be strictly greater");
+    }
+
+    /// Zero range param → no emission.
+    #[test]
+    fn range_bar_zero_range_safe() {
+        let key = range_bar_key(0);
+        let mut d = TradeToRangeBarDerived::new_for_key(&key);
+        assert!(d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // TradeToTickBarDerived tests
+    // -----------------------------------------------------------------------
+
+    /// Every n trades rolls a new bar.
+    #[test]
+    fn tick_bar_rolls_every_n() {
+        let n = 3u32;
+        let key = tick_bar_key(n);
+        let mut d = TradeToTickBarDerived::new_for_key(&key);
+
+        let p1 = d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
+        assert_eq!(p1.trades_count, 1);
+        let p2 = d.on_upstream_event(&trade_event(1, 101.0, 1.0), 0).unwrap();
+        assert_eq!(p2.trades_count, 2);
+        let p3 = d.on_upstream_event(&trade_event(2, 99.0, 1.0), 0).unwrap();
+        assert_eq!(p3.trades_count, 3, "3rd trade completes bar");
+
+        // 4th trade opens new bar.
+        let p4 = d.on_upstream_event(&trade_event(3, 102.0, 2.0), 0).unwrap();
+        assert_eq!(p4.trades_count, 1, "first trade in new bar");
+        assert_eq!(p4.open, 102.0, "new bar open = 4th trade price");
+    }
+
+    /// OHLC across one complete bar.
+    #[test]
+    fn tick_bar_ohlc_correct() {
+        let key = tick_bar_key(3);
+        let mut d = TradeToTickBarDerived::new_for_key(&key);
+
+        d.on_upstream_event(&trade_event(0, 200.0, 1.0), 0).unwrap();
+        d.on_upstream_event(&trade_event(1,  50.0, 1.0), 0).unwrap();
+        let last = d.on_upstream_event(&trade_event(2, 150.0, 1.0), 0).unwrap();
+
+        assert_eq!(last.open,  200.0);
+        assert_eq!(last.high,  200.0);
+        assert_eq!(last.low,    50.0);
+        assert_eq!(last.close, 150.0);
+        assert!((last.volume - 3.0).abs() < 1e-12);
+    }
+
+    /// n=0 → no emission.
+    #[test]
+    fn tick_bar_zero_n_safe() {
+        let key = tick_bar_key(0);
+        let mut d = TradeToTickBarDerived::new_for_key(&key);
+        assert!(d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // TradeToVolumeBarDerived tests
+    // -----------------------------------------------------------------------
+
+    /// Crossing threshold rolls a bar; crossing trade is in the closing bar.
+    #[test]
+    fn volume_bar_rolls_on_threshold() {
+        // threshold = 2.0 volume = 200_000_000 fixed-point
+        let key = volume_bar_key(200_000_000);
+        let mut d = TradeToVolumeBarDerived::new_for_key(&key);
+
+        // Trade 1: vol=1.0 — cumulative 1.0 < 2.0 threshold.
+        let p1 = d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
+        assert!((p1.volume - 1.0).abs() < 1e-12);
+
+        // Trade 2: vol=1.0 — cumulative 2.0 >= 2.0 → roll.
+        let p2 = d.on_upstream_event(&trade_event(1, 101.0, 1.0), 0).unwrap();
+        assert!((p2.volume - 2.0).abs() < 1e-12, "crossing trade in closing bar");
+        assert_eq!(p2.close, 101.0, "close = crossing trade price");
+
+        // Trade 3: opens new bar.
+        let p3 = d.on_upstream_event(&trade_event(2, 102.0, 0.5), 0).unwrap();
+        assert_eq!(p3.open, 102.0, "new bar");
+        assert_ne!(p3.open_time, p2.open_time);
+    }
+
+    /// OHLC across one complete volume bar.
+    #[test]
+    fn volume_bar_ohlc_correct() {
+        let key = volume_bar_key(300_000_000); // threshold = 3.0
+        let mut d = TradeToVolumeBarDerived::new_for_key(&key);
+
+        d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).unwrap();
+        d.on_upstream_event(&trade_event(1, 200.0, 1.0), 0).unwrap();
+        let last = d.on_upstream_event(&trade_event(2,  50.0, 1.0), 0).unwrap();
+
+        assert_eq!(last.open,  100.0);
+        assert_eq!(last.high,  200.0);
+        assert_eq!(last.low,    50.0);
+        assert_eq!(last.close,  50.0);
+        assert!((last.volume - 3.0).abs() < 1e-12);
+    }
+
+    /// Zero threshold → no emission.
+    #[test]
+    fn volume_bar_zero_threshold_safe() {
+        let key = volume_bar_key(0);
+        let mut d = TradeToVolumeBarDerived::new_for_key(&key);
+        assert!(d.on_upstream_event(&trade_event(0, 100.0, 1.0), 0).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // TradeToFootprintDerived tests
+    // -----------------------------------------------------------------------
+
+    /// Per-level buy/sell accumulate correctly by side.
+    #[test]
+    fn footprint_per_level_buy_sell() {
+        let key = footprint_key("1m");
+        let mut d = TradeToFootprintDerived::new_for_key(&key);
+
+        // Two buys at 100.0, one sell at 100.0.
+        d.on_upstream_event(&trade_event_side(0, 100.0, 1.5, 0), 0); // buy 1.5
+        d.on_upstream_event(&trade_event_side(1, 100.0, 0.5, 1), 0); // sell 0.5
+        let p = d.on_upstream_event(&trade_event_side(2, 100.0, 1.0, 0), 0).unwrap(); // buy 1.0
+
+        assert_eq!(p.levels.len(), 1, "one unique price level");
+        let (price, buy, sell) = p.levels[0];
+        assert!((price - 100.0).abs() < 1e-12);
+        assert!((buy  -  2.5 ).abs() < 1e-12, "buy = 1.5 + 1.0");
+        assert!((sell -  0.5 ).abs() < 1e-12);
+    }
+
+    /// Bucket roll resets levels and OHLC.
+    #[test]
+    fn footprint_bucket_roll_resets() {
+        let key = footprint_key("1m");
+        let interval_ms = 60_000_i64;
+        let mut d = TradeToFootprintDerived::new_for_key(&key);
+
+        d.on_upstream_event(&trade_event_side(0, 100.0, 1.0, 0), 0);
+        // Trade in next bucket.
+        let p = d.on_upstream_event(&trade_event_side(interval_ms, 200.0, 2.0, 1), 0).unwrap();
+        assert_eq!(p.open_time, interval_ms, "new bucket");
+        assert_eq!(p.open, 200.0, "reset to new bucket open");
+        assert_eq!(p.levels.len(), 1, "only new bucket level");
+        let (_, buy, sell) = p.levels[0];
+        assert!((buy - 0.0).abs() < 1e-12);
+        assert!((sell - 2.0).abs() < 1e-12);
+    }
+
+    /// OHLC accumulates correctly across bucket.
+    #[test]
+    fn footprint_ohlc_correct() {
+        let key = footprint_key("1m");
+        let mut d = TradeToFootprintDerived::new_for_key(&key);
+
+        d.on_upstream_event(&trade_event_side(0, 100.0, 1.0, 0), 0);
+        d.on_upstream_event(&trade_event_side(1, 200.0, 1.0, 1), 0);
+        let p = d.on_upstream_event(&trade_event_side(2,  50.0, 1.0, 0), 0).unwrap();
+
+        assert_eq!(p.open,   100.0);
+        assert_eq!(p.high,   200.0);
+        assert_eq!(p.low,     50.0);
+        assert_eq!(p.close,   50.0);
+        assert!((p.volume - 3.0).abs() < 1e-12);
+    }
+
+    /// Multiple price levels are sorted by price (BTreeMap ordering of positive f64 bits).
+    #[test]
+    fn footprint_levels_sorted_by_price() {
+        let key = footprint_key("1m");
+        let mut d = TradeToFootprintDerived::new_for_key(&key);
+
+        d.on_upstream_event(&trade_event_side(0, 300.0, 1.0, 0), 0);
+        d.on_upstream_event(&trade_event_side(1, 100.0, 1.0, 0), 0);
+        let p = d.on_upstream_event(&trade_event_side(2, 200.0, 1.0, 1), 0).unwrap();
+
+        assert_eq!(p.levels.len(), 3);
+        // Prices should be sorted ascending.
+        let prices: Vec<f64> = p.levels.iter().map(|(pr, _, _)| *pr).collect();
+        assert!(prices[0] < prices[1] && prices[1] < prices[2],
+            "levels must be sorted ascending: {:?}", prices);
+    }
+
+    /// Unknown interval → disabled.
+    #[test]
+    fn footprint_unknown_interval_safe() {
+        let key = footprint_key("99x");
+        let mut d = TradeToFootprintDerived::new_for_key(&key);
+        assert!(d.on_upstream_event(&trade_event_side(0, 100.0, 1.0, 0), 0).is_none());
     }
 }

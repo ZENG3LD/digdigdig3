@@ -82,9 +82,12 @@ fn ob_snapshot_round_trip_top_3() {
         asks: vec![(70_001.0, 1.5), (70_002.0, 2.5)],
     };
     rt_bytes_stable(p.clone());
+    // Levels now live in the companion blob (variable depth), not the fixed
+    // header — round-trip through encode + encode_blob → decode_blob.
     let mut buf = vec![0u8; ObSnapshotPoint::RECORD_SIZE];
     p.encode(&mut buf);
-    let back = ObSnapshotPoint::decode(&buf).unwrap();
+    let blob = p.encode_blob().expect("snapshot must produce a blob");
+    let back = ObSnapshotPoint::decode_blob(&buf, &blob).unwrap();
     assert_eq!(back.bids.len(), 3);
     assert_eq!(back.asks.len(), 2);
     assert_eq!(back.bids[0], (70_000.0, 1.0));
@@ -101,9 +104,12 @@ fn ob_delta_round_trip_with_removal() {
         ask_changes: vec![(70_002.0, 1.5)],
     };
     rt_bytes_stable(p.clone());
+    // Changes now live in the companion blob (variable depth) — round-trip
+    // through encode + encode_blob → decode_blob.
     let mut buf = vec![0u8; ObDeltaPoint::RECORD_SIZE];
     p.encode(&mut buf);
-    let back = ObDeltaPoint::decode(&buf).unwrap();
+    let blob = p.encode_blob().expect("delta must produce a blob");
+    let back = ObDeltaPoint::decode_blob(&buf, &blob).unwrap();
     assert_eq!(back.ts_ms, p.ts_ms);
     assert_eq!(back.bid_changes.len(), 2);
     assert_eq!(back.bid_changes[0], (70_000.0, 2.5));

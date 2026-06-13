@@ -70,6 +70,14 @@ enum WatchKind {
     OpenInterest { exchange: String, symbol: String, #[arg(long, default_value = "cross")] account: String, #[arg(long)] duration: Option<u64> },
     /// Live liquidation events (futures).
     Liquidations { exchange: String, symbol: String, #[arg(long, default_value = "cross")] account: String, #[arg(long)] duration: Option<u64> },
+    /// Range bars (new bar when price moves >= --range, aggregated from trades).
+    RangeBar { exchange: String, symbol: String, #[arg(long, default_value = "spot")] account: String, #[arg(long)] range: f64, #[arg(long)] duration: Option<u64> },
+    /// Tick bars (new bar every --count trades, aggregated from trades).
+    TickBar { exchange: String, symbol: String, #[arg(long, default_value = "spot")] account: String, #[arg(long)] count: u32, #[arg(long)] duration: Option<u64> },
+    /// Volume bars (new bar every --vol volume, aggregated from trades).
+    VolumeBar { exchange: String, symbol: String, #[arg(long, default_value = "spot")] account: String, #[arg(long)] vol: f64, #[arg(long)] duration: Option<u64> },
+    /// Footprint bars (time-bucketed OHLCV + per-price buy/sell breakdown).
+    Footprint { exchange: String, symbol: String, #[arg(long, default_value = "spot")] account: String, #[arg(long, default_value = "1m")] interval: String, #[arg(long)] duration: Option<u64> },
 }
 
 #[tokio::main]
@@ -130,6 +138,10 @@ async fn run_watch(kind: WatchKind, opts: WatchOpts) -> Result<()> {
         Funding { exchange, symbol, account, duration } => watch_one(&exchange, &symbol, &account, duration, Stream::FundingRate, &opts, 0).await,
         OpenInterest { exchange, symbol, account, duration } => watch_one(&exchange, &symbol, &account, duration, Stream::OpenInterest, &opts, 0).await,
         Liquidations { exchange, symbol, account, duration } => watch_one(&exchange, &symbol, &account, duration, Stream::Liquidation, &opts, 0).await,
+        RangeBar { exchange, symbol, account, range, duration } => watch_one(&exchange, &symbol, &account, duration, Stream::RangeBar((range * 1e8) as u64), &opts, 0).await,
+        TickBar { exchange, symbol, account, count, duration } => watch_one(&exchange, &symbol, &account, duration, Stream::TickBar(count), &opts, 0).await,
+        VolumeBar { exchange, symbol, account, vol, duration } => watch_one(&exchange, &symbol, &account, duration, Stream::VolumeBar((vol * 1e8) as u64), &opts, 0).await,
+        Footprint { exchange, symbol, account, interval, duration } => watch_one(&exchange, &symbol, &account, duration, Stream::Footprint(KlineInterval::new(interval)), &opts, 0).await,
     }
 }
 
@@ -335,6 +347,16 @@ fn print_event(event: &Event, ob_depth: usize, seq: u64) {
         }
         Event::SymbolsLoaded { exchange, account_type, symbols } => {
             println!("SYMBOLS_LOADED {exchange:?}/{account_type:?} count={}", symbols.len());
+        }
+        Event::Footprint { exchange, symbol, point } => {
+            println!("{ts} {ex:?} {sym} FOOTPRINT O={o} H={h} L={l} C={c} V={v} levels={n}",
+                ts = point.open_time, ex = exchange, sym = symbol,
+                o = point.open, h = point.high, l = point.low, c = point.close,
+                v = point.volume, n = point.levels.len());
+            // Show the per-price buy/sell breakdown (already price-sorted).
+            for (price, buy, sell) in point.levels.iter().take(ob_depth.max(5)) {
+                println!("      {price}  buy={buy}  sell={sell}");
+            }
         }
     }
 }

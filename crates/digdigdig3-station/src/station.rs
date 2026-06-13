@@ -17,15 +17,19 @@ use tokio::sync::{broadcast, mpsc, oneshot, RwLock};
 
 use crate::data::{
     AggTradePoint, BalanceUpdatePoint, BarPoint, BasisPoint, BlockTradePoint, CompositeIndexPoint,
-    FundingRatePoint, FundingSettlementPoint, HistoricalVolatilityPoint, IndexPriceKlinePoint,
-    IndexPricePoint, InsuranceFundPoint, LiquidationPoint, LongShortRatioPoint,
-    MarkPriceKlinePoint, MarkPricePoint,
+    FootprintPoint, FundingRatePoint, FundingSettlementPoint, HistoricalVolatilityPoint,
+    IndexPriceKlinePoint, IndexPricePoint, InsuranceFundPoint, LiquidationPoint,
+    LongShortRatioPoint, MarkPriceKlinePoint, MarkPricePoint,
     MarketWarningPoint, ObDeltaPoint, ObSnapshotPoint, OpenInterestPoint, OptionGreeksPoint,
     OrderUpdatePoint, OrderbookL3Point, PositionUpdatePoint,
     PredictedFundingPoint, PremiumIndexKlinePoint, RiskLimitPoint, SettlementEventPoint,
     TickerPoint, TradePoint, VolatilityIndexPoint,
 };
-use crate::derived::{BasisDerived, DerivedStream, FundingSettlementDerived, TradeToBarDerived, interval_to_ms};
+use crate::derived::{
+    BasisDerived, DerivedStream, FundingSettlementDerived, TradeToBarDerived,
+    TradeToRangeBarDerived, TradeToTickBarDerived, TradeToVolumeBarDerived,
+    TradeToFootprintDerived, interval_to_ms,
+};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::polling;
 use crate::series::DiskStore;
@@ -456,14 +460,17 @@ impl Station {
                 tracing::debug!(?e, ?entry.exchange, "connect_public failed; warm-start REST backfill will be skipped");
             }
 
-            // WS connect: skip if ALL streams in this entry are derived or
-            // poll-only (they never touch a WS connector). For mixed entries —
-            // e.g. [Stream::Trade, Stream::LongShortRatio] — the WS connect is
-            // still needed for the Trade stream. Per-stream failures are reported
-            // in `failed`; derived and poll-only streams are excluded from that.
+            // WS connect: skip only if ALL streams in this entry are poll-only
+            // (REST polling — never touch a WS connector). Derived streams DO
+            // need WS: they subscribe to WS-backed upstreams (Basis ← MarkPrice
+            // + IndexPrice; TradeToBar/Range/Tick/Volume/Footprint ← Trade), so
+            // the WS connector must be up before the derived forwarder spawns —
+            // otherwise the recursive upstream acquire fails with "ws handle
+            // missing post-connect". Mixed entries (e.g. [Trade, LongShortRatio])
+            // also need WS for the non-poll stream. Per-stream failures are
+            // reported in `failed`; only poll-only streams are excluded from that.
             let needs_ws = entry.streams.iter().any(|s| {
-                let kind = s.to_kind();
-                !kind.is_derived() && kind.is_poll_only().is_none()
+                s.to_kind().is_poll_only().is_none()
             });
 
             if needs_ws {
@@ -499,10 +506,10 @@ impl Station {
                 {
                     let err_msg = format!("connect_websocket: {e}");
                     for s in &entry.streams {
-                        // Exclude derived and poll-only streams from the WS-connect
-                        // failure list — they don't use WS.
-                        let kind = s.to_kind();
-                        if kind.is_derived() || kind.is_poll_only().is_some() {
+                        // Only poll-only streams survive a WS-connect failure —
+                        // derived streams need WS upstreams, so a WS failure fails
+                        // them too.
+                        if s.to_kind().is_poll_only().is_some() {
                             continue;
                         }
                         failed.push(FailedStream {
@@ -513,11 +520,10 @@ impl Station {
                             error: StationError::Core(err_msg.clone()),
                         });
                     }
-                    // Only `continue` if there are no derived/poll-only streams
-                    // that can still be acquired without WS.
+                    // Only `continue` if there are no poll-only streams that can
+                    // still be acquired without WS.
                     let has_non_ws = entry.streams.iter().any(|s| {
-                        let kind = s.to_kind();
-                        kind.is_derived() || kind.is_poll_only().is_some()
+                        s.to_kind().is_poll_only().is_some()
                     });
                     if !has_non_ws {
                         continue;
@@ -699,7 +705,19 @@ impl Station {
                 Kind::FundingSettlement => {
                     self.acquire_or_spawn_derived::<FundingSettlementDerived>(key, entry, canonical, raw_symbol).await.map(|tx| (tx, None))
                 }
-                _ => unreachable!("is_derived() returned true for non-derived kind"),
+                Kind::RangeBar(_) => {
+                    self.acquire_or_spawn_derived::<TradeToRangeBarDerived>(key, entry, canonical, raw_symbol).await.map(|tx| (tx, None))
+                }
+                Kind::TickBar(_) => {
+                    self.acquire_or_spawn_derived::<TradeToTickBarDerived>(key, entry, canonical, raw_symbol).await.map(|tx| (tx, None))
+                }
+                Kind::VolumeBar(_) => {
+                    self.acquire_or_spawn_derived::<TradeToVolumeBarDerived>(key, entry, canonical, raw_symbol).await.map(|tx| (tx, None))
+                }
+                Kind::Footprint(_) => {
+                    self.acquire_or_spawn_derived::<TradeToFootprintDerived>(key, entry, canonical, raw_symbol).await.map(|tx| (tx, None))
+                }
+                _ => unreachable!("is_derived() returned true for unhandled kind — update acquire_or_spawn dispatch"),
             };
         }
 
@@ -885,6 +903,11 @@ impl Station {
             Kind::OrderUpdate => spawn_forwarder::<OrderUpdatePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::BalanceUpdate => spawn_forwarder::<BalanceUpdatePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req.clone()),
             Kind::PositionUpdate => spawn_forwarder::<PositionUpdatePoint>(self, key, ws, bcast_tx.clone(), shutdown_rx, key.symbol.clone(), Vec::new(), req),
+            // Derived kinds — handled above by acquire_or_spawn_derived before
+            // reaching this match. These arms satisfy exhaustiveness only.
+            Kind::RangeBar(_) | Kind::TickBar(_) | Kind::VolumeBar(_) | Kind::Footprint(_) => {
+                unreachable!("derived kinds dispatched before forwarder match")
+            }
         }
 
         self.inner.muxes.insert(
@@ -1886,6 +1909,11 @@ impl EventFrom<PositionUpdatePoint> for Event {
         Event::PositionUpdate { exchange, account_type, symbol: symbol.to_string(), point }
     }
 }
+impl EventFrom<FootprintPoint> for Event {
+    fn from_point(exchange: digdigdig3::core::types::ExchangeId, _account_type: digdigdig3::core::types::AccountType, symbol: &str, _kind: &Kind, point: FootprintPoint) -> Self {
+        Event::Footprint { exchange, symbol: symbol.to_string(), point }
+    }
+}
 
 /// Fetch a REST orderbook snapshot and convert to `Vec<ObSnapshotPoint>`.
 /// Returns an empty Vec on any failure (no REST, exchange error, empty book).
@@ -1982,6 +2010,11 @@ fn ws_request_for(
         Kind::OrderUpdate => StreamType::OrderUpdate,
         Kind::BalanceUpdate => StreamType::BalanceUpdate,
         Kind::PositionUpdate => StreamType::PositionUpdate,
+        // Derived kinds — never reach ws_request_for (acquire_or_spawn dispatches
+        // them through acquire_or_spawn_derived before calling this function).
+        Kind::RangeBar(_) | Kind::TickBar(_) | Kind::VolumeBar(_) | Kind::Footprint(_) => {
+            unreachable!("derived kinds must not call ws_request_for")
+        }
     };
     SubscriptionRequest {
         symbol: sym,

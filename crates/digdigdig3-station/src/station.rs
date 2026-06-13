@@ -1215,8 +1215,58 @@ fn spawn_derived_forwarder<D: DerivedStream + 'static>(
 
             let mut series = Series::<D::Output>::new(warm);
 
-            // Derived streams start with no warm-start / backfill — see spec §11.
             let mut state = D::new_for_key(&key);
+
+            // RAM warm-seed (Gap C): a trade-derived aggregator (Range/Tick/
+            // Volume/Footprint bars — deps() == [Trade]) reconstructs its initial
+            // bar state from the trades ALREADY buffered in the upstream Trade
+            // Series ring, so subscribing while trades are flowing for another
+            // consumer (tape / footprint panel / another chart) is not
+            // cold-empty. We replay the buffered TradePoints through
+            // `state.on_upstream_event` BEFORE the live loop, then emit/persist
+            // the resulting bars so the new consumer sees them immediately.
+            //
+            // Only applies when the sole dependency is Stream::Trade — Basis
+            // (MarkPrice+IndexPrice) and FundingSettlement (FundingRate) are NOT
+            // trade-seeded (replaying trades through them is meaningless). The ring
+            // is only non-trivial when the Station was built with warm_start(N>0);
+            // otherwise it holds ≤1 point and the seed is a near-no-op.
+            if D::deps() == [Stream::Trade] {
+                if let Some(dep_key) = upstream_keys.first() {
+                    let trade_handle = inner
+                        .series_handles
+                        .get(dep_key)
+                        .and_then(|e| {
+                            e.downcast_ref::<Arc<RwLock<Series<TradePoint>>>>().map(Arc::clone)
+                        });
+                    if let Some(handle) = trade_handle {
+                        let buffered = handle.read().await.snapshot(); // oldest→newest
+                        for pt in buffered {
+                            let ev = Event::Trade {
+                                exchange,
+                                symbol: symbol_label.clone(),
+                                point: pt,
+                            };
+                            if let Some(point) = state.on_upstream_event(&ev, 0) {
+                                #[cfg(not(target_arch = "wasm32"))]
+                                if let Some(d) = disk.as_mut() {
+                                    if let Err(e) = d.append(&point) {
+                                        tracing::warn!(?e, ?key, "derived seed: disk append failed");
+                                    }
+                                }
+                                series.upsert_by_ts(point.clone());
+                                let _ = bcast_tx.send(Event::from_point(
+                                    exchange,
+                                    key.account_type,
+                                    &symbol_label,
+                                    &key.kind,
+                                    point,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
 
             // Convert each upstream Receiver into a tagged BroadcastStream so
             // the state machine can branch by dep_idx cheaply.

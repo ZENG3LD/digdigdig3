@@ -461,10 +461,38 @@ fn parse_bbo(raw: &Value) -> WebSocketResult<StreamEvent> {
 
 fn parse_candle(raw: &Value) -> WebSocketResult<StreamEvent> {
     let data = frame_data(raw)?;
-    // HyperLiquid candle data carries "coin" and "interval" fields
-    let kl_symbol = data.get("coin").and_then(|c| c.as_str()).unwrap_or("").to_string();
-    let kl_interval = KlineInterval::new(data.get("interval").and_then(|i| i.as_str()).unwrap_or(""));
-    let klines = HyperliquidParser::parse_klines(data)
+    // HyperLiquid candle data carries "coin" and "interval" fields.
+    // The WS `candle` channel delivers a SINGLE candle object in `data`
+    // (fields t/T/s/i/o/c/h/l/v/n), whereas REST `candleSnapshot` returns an
+    // ARRAY. `parse_klines` only accepts an array, so a bare object made
+    // `as_array()` return None → every live candle was dropped (the chart's
+    // countdown then froze on the last REST bar). Wrap a single object in a
+    // one-element array before handing it to the shared parser.
+    // The single candle object uses "s" (symbol) and "i" (interval) — the
+    // same field names parse_klines reads. ("coin"/"interval" were the old
+    // assumed names; they never matched the real candle object, but it didn't
+    // show because the event was dropped before reaching here.) Fall back to
+    // the array element when data is already an array (REST-shaped frame).
+    let candle_obj = if data.is_array() {
+        data.get(0).unwrap_or(data)
+    } else {
+        data
+    };
+    let kl_symbol = candle_obj.get("s").and_then(|c| c.as_str())
+        .or_else(|| data.get("coin").and_then(|c| c.as_str()))
+        .unwrap_or("")
+        .to_string();
+    let kl_interval = KlineInterval::new(
+        candle_obj.get("i").and_then(|i| i.as_str())
+            .or_else(|| data.get("interval").and_then(|i| i.as_str()))
+            .unwrap_or(""),
+    );
+    let as_array = if data.is_array() {
+        std::borrow::Cow::Borrowed(data)
+    } else {
+        std::borrow::Cow::Owned(Value::Array(vec![data.clone()]))
+    };
+    let klines = HyperliquidParser::parse_klines(&as_array)
         .map_err(|e| WebSocketError::Parse(e.to_string()))?;
     let kline = klines
         .into_iter()
@@ -1010,5 +1038,40 @@ mod tests {
         });
         let topic = proto.extract_topic(&frame).expect("should extract topic");
         assert_eq!(topic.as_str(), "bbo");
+    }
+
+    #[test]
+    fn test_parse_candle_single_object_frame() {
+        // Regression: the WS `candle` channel delivers a SINGLE candle object
+        // in `data` (not the REST array). parse_candle must wrap it before
+        // parse_klines — a bare object previously made parse_klines bail
+        // ("Expected array of candles") so no live candle ever reached the
+        // chart, freezing the bar countdown at 00:00.
+        let frame = serde_json::json!({
+            "channel": "candle",
+            "data": {
+                "t": 1704067200000i64,
+                "T": 1704074400000i64,
+                "s": "MUUSDC",
+                "i": "2h",
+                "o": "980.0",
+                "c": "985.4",
+                "h": "990.0",
+                "l": "975.0",
+                "v": "123.45",
+                "n": 42
+            }
+        });
+        let ev = parse_candle(&frame).expect("single-object candle must parse");
+        match ev {
+            StreamEvent::Kline { symbol, interval, kline } => {
+                assert_eq!(symbol, "MUUSDC");
+                assert_eq!(interval.as_str(), "2h");
+                assert_eq!(kline.open_time, 1704067200000);
+                assert_eq!(kline.close, 985.4);
+                assert_eq!(kline.high, 990.0);
+            }
+            _ => panic!("expected Kline event"),
+        }
     }
 }

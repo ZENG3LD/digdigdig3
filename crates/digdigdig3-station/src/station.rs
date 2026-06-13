@@ -685,7 +685,42 @@ impl Station {
                 let _ = cancel.send(());
             }
             mux.consumers.fetch_add(1, Ordering::SeqCst);
-            return Ok((mux.tx.clone(), None));
+            let tx = mux.tx.clone();
+            // Release the DashMap guard before any await (the REST seed below).
+            drop(mux);
+
+            // Orderbook is STATE, not a flow: a consumer that joins an existing
+            // mux (second subscriber, or a re-subscribe inside the grace window)
+            // still needs a full-book snapshot to seed against — the deltas
+            // already in flight are meaningless without it. Without this, a chart
+            // restore that lands on the live mux (or within grace) gets deltas
+            // against an empty book and the DOM panel never populates. So fetch a
+            // fresh REST snapshot and return it as `pending_seed`, exactly as the
+            // spawn-new-mux path does. Flow kinds (trade/kline/...) need no seed.
+            #[cfg(not(target_arch = "wasm32"))]
+            let reuse_seed = if matches!(key.kind, Kind::OrderbookDelta | Kind::Orderbook)
+                && self.inner.orderbook_rest_seed
+            {
+                let snaps = ob_rest_seed(
+                    &self.inner.hub,
+                    key.exchange,
+                    entry.account_type,
+                    raw_symbol,
+                    self.inner.orderbook_seed_depth,
+                )
+                .await;
+                snaps.into_iter().next().map(|point| Event::OrderbookSnapshot {
+                    exchange: key.exchange,
+                    symbol: raw_symbol.to_string(),
+                    point,
+                })
+            } else {
+                None
+            };
+            #[cfg(target_arch = "wasm32")]
+            let reuse_seed: Option<Event> = None;
+
+            return Ok((tx, reuse_seed));
         }
 
         // --- Derived stream path (no WS, no REST) ---

@@ -25,7 +25,7 @@ use crate::data::{
     PredictedFundingPoint, PremiumIndexKlinePoint, RiskLimitPoint, SettlementEventPoint,
     TickerPoint, TradePoint, VolatilityIndexPoint,
 };
-use crate::derived::{BasisDerived, DerivedStream, FundingSettlementDerived};
+use crate::derived::{BasisDerived, DerivedStream, FundingSettlementDerived, TradeToBarDerived, interval_to_ms};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::polling;
 use crate::series::DiskStore;
@@ -734,8 +734,43 @@ impl Station {
         // them into `SubscribeReport::failed` without spawning a forwarder
         // that would loop in heal/resub forever (this is what caused
         // MLI's 0.3.6 OOM — see release-0.3.7-plan.md).
+        //
+        // Special case — Kind::Kline(iv): if the venue does not natively
+        // support this interval on its WS, fall back to TradeToBarDerived
+        // (trade-aggregation engine) rather than returning a hard error.
+        // The fallback is attempted only when ws.subscribe fails with
+        // NotSupported / UnsupportedOperation; native kline paths are
+        // unchanged. If the interval string is unknown (interval_to_ms
+        // returns None) we cannot build the aggregator either — return a
+        // clear StreamNotSupported to the caller.
         if let Err(e) = ws.subscribe(req.clone()).await {
             use digdigdig3::core::types::WebSocketError;
+            let is_not_supported = matches!(
+                e,
+                WebSocketError::NotSupported(_) | WebSocketError::UnsupportedOperation(_)
+            );
+            if is_not_supported {
+                if let Kind::Kline(iv) = &key.kind {
+                    // Validate the interval before attempting the aggregator.
+                    if interval_to_ms(iv.as_str()).is_none() {
+                        return Err(StationError::StreamNotSupported(format!(
+                            "Kline interval {:?} is unknown — cannot aggregate from trades",
+                            iv.as_str()
+                        )));
+                    }
+                    tracing::debug!(
+                        target: "dig3::station::derived",
+                        exchange = ?key.exchange,
+                        symbol   = %key.symbol,
+                        interval = %iv,
+                        "native Kline WS not supported — falling back to TradeToBarDerived"
+                    );
+                    return self
+                        .acquire_or_spawn_derived::<TradeToBarDerived>(key, entry, canonical, raw_symbol)
+                        .await
+                        .map(|tx| (tx, None));
+                }
+            }
             return Err(match e {
                 WebSocketError::NotSupported(msg)
                 | WebSocketError::UnsupportedOperation(msg) => {

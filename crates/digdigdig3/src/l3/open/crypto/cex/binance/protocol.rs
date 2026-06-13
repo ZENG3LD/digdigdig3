@@ -368,6 +368,11 @@ fn build_registry(account_type: AccountType) -> TopicRegistry {
 
 /// Binance wire kline suffixes → internal interval strings.
 const BINANCE_KLINE_INTERVALS: &[(&str, &str)] = &[
+    // 1s is native on Binance spot (`<sym>@kline_1s`) — register its parser so
+    // the topic is matched instead of dropped as unmatched. Binance is the only
+    // CEX with a 1-second WS kline; every other venue's sub-minute bars are
+    // aggregated from trades by the station.
+    ("1s", "1s"),
     ("1m", "1m"),
     ("3m", "3m"),
     ("5m", "5m"),

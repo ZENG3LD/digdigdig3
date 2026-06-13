@@ -110,7 +110,18 @@ impl BybitProtocol {
                 format!("orderbook.{}.{}", depth, sym)
             }
             StreamKind::Kline { interval } => {
-                format!("kline.{}.{}", bybit_kline_wire(interval), sym)
+                // Unknown interval → NotSupported (NOT a silent 1m substitution).
+                // The station arbiter relies on this error to fall back to its
+                // trade-aggregation engine; silently returning 1m would deliver
+                // 1-minute bars mislabelled as the requested (e.g. 1s) interval.
+                let wire = bybit_kline_wire(interval).ok_or_else(|| {
+                    WebSocketError::NotSupported(format!(
+                        "Bybit WS has no native kline interval {:?} — \
+                         smallest is 1m; aggregate sub-minute from the trade stream",
+                        interval.as_str()
+                    ))
+                })?;
+                format!("kline.{}.{}", wire, sym)
             }
             StreamKind::Liquidation => format!("allLiquidation.{}", sym),
             StreamKind::OrderUpdate => "order".to_string(),
@@ -267,30 +278,26 @@ impl WsProtocol for BybitProtocol {
 ///   1m→"1", 3m→"3", 5m→"5", 15m→"15", 30m→"30", 60m/1h→"60",
 ///   120m/2h→"120", 240m/4h→"240", 360m/6h→"360", 720m/12h→"720",
 ///   1d/1D→"D", 1w/1W→"W", 1M→"M"
-fn bybit_kline_wire(interval: &KlineInterval) -> &'static str {
+fn bybit_kline_wire(interval: &KlineInterval) -> Option<&'static str> {
     match interval.as_str() {
-        "1m"  => "1",
-        "3m"  => "3",
-        "5m"  => "5",
-        "15m" => "15",
-        "30m" => "30",
-        "1h" | "60m"  => "60",
-        "2h" | "120m" => "120",
-        "4h" | "240m" => "240",
-        "6h" | "360m" => "360",
-        "12h"| "720m" => "720",
-        "1d" | "1D"   => "D",
-        "1w" | "1W"   => "W",
-        "1M"          => "M",
-        other          => {
-            // Fall back: attempt to treat as a numeric string
-            // (e.g. someone passes "60" already).
-            // Static lifetime required — leak only happens once per unknown interval.
-            tracing::warn!(target: "dig3::bybit::protocol", interval = other, "unknown kline interval, using as-is");
-            // We cannot return `other` as &'static str from a fn parameter.
-            // Use a match fallthrough to "1" as safe default.
-            "1"
-        }
+        "1m"  => Some("1"),
+        "3m"  => Some("3"),
+        "5m"  => Some("5"),
+        "15m" => Some("15"),
+        "30m" => Some("30"),
+        "1h" | "60m"  => Some("60"),
+        "2h" | "120m" => Some("120"),
+        "4h" | "240m" => Some("240"),
+        "6h" | "360m" => Some("360"),
+        "12h"| "720m" => Some("720"),
+        "1d" | "1D"   => Some("D"),
+        "1w" | "1W"   => Some("W"),
+        "1M"          => Some("M"),
+        // Unknown interval (incl. all sub-minute like 1s/30s) → None. The
+        // caller turns this into a NotSupported error so the station arbiter
+        // can aggregate from the trade stream instead of silently mislabelling
+        // 1-minute bars as the requested interval.
+        _ => None,
     }
 }
 

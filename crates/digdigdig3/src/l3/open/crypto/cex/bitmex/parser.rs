@@ -175,6 +175,51 @@ pub fn parse_mark_price(raw: &Value) -> WebSocketResult<StreamEvent> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// instrument channel — OpenInterest
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Parse `instrument:{sym}` frame → `StreamEvent::OpenInterestUpdate`.
+///
+/// BitMEX `instrument` channel carries `openInterest` (number of open contracts)
+/// and `openValue` (value in satoshis).  Like all instrument fields, these appear
+/// only in delta rows that actually changed — rows without `openInterest` are
+/// silently skipped so we never emit a bogus 0.
+pub fn parse_open_interest(raw: &Value) -> WebSocketResult<StreamEvent> {
+    let data = frame_data(raw)?;
+
+    for item in data {
+        let symbol = match item.get("symbol").and_then(Value::as_str) {
+            Some(s) if !s.is_empty() => s.to_string(),
+            _ => continue,
+        };
+
+        let open_interest = match item.get("openInterest").and_then(Value::as_f64) {
+            Some(oi) => oi,
+            None => continue, // field absent in this delta row — normal for partial updates
+        };
+
+        let open_interest_value = item.get("openValue").and_then(Value::as_f64);
+
+        let timestamp = item
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .and_then(iso_to_ms)
+            .unwrap_or_else(now_ms);
+
+        return Ok(StreamEvent::OpenInterestUpdate {
+            symbol,
+            open_interest,
+            open_interest_value,
+            timestamp,
+        });
+    }
+
+    Err(WebSocketError::FieldAbsent(
+        "bitmex instrument: no row contained openInterest".into(),
+    ))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // instrument channel — IndexPrice
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -594,6 +639,46 @@ mod tests {
                 "timestamp": ts
             }]
         })
+    }
+
+    #[test]
+    fn parse_open_interest_extracts_oi_and_value() {
+        let frame = serde_json::json!({
+            "table": "instrument",
+            "action": "update",
+            "data": [{
+                "symbol": "XBTUSD",
+                "openInterest": 123456789_u64,
+                "openValue": 8765432100_u64,
+                "timestamp": "2024-01-01T12:00:00.000Z"
+            }]
+        });
+        let event = parse_open_interest(&frame).expect("should parse OpenInterestUpdate");
+        match event {
+            StreamEvent::OpenInterestUpdate { symbol, open_interest, open_interest_value, timestamp } => {
+                assert_eq!(symbol, "XBTUSD");
+                assert!((open_interest - 123_456_789.0).abs() < 1.0);
+                assert!(open_interest_value.is_some());
+                assert!((open_interest_value.unwrap() - 8_765_432_100.0).abs() < 1.0);
+                assert!(timestamp > 0);
+            }
+            other => panic!("expected OpenInterestUpdate, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_open_interest_missing_field_returns_field_absent() {
+        // Partial-update frame without openInterest — must not emit OI=0.
+        let frame = serde_json::json!({
+            "table": "instrument",
+            "action": "update",
+            "data": [{"symbol": "XBTUSD", "markPrice": 45200.0, "timestamp": "2024-01-01T07:45:00.000Z"}]
+        });
+        let err = parse_open_interest(&frame).expect_err("should return FieldAbsent");
+        assert!(
+            matches!(err, WebSocketError::FieldAbsent(_)),
+            "expected FieldAbsent, got {:?}", err
+        );
     }
 
     #[test]

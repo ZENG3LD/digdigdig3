@@ -23,7 +23,7 @@ use crate::core::websocket::{
 
 use super::parser::{
     parse_predicted_funding, parse_funding_rate, parse_mark_price, parse_index_price,
-    parse_trade, parse_quote, parse_liquidation, parse_funding_settled,
+    parse_open_interest, parse_trade, parse_quote, parse_liquidation, parse_funding_settled,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -53,7 +53,8 @@ impl BitmexProtocol {
             StreamKind::PredictedFunding
             | StreamKind::FundingRate
             | StreamKind::MarkPrice
-            | StreamKind::IndexPrice => format!("instrument:{sym}"),
+            | StreamKind::IndexPrice
+            | StreamKind::OpenInterest => format!("instrument:{sym}"),
 
             StreamKind::Trade | StreamKind::AggTrade => format!("trade:{sym}"),
 
@@ -183,6 +184,8 @@ fn build_registry() -> TopicRegistry {
         .register(StreamKind::MarkPrice, AccountType::FuturesCross, "instrument", parse_mark_price)
         // instrument → IndexPrice
         .register(StreamKind::IndexPrice, AccountType::FuturesCross, "instrument", parse_index_price)
+        // instrument → OpenInterest (openInterest + openValue fields; partial-update safe)
+        .register(StreamKind::OpenInterest, AccountType::FuturesCross, "instrument", parse_open_interest)
         // trade → Trade
         .register(StreamKind::Trade, AccountType::FuturesCross, "trade", parse_trade)
         // AggTrade: no dedicated channel; fan-out from trade
@@ -385,16 +388,86 @@ mod tests {
     }
 
     #[test]
-    fn instrument_topic_dispatches_four_parsers() {
+    fn instrument_topic_dispatches_five_parsers() {
         let proto = BitmexProtocol::new(false);
         let reg = proto.topic_registry(AccountType::FuturesCross);
         let key = crate::core::websocket::TopicKey::new("instrument");
         let parsers = reg.dispatch_all(&key);
-        // PredictedFunding + FundingRate + MarkPrice + IndexPrice = 4
+        // PredictedFunding + FundingRate + MarkPrice + IndexPrice + OpenInterest = 5
         assert!(
-            parsers.len() >= 4,
-            "expected >=4 parsers for instrument fan-out, got {}",
+            parsers.len() >= 5,
+            "expected >=5 parsers for instrument fan-out, got {}",
             parsers.len()
+        );
+    }
+
+    #[test]
+    fn subscribe_frame_open_interest_maps_to_instrument() {
+        let proto = BitmexProtocol::new(false);
+        let spec = futures_spec(StreamKind::OpenInterest);
+        let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed for OpenInterest");
+        let text = match msg {
+            WsFrame::Text(t) => t,
+            _ => panic!("expected text frame"),
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert_eq!(v["op"], "subscribe");
+        assert_eq!(v["args"][0], "instrument:XBTUSD");
+    }
+
+    #[test]
+    fn registry_supports_open_interest() {
+        let proto = BitmexProtocol::new(false);
+        let reg = proto.topic_registry(AccountType::FuturesCross);
+        assert!(reg.supports(&StreamKind::OpenInterest, AccountType::FuturesCross));
+    }
+
+    #[test]
+    fn parse_open_interest_yields_correct_event() {
+        use super::super::parser::parse_open_interest as parse_oi;
+        use crate::core::types::StreamEvent;
+
+        let frame = serde_json::json!({
+            "table": "instrument",
+            "action": "update",
+            "data": [{
+                "symbol": "XBTUSD",
+                "openInterest": 123456789_u64,
+                "openValue": 8765432100_u64,
+                "timestamp": "2024-01-01T12:00:00.000Z"
+            }]
+        });
+        let event = parse_oi(&frame).expect("should parse OpenInterest");
+        match event {
+            StreamEvent::OpenInterestUpdate { symbol, open_interest, open_interest_value, timestamp } => {
+                assert_eq!(symbol, "XBTUSD");
+                assert!((open_interest - 123_456_789.0).abs() < 1.0, "open_interest mismatch");
+                assert!(open_interest_value.is_some(), "open_interest_value must be Some");
+                assert!(
+                    (open_interest_value.unwrap() - 8_765_432_100.0).abs() < 1.0,
+                    "open_interest_value mismatch"
+                );
+                assert!(timestamp > 0, "timestamp must be set");
+            }
+            other => panic!("expected OpenInterestUpdate, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_open_interest_missing_field_returns_field_absent() {
+        use super::super::parser::parse_open_interest as parse_oi;
+        use crate::core::types::WebSocketError;
+
+        // Partial-update frame without openInterest — must NOT emit a bogus 0.
+        let frame = serde_json::json!({
+            "table": "instrument",
+            "action": "update",
+            "data": [{"symbol": "XBTUSD", "markPrice": 45200.0, "timestamp": "2024-01-01T07:45:00.000Z"}]
+        });
+        let err = parse_oi(&frame).expect_err("should return FieldAbsent when openInterest absent");
+        assert!(
+            matches!(err, WebSocketError::FieldAbsent(_)),
+            "expected FieldAbsent, got {:?}", err
         );
     }
 }

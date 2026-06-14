@@ -395,7 +395,15 @@ pub(crate) fn parse_mark_price(raw: &Value) -> WebSocketResult<StreamEvent> {
         .or_else(|| data.get("time"))
         .and_then(|v| v.as_i64())
         .unwrap_or(0);
-    Ok(StreamEvent::MarkPrice { symbol, mark_price, index_price, timestamp })
+    Ok(StreamEvent::MarkPrice {
+        symbol,
+        mark: crate::core::types::MarkPrice {
+            mark_price,
+            index_price,
+            timestamp,
+            ..Default::default()
+        },
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

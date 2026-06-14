@@ -695,13 +695,18 @@ pub(crate) fn parse_liq_frame(raw: &Value) -> WebSocketResult<StreamEvent> {
     let quantity = amount.abs();
     let value = base_price.map(|bp| bp * quantity);
 
+    let sym = symbol;
     Ok(StreamEvent::Liquidation {
-        symbol,
-        side,
-        price,
-        quantity,
-        timestamp,
-        value,
+        symbol: sym.clone(),
+        liquidation: crate::core::types::Liquidation {
+            symbol: sym,
+            side,
+            price,
+            quantity,
+            timestamp,
+            value,
+            ..Default::default()
+        },
     })
 }
 
@@ -1056,13 +1061,13 @@ mod tests {
             [["pos", 191941265, 1779998542354i64, null, "tETHF0:USTF0", 19.00019049, 2027.1, null, 1, 1, null, 2013.5]]
         ]);
         let event = parse_liq_frame(&raw).expect("should parse");
-        if let StreamEvent::Liquidation { symbol, side, price, quantity, timestamp, value } = event {
+        if let StreamEvent::Liquidation { symbol, liquidation } = event {
             assert_eq!(symbol, "tETHF0:USTF0");
-            assert_eq!(side, TradeSide::Buy); // positive amount = long = buy
-            assert!((price - 2013.5).abs() < 1e-6);
-            assert!((quantity - 19.00019049).abs() < 1e-6);
-            assert_eq!(timestamp, 1779998542354);
-            assert!(value.is_some());
+            assert_eq!(liquidation.side, TradeSide::Buy); // positive amount = long = buy
+            assert!((liquidation.price - 2013.5).abs() < 1e-6);
+            assert!((liquidation.quantity - 19.00019049).abs() < 1e-6);
+            assert_eq!(liquidation.timestamp, 1779998542354);
+            assert!(liquidation.value.is_some());
         } else {
             panic!("expected Liquidation event");
         }
@@ -1075,10 +1080,10 @@ mod tests {
             [["pos", 12345, 1780000000000i64, null, "tBTCUSD", -0.5, 95000.0, null, 1, 1, null, 94500.0]]
         ]);
         let event = parse_liq_frame(&raw).expect("should parse");
-        if let StreamEvent::Liquidation { side, quantity, price, .. } = event {
-            assert_eq!(side, TradeSide::Sell);
-            assert!((quantity - 0.5).abs() < 1e-9);
-            assert!((price - 94500.0).abs() < 1e-6);
+        if let StreamEvent::Liquidation { liquidation, .. } = event {
+            assert_eq!(liquidation.side, TradeSide::Sell);
+            assert!((liquidation.quantity - 0.5).abs() < 1e-9);
+            assert!((liquidation.price - 94500.0).abs() < 1e-6);
         } else {
             panic!("expected Liquidation event");
         }

@@ -950,9 +950,12 @@ fn parse_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     Ok(StreamEvent::FundingRate {
         symbol,
-        rate,
-        next_funding_time,
-        timestamp,
+        funding: crate::core::types::FundingRate {
+            rate,
+            next_funding_time,
+            timestamp,
+            ..Default::default()
+        },
     })
 }
 
@@ -988,13 +991,18 @@ fn parse_liquidation(raw: &Value) -> WebSocketResult<StreamEvent> {
         .map(|ms| ms as i64)
         .unwrap_or(0);
 
+    let sym = symbol;
     Ok(StreamEvent::Liquidation {
-        symbol,
-        side,
-        price,
-        quantity,
-        value: None,
-        timestamp,
+        symbol: sym.clone(),
+        liquidation: crate::core::types::Liquidation {
+            symbol: sym,
+            side,
+            price,
+            quantity,
+            timestamp,
+            value: None,
+            ..Default::default()
+        },
     })
 }
 

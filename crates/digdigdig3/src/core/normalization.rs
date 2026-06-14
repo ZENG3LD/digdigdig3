@@ -599,9 +599,12 @@ mod tests {
     fn stream_event_other_canonicalize() {
         let event = StreamEvent::FundingRate {
             symbol: "BTCUSDT".to_string(),
-            rate: 0.0001,
-            next_funding_time: None,
-            timestamp: 1_700_000_000_000,
+            funding: crate::core::types::FundingRate {
+                rate: 0.0001,
+                next_funding_time: None,
+                timestamp: 1_700_000_000_000,
+                ..Default::default()
+            },
         };
         assert!(matches!(event.canonicalize(), Some(CanonicalEvent::Other)));
     }

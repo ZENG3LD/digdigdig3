@@ -668,13 +668,16 @@ fn parse_agg_trades(raw: &Value) -> WebSocketResult<StreamEvent> {
         .unwrap_or(0);
     Ok(StreamEvent::AggTrade {
         symbol,
-        aggregate_id: trade_id,
-        price,
-        quantity,
-        first_trade_id: trade_id,
-        last_trade_id: trade_id,
-        side,
-        timestamp,
+        agg: crate::core::types::AggTrade {
+            aggregate_id: trade_id,
+            price,
+            quantity,
+            first_trade_id: trade_id,
+            last_trade_id: trade_id,
+            is_buy: side == TradeSide::Buy,
+            timestamp,
+            ..Default::default()
+        },
     })
 }
 
@@ -741,7 +744,15 @@ fn parse_mark_price(raw: &Value) -> WebSocketResult<StreamEvent> {
         .and_then(parse_f64_field)
         .map(|ms| ms as i64)
         .unwrap_or(0);
-    Ok(StreamEvent::MarkPrice { symbol, mark_price, index_price: None, timestamp })
+    Ok(StreamEvent::MarkPrice {
+        symbol,
+        mark: crate::core::types::MarkPrice {
+            mark_price,
+            index_price: None,
+            timestamp,
+            ..Default::default()
+        },
+    })
 }
 
 fn parse_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -760,7 +771,15 @@ fn parse_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent> {
         .and_then(parse_f64_field)
         .map(|ms| ms as i64)
         .unwrap_or(0);
-    Ok(StreamEvent::FundingRate { symbol, rate, next_funding_time, timestamp })
+    Ok(StreamEvent::FundingRate {
+        symbol,
+        funding: crate::core::types::FundingRate {
+            rate,
+            next_funding_time,
+            timestamp,
+            ..Default::default()
+        },
+    })
 }
 
 /// Parse `funding-rate` channel frame as `StreamEvent::PredictedFunding`.
@@ -828,13 +847,18 @@ fn parse_liquidation_orders(raw: &Value) -> WebSocketResult<StreamEvent> {
         .and_then(parse_f64_field)
         .map(|ms| ms as i64)
         .unwrap_or(0);
+    let sym = symbol;
     Ok(StreamEvent::Liquidation {
-        symbol,
-        side,
-        price,
-        quantity,
-        value: Some(price * quantity),
-        timestamp,
+        symbol: sym.clone(),
+        liquidation: crate::core::types::Liquidation {
+            symbol: sym,
+            side,
+            price,
+            quantity,
+            timestamp,
+            value: Some(price * quantity),
+            ..Default::default()
+        },
     })
 }
 
@@ -868,7 +892,15 @@ fn parse_open_interest(raw: &Value) -> WebSocketResult<StreamEvent> {
         .and_then(parse_f64_field)
         .map(|ms| ms as i64)
         .unwrap_or(0);
-    Ok(StreamEvent::OpenInterestUpdate { symbol, open_interest, open_interest_value, timestamp })
+    Ok(StreamEvent::OpenInterestUpdate {
+        symbol,
+        open_interest: crate::core::types::OpenInterest {
+            open_interest,
+            open_interest_value,
+            timestamp,
+            ..Default::default()
+        },
+    })
 }
 
 fn parse_block_trades(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -988,7 +1020,15 @@ fn parse_price_limit(raw: &Value) -> WebSocketResult<StreamEvent> {
         .and_then(parse_f64_field)
         .map(|ms| ms as i64)
         .unwrap_or(0);
-    Ok(StreamEvent::MarkPrice { symbol, mark_price, index_price: None, timestamp })
+    Ok(StreamEvent::MarkPrice {
+        symbol,
+        mark: crate::core::types::MarkPrice {
+            mark_price,
+            index_price: None,
+            timestamp,
+            ..Default::default()
+        },
+    })
 }
 
 /// instruments channel — informational, no standard event. Return a dummy Ticker.

@@ -70,9 +70,12 @@ fn main() {
     // Show the Other variant for events we don't canonicalize yet
     let raw_funding = StreamEvent::FundingRate {
         symbol: "BTCUSDT".to_string(),
-        rate: 0.0001,
-        next_funding_time: None,
-        timestamp: 1_700_000_000_000,
+        funding: digdigdig3::core::types::FundingRate {
+            rate: 0.0001,
+            next_funding_time: None,
+            timestamp: 1_700_000_000_000,
+            ..Default::default()
+        },
     };
 
     match raw_funding.canonicalize() {

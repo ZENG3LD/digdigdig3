@@ -439,15 +439,15 @@ mod tests {
         });
         let event = parse_oi(&frame).expect("should parse OpenInterest");
         match event {
-            StreamEvent::OpenInterestUpdate { symbol, open_interest, open_interest_value, timestamp } => {
+            StreamEvent::OpenInterestUpdate { symbol, open_interest } => {
                 assert_eq!(symbol, "XBTUSD");
-                assert!((open_interest - 123_456_789.0).abs() < 1.0, "open_interest mismatch");
-                assert!(open_interest_value.is_some(), "open_interest_value must be Some");
+                assert!((open_interest.open_interest - 123_456_789.0).abs() < 1.0, "open_interest mismatch");
+                assert!(open_interest.open_interest_value.is_some(), "open_interest_value must be Some");
                 assert!(
-                    (open_interest_value.unwrap() - 8_765_432_100.0).abs() < 1.0,
+                    (open_interest.open_interest_value.unwrap() - 8_765_432_100.0).abs() < 1.0,
                     "open_interest_value mismatch"
                 );
-                assert!(timestamp > 0, "timestamp must be set");
+                assert!(open_interest.timestamp > 0, "timestamp must be set");
             }
             other => panic!("expected OpenInterestUpdate, got {:?}", other),
         }

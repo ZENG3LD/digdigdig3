@@ -71,8 +71,8 @@ async fn crypto_com_perp_trade_and_mark_price_receive_events() {
                     eprintln!("  Trade: {} @ {} qty={}", symbol, trade.price, trade.quantity);
                     saw_trade = true;
                 }
-                Ok(StreamEvent::MarkPrice { symbol, mark_price, .. }) => {
-                    eprintln!("  MarkPrice: {} = {}", symbol, mark_price);
+                Ok(StreamEvent::MarkPrice { symbol, mark }) => {
+                    eprintln!("  MarkPrice: {} = {}", symbol, mark.mark_price);
                     saw_mark_price = true;
                 }
                 Err(e) => {

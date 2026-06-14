@@ -460,7 +460,7 @@ fn parse_mark_price(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     let index_price = ticker_data.get("indexPrice").and_then(parse_f64_str);
 
-    Ok(StreamEvent::MarkPrice { symbol, mark_price, index_price, timestamp: ts })
+    Ok(StreamEvent::MarkPrice { symbol, mark: crate::core::types::MarkPrice { mark_price, index_price, timestamp: ts, ..Default::default() } })
 }
 
 fn parse_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -487,7 +487,7 @@ fn parse_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent> {
         .and_then(parse_f64_str)
         .map(|ms| ms as i64);
 
-    Ok(StreamEvent::FundingRate { symbol, rate, next_funding_time, timestamp: ts })
+    Ok(StreamEvent::FundingRate { symbol, funding: crate::core::types::FundingRate { rate, next_funding_time, timestamp: ts, ..Default::default() } })
 }
 
 fn parse_open_interest(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -507,7 +507,7 @@ fn parse_open_interest(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     let open_interest_value = ticker_data.get("openInterestValue").and_then(parse_f64_str);
 
-    Ok(StreamEvent::OpenInterestUpdate { symbol, open_interest, open_interest_value, timestamp: ts })
+    Ok(StreamEvent::OpenInterestUpdate { symbol, open_interest: crate::core::types::OpenInterest { open_interest, open_interest_value, timestamp: ts, ..Default::default() } })
 }
 
 fn parse_agg_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -538,9 +538,15 @@ fn parse_agg_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
         .unwrap_or(0);
 
     Ok(StreamEvent::AggTrade {
-        symbol, aggregate_id, price, quantity, side, timestamp,
-        first_trade_id: 0,
-        last_trade_id: 0,
+        symbol,
+        agg: crate::core::types::AggTrade {
+            aggregate_id, price, quantity,
+            first_trade_id: 0,
+            last_trade_id: 0,
+            is_buy: side == TradeSide::Buy,
+            timestamp,
+            ..Default::default()
+        },
     })
 }
 
@@ -689,10 +695,15 @@ fn parse_all_liquidation(raw: &Value) -> WebSocketResult<StreamEvent> {
     let timestamp = item["T"].as_i64()
         .ok_or_else(|| WebSocketError::Parse("allLiquidation: invalid T".into()))?;
 
+    let sym = symbol;
     Ok(StreamEvent::Liquidation {
-        symbol, side, price, quantity,
-        value: Some(price * quantity),
-        timestamp,
+        symbol: sym.clone(),
+        liquidation: crate::core::types::Liquidation {
+            symbol: sym, side, price, quantity,
+            value: Some(price * quantity),
+            timestamp,
+            ..Default::default()
+        },
     })
 }
 
@@ -1077,11 +1088,11 @@ mod tests {
         });
         let event = parse_all_liquidation(&frame).expect("should parse");
         match event {
-            StreamEvent::Liquidation { symbol, price, quantity, timestamp, .. } => {
+            StreamEvent::Liquidation { symbol, liquidation } => {
                 assert_eq!(symbol, "BTCUSDT");
-                assert!((price - 30000.50).abs() < 0.01, "price={}", price);
-                assert!((quantity - 0.123).abs() < 0.001, "quantity={}", quantity);
-                assert_eq!(timestamp, 1700000000000);
+                assert!((liquidation.price - 30000.50).abs() < 0.01, "price={}", liquidation.price);
+                assert!((liquidation.quantity - 0.123).abs() < 0.001, "quantity={}", liquidation.quantity);
+                assert_eq!(liquidation.timestamp, 1700000000000);
             }
             other => panic!("expected Liquidation, got {:?}", other),
         }
@@ -1104,11 +1115,11 @@ mod tests {
         });
         let event = parse_all_liquidation(&frame).expect("should parse array-wrapped");
         match event {
-            StreamEvent::Liquidation { symbol, price, quantity, timestamp, .. } => {
+            StreamEvent::Liquidation { symbol, liquidation } => {
                 assert_eq!(symbol, "ETHUSDT");
-                assert!((price - 2000.0).abs() < 0.01);
-                assert!((quantity - 2.5).abs() < 0.001);
-                assert_eq!(timestamp, 1700000001000);
+                assert!((liquidation.price - 2000.0).abs() < 0.01);
+                assert!((liquidation.quantity - 2.5).abs() < 0.001);
+                assert_eq!(liquidation.timestamp, 1700000001000);
             }
             other => panic!("expected Liquidation, got {:?}", other),
         }

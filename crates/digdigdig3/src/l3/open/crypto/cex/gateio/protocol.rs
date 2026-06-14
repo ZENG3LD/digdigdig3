@@ -473,13 +473,16 @@ fn parse_agg_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
         .unwrap_or(0);
     Ok(StreamEvent::AggTrade {
         symbol,
-        aggregate_id: item.get("id").and_then(|v| v.as_u64()).unwrap_or(0) as i64,
-        price,
-        quantity,
-        first_trade_id: 0,
-        last_trade_id: 0,
-        side,
-        timestamp,
+        agg: crate::core::types::AggTrade {
+            aggregate_id: item.get("id").and_then(|v| v.as_u64()).unwrap_or(0) as i64,
+            price,
+            quantity,
+            first_trade_id: 0,
+            last_trade_id: 0,
+            is_buy: side == TradeSide::Buy,
+            timestamp,
+            ..Default::default()
+        },
     })
 }
 
@@ -661,7 +664,15 @@ fn parse_mark_price(raw: &Value) -> WebSocketResult<StreamEvent> {
         .unwrap_or(0.0);
     let index_price = parse_f64(result.get("index_price").unwrap_or(&Value::Null));
     let timestamp = result.get("t").and_then(|v| v.as_i64()).unwrap_or(0);
-    Ok(StreamEvent::MarkPrice { symbol, mark_price, index_price, timestamp })
+    Ok(StreamEvent::MarkPrice {
+        symbol,
+        mark: crate::core::types::MarkPrice {
+            mark_price,
+            index_price,
+            timestamp,
+            ..Default::default()
+        },
+    })
 }
 
 fn parse_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -673,7 +684,15 @@ fn parse_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent> {
     let rate = parse_f64(result.get("r").unwrap_or(&Value::Null)).unwrap_or(0.0);
     let next_funding_time = result.get("t").and_then(|v| v.as_i64());
     let timestamp = result.get("t").and_then(|v| v.as_i64()).unwrap_or(0);
-    Ok(StreamEvent::FundingRate { symbol, rate, next_funding_time, timestamp })
+    Ok(StreamEvent::FundingRate {
+        symbol,
+        funding: crate::core::types::FundingRate {
+            rate,
+            next_funding_time,
+            timestamp,
+            ..Default::default()
+        },
+    })
 }
 
 fn parse_liquidation(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -707,7 +726,19 @@ fn parse_liquidation(raw: &Value) -> WebSocketResult<StreamEvent> {
         .or_else(|| raw.get("time_ms").and_then(|v| v.as_i64()))
         .or_else(|| raw.get("time").and_then(|v| v.as_i64()).map(|s| s * 1000))
         .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
-    Ok(StreamEvent::Liquidation { symbol, side, price, quantity, value: None, timestamp })
+    let sym = symbol;
+    Ok(StreamEvent::Liquidation {
+        symbol: sym.clone(),
+        liquidation: crate::core::types::Liquidation {
+            symbol: sym,
+            side,
+            price,
+            quantity,
+            value: None,
+            timestamp,
+            ..Default::default()
+        },
+    })
 }
 
 fn parse_order_update(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -773,9 +804,12 @@ fn parse_open_interest(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     Ok(StreamEvent::OpenInterestUpdate {
         symbol,
-        open_interest,
-        open_interest_value,
-        timestamp,
+        open_interest: crate::core::types::OpenInterest {
+            open_interest,
+            open_interest_value,
+            timestamp,
+            ..Default::default()
+        },
     })
 }
 
@@ -952,13 +986,13 @@ mod tests {
         });
         let ev = parse_open_interest(&frame).expect("parse_open_interest must succeed");
         match ev {
-            StreamEvent::OpenInterestUpdate { symbol, open_interest, open_interest_value, timestamp } => {
+            StreamEvent::OpenInterestUpdate { symbol, open_interest: oi } => {
                 assert_eq!(symbol, "BTC_USDT");
-                assert!((open_interest - 12345.0).abs() < 0.001);
-                assert!(open_interest_value.is_some());
-                assert!((open_interest_value.unwrap() - 987654321.5).abs() < 1.0);
+                assert!((oi.open_interest - 12345.0).abs() < 0.001);
+                assert!(oi.open_interest_value.is_some());
+                assert!((oi.open_interest_value.unwrap() - 987654321.5).abs() < 1.0);
                 // time=1720000000 seconds → 1720000000000 ms
-                assert_eq!(timestamp, 1720000000_i64 * 1000);
+                assert_eq!(oi.timestamp, 1720000000_i64 * 1000);
             }
             other => panic!("expected OpenInterestUpdate, got {:?}", other),
         }
@@ -979,9 +1013,9 @@ mod tests {
         });
         let ev = parse_open_interest(&frame).expect("parse_open_interest array result");
         match ev {
-            StreamEvent::OpenInterestUpdate { symbol, open_interest, .. } => {
+            StreamEvent::OpenInterestUpdate { symbol, open_interest: oi } => {
                 assert_eq!(symbol, "ETH_USDT");
-                assert!((open_interest - 99999.5).abs() < 0.01);
+                assert!((oi.open_interest - 99999.5).abs() < 0.01);
             }
             other => panic!("expected OpenInterestUpdate, got {:?}", other),
         }

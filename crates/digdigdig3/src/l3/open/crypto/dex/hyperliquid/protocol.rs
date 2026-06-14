@@ -282,9 +282,12 @@ fn parse_funding_from_ctx(raw: &Value) -> WebSocketResult<StreamEvent> {
     let now = crate::core::utils::timestamp_millis() as i64;
     Ok(StreamEvent::FundingRate {
         symbol: coin.to_string(),
-        rate,
-        next_funding_time: None,
-        timestamp: now,
+        funding: crate::core::types::FundingRate {
+            rate,
+            next_funding_time: None,
+            timestamp: now,
+            ..Default::default()
+        },
     })
 }
 
@@ -303,9 +306,12 @@ fn parse_mark_price_from_ctx(raw: &Value) -> WebSocketResult<StreamEvent> {
     let now = crate::core::utils::timestamp_millis() as i64;
     Ok(StreamEvent::MarkPrice {
         symbol: coin.to_string(),
-        mark_price,
-        index_price,
-        timestamp: now,
+        mark: crate::core::types::MarkPrice {
+            mark_price,
+            index_price,
+            timestamp: now,
+            ..Default::default()
+        },
     })
 }
 
@@ -323,9 +329,12 @@ fn parse_open_interest_from_ctx(raw: &Value) -> WebSocketResult<StreamEvent> {
     let now = crate::core::utils::timestamp_millis() as i64;
     Ok(StreamEvent::OpenInterestUpdate {
         symbol: coin.to_string(),
-        open_interest,
-        open_interest_value: None,
-        timestamp: now,
+        open_interest: crate::core::types::OpenInterest {
+            open_interest,
+            open_interest_value: None,
+            timestamp: now,
+            ..Default::default()
+        },
     })
 }
 
@@ -652,9 +661,12 @@ fn parse_user_fundings(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     Ok(StreamEvent::FundingRate {
         symbol: coin.to_string(),
-        rate,
-        next_funding_time: None,
-        timestamp,
+        funding: crate::core::types::FundingRate {
+            rate,
+            next_funding_time: None,
+            timestamp,
+            ..Default::default()
+        },
     })
 }
 

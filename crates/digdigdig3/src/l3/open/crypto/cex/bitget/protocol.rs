@@ -427,7 +427,15 @@ fn parse_mark_price(raw: &Value) -> WebSocketResult<StreamEvent> {
         .map(|ms| ms as i64)
         .unwrap_or(0);
 
-    Ok(StreamEvent::MarkPrice { symbol, mark_price, index_price, timestamp })
+    Ok(StreamEvent::MarkPrice {
+        symbol,
+        mark: crate::core::types::MarkPrice {
+            mark_price,
+            index_price,
+            timestamp,
+            ..Default::default()
+        },
+    })
 }
 
 fn parse_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -466,7 +474,15 @@ fn parse_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent> {
         .map(|ms| ms as i64)
         .unwrap_or(0);
 
-    Ok(StreamEvent::FundingRate { symbol, rate, next_funding_time, timestamp })
+    Ok(StreamEvent::FundingRate {
+        symbol,
+        funding: crate::core::types::FundingRate {
+            rate,
+            next_funding_time,
+            timestamp,
+            ..Default::default()
+        },
+    })
 }
 
 fn parse_liquidation(raw: &Value) -> WebSocketResult<StreamEvent> {
@@ -512,13 +528,18 @@ fn parse_liquidation(raw: &Value) -> WebSocketResult<StreamEvent> {
         .map(|ms| ms as i64)
         .unwrap_or(0);
 
+    let sym = symbol;
     Ok(StreamEvent::Liquidation {
-        symbol,
-        side,
-        price,
-        quantity,
-        value: None,
-        timestamp,
+        symbol: sym.clone(),
+        liquidation: crate::core::types::Liquidation {
+            symbol: sym,
+            side,
+            price,
+            quantity,
+            value: None,
+            timestamp,
+            ..Default::default()
+        },
     })
 }
 
@@ -556,7 +577,15 @@ fn parse_ticker_as_mark_price(raw: &Value) -> WebSocketResult<StreamEvent> {
         .map(|ms| ms as i64)
         .unwrap_or(0);
 
-    Ok(StreamEvent::MarkPrice { symbol, mark_price, index_price, timestamp })
+    Ok(StreamEvent::MarkPrice {
+        symbol,
+        mark: crate::core::types::MarkPrice {
+            mark_price,
+            index_price,
+            timestamp,
+            ..Default::default()
+        },
+    })
 }
 
 /// Fan-out: extract FundingRate from a `ticker` frame (`fundingRate` + `nextFundingTime` fields).
@@ -595,7 +624,15 @@ fn parse_ticker_as_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent> {
         .map(|ms| ms as i64)
         .unwrap_or(0);
 
-    Ok(StreamEvent::FundingRate { symbol, rate, next_funding_time, timestamp })
+    Ok(StreamEvent::FundingRate {
+        symbol,
+        funding: crate::core::types::FundingRate {
+            rate,
+            next_funding_time,
+            timestamp,
+            ..Default::default()
+        },
+    })
 }
 
 /// Fan-out: extract OpenInterest from a `ticker` frame (`holdingAmount` field).
@@ -631,9 +668,12 @@ fn parse_ticker_as_open_interest(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     Ok(StreamEvent::OpenInterestUpdate {
         symbol,
-        open_interest,
-        open_interest_value: None,
-        timestamp,
+        open_interest: crate::core::types::OpenInterest {
+            open_interest,
+            open_interest_value: None,
+            timestamp,
+            ..Default::default()
+        },
     })
 }
 
@@ -722,13 +762,16 @@ fn parse_agg_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     Ok(StreamEvent::AggTrade {
         symbol,
-        aggregate_id: trade_id,
-        price,
-        quantity,
-        first_trade_id: trade_id,
-        last_trade_id: trade_id,
-        side,
-        timestamp,
+        agg: crate::core::types::AggTrade {
+            aggregate_id: trade_id,
+            price,
+            quantity,
+            first_trade_id: trade_id,
+            last_trade_id: trade_id,
+            is_buy: side == crate::core::types::TradeSide::Buy,
+            timestamp,
+            ..Default::default()
+        },
     })
 }
 
@@ -997,10 +1040,10 @@ mod tests {
         });
         let event = parse_ticker_as_funding_rate(&frame).expect("should parse funding rate");
         match event {
-            StreamEvent::FundingRate { rate, symbol, next_funding_time, .. } => {
-                assert!((rate - 0.0001).abs() < 1e-9, "rate mismatch");
+            StreamEvent::FundingRate { symbol, funding, .. } => {
+                assert!((funding.rate - 0.0001).abs() < 1e-9, "rate mismatch");
                 assert_eq!(symbol, "BTCUSDT");
-                assert_eq!(next_funding_time, Some(1_716_192_000_000i64));
+                assert_eq!(funding.next_funding_time, Some(1_716_192_000_000i64));
             }
             other => panic!("expected FundingRate, got {:?}", other),
         }
@@ -1019,8 +1062,8 @@ mod tests {
         });
         let event = parse_ticker_as_open_interest(&frame).expect("should parse OI");
         match event {
-            StreamEvent::OpenInterestUpdate { open_interest, symbol, .. } => {
-                assert!((open_interest - 12345.678).abs() < 1e-6);
+            StreamEvent::OpenInterestUpdate { symbol, open_interest, .. } => {
+                assert!((open_interest.open_interest - 12345.678).abs() < 1e-6);
                 assert_eq!(symbol, "BTCUSDT");
             }
             other => panic!("expected OpenInterestUpdate, got {:?}", other),

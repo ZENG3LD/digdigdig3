@@ -311,9 +311,12 @@ pub(crate) fn parse_markets_funding(raw: &Value) -> WebSocketResult<StreamEvent>
     let now = crate::core::utils::timestamp_millis() as i64;
     Ok(StreamEvent::FundingRate {
         symbol,
-        rate,
-        next_funding_time: None,
-        timestamp: now,
+        funding: crate::core::types::FundingRate {
+            rate,
+            next_funding_time: None,
+            timestamp: now,
+            ..Default::default()
+        },
     })
 }
 
@@ -334,9 +337,12 @@ pub(crate) fn parse_markets_mark_price(raw: &Value) -> WebSocketResult<StreamEve
     let now = crate::core::utils::timestamp_millis() as i64;
     Ok(StreamEvent::MarkPrice {
         symbol,
-        mark_price,
-        index_price: None,
-        timestamp: now,
+        mark: crate::core::types::MarkPrice {
+            mark_price,
+            index_price: None,
+            timestamp: now,
+            ..Default::default()
+        },
     })
 }
 

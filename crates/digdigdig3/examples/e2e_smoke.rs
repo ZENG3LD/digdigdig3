@@ -284,34 +284,34 @@ mod market {
                 (format!("Kline sym={} iv={} o={:.4} h={:.4} l={:.4} c={:.4} vol={:.2} ts={}",
                     symbol, interval, k.open, k.high, k.low, k.close, k.volume, k.open_time), valid)
             }
-            StreamEvent::MarkPrice { symbol, mark_price, timestamp, .. } => {
+            StreamEvent::MarkPrice { symbol, mark } => {
                 if expected_kind != ExpectedKind::MarkPrice {
                     issues.push(format!("WRONG_TYPE: got MarkPrice, expected {:?}", expected_kind));
                 }
-                let valid = *mark_price > 0.0 && *timestamp > stale_ms;
+                let valid = mark.mark_price > 0.0 && mark.timestamp > stale_ms;
                 if !valid { issues.push("mark_price<=0 or stale".into()); }
-                (format!("MarkPrice sym={} px={:.4} ts={}", symbol, mark_price, timestamp), valid)
+                (format!("MarkPrice sym={} px={:.4} ts={}", symbol, mark.mark_price, mark.timestamp), valid)
             }
-            StreamEvent::FundingRate { symbol, rate, timestamp, .. } => {
+            StreamEvent::FundingRate { symbol, funding } => {
                 if expected_kind == ExpectedKind::Ticker {
                     issues.push("WRONG_TYPE: got FundingRate while subscribed to Ticker".into());
                 }
-                (format!("FundingRate sym={} rate={:.6} ts={}", symbol, rate, timestamp), *timestamp > 0)
+                (format!("FundingRate sym={} rate={:.6} ts={}", symbol, funding.rate, funding.timestamp), funding.timestamp > 0)
             }
-            StreamEvent::Liquidation { symbol, price, quantity, timestamp, .. } => {
-                let valid = *price > 0.0 && *quantity > 0.0;
+            StreamEvent::Liquidation { symbol, liquidation } => {
+                let valid = liquidation.price > 0.0 && liquidation.quantity > 0.0;
                 if !valid { issues.push("liquidation px/qty<=0".into()); }
-                (format!("Liquidation sym={} px={:.4} qty={:.6} ts={}", symbol, price, quantity, timestamp), valid)
+                (format!("Liquidation sym={} px={:.4} qty={:.6} ts={}", symbol, liquidation.price, liquidation.quantity, liquidation.timestamp), valid)
             }
-            StreamEvent::OpenInterestUpdate { symbol, open_interest, timestamp, .. } => {
-                let valid = *open_interest > 0.0;
+            StreamEvent::OpenInterestUpdate { symbol, open_interest } => {
+                let valid = open_interest.open_interest > 0.0;
                 if !valid { issues.push("open_interest<=0".into()); }
-                (format!("OI sym={} oi={:.2} ts={}", symbol, open_interest, timestamp), valid)
+                (format!("OI sym={} oi={:.2} ts={}", symbol, open_interest.open_interest, open_interest.timestamp), valid)
             }
-            StreamEvent::AggTrade { symbol, price, quantity, timestamp, .. } => {
-                let valid = *price > 0.0 && *quantity > 0.0;
+            StreamEvent::AggTrade { symbol, agg } => {
+                let valid = agg.price > 0.0 && agg.quantity > 0.0;
                 if !valid { issues.push("aggtrade px/qty<=0".into()); }
-                (format!("AggTrade sym={} px={:.4} qty={:.6} ts={}", symbol, price, quantity, timestamp), valid)
+                (format!("AggTrade sym={} px={:.4} qty={:.6} ts={}", symbol, agg.price, agg.quantity, agg.timestamp), valid)
             }
             other => {
                 let s = format!("{:?}", other);

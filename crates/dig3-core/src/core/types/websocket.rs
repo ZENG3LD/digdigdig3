@@ -13,7 +13,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    AccountType, Kline, MarginType, OrderBook, OrderSide, OrderStatus, OrderType,
+    AccountType, AggTrade, FundingRate, Kline, Liquidation, LongShortRatio, MarginType, MarkPrice,
+    OpenInterest, OrderBook, OrderSide, OrderStatus, OrderType,
     OrderbookDelta as OrderbookDeltaData, PositionSide, Price, PublicTrade, Quantity, Symbol,
     Ticker, Timestamp, TradeSide,
 };
@@ -236,60 +237,30 @@ pub enum StreamEvent {
     /// Обновление свечи
     Kline { symbol: String, interval: KlineInterval, kline: Kline },
 
-    /// Mark price
-    MarkPrice {
-        symbol: String,
-        mark_price: f64,
-        index_price: Option<f64>,
-        timestamp: i64,
-    },
+    /// Mark price. Carries the full `MarkPrice` struct so the WS feed is lossless
+    /// (estimated/indicative settle, interest rate, fair/spot price, …) — `symbol`
+    /// stays on the variant as the routing key.
+    MarkPrice { symbol: String, mark: MarkPrice },
 
-    /// Funding rate
-    FundingRate {
-        symbol: String,
-        rate: f64,
-        next_funding_time: Option<i64>,
-        timestamp: i64,
-    },
+    /// Funding rate. Carries the full `FundingRate` struct (premium, realized,
+    /// sett state, interval, caps, …) — lossless WS, `symbol` is the routing key.
+    FundingRate { symbol: String, funding: FundingRate },
 
-    /// Public liquidation event (forced position close)
-    Liquidation {
-        symbol: String,
-        side: TradeSide,
-        price: f64,
-        quantity: f64,
-        timestamp: i64,
-        value: Option<f64>,
-    },
+    /// Public liquidation event (forced position close). Carries the full
+    /// `Liquidation` struct (order id/type/status, avg/fill/order price, …).
+    Liquidation { symbol: String, liquidation: Liquidation },
 
-    /// Open interest update
-    OpenInterestUpdate {
-        symbol: String,
-        open_interest: f64,
-        open_interest_value: Option<f64>,
-        timestamp: i64,
-    },
+    /// Open interest update. Carries the full `OpenInterest` struct
+    /// (ccy/usd, single/sum OI, trade rollups, …).
+    OpenInterestUpdate { symbol: String, open_interest: OpenInterest },
 
-    /// Long/short ratio update
-    LongShortRatio {
-        symbol: String,
-        ratio_type: String,
-        long_ratio: f64,
-        short_ratio: f64,
-        timestamp: i64,
-    },
+    /// Long/short ratio update. Carries the full `LongShortRatio` struct
+    /// (top-trader splits, user counts, buy/sell/locked, …).
+    LongShortRatio { symbol: String, ratio: LongShortRatio },
 
-    /// Aggregated trade (combines multiple trades at same price/time)
-    AggTrade {
-        symbol: String,
-        aggregate_id: i64,
-        price: f64,
-        quantity: f64,
-        first_trade_id: i64,
-        last_trade_id: i64,
-        side: TradeSide,
-        timestamp: i64,
-    },
+    /// Aggregated trade (combines multiple trades at same price/time). Carries
+    /// the full `AggTrade` struct (is_best_match, non_rpi_qty, quote_qty, …).
+    AggTrade { symbol: String, agg: AggTrade },
 
     /// Composite index price update
     CompositeIndex {

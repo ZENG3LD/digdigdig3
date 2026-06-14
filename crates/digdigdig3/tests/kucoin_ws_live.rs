@@ -74,14 +74,14 @@ async fn kucoin_liquidation_public_channel_no_error() {
     let result = timeout(Duration::from_secs(60), async {
         while let Some(event) = stream.next().await {
             match event {
-                Ok(StreamEvent::Liquidation { symbol, side, price, quantity, .. }) => {
+                Ok(StreamEvent::Liquidation { symbol, liquidation }) => {
                     liq_count += 1;
                     eprintln!(
                         "  Liquidation #{}: {} {:?} price={:.2} qty={:.4}",
-                        liq_count, symbol, side, price, quantity
+                        liq_count, symbol, liquidation.side, liquidation.price, liquidation.quantity
                     );
                     assert!(!symbol.is_empty(), "liquidation symbol must be populated");
-                    assert!(price > 0.0, "liquidation price must be > 0");
+                    assert!(liquidation.price > 0.0, "liquidation price must be > 0");
                 }
                 Err(e) => {
                     eprintln!("  stream error: {:?}", e);

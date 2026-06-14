@@ -593,9 +593,12 @@ fn parse_futures_ticker_mark_price(raw: &Value) -> WebSocketResult<StreamEvent> 
 
     Ok(StreamEvent::MarkPrice {
         symbol,
-        mark_price,
-        index_price,
-        timestamp,
+        mark: crate::core::types::MarkPrice {
+            mark_price,
+            index_price,
+            timestamp,
+            ..Default::default()
+        },
     })
 }
 
@@ -617,13 +620,16 @@ fn parse_futures_ticker_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent
 
     Ok(StreamEvent::FundingRate {
         symbol,
-        rate,
-        // next_funding_time is intentionally None here: the push.ticker frame does not
-        // carry a next-settlement timestamp field.  Consumers that need next_funding_time
-        // populated must subscribe to the dedicated push.funding.rate channel (handled
-        // separately in topic_registry / dispatch — that path does populate the field).
-        next_funding_time: None,
-        timestamp,
+        funding: crate::core::types::FundingRate {
+            rate,
+            // next_funding_time is intentionally None here: the push.ticker frame does not
+            // carry a next-settlement timestamp field.  Consumers that need next_funding_time
+            // populated must subscribe to the dedicated push.funding.rate channel (handled
+            // separately in topic_registry / dispatch — that path does populate the field).
+            next_funding_time: None,
+            timestamp,
+            ..Default::default()
+        },
     })
 }
 
@@ -645,9 +651,12 @@ fn parse_futures_ticker_open_interest(raw: &Value) -> WebSocketResult<StreamEven
 
     Ok(StreamEvent::OpenInterestUpdate {
         symbol,
-        open_interest,
-        open_interest_value: None,
-        timestamp,
+        open_interest: crate::core::types::OpenInterest {
+            open_interest,
+            open_interest_value: None,
+            timestamp,
+            ..Default::default()
+        },
     })
 }
 
@@ -669,9 +678,12 @@ fn parse_futures_ticker_index_price(raw: &Value) -> WebSocketResult<StreamEvent>
 
     Ok(StreamEvent::MarkPrice {
         symbol,
-        mark_price: index_price,
-        index_price: Some(index_price),
-        timestamp,
+        mark: crate::core::types::MarkPrice {
+            mark_price: index_price,
+            index_price: Some(index_price),
+            timestamp,
+            ..Default::default()
+        },
     })
 }
 
@@ -790,13 +802,16 @@ fn parse_futures_agg_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     Ok(StreamEvent::AggTrade {
         symbol,
-        aggregate_id: id,
-        price,
-        quantity,
-        first_trade_id: id,
-        last_trade_id: id,
-        side,
-        timestamp,
+        agg: crate::core::types::AggTrade {
+            aggregate_id: id,
+            price,
+            quantity,
+            first_trade_id: id,
+            last_trade_id: id,
+            is_buy: side == crate::core::types::TradeSide::Buy,
+            timestamp,
+            ..Default::default()
+        },
     })
 }
 
@@ -922,9 +937,12 @@ fn parse_futures_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     Ok(StreamEvent::FundingRate {
         symbol,
-        rate,
-        next_funding_time,
-        timestamp,
+        funding: crate::core::types::FundingRate {
+            rate,
+            next_funding_time,
+            timestamp,
+            ..Default::default()
+        },
     })
 }
 
@@ -946,9 +964,12 @@ fn parse_futures_index_price(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     Ok(StreamEvent::MarkPrice {
         symbol,
-        mark_price: index_price,
-        index_price: Some(index_price),
-        timestamp,
+        mark: crate::core::types::MarkPrice {
+            mark_price: index_price,
+            index_price: Some(index_price),
+            timestamp,
+            ..Default::default()
+        },
     })
 }
 
@@ -971,9 +992,12 @@ fn parse_futures_fair_price(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     Ok(StreamEvent::MarkPrice {
         symbol,
-        mark_price,
-        index_price: None,
-        timestamp,
+        mark: crate::core::types::MarkPrice {
+            mark_price,
+            index_price: None,
+            timestamp,
+            ..Default::default()
+        },
     })
 }
 

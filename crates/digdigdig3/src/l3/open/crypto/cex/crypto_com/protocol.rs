@@ -363,9 +363,12 @@ pub(crate) fn parse_ticker_oi(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     Ok(StreamEvent::OpenInterestUpdate {
         symbol,
-        open_interest: oi,
-        open_interest_value: None,
-        timestamp: ticker.timestamp,
+        open_interest: crate::core::types::OpenInterest {
+            open_interest: oi,
+            open_interest_value: None,
+            timestamp: ticker.timestamp,
+            ..Default::default()
+        },
     })
 }
 
@@ -453,7 +456,15 @@ pub(crate) fn parse_mark_price(raw: &Value) -> WebSocketResult<StreamEvent> {
     let index_price = parse_f64_field(data, &["ip"]);
     let timestamp = data.get("t").and_then(|v| v.as_i64()).unwrap_or(0);
 
-    Ok(StreamEvent::MarkPrice { symbol, mark_price, index_price, timestamp })
+    Ok(StreamEvent::MarkPrice {
+        symbol,
+        mark: crate::core::types::MarkPrice {
+            mark_price,
+            index_price,
+            timestamp,
+            ..Default::default()
+        },
+    })
 }
 
 /// Parse `index.<instrument>` → StreamEvent::IndexPrice.
@@ -501,7 +512,15 @@ pub(crate) fn parse_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent> {
     let rate = parse_f64_field(data, &["fr"]).unwrap_or(0.0);
     let timestamp = data.get("t").and_then(|v| v.as_i64()).unwrap_or(0);
 
-    Ok(StreamEvent::FundingRate { symbol, rate, next_funding_time: None, timestamp })
+    Ok(StreamEvent::FundingRate {
+        symbol,
+        funding: crate::core::types::FundingRate {
+            rate,
+            next_funding_time: None,
+            timestamp,
+            ..Default::default()
+        },
+    })
 }
 
 /// Parse `settlement.<instrument>` → StreamEvent::SettlementEvent.
@@ -887,9 +906,9 @@ mod tests {
         });
         let ev = parse_mark_price(&raw).expect("parse mark price");
         match ev {
-            StreamEvent::MarkPrice { symbol, mark_price, .. } => {
+            StreamEvent::MarkPrice { symbol, mark } => {
                 assert_eq!(symbol, "BTCUSD-PERP");
-                assert!((mark_price - 50100.0).abs() < f64::EPSILON);
+                assert!((mark.mark_price - 50100.0).abs() < f64::EPSILON);
             }
             other => panic!("expected MarkPrice, got {:?}", other),
         }

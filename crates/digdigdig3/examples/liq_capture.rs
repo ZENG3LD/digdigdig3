@@ -338,7 +338,7 @@ async fn capture_one(
         match timeout(remaining, stream.next()).await {
             Ok(Some(Ok(event))) => {
                 let ts_now = now_ms();
-                if let StreamEvent::Liquidation { symbol, price, quantity, side, timestamp, .. } =
+                if let StreamEvent::Liquidation { symbol, liquidation } =
                     &event
                 {
                     event_count += 1;
@@ -349,13 +349,13 @@ async fn capture_one(
                     if sample.is_none() {
                         sample = Some(format!(
                             "Liquidation {{ sym={} side={:?} px={:.4} qty={:.6} ts={} }}",
-                            symbol, side, price, quantity, timestamp
+                            symbol, liquidation.side, liquidation.price, liquidation.quantity, liquidation.timestamp
                         ));
                     }
                     if event_count % 10 == 1 {
                         println!(
                             "[{}] #{}: sym={} side={:?} px={:.4} qty={:.6}",
-                            exchange_name, event_count, symbol, side, price, quantity
+                            exchange_name, event_count, symbol, liquidation.side, liquidation.price, liquidation.quantity
                         );
                     }
                 }

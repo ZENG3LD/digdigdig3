@@ -574,13 +574,16 @@ fn parse_agg_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
     // Deribit 100ms batch doesn't expose aggregate_id / first_last_trade_id — use 0.
     Ok(StreamEvent::AggTrade {
         symbol,
-        aggregate_id: 0,
-        price,
-        quantity,
-        first_trade_id: 0,
-        last_trade_id: 0,
-        side,
-        timestamp,
+        agg: crate::core::types::AggTrade {
+            aggregate_id: 0,
+            price,
+            quantity,
+            first_trade_id: 0,
+            last_trade_id: 0,
+            is_buy: side == TradeSide::Buy,
+            timestamp,
+            ..Default::default()
+        },
     })
 }
 
@@ -628,7 +631,15 @@ fn parse_mark_price_from_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
         .ok_or_else(|| WebSocketError::FieldAbsent("mark_price absent in ticker".into()))?;
     let index_price = get_f64(data, "index_price");
     let timestamp = get_i64(data, "timestamp").unwrap_or(0);
-    Ok(StreamEvent::MarkPrice { symbol, mark_price, index_price, timestamp })
+    Ok(StreamEvent::MarkPrice {
+        symbol,
+        mark: crate::core::types::MarkPrice {
+            mark_price,
+            index_price,
+            timestamp,
+            ..Default::default()
+        },
+    })
 }
 
 // ── FundingRate from ticker fan-out ─────────────────────────────────────────
@@ -640,7 +651,15 @@ fn parse_funding_from_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
     let rate = get_f64(data, "current_funding")
         .ok_or_else(|| WebSocketError::FieldAbsent("current_funding absent in ticker".into()))?;
     let timestamp = get_i64(data, "timestamp").unwrap_or(0);
-    Ok(StreamEvent::FundingRate { symbol, rate, next_funding_time: None, timestamp })
+    Ok(StreamEvent::FundingRate {
+        symbol,
+        funding: crate::core::types::FundingRate {
+            rate,
+            next_funding_time: None,
+            timestamp,
+            ..Default::default()
+        },
+    })
 }
 
 // ── OpenInterest from ticker fan-out ─────────────────────────────────────────
@@ -651,7 +670,15 @@ fn parse_oi_from_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
     let open_interest = get_f64(data, "open_interest")
         .ok_or_else(|| WebSocketError::FieldAbsent("open_interest absent in ticker".into()))?;
     let timestamp = get_i64(data, "timestamp").unwrap_or(0);
-    Ok(StreamEvent::OpenInterestUpdate { symbol, open_interest, open_interest_value: None, timestamp })
+    Ok(StreamEvent::OpenInterestUpdate {
+        symbol,
+        open_interest: crate::core::types::OpenInterest {
+            open_interest,
+            open_interest_value: None,
+            timestamp,
+            ..Default::default()
+        },
+    })
 }
 
 // ── Kline ────────────────────────────────────────────────────────────────────
@@ -690,7 +717,15 @@ fn parse_mark_price(raw: &Value) -> WebSocketResult<StreamEvent> {
         .ok_or_else(|| WebSocketError::Parse("mark_price missing".into()))?;
     let index_price = get_f64(data, "index_price");
     let timestamp = get_i64(data, "timestamp").unwrap_or(0);
-    Ok(StreamEvent::MarkPrice { symbol, mark_price, index_price, timestamp })
+    Ok(StreamEvent::MarkPrice {
+        symbol,
+        mark: crate::core::types::MarkPrice {
+            mark_price,
+            index_price,
+            timestamp,
+            ..Default::default()
+        },
+    })
 }
 
 // ── Perpetual (interest rate → FundingRate) ──────────────────────────────────
@@ -706,9 +741,12 @@ fn parse_perpetual(raw: &Value) -> WebSocketResult<StreamEvent> {
         .ok_or_else(|| WebSocketError::Parse("perpetual: missing interest/interest_rate".into()))?;
     Ok(StreamEvent::FundingRate {
         symbol: instrument.to_string(),
-        rate,
-        next_funding_time: None,
-        timestamp,
+        funding: crate::core::types::FundingRate {
+            rate,
+            next_funding_time: None,
+            timestamp,
+            ..Default::default()
+        },
     })
 }
 
@@ -778,9 +816,12 @@ fn parse_markprice_options(raw: &Value) -> WebSocketResult<StreamEvent> {
     let timestamp = get_i64(item, "timestamp").unwrap_or(0);
     Ok(StreamEvent::MarkPrice {
         symbol,
-        mark_price,
-        index_price: None,
-        timestamp,
+        mark: crate::core::types::MarkPrice {
+            mark_price,
+            index_price: None,
+            timestamp,
+            ..Default::default()
+        },
     })
 }
 

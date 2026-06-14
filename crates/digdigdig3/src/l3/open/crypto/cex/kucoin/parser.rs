@@ -741,21 +741,29 @@ impl KuCoinParser {
 
     /// Parse WebSocket mark price message
     pub fn parse_ws_mark_price(data: &Value) -> ExchangeResult<StreamEvent> {
+        let symbol = Self::get_str(data, "symbol").unwrap_or("").to_string();
         Ok(StreamEvent::MarkPrice {
-            symbol: Self::get_str(data, "symbol").unwrap_or("").to_string(),
-            mark_price: Self::require_f64(data, "markPrice")?,
-            index_price: Self::get_f64(data, "indexPrice"),
-            timestamp: data.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0),
+            symbol,
+            mark: crate::core::types::MarkPrice {
+                mark_price: Self::require_f64(data, "markPrice")?,
+                index_price: Self::get_f64(data, "indexPrice"),
+                timestamp: data.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0),
+                ..Default::default()
+            },
         })
     }
 
     /// Parse WebSocket funding rate message
     pub fn parse_ws_funding_rate(data: &Value) -> ExchangeResult<StreamEvent> {
+        let symbol = Self::get_str(data, "symbol").unwrap_or("").to_string();
         Ok(StreamEvent::FundingRate {
-            symbol: Self::get_str(data, "symbol").unwrap_or("").to_string(),
-            rate: Self::require_f64(data, "fundingRate")?,
-            next_funding_time: None,
-            timestamp: data.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0),
+            symbol,
+            funding: crate::core::types::FundingRate {
+                rate: Self::require_f64(data, "fundingRate")?,
+                next_funding_time: None,
+                timestamp: data.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0),
+                ..Default::default()
+            },
         })
     }
 

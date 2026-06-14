@@ -160,18 +160,18 @@ async fn bitfinex_liq_global_subscribe_and_receive() {
     let result = timeout(Duration::from_secs(60), async {
         while let Some(event) = stream.next().await {
             match event {
-                Ok(StreamEvent::Liquidation { symbol, side, price, quantity, timestamp, value }) => {
+                Ok(StreamEvent::Liquidation { symbol, liquidation }) => {
                     liq_count += 1;
                     subscribe_ok = true;
                     eprintln!(
                         "  Liquidation #{}: symbol='{}' side={:?} price={:.4} qty={:.6} ts={} value={:?}",
-                        liq_count, symbol, side, price, quantity, timestamp, value
+                        liq_count, symbol, liquidation.side, liquidation.price, liquidation.quantity, liquidation.timestamp, liquidation.value
                     );
                     // Validate fields when we get a liq.
                     assert!(!symbol.is_empty(), "symbol must not be empty");
-                    assert!(price > 0.0, "liquidation price must be positive");
-                    assert!(quantity > 0.0, "liquidation quantity must be positive");
-                    assert!(timestamp > 0, "liquidation timestamp must be positive");
+                    assert!(liquidation.price > 0.0, "liquidation price must be positive");
+                    assert!(liquidation.quantity > 0.0, "liquidation quantity must be positive");
+                    assert!(liquidation.timestamp > 0, "liquidation timestamp must be positive");
                     if liq_count >= 1 {
                         // Got at least one — good enough proof of flow.
                         break;

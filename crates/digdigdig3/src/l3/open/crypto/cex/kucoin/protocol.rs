@@ -592,13 +592,18 @@ fn parse_liquidation(raw: &Value) -> WebSocketResult<StreamEvent> {
         .map(|ns| ns / 1_000_000)
         .unwrap_or_else(|| timestamp_millis() as i64);
 
+    let sym = symbol;
     Ok(StreamEvent::Liquidation {
-        symbol,
-        side,
-        price,
-        quantity,
-        value: None,
-        timestamp,
+        symbol: sym.clone(),
+        liquidation: crate::core::types::Liquidation {
+            symbol: sym,
+            side,
+            price,
+            quantity,
+            timestamp,
+            value: None,
+            ..Default::default()
+        },
     })
 }
 
@@ -840,13 +845,13 @@ mod tests {
         assert!(!parsers.is_empty(), "liquidationOrders:* must have a registered parser");
         let event = parsers[0](&frame).expect("parse must succeed");
         match event {
-            crate::core::types::StreamEvent::Liquidation { symbol, side, price, quantity, timestamp, .. } => {
+            crate::core::types::StreamEvent::Liquidation { symbol, liquidation } => {
                 assert_eq!(symbol, "XBTUSDTM");
-                assert_eq!(side, crate::core::types::TradeSide::Sell);
-                assert!((price - 50000.5).abs() < 0.01);
-                assert!((quantity - 10.0).abs() < 0.001);
+                assert_eq!(liquidation.side, crate::core::types::TradeSide::Sell);
+                assert!((liquidation.price - 50000.5).abs() < 0.01);
+                assert!((liquidation.quantity - 10.0).abs() < 0.001);
                 // ts=1700000000_000_000_000 ns → 1700000000000 ms
-                assert_eq!(timestamp, 1_700_000_000_000i64);
+                assert_eq!(liquidation.timestamp, 1_700_000_000_000i64);
             }
             other => panic!("expected Liquidation, got {:?}", other),
         }

@@ -499,15 +499,19 @@ fn parse_agg_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
     let is_buyer_maker = data.get("m").and_then(|m| m.as_bool()).unwrap_or(false);
     let side = if is_buyer_maker { TradeSide::Sell } else { TradeSide::Buy };
 
+    let _ = side;
     Ok(StreamEvent::AggTrade {
         symbol: data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string(),
-        aggregate_id: data.get("a").and_then(|a| a.as_i64()).unwrap_or(0),
-        price: parse_f64("p").unwrap_or(0.0),
-        quantity: parse_f64("q").unwrap_or(0.0),
-        first_trade_id: data.get("f").and_then(|f| f.as_i64()).unwrap_or(0),
-        last_trade_id: data.get("l").and_then(|l| l.as_i64()).unwrap_or(0),
-        side,
-        timestamp: data.get("T").and_then(|t| t.as_i64()).unwrap_or(0),
+        agg: crate::core::types::AggTrade {
+            aggregate_id: data.get("a").and_then(|a| a.as_i64()).unwrap_or(0),
+            price: parse_f64("p").unwrap_or(0.0),
+            quantity: parse_f64("q").unwrap_or(0.0),
+            first_trade_id: data.get("f").and_then(|f| f.as_i64()).unwrap_or(0),
+            last_trade_id: data.get("l").and_then(|l| l.as_i64()).unwrap_or(0),
+            is_buy: !is_buyer_maker,
+            timestamp: data.get("T").and_then(|t| t.as_i64()).unwrap_or(0),
+            ..Default::default()
+        },
     })
 }
 
@@ -611,9 +615,12 @@ fn parse_mark_price(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     Ok(StreamEvent::MarkPrice {
         symbol: data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string(),
-        mark_price: parse_f64("p").unwrap_or(0.0),
-        index_price: parse_f64("i"),
-        timestamp: data.get("E").and_then(|e| e.as_i64()).unwrap_or(0),
+        mark: crate::core::types::MarkPrice {
+            mark_price: parse_f64("p").unwrap_or(0.0),
+            index_price: parse_f64("i"),
+            timestamp: data.get("E").and_then(|e| e.as_i64()).unwrap_or(0),
+            ..Default::default()
+        },
     })
 }
 
@@ -634,9 +641,12 @@ fn parse_mark_price_arr(raw: &Value) -> WebSocketResult<StreamEvent> {
     };
     Ok(StreamEvent::MarkPrice {
         symbol: item.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string(),
-        mark_price: parse_f64("p").unwrap_or(0.0),
-        index_price: parse_f64("i"),
-        timestamp: item.get("E").and_then(|e| e.as_i64()).unwrap_or(0),
+        mark: crate::core::types::MarkPrice {
+            mark_price: parse_f64("p").unwrap_or(0.0),
+            index_price: parse_f64("i"),
+            timestamp: item.get("E").and_then(|e| e.as_i64()).unwrap_or(0),
+            ..Default::default()
+        },
     })
 }
 
@@ -658,9 +668,12 @@ fn parse_funding_rate(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     Ok(StreamEvent::FundingRate {
         symbol: data.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string(),
-        rate,
-        next_funding_time: data.get("T").and_then(|t| t.as_i64()),
-        timestamp: data.get("E").and_then(|e| e.as_i64()).unwrap_or(0),
+        funding: crate::core::types::FundingRate {
+            rate,
+            next_funding_time: data.get("T").and_then(|t| t.as_i64()),
+            timestamp: data.get("E").and_then(|e| e.as_i64()).unwrap_or(0),
+            ..Default::default()
+        },
     })
 }
 
@@ -704,11 +717,21 @@ fn parse_force_order(raw: &Value) -> WebSocketResult<StreamEvent> {
 
     Ok(StreamEvent::Liquidation {
         symbol: o.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string(),
-        side,
-        price,
-        quantity,
-        timestamp: o.get("T").and_then(|t| t.as_i64()).unwrap_or(0),
-        value: Some(price * quantity),
+        liquidation: crate::core::types::Liquidation {
+            symbol: o.get("s").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+            side,
+            price,
+            quantity,
+            timestamp: o.get("T").and_then(|t| t.as_i64()).unwrap_or(0),
+            value: Some(price * quantity),
+            order_type: o.get("o").and_then(|v| v.as_str()).map(String::from),
+            status: o.get("X").and_then(|v| v.as_str()).map(String::from),
+            avg_price: parse_f64("ap"),
+            executed_qty: parse_f64("z"),
+            order_qty: parse_f64("q"),
+            order_price: parse_f64("p"),
+            ..Default::default()
+        },
     })
 }
 

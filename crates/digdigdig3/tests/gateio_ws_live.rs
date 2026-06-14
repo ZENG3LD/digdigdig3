@@ -56,16 +56,14 @@ async fn gateio_open_interest_btc_usdt_receives_event() {
                 Ok(StreamEvent::OpenInterestUpdate {
                     symbol,
                     open_interest,
-                    open_interest_value,
-                    timestamp,
                 }) => {
                     eprintln!(
                         "  OpenInterest: {} oi={:.2} oi_value={:?} ts={}",
-                        symbol, open_interest, open_interest_value, timestamp
+                        symbol, open_interest.open_interest, open_interest.open_interest_value, open_interest.timestamp
                     );
                     assert!(!symbol.is_empty(), "symbol must be populated");
-                    assert!(open_interest > 0.0, "open_interest must be > 0, got {}", open_interest);
-                    assert!(timestamp > 0, "timestamp must be > 0");
+                    assert!(open_interest.open_interest > 0.0, "open_interest must be > 0, got {}", open_interest.open_interest);
+                    assert!(open_interest.timestamp > 0, "timestamp must be > 0");
                     return true;
                 }
                 Err(e) => {

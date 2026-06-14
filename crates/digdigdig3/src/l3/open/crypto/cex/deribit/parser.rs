@@ -165,30 +165,28 @@ impl DeribitParser {
     /// Parse ticker
     pub fn parse_ticker(response: &Value) -> ExchangeResult<Ticker> {
         let result = Self::extract_result(response)?;
+        let stats = result.get("stats");
 
         Ok(Ticker {
             last_price: Self::get_f64(result, "last_price").unwrap_or(0.0),
             bid_price: Self::get_f64(result, "best_bid_price"),
             ask_price: Self::get_f64(result, "best_ask_price"),
-            high_24h: result.get("stats")
-                .and_then(|s| s.get("high"))
-                .and_then(Self::parse_f64),
-            low_24h: result.get("stats")
-                .and_then(|s| s.get("low"))
-                .and_then(Self::parse_f64),
-            volume_24h: result.get("stats")
-                .and_then(|s| s.get("volume"))
-                .and_then(Self::parse_f64),
-            quote_volume_24h: result.get("stats")
-                .and_then(|s| s.get("volume_usd"))
-                .and_then(Self::parse_f64),
-            price_change_24h: result.get("stats")
-                .and_then(|s| s.get("price_change"))
-                .and_then(Self::parse_f64),
-            price_change_percent_24h: result.get("stats")
-                .and_then(|s| s.get("price_change"))
-                .and_then(Self::parse_f64),
-            timestamp: Self::get_i64(result, "timestamp").unwrap_or(0), ..Default::default() 
+            bid_qty: Self::get_f64(result, "best_bid_amount"),
+            ask_qty: Self::get_f64(result, "best_ask_amount"),
+            high_24h: stats.and_then(|s| s.get("high")).and_then(Self::parse_f64),
+            low_24h: stats.and_then(|s| s.get("low")).and_then(Self::parse_f64),
+            volume_24h: stats.and_then(|s| s.get("volume")).and_then(Self::parse_f64),
+            quote_volume_24h: stats.and_then(|s| s.get("volume_usd")).and_then(Self::parse_f64),
+            price_change_24h: stats.and_then(|s| s.get("price_change")).and_then(Self::parse_f64),
+            price_change_percent_24h: stats.and_then(|s| s.get("price_change")).and_then(Self::parse_f64),
+            mark_price: Self::get_f64(result, "mark_price"),
+            index_price: Self::get_f64(result, "index_price"),
+            open_interest: Self::get_f64(result, "open_interest"),
+            funding_rate: Self::get_f64(result, "current_funding"),
+            settlement_price: Self::get_f64(result, "settlement_price"),
+            predicted_delivery_price: Self::get_f64(result, "estimated_delivery_price"),
+            timestamp: Self::get_i64(result, "timestamp").unwrap_or(0),
+            ..Default::default()
         })
     }
 
@@ -635,13 +633,22 @@ impl DeribitParser {
             last_price: Self::get_f64(data, "last_price").unwrap_or(0.0),
             bid_price: Self::get_f64(data, "best_bid_price"),
             ask_price: Self::get_f64(data, "best_ask_price"),
+            bid_qty: Self::get_f64(data, "best_bid_amount"),
+            ask_qty: Self::get_f64(data, "best_ask_amount"),
             high_24h: stats.and_then(|s| Self::get_f64(s, "high")),
             low_24h: stats.and_then(|s| Self::get_f64(s, "low")),
             volume_24h: stats.and_then(|s| Self::get_f64(s, "volume")),
             quote_volume_24h: stats.and_then(|s| Self::get_f64(s, "volume_usd")),
             price_change_24h: stats.and_then(|s| Self::get_f64(s, "price_change")),
             price_change_percent_24h: stats.and_then(|s| Self::get_f64(s, "price_change")),
-            timestamp: Self::get_i64(data, "timestamp").unwrap_or(0), ..Default::default() 
+            mark_price: Self::get_f64(data, "mark_price"),
+            index_price: Self::get_f64(data, "index_price"),
+            open_interest: Self::get_f64(data, "open_interest"),
+            funding_rate: Self::get_f64(data, "current_funding"),
+            settlement_price: Self::get_f64(data, "settlement_price"),
+            predicted_delivery_price: Self::get_f64(data, "estimated_delivery_price"),
+            timestamp: Self::get_i64(data, "timestamp").unwrap_or(0),
+            ..Default::default()
         })
     }
 

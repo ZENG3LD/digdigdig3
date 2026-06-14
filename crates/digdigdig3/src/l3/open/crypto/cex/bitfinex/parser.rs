@@ -16,7 +16,7 @@ use crate::core::types::{
     Kline, OrderBook, OrderBookLevel, Ticker, Order, Balance, Position, PublicTrade, TradeSide,
     OrderSide, OrderType, OrderStatus, PositionSide, SymbolInfo, UserTrade,
     OrderbookDelta as OrderbookDeltaData,
-    FundingRate, OpenInterest,
+    FundingRate, MarkPrice, OpenInterest,
 };
 
 // Shared wasm-safe wall-clock helper.
@@ -824,9 +824,20 @@ impl BitfinexParser {
             };
             // idx 7 = NEXT_FUNDING_EVT_TIMESTAMP (ms)
             let next_funding_time = Self::get_i64(row, 7);
+            // idx 14 = MARK_PRICE (hist form; ?keys= form idx 15 minus the leading key element)
+            let mark_price = Self::get_f64(row, 14);
+            // idx 3 = SPOT_PRICE / index price (hist form; ?keys= form idx 4)
+            let index_price = Self::get_f64(row, 3);
 
             let _ = symbol; // symbol used by caller for routing; not stored in FundingRate
-            out.push(FundingRate { rate, next_funding_time, timestamp, ..Default::default()  });
+            out.push(FundingRate {
+                rate,
+                next_funding_time,
+                timestamp,
+                mark_price,
+                index_price,
+                ..Default::default()
+            });
         }
         Ok(out)
     }
@@ -866,6 +877,63 @@ impl BitfinexParser {
                 open_interest: oi,
                 open_interest_value: None,
                 timestamp, ..Default::default() 
+            });
+        }
+        Ok(out)
+    }
+
+    /// Parse mark-price history from `GET /v2/status/deriv/{symbol}/hist`.
+    ///
+    /// The `/hist` form carries no leading key element — element [0] is MTS.
+    /// Index mapping (hist form = `?keys=` form minus the leading key at [0]):
+    /// - [0]  MTS                     → `timestamp`
+    /// - [3]  SPOT_PRICE (index)      → `index_price`, `spot_price`
+    /// - [11] CURRENT_FUNDING         → `funding_rate`
+    /// - [14] MARK_PRICE              → `mark_price`
+    ///
+    /// Indices verified against live `GET /v2/status/deriv?keys=tBTCF0:USTF0` probe
+    /// (2026-06-15): key at [0], so hist offsets are exactly `?keys=` indices − 1.
+    pub fn parse_deriv_mark_price_history(
+        response: &Value,
+        symbol: &str,
+    ) -> ExchangeResult<Vec<MarkPrice>> {
+        Self::check_error(response)?;
+
+        let outer = response
+            .as_array()
+            .ok_or_else(|| ExchangeError::Parse(
+                "bitfinex deriv status hist: expected outer array".into(),
+            ))?;
+
+        let mut out = Vec::with_capacity(outer.len());
+        for item in outer {
+            let row = match item.as_array() {
+                Some(a) => a,
+                None => continue,
+            };
+            // idx 0 = MTS (ms timestamp)
+            let timestamp = match Self::get_i64(row, 0) {
+                Some(t) => t,
+                None => continue,
+            };
+            // idx 14 = MARK_PRICE (hist form)
+            let mark_price_val = match Self::get_f64(row, 14) {
+                Some(v) => v,
+                None => continue,
+            };
+            // idx 3 = SPOT_PRICE / index price (hist form)
+            let spot = Self::get_f64(row, 3);
+            // idx 11 = CURRENT_FUNDING (hist form)
+            let funding_rate = Self::get_f64(row, 11);
+
+            let _ = symbol; // caller uses symbol for routing; not stored on MarkPrice
+            out.push(MarkPrice {
+                mark_price: mark_price_val,
+                index_price: spot,
+                funding_rate,
+                timestamp,
+                spot_price: spot,
+                ..Default::default()
             });
         }
         Ok(out)

@@ -32,7 +32,7 @@ use crate::core::types::SymbolInfo;
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions, MarketDataPublic,
 };
-use crate::core::types::{FundingRate, OpenInterest, LongShortRatio};
+use crate::core::types::{FundingRate, OpenInterest, LongShortRatio, MarkPrice};
 use crate::core::types::{MarketDataCapabilities, TradingCapabilities, AccountCapabilities};
 use crate::core::{CancelAll, AmendOrder, BatchOrders, AccountTransfers, CustodialFunds, SubAccounts};
 use crate::core::traits::{FundingHistory, AccountLedger};
@@ -502,6 +502,28 @@ impl MarketDataPublic for BitfinexConnector {
             )
             .await?;
         BitfinexParser::parse_deriv_funding_rate_history(&raw, &sym)
+    }
+
+    // ── Mark price (derivative status snapshot) ───────────────────────────────
+    //
+    // Source: GET /v2/status/deriv/{key}/hist — MARK_PRICE idx14, SPOT idx3,
+    // CURRENT_FUNDING idx11 (hist form). Returns the most-recent row as a MarkPrice.
+
+    async fn get_premium_index(
+        &self,
+        symbol: Option<SymbolInput<'_>>,
+        account_type: AccountType,
+    ) -> crate::core::ExchangeResult<Vec<MarkPrice>> {
+        let sym = match symbol {
+            Some(s) => s.resolve(crate::core::ExchangeId::Bitfinex, account_type)?,
+            None => return Err(ExchangeError::UnsupportedOperation(
+                "Bitfinex get_premium_index requires a symbol (deriv-status is per-instrument)".into(),
+            )),
+        };
+        let raw = self
+            .get_derivative_status_history(&sym, None, None, Some(1), None)
+            .await?;
+        BitfinexParser::parse_deriv_mark_price_history(&raw, &sym)
     }
 
     // ── Open interest history ─────────────────────────────────────────────────

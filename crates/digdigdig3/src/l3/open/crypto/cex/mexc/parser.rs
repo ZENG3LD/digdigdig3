@@ -345,7 +345,12 @@ impl MexcParser {
     /// Parse futures ticker from REST response
     ///
     /// Endpoint: GET /api/v1/contract/ticker
-    /// Response: { "success": true, "code": 0, "data": [{ symbol, lastPrice, bid1, ask1, ... }] }
+    /// Response: { "success": true, "code": 0, "data": { symbol, lastPrice, bid1, ask1,
+    ///             volume24, amount24, holdVol, lower24Price, high24Price, riseFallRate,
+    ///             indexPrice, fairPrice, fundingRate, timestamp } }
+    ///
+    /// Live payload (2026-06-15): numbers (not strings); `lower24Price` (not `low24Price`);
+    /// `amount24` = quote volume; `fairPrice` = mark price; `holdVol` = open interest.
     pub fn parse_ticker_futures(json: &Value) -> ExchangeResult<Ticker> {
         let last_price = json["lastPrice"].as_f64()
             .ok_or_else(|| ExchangeError::Parse("Invalid lastPrice".into()))?;
@@ -353,9 +358,17 @@ impl MexcParser {
         let bid_price = json["bid1"].as_f64();
         let ask_price = json["ask1"].as_f64();
         let high_24h = json["high24Price"].as_f64();
-        let low_24h = json["low24Price"].as_f64();
+        // Live payload uses "lower24Price" (not "low24Price").
+        let low_24h = json["lower24Price"].as_f64();
         let volume_24h = json["volume24"].as_f64();
-        let price_change_24h = json["riseFallRate"].as_f64();
+        let quote_volume_24h = json["amount24"].as_f64();
+        let price_change_percent_24h = json["riseFallRate"].as_f64();
+        let mark_price = json["fairPrice"].as_f64();
+        let index_price = json["indexPrice"].as_f64();
+        let funding_rate = json["fundingRate"].as_f64();
+        let open_interest = json["holdVol"].as_f64();
+        let timestamp = json["timestamp"].as_i64()
+            .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
 
         Ok(Ticker {
             last_price,
@@ -364,10 +377,15 @@ impl MexcParser {
             high_24h,
             low_24h,
             volume_24h,
-            quote_volume_24h: None,
+            quote_volume_24h,
             price_change_24h: None,
-            price_change_percent_24h: price_change_24h,
-            timestamp: crate::core::timestamp_millis() as i64, ..Default::default() 
+            price_change_percent_24h,
+            timestamp,
+            mark_price,
+            index_price,
+            funding_rate,
+            open_interest,
+            ..Default::default()
         })
     }
 
@@ -1526,6 +1544,76 @@ impl MexcParser {
     ///
     /// `settleTime` is in Unix **milliseconds**.
     /// Note: no date filter exists on this endpoint — use `page_num`/`page_size` pagination.
+    /// Parse current funding rate snapshot from `GET /api/v1/contract/funding_rate/{symbol}`.
+    ///
+    /// Live payload (2026-06-15):
+    /// ```json
+    /// {"data":{"symbol":"BTC_USDT","fundingRate":0.00002,"maxFundingRate":0.0018,
+    ///          "minFundingRate":-0.0018,"collectCycle":8,"nextSettleTime":1781481600000,
+    ///          "timestamp":1781465657239,"idxPrice":63831.6,"fairPrice":63803.5}}
+    /// ```
+    ///
+    /// `fairPrice` (MEXC "fair price") acts as the mark price in this context.
+    pub fn parse_funding_rate_futures(response: &Value) -> ExchangeResult<FundingRate> {
+        if let Some(code) = response.get("code").and_then(|c| c.as_i64()) {
+            if code != 0 {
+                let msg = response.get("message")
+                    .or_else(|| response.get("msg"))
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown error");
+                return Err(ExchangeError::Api { code: code as i32, message: msg.to_string() });
+            }
+        }
+
+        let data = response.get("data")
+            .ok_or_else(|| ExchangeError::Parse("MEXC funding rate: missing 'data'".into()))?;
+
+        let rate = data.get("fundingRate")
+            .and_then(|v| v.as_f64())
+            .ok_or_else(|| ExchangeError::Parse("MEXC funding rate: missing 'fundingRate'".into()))?;
+
+        let symbol = data.get("symbol")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let next_funding_time = data.get("nextSettleTime")
+            .and_then(|v| v.as_i64());
+
+        let timestamp = data.get("timestamp")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+
+        let max_funding_rate = data.get("maxFundingRate")
+            .and_then(|v| v.as_f64());
+
+        let min_funding_rate = data.get("minFundingRate")
+            .and_then(|v| v.as_f64());
+
+        // collectCycle is hours (integer), stored as f64 for the field type.
+        let funding_interval_hours = data.get("collectCycle")
+            .and_then(|v| v.as_f64());
+
+        let index_price = data.get("idxPrice")
+            .and_then(|v| v.as_f64());
+
+        // MEXC "fairPrice" = mark price in the funding context.
+        let mark_price = data.get("fairPrice")
+            .and_then(|v| v.as_f64());
+
+        Ok(FundingRate {
+            rate,
+            next_funding_time,
+            timestamp,
+            symbol,
+            max_funding_rate,
+            min_funding_rate,
+            funding_interval_hours,
+            index_price,
+            mark_price,
+            ..Default::default()
+        })
+    }
+
     pub fn parse_funding_rate_history_futures(response: &Value) -> ExchangeResult<Vec<FundingRate>> {
         if let Some(code) = response.get("code").and_then(|c| c.as_i64()) {
             if code != 0 {

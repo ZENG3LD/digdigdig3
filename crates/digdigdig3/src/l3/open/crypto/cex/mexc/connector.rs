@@ -1918,12 +1918,29 @@ impl crate::core::traits::Positions for MexcConnector {
 
     async fn get_funding_rate(
         &self,
-        _symbol: &str,
+        symbol: &str,
         _account_type: AccountType,
     ) -> ExchangeResult<crate::core::types::FundingRate> {
-        Err(ExchangeError::UnsupportedOperation(
-            "MEXC funding rate not implemented in v5".into(),
-        ))
+        // Normalise to MEXC futures format (BTC_USDT).
+        let raw_symbol = if symbol.contains('/') {
+            let parts: Vec<&str> = symbol.split('/').collect();
+            format!(
+                "{}_{}",
+                parts[0].to_uppercase(),
+                parts.get(1).copied().unwrap_or("USDT").to_uppercase()
+            )
+        } else if symbol.contains('-') {
+            symbol.to_uppercase().replace('-', "_")
+        } else if !symbol.contains('_') {
+            use crate::core::utils::symbol_normalizer::SymbolNormalizer;
+            SymbolNormalizer::from_exchange(crate::core::types::ExchangeId::MEXC, symbol, AccountType::Spot)
+                .and_then(|canonical| SymbolNormalizer::to_exchange(crate::core::types::ExchangeId::MEXC, &canonical, AccountType::FuturesCross))
+                .unwrap_or_else(|_| symbol.to_uppercase())
+        } else {
+            symbol.to_uppercase()
+        };
+        let response = self.get_funding_rate(&raw_symbol).await?;
+        MexcParser::parse_funding_rate_futures(&response)
     }
 
     async fn modify_position(

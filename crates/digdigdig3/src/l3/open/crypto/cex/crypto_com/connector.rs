@@ -456,8 +456,7 @@ impl MarketData for CryptoComConnector {
             has_orderbook: true,
             has_klines: true,
             has_exchange_info: true,
-            // get_recent_trades is not implemented (no public/get-trades override in MarketData)
-            has_recent_trades: false,
+            has_recent_trades: true,
             // map_kline_interval covers these 11 intervals
             supported_intervals: &[
                 "1m", "5m", "15m", "30m", "1h", "2h", "4h", "12h", "1d", "1w", "1M",
@@ -2050,6 +2049,26 @@ impl AccountLedger for CryptoComConnector {
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketDataPublic for CryptoComConnector {
+    /// Recent public trades via `public/get-trades`.
+    ///
+    /// `limit` is capped at 150 (exchange maximum). Uses `count` query param.
+    /// Side `"sell"` / `"buy"` is the taker side (explicit in the response).
+    async fn get_recent_trades(
+        &self,
+        symbol: SymbolInput<'_>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<crate::core::types::PublicTrade>> {
+        let instrument = symbol.resolve(ExchangeId::CryptoCom, account_type)?;
+        let count = limit.unwrap_or(50).min(150);
+        let params = json!({
+            "instrument_name": instrument,
+            "count": count
+        });
+        let response = self.request(CryptoComEndpoint::GetTrades, params).await?;
+        CryptoComParser::parse_recent_trades(&response)
+    }
+
     /// Mark price klines via `public/get-valuations?valuation_type=mark_price`.
     ///
     /// Raw API returns per-minute tick points `{"v": "<price>", "t": <unix_ms>}`.
@@ -2230,7 +2249,7 @@ impl crate::core::traits::HasCapabilities for CryptoComConnector {
     fn capabilities(&self) -> crate::core::types::ConnectorCapabilities {
         crate::core::types::ConnectorCapabilities {
             has_ticker: true, has_orderbook: true, has_klines: true,
-            has_recent_trades: false, has_exchange_info: true,
+            has_recent_trades: true, has_exchange_info: true,
             has_liquidation_history: false, has_open_interest_history: false,
             has_premium_index: false, has_long_short_ratio_history: false,
             has_funding_rate_history: true, has_mark_price_klines: true,

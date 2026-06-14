@@ -474,6 +474,40 @@ impl CryptoComParser {
         })
     }
 
+    /// Parse `public/get-trades` REST response into a list of public trades.
+    ///
+    /// Response shape:
+    /// ```json
+    /// {"id":-1,"method":"public/get-trades","code":0,
+    ///  "result":{"data":[{"d":"1781450491821274859","t":1749000000000,
+    ///    "q":"0.04522","p":"64072.10","s":"sell","i":"BTC_USDT","m":"..."}]}}
+    /// ```
+    /// Fields: `d`=tradeId, `t`=timestamp(ms), `p`=price(string),
+    /// `q`=quantity(string), `s`=side("buy"/"sell" taker side).
+    pub fn parse_recent_trades(response: &Value) -> ExchangeResult<Vec<PublicTrade>> {
+        Self::check_response(response)?;
+        let result = Self::extract_result(response)?;
+        let data = result.get("data")
+            .and_then(|d| d.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing 'result.data' in get-trades response".to_string()))?;
+
+        let mut trades = Vec::with_capacity(data.len());
+        for item in data {
+            let side = match Self::get_str(item, "s").unwrap_or("buy") {
+                "sell" => TradeSide::Sell,
+                _ => TradeSide::Buy,
+            };
+            trades.push(PublicTrade {
+                id: Self::get_str(item, "d").unwrap_or("").to_string(),
+                price: Self::require_f64(item, "p")?,
+                quantity: Self::get_f64(item, "q").unwrap_or(0.0),
+                side,
+                timestamp: Self::get_i64(item, "t").unwrap_or(0),
+            });
+        }
+        Ok(trades)
+    }
+
     /// Parse WebSocket trade message
     pub fn parse_ws_trade(data: &Value) -> ExchangeResult<PublicTrade> {
         let side = match Self::get_str(data, "s").unwrap_or("BUY") {
@@ -1027,6 +1061,36 @@ mod tests {
         let ticker = CryptoComParser::parse_ticker(&response).unwrap();
         assert!((ticker.last_price - 50000.50).abs() < f64::EPSILON);
         assert_eq!(ticker.timestamp, 1234567890);
+    }
+
+    #[test]
+    fn test_parse_recent_trades() {
+        let response = json!({
+            "id": -1,
+            "method": "public/get-trades",
+            "code": 0,
+            "result": {
+                "data": [{
+                    "d": "1781450491821274859",
+                    "t": 1781450491821_i64,
+                    "tn": 1781450491821274859_i64,
+                    "q": "0.04522",
+                    "p": "64072.10",
+                    "s": "sell",
+                    "i": "BTC_USDT",
+                    "m": "4611686018682685149"
+                }]
+            }
+        });
+
+        let trades = CryptoComParser::parse_recent_trades(&response).unwrap();
+        assert_eq!(trades.len(), 1);
+        let t = &trades[0];
+        assert_eq!(t.id, "1781450491821274859");
+        assert!((t.price - 64072.10).abs() < 0.001);
+        assert!((t.quantity - 0.04522).abs() < 1e-6);
+        assert_eq!(t.side, TradeSide::Sell);
+        assert_eq!(t.timestamp, 1781450491821);
     }
 
     #[test]

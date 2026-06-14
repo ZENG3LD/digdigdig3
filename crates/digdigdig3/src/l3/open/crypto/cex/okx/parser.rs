@@ -1525,37 +1525,39 @@ impl OkxParser {
 
     /// Parse `GET /api/v5/rubik/stat/contracts/open-interest-history` response.
     ///
-    /// OKX returns positional arrays: `[ts_str, oi_str, oiCcy_str]`.
+    /// OKX returns positional arrays: `[ts_str, oi_str, oiCcy_str, oiUsd_str]`
+    /// (live-probed 2026-06-15 — idx3 oiUsd was previously dropped).
     /// - `ts`    — Unix timestamp in ms (string)
     /// - `oi`    — open interest in contracts (string)
     /// - `oiCcy` — open interest in base currency (string, may be "0")
-    ///
-    /// Param quirk: endpoint uses `ccy` (base currency, e.g. `"BTC"`),
-    /// not `instId` — currency-level aggregation, not per-instrument.
+    /// - `oiUsd` — open interest in USD (string)
     pub fn parse_open_interest_history(response: &Value) -> ExchangeResult<Vec<OpenInterest>> {
         let data = Self::extract_data(response)?;
         let arr = data.as_array()
             .ok_or_else(|| ExchangeError::Parse("'data' is not an array".to_string()))?;
 
+        let parse_idx = |item: &Value, i: usize| -> Option<f64> {
+            item.get(i).and_then(Value::as_str).and_then(|s| s.parse::<f64>().ok())
+        };
+
         let mut result = Vec::with_capacity(arr.len());
         for item in arr {
-            // Positional array: [ts, oi, oiCcy]
+            // Positional array: [ts, oi, oiCcy, oiUsd]
             let timestamp = item.get(0)
                 .and_then(Value::as_str)
                 .and_then(|s| s.parse::<i64>().ok())
                 .unwrap_or(0);
-            let open_interest = item.get(1)
-                .and_then(Value::as_str)
-                .and_then(|s| s.parse::<f64>().ok())
-                .unwrap_or(0.0);
-            let open_interest_value = item.get(2)
-                .and_then(Value::as_str)
-                .and_then(|s| s.parse::<f64>().ok())
-                .filter(|&v| v != 0.0);
+            let open_interest = parse_idx(item, 1).unwrap_or(0.0);
+            let open_interest_ccy = parse_idx(item, 2).filter(|&v| v != 0.0);
+            let open_interest_usd = parse_idx(item, 3).filter(|&v| v != 0.0);
             result.push(OpenInterest {
                 open_interest,
-                open_interest_value,
-                timestamp, ..Default::default() 
+                // value = the USD figure (quote); base lives in open_interest_ccy.
+                open_interest_value: open_interest_usd,
+                timestamp,
+                open_interest_ccy,
+                open_interest_usd,
+                ..Default::default()
             });
         }
         Ok(result)

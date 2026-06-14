@@ -1153,7 +1153,10 @@ impl BingxParser {
             rates.push(FundingRate {
                 rate,
                 next_funding_time: None,
-                timestamp, ..Default::default() 
+                timestamp,
+                symbol: Self::get_str(item, "symbol").map(|s| s.to_string()),
+                mark_price: Self::get_f64(item, "markPrice"),
+                ..Default::default()
             });
         }
         Ok(rates)

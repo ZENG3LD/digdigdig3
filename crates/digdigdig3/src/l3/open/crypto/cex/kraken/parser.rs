@@ -277,7 +277,75 @@ impl KrakenParser {
             quote_volume_24h: None,
             price_change_24h: None,
             price_change_percent_24h: None,
-            timestamp: chrono::Utc::now().timestamp_millis(), ..Default::default() 
+            timestamp: chrono::Utc::now().timestamp_millis(), ..Default::default()
+        })
+    }
+
+    /// Parse ticker from Kraken Futures `GET /derivatives/api/v3/tickers` response.
+    ///
+    /// Response: `{"tickers": [{...}]}` (array; single entry when `symbol=` filter used).
+    /// Numbers are native JSON numbers (not strings).
+    /// Mapped fields: last(last_price), bid(bid_price), ask(ask_price),
+    /// high24h(high_24h), low24h(low_24h), vol24h(volume_24h),
+    /// volumeQuote(quote_volume_24h), change24h(price_change_percent_24h),
+    /// markPrice(mark_price), indexPrice(index_price),
+    /// openInterest(open_interest), fundingRate(funding_rate),
+    /// open24h(open_price), bidSize(bid_qty), askSize(ask_qty).
+    /// Unmapped (no Ticker field): vwap24h, fundingRatePrediction, lastSize, lastTime.
+    pub fn parse_futures_ticker(response: &Value, symbol: &str) -> ExchangeResult<Ticker> {
+        let tickers = response
+            .get("tickers")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExchangeError::Parse("Missing tickers array".to_string()))?;
+
+        let data = tickers
+            .iter()
+            .find(|t| {
+                t.get("symbol")
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.eq_ignore_ascii_case(symbol))
+                    .unwrap_or(false)
+            })
+            .or_else(|| tickers.first())
+            .ok_or_else(|| ExchangeError::Parse(
+                format!("No ticker entry for '{}'", symbol)
+            ))?;
+
+        let last_price = data.get("last").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let bid_price   = data.get("bid").and_then(|v| v.as_f64());
+        let ask_price   = data.get("ask").and_then(|v| v.as_f64());
+        let high_24h    = data.get("high24h").and_then(|v| v.as_f64());
+        let low_24h     = data.get("low24h").and_then(|v| v.as_f64());
+        let volume_24h  = data.get("vol24h").and_then(|v| v.as_f64());
+        let quote_volume_24h = data.get("volumeQuote").and_then(|v| v.as_f64());
+        let price_change_percent_24h = data.get("change24h").and_then(|v| v.as_f64());
+        let mark_price    = data.get("markPrice").and_then(|v| v.as_f64());
+        let index_price   = data.get("indexPrice").and_then(|v| v.as_f64());
+        let open_interest = data.get("openInterest").and_then(|v| v.as_f64());
+        let funding_rate  = data.get("fundingRate").and_then(|v| v.as_f64());
+        let open_price    = data.get("open24h").and_then(|v| v.as_f64());
+        let bid_qty       = data.get("bidSize").and_then(|v| v.as_f64());
+        let ask_qty       = data.get("askSize").and_then(|v| v.as_f64());
+
+        Ok(Ticker {
+            last_price,
+            bid_price,
+            ask_price,
+            high_24h,
+            low_24h,
+            volume_24h,
+            quote_volume_24h,
+            price_change_24h: None,
+            price_change_percent_24h,
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            mark_price,
+            index_price,
+            open_interest,
+            funding_rate,
+            open_price,
+            bid_qty,
+            ask_qty,
+            ..Default::default()
         })
     }
 

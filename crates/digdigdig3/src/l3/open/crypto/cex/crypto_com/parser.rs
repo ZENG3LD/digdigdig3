@@ -201,7 +201,9 @@ impl CryptoComParser {
             quote_volume_24h: Self::get_f64(data, "vv"),
             price_change_24h: None,
             price_change_percent_24h: Self::get_f64(data, "c").map(|r| r * 100.0),
-            timestamp: Self::get_i64(data, "t").unwrap_or(0), ..Default::default() 
+            timestamp: Self::get_i64(data, "t").unwrap_or(0),
+            open_interest: Self::get_f64(data, "oi"),
+            ..Default::default()
         })
     }
 
@@ -471,7 +473,9 @@ impl CryptoComParser {
             quote_volume_24h: Self::get_f64(data, "vv"),
             price_change_24h: None,
             price_change_percent_24h: Self::get_f64(data, "c").map(|r| r * 100.0),
-            timestamp: Self::get_i64(data, "t").unwrap_or(0), ..Default::default() 
+            timestamp: Self::get_i64(data, "t").unwrap_or(0),
+            open_interest: Self::get_f64(data, "oi"),
+            ..Default::default()
         })
     }
 

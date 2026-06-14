@@ -1169,7 +1169,9 @@ impl Positions for BingxConnector {
         Ok(FundingRate {
             rate,
             next_funding_time: next_time,
-            timestamp: crate::core::timestamp_millis() as i64, ..Default::default() 
+            timestamp: crate::core::timestamp_millis() as i64,
+            symbol: Some(format_symbol(&sym.base, &sym.quote, account_type)),
+            ..Default::default()
         })
     }
 
@@ -1184,7 +1186,7 @@ impl Positions for BingxConnector {
             .get(BingxEndpoint::SwapPremiumIndex, params, AccountType::FuturesCross)
             .await?;
 
-        // Response: {code, msg, data: {symbol, markPrice, indexPrice, fundingRate, nextFundingTime}}
+        // Response: {code, msg, data: {symbol, markPrice, indexPrice, lastFundingRate, nextFundingTime, updateTime}}
         let data = response
             .get("data")
             .ok_or_else(|| ExchangeError::Parse("Missing data".to_string()))?;
@@ -1196,17 +1198,26 @@ impl Positions for BingxConnector {
             .or_else(|| data.get("markPrice").and_then(|v| v.as_f64()))
             .ok_or_else(|| ExchangeError::Parse("Missing markPrice".to_string()))?;
 
+        // BingX premiumIndex uses updateTime for the snapshot timestamp (ms)
+        let timestamp = data.get("updateTime")
+            .and_then(|v| v.as_i64())
+            .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
+
         Ok(MarkPrice {
             mark_price,
             index_price: data
                 .get("indexPrice")
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<f64>().ok()),
+            // BingX premiumIndex field is "lastFundingRate"
             funding_rate: data
-                .get("fundingRate")
+                .get("lastFundingRate")
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<f64>().ok()),
-            timestamp: crate::core::timestamp_millis() as i64, ..Default::default() 
+            timestamp,
+            symbol: data.get("symbol").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            next_funding_time: data.get("nextFundingTime").and_then(|v| v.as_i64()),
+            ..Default::default()
         })
     }
 

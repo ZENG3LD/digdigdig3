@@ -591,6 +591,14 @@ impl MarketData for KrakenConnector {
         account_type: AccountType,
     ) -> ExchangeResult<Ticker> {
         let symbol = symbol.resolve(ExchangeId::Kraken, account_type)?;
+
+        if matches!(account_type, AccountType::FuturesCross | AccountType::FuturesIsolated) {
+            let mut params = HashMap::new();
+            params.insert("symbol".to_string(), symbol.to_string());
+            let response = self.get(KrakenEndpoint::FuturesTickers, params, account_type).await?;
+            return KrakenParser::parse_futures_ticker(&response, &symbol);
+        }
+
         let mut params = HashMap::new();
         params.insert("pair".to_string(), symbol.to_string());
 

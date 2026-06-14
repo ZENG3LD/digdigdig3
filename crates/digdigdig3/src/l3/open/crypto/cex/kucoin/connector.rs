@@ -414,7 +414,7 @@ impl KuCoinConnector {
                 quote_volume_24h: get_f64("volValue"),
                 price_change_24h: get_f64("changePrice"),
                 price_change_percent_24h: change_rate,
-                timestamp: ts,
+                timestamp: ts, ..Default::default() 
             }
         }).collect();
 
@@ -1824,7 +1824,7 @@ impl Positions for KuCoinConnector {
             timestamp: data
                 .get("timePoint")
                 .and_then(|t| t.as_i64())
-                .unwrap_or_else(|| crate::core::timestamp_millis() as i64),
+                .unwrap_or_else(|| crate::core::timestamp_millis() as i64), ..Default::default() 
         })
     }
 
@@ -2031,7 +2031,7 @@ impl Positions for KuCoinConnector {
         Ok(OpenInterest {
             open_interest: oi,
             open_interest_value: oi_value,
-            timestamp: crate::core::timestamp_millis() as i64,
+            timestamp: crate::core::timestamp_millis() as i64, ..Default::default() 
         })
     }
 }

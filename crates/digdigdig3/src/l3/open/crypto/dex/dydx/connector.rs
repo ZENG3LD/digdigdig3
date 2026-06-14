@@ -931,7 +931,7 @@ impl Positions for DydxConnector {
         Ok(OpenInterest {
             open_interest: oi,
             open_interest_value: None,
-            timestamp: crate::core::timestamp_millis() as i64,
+            timestamp: crate::core::timestamp_millis() as i64, ..Default::default() 
         })
     }
 
@@ -969,7 +969,7 @@ impl Positions for DydxConnector {
             mark_price: oracle_price,
             index_price: Some(oracle_price), // oracle IS the index on dYdX v4
             funding_rate: None,
-            timestamp: crate::core::timestamp_millis() as i64,
+            timestamp: crate::core::timestamp_millis() as i64, ..Default::default() 
         })
     }
 

@@ -53,7 +53,7 @@ impl KrxParser {
             quote_volume_24h: Self::get_krx_number(response, "ACC_TRDVAL"),
             price_change_24h: Self::get_krx_number(response, "CMPPRVDD_PRC"),
             price_change_percent_24h: Self::get_krx_number(response, "FLUC_RT"),
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: chrono::Utc::now().timestamp_millis(), ..Default::default() 
         })
     }
 

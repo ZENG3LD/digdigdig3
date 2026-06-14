@@ -163,7 +163,7 @@ impl DydxParser {
                     Self::get_f64(market, "oraclePrice")
                         .map(|price| (change / (price - change)) * 100.0)
                 }),
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: chrono::Utc::now().timestamp_millis(), ..Default::default() 
         })
     }
 
@@ -180,7 +180,7 @@ impl DydxParser {
         Ok(FundingRate {
             rate: Self::require_f64(funding, "rate")?,
             next_funding_time: None,
-            timestamp: effective_at,
+            timestamp: effective_at, ..Default::default() 
         })
     }
 
@@ -460,7 +460,7 @@ impl DydxParser {
                     Self::get_f64(market, "oraclePrice")
                         .map(|price| (change / (price - change)) * 100.0)
                 }),
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: chrono::Utc::now().timestamp_millis(), ..Default::default() 
         })
     }
 
@@ -783,7 +783,7 @@ impl DydxParser {
             rates.push(FundingRate {
                 rate,
                 next_funding_time: None,
-                timestamp,
+                timestamp, ..Default::default() 
             });
         }
         Ok(rates)

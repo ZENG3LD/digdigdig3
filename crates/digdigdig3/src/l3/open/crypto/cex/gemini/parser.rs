@@ -138,7 +138,7 @@ impl GeminiParser {
             timestamp: response.get("volume")
                 .and_then(|v| v.get("timestamp"))
                 .and_then(|t| t.as_i64())
-                .unwrap_or(0),
+                .unwrap_or(0), ..Default::default() 
         })
     }
 
@@ -252,7 +252,7 @@ impl GeminiParser {
         Ok(FundingRate {
             rate: Self::require_f64(response, "funding_amount")?,
             next_funding_time: Self::get_i64(response, "next_funding_time"),
-            timestamp: Self::get_i64(response, "funding_time").unwrap_or(0),
+            timestamp: Self::get_i64(response, "funding_time").unwrap_or(0), ..Default::default() 
         })
     }
 
@@ -561,7 +561,7 @@ impl GeminiParser {
             quote_volume_24h: None,
             price_change_24h: None,
             price_change_percent_24h: None,
-            timestamp,
+            timestamp, ..Default::default() 
         };
         Some(StreamEvent::Ticker { symbol: symbol.to_string(), ticker })
     }

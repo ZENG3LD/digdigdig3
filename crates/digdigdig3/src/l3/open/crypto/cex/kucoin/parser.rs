@@ -186,7 +186,7 @@ impl KuCoinParser {
             quote_volume_24h: Self::get_f64(data, "volValue"),
             price_change_24h: Self::get_f64(data, "changePrice"),
             price_change_percent_24h: Self::get_f64(data, "changeRate").map(|r| r * 100.0),
-            timestamp,
+            timestamp, ..Default::default() 
         })
     }
 
@@ -199,7 +199,7 @@ impl KuCoinParser {
             next_funding_time: data.get("fundingFeeTime").and_then(|t| t.as_i64()),
             timestamp: data.get("timePoint")
                 .and_then(|t| t.as_i64())
-                .unwrap_or(0),
+                .unwrap_or(0), ..Default::default() 
         })
     }
 
@@ -535,7 +535,7 @@ impl KuCoinParser {
                 .or_else(|| data.get("ts"))
                 .and_then(|t| t.as_i64())
                 .map(|t| if t > 1_000_000_000_000_000 { t / 1_000_000 } else { t })
-                .unwrap_or(0),
+                .unwrap_or(0), ..Default::default() 
         })
     }
 
@@ -569,7 +569,7 @@ impl KuCoinParser {
             quote_volume_24h: Self::get_f64(data, "volValue"),
             price_change_24h: Self::get_f64(data, "changePrice"),
             price_change_percent_24h: Self::get_f64(data, "changeRate").map(|r| r * 100.0),
-            timestamp,
+            timestamp, ..Default::default() 
         })
     }
 
@@ -1217,7 +1217,7 @@ impl KuCoinParser {
             rates.push(FundingRate {
                 rate,
                 timestamp,
-                next_funding_time: None,
+                next_funding_time: None, ..Default::default() 
             });
         }
 

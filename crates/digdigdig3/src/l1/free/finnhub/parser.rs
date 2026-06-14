@@ -162,7 +162,7 @@ impl FinnhubParser {
             quote_volume_24h: None,
             price_change_24h: change,
             price_change_percent_24h: change_percent,
-            timestamp,
+            timestamp, ..Default::default() 
         })
     }
 
@@ -260,7 +260,7 @@ impl FinnhubParser {
                 quote_volume_24h: None,
                 price_change_24h: None,
                 price_change_percent_24h: None,
-                timestamp,
+                timestamp, ..Default::default() 
             },
         })
     }

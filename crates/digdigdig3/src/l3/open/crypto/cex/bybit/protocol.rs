@@ -438,7 +438,7 @@ fn parse_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
             quote_volume_24h,
             price_change_24h,
             price_change_percent_24h,
-            timestamp: ts,
+            timestamp: ts, ..Default::default() 
         },
     })
 }
@@ -773,7 +773,7 @@ fn parse_ticker_lt(raw: &Value) -> WebSocketResult<StreamEvent> {
             high_24h: None, low_24h: None,
             volume_24h: None, quote_volume_24h: None,
             price_change_24h: None, price_change_percent_24h: None,
-            timestamp,
+            timestamp, ..Default::default() 
         },
     })
 }

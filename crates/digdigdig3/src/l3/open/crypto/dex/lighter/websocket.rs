@@ -372,7 +372,7 @@ pub(super) fn parse_market_stats(raw: &Value, channel: &str) -> Option<StreamEve
             quote_volume_24h: None,
             price_change_24h,
             price_change_percent_24h,
-            timestamp,
+            timestamp, ..Default::default() 
         },
     })
 }
@@ -420,7 +420,7 @@ pub(super) fn parse_ticker_channel(raw: &Value, channel: &str) -> Option<StreamE
             quote_volume_24h: None,
             price_change_24h: None,
             price_change_percent_24h: None,
-            timestamp,
+            timestamp, ..Default::default() 
         },
     })
 }

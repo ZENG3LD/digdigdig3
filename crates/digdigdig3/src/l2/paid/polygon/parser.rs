@@ -174,7 +174,7 @@ impl PolygonParser {
             quote_volume_24h: None,
             price_change_24h: price_change,
             price_change_percent_24h: price_change_percent,
-            timestamp: Self::get_i64(ticker_obj, "updated").unwrap_or(0),
+            timestamp: Self::get_i64(ticker_obj, "updated").unwrap_or(0), ..Default::default() 
         })
     }
 
@@ -320,7 +320,7 @@ impl PolygonParser {
                 quote_volume_24h: None,
                 price_change_24h: None,
                 price_change_percent_24h: None,
-                timestamp,
+                timestamp, ..Default::default() 
             },
         })
     }
@@ -351,7 +351,7 @@ impl PolygonParser {
                 quote_volume_24h: None,
                 price_change_24h: None,
                 price_change_percent_24h: None,
-                timestamp,
+                timestamp, ..Default::default() 
             },
         })
     }

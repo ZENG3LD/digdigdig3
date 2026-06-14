@@ -97,7 +97,7 @@ impl IBParser {
             quote_volume_24h: None, // Not provided by IB
             price_change_24h,
             price_change_percent_24h,
-            timestamp,
+            timestamp, ..Default::default() 
         })
     }
 

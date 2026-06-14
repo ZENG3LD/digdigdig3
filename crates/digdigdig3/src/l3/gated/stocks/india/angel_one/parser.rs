@@ -132,7 +132,7 @@ impl AngelOneParser {
             quote_volume_24h: None,
             price_change_24h: None,
             price_change_percent_24h: None,
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: chrono::Utc::now().timestamp_millis(), ..Default::default() 
         })
     }
 

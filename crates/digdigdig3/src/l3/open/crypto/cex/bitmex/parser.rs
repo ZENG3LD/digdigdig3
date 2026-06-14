@@ -357,7 +357,7 @@ pub fn parse_quote(raw: &Value) -> WebSocketResult<StreamEvent> {
             quote_volume_24h: None,
             price_change_24h: None,
             price_change_percent_24h: None,
-            timestamp,
+            timestamp, ..Default::default() 
         };
 
         return Ok(StreamEvent::Ticker { symbol, ticker });
@@ -570,7 +570,7 @@ pub fn parse_rest_funding_rate_history(v: &Value) -> ExchangeResult<Vec<FundingR
             Some(FundingRate {
                 rate,
                 next_funding_time: None,
-                timestamp,
+                timestamp, ..Default::default() 
             })
         })
         .collect();
@@ -614,7 +614,7 @@ pub fn parse_rest_liquidation_history(v: &Value, symbol: &str) -> ExchangeResult
                 price,
                 quantity,
                 timestamp: 0,
-                value: None,
+                value: None, ..Default::default() 
             })
         })
         .collect();

@@ -596,7 +596,7 @@ impl MarketDataPublic for BitfinexConnector {
                 long_ratio,
                 short_ratio,
                 ratio,
-                timestamp: ts,
+                timestamp: ts, ..Default::default() 
             });
         }
         Ok(out)

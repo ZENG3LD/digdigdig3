@@ -272,7 +272,7 @@ impl HyperliquidParser {
             price_change_24h,
             price_change_percent_24h,
             // HL metaAndAssetCtxs has no per-asset timestamp — stamp on receive.
-            timestamp: now_ms(),
+            timestamp: now_ms(), ..Default::default() 
         })
     }
 
@@ -286,7 +286,7 @@ impl HyperliquidParser {
             return Ok(FundingRate {
                 rate: Self::require_f64(item, "fundingRate")?,
                 next_funding_time: None,
-                timestamp: Self::get_i64(item, "time").unwrap_or(0),
+                timestamp: Self::get_i64(item, "time").unwrap_or(0), ..Default::default() 
             });
         }
 
@@ -306,7 +306,7 @@ impl HyperliquidParser {
         Ok(FundingRate {
             rate: Self::require_f64(ctx, "funding")?,
             next_funding_time: None,
-            timestamp: 0,
+            timestamp: 0, ..Default::default() 
         })
     }
 
@@ -330,7 +330,7 @@ impl HyperliquidParser {
             rates.push(FundingRate {
                 rate,
                 next_funding_time: None,
-                timestamp,
+                timestamp, ..Default::default() 
             });
         }
         Ok(rates)
@@ -743,7 +743,7 @@ impl HyperliquidParser {
         Ok(FundingRate {
             rate,
             next_funding_time: None, // Funding occurs every hour
-            timestamp: 0,
+            timestamp: 0, ..Default::default() 
         })
     }
 

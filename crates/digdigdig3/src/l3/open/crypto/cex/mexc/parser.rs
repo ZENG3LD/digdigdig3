@@ -116,7 +116,7 @@ impl MexcParser {
             quote_volume_24h,
             price_change_24h,
             price_change_percent_24h,
-            timestamp,
+            timestamp, ..Default::default() 
         })
     }
 
@@ -367,7 +367,7 @@ impl MexcParser {
             quote_volume_24h: None,
             price_change_24h: None,
             price_change_percent_24h: price_change_24h,
-            timestamp: crate::core::timestamp_millis() as i64,
+            timestamp: crate::core::timestamp_millis() as i64, ..Default::default() 
         })
     }
 
@@ -820,7 +820,7 @@ impl MexcParser {
                 quote_volume_24h: None,
                 price_change_24h: None,
                 price_change_percent_24h: None,
-                timestamp,
+                timestamp, ..Default::default() 
             });
         }
 
@@ -843,7 +843,7 @@ impl MexcParser {
                         quote_volume_24h: None,
                         price_change_24h: None,
                         price_change_percent_24h: None,
-                        timestamp,
+                        timestamp, ..Default::default() 
                     });
                 }
             }
@@ -1189,7 +1189,7 @@ impl MexcParser {
             quote_volume_24h,
             price_change_24h: None,
             price_change_percent_24h: price_change_pct,
-            timestamp,
+            timestamp, ..Default::default() 
         })
     }
 
@@ -1266,7 +1266,7 @@ impl MexcParser {
             quote_volume_24h: None,
             price_change_24h: None,
             price_change_percent_24h: None,
-            timestamp,
+            timestamp, ..Default::default() 
         })
     }
 
@@ -1530,7 +1530,7 @@ impl MexcParser {
             rates.push(FundingRate {
                 rate,
                 next_funding_time: None,
-                timestamp,
+                timestamp, ..Default::default() 
             });
         }
 

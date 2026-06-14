@@ -66,13 +66,28 @@ pub struct HistoricalVolatility {
 
 /// Volatility index snapshot (e.g., DVOL, BVOL).
 ///
-/// Exchange-published forward-looking implied volatility index.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+/// Exchange-published forward-looking implied volatility index. The Deribit
+/// `get_volatility_index_data` endpoint returns OHLC candles `[ts, open, high,
+/// low, close]` (live-probed 2026-06-14), not a single scalar — `value` holds
+/// the close for scalar consumers, OHLC fields hold the full candle.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct VolatilityIndex {
-    /// Index value (annualized implied volatility, e.g., 0.85 = 85%).
+    /// Index value (close of the candle / instantaneous value).
     pub value: f64,
     /// Event timestamp in milliseconds.
     pub timestamp: i64,
+    /// Candle open (Deribit DVOL OHLC[1]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open: Option<f64>,
+    /// Candle high (Deribit DVOL OHLC[2]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub high: Option<f64>,
+    /// Candle low (Deribit DVOL OHLC[3]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub low: Option<f64>,
+    /// Candle close (Deribit DVOL OHLC[4]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub close: Option<f64>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -83,12 +98,29 @@ pub struct VolatilityIndex {
 ///
 /// Basis = futures_price − spot_index_price.
 /// Positive = contango (futures above spot), negative = backwardation.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+/// Field sources (live-probed 2026-06-14): Binance futures/data/basis
+/// (indexPrice/futuresPrice/basisRate/annualizedBasisRate/contractType), HTX.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Basis {
     /// Futures price minus spot index price.
     pub basis: f64,
     /// Event timestamp in milliseconds.
     pub timestamp: i64,
+    /// Futures/contract price (Binance futuresPrice / HTX contract_price).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub futures_price: Option<f64>,
+    /// Spot index price (Binance indexPrice / HTX index_price).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_price: Option<f64>,
+    /// Basis rate = basis / index (Binance basisRate / HTX basis_rate).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub basis_rate: Option<f64>,
+    /// Annualized basis rate (Binance annualizedBasisRate; empty string → None).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annualized_basis_rate: Option<f64>,
+    /// Contract type (Binance contractType: "PERPETUAL"/"CURRENT_QUARTER"/...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract_type: Option<String>,
 }
 
 /// Taker buy/sell volume over a time bucket.
@@ -96,7 +128,9 @@ pub struct Basis {
 /// Aggressor-side flow: `buy_volume` = taker-buy (market buys lifting the ask),
 /// `sell_volume` = taker-sell (market sells hitting the bid). The buy/sell ratio
 /// is a common order-flow imbalance signal.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+/// Field sources (live-probed 2026-06-14): Binance takerlongshortRatio
+/// (buyVol/sellVol/buySellRatio), GateIO contract_stats (long/short_taker_size).
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct TakerVolume {
     /// Taker buy (aggressor-buy) volume in the bucket.
     pub buy_volume: f64,
@@ -104,6 +138,15 @@ pub struct TakerVolume {
     pub sell_volume: f64,
     /// Bucket timestamp in milliseconds.
     pub timestamp: i64,
+    /// Buy/sell ratio precomputed by the venue (Binance buySellRatio).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buy_sell_ratio: Option<f64>,
+    /// Long-taker size from a bundled stats endpoint (GateIO long_taker_size).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub long_taker_size: Option<f64>,
+    /// Short-taker size from a bundled stats endpoint (GateIO short_taker_size).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short_taker_size: Option<f64>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

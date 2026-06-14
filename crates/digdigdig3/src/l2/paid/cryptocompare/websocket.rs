@@ -566,6 +566,7 @@ impl CryptoCompareWebSocket {
                     open.filter(|&o| o > 0.0).map(|o| ((price - o) / o) * 100.0)
                 },
                 timestamp: timestamp * 1000, // Convert seconds to milliseconds
+                ..Default::default()
             },
         })
     }
@@ -833,7 +834,7 @@ impl CryptoCompareWebSocket {
                 price_change_percent_24h: open_24h
                     .filter(|&o| o > 0.0)
                     .map(|o| ((last_price - o) / o) * 100.0),
-                timestamp: ts_ms,
+                timestamp: ts_ms, ..Default::default() 
             },
         })
     }

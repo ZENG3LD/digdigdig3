@@ -503,7 +503,7 @@ fn parse_spot_depth_as_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
             quote_volume_24h: None,
             price_change_24h: None,
             price_change_percent_24h: None,
-            timestamp: timestamp_millis() as i64,
+            timestamp: timestamp_millis() as i64, ..Default::default() 
         },
     })
 }
@@ -568,7 +568,7 @@ fn parse_futures_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
             quote_volume_24h: None,
             price_change_24h: None,
             price_change_percent_24h,
-            timestamp,
+            timestamp, ..Default::default() 
         },
     })
 }

@@ -2313,7 +2313,7 @@ impl Positions for BinanceConnector {
                 .get("lastFundingRate")
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<f64>().ok()),
-            timestamp: data.get("time").and_then(|t| t.as_i64()).unwrap_or(0),
+            timestamp: data.get("time").and_then(|t| t.as_i64()).unwrap_or(0), ..Default::default() 
         })
     }
 
@@ -3207,7 +3207,7 @@ impl MarketDataPublic for BinanceConnector {
             mark_price: data.mark_price,
             index_price: Some(data.index_price),
             funding_rate: Some(data.last_funding_rate),
-            timestamp: data.timestamp,
+            timestamp: data.timestamp, ..Default::default() 
         }])
     }
 

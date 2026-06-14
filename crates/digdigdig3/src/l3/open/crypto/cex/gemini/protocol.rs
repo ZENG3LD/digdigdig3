@@ -511,7 +511,7 @@ pub(crate) fn parse_l2_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
         quote_volume_24h: None,
         price_change_24h: None,
         price_change_percent_24h: None,
-        timestamp: ts,
+        timestamp: ts, ..Default::default() 
     };
 
     Ok(StreamEvent::Ticker { symbol, ticker })

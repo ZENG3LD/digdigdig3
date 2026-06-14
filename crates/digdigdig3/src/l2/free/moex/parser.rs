@@ -201,7 +201,7 @@ impl MoexParser {
             quote_volume_24h: value,
             price_change_24h: change,
             price_change_percent_24h: change_pct,
-            timestamp,
+            timestamp, ..Default::default() 
         })
     }
 

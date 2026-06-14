@@ -405,7 +405,7 @@ impl MoexWebSocket {
                 quote_volume_24h: None,
                 price_change_24h: change,
                 price_change_percent_24h: change_pct,
-                timestamp,
+                timestamp, ..Default::default() 
             },
         })
     }
@@ -467,7 +467,7 @@ impl MoexWebSocket {
                 quote_volume_24h: get_f64("VALTODAY").or_else(|| get_f64("VALUE")),
                 price_change_24h: get_f64("CHANGE").or_else(|| get_f64("LASTCHANGE")),
                 price_change_percent_24h: get_f64("LASTCHANGEPRCNT"),
-                timestamp,
+                timestamp, ..Default::default() 
             },
         })
     }
@@ -508,7 +508,7 @@ impl MoexWebSocket {
                 quote_volume_24h: None,
                 price_change_24h: None,
                 price_change_percent_24h: None,
-                timestamp,
+                timestamp, ..Default::default() 
             },
         })
     }

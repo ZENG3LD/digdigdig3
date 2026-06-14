@@ -260,7 +260,7 @@ fn pricing_data_to_ticker(data: &PricingData) -> StreamEvent {
             quote_volume_24h: None,
             price_change_24h: data.change.map(|v| v as f64),
             price_change_percent_24h: data.change_percent.map(|v| v as f64),
-            timestamp: data.time.unwrap_or_else(|| chrono::Utc::now().timestamp()),
+            timestamp: data.time.unwrap_or_else(|| chrono::Utc::now().timestamp()), ..Default::default() 
         },
     }
 }

@@ -113,7 +113,7 @@ impl TwelvedataParser {
             quote_volume_24h: None, // Not provided by Twelvedata
             price_change_24h,
             price_change_percent_24h,
-            timestamp,
+            timestamp, ..Default::default() 
         })
     }
 

@@ -260,7 +260,7 @@ fn parse_all_mids(raw: &Value) -> WebSocketResult<StreamEvent> {
             quote_volume_24h: None,
             price_change_24h: None,
             price_change_percent_24h: None,
-            timestamp: now,
+            timestamp: now, ..Default::default() 
         };
         return Ok(StreamEvent::Ticker { symbol: symbol.clone(), ticker });
     }
@@ -379,7 +379,7 @@ fn parse_ticker_from_ctx(raw: &Value) -> WebSocketResult<StreamEvent> {
         quote_volume_24h,
         price_change_24h,
         price_change_percent_24h: price_change_24h.map(|c| c * 100.0),
-        timestamp: now,
+        timestamp: now, ..Default::default() 
     };
     Ok(StreamEvent::Ticker { symbol, ticker })
 }
@@ -454,7 +454,7 @@ fn parse_bbo(raw: &Value) -> WebSocketResult<StreamEvent> {
         quote_volume_24h: None,
         price_change_24h: None,
         price_change_percent_24h: None,
-        timestamp: now,
+        timestamp: now, ..Default::default() 
     };
     Ok(StreamEvent::Ticker { symbol, ticker })
 }
@@ -680,7 +680,7 @@ fn parse_web_data2(raw: &Value) -> WebSocketResult<StreamEvent> {
             quote_volume_24h: None,
             price_change_24h: None,
             price_change_percent_24h: None,
-            timestamp: now,
+            timestamp: now, ..Default::default() 
         };
         return Ok(StreamEvent::Ticker { symbol: symbol.clone(), ticker });
     }

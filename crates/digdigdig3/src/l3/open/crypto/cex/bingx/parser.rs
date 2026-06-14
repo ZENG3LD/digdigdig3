@@ -229,7 +229,7 @@ impl BingxParser {
             timestamp: ticker_data.get("closeTime")
                 .or_else(|| ticker_data.get("time"))
                 .and_then(|t| t.as_i64())
-                .unwrap_or(crate::core::timestamp_millis() as i64),
+                .unwrap_or(crate::core::timestamp_millis() as i64), ..Default::default() 
         })
     }
 
@@ -493,7 +493,7 @@ impl BingxParser {
             quote_volume_24h: Self::get_f64(data, "q"),
             price_change_24h,
             price_change_percent_24h,
-            timestamp,
+            timestamp, ..Default::default() 
         })
     }
 
@@ -532,7 +532,7 @@ impl BingxParser {
             quote_volume_24h: None,
             price_change_24h: None,
             price_change_percent_24h: None,
-            timestamp,
+            timestamp, ..Default::default() 
         })
     }
 
@@ -1151,7 +1151,7 @@ impl BingxParser {
             rates.push(FundingRate {
                 rate,
                 next_funding_time: None,
-                timestamp,
+                timestamp, ..Default::default() 
             });
         }
         Ok(rates)

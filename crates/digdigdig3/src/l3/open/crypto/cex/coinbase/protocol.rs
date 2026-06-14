@@ -360,7 +360,7 @@ pub(crate) fn parse_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
             quote_volume_24h: None,
             price_change_24h: None,
             price_change_percent_24h,
-            timestamp,
+            timestamp, ..Default::default() 
         },
     })
 }

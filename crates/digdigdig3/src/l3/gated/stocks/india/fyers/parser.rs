@@ -133,7 +133,7 @@ impl FyersParser {
                         quote_volume_24h: None,
                         price_change_24h: v["ch"].as_f64(),
                         price_change_percent_24h: v["chp"].as_f64(),
-                        timestamp: v["timestamp"].as_i64().unwrap_or(0),
+                        timestamp: v["timestamp"].as_i64().unwrap_or(0), ..Default::default() 
                     });
                 }
             }

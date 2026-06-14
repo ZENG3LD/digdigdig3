@@ -92,7 +92,7 @@ impl AlpacaParser {
             quote_volume_24h: None, // Alpaca doesn't provide quote volume directly
             price_change_24h,
             price_change_percent_24h,
-            timestamp,
+            timestamp, ..Default::default() 
         })
     }
 

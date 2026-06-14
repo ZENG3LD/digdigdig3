@@ -188,7 +188,7 @@ impl DeribitParser {
             price_change_percent_24h: result.get("stats")
                 .and_then(|s| s.get("price_change"))
                 .and_then(Self::parse_f64),
-            timestamp: Self::get_i64(result, "timestamp").unwrap_or(0),
+            timestamp: Self::get_i64(result, "timestamp").unwrap_or(0), ..Default::default() 
         })
     }
 
@@ -260,7 +260,7 @@ impl DeribitParser {
                 .or_else(|| Self::get_f64(result, "funding_8h"))
                 .unwrap_or(0.0),
             next_funding_time: None,
-            timestamp: Self::get_i64(result, "timestamp").unwrap_or(0),
+            timestamp: Self::get_i64(result, "timestamp").unwrap_or(0), ..Default::default() 
         })
     }
 
@@ -641,7 +641,7 @@ impl DeribitParser {
             quote_volume_24h: stats.and_then(|s| Self::get_f64(s, "volume_usd")),
             price_change_24h: stats.and_then(|s| Self::get_f64(s, "price_change")),
             price_change_percent_24h: stats.and_then(|s| Self::get_f64(s, "price_change")),
-            timestamp: Self::get_i64(data, "timestamp").unwrap_or(0),
+            timestamp: Self::get_i64(data, "timestamp").unwrap_or(0), ..Default::default() 
         })
     }
 

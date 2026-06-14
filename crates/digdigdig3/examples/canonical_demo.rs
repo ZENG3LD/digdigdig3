@@ -24,6 +24,7 @@ fn main() {
             side: TradeSide::Buy,
             // Exchange sends 10-digit seconds — normalization converts to ms
             timestamp: 1_700_000_000,
+        ..Default::default()
         },
     };
 
@@ -52,6 +53,7 @@ fn main() {
             price_change_percent_24h: None,
             // Exchange sends 16-digit microseconds — normalization converts to ms
             timestamp: 1_700_000_000_000_000,
+        ..Default::default()
         },
     };
 

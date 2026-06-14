@@ -353,6 +353,7 @@ mod tests {
             quote_volume: None,
             close_time: None,
             trades: None,
+        ..Default::default()
         }
     }
 
@@ -393,6 +394,7 @@ mod tests {
             price_change_24h: None,
             price_change_percent_24h: None,
             timestamp: MIN_TIMESTAMP_MS,
+        ..Default::default()
         };
         assert!(assert_ticker_sane(&t).is_ok());
     }

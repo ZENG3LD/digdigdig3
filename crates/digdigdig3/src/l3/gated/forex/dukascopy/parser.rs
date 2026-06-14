@@ -233,7 +233,7 @@ impl DukascopyParser {
             quote_volume_24h: None,
             price_change_24h: None,
             price_change_percent_24h: None,
-            timestamp: tick.time,
+            timestamp: tick.time, ..Default::default() 
         }
     }
 

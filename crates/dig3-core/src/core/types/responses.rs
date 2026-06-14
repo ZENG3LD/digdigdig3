@@ -288,7 +288,13 @@ pub struct ClosedPnlRecord {
 ///
 /// ~8/24: Binance Futures, Bybit, OKX, KuCoin Futures, Bitget, BingX,
 /// GateIO, HTX.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Field sources (live-probed 2026-06-14): Binance globalLongShortAccountRatio /
+/// topLongShortPositionRatio (longAccount/shortAccount/longShortRatio), HTX
+/// elite (buy_ratio/sell_ratio/locked_ratio), GateIO contract_stats
+/// (lsr_taker/lsr_account/top_lsr_size/top_lsr_account/top_long_size/
+/// top_short_size/top_long_account/top_short_account/long_users/short_users).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LongShortRatio {
     /// Trading pair.
     pub symbol: String,
@@ -302,6 +308,52 @@ pub struct LongShortRatio {
     pub ratio: Option<f64>,
     /// Unix timestamp (ms) of the snapshot.
     pub timestamp: i64,
+
+    /// Long account fraction reported explicitly (Binance longAccount).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub long_account: Option<f64>,
+    /// Short account fraction reported explicitly (Binance shortAccount).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short_account: Option<f64>,
+    /// Buy ratio (HTX elite buy_ratio).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buy_ratio: Option<f64>,
+    /// Sell ratio (HTX elite sell_ratio).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sell_ratio: Option<f64>,
+    /// Locked (neutral/hedged) ratio (HTX elite locked_ratio).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locked_ratio: Option<f64>,
+    /// Taker-side long/short ratio (GateIO lsr_taker).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lsr_taker: Option<f64>,
+    /// Account-side long/short ratio (GateIO lsr_account).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lsr_account: Option<f64>,
+    /// Top-trader long/short size ratio (GateIO top_lsr_size).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_lsr_size: Option<f64>,
+    /// Top-trader long/short account ratio (GateIO top_lsr_account).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_lsr_account: Option<f64>,
+    /// Top-trader long size (GateIO top_long_size).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_long_size: Option<f64>,
+    /// Top-trader short size (GateIO top_short_size).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_short_size: Option<f64>,
+    /// Top-trader long account count (GateIO top_long_account).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_long_account: Option<f64>,
+    /// Top-trader short account count (GateIO top_short_account).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_short_account: Option<f64>,
+    /// Long user count (GateIO long_users).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub long_users: Option<i64>,
+    /// Short user count (GateIO short_users).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short_users: Option<i64>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

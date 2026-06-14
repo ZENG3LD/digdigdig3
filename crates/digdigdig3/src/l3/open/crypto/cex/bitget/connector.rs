@@ -1660,7 +1660,7 @@ impl Positions for BitgetConnector {
         Ok(OpenInterest {
             open_interest: oi,
             open_interest_value: None,
-            timestamp: ts,
+            timestamp: ts, ..Default::default() 
         })
     }
 
@@ -1711,7 +1711,7 @@ impl Positions for BitgetConnector {
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<f64>().ok()),
             funding_rate: None,
-            timestamp: crate::core::timestamp_millis() as i64,
+            timestamp: crate::core::timestamp_millis() as i64, ..Default::default() 
         })
     }
 

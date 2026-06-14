@@ -439,7 +439,7 @@ fn parse_mini_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
             quote_volume_24h: parse_f64("q"),
             price_change_24h: None,
             price_change_percent_24h: None,
-            timestamp: data.get("E").and_then(|t| t.as_i64()).unwrap_or(0),
+            timestamp: data.get("E").and_then(|t| t.as_i64()).unwrap_or(0), ..Default::default() 
         },
     })
 }
@@ -472,7 +472,7 @@ fn parse_book_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
             quote_volume_24h: None,
             price_change_24h: None,
             price_change_percent_24h: None,
-            timestamp: data.get("T").and_then(|t| t.as_i64()).unwrap_or(0),
+            timestamp: data.get("T").and_then(|t| t.as_i64()).unwrap_or(0), ..Default::default() 
         },
     })
 }

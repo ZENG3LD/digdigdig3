@@ -261,7 +261,7 @@ impl MarketData for KrxConnector {
             quote_volume_24h: k.quote_volume,
             price_change_24h: None,
             price_change_percent_24h: None,
-            timestamp: k.open_time,
+            timestamp: k.open_time, ..Default::default() 
         })
     }
 

@@ -268,7 +268,7 @@ pub(crate) fn parse_ticker_from_ob(raw: &Value) -> WebSocketResult<StreamEvent> 
         quote_volume_24h: None,
         price_change_24h: None,
         price_change_percent_24h: None,
-        timestamp: book.timestamp,
+        timestamp: book.timestamp, ..Default::default() 
     };
     Ok(StreamEvent::Ticker { symbol, ticker })
 }

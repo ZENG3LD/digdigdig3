@@ -201,7 +201,7 @@ impl CryptoComParser {
             quote_volume_24h: Self::get_f64(data, "vv"),
             price_change_24h: None,
             price_change_percent_24h: Self::get_f64(data, "c").map(|r| r * 100.0),
-            timestamp: Self::get_i64(data, "t").unwrap_or(0),
+            timestamp: Self::get_i64(data, "t").unwrap_or(0), ..Default::default() 
         })
     }
 
@@ -217,7 +217,7 @@ impl CryptoComParser {
         Ok(FundingRate {
             rate: Self::require_f64(data, "funding_rate")?,
             next_funding_time: Self::get_i64(data, "next_funding_time"),
-            timestamp: 0,
+            timestamp: 0, ..Default::default() 
         })
     }
 
@@ -471,7 +471,7 @@ impl CryptoComParser {
             quote_volume_24h: Self::get_f64(data, "vv"),
             price_change_24h: None,
             price_change_percent_24h: Self::get_f64(data, "c").map(|r| r * 100.0),
-            timestamp: Self::get_i64(data, "t").unwrap_or(0),
+            timestamp: Self::get_i64(data, "t").unwrap_or(0), ..Default::default() 
         })
     }
 
@@ -977,7 +977,7 @@ impl CryptoComParser {
             rates.push(FundingRate {
                 rate,
                 next_funding_time: None,
-                timestamp: ts,
+                timestamp: ts, ..Default::default() 
             });
         }
         Ok(rates)

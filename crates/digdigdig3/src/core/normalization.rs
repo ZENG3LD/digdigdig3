@@ -400,6 +400,7 @@ mod tests {
             quantity: 0.5,
             side: TradeSide::Buy,
             timestamp: 1_700_000_000_000,
+        ..Default::default()
         };
 
         let c = trade_to_canonical(&trade, "BTCUSDT".to_string()).expect("should canonicalize");
@@ -419,6 +420,7 @@ mod tests {
             quantity: 1.0,
             side: TradeSide::Sell,
             timestamp: 1_700_000_001_000,
+        ..Default::default()
         };
         let c = trade_to_canonical(&trade, "ETHUSDT".to_string()).expect("should canonicalize");
         assert_eq!(c.symbol, "ETHUSDT");
@@ -440,6 +442,7 @@ mod tests {
             price_change_24h: None,
             price_change_percent_24h: None,
             timestamp: 1_700_000_000_000,
+        ..Default::default()
         };
 
         let c = ticker_to_canonical(&ticker, "AAPL".to_string()).expect("should canonicalize");
@@ -463,6 +466,7 @@ mod tests {
             price_change_24h: None,
             price_change_percent_24h: None,
             timestamp: 1_700_000_000_000,
+        ..Default::default()
         };
 
         let c = ticker_to_canonical(&ticker, "BTCUSDT".to_string()).expect("should canonicalize");
@@ -485,6 +489,7 @@ mod tests {
             quote_volume: None,
             close_time: Some(1_700_000_059_999),
             trades: None,
+        ..Default::default()
         };
 
         let c = kline_to_canonical(&kline, "BTCUSDT".to_string(), KlineInterval::new("1m"))
@@ -553,6 +558,7 @@ mod tests {
                 quantity: 0.1,
                 side: TradeSide::Buy,
                 timestamp: 1_700_000_000_000,
+            ..Default::default()
             },
         };
 
@@ -579,6 +585,7 @@ mod tests {
                 price_change_24h: None,
                 price_change_percent_24h: None,
                 timestamp: 1_700_000_000_000,
+            ..Default::default()
             },
         };
 
@@ -658,6 +665,7 @@ mod tests {
                 close_time: Some(1_700_000_060_000),
                 quote_volume: None,
                 trades: None,
+            ..Default::default()
             },
         };
         match event.canonicalize() {
@@ -684,6 +692,7 @@ mod tests {
                 close_time: None,
                 quote_volume: None,
                 trades: None,
+            ..Default::default()
             },
         };
         match event.canonicalize() {

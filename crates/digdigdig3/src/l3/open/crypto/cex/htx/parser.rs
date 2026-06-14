@@ -131,7 +131,7 @@ impl HtxParser {
             quote_volume_24h,
             price_change_24h: None,
             price_change_percent_24h: None,
-            timestamp,
+            timestamp, ..Default::default() 
         })
     }
 
@@ -672,7 +672,7 @@ impl HtxParser {
                 Some(OpenInterest {
                     open_interest: volume,
                     open_interest_value: None,
-                    timestamp,
+                    timestamp, ..Default::default() 
                 })
             })
             .collect();
@@ -713,7 +713,7 @@ impl HtxParser {
                     long_ratio: buy_ratio,
                     short_ratio: sell_ratio,
                     ratio,
-                    timestamp,
+                    timestamp, ..Default::default() 
                 })
             })
             .collect();
@@ -747,7 +747,7 @@ impl HtxParser {
                 Some(FundingRate {
                     rate,
                     next_funding_time: None,
-                    timestamp,
+                    timestamp, ..Default::default() 
                 })
             })
             .collect();
@@ -782,7 +782,7 @@ impl HtxParser {
                 let basis     = parse_f64(&entry["basis"])?;
                 // `id` is seconds-epoch; multiply to ms.
                 let timestamp = entry["id"].as_i64()? * 1000;
-                Some(crate::core::types::Basis { basis, timestamp })
+                Some(crate::core::types::Basis { basis, timestamp, ..Default::default()  })
             })
             .collect();
 

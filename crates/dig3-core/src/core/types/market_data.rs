@@ -52,8 +52,16 @@ pub struct Kline {
 // TICKER
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Тикер (24h статистика)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Тикер (24h статистика).
+///
+/// RAW pump: `last_price`/`timestamp` always present; every venue extra is
+/// `Option`. Field sources (live-probed 2026-06-14): Bybit linear carries ~35
+/// fields in one object (index/mark, prev1h, single OI, funding cap/interval,
+/// basis, ask1/bid1 px+size); Deribit ticker stats{} + open_interest + funding;
+/// Bitget(indexPrice/markPrice/fundingRate/holdingAmount/openUtc); MEXC-fut
+/// (indexPrice/fairPrice/fundingRate/holdVol); Binance(weightedAvgPrice/
+/// prevClose/openPrice/firstId/lastId/count).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Ticker {
     /// Последняя цена
     pub last_price: f64,
@@ -73,8 +81,94 @@ pub struct Ticker {
     pub price_change_24h: Option<f64>,
     /// Изменение цены в процентах за 24h
     pub price_change_percent_24h: Option<f64>,
-    /// Timestamp
+    /// Timestamp (ms)
     pub timestamp: i64,
+
+    // ── Top-of-book sizes ──
+    /// Best bid size (Bybit bid1Size / Bitget bidSz).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bid_qty: Option<f64>,
+    /// Best ask size (Bybit ask1Size / Bitget askSz).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask_qty: Option<f64>,
+
+    // ── Extra price stats ──
+    /// Open price 24h ago (Binance openPrice / Bitget open24h).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_price: Option<f64>,
+    /// Previous close price (Binance prevClosePrice).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_close_price: Option<f64>,
+    /// Price 24h ago (Bybit prevPrice24h).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_price_24h: Option<f64>,
+    /// Price 1h ago (Bybit prevPrice1h).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_price_1h: Option<f64>,
+    /// Weighted average price 24h (Binance weightedAvgPrice).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weighted_avg_price: Option<f64>,
+    /// UTC-day open price (Bitget openUtc).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_utc: Option<f64>,
+    /// Turnover 24h in quote (Bybit turnover24h).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turnover_24h: Option<f64>,
+
+    // ── Trade-id range / count (Binance) ──
+    /// First trade id of the window (Binance firstId).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_id: Option<i64>,
+    /// Last trade id of the window (Binance lastId).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_id: Option<i64>,
+    /// Trade count in the window (Binance count).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<i64>,
+
+    // ── Derivatives context (futures tickers) ──
+    /// Mark price (Bybit/Bitget markPrice / MEXC-fut fairPrice via mark).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mark_price: Option<f64>,
+    /// Index price (Bybit/Bitget/MEXC indexPrice / Deribit index_price).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_price: Option<f64>,
+    /// Open interest (Bybit openInterest / Bitget holdingAmount / Deribit open_interest / CryptoCom oi).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_interest: Option<f64>,
+    /// Open interest value (Bybit openInterestValue).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_interest_value: Option<f64>,
+    /// Single-side OI (Bybit singleOpenInterest).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub single_open_interest: Option<f64>,
+    /// Current funding rate (Bybit/Bitget/MEXC fundingRate / Deribit current_funding).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub funding_rate: Option<f64>,
+    /// Next funding time (Bybit nextFundingTime).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_funding_time: Option<i64>,
+    /// Funding interval in hours (Bybit fundingIntervalHour).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub funding_interval_hour: Option<f64>,
+    /// Funding cap (Bybit fundingCap).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub funding_cap: Option<f64>,
+    /// Basis (Bybit basis — absolute).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub basis: Option<f64>,
+    /// Annualized basis rate (Bybit basisRate / basisRateYear).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub basis_rate: Option<f64>,
+    /// Predicted delivery price (Bybit predictedDeliveryPrice).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predicted_delivery_price: Option<f64>,
+    /// Delivery time for dated contracts (Bybit deliveryTime).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_time: Option<i64>,
+    /// Settlement price (Deribit settlement_price).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement_price: Option<f64>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -252,23 +346,105 @@ impl OrderbookDelta {
 // FUNDING RATE (Futures)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Информация о funding rate
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Информация о funding rate.
+///
+/// RAW pump: core `rate`/`timestamp` always present; every venue-specific field
+/// is `Option` (serde-default). Field sources (live-probed 2026-06-14):
+/// Binance(markPrice), OKX(realizedRate/premium/interestRate/impactValue/
+/// max-min/settFundingRate/settState/method/formulaType/nextFundingRate/
+/// prevFundingTime), HTX(estimated_rate/fee_asset), Deribit(interest_1h/8h/
+/// index_price/prev_index_price), Bitget(funding_interval/min-max),
+/// MEXC(collect_cycle/idx_price/fair_price/min-max), Kraken(funding_rate_prediction/
+/// relative_funding_rate), BingX(funding_interval_hours).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FundingRate {
-    /// Текущий funding rate
+    /// Текущий/исторический funding rate
     pub rate: f64,
     /// Время следующего funding
     pub next_funding_time: Option<i64>,
-    /// Timestamp
+    /// Timestamp (ms)
     pub timestamp: i64,
+
+    /// Symbol/contract this rate belongs to (history endpoints carry it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
+    /// Mark price at the funding point (Binance fundingRate.markPrice).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mark_price: Option<f64>,
+    /// Index price at the funding point (Deribit index_price).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_price: Option<f64>,
+    /// Previous index price (Deribit prev_index_price).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_index_price: Option<f64>,
+    /// Realized rate after settlement (OKX realizedRate / HTX realized_rate).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realized_rate: Option<f64>,
+    /// Estimated next-period rate (HTX estimated_rate / Kraken fundingRatePrediction).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_rate: Option<f64>,
+    /// Premium component (OKX premium).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub premium: Option<f64>,
+    /// Interest rate component (OKX interestRate).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interest_rate: Option<f64>,
+    /// 1h interest accrual (Deribit interest_1h).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interest_1h: Option<f64>,
+    /// 8h interest accrual (Deribit interest_8h).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interest_8h: Option<f64>,
+    /// Relative funding rate (Kraken relativeFundingRate).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relative_funding_rate: Option<f64>,
+    /// Impact notional used in the premium formula (OKX impactValue / GateIO funding_impact_value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub impact_value: Option<f64>,
+    /// Funding interval in hours (BingX fundingIntervalHours / Bitget fundingRateInterval / MEXC collectCycle).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub funding_interval_hours: Option<f64>,
+    /// Funding-rate cap (OKX maxFundingRate / Bitget maxFundingRate / MEXC maxFundingRate).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_funding_rate: Option<f64>,
+    /// Funding-rate floor (OKX minFundingRate / Bitget minFundingRate / MEXC minFundingRate).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_funding_rate: Option<f64>,
+    /// Settled funding rate of the current period (OKX settFundingRate).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sett_funding_rate: Option<f64>,
+    /// Settlement state (OKX settState: "settled"/"processing").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sett_state: Option<String>,
+    /// Computation method (OKX method: "current_period").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    /// Formula type (OKX formulaType: "withRate"/"noRate").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formula_type: Option<String>,
+    /// Next-period rate when already known (OKX nextFundingRate).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_funding_rate: Option<f64>,
+    /// Previous funding timestamp (OKX prevFundingTime).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_funding_time: Option<i64>,
+    /// Funding fee asset (HTX fee_asset).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_asset: Option<String>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // MARK PRICE (Futures)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Mark price информация
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Mark price информация.
+///
+/// RAW pump: `mark_price`/`timestamp` always present; richer fields `Option`.
+/// Field sources (live-probed 2026-06-14): Binance premiumIndex(indexPrice/
+/// estimatedSettlePrice/lastFundingRate/interestRate/nextFundingTime),
+/// OKX(markPx only), BitMEX(indicativeSettlePrice/indicativeFundingRate),
+/// MEXC(fairPrice/idxPrice), Bitfinex deriv-status [2]=deriv_price [3]=spot.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MarkPrice {
     /// Mark price
     pub mark_price: f64,
@@ -276,23 +452,88 @@ pub struct MarkPrice {
     pub index_price: Option<f64>,
     /// Current funding rate (опционально — только для перпетуальных контрактов)
     pub funding_rate: Option<f64>,
-    /// Timestamp
+    /// Timestamp (ms)
     pub timestamp: i64,
+
+    /// Symbol/contract (snapshots over all symbols carry it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
+    /// Estimated settlement price (Binance estimatedSettlePrice).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_settle_price: Option<f64>,
+    /// Indicative settlement price (BitMEX indicativeSettlePrice).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indicative_settle_price: Option<f64>,
+    /// Indicative (predicted) funding rate (BitMEX indicativeFundingRate).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indicative_funding_rate: Option<f64>,
+    /// Interest rate component (Binance interestRate).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interest_rate: Option<f64>,
+    /// Next funding time (Binance/OKX nextFundingTime).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_funding_time: Option<i64>,
+    /// Fair price when the venue distinguishes it from mark (MEXC fairPrice).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fair_price: Option<f64>,
+    /// Spot/underlying price alongside mark (Bitfinex deriv-status [3]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spot_price: Option<f64>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // OPEN INTEREST (Futures)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Open Interest информация
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Open Interest информация.
+///
+/// RAW pump: `open_interest`/`timestamp` always present; richer fields `Option`.
+/// Field sources (live-probed 2026-06-14): OKX(oiCcy=base/oiUsd), Binance
+/// openInterestHist(sumOpenInterest/sumOpenInterestValue/CMCCirculatingSupply),
+/// Bybit(singleOpenInterest+Value), HTX(amount/value/trade_amount/trade_volume/
+/// trade_turnover/business_type), GateIO(open_interest_usd).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OpenInterest {
     /// Open interest (в контрактах или базовом активе)
     pub open_interest: f64,
-    /// Open interest в USDT (опционально)
+    /// Open interest в quote/USD (опционально)
     pub open_interest_value: Option<f64>,
-    /// Timestamp
+    /// Timestamp (ms)
     pub timestamp: i64,
+
+    /// Symbol/contract this OI belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
+    /// OI denominated in base currency (OKX oiCcy / HTX amount).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_interest_ccy: Option<f64>,
+    /// OI denominated in USD (OKX oiUsd).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_interest_usd: Option<f64>,
+    /// Single-side (one-way) OI (Bybit singleOpenInterest).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub single_open_interest: Option<f64>,
+    /// Single-side OI value (Bybit singleOpenInterestValue).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub single_open_interest_value: Option<f64>,
+    /// Summed OI over the bucket (Binance openInterestHist sumOpenInterest).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sum_open_interest: Option<f64>,
+    /// Summed OI value over the bucket (Binance openInterestHist sumOpenInterestValue).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sum_open_interest_value: Option<f64>,
+    /// CoinMarketCap circulating supply snapshot (Binance openInterestHist CMCCirculatingSupply).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cmc_circulating_supply: Option<f64>,
+    /// Rolling trade amount in base (HTX trade_amount).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trade_amount: Option<f64>,
+    /// Rolling trade volume in contracts (HTX trade_volume).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trade_volume: Option<f64>,
+    /// Rolling trade turnover in quote (HTX trade_turnover).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trade_turnover: Option<f64>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -435,7 +676,7 @@ pub enum TradeSide {
 /// Semantics of `side`:
 /// - `Buy`  — a **long** position was liquidated (forced sell into market).
 /// - `Sell` — a **short** position was liquidated (forced buy into market).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Liquidation {
     /// Trading pair symbol (e.g. "BTCUSDT").
     pub symbol: String,
@@ -450,6 +691,41 @@ pub struct Liquidation {
     pub timestamp: i64,
     /// Quote value (price × quantity). `None` when not provided by exchange.
     pub value: Option<f64>,
+
+    // ── Venue-specific (live-probed 2026-06-14) ──
+    /// Liquidation order id (BitMEX orderID / GateIO).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order_id: Option<String>,
+    /// Order type of the forced order (Binance forceOrder `o`: "LIMIT").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order_type: Option<String>,
+    /// Order status (Binance forceOrder `X`: "FILLED").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// Average fill price (Binance forceOrder `ap`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avg_price: Option<f64>,
+    /// Accumulated executed quantity (Binance forceOrder `z`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executed_qty: Option<f64>,
+    /// Original order quantity (Binance forceOrder `q` / GateIO order_size).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order_qty: Option<f64>,
+    /// Order price (Binance forceOrder `p` / GateIO order_price).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order_price: Option<f64>,
+    /// Fill price reported separately (GateIO fill_price).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill_price: Option<f64>,
+    /// Quantity left unfilled (GateIO left / BitMEX leavesQty).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left: Option<f64>,
+    /// Signed position size when the venue reports direction via sign (GateIO size; negative = short side).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signed_size: Option<f64>,
+    /// Bankruptcy/base price (Bitfinex liq base_price).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_price: Option<f64>,
 }
 
 impl Liquidation {

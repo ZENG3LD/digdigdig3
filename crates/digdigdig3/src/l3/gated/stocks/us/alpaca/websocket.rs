@@ -389,7 +389,7 @@ impl AlpacaWebSocket {
                     quote_volume_24h: None,
                     price_change_24h: None,
                     price_change_percent_24h: None,
-                    timestamp: crate::core::utils::timestamp_millis() as i64,
+                    timestamp: crate::core::utils::timestamp_millis() as i64, ..Default::default() 
                 };
 
                 Some(StreamEvent::Ticker { symbol: symbol.to_string(), ticker })

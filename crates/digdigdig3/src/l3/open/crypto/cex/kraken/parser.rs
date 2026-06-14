@@ -276,7 +276,7 @@ impl KrakenParser {
             quote_volume_24h: None,
             price_change_24h: None,
             price_change_percent_24h: None,
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: chrono::Utc::now().timestamp_millis(), ..Default::default() 
         })
     }
 
@@ -553,7 +553,7 @@ impl KrakenParser {
         Ok(FundingRate {
             rate: Self::require_f64(latest, "fundingRate")?,
             next_funding_time: None,
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: chrono::Utc::now().timestamp_millis(), ..Default::default() 
         })
     }
 
@@ -1466,7 +1466,7 @@ impl KrakenParser {
             result.push(FundingRate {
                 rate,
                 next_funding_time: None,
-                timestamp: ts_ms,
+                timestamp: ts_ms, ..Default::default() 
             });
         }
         Ok(result)
@@ -1491,7 +1491,7 @@ impl KrakenParser {
                 .and_then(|a| a.last())
                 .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| v.as_f64()));
             if let Some(oi) = close {
-                out.push(OpenInterest { open_interest: oi, open_interest_value: None, timestamp: t_ms });
+                out.push(OpenInterest { open_interest: oi, open_interest_value: None, timestamp: t_ms, ..Default::default()  });
             }
         }
         Ok(out)
@@ -1597,7 +1597,7 @@ impl KrakenParser {
                 long_ratio: if total > 0.0 { l / total } else { 0.0 },
                 short_ratio: if total > 0.0 { s / total } else { 0.0 },
                 ratio: if s > 0.0 { Some(l / s) } else { None },
-                timestamp: t_ms,
+                timestamp: t_ms, ..Default::default() 
             });
         }
         Ok(out)
@@ -1768,7 +1768,7 @@ pub fn parse_ws_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
             quote_volume_24h: None,
             price_change_24h: None,
             price_change_percent_24h: change_pct,
-            timestamp: timestamp_millis() as i64,
+            timestamp: timestamp_millis() as i64, ..Default::default() 
         },
     })
 }

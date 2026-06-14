@@ -764,7 +764,7 @@ impl MarketData for PolymarketConnector {
             price_change_percent_24h: None,
             high_24h: None,
             low_24h: None,
-            timestamp: now_ms,
+            timestamp: now_ms, ..Default::default() 
         })
     }
 

@@ -1379,7 +1379,7 @@ impl Positions for CryptoComConnector {
         Ok(OpenInterest {
             open_interest: oi,
             open_interest_value: None,
-            timestamp: ts,
+            timestamp: ts, ..Default::default() 
         })
     }
 

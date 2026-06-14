@@ -215,7 +215,7 @@ impl UpbitParser {
                 .map(|r| r * 100.0), // Convert decimal to percentage
             timestamp: data.get("timestamp")
                 .and_then(|t| t.as_i64())
-                .unwrap_or(0),
+                .unwrap_or(0), ..Default::default() 
         })
     }
 
@@ -553,7 +553,7 @@ impl UpbitParser {
             price_change_24h: Self::get_f64(data, "change_price"),
             price_change_percent_24h: Self::get_f64(data, "change_rate")
                 .map(|r| r * 100.0),
-            timestamp,
+            timestamp, ..Default::default() 
         })
     }
 
@@ -612,7 +612,7 @@ impl UpbitParser {
             quote_volume_24h: None,
             price_change_24h: None,
             price_change_percent_24h: None,
-            timestamp,
+            timestamp, ..Default::default() 
         })
     }
 

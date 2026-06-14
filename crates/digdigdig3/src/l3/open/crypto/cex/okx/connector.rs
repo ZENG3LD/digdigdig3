@@ -337,7 +337,7 @@ impl OkxConnector {
                 quote_volume_24h: get_f64("volCcy24h"),
                 price_change_24h: None,
                 price_change_percent_24h: None,
-                timestamp: ts,
+                timestamp: ts, ..Default::default() 
             }
         }).collect();
 
@@ -1572,7 +1572,7 @@ impl Positions for OkxConnector {
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<i64>().ok())
                 .or_else(|| data.get("ts").and_then(|v| v.as_i64()))
-                .unwrap_or_else(|| crate::core::timestamp_millis() as i64),
+                .unwrap_or_else(|| crate::core::timestamp_millis() as i64), ..Default::default() 
         })
     }
 

@@ -139,7 +139,7 @@ impl OkxParser {
             quote_volume_24h: Self::get_f64(data, "volCcy24h"),
             price_change_24h: None, // OKX doesn't provide this directly
             price_change_percent_24h: None, // Would need to calculate from open24h
-            timestamp: Self::get_i64(data, "ts").unwrap_or(0),
+            timestamp: Self::get_i64(data, "ts").unwrap_or(0), ..Default::default() 
         })
     }
 
@@ -276,7 +276,7 @@ impl OkxParser {
         Ok(FundingRate {
             rate: Self::require_f64(data, "fundingRate")?,
             next_funding_time: Self::get_i64(data, "nextFundingTime"),
-            timestamp: Self::get_i64(data, "fundingTime").unwrap_or(0),
+            timestamp: Self::get_i64(data, "fundingTime").unwrap_or(0), ..Default::default() 
         })
     }
 
@@ -290,7 +290,7 @@ impl OkxParser {
         let rates = arr.iter().map(|item| FundingRate {
             rate: Self::get_f64(item, "fundingRate").unwrap_or(0.0),
             next_funding_time: None,
-            timestamp: Self::get_i64(item, "fundingTime").unwrap_or(0),
+            timestamp: Self::get_i64(item, "fundingTime").unwrap_or(0), ..Default::default() 
         }).collect();
         Ok(rates)
     }
@@ -505,7 +505,7 @@ impl OkxParser {
                     _ => None,
                 }
             },
-            timestamp: Self::get_i64(data, "ts").unwrap_or(0),
+            timestamp: Self::get_i64(data, "ts").unwrap_or(0), ..Default::default() 
         })
     }
 
@@ -1448,7 +1448,7 @@ impl OkxParser {
                     price,
                     quantity,
                     timestamp,
-                    value: Some(price * quantity),
+                    value: Some(price * quantity), ..Default::default() 
                 });
             }
         }
@@ -1478,7 +1478,7 @@ impl OkxParser {
             result.push(OpenInterest {
                 open_interest,
                 open_interest_value,
-                timestamp,
+                timestamp, ..Default::default() 
             });
         }
         Ok(result)
@@ -1520,7 +1520,7 @@ impl OkxParser {
             result.push(OpenInterest {
                 open_interest,
                 open_interest_value,
-                timestamp,
+                timestamp, ..Default::default() 
             });
         }
         Ok(result)
@@ -1557,7 +1557,7 @@ impl OkxParser {
                 .and_then(Value::as_str)
                 .and_then(|s| s.parse::<f64>().ok())
                 .unwrap_or(0.0);
-            result.push(crate::core::types::TakerVolume { buy_volume, sell_volume, timestamp });
+            result.push(crate::core::types::TakerVolume { buy_volume, sell_volume, timestamp, ..Default::default()  });
         }
         Ok(result)
     }
@@ -1608,7 +1608,7 @@ impl OkxParser {
                 long_ratio,
                 short_ratio,
                 ratio: Some(ratio),
-                timestamp,
+                timestamp, ..Default::default() 
             });
         }
         Ok(result)
@@ -1648,7 +1648,7 @@ impl OkxParser {
                 mark_price,
                 index_price: None,
                 funding_rate: None,
-                timestamp,
+                timestamp, ..Default::default() 
             });
         }
         Ok(result)

@@ -112,7 +112,7 @@ impl BybitParser {
             price_change_percent_24h: data["price24hPcnt"].as_str()
                 .and_then(|s| s.parse::<f64>().ok())
                 .map(|v| v * 100.0),
-            timestamp,
+            timestamp, ..Default::default() 
         })
     }
 
@@ -397,7 +397,7 @@ impl BybitParser {
         Ok(FundingRate {
             rate,
             next_funding_time: None,
-            timestamp,
+            timestamp, ..Default::default() 
         })
     }
 
@@ -411,7 +411,7 @@ impl BybitParser {
         let rates = list.iter().map(|item| FundingRate {
             rate: item["fundingRate"].as_str().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0),
             next_funding_time: None,
-            timestamp: item["fundingRateTimestamp"].as_str().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0),
+            timestamp: item["fundingRateTimestamp"].as_str().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0), ..Default::default() 
         }).collect();
         Ok(rates)
     }
@@ -1096,7 +1096,7 @@ impl BybitParser {
                 crate::core::types::OpenInterest {
                     open_interest,
                     open_interest_value,
-                    timestamp,
+                    timestamp, ..Default::default() 
                 }
             })
             .collect();
@@ -1130,7 +1130,7 @@ impl BybitParser {
                     long_ratio,
                     short_ratio,
                     ratio,
-                    timestamp,
+                    timestamp, ..Default::default() 
                 }
             })
             .collect();

@@ -349,7 +349,7 @@ impl BybitConnector {
                 quote_volume_24h: parse_str_f64("turnover24h"),
                 price_change_24h,
                 price_change_percent_24h,
-                timestamp,
+                timestamp, ..Default::default() 
             }
         }).collect();
 
@@ -2051,7 +2051,7 @@ impl Positions for BybitConnector {
                 .get("fundingRate")
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<f64>().ok()),
-            timestamp: crate::core::timestamp_millis() as i64,
+            timestamp: crate::core::timestamp_millis() as i64, ..Default::default() 
         })
     }
 
@@ -2096,7 +2096,7 @@ impl Positions for BybitConnector {
         Ok(OpenInterest {
             open_interest: oi,
             open_interest_value: None,
-            timestamp: ts,
+            timestamp: ts, ..Default::default() 
         })
     }
 

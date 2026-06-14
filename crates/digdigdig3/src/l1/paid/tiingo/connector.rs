@@ -268,7 +268,7 @@ impl MarketData for TiingoConnector {
             quote_volume_24h: None,
             price_change_24h: None,
             price_change_percent_24h: None,
-            timestamp: latest.open_time,
+            timestamp: latest.open_time, ..Default::default() 
         })
     }
 

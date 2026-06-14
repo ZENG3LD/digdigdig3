@@ -824,7 +824,7 @@ impl MarketData for HyperliquidConnector {
                 quote_volume_24h: None,
                 price_change_24h: None,
                 price_change_percent_24h: None,
-                timestamp: now,
+                timestamp: now, ..Default::default() 
             };
 
             if let Ok(l2) = self.info_request(
@@ -1606,7 +1606,7 @@ impl Positions for HyperliquidConnector {
             mark_price,
             index_price,
             funding_rate,
-            timestamp: now,
+            timestamp: now, ..Default::default() 
         })
     }
 
@@ -1741,7 +1741,7 @@ impl Positions for HyperliquidConnector {
         Ok(crate::core::types::OpenInterest {
             open_interest: oi,
             open_interest_value: None,
-            timestamp: crate::core::timestamp_millis() as i64,
+            timestamp: crate::core::timestamp_millis() as i64, ..Default::default() 
         })
     }
 }

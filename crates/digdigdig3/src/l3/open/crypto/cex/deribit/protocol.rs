@@ -614,7 +614,7 @@ fn parse_quote(raw: &Value) -> WebSocketResult<StreamEvent> {
         price_change_24h: None,
         price_change_percent_24h: None,
         quote_volume_24h: None,
-        timestamp,
+        timestamp, ..Default::default() 
     };
     Ok(StreamEvent::Ticker { symbol, ticker })
 }

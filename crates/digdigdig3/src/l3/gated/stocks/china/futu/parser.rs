@@ -450,7 +450,7 @@ impl FutuParser {
             quote_volume_24h: Self::get_f64(basic, "turnover"),
             price_change_24h: Self::get_f64(basic, "priceChange"),
             price_change_percent_24h: Self::get_f64(basic, "changeRate"),
-            timestamp,
+            timestamp, ..Default::default() 
         })
     }
 

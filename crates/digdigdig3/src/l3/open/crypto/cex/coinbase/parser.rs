@@ -128,7 +128,7 @@ impl CoinbaseParser {
             quote_volume_24h: None,
             price_change_24h: None,
             price_change_percent_24h: None,
-            timestamp,
+            timestamp, ..Default::default() 
         })
     }
 
@@ -512,7 +512,7 @@ impl CoinbaseParser {
             quote_volume_24h: None,
             price_change_24h: None,
             price_change_percent_24h: price_change_percent,
-            timestamp,
+            timestamp, ..Default::default() 
         })
     }
 

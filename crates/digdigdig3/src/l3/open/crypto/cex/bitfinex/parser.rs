@@ -118,7 +118,7 @@ impl BitfinexParser {
             // response with the local receive time so downstream consumers
             // can age it. Better than emitting 0 (which gets misread as
             // "1970-01-01" everywhere).
-            timestamp: now_ms(),
+            timestamp: now_ms(), ..Default::default() 
         })
     }
 
@@ -525,7 +525,7 @@ impl BitfinexParser {
             quote_volume_24h: None,
             price_change_24h: Self::get_f64(data, 4),
             price_change_percent_24h: Self::get_f64(data, 5).map(|r| r * 100.0),
-            timestamp: crate::core::timestamp_millis() as i64,
+            timestamp: crate::core::timestamp_millis() as i64, ..Default::default() 
         })
     }
 
@@ -826,7 +826,7 @@ impl BitfinexParser {
             let next_funding_time = Self::get_i64(row, 7);
 
             let _ = symbol; // symbol used by caller for routing; not stored in FundingRate
-            out.push(FundingRate { rate, next_funding_time, timestamp });
+            out.push(FundingRate { rate, next_funding_time, timestamp, ..Default::default()  });
         }
         Ok(out)
     }
@@ -865,7 +865,7 @@ impl BitfinexParser {
             out.push(OpenInterest {
                 open_interest: oi,
                 open_interest_value: None,
-                timestamp,
+                timestamp, ..Default::default() 
             });
         }
         Ok(out)

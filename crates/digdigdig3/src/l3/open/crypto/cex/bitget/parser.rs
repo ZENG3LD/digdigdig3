@@ -214,7 +214,7 @@ impl BitgetParser {
             price_change_percent_24h: Self::get_f64(ticker_data, "change24h")
                 .or_else(|| Self::get_f64(ticker_data, "priceChangePercent"))
                 .map(|r| r * 100.0),
-            timestamp,
+            timestamp, ..Default::default() 
         })
     }
 
@@ -225,7 +225,7 @@ impl BitgetParser {
         Ok(FundingRate {
             rate: Self::require_f64(data, "fundingRate")?,
             next_funding_time: Self::get_i64(data, "fundingTime"),
-            timestamp: Self::get_i64(data, "timestamp").unwrap_or(0),
+            timestamp: Self::get_i64(data, "timestamp").unwrap_or(0), ..Default::default() 
         })
     }
 
@@ -583,7 +583,7 @@ impl BitgetParser {
             result.push(FundingRate {
                 rate,
                 next_funding_time: None,
-                timestamp,
+                timestamp, ..Default::default() 
             });
         }
         Ok(result)
@@ -627,7 +627,7 @@ impl BitgetParser {
                 long_ratio,
                 short_ratio,
                 ratio: combined,
-                timestamp,
+                timestamp, ..Default::default() 
             });
         }
         Ok(result)
@@ -655,7 +655,7 @@ impl BitgetParser {
             let timestamp = Self::get_i64(item, "ts")
                 .or_else(|| Self::get_i64(item, "timestamp"))
                 .unwrap_or(0);
-            result.push(crate::core::types::TakerVolume { buy_volume, sell_volume, timestamp });
+            result.push(crate::core::types::TakerVolume { buy_volume, sell_volume, timestamp, ..Default::default()  });
         }
         Ok(result)
     }
@@ -763,7 +763,7 @@ impl BitgetParser {
             price_change_percent_24h: Self::get_f64(ticker_data, "change24h")
                 .or_else(|| Self::get_f64(ticker_data, "priceChangePercent"))
                 .map(|r| r * 100.0),
-            timestamp,
+            timestamp, ..Default::default() 
         })
     }
 

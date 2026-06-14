@@ -1124,7 +1124,7 @@ impl Positions for DeribitConnector {
         Ok(FundingRate {
             rate,
             next_funding_time,
-            timestamp: crate::core::timestamp_millis() as i64,
+            timestamp: crate::core::timestamp_millis() as i64, ..Default::default() 
         })
     }
 
@@ -1171,7 +1171,7 @@ impl Positions for DeribitConnector {
                 .get("current_funding")
                 .or_else(|| result.get("funding_8h"))
                 .and_then(|v| v.as_f64()),
-            timestamp: crate::core::timestamp_millis() as i64,
+            timestamp: crate::core::timestamp_millis() as i64, ..Default::default() 
         })
     }
 
@@ -1207,7 +1207,7 @@ impl Positions for DeribitConnector {
         Ok(OpenInterest {
             open_interest: oi,
             open_interest_value: None,
-            timestamp: ts,
+            timestamp: ts, ..Default::default() 
         })
     }
 
@@ -2048,7 +2048,7 @@ impl MarketDataPublic for DeribitConnector {
             out.push(FundingRate {
                 rate,
                 next_funding_time: None, // not provided in history response
-                timestamp,
+                timestamp, ..Default::default() 
             });
         }
         Ok(out)

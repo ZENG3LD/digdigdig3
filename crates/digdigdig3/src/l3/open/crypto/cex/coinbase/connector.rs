@@ -573,7 +573,7 @@ impl MarketData for CoinbaseConnector {
                 quote_volume_24h: None,
                 price_change_24h: None,
                 price_change_percent_24h: None,
-                timestamp: crate::core::timestamp_millis() as i64,
+                timestamp: crate::core::timestamp_millis() as i64, ..Default::default() 
             })
         }
     }

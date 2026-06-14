@@ -214,7 +214,7 @@ impl BinanceParser {
                 quote_volume_24h: Self::get_f64(response, "q"),
                 price_change_24h: Self::get_f64(response, "p"),
                 price_change_percent_24h: Self::get_f64(response, "P"),
-                timestamp: response.get("E").and_then(|t| t.as_i64()).unwrap_or(0),
+                timestamp: response.get("E").and_then(|t| t.as_i64()).unwrap_or(0), ..Default::default() 
             })
         } else {
             // REST API format: uses long field names
@@ -229,7 +229,7 @@ impl BinanceParser {
                 quote_volume_24h: Self::get_f64(response, "quoteVolume"),
                 price_change_24h: Self::get_f64(response, "priceChange"),
                 price_change_percent_24h: Self::get_f64(response, "priceChangePercent"),
-                timestamp: response.get("closeTime").and_then(|t| t.as_i64()).unwrap_or(0),
+                timestamp: response.get("closeTime").and_then(|t| t.as_i64()).unwrap_or(0), ..Default::default() 
             })
         }
     }
@@ -248,7 +248,7 @@ impl BinanceParser {
         Ok(FundingRate {
             rate: Self::require_f64(data, "fundingRate")?,
             next_funding_time: data.get("fundingTime").and_then(|t| t.as_i64()),
-            timestamp: data.get("fundingTime").and_then(|t| t.as_i64()).unwrap_or(0),
+            timestamp: data.get("fundingTime").and_then(|t| t.as_i64()).unwrap_or(0), ..Default::default() 
         })
     }
 
@@ -261,7 +261,7 @@ impl BinanceParser {
         let result = arr.iter().map(|item| FundingRate {
             rate: Self::get_f64(item, "fundingRate").unwrap_or(0.0),
             next_funding_time: item.get("fundingTime").and_then(|t| t.as_i64()),
-            timestamp: item.get("fundingTime").and_then(|t| t.as_i64()).unwrap_or(0),
+            timestamp: item.get("fundingTime").and_then(|t| t.as_i64()).unwrap_or(0), ..Default::default() 
         }).collect();
         Ok(result)
     }
@@ -1400,7 +1400,7 @@ impl BinanceParser {
                 long_ratio,
                 short_ratio,
                 ratio,
-                timestamp,
+                timestamp, ..Default::default() 
             });
         }
 
@@ -1429,7 +1429,7 @@ impl BinanceParser {
             result.push(OpenInterest {
                 open_interest,
                 open_interest_value,
-                timestamp,
+                timestamp, ..Default::default() 
             });
         }
 
@@ -1446,7 +1446,7 @@ impl BinanceParser {
         for item in arr {
             let basis = Self::get_f64(item, "basis").unwrap_or(0.0);
             let timestamp = item.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0);
-            result.push(crate::core::types::Basis { basis, timestamp });
+            result.push(crate::core::types::Basis { basis, timestamp, ..Default::default()  });
         }
         Ok(result)
     }
@@ -1462,7 +1462,7 @@ impl BinanceParser {
             let buy_volume = Self::get_f64(item, "buyVol").unwrap_or(0.0);
             let sell_volume = Self::get_f64(item, "sellVol").unwrap_or(0.0);
             let timestamp = item.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0);
-            result.push(crate::core::types::TakerVolume { buy_volume, sell_volume, timestamp });
+            result.push(crate::core::types::TakerVolume { buy_volume, sell_volume, timestamp, ..Default::default()  });
         }
         Ok(result)
     }
@@ -1487,7 +1487,7 @@ impl BinanceParser {
         Ok(OpenInterest {
             open_interest,
             open_interest_value: None,
-            timestamp,
+            timestamp, ..Default::default() 
         })
     }
 
@@ -1587,7 +1587,7 @@ impl BinanceParser {
                 price,
                 quantity,
                 timestamp,
-                value: Some(price * quantity),
+                value: Some(price * quantity), ..Default::default() 
             });
         }
         Ok(result)

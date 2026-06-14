@@ -1169,7 +1169,7 @@ impl Positions for BingxConnector {
         Ok(FundingRate {
             rate,
             next_funding_time: next_time,
-            timestamp: crate::core::timestamp_millis() as i64,
+            timestamp: crate::core::timestamp_millis() as i64, ..Default::default() 
         })
     }
 
@@ -1206,7 +1206,7 @@ impl Positions for BingxConnector {
                 .get("fundingRate")
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<f64>().ok()),
-            timestamp: crate::core::timestamp_millis() as i64,
+            timestamp: crate::core::timestamp_millis() as i64, ..Default::default() 
         })
     }
 
@@ -1324,7 +1324,7 @@ impl Positions for BingxConnector {
         Ok(crate::core::types::OpenInterest {
             open_interest,
             open_interest_value: None,
-            timestamp,
+            timestamp, ..Default::default() 
         })
     }
 }

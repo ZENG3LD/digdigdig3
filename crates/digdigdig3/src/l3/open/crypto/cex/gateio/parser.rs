@@ -115,7 +115,7 @@ impl GateioParser {
             price_change_24h: None,
             price_change_percent_24h: Self::get_f64(data, "change_percentage"),
             // Gate.io REST ticker carries no timestamp — stamp on receive.
-            timestamp: now_ms(),
+            timestamp: now_ms(), ..Default::default() 
         })
     }
 
@@ -250,7 +250,7 @@ impl GateioParser {
             timestamp: data.get("t")
                 .and_then(|t| t.as_i64())
                 .map(|t| t * 1000) // seconds to ms
-                .unwrap_or(0),
+                .unwrap_or(0), ..Default::default() 
         })
     }
 
@@ -1042,7 +1042,7 @@ impl GateioParser {
             timestamp: item.get("t")
                 .and_then(|v| v.as_i64())
                 .map(|t| t * 1000)
-                .unwrap_or(0),
+                .unwrap_or(0), ..Default::default() 
         }).collect();
 
         Ok(result)
@@ -1072,7 +1072,7 @@ impl GateioParser {
             OpenInterest {
                 open_interest: oi,
                 open_interest_value: oi_usd,
-                timestamp: ts,
+                timestamp: ts, ..Default::default() 
             }
         }).collect();
 
@@ -1116,7 +1116,7 @@ impl GateioParser {
                 long_ratio,
                 short_ratio,
                 ratio: Some(lsr),
-                timestamp: ts,
+                timestamp: ts, ..Default::default() 
             }
         }).collect();
 
@@ -1140,7 +1140,7 @@ impl GateioParser {
                 .and_then(|v| v.as_i64())
                 .map(|t| t * 1000)
                 .unwrap_or(0);
-            crate::core::types::TakerVolume { buy_volume, sell_volume, timestamp }
+            crate::core::types::TakerVolume { buy_volume, sell_volume, timestamp, ..Default::default()  }
         }).collect();
 
         Ok(result)

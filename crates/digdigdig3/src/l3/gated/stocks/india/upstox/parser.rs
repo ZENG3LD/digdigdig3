@@ -238,7 +238,7 @@ impl UpstoxParser {
             quote_volume_24h: None,
             price_change_24h: Self::get_f64(quote, "net_change"),
             price_change_percent_24h: None,
-            timestamp,
+            timestamp, ..Default::default() 
         })
     }
 

@@ -1509,7 +1509,7 @@ impl Positions for GateioConnector {
                 .get("funding_rate")
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<f64>().ok()),
-            timestamp: crate::core::timestamp_millis() as i64,
+            timestamp: crate::core::timestamp_millis() as i64, ..Default::default() 
         })
     }
 
@@ -1748,7 +1748,7 @@ impl Positions for GateioConnector {
         Ok(OpenInterest {
             open_interest: oi,
             open_interest_value: None,
-            timestamp: ts,
+            timestamp: ts, ..Default::default() 
         })
     }
 }

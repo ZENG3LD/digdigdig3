@@ -71,7 +71,7 @@ impl YahooFinanceParser {
             // `Ticker.timestamp` is **milliseconds**. Multiply on the way in.
             timestamp: Self::get_i64(meta, "regularMarketTime")
                 .map(|s| s * 1_000)
-                .unwrap_or_else(|| chrono::Utc::now().timestamp_millis()),
+                .unwrap_or_else(|| chrono::Utc::now().timestamp_millis()), ..Default::default() 
         })
     }
 
@@ -192,7 +192,7 @@ impl YahooFinanceParser {
             // regularMarketTime is seconds → convert to ms
             timestamp: Self::get_i64(first, "regularMarketTime")
                 .map(|s| s * 1_000)
-                .unwrap_or_else(|| chrono::Utc::now().timestamp_millis()),
+                .unwrap_or_else(|| chrono::Utc::now().timestamp_millis()), ..Default::default() 
         })
     }
 

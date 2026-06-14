@@ -122,6 +122,7 @@ impl CryptoCompareParser {
             price_change_24h: Self::get_f64(ticker_data, "CHANGE24HOUR"),
             price_change_percent_24h: Self::get_f64(ticker_data, "CHANGEPCT24HOUR"),
             timestamp: Self::require_i64(ticker_data, "LASTUPDATE")? * 1000, // Convert to milliseconds
+            ..Default::default()
         })
     }
 

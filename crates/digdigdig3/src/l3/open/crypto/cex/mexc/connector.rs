@@ -1985,7 +1985,7 @@ impl crate::core::traits::Positions for MexcConnector {
         Ok(crate::core::types::OpenInterest {
             open_interest: oi,
             open_interest_value: None,
-            timestamp: crate::core::timestamp_millis() as i64,
+            timestamp: crate::core::timestamp_millis() as i64, ..Default::default() 
         })
     }
 }

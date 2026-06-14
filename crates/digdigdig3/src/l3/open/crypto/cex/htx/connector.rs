@@ -1418,7 +1418,7 @@ impl Positions for HtxConnector {
                 .get("id")
                 .and_then(|v| v.as_i64())
                 .map(|t| t * 1000)
-                .unwrap_or_else(|| crate::core::timestamp_millis() as i64),
+                .unwrap_or_else(|| crate::core::timestamp_millis() as i64), ..Default::default() 
         })
     }
 
@@ -1459,7 +1459,7 @@ impl Positions for HtxConnector {
         Ok(OpenInterest {
             open_interest: oi,
             open_interest_value: None,
-            timestamp: ts,
+            timestamp: ts, ..Default::default() 
         })
     }
 }

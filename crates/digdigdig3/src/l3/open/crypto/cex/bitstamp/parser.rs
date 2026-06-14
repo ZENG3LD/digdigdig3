@@ -116,7 +116,7 @@ impl BitstampParser {
             quote_volume_24h: vwap, // Use vwap as quote volume approximation
             price_change_24h: None,
             price_change_percent_24h,
-            timestamp,
+            timestamp, ..Default::default() 
         })
     }
 

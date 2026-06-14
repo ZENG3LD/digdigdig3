@@ -254,7 +254,7 @@ impl MarketData for BitmexConnector {
             quote_volume_24h: item.get("turnover24h").and_then(|x| x.as_f64()),
             price_change_24h: None,
             price_change_percent_24h: None,
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: chrono::Utc::now().timestamp_millis(), ..Default::default() 
         })
     }
 
@@ -547,7 +547,7 @@ impl Positions for BitmexConnector {
         Ok(FundingRate {
             rate,
             next_funding_time: None,
-            timestamp,
+            timestamp, ..Default::default() 
         })
     }
 

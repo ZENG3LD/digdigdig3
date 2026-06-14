@@ -970,7 +970,7 @@ pub fn clob_market_to_ticker(market: &ClobMarket) -> Option<Ticker> {
         quote_volume_24h: None,
         price_change_24h: None,
         price_change_percent_24h: None,
-        timestamp: chrono::Utc::now().timestamp_millis(),
+        timestamp: chrono::Utc::now().timestamp_millis(), ..Default::default() 
     })
 }
 
@@ -994,7 +994,7 @@ pub fn poly_market_to_ticker(market: &PolyMarket) -> Ticker {
             .one_day_price_change
             .zip(Some(last_price))
             .map(|(change, _)| change * 100.0),
-        timestamp: chrono::Utc::now().timestamp_millis(),
+        timestamp: chrono::Utc::now().timestamp_millis(), ..Default::default() 
     }
 }
 

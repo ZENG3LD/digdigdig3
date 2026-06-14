@@ -505,7 +505,7 @@ fn parse_ticker(raw: &Value) -> WebSocketResult<StreamEvent> {
                     _ => None,
                 }
             },
-            timestamp: raw.get("ts").and_then(|v| v.as_i64()).unwrap_or_else(|| timestamp_millis() as i64),
+            timestamp: raw.get("ts").and_then(|v| v.as_i64()).unwrap_or_else(|| timestamp_millis() as i64), ..Default::default() 
         },
     })
 }
@@ -566,7 +566,7 @@ fn parse_bbo(raw: &Value) -> WebSocketResult<StreamEvent> {
             timestamp: raw
                 .get("ts")
                 .and_then(|v| v.as_i64())
-                .unwrap_or_else(|| timestamp_millis() as i64),
+                .unwrap_or_else(|| timestamp_millis() as i64), ..Default::default() 
         },
     })
 }

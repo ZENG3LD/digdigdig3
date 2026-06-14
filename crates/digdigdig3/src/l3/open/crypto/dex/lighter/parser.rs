@@ -136,7 +136,7 @@ impl LighterParser {
                         None
                     }
                 }),
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: chrono::Utc::now().timestamp_millis(), ..Default::default() 
         })
     }
 
@@ -320,6 +320,7 @@ impl LighterParser {
             rate: funding_rate,
             next_funding_time: None,
             timestamp: timestamp * 1000, // seconds to milliseconds
+            ..Default::default()
         })
     }
 
@@ -382,6 +383,7 @@ impl LighterParser {
                 rate,
                 next_funding_time: None,
                 timestamp: ts_sec * 1000, // seconds → milliseconds
+                ..Default::default()
             });
         }
         Ok(rates)

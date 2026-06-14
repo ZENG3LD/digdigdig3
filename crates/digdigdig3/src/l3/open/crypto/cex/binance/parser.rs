@@ -248,7 +248,10 @@ impl BinanceParser {
         Ok(FundingRate {
             rate: Self::require_f64(data, "fundingRate")?,
             next_funding_time: data.get("fundingTime").and_then(|t| t.as_i64()),
-            timestamp: data.get("fundingTime").and_then(|t| t.as_i64()).unwrap_or(0), ..Default::default() 
+            timestamp: data.get("fundingTime").and_then(|t| t.as_i64()).unwrap_or(0),
+            symbol: Self::get_str(data, "symbol").map(String::from),
+            mark_price: Self::get_f64(data, "markPrice"),
+            ..Default::default()
         })
     }
 
@@ -261,7 +264,10 @@ impl BinanceParser {
         let result = arr.iter().map(|item| FundingRate {
             rate: Self::get_f64(item, "fundingRate").unwrap_or(0.0),
             next_funding_time: item.get("fundingTime").and_then(|t| t.as_i64()),
-            timestamp: item.get("fundingTime").and_then(|t| t.as_i64()).unwrap_or(0), ..Default::default() 
+            timestamp: item.get("fundingTime").and_then(|t| t.as_i64()).unwrap_or(0),
+            symbol: Self::get_str(item, "symbol").map(String::from),
+            mark_price: Self::get_f64(item, "markPrice"),
+            ..Default::default()
         }).collect();
         Ok(result)
     }
@@ -1394,13 +1400,26 @@ impl BinanceParser {
                 (lr, sr, ratio_val)
             };
 
+            // For account-based endpoints populate the explicit account fractions.
+            let (long_account, short_account) = if ratio_type == "top_account" || ratio_type == "global_account" {
+                (
+                    Self::get_f64(item, "longAccount"),
+                    Self::get_f64(item, "shortAccount"),
+                )
+            } else {
+                (None, None)
+            };
+
             result.push(LongShortRatio {
                 symbol,
                 ratio_type: ratio_type.to_string(),
                 long_ratio,
                 short_ratio,
                 ratio,
-                timestamp, ..Default::default() 
+                timestamp,
+                long_account,
+                short_account,
+                ..Default::default()
             });
         }
 
@@ -1429,7 +1448,12 @@ impl BinanceParser {
             result.push(OpenInterest {
                 open_interest,
                 open_interest_value,
-                timestamp, ..Default::default() 
+                timestamp,
+                symbol: Self::get_str(item, "symbol").map(String::from),
+                sum_open_interest: Self::get_f64(item, "sumOpenInterest"),
+                sum_open_interest_value: Self::get_f64(item, "sumOpenInterestValue"),
+                cmc_circulating_supply: Self::get_f64(item, "CMCCirculatingSupply"),
+                ..Default::default()
             });
         }
 
@@ -1462,7 +1486,13 @@ impl BinanceParser {
             let buy_volume = Self::get_f64(item, "buyVol").unwrap_or(0.0);
             let sell_volume = Self::get_f64(item, "sellVol").unwrap_or(0.0);
             let timestamp = item.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0);
-            result.push(crate::core::types::TakerVolume { buy_volume, sell_volume, timestamp, ..Default::default()  });
+            result.push(crate::core::types::TakerVolume {
+                buy_volume,
+                sell_volume,
+                timestamp,
+                buy_sell_ratio: Self::get_f64(item, "buySellRatio"),
+                ..Default::default()
+            });
         }
         Ok(result)
     }
@@ -1487,7 +1517,9 @@ impl BinanceParser {
         Ok(OpenInterest {
             open_interest,
             open_interest_value: None,
-            timestamp, ..Default::default() 
+            timestamp,
+            symbol: Self::get_str(value, "symbol").map(String::from),
+            ..Default::default()
         })
     }
 

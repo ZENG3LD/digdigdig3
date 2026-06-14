@@ -277,7 +277,23 @@ impl OkxParser {
         Ok(FundingRate {
             rate: Self::require_f64(data, "fundingRate")?,
             next_funding_time: Self::get_i64(data, "nextFundingTime"),
-            timestamp: Self::get_i64(data, "fundingTime").unwrap_or(0), ..Default::default() 
+            timestamp: Self::get_i64(data, "ts").unwrap_or_else(|| Self::get_i64(data, "fundingTime").unwrap_or(0)),
+            symbol: Self::get_str(data, "instId").map(String::from),
+            premium: Self::get_f64(data, "premium"),
+            interest_rate: Self::get_f64(data, "interestRate"),
+            impact_value: Self::get_f64(data, "impactValue"),
+            max_funding_rate: Self::get_f64(data, "maxFundingRate"),
+            min_funding_rate: Self::get_f64(data, "minFundingRate"),
+            sett_funding_rate: Self::get_f64(data, "settFundingRate"),
+            sett_state: Self::get_str(data, "settState").map(String::from),
+            method: Self::get_str(data, "method").map(String::from),
+            formula_type: Self::get_str(data, "formulaType").map(String::from),
+            // nextFundingRate is present but may be empty string → only populate if non-empty
+            next_funding_rate: Self::get_str(data, "nextFundingRate")
+                .filter(|s| !s.is_empty())
+                .and_then(|s| s.parse::<f64>().ok()),
+            prev_funding_time: Self::get_i64(data, "prevFundingTime"),
+            ..Default::default()
         })
     }
 
@@ -291,7 +307,12 @@ impl OkxParser {
         let rates = arr.iter().map(|item| FundingRate {
             rate: Self::get_f64(item, "fundingRate").unwrap_or(0.0),
             next_funding_time: None,
-            timestamp: Self::get_i64(item, "fundingTime").unwrap_or(0), ..Default::default() 
+            timestamp: Self::get_i64(item, "fundingTime").unwrap_or(0),
+            symbol: Self::get_str(item, "instId").map(String::from),
+            realized_rate: Self::get_f64(item, "realizedRate"),
+            method: Self::get_str(item, "method").map(String::from),
+            formula_type: Self::get_str(item, "formulaType").map(String::from),
+            ..Default::default()
         }).collect();
         Ok(rates)
     }
@@ -1480,12 +1501,19 @@ impl OkxParser {
         let mut result = Vec::with_capacity(arr.len());
         for item in arr {
             let open_interest = Self::get_f64(item, "oi").unwrap_or(0.0);
-            let open_interest_value = Self::get_f64(item, "oiCcy").filter(|&v| v != 0.0);
+            // oiCcy = OI in base currency, oiUsd = OI in USD.
+            // open_interest_value carries the quote/USD figure (oiUsd); base goes to open_interest_ccy.
+            let open_interest_ccy = Self::get_f64(item, "oiCcy").filter(|&v| v != 0.0);
+            let open_interest_usd = Self::get_f64(item, "oiUsd").filter(|&v| v != 0.0);
             let timestamp = Self::get_i64(item, "ts").unwrap_or(0);
             result.push(OpenInterest {
                 open_interest,
-                open_interest_value,
-                timestamp, ..Default::default() 
+                open_interest_value: open_interest_usd,
+                timestamp,
+                symbol: Self::get_str(item, "instId").map(String::from),
+                open_interest_ccy,
+                open_interest_usd,
+                ..Default::default()
             });
         }
         Ok(result)
@@ -1653,9 +1681,11 @@ impl OkxParser {
                 .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
             result.push(MarkPrice {
                 mark_price,
-                index_price: None,
-                funding_rate: None,
-                timestamp, ..Default::default() 
+                index_price: None,  // not present in /public/mark-price response
+                funding_rate: None, // not present in /public/mark-price response
+                timestamp,
+                symbol: Self::get_str(item, "instId").map(String::from),
+                ..Default::default()
             });
         }
         Ok(result)

@@ -1565,14 +1565,16 @@ impl Positions for OkxConnector {
 
         Ok(MarkPrice {
             mark_price,
-            index_price: None,
-            funding_rate: None,
+            index_price: None,  // not present in /public/mark-price response
+            funding_rate: None, // not present in /public/mark-price response
             timestamp: data
                 .get("ts")
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<i64>().ok())
                 .or_else(|| data.get("ts").and_then(|v| v.as_i64()))
-                .unwrap_or_else(|| crate::core::timestamp_millis() as i64), ..Default::default() 
+                .unwrap_or_else(|| crate::core::timestamp_millis() as i64),
+            symbol: OkxParser::get_str(data, "instId").map(String::from),
+            ..Default::default()
         })
     }
 

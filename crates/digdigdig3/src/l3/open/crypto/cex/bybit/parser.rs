@@ -93,6 +93,18 @@ impl BybitParser {
 
         let timestamp = json["time"].as_i64().unwrap_or(0);
 
+        // Helper: parse non-empty string → f64, empty string → None
+        let parse_ne = |key: &str| -> Option<f64> {
+            data[key].as_str()
+                .filter(|s| !s.is_empty())
+                .and_then(|s| s.parse::<f64>().ok())
+        };
+        let parse_ne_i64 = |key: &str| -> Option<i64> {
+            data[key].as_str()
+                .filter(|s| !s.is_empty())
+                .and_then(|s| s.parse::<i64>().ok())
+        };
+
         Ok(Ticker {
             last_price,
             bid_price,
@@ -112,7 +124,33 @@ impl BybitParser {
             price_change_percent_24h: data["price24hPcnt"].as_str()
                 .and_then(|s| s.parse::<f64>().ok())
                 .map(|v| v * 100.0),
-            timestamp, ..Default::default() 
+            timestamp,
+            // ── Top-of-book sizes ──
+            bid_qty: parse_ne("bid1Size"),
+            ask_qty: parse_ne("ask1Size"),
+            // ── Extra price stats ──
+            prev_price_24h: parse_ne("prevPrice24h"),
+            prev_price_1h: parse_ne("prevPrice1h"),
+            turnover_24h: parse_ne("turnover24h"),
+            // ── Derivatives fields ──
+            mark_price: parse_ne("markPrice"),
+            index_price: parse_ne("indexPrice"),
+            open_interest: parse_ne("openInterest"),
+            open_interest_value: parse_ne("openInterestValue"),
+            single_open_interest: parse_ne("singleOpenInterest"),
+            funding_rate: parse_ne("fundingRate"),
+            next_funding_time: parse_ne_i64("nextFundingTime"),
+            funding_interval_hour: parse_ne("fundingIntervalHour"),
+            funding_cap: parse_ne("fundingCap"),
+            // basis: "" on spot and perps without calendar spread → None
+            basis: parse_ne("basis"),
+            // basisRate or basisRateYear: use basisRate first, fallback to basisRateYear
+            basis_rate: parse_ne("basisRate").or_else(|| parse_ne("basisRateYear")),
+            predicted_delivery_price: parse_ne("predictedDeliveryPrice"),
+            // deliveryTime: "0" is a valid timestamp (no delivery) — keep as Some(0)
+            delivery_time: data["deliveryTime"].as_str()
+                .and_then(|s| s.parse::<i64>().ok()),
+            ..Default::default()
         })
     }
 
@@ -397,10 +435,16 @@ impl BybitParser {
             .and_then(|s| s.parse::<i64>().ok())
             .unwrap_or(0);
 
+        let symbol = data["symbol"].as_str()
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+
         Ok(FundingRate {
             rate,
             next_funding_time: None,
-            timestamp, ..Default::default() 
+            timestamp,
+            symbol,
+            ..Default::default()
         })
     }
 
@@ -414,7 +458,9 @@ impl BybitParser {
         let rates = list.iter().map(|item| FundingRate {
             rate: item["fundingRate"].as_str().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0),
             next_funding_time: None,
-            timestamp: item["fundingRateTimestamp"].as_str().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0), ..Default::default() 
+            timestamp: item["fundingRateTimestamp"].as_str().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0),
+            symbol: item["symbol"].as_str().filter(|s| !s.is_empty()).map(String::from),
+            ..Default::default()
         }).collect();
         Ok(rates)
     }
@@ -1096,10 +1142,15 @@ impl BybitParser {
                 let timestamp = item["timestamp"].as_str()
                     .and_then(|s| s.parse::<i64>().ok())
                     .unwrap_or(0);
+                let single_open_interest = item["singleOpenInterest"].as_str()
+                    .filter(|s| !s.is_empty())
+                    .and_then(|s| s.parse::<f64>().ok());
                 crate::core::types::OpenInterest {
                     open_interest,
                     open_interest_value,
-                    timestamp, ..Default::default() 
+                    timestamp,
+                    single_open_interest,
+                    ..Default::default()
                 }
             })
             .collect();

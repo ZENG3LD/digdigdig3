@@ -2313,7 +2313,18 @@ impl Positions for BinanceConnector {
                 .get("lastFundingRate")
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<f64>().ok()),
-            timestamp: data.get("time").and_then(|t| t.as_i64()).unwrap_or(0), ..Default::default() 
+            timestamp: data.get("time").and_then(|t| t.as_i64()).unwrap_or(0),
+            symbol: data.get("symbol").and_then(|v| v.as_str()).map(String::from),
+            estimated_settle_price: data
+                .get("estimatedSettlePrice")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok()),
+            interest_rate: data
+                .get("interestRate")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok()),
+            next_funding_time: data.get("nextFundingTime").and_then(|t| t.as_i64()),
+            ..Default::default()
         })
     }
 
@@ -3207,7 +3218,12 @@ impl MarketDataPublic for BinanceConnector {
             mark_price: data.mark_price,
             index_price: Some(data.index_price),
             funding_rate: Some(data.last_funding_rate),
-            timestamp: data.timestamp, ..Default::default() 
+            timestamp: data.timestamp,
+            symbol: Some(data.symbol.clone()),
+            estimated_settle_price: data.estimated_settle_price,
+            interest_rate: Some(data.interest_rate),
+            next_funding_time: Some(data.next_funding_time),
+            ..Default::default()
         }])
     }
 

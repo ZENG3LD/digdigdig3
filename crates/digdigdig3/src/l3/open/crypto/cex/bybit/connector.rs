@@ -327,12 +327,16 @@ impl BybitConnector {
         let timestamp = response.get("time").and_then(|t| t.as_i64()).unwrap_or(0);
 
         let tickers = list.iter().map(|data| {
-            let parse_str_f64 = |key: &str| -> Option<f64> {
-                data.get(key).and_then(|v| v.as_str()).and_then(|s| s.parse().ok())
+            // parse non-empty string → f64; empty "" → None
+            let parse_ne = |key: &str| -> Option<f64> {
+                data.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).and_then(|s| s.parse().ok())
+            };
+            let parse_ne_i64 = |key: &str| -> Option<i64> {
+                data.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).and_then(|s| s.parse().ok())
             };
 
-            let last_price = parse_str_f64("lastPrice").unwrap_or(0.0);
-            let prev_price = parse_str_f64("prevPrice24h");
+            let last_price = parse_ne("lastPrice").unwrap_or(0.0);
+            let prev_price = parse_ne("prevPrice24h");
             let price_change_24h = prev_price.map(|p| last_price - p);
             let price_change_percent_24h = data.get("price24hPcnt")
                 .and_then(|v| v.as_str())
@@ -341,15 +345,37 @@ impl BybitConnector {
 
             Ticker {
                 last_price,
-                bid_price: parse_str_f64("bid1Price"),
-                ask_price: parse_str_f64("ask1Price"),
-                high_24h: parse_str_f64("highPrice24h"),
-                low_24h: parse_str_f64("lowPrice24h"),
-                volume_24h: parse_str_f64("volume24h"),
-                quote_volume_24h: parse_str_f64("turnover24h"),
+                bid_price: parse_ne("bid1Price"),
+                ask_price: parse_ne("ask1Price"),
+                high_24h: parse_ne("highPrice24h"),
+                low_24h: parse_ne("lowPrice24h"),
+                volume_24h: parse_ne("volume24h"),
+                quote_volume_24h: parse_ne("turnover24h"),
                 price_change_24h,
                 price_change_percent_24h,
-                timestamp, ..Default::default() 
+                timestamp,
+                // ── Top-of-book sizes ──
+                bid_qty: parse_ne("bid1Size"),
+                ask_qty: parse_ne("ask1Size"),
+                // ── Extra price stats ──
+                prev_price_24h: parse_ne("prevPrice24h"),
+                prev_price_1h: parse_ne("prevPrice1h"),
+                turnover_24h: parse_ne("turnover24h"),
+                // ── Derivatives fields ──
+                mark_price: parse_ne("markPrice"),
+                index_price: parse_ne("indexPrice"),
+                open_interest: parse_ne("openInterest"),
+                open_interest_value: parse_ne("openInterestValue"),
+                single_open_interest: parse_ne("singleOpenInterest"),
+                funding_rate: parse_ne("fundingRate"),
+                next_funding_time: parse_ne_i64("nextFundingTime"),
+                funding_interval_hour: parse_ne("fundingIntervalHour"),
+                funding_cap: parse_ne("fundingCap"),
+                basis: parse_ne("basis"),
+                basis_rate: parse_ne("basisRate").or_else(|| parse_ne("basisRateYear")),
+                predicted_delivery_price: parse_ne("predictedDeliveryPrice"),
+                delivery_time: data.get("deliveryTime").and_then(|v| v.as_str()).and_then(|s| s.parse::<i64>().ok()),
+                ..Default::default()
             }
         }).collect();
 

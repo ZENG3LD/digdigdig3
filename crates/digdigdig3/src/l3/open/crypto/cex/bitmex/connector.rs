@@ -12,13 +12,14 @@ use crate::core::{
     ExchangeError, ExchangeResult,
     Kline, Ticker, OrderBook, Price,
     Order, Balance, AccountInfo,
-    Position, FundingRate,
+    Position, FundingRate, PublicTrade,
     OrderRequest, CancelRequest,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
     SymbolInput,
 };
+use crate::core::types::Liquidation;
 use crate::core::traits::{
     ExchangeIdentity, MarketData, MarketDataPublic, Trading, Account, Positions,
     CancelAll, AmendOrder, BatchOrders, AccountTransfers, CustodialFunds,
@@ -201,15 +202,31 @@ impl MarketData for BitmexConnector {
 
     async fn get_klines(
         &self,
-        _symbol: SymbolInput<'_>,
-        _interval: &str,
-        _limit: Option<u16>,
-        _account_type: AccountType,
+        symbol: SymbolInput<'_>,
+        interval: &str,
+        limit: Option<u16>,
+        account_type: AccountType,
         _end_time: Option<i64>,
     ) -> ExchangeResult<Vec<Kline>> {
-        Err(ExchangeError::UnsupportedOperation(
-            "bitmex: REST klines not implemented — use WS tradeBin1m/tradeBin5m channels".into(),
-        ))
+        let bin_size = super::endpoints::interval_to_bin_size(interval)
+            .ok_or_else(|| ExchangeError::UnsupportedOperation(
+                format!("bitmex: unsupported kline interval '{interval}' (supported: 1m, 5m, 1h, 1d)"),
+            ))?;
+        let bin_size_ms = super::endpoints::bin_size_duration_ms(bin_size);
+        let sym = symbol.resolve(ExchangeId::Bitmex, account_type)?;
+        let count = limit.unwrap_or(100).to_string();
+        let v = self
+            .get_json(
+                super::endpoints::PATH_TRADE_BUCKETED,
+                &[
+                    ("symbol",  sym.as_ref()),
+                    ("binSize", bin_size),
+                    ("count",   count.as_str()),
+                    ("reverse", "true"),
+                ],
+            )
+            .await?;
+        super::parser::parse_rest_klines(&v, bin_size_ms)
     }
 
     async fn get_ticker(
@@ -317,24 +334,99 @@ impl MarketData for BitmexConnector {
             has_price: true,
             has_ticker: true,
             has_orderbook: false,
-            has_klines: false,
+            has_klines: true,
             has_exchange_info: true,
-            has_recent_trades: false,
+            has_recent_trades: true,
             has_ws_klines: false,
             has_ws_trades: true,
             has_ws_orderbook: true,
             has_ws_ticker: true,
-            supported_intervals: &[],
-            max_kline_limit: None,
+            supported_intervals: &["1m", "5m", "1h", "1d"],
+            max_kline_limit: Some(1000),
         }
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MarketDataPublic — all default to UnsupportedOperation
+// MarketDataPublic — recent trades, funding history, liquidation history
 // ─────────────────────────────────────────────────────────────────────────────
 
-impl MarketDataPublic for BitmexConnector {}
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+impl MarketDataPublic for BitmexConnector {
+    async fn get_recent_trades(
+        &self,
+        symbol: SymbolInput<'_>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<PublicTrade>> {
+        let sym = symbol.resolve(ExchangeId::Bitmex, account_type)?;
+        let count = limit.unwrap_or(100).to_string();
+        let v = self
+            .get_json(
+                super::endpoints::PATH_TRADE,
+                &[
+                    ("symbol",  sym.as_ref()),
+                    ("count",   count.as_str()),
+                    ("reverse", "true"),
+                ],
+            )
+            .await?;
+        super::parser::parse_rest_recent_trades(&v)
+    }
+
+    async fn get_funding_rate_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        _start_time: Option<i64>,
+        _end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<FundingRate>> {
+        let sym = symbol.resolve(ExchangeId::Bitmex, account_type)?;
+        let count = limit.unwrap_or(100).to_string();
+        let v = self
+            .get_json(
+                super::endpoints::PATH_FUNDING,
+                &[
+                    ("symbol",  sym.as_ref()),
+                    ("count",   count.as_str()),
+                    ("reverse", "true"),
+                ],
+            )
+            .await?;
+        super::parser::parse_rest_funding_rate_history(&v)
+    }
+
+    async fn get_liquidation_history(
+        &self,
+        symbol: Option<SymbolInput<'_>>,
+        _start_time: Option<i64>,
+        _end_time: Option<i64>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<Liquidation>> {
+        let sym_str;
+        let sym_ref: &str = if let Some(s) = symbol {
+            sym_str = s.resolve(ExchangeId::Bitmex, account_type)?;
+            sym_str.as_ref()
+        } else {
+            "XBTUSD"
+        };
+        let count = limit.unwrap_or(100).to_string();
+        let v = self
+            .get_json(
+                super::endpoints::PATH_LIQUIDATION,
+                &[
+                    ("symbol",  sym_ref),
+                    ("count",   count.as_str()),
+                    ("reverse", "true"),
+                ],
+            )
+            .await?;
+        super::parser::parse_rest_liquidation_history(&v, sym_ref)
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Trading — all NotSupported (no auth)
@@ -486,27 +578,39 @@ impl AccountLedger for BitmexConnector {}
 impl HasCapabilities for BitmexConnector {
     fn capabilities(&self) -> ConnectorCapabilities {
         ConnectorCapabilities {
-            // Market data via REST (partial)
+            // ── MarketData (REST) ─────────────────────────────────────────────
             has_ticker: true,
-            has_orderbook: false,       // REST not implemented; WS only
-            has_klines: false,          // REST not implemented; WS tradeBin channels
-            has_recent_trades: false,
-            has_exchange_info: false,
-            // WebSocket — the primary value
+            has_orderbook: false,            // REST not implemented; WS only
+            has_klines: true,                // GET /trade/bucketed (1m/5m/1h/1d)
+            has_recent_trades: true,         // GET /trade
+            has_exchange_info: true,         // GET /instrument
+            // ── MarketDataPublic (REST) ───────────────────────────────────────
+            has_funding_rate_history: true,  // GET /funding
+            has_liquidation_history: true,   // GET /liquidation (sparse; [] is normal)
+            // mark/index/premium klines, LSR, taker, basis — wire-absent on BitMEX
+            has_mark_price_klines: false,
+            has_index_price_klines: false,
+            has_premium_index_klines: false,
+            has_long_short_ratio_history: false,
+            has_taker_volume_history: false,
+            has_basis_history: false,
+            has_open_interest_history: false,
+            has_premium_index: false,
+            // ── WebSocket ─────────────────────────────────────────────────────
             has_websocket: true,
-            has_ws_ticker: true,        // quote channel
-            has_ws_trades: true,        // trade channel
-            has_ws_orderbook: true,     // orderBookL2_25 channel
-            has_ws_klines: false,       // tradeBin not yet wired in protocol.rs
-            has_ws_mark_price: true,    // instrument channel fan-out
-            has_ws_funding_rate: true,  // instrument channel fan-out
-            // Trading — none (no auth)
+            has_ws_ticker: true,             // quote channel
+            has_ws_trades: true,             // trade channel
+            has_ws_orderbook: true,          // orderBookL2_25 channel
+            has_ws_klines: false,            // tradeBin not yet wired in protocol.rs
+            has_ws_mark_price: true,         // instrument channel fan-out
+            has_ws_funding_rate: true,       // instrument channel fan-out
+            // ── Trading — none (no auth) ──────────────────────────────────────
             has_market_order: false,
             has_limit_order: false,
             has_open_orders: false,
             has_order_history: false,
             has_user_trades: false,
-            // Account — none
+            // ── Account — none ────────────────────────────────────────────────
             has_balance: false,
             has_account_info: false,
             has_fees: false,
@@ -515,12 +619,12 @@ impl HasCapabilities for BitmexConnector {
             has_sub_accounts: false,
             has_funding_payments: false,
             has_ledger: false,
-            // Operations
+            // ── Operations ────────────────────────────────────────────────────
             has_cancel_all: false,
             has_amend_order: false,
             has_batch_place: false,
             has_batch_cancel: false,
-            // Positions
+            // ── Positions ─────────────────────────────────────────────────────
             has_positions: false,
             has_mark_price: false,
             has_long_short_ratio: false,

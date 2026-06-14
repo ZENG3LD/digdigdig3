@@ -3196,7 +3196,7 @@ impl crate::core::traits::HasCapabilities for BitgetConnector {
             has_index_price_klines: true,
             // Wire-absent on Bitget. NotSupported override documents this.
             has_premium_index_klines: false,
-            has_market_order: true, has_limit_order: true,
+            has_agg_trades: false,            has_market_order: true, has_limit_order: true,
             has_open_orders: true, has_order_history: true, has_user_trades: true,
             has_positions: true, has_mark_price: true, has_modify_position: true,
             has_closed_pnl: false, has_long_short_ratio: false,

@@ -1498,7 +1498,7 @@ impl crate::core::traits::HasCapabilities for UpbitConnector {
             has_taker_volume_history: false,
             has_index_price_klines: false,
             has_premium_index_klines: false,
-            has_market_order: true, has_limit_order: true,
+            has_agg_trades: false,            has_market_order: true, has_limit_order: true,
             has_open_orders: true, has_order_history: true, has_user_trades: true,
             has_positions: false, has_mark_price: false, has_modify_position: false,
             has_closed_pnl: false, has_long_short_ratio: false,

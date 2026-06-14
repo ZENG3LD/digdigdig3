@@ -2654,7 +2654,7 @@ impl crate::core::traits::HasCapabilities for OkxConnector {
             has_mark_price_klines: true,
             has_index_price_klines: true,
             has_premium_index_klines: false,
-            // Trading
+            has_agg_trades: false,            // Trading
             has_market_order: true,
             has_limit_order: true,
             has_open_orders: true,

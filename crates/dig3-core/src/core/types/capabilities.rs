@@ -823,6 +823,10 @@ pub struct ConnectorCapabilities {
     pub has_orderbook: bool,
     pub has_klines: bool,
     pub has_recent_trades: bool,
+    /// REST aggregated-trades endpoint (Binance spot/fut, MEXC spot). Distinct
+    /// from `has_recent_trades`: only true where the venue's aggTrade feed is
+    /// richer/deeper than raw trades — not where it is a raw-trade alias.
+    pub has_agg_trades: bool,
     pub has_exchange_info: bool,
 
     // ── MarketDataPublic ──────────────────────────────────────────────────────

@@ -49,6 +49,32 @@ pub trait MarketDataPublic: Send + Sync {
         ))
     }
 
+    /// Aggregated trades — server-side compression of fills (same price / side /
+    /// taker order) into one record carrying the underlying fill-id range.
+    ///
+    /// Override ONLY on venues whose aggTrade feed is materially richer or
+    /// deeper than `get_recent_trades`: Binance spot (`/api/v3/aggTrades`,
+    /// history to 2017 via `from_id`), Binance USDⓈ-M (`/fapi/v1/aggTrades`),
+    /// MEXC spot (`/api/v3/aggTrades`). On venues where the "aggTrade" channel
+    /// is byte-identical to the raw trade feed (Bybit/OKX/Bitget/MEXC-fut/dYdX),
+    /// do NOT override — callers fall back to `get_recent_trades`.
+    ///
+    /// Returns the same `PublicTrade` shape as raw trades; the aggregate id is
+    /// carried in `PublicTrade.trade_id`. `from_id` paginates by aggregate id
+    /// (Binance cursor). Default: `UnsupportedOperation`.
+    async fn get_agg_trades(
+        &self,
+        symbol: SymbolInput<'_>,
+        limit: Option<u32>,
+        from_id: Option<u64>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<PublicTrade>> {
+        let _ = (symbol, limit, from_id, account_type);
+        Err(ExchangeError::UnsupportedOperation(
+            "get_agg_trades not supported".into(),
+        ))
+    }
+
     /// Historical liquidation events, optionally filtered by symbol and time range.
     async fn get_liquidation_history(
         &self,

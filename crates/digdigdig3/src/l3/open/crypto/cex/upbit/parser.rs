@@ -246,6 +246,7 @@ impl UpbitParser {
                     .and_then(|t| t.as_i64())
                     .unwrap_or(0),
                 side,
+                seq: item.get("sequential_id").and_then(|v| v.as_i64()),
                 ..Default::default()
             });
         }
@@ -577,6 +578,7 @@ impl UpbitParser {
                 .and_then(|t| t.as_i64())
                 .unwrap_or(0),
             side,
+            seq: data.get("sequential_id").and_then(|v| v.as_i64()),
             ..Default::default()
         })
     }

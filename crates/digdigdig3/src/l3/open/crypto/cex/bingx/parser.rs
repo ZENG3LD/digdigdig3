@@ -575,6 +575,8 @@ impl BingxParser {
             quantity,
             side,
             timestamp,
+            // BingX WS @trade carries `m` = isBuyerMaker; no quoteQty in WS payload.
+            is_buyer_maker: Some(is_buyer_maker),
             ..Default::default()
         })
     }
@@ -1229,12 +1231,18 @@ impl BingxParser {
                 TradeSide::Buy
             };
 
+            // quoteQty: present in swap payload (string), absent in spot payload.
+            let quote_qty = item.get("quoteQty")
+                .and_then(|v| Self::parse_f64(v));
+
             trades.push(PublicTrade {
                 id,
                 price,
                 quantity,
                 side,
                 timestamp,
+                quote_qty,
+                is_buyer_maker: Some(is_buyer_maker),
                 ..Default::default()
             });
         }

@@ -1480,6 +1480,7 @@ impl MarketDataPublic for UpbitConnector {
                 quantity: parse_f64("trade_volume"),
                 side,
                 timestamp,
+                seq: item.get("sequential_id").and_then(|v| v.as_i64()),
                 ..Default::default()
             });
         }

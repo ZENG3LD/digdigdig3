@@ -580,6 +580,17 @@ impl KuCoinParser {
             _ => TradeSide::Buy,
         };
 
+        // `sequence`: string on spot (/market/match), number on futures (/contractMarket/execution)
+        let seq = data.get("sequence")
+            .and_then(|v| v.as_i64()
+                .or_else(|| v.as_str().and_then(|s| s.parse().ok())));
+
+        // makerOrderId / takerOrderId: present on both spot and futures WS trade channels
+        let ask_id = data.get("makerOrderId")
+            .and_then(|v| v.as_str().and_then(|s| s.parse::<i64>().ok()));
+        let bid_id = data.get("takerOrderId")
+            .and_then(|v| v.as_str().and_then(|s| s.parse::<i64>().ok()));
+
         Ok(PublicTrade {
             id: Self::get_str(data, "tradeId").unwrap_or("").to_string(),
             price: Self::require_f64(data, "price")?,
@@ -590,6 +601,9 @@ impl KuCoinParser {
                 .and_then(|t| t.as_i64())
                 .map(|t| if t > 1_000_000_000_000_000 { t / 1_000_000 } else { t })
                 .unwrap_or(0),
+            seq,
+            ask_id,
+            bid_id,
             ..Default::default()
         })
     }
@@ -1167,12 +1181,26 @@ impl KuCoinParser {
                 .map(|ns| ns / 1_000_000)
                 .unwrap_or(0);
 
+            // `sequence`: string on spot, number on futures — handle both
+            let seq = item.get("sequence")
+                .and_then(|v| v.as_i64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse().ok())));
+
+            // `makerOrderId` / `takerOrderId`: present on futures, absent on spot
+            let ask_id = item.get("makerOrderId")
+                .and_then(|v| v.as_str().and_then(|s| s.parse::<i64>().ok()));
+            let bid_id = item.get("takerOrderId")
+                .and_then(|v| v.as_str().and_then(|s| s.parse::<i64>().ok()));
+
             trades.push(PublicTrade {
                 id,
                 price,
                 quantity,
                 side,
                 timestamp,
+                seq,
+                ask_id,
+                bid_id,
                 ..Default::default()
             });
         }

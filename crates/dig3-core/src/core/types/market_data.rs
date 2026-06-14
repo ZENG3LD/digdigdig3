@@ -615,6 +615,14 @@ pub struct PublicTrade {
     /// Sequence id (Bybit seq / GateIO sequence_id / Upbit sequential_id / KuCoin sequence)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seq: Option<i64>,
+    /// Open/close position direction, raw venue code (MEXC-fut `O`: 1/2/3/4).
+    /// Semantics NOT normalized — preserved verbatim so station can interpret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_close_code: Option<i64>,
+    /// Self/maker trade flag, raw venue code (MEXC-fut `M`: 1/2).
+    /// Semantics NOT normalized — preserved verbatim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trade_flag_code: Option<i64>,
 
     // ── Deribit-rich (price context at trade) ──
     /// Index price at trade (Deribit)
@@ -652,6 +660,12 @@ pub struct PublicTrade {
     /// Tx hash (Lighter tx_hash / HyperLiquid hash)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tx_hash: Option<String>,
+    /// Counterparty addresses (HyperLiquid `users`: [taker, maker] wallet addrs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub users: Option<Vec<String>>,
+    /// Match/aggregation id distinct from trade id (Crypto.com `m` match_id).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_id: Option<String>,
     /// Maker order id (Lighter bid_id is taker; this holds the maker side when distinct).
     /// Taker position size before the fill (Lighter taker_position_size_before).
     #[serde(default, skip_serializing_if = "Option::is_none")]

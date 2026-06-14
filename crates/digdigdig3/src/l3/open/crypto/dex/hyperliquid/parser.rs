@@ -357,6 +357,11 @@ impl HyperliquidParser {
                 quantity: Self::get_f64(trade, "sz").unwrap_or(0.0),
                 side,
                 timestamp: Self::get_i64(trade, "time").unwrap_or(0),
+                tx_hash: Self::get_str(trade, "hash").map(String::from),
+                seq: Self::get_i64(trade, "tid"),
+                users: trade.get("users").and_then(|v| v.as_array()).map(|a| {
+                    a.iter().filter_map(|u| u.as_str().map(String::from)).collect()
+                }),
                 ..Default::default()
             });
         }

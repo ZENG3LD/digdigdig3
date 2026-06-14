@@ -207,6 +207,9 @@ impl DydxParser {
                     quantity: Self::get_f64(trade, "size").unwrap_or(0.0),
                     side,
                     timestamp: created_at,
+                    order_type: Self::get_str(trade, "type").map(str::to_owned),
+                    block_height: Self::get_str(trade, "createdAtHeight")
+                        .and_then(|s| s.parse::<i64>().ok()),
                     ..Default::default()
                 })
             })
@@ -509,6 +512,9 @@ impl DydxParser {
             quantity: Self::get_f64(trade, "size").unwrap_or(0.0),
             side,
             timestamp: created_at,
+            order_type: Self::get_str(trade, "type").map(str::to_owned),
+            block_height: Self::get_str(trade, "createdAtHeight")
+                .and_then(|s| s.parse::<i64>().ok()),
             ..Default::default()
         })
     }

@@ -504,6 +504,8 @@ impl CryptoComParser {
                 quantity: Self::get_f64(item, "q").unwrap_or(0.0),
                 side,
                 timestamp: Self::get_i64(item, "t").unwrap_or(0),
+                seq: Self::get_i64(item, "d"),
+                match_id: Self::get_str(item, "m").map(String::from),
                 ..Default::default()
             });
         }
@@ -523,6 +525,8 @@ impl CryptoComParser {
             quantity: Self::get_f64(data, "q").unwrap_or(0.0),
             side,
             timestamp: Self::get_i64(data, "t").unwrap_or(0),
+            seq: Self::get_i64(data, "d"),
+            match_id: Self::get_str(data, "m").map(String::from),
             ..Default::default()
         })
     }

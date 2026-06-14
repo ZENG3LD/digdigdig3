@@ -415,7 +415,28 @@ impl MexcParser {
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0);
 
-            trades.push(PublicTrade { id, price, quantity, side, timestamp, ..Default::default() });
+            let quote_qty = item.get("quoteQty")
+                .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()));
+
+            let is_best_match = item.get("isBestMatch")
+                .and_then(|v| v.as_bool());
+
+            let trade_type = item.get("tradeType")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            trades.push(PublicTrade {
+                id,
+                price,
+                quantity,
+                side,
+                timestamp,
+                quote_qty,
+                is_buyer_maker: Some(is_buyer_maker),
+                is_best_match,
+                trade_type,
+                ..Default::default()
+            });
         }
         Ok(trades)
     }
@@ -459,7 +480,12 @@ impl MexcParser {
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0);
 
-            trades.push(PublicTrade { id, price, quantity, side, timestamp, ..Default::default() });
+            // O = open/close position direction code, M = self/maker flag code.
+            // Raw venue codes, semantics not normalized (live-probed 2026-06-15).
+            let open_close_code = item.get("O").and_then(|v| v.as_i64());
+            let trade_flag_code = item.get("M").and_then(|v| v.as_i64());
+
+            trades.push(PublicTrade { id, price, quantity, side, timestamp, open_close_code, trade_flag_code, ..Default::default() });
         }
         Ok(trades)
     }

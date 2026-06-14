@@ -297,6 +297,11 @@ fn channel_and_payload(
             // mark price candles: symbol prefixed with "mark_"
             ("candlesticks", vec![interval.as_str().to_string(), format!("mark_{}", sym)])
         }
+        StreamKind::IndexPriceKline { interval } => {
+            // index price candles: contract prefixed with "index_"
+            // GateIO returns n="<interval>_index_<contract>" in update frames
+            ("candlesticks", vec![interval.as_str().to_string(), format!("index_{}", sym)])
+        }
         StreamKind::MarkPrice => ("tickers", vec![sym]),
         StreamKind::FundingRate => ("tickers", vec![sym]),
         // futures.public_liquidates — public market-wide liquidations (added 2025-02-10)
@@ -573,7 +578,7 @@ fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
     // Gate.io candlestick result has field `n` formatted as `<interval>_<symbol>`:
     //   normal:        "1m_BTC_USDT"
     //   mark price:    "1m_mark_BTC_USDT"
-    //   premium index: "1m_premium_index_BTC_USDT"
+    //   index price:   "1m_index_BTC_USDT"  (live-verified; `premium_index_` n/a)
     //
     // Channel is plain "spot.candlesticks" / "futures.candlesticks" (no interval suffix).
     // So interval+symbol both must be extracted from `n`.
@@ -595,7 +600,11 @@ fn parse_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
             interval,
             kline,
         })
-    } else if let Some(sym) = rest.strip_prefix("premium_index_") {
+    } else if let Some(sym) = rest.strip_prefix("index_") {
+        // GateIO index-price candles: subscribe prefix is `index_<contract>`
+        // (live-verified 2026-06-14: `index_BTC_USDT` valid, `premium_index_`
+        // returns CONTRACT_NOT_FOUND). The update frame's `n` field carries
+        // `<interval>_index_<contract>`, so strip `index_` here.
         Ok(StreamEvent::IndexPriceKline {
             symbol: sym.to_string(),
             interval,
@@ -1037,8 +1046,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_kline_premium_index_variant() {
-        let frame = kline_frame_with_n("5m_premium_index_BTC_USDT");
+    fn parse_kline_index_variant() {
+        // GateIO index-price candle update: n = "<interval>_index_<contract>".
+        // (live-verified 2026-06-14: subscribe contract is `index_BTC_USDT`;
+        // `premium_index_` does not exist → CONTRACT_NOT_FOUND.)
+        let frame = kline_frame_with_n("5m_index_BTC_USDT");
         let ev = parse_kline(&frame).expect("parse_kline ok");
         match ev {
             StreamEvent::IndexPriceKline { symbol, interval, .. } => {
@@ -1047,6 +1059,31 @@ mod tests {
             }
             other => panic!("expected IndexPriceKline, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_subscribe_frame_index_price_kline_futures() {
+        // IndexPriceKline subscribe must produce channel "futures.candlesticks"
+        // with payload ["1m", "index_BTC_USDT"] — mirroring MarkPriceKline but with "index_" prefix.
+        let proto = GateIoProtocol::new(AccountType::FuturesCross, false);
+        let spec = StreamSpec {
+            kind: StreamKind::IndexPriceKline { interval: KlineInterval::new("1m") },
+            symbol: crate::core::types::OwnedSymbolInput::Raw("BTC_USDT".to_string()),
+            account_type: AccountType::FuturesCross,
+            depth: None,
+            speed_ms: None,
+        };
+        let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed for IndexPriceKline");
+        let text = match msg {
+            WsFrame::Text(t) => t,
+            _ => panic!("expected text frame"),
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert_eq!(v["event"], "subscribe");
+        assert_eq!(v["channel"], "futures.candlesticks");
+        let payload = v["payload"].as_array().expect("payload must be array");
+        assert_eq!(payload[0], "1m");
+        assert_eq!(payload[1], "index_BTC_USDT");
     }
 
     #[test]

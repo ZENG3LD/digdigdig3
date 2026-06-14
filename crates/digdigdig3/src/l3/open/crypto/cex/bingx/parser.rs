@@ -8,7 +8,7 @@ use crate::core::types::{
     ExchangeError, ExchangeResult,
     Kline, OrderBook, OrderBookLevel, Ticker, Order, Balance, Position,
     OrderSide, OrderType, OrderStatus, PositionSide, SymbolInfo,
-    UserTrade, FundingRate,
+    UserTrade, FundingRate, PublicTrade,
     OrderbookDelta as OrderbookDeltaData,
 };
 
@@ -1152,6 +1152,90 @@ impl BingxParser {
         }
         Ok(rates)
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // RECENT TRADES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse recent public trades from BingX.
+    ///
+    /// Spot payload (`GET /openApi/spot/v1/market/trades`):
+    /// ```json
+    /// {"code":0,"data":[{"id":218833088,"price":64119.81,"qty":0.007149,
+    ///   "time":1781450156020,"buyerMaker":true}]}
+    /// ```
+    /// - `id` — numeric i64
+    /// - `price` / `qty` — **numbers**
+    /// - `buyerMaker: true` → taker is seller → `TradeSide::Sell`
+    ///
+    /// Swap payload (`GET /openApi/swap/v2/quote/trades`):
+    /// ```json
+    /// {"code":0,"data":[{"time":1781449993428,"isBuyerMaker":false,
+    ///   "price":"64070.9","qty":"0.0179","quoteQty":"1146.87",
+    ///   "fillId":"677870099","ts":1781449993428}]}
+    /// ```
+    /// - `fillId` — string (used as trade id)
+    /// - `price` / `qty` — **strings**
+    /// - `isBuyerMaker: false` → taker is buyer → `TradeSide::Buy`
+    ///
+    /// Both shapes are handled by a single tolerant parser:
+    /// - `price` / `qty`: try `as_f64()` first (number), then `as_str().parse()` (string).
+    /// - trade id: `id` (numeric) → `fillId` (string) → `time` as fallback.
+    /// - maker flag: `buyerMaker` (spot) or `isBuyerMaker` (swap).
+    pub fn parse_recent_trades(response: &Value) -> ExchangeResult<Vec<PublicTrade>> {
+        use crate::core::types::TradeSide;
+
+        let data = Self::extract_data(response)?;
+        let arr = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("'data' is not an array".to_string()))?;
+
+        let mut trades = Vec::with_capacity(arr.len());
+
+        for item in arr {
+            // price: number (spot) or string (swap)
+            let price = Self::parse_f64(item.get("price").unwrap_or(&Value::Null))
+                .ok_or_else(|| ExchangeError::Parse("Missing or invalid 'price' in trade".to_string()))?;
+
+            // qty: number (spot) or string (swap)
+            let quantity = Self::parse_f64(item.get("qty").unwrap_or(&Value::Null))
+                .ok_or_else(|| ExchangeError::Parse("Missing or invalid 'qty' in trade".to_string()))?;
+
+            // timestamp ms: "time" field present in both shapes
+            let timestamp = item.get("time")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+
+            // trade id: spot has numeric "id", swap has string "fillId"
+            let id = item.get("id")
+                .and_then(|v| v.as_i64().map(|n| n.to_string()))
+                .or_else(|| item.get("fillId").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                .unwrap_or_else(|| timestamp.to_string());
+
+            // maker flag: "buyerMaker" (spot) or "isBuyerMaker" (swap)
+            let is_buyer_maker = item.get("buyerMaker")
+                .or_else(|| item.get("isBuyerMaker"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            // buyerMaker=true → taker is seller → Sell
+            // buyerMaker=false → taker is buyer → Buy
+            let side = if is_buyer_maker {
+                TradeSide::Sell
+            } else {
+                TradeSide::Buy
+            };
+
+            trades.push(PublicTrade {
+                id,
+                price,
+                quantity,
+                side,
+                timestamp,
+            });
+        }
+
+        Ok(trades)
+    }
 }
 
 #[cfg(test)]
@@ -1260,5 +1344,63 @@ mod tests {
             }
             _ => panic!("Expected API error"),
         }
+    }
+
+    // ── parse_recent_trades ──────────────────────────────────────────────────
+
+    /// Spot: price/qty are numbers, id is numeric, side via buyerMaker.
+    #[test]
+    fn test_parse_recent_trades_spot() {
+        use crate::core::types::TradeSide;
+        let response = json!({
+            "code": 0,
+            "data": [
+                {
+                    "id": 218833088_i64,
+                    "price": 64119.81,
+                    "qty": 0.007149,
+                    "time": 1781450156020_i64,
+                    "buyerMaker": true
+                }
+            ]
+        });
+        let trades = BingxParser::parse_recent_trades(&response).unwrap();
+        assert_eq!(trades.len(), 1);
+        let t = &trades[0];
+        assert_eq!(t.id, "218833088");
+        assert!((t.price - 64119.81).abs() < 0.001);
+        assert!((t.quantity - 0.007149).abs() < 1e-9);
+        assert_eq!(t.timestamp, 1781450156020);
+        // buyerMaker=true → taker is seller → Sell
+        assert!(matches!(t.side, TradeSide::Sell));
+    }
+
+    /// Swap: price/qty are strings, id is fillId string, side via isBuyerMaker.
+    #[test]
+    fn test_parse_recent_trades_swap() {
+        use crate::core::types::TradeSide;
+        let response = json!({
+            "code": 0,
+            "data": [
+                {
+                    "time": 1781449993428_i64,
+                    "isBuyerMaker": false,
+                    "price": "64070.9",
+                    "qty": "0.0179",
+                    "quoteQty": "1146.87",
+                    "fillId": "677870099",
+                    "ts": 1781449993428_i64
+                }
+            ]
+        });
+        let trades = BingxParser::parse_recent_trades(&response).unwrap();
+        assert_eq!(trades.len(), 1);
+        let t = &trades[0];
+        assert_eq!(t.id, "677870099");
+        assert!((t.price - 64070.9).abs() < 0.001);
+        assert!((t.quantity - 0.0179).abs() < 1e-9);
+        assert_eq!(t.timestamp, 1781449993428);
+        // isBuyerMaker=false → taker is buyer → Buy
+        assert!(matches!(t.side, TradeSide::Buy));
     }
 }

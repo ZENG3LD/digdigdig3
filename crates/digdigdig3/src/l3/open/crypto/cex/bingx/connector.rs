@@ -23,7 +23,7 @@ use crate::core::{
     HttpClient, Credentials, assemble_rest_url,
     ExchangeId, ExchangeType, AccountType, Symbol,
     ExchangeError, ExchangeResult,
-    Price, Quantity, Kline, Ticker, OrderBook,
+    Price, Quantity, Kline, Ticker, OrderBook, PublicTrade,
     SymbolInput,
     Order, OrderSide, OrderType, Balance, AccountInfo,
     Position, FundingRate, MarginType,
@@ -562,9 +562,7 @@ impl MarketData for BingxConnector {
             has_orderbook: true,
             has_klines: true,
             has_exchange_info: true,
-            // SpotTrades / SwapTrades endpoints exist but get_recent_trades is not
-            // implemented in the MarketData trait impl for this connector.
-            has_recent_trades: false,
+            has_recent_trades: true,
             supported_intervals: &[
                 "1m", "3m", "5m", "15m", "30m",
                 "1h", "2h", "4h", "6h", "8h", "12h",
@@ -2252,6 +2250,29 @@ impl MarketDataPublic for BingxConnector {
         BingxParser::parse_funding_rate_history(&response)
     }
 
+    // Recent trades — SPOT: /openApi/spot/v1/market/trades (max 500)
+    //                SWAP: /openApi/swap/v2/quote/trades (max 500)
+    // Verified live 2026-06-14. aggTrades wire-absent (code 100400) — NOT wired.
+    async fn get_recent_trades(
+        &self,
+        symbol: SymbolInput<'_>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<PublicTrade>> {
+        let sym = symbol.resolve(ExchangeId::BingX, account_type)?;
+        let endpoint = match account_type {
+            AccountType::Spot | AccountType::Margin => BingxEndpoint::SpotTrades,
+            _ => BingxEndpoint::SwapTrades,
+        };
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), sym.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.min(500).to_string());
+        }
+        let response = self.get(endpoint, params, account_type).await?;
+        BingxParser::parse_recent_trades(&response)
+    }
+
     // Open interest history — NOT SUPPORTED (snapshot only).
     // Source: bingx_py model OpenInterestStatisticsData (no period/range params).
     async fn get_open_interest_history(
@@ -2308,7 +2329,7 @@ impl crate::core::traits::HasCapabilities for BingxConnector {
     fn capabilities(&self) -> crate::core::types::ConnectorCapabilities {
         crate::core::types::ConnectorCapabilities {
             has_ticker: true, has_orderbook: true, has_klines: true,
-            has_recent_trades: false, has_exchange_info: true,
+            has_recent_trades: true, has_exchange_info: true,
             has_liquidation_history: false, has_open_interest_history: false,
             has_premium_index: false, has_long_short_ratio_history: false,
             has_funding_rate_history: true, has_mark_price_klines: true,

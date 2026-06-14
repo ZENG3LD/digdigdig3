@@ -6,8 +6,7 @@
 
 use super::MarketDataPublic;
 
-// CEX — Binance, Bybit, OKX, Lighter, Bitstamp, Coinbase, Deribit, Gemini, Upbit have real impls in their connector.rs files
-use crate::l3::open::crypto::cex::kucoin::KuCoinConnector;
+// CEX — Binance, Bybit, OKX, Lighter, Bitstamp, Coinbase, Deribit, Gemini, Upbit, KuCoin have real impls in their connector.rs files
 // GateioConnector — real impl in connector.rs
 // BitfinexConnector — real impl in connector.rs (funding_rate_history, open_interest_history, long_short_ratio_history)
 // MexcConnector — real impl in connector.rs
@@ -56,7 +55,7 @@ use crate::l2::paid::cryptocompare::CryptoCompareConnector;
 // CEX stubs
 // ═══════════════════════════════════════════════════════════════════════════════
 
-impl MarketDataPublic for KuCoinConnector {}
+// KuCoinConnector — real impl in connector.rs (get_recent_trades, get_funding_rate_history)
 // KrakenConnector — real impl in connector.rs
 // CoinbaseConnector — real impl in connector.rs
 // GateioConnector — real impl in connector.rs

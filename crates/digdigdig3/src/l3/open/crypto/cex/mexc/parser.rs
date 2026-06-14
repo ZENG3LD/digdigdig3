@@ -370,6 +370,143 @@ impl MexcParser {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════
+    // RECENT TRADES + AGG TRADES PARSERS (REST)
+    // ═══════════════════════════════════════════════════════════════════════════════
+
+    /// Parse spot recent trades from `GET /api/v3/trades`.
+    ///
+    /// Live payload (2026-06-14):
+    /// ```json
+    /// [{"id":null,"price":"64119.99","qty":"0.00059686","quoteQty":"...","time":1781450140187,
+    ///   "isBuyerMaker":true,"isBestMatch":true,"tradeType":"ASK"}]
+    /// ```
+    ///
+    /// - `id` is always `null` on MEXC — use counter position as id fallback.
+    /// - `isBuyerMaker=true` → aggressor was seller → `TradeSide::Sell`.
+    pub fn parse_recent_trades_spot(json: &Value) -> ExchangeResult<Vec<PublicTrade>> {
+        let arr = json.as_array()
+            .ok_or_else(|| ExchangeError::Parse("parse_recent_trades_spot: expected array".into()))?;
+
+        let mut trades = Vec::with_capacity(arr.len());
+        for (i, item) in arr.iter().enumerate() {
+            let price = item.get("price")
+                .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()))
+                .unwrap_or(0.0);
+
+            let quantity = item.get("qty")
+                .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()))
+                .unwrap_or(0.0);
+
+            // isBuyerMaker=true: the buyer is the maker → seller is the aggressor.
+            let is_buyer_maker = item.get("isBuyerMaker")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let side = if is_buyer_maker { TradeSide::Sell } else { TradeSide::Buy };
+
+            // MEXC spot trades return id=null; use array index as stable id within this response.
+            let id = item.get("id")
+                .and_then(|v| v.as_i64())
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| i.to_string());
+
+            let timestamp = item.get("time")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+
+            trades.push(PublicTrade { id, price, quantity, side, timestamp });
+        }
+        Ok(trades)
+    }
+
+    /// Parse futures recent trades from `GET /api/v1/contract/deals/{symbol}`.
+    ///
+    /// Live payload (2026-06-14):
+    /// ```json
+    /// {"success":true,"data":[{"p":64034,"v":74,"T":2,"O":1,"M":2,"t":1781450496978,"i":"14957792772"}]}
+    /// ```
+    ///
+    /// Field meanings: `p`=price, `v`=qty, `T`=direction (1=Buy, 2=Sell), `t`=timestamp ms, `i`=id.
+    pub fn parse_recent_trades_futures(json: &Value) -> ExchangeResult<Vec<PublicTrade>> {
+        // Response is wrapped: { "success": true, "data": [...] }
+        let arr = json.get("data")
+            .and_then(|d| d.as_array())
+            .ok_or_else(|| ExchangeError::Parse("parse_recent_trades_futures: missing 'data' array".into()))?;
+
+        let mut trades = Vec::with_capacity(arr.len());
+        for item in arr {
+            let price = item.get("p")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+
+            let quantity = item.get("v")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+
+            // T: 1=Buy, 2=Sell (direction of trade, not maker/taker).
+            let side = match item.get("T").and_then(|v| v.as_i64()).unwrap_or(1) {
+                2 => TradeSide::Sell,
+                _ => TradeSide::Buy,
+            };
+
+            let id = item.get("i")
+                .and_then(|v| v.as_str().map(|s| s.to_string())
+                    .or_else(|| v.as_i64().map(|n| n.to_string())))
+                .unwrap_or_default();
+
+            let timestamp = item.get("t")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+
+            trades.push(PublicTrade { id, price, quantity, side, timestamp });
+        }
+        Ok(trades)
+    }
+
+    /// Parse spot agg trades from `GET /api/v3/aggTrades`.
+    ///
+    /// Live payload (2026-06-14):
+    /// ```json
+    /// [{"a":null,"f":null,"l":null,"p":"64119.99","q":"0.00123905","T":1781450144000,"m":true,"M":true}]
+    /// ```
+    ///
+    /// - `a`/`f`/`l` are always `null` on MEXC (no agg metadata), use index as id.
+    /// - `m=true` (buyer is maker) → `TradeSide::Sell`.
+    pub fn parse_agg_trades_spot(json: &Value) -> ExchangeResult<Vec<PublicTrade>> {
+        let arr = json.as_array()
+            .ok_or_else(|| ExchangeError::Parse("parse_agg_trades_spot: expected array".into()))?;
+
+        let mut trades = Vec::with_capacity(arr.len());
+        for (i, item) in arr.iter().enumerate() {
+            let price = item.get("p")
+                .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()))
+                .unwrap_or(0.0);
+
+            let quantity = item.get("q")
+                .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()))
+                .unwrap_or(0.0);
+
+            // m=true: buyer is maker → seller is aggressor.
+            let is_buyer_maker = item.get("m")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let side = if is_buyer_maker { TradeSide::Sell } else { TradeSide::Buy };
+
+            // MEXC aggTrades returns a=null; use array index as id within this response.
+            let id = item.get("a")
+                .and_then(|v| v.as_i64())
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| i.to_string());
+
+            let timestamp = item.get("T")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+
+            trades.push(PublicTrade { id, price, quantity, side, timestamp });
+        }
+        Ok(trades)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════
     // EXCHANGE INFO PARSERS
     // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1457,5 +1594,95 @@ mod tests {
             },
             _ => panic!("Expected API error"),
         }
+    }
+
+    /// Spot trades: id=null must fall back to array index; isBuyerMaker=true → Sell.
+    #[test]
+    fn test_parse_recent_trades_spot_null_id_and_side() {
+        let json = json!([
+            {
+                "id": null,
+                "price": "64119.99",
+                "qty": "0.00059686",
+                "quoteQty": "38.28",
+                "time": 1781450140187_i64,
+                "isBuyerMaker": true,
+                "isBestMatch": true,
+                "tradeType": "ASK"
+            },
+            {
+                "id": null,
+                "price": "64120.00",
+                "qty": "0.001",
+                "quoteQty": "64.12",
+                "time": 1781450140200_i64,
+                "isBuyerMaker": false,
+                "isBestMatch": true,
+                "tradeType": "BID"
+            }
+        ]);
+
+        let trades = MexcParser::parse_recent_trades_spot(&json).unwrap();
+        assert_eq!(trades.len(), 2);
+
+        // First trade: isBuyerMaker=true → Sell; id=null → fallback "0"
+        assert_eq!(trades[0].id, "0");
+        assert_eq!(trades[0].price, 64119.99);
+        assert_eq!(trades[0].quantity, 0.00059686);
+        assert!(matches!(trades[0].side, TradeSide::Sell));
+        assert_eq!(trades[0].timestamp, 1781450140187);
+
+        // Second trade: isBuyerMaker=false → Buy; id=null → fallback "1"
+        assert_eq!(trades[1].id, "1");
+        assert!(matches!(trades[1].side, TradeSide::Buy));
+    }
+
+    /// Futures deals: T=2 must decode as Sell; i (string id) is preserved; wrapped in "data".
+    #[test]
+    fn test_parse_recent_trades_futures_t_direction() {
+        let json = json!({
+            "success": true,
+            "data": [
+                { "p": 64034, "v": 74, "T": 2, "O": 1, "M": 2, "t": 1781450496978_i64, "i": "14957792772" },
+                { "p": 63900, "v": 10, "T": 1, "O": 0, "M": 1, "t": 1781450497000_i64, "i": "14957792773" }
+            ]
+        });
+
+        let trades = MexcParser::parse_recent_trades_futures(&json).unwrap();
+        assert_eq!(trades.len(), 2);
+
+        // T=2 → Sell
+        assert_eq!(trades[0].price, 64034.0);
+        assert_eq!(trades[0].quantity, 74.0);
+        assert!(matches!(trades[0].side, TradeSide::Sell));
+        assert_eq!(trades[0].id, "14957792772");
+        assert_eq!(trades[0].timestamp, 1781450496978);
+
+        // T=1 → Buy
+        assert!(matches!(trades[1].side, TradeSide::Buy));
+        assert_eq!(trades[1].id, "14957792773");
+    }
+
+    /// Spot aggTrades: a=null falls back to index; m=true → Sell. T=timestamp field.
+    #[test]
+    fn test_parse_agg_trades_spot_null_id_and_side() {
+        let json = json!([
+            { "a": null, "f": null, "l": null, "p": "64119.99", "q": "0.00123905", "T": 1781450144000_i64, "m": true, "M": true },
+            { "a": null, "f": null, "l": null, "p": "64120.01", "q": "0.002", "T": 1781450145000_i64, "m": false, "M": true }
+        ]);
+
+        let trades = MexcParser::parse_agg_trades_spot(&json).unwrap();
+        assert_eq!(trades.len(), 2);
+
+        // m=true → Sell; a=null → id "0"
+        assert_eq!(trades[0].id, "0");
+        assert_eq!(trades[0].price, 64119.99);
+        assert_eq!(trades[0].quantity, 0.00123905);
+        assert!(matches!(trades[0].side, TradeSide::Sell));
+        assert_eq!(trades[0].timestamp, 1781450144000);
+
+        // m=false → Buy; a=null → id "1"
+        assert_eq!(trades[1].id, "1");
+        assert!(matches!(trades[1].side, TradeSide::Buy));
     }
 }

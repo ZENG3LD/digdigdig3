@@ -528,6 +528,51 @@ impl BitfinexParser {
         })
     }
 
+    /// Parse recent public trades from `GET /v2/trades/{symbol}/hist`.
+    ///
+    /// Response format: `[[ID, MTS, AMOUNT, PRICE], ...]`
+    /// - `ID`     — trade identifier (i64)
+    /// - `MTS`    — timestamp in milliseconds
+    /// - `AMOUNT` — positive = Buy side, negative = Sell side
+    /// - `PRICE`  — execution price
+    pub fn parse_recent_trades(response: &Value) -> ExchangeResult<Vec<PublicTrade>> {
+        Self::check_error(response)?;
+
+        let arr = response
+            .as_array()
+            .ok_or_else(|| ExchangeError::Parse("parse_recent_trades: expected array".into()))?;
+
+        let mut out = Vec::with_capacity(arr.len());
+        for item in arr {
+            let row = match item.as_array() {
+                Some(a) if a.len() >= 4 => a,
+                _ => continue,
+            };
+
+            let id = Self::get_i64(row, 0)
+                .map(|v| v.to_string())
+                .unwrap_or_default();
+            let timestamp = Self::get_i64(row, 1).unwrap_or(0);
+            let amount = Self::require_f64(row, 2)?;
+            let price = Self::require_f64(row, 3)?;
+
+            let side = if amount >= 0.0 {
+                TradeSide::Buy
+            } else {
+                TradeSide::Sell
+            };
+
+            out.push(PublicTrade {
+                id,
+                price,
+                quantity: amount.abs(),
+                side,
+                timestamp,
+            });
+        }
+        Ok(out)
+    }
+
     /// Parse WebSocket trade
     /// Format: [ID, MTS, AMOUNT, PRICE]
     pub fn parse_ws_trade(data: &[Value]) -> ExchangeResult<PublicTrade> {
@@ -912,6 +957,36 @@ mod tests {
         // Should be reversed (oldest first)
         assert_eq!(klines[0].open_time, 1678465260000i64);
         assert!((klines[0].open - 20100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_parse_recent_trades() {
+        // Live payload (probed 2026-06-14): [ID, MTS, AMOUNT, PRICE]
+        // Negative AMOUNT → Sell; positive AMOUNT → Buy
+        let response = json!([
+            [1936218509i64, 1781450360283i64, -0.0002f64, 63961.0f64],
+            [1936218510i64, 1781450360283i64, -0.03339f64, 63960.0f64],
+            [1936218511i64, 1781450360284i64, 0.001f64, 63962.0f64]
+        ]);
+
+        let trades = BitfinexParser::parse_recent_trades(&response).unwrap();
+
+        assert_eq!(trades.len(), 3);
+
+        // First trade: negative amount → Sell
+        assert_eq!(trades[0].id, "1936218509");
+        assert_eq!(trades[0].timestamp, 1781450360283i64);
+        assert!((trades[0].quantity - 0.0002f64).abs() < f64::EPSILON);
+        assert!((trades[0].price - 63961.0f64).abs() < f64::EPSILON);
+        assert!(matches!(trades[0].side, TradeSide::Sell));
+
+        // Second trade: negative amount → Sell
+        assert!(matches!(trades[1].side, TradeSide::Sell));
+        assert!((trades[1].quantity - 0.03339f64).abs() < 1e-10);
+
+        // Third trade: positive amount → Buy
+        assert!(matches!(trades[2].side, TradeSide::Buy));
+        assert!((trades[2].quantity - 0.001f64).abs() < f64::EPSILON);
     }
 
     #[test]

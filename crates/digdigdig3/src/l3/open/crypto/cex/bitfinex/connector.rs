@@ -601,6 +601,30 @@ impl MarketDataPublic for BitfinexConnector {
         }
         Ok(out)
     }
+
+    // ── Recent public trades ──────────────────────────────────────────────────
+    //
+    // Source: GET /v2/trades/{symbol}/hist?limit=N
+    // Response: [[ID, MTS, AMOUNT, PRICE], ...]
+    // AMOUNT > 0 → Buy, AMOUNT < 0 → Sell.
+    // Max depth: 10 000 records per call. MTS already in milliseconds.
+
+    async fn get_recent_trades(
+        &self,
+        symbol: SymbolInput<'_>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> crate::core::ExchangeResult<Vec<crate::core::types::PublicTrade>> {
+        let sym = symbol.resolve(crate::core::ExchangeId::Bitfinex, account_type)?;
+        let mut query = HashMap::new();
+        if let Some(l) = limit {
+            query.insert("limit".to_string(), l.min(10000).to_string());
+        }
+        let raw = self
+            .get(BitfinexEndpoint::Trades, &[("symbol", &sym)], query)
+            .await?;
+        BitfinexParser::parse_recent_trades(&raw)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -813,8 +837,8 @@ impl MarketData for BitfinexConnector {
             has_orderbook: true,
             has_klines: true,
             has_exchange_info: true,
-            // No public recent-trades endpoint implemented in this connector.
-            has_recent_trades: false,
+            // GET /v2/trades/{symbol}/hist — up to 10 000 records per call.
+            has_recent_trades: true,
             // Bitfinex candle timeframes: 1m 3m 5m 15m 30m 1h 2h 3h 4h 6h 8h 12h 1D 1W 14D 1M
             supported_intervals: &[
                 "1m", "3m", "5m", "15m", "30m",
@@ -2207,7 +2231,7 @@ impl crate::core::traits::HasCapabilities for BitfinexConnector {
     fn capabilities(&self) -> crate::core::types::ConnectorCapabilities {
         crate::core::types::ConnectorCapabilities {
             has_ticker: true, has_orderbook: true, has_klines: true,
-            has_recent_trades: false, has_exchange_info: true,
+            has_recent_trades: true, has_exchange_info: true,
             // MarketDataPublic
             has_liquidation_history: false,
             // OI from /v2/status/deriv/{key}/hist idx 18 — event snapshots

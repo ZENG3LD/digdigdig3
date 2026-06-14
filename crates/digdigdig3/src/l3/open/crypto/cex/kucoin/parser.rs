@@ -1123,6 +1123,103 @@ impl KuCoinParser {
         Ok(result)
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // RECENT TRADES (public)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse recent public trades from Spot `GET /api/v1/market/histories`
+    /// or Futures `GET /api/v1/trade/history`.
+    ///
+    /// Spot payload:
+    /// ```json
+    /// {"code":"200000","data":[{"sequence":"...","tradeId":"...","price":"64050.8",
+    ///   "size":"0.00026769","side":"buy","time":1781450356633000000}]}
+    /// ```
+    /// The `time` field is **nanoseconds** (19 digits). Divide by 1_000_000 to get ms.
+    ///
+    /// Futures payload shares the same shape (fields may vary, but `time` is always ns).
+    pub fn parse_recent_trades(response: &Value) -> ExchangeResult<Vec<PublicTrade>> {
+        let data = Self::extract_data(response)?;
+        let arr = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("'data' is not an array".to_string()))?;
+
+        let mut trades = Vec::with_capacity(arr.len());
+        for item in arr {
+            let id = Self::get_str(item, "tradeId")
+                .or_else(|| Self::get_str(item, "sequence"))
+                .unwrap_or("")
+                .to_string();
+
+            let price = Self::require_f64(item, "price")?;
+            let quantity = Self::get_f64(item, "size").unwrap_or(0.0);
+
+            let side = match Self::get_str(item, "side").unwrap_or("buy") {
+                "sell" => TradeSide::Sell,
+                _ => TradeSide::Buy,
+            };
+
+            // `time` is nanoseconds — convert to milliseconds
+            let timestamp = item.get("time")
+                .and_then(|t| t.as_i64())
+                .map(|ns| ns / 1_000_000)
+                .unwrap_or(0);
+
+            trades.push(PublicTrade {
+                id,
+                price,
+                quantity,
+                side,
+                timestamp,
+            });
+        }
+
+        Ok(trades)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FUNDING RATE HISTORY (public)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse historical funding rates from Futures `GET /api/v1/contract/funding-rates`.
+    ///
+    /// KuCoin response shape (official docs):
+    /// ```json
+    /// {"code":"200000","data":[{"symbol":"XBTUSDTM","fundingRate":0.0001,
+    ///   "timepoint":1781450000000,"granularity":28800000}]}
+    /// ```
+    ///
+    /// `timepoint` is Unix milliseconds. `granularity` is the funding interval in ms (not needed for FundingRate).
+    /// When `data` is `null` (empty window), returns an empty vec.
+    pub fn parse_funding_rate_history(response: &Value) -> ExchangeResult<Vec<FundingRate>> {
+        let data_val = response.get("data")
+            .ok_or_else(|| ExchangeError::Parse("Missing 'data' field".to_string()))?;
+
+        // KuCoin returns null for an empty window — treat as empty list.
+        if data_val.is_null() {
+            return Ok(Vec::new());
+        }
+
+        let arr = data_val.as_array()
+            .ok_or_else(|| ExchangeError::Parse("'data' is not an array".to_string()))?;
+
+        let mut rates = Vec::with_capacity(arr.len());
+        for item in arr {
+            let rate = Self::get_f64(item, "fundingRate").unwrap_or(0.0);
+            // `timepoint` is ms; field name confirmed in KuCoin docs
+            let timestamp = item.get("timepoint")
+                .and_then(|t| t.as_i64())
+                .unwrap_or(0);
+
+            rates.push(FundingRate {
+                rate,
+                timestamp,
+                next_funding_time: None,
+            });
+        }
+
+        Ok(rates)
+    }
+
     fn map_kucoin_biz_type(biz_type: &str) -> LedgerEntryType {
         match biz_type.to_uppercase().as_str() {
             "TRADE" | "SPOT_TRADE" | "FUTURES_TRADE" => LedgerEntryType::Trade,
@@ -1276,5 +1373,89 @@ mod tests {
 
         let fr = KuCoinParser::parse_funding_rate(&response).unwrap();
         assert_eq!(fr.next_funding_time, None);
+    }
+
+    #[test]
+    fn test_parse_recent_trades_spot() {
+        // Live payload from GET /api/v1/market/histories?symbol=BTC-USDT
+        // time is nanoseconds (19 digits) — must be divided by 1_000_000 to yield ms.
+        let response = json!({
+            "code": "200000",
+            "data": [
+                {
+                    "sequence": "123456",
+                    "tradeId": "trade001",
+                    "price": "64050.8",
+                    "size": "0.00026769",
+                    "side": "buy",
+                    "time": 1781450356633000000i64
+                },
+                {
+                    "sequence": "123457",
+                    "tradeId": "trade002",
+                    "price": "64051.0",
+                    "size": "0.001",
+                    "side": "sell",
+                    "time": 1781450357000000000i64
+                }
+            ]
+        });
+
+        let trades = KuCoinParser::parse_recent_trades(&response).unwrap();
+        assert_eq!(trades.len(), 2);
+
+        let t0 = &trades[0];
+        assert_eq!(t0.id, "trade001");
+        assert!((t0.price - 64050.8).abs() < 1e-6);
+        assert!((t0.quantity - 0.00026769).abs() < 1e-10);
+        assert_eq!(t0.side, TradeSide::Buy);
+        // 1781450356633000000 ns / 1_000_000 = 1781450356633 ms
+        assert_eq!(t0.timestamp, 1_781_450_356_633i64);
+
+        let t1 = &trades[1];
+        assert_eq!(t1.side, TradeSide::Sell);
+        // 1781450357000000000 ns / 1_000_000 = 1781450357000 ms
+        assert_eq!(t1.timestamp, 1_781_450_357_000i64);
+    }
+
+    #[test]
+    fn test_parse_recent_trades_empty_data_is_error() {
+        // data must be an array; object is a parse error.
+        let response = json!({
+            "code": "200000",
+            "data": {}
+        });
+        assert!(KuCoinParser::parse_recent_trades(&response).is_err());
+    }
+
+    #[test]
+    fn test_parse_funding_rate_history_normal() {
+        // KuCoin historical funding rates — timepoint in ms.
+        let response = json!({
+            "code": "200000",
+            "data": [
+                { "symbol": "XBTUSDTM", "fundingRate": 0.0001, "timepoint": 1781440000000i64, "granularity": 28800000 },
+                { "symbol": "XBTUSDTM", "fundingRate": -0.00005, "timepoint": 1781411200000i64, "granularity": 28800000 }
+            ]
+        });
+
+        let rates = KuCoinParser::parse_funding_rate_history(&response).unwrap();
+        assert_eq!(rates.len(), 2);
+        assert!((rates[0].rate - 0.0001).abs() < 1e-10);
+        assert_eq!(rates[0].timestamp, 1_781_440_000_000i64);
+        assert!((rates[1].rate - (-0.00005)).abs() < 1e-10);
+        assert_eq!(rates[1].next_funding_time, None);
+    }
+
+    #[test]
+    fn test_parse_funding_rate_history_null_data() {
+        // KuCoin returns {"code":"200000","data":null} for an empty time window.
+        let response = json!({
+            "code": "200000",
+            "data": null
+        });
+
+        let rates = KuCoinParser::parse_funding_rate_history(&response).unwrap();
+        assert!(rates.is_empty());
     }
 }

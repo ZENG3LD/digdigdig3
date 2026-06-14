@@ -34,12 +34,14 @@ use crate::core::{
     UserTrade, UserTradeFilter,
     TransferResponse, DepositAddress, WithdrawResponse, FundsRecord,
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
+    PublicTrade,
 };
 use crate::core::traits::{
     ExchangeIdentity, MarketData, Trading, Account, Positions,
     CancelAll, AmendOrder, BatchOrders,
     AccountTransfers, CustodialFunds, SubAccounts,
     FundingHistory, AccountLedger,
+    MarketDataPublic,
 };
 use crate::core::types::{
     TransferRequest, TransferHistoryFilter, WithdrawRequest,
@@ -972,9 +974,7 @@ impl MarketData for KuCoinConnector {
             has_orderbook: true,
             has_klines: true,
             has_exchange_info: true,
-            // get_spot_recent_trades exists as an inherent method but is NOT part of the
-            // MarketData trait — the trait method is not overridden, so false here.
-            has_recent_trades: false,
+            has_recent_trades: true,
             has_ws_klines: true,
             has_ws_trades: true,
             has_ws_orderbook: true,
@@ -989,6 +989,63 @@ impl MarketData for KuCoinConnector {
             // KuCoin uses time-window, not a numeric limit param; effective max is 1500 bars.
             max_kline_limit: Some(1500),
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MarketDataPublic
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+impl MarketDataPublic for KuCoinConnector {
+    /// Recent public trades.
+    ///
+    /// Spot: `GET /api/v1/market/histories?symbol=BTC-USDT` (max 100 per request).
+    /// Futures: `GET /api/v1/trade/history?symbol=XBTUSDTM`.
+    ///
+    /// The exchange `time` field is **nanoseconds** — `parse_recent_trades` divides
+    /// by 1_000_000 to yield milliseconds.
+    async fn get_recent_trades(
+        &self,
+        symbol: SymbolInput<'_>,
+        _limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<PublicTrade>> {
+        let symbol = symbol.resolve(ExchangeId::KuCoin, account_type)?;
+        let response = match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                self.get_spot_recent_trades(&symbol).await?
+            }
+            _ => {
+                self.get_futures_trade_history(&symbol).await?
+            }
+        };
+        KuCoinParser::parse_recent_trades(&response)
+    }
+
+    /// Historical funding rates.
+    ///
+    /// Futures only: `GET /api/v1/contract/funding-rates?symbol=XBTUSDTM&from=MS&to=MS`.
+    /// Returns `UnsupportedOperation` for spot/margin (no funding on spot).
+    ///
+    /// `start_time` / `end_time` are Unix milliseconds passed directly as `from` / `to`.
+    async fn get_funding_rate_history(
+        &self,
+        symbol: SymbolInput<'_>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        _limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<FundingRate>> {
+        if matches!(account_type, AccountType::Spot | AccountType::Margin) {
+            return Err(ExchangeError::UnsupportedOperation(
+                "get_funding_rate_history: spot/margin has no funding rate".into(),
+            ));
+        }
+        let symbol = symbol.resolve(ExchangeId::KuCoin, account_type)?;
+        let response = self.get_historical_funding_rates(&symbol, start_time, end_time).await?;
+        KuCoinParser::parse_funding_rate_history(&response)
     }
 }
 

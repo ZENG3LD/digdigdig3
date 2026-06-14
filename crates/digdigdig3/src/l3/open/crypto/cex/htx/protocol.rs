@@ -139,6 +139,12 @@ impl HtxProtocol {
                 let contract = if is_futures { to_futures_contract(sym) } else { sym.to_string() };
                 Ok(format!("market.{contract}.index.{}", htx_kline_wire(interval)))
             }
+            StreamKind::MarkPriceKline { interval } => {
+                // HTX linear-swap mark-price klines: market.{contract}.mark_price.{period}
+                // Served on the ws_index endpoint (same as IndexPriceKline).
+                let contract = if is_futures { to_futures_contract(sym) } else { sym.to_string() };
+                Ok(format!("market.{contract}.mark_price.{}", htx_kline_wire(interval)))
+            }
             StreamKind::IndexPrice => Err(WebSocketError::NotSupported(
                 "HTX does not expose a realtime WS index price channel — \
                  use REST GET /index/market/history/index for the current index value".to_string(),
@@ -261,6 +267,7 @@ impl WsProtocol for HtxProtocol {
     }
 
     fn unsupported_by_exchange(&self, _account_type: AccountType) -> &'static [StreamKind] {
+        // MarkPriceKline is NOT listed here — it IS supported via the ws_index endpoint.
         &[StreamKind::MarkPrice, StreamKind::IndexPrice, StreamKind::Liquidation]
     }
 
@@ -356,10 +363,19 @@ fn build_registry(account_type: AccountType) -> TopicRegistry {
         b = b.register(kind, account_type, format!("market.*.index.{wire}"), parse_index_kline);
     }
 
+    // Mark price kline channels — market.<contract>.mark_price.<period>
+    // Served on ws_index endpoint; OHLCV shape identical to index klines.
+    for (wire, internal) in HTX_KLINE_CHANNELS {
+        let kind = StreamKind::MarkPriceKline {
+            interval: KlineInterval::new(*internal),
+        };
+        b = b.register(kind, account_type, format!("market.*.mark_price.{wire}"), parse_mark_price_kline);
+    }
+
     b.build()
 }
 
-/// Build the index-endpoint-only registry (ws_index — only IndexPriceKline channels).
+/// Build the index-endpoint-only registry (ws_index — IndexPriceKline + MarkPriceKline channels).
 fn build_index_registry() -> TopicRegistry {
     let mut b = TopicRegistry::builder();
     // ws_index endpoint topics: market.{contract}.index.{period}
@@ -370,6 +386,14 @@ fn build_index_registry() -> TopicRegistry {
             interval: KlineInterval::new(*internal),
         };
         b = b.register(kind, AccountType::FuturesCross, format!("market.*.index.{wire}"), parse_index_kline);
+    }
+    // Mark price kline topics: market.{contract}.mark_price.{period}
+    // Also served on ws_index endpoint alongside index klines.
+    for (wire, internal) in HTX_KLINE_CHANNELS {
+        let kind = StreamKind::MarkPriceKline {
+            interval: KlineInterval::new(*internal),
+        };
+        b = b.register(kind, AccountType::FuturesCross, format!("market.*.mark_price.{wire}"), parse_mark_price_kline);
     }
     b.build()
 }
@@ -829,6 +853,61 @@ fn parse_index_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
     })
 }
 
+fn parse_mark_price_kline(raw: &Value) -> WebSocketResult<StreamEvent> {
+    use crate::core::types::Kline;
+
+    // channel: "market.BTC-USDT.mark_price.1min" → symbol=parts[1], interval=parts[3]
+    let ch = raw.get("ch").and_then(|v| v.as_str()).unwrap_or("");
+    let parts: Vec<&str> = ch.split('.').collect();
+    let symbol = parts.get(1).copied().unwrap_or("").to_uppercase();
+    // parts[3] is the HTX wire interval; convert to internal KlineInterval
+    let htx_wire_interval = parts.get(3).copied().unwrap_or("");
+    let interval = KlineInterval::new(htx_wire_to_internal(htx_wire_interval));
+
+    let data = tick_data(raw)?;
+
+    let open_time = data
+        .get("id")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| WebSocketError::Parse("htx mark_price_kline: missing id".into()))?
+        * 1000; // seconds → ms
+    let open = data
+        .get("open")
+        .and_then(parse_f64_field)
+        .ok_or_else(|| WebSocketError::Parse("htx mark_price_kline: missing open".into()))?;
+    let high = data
+        .get("high")
+        .and_then(parse_f64_field)
+        .ok_or_else(|| WebSocketError::Parse("htx mark_price_kline: missing high".into()))?;
+    let low = data
+        .get("low")
+        .and_then(parse_f64_field)
+        .ok_or_else(|| WebSocketError::Parse("htx mark_price_kline: missing low".into()))?;
+    let close = data
+        .get("close")
+        .and_then(parse_f64_field)
+        .ok_or_else(|| WebSocketError::Parse("htx mark_price_kline: missing close".into()))?;
+    let volume = data.get("amount").and_then(parse_f64_field).unwrap_or(0.0);
+    let quote_volume = data.get("vol").and_then(parse_f64_field);
+    let trades = data.get("count").and_then(|v| v.as_i64()).map(|c| c as u64);
+
+    Ok(StreamEvent::MarkPriceKline {
+        symbol,
+        interval,
+        kline: Kline {
+            open_time,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            quote_volume,
+            close_time: None,
+            trades,
+        },
+    })
+}
+
 /// Convert HTX wire interval string → internal KlineInterval str.
 fn htx_wire_to_internal(wire: &str) -> &'static str {
     match wire {
@@ -1156,5 +1235,68 @@ mod tests {
         let proto = HtxProtocol::new(AccountType::Spot, false);
         let val = proto.decode_binary(&compressed).expect("gzip decode must succeed");
         assert_eq!(val["ping"], 1629384000000i64);
+    }
+
+    #[test]
+    fn test_subscribe_frame_mark_price_kline() {
+        let proto = HtxProtocol::new(AccountType::FuturesCross, false);
+        let spec = StreamSpec {
+            kind: StreamKind::MarkPriceKline { interval: KlineInterval::new("1m") },
+            symbol: crate::core::types::OwnedSymbolInput::Raw("BTC-USDT".to_string()),
+            account_type: AccountType::FuturesCross,
+            depth: None,
+            speed_ms: None,
+        };
+        let msg = proto.subscribe_frame(&spec).expect("subscribe_frame must succeed");
+        let text = match msg {
+            WsFrame::Text(t) => t,
+            _ => panic!("expected text frame"),
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert_eq!(v["sub"], "market.BTC-USDT.mark_price.1min");
+    }
+
+    #[test]
+    fn test_parse_mark_price_kline_frame() {
+        let proto = HtxProtocol::new_index(AccountType::FuturesCross, false);
+        let frame = serde_json::json!({
+            "ch": "market.BTC-USDT.mark_price.1min",
+            "ts": 1716000000000i64,
+            "tick": {
+                "id": 1716000000i64,
+                "open": 70000.0,
+                "close": 70100.0,
+                "low": 69900.0,
+                "high": 70200.0,
+                "amount": 0.0,
+                "vol": 0.0,
+                "count": 0
+            }
+        });
+        let topic = proto.extract_topic(&frame).expect("should extract topic");
+        assert_eq!(topic.as_str(), "market.BTC-USDT.mark_price.1min");
+
+        let registry = proto.topic_registry(AccountType::FuturesCross);
+        assert!(
+            registry.supports(
+                &StreamKind::MarkPriceKline { interval: KlineInterval::new("1m") },
+                AccountType::FuturesCross
+            ),
+            "index registry must support MarkPriceKline"
+        );
+
+        let parsers = registry.dispatch_all(&topic);
+        assert!(!parsers.is_empty(), "mark_price.1min must have a registered parser");
+        let event = parsers[0](&frame).expect("parse must succeed");
+        match event {
+            crate::core::types::StreamEvent::MarkPriceKline { symbol, interval, kline } => {
+                assert_eq!(symbol, "BTC-USDT");
+                assert_eq!(interval, KlineInterval::new("1m"));
+                assert!((kline.open - 70000.0).abs() < 0.01);
+                assert!((kline.close - 70100.0).abs() < 0.01);
+                assert_eq!(kline.open_time, 1716000000_i64 * 1000);
+            }
+            other => panic!("expected MarkPriceKline, got {:?}", other),
+        }
     }
 }

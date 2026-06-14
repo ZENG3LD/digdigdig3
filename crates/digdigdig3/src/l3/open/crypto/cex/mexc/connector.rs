@@ -22,7 +22,7 @@ use crate::core::{
     HttpClient, Credentials, assemble_rest_url,
     ExchangeId, ExchangeType, AccountType,
     ExchangeError, ExchangeResult,
-    Price, Kline, Ticker, OrderBook,
+    Price, Kline, Ticker, OrderBook, PublicTrade,
     Order, OrderSide, OrderType, Balance, AccountInfo,
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery,
@@ -1996,6 +1996,88 @@ impl crate::core::traits::Positions for MexcConnector {
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketDataPublic for MexcConnector {
+    /// Recent public trades for a symbol.
+    ///
+    /// - Spot: `GET /api/v3/trades` — id field is null on MEXC; array index used as fallback id.
+    /// - Futures: `GET /api/v1/contract/deals/{symbol}` — direction T:1=Buy/2=Sell.
+    async fn get_recent_trades(
+        &self,
+        symbol: SymbolInput<'_>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<PublicTrade>> {
+        let symbol = symbol.resolve(ExchangeId::MEXC, account_type)?;
+        match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), symbol.to_string());
+                if let Some(l) = limit {
+                    params.insert("limit".to_string(), l.to_string());
+                }
+                let raw = self.get(MexcEndpoint::RecentTrades, params).await?;
+                MexcParser::parse_recent_trades_spot(&raw)
+            }
+            AccountType::FuturesCross | AccountType::FuturesIsolated => {
+                let real_base = MexcUrls::futures_base_url();
+                let mut path = format!("{}/{}", MexcEndpoint::FuturesRecentTrades.path(), symbol);
+                if let Some(l) = limit {
+                    path = format!("{}?limit={}", path, l);
+                }
+                let url = assemble_rest_url(self.rest_override.as_deref(), real_base, &path, "");
+                if !self.rate_limit_wait(1, false).await {
+                    return Err(ExchangeError::RateLimitExceeded {
+                        retry_after: None,
+                        message: "Rate limit budget >= 90% used; request dropped".to_string(),
+                    });
+                }
+                let (response, resp_headers) = self.http
+                    .get_with_response_headers(&url, &HashMap::new(), &HashMap::new())
+                    .await?;
+                self.update_weight_from_headers(&resp_headers);
+                MexcParser::parse_recent_trades_futures(&response)
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                format!("{:?} account type not supported for get_recent_trades on MEXC", account_type),
+            )),
+        }
+    }
+
+    /// Aggregated trades for spot via `GET /api/v3/aggTrades`.
+    ///
+    /// Futures aggTrades are not materially different from recent trades on MEXC;
+    /// returns `UnsupportedOperation` for non-spot account types — callers fall back
+    /// to `get_recent_trades`.
+    ///
+    /// Note: MEXC aggTrade fields `a`/`f`/`l` (agg-id, first-fill-id, last-fill-id)
+    /// are always null; array index is used as the id.
+    async fn get_agg_trades(
+        &self,
+        symbol: SymbolInput<'_>,
+        limit: Option<u32>,
+        from_id: Option<u64>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<PublicTrade>> {
+        match account_type {
+            AccountType::Spot | AccountType::Margin => {
+                let symbol = symbol.resolve(ExchangeId::MEXC, account_type)?;
+                let mut params = HashMap::new();
+                params.insert("symbol".to_string(), symbol.to_string());
+                if let Some(l) = limit {
+                    params.insert("limit".to_string(), l.to_string());
+                }
+                if let Some(id) = from_id {
+                    params.insert("fromId".to_string(), id.to_string());
+                }
+                let raw = self.get(MexcEndpoint::SpotAggTrades, params).await?;
+                MexcParser::parse_agg_trades_spot(&raw)
+            }
+            _ => Err(ExchangeError::UnsupportedOperation(
+                "get_agg_trades: MEXC futures aggTrades are identical to recent trades — \
+                 use get_recent_trades for futures account types".into(),
+            )),
+        }
+    }
+
     /// Mark-price (fair price) klines from the MEXC contract API.
     ///
     /// Endpoint: `GET /api/v1/contract/kline/fair_price/{symbol}` on `contract.mexc.com`.
@@ -2231,7 +2313,7 @@ impl crate::core::traits::HasCapabilities for MexcConnector {
     fn capabilities(&self) -> crate::core::types::ConnectorCapabilities {
         crate::core::types::ConnectorCapabilities {
             has_ticker: true, has_orderbook: true, has_klines: true,
-            has_recent_trades: false, has_exchange_info: true,
+            has_recent_trades: true, has_exchange_info: true,
             has_liquidation_history: false, has_open_interest_history: false,
             has_premium_index: false, has_long_short_ratio_history: false,
             has_funding_rate_history: true, has_mark_price_klines: true,
@@ -2239,7 +2321,7 @@ impl crate::core::traits::HasCapabilities for MexcConnector {
             has_taker_volume_history: false,
             has_index_price_klines: true,
             has_premium_index_klines: false,
-            has_agg_trades: false,            has_market_order: true, has_limit_order: true,
+            has_agg_trades: true,            has_market_order: true, has_limit_order: true,
             has_open_orders: true, has_order_history: true, has_user_trades: true,
             has_positions: true, has_mark_price: false, has_modify_position: false,
             has_closed_pnl: false, has_long_short_ratio: false,

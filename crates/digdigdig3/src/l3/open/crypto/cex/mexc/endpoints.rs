@@ -50,6 +50,7 @@ pub enum MexcEndpoint {
     ExchangeInfo,     // GET /api/v3/exchangeInfo
     Orderbook,        // GET /api/v3/depth
     RecentTrades,     // GET /api/v3/trades
+    SpotAggTrades,    // GET /api/v3/aggTrades  (Binance-compatible)
     Klines,           // GET /api/v3/klines
     Ticker24hr,       // GET /api/v3/ticker/24hr
     TickerPrice,      // GET /api/v3/ticker/price
@@ -134,6 +135,7 @@ impl MexcEndpoint {
             Self::ExchangeInfo => "/api/v3/exchangeInfo",
             Self::Orderbook => "/api/v3/depth",
             Self::RecentTrades => "/api/v3/trades",
+            Self::SpotAggTrades => "/api/v3/aggTrades",
             Self::Klines => "/api/v3/klines",
             Self::Ticker24hr => "/api/v3/ticker/24hr",
             Self::TickerPrice => "/api/v3/ticker/price",
@@ -223,6 +225,7 @@ impl MexcEndpoint {
             | Self::ExchangeInfo
             | Self::Orderbook
             | Self::RecentTrades
+            | Self::SpotAggTrades
             | Self::Klines
             | Self::Ticker24hr
             | Self::TickerPrice

@@ -787,6 +787,61 @@ impl HtxParser {
         Ok(records)
     }
 
+    /// Parse recent public trades from HTX REST.
+    ///
+    /// **Spot** `GET /market/history/trade` response shape (double-nested):
+    /// ```json
+    /// { "status": "ok", "data": [
+    ///   { "id": 123, "ts": 1716000000000, "data": [
+    ///     { "id": 456, "ts": 1716000000001, "price": 70000.0,
+    ///       "amount": 0.5, "direction": "buy" }
+    ///   ] }
+    /// ] }
+    /// ```
+    /// The outer `data[]` array groups fills by the same micro-batch id.
+    /// The inner `data[]` array contains individual fills.
+    /// We flatten both layers into a single `Vec<PublicTrade>`.
+    ///
+    /// **Futures** `GET /linear-swap-ex/market/history/trade` uses the same
+    /// double-nested shape with identical field names.
+    pub fn parse_recent_trades(json: &Value) -> ExchangeResult<Vec<PublicTrade>> {
+        let outer = Self::extract_result_v1(json)?;
+        let batches = outer.as_array()
+            .ok_or_else(|| ExchangeError::Parse("HTX recent trades: outer data is not an array".into()))?;
+
+        let parse_f64 = |v: &Value| -> Option<f64> {
+            v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        };
+
+        let mut trades = Vec::new();
+        for batch in batches {
+            let inner = match batch.get("data").and_then(|v| v.as_array()) {
+                Some(arr) => arr,
+                None => continue,
+            };
+            for t in inner {
+                let price = match parse_f64(&t["price"]) {
+                    Some(p) => p,
+                    None => continue,
+                };
+                let quantity = parse_f64(&t["amount"]).unwrap_or(0.0);
+                let side = t["direction"].as_str()
+                    .map(|s| match s {
+                        "buy" | "Buy" => TradeSide::Buy,
+                        _ => TradeSide::Sell,
+                    })
+                    .unwrap_or(TradeSide::Buy);
+                let timestamp = t["ts"].as_i64().unwrap_or(0);
+                let id = t["id"].as_i64()
+                    .or_else(|| t["tradeId"].as_i64())
+                    .map(|n| n.to_string())
+                    .unwrap_or_default();
+                trades.push(PublicTrade { id, price, quantity, side, timestamp });
+            }
+        }
+        Ok(trades)
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════════
     // WEBSOCKET PARSERS
     // ═══════════════════════════════════════════════════════════════════════════════
@@ -823,6 +878,59 @@ impl HtxParser {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Spot /market/history/trade double-nested shape, as confirmed live 2026-06-14.
+    #[test]
+    fn test_parse_recent_trades_double_nested() {
+        let json = json!({
+            "status": "ok",
+            "data": [
+                {
+                    "id": 100001i64,
+                    "ts": 1716000000000i64,
+                    "data": [
+                        {
+                            "id": 200001i64,
+                            "ts": 1716000000001i64,
+                            "price": 70000.0,
+                            "amount": 0.5,
+                            "direction": "buy"
+                        },
+                        {
+                            "id": 200002i64,
+                            "ts": 1716000000002i64,
+                            "price": 69999.0,
+                            "amount": 1.0,
+                            "direction": "sell"
+                        }
+                    ]
+                },
+                {
+                    "id": 100002i64,
+                    "ts": 1716000001000i64,
+                    "data": [
+                        {
+                            "id": 200003i64,
+                            "ts": 1716000001001i64,
+                            "price": 70001.0,
+                            "amount": 0.25,
+                            "direction": "buy"
+                        }
+                    ]
+                }
+            ]
+        });
+
+        let trades = HtxParser::parse_recent_trades(&json).expect("parse must succeed");
+        assert_eq!(trades.len(), 3, "must flatten all inner fills");
+        assert_eq!(trades[0].id, "200001");
+        assert!((trades[0].price - 70000.0).abs() < 0.001);
+        assert!((trades[0].quantity - 0.5).abs() < 0.001);
+        assert_eq!(trades[0].side, TradeSide::Buy);
+        assert_eq!(trades[0].timestamp, 1716000000001i64);
+        assert_eq!(trades[1].side, TradeSide::Sell);
+        assert_eq!(trades[2].id, "200003");
+    }
 
     #[test]
     fn test_parse_ticker() {

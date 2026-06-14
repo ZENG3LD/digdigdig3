@@ -295,6 +295,18 @@ impl LighterParser {
                     crate::core::types::TradeSide::Buy
                 },
                 timestamp: time * 1000, // seconds to milliseconds
+                usd_amount: Self::get_f64(trade, "usd_amount"),
+                ask_id: Self::get_i64(trade, "ask_id"),
+                bid_id: Self::get_i64(trade, "bid_id"),
+                ask_account_id: Self::get_i64(trade, "ask_account_id"),
+                bid_account_id: Self::get_i64(trade, "bid_account_id"),
+                is_maker_ask: trade.get("is_maker_ask").and_then(|v| v.as_bool()),
+                block_height: Self::get_i64(trade, "block_height"),
+                maker_fee: Self::get_i64(trade, "maker_fee"),
+                tx_hash: Self::get_str(trade, "tx_hash").map(|s| s.to_string()),
+                taker_position_size_before: Self::get_f64(trade, "taker_position_size_before"),
+                maker_position_size_before: Self::get_f64(trade, "maker_position_size_before"),
+                transaction_time: Self::get_i64(trade, "transaction_time"),
                 ..Default::default()
             });
         }

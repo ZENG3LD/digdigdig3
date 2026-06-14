@@ -666,6 +666,13 @@ impl DeribitParser {
             quantity: Self::get_f64(item, "amount").unwrap_or(0.0),
             side,
             timestamp: Self::get_i64(item, "timestamp").unwrap_or(0),
+            index_price: Self::get_f64(item, "index_price"),
+            mark_price: Self::get_f64(item, "mark_price"),
+            contracts: Self::get_f64(item, "contracts"),
+            trade_seq: Self::get_i64(item, "trade_seq"),
+            tick_direction: item.get("tick_direction").and_then(|v| v.as_i64()).map(|n| n.to_string()),
+            iv: Self::get_f64(item, "iv"),
+            is_liquidation: item.get("liquidation").map(|v| !v.is_null()),
             ..Default::default()
         })
     }

@@ -652,6 +652,28 @@ pub struct PublicTrade {
     /// Tx hash (Lighter tx_hash / HyperLiquid hash)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tx_hash: Option<String>,
+    /// Maker order id (Lighter bid_id is taker; this holds the maker side when distinct).
+    /// Taker position size before the fill (Lighter taker_position_size_before).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taker_position_size_before: Option<f64>,
+    /// Maker position size before the fill (Lighter maker_position_size_before).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maker_position_size_before: Option<f64>,
+    /// On-chain transaction time, distinct from match timestamp (Lighter transaction_time).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transaction_time: Option<i64>,
+    /// Ask-side account id (Lighter ask_account_id).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask_account_id: Option<i64>,
+    /// Bid-side account id (Lighter bid_account_id).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bid_account_id: Option<i64>,
+    /// Source/origin tag of the trade (OKX `source`, e.g. "0").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Matching-engine pool (BitMEX pool, e.g. "Primary").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool: Option<String>,
 }
 
 /// Сторона сделки в публичной ленте

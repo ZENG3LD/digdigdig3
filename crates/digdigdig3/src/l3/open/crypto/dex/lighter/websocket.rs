@@ -310,6 +310,18 @@ pub(super) fn parse_trade(raw: &Value, channel: &str) -> Vec<StreamEvent> {
                 quantity,
                 side,
                 timestamp,
+                usd_amount: val_f64(entry, "usd_amount"),
+                ask_id: val_i64(entry, "ask_id"),
+                bid_id: val_i64(entry, "bid_id"),
+                ask_account_id: val_i64(entry, "ask_account_id"),
+                bid_account_id: val_i64(entry, "bid_account_id"),
+                is_maker_ask: val_bool(entry, "is_maker_ask"),
+                block_height: val_i64(entry, "block_height"),
+                maker_fee: val_i64(entry, "maker_fee"),
+                tx_hash: val_str(entry, "tx_hash").map(|s| s.to_string()),
+                taker_position_size_before: val_f64(entry, "taker_position_size_before"),
+                maker_position_size_before: val_f64(entry, "maker_position_size_before"),
+                transaction_time: val_i64(entry, "transaction_time"),
                 ..Default::default()
             },
         })

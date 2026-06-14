@@ -1951,6 +1951,13 @@ impl MarketDataPublic for DeribitConnector {
                 quantity: parse_f64("amount"),
                 side,
                 timestamp: item.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0),
+                index_price: item.get("index_price").and_then(|v| v.as_f64()),
+                mark_price: item.get("mark_price").and_then(|v| v.as_f64()),
+                contracts: item.get("contracts").and_then(|v| v.as_f64()),
+                trade_seq: item.get("trade_seq").and_then(|v| v.as_i64()),
+                tick_direction: item.get("tick_direction").and_then(|v| v.as_i64()).map(|n| n.to_string()),
+                iv: item.get("iv").and_then(|v| v.as_f64()),
+                is_liquidation: item.get("liquidation").map(|v| !v.is_null()),
                 ..Default::default()
             });
         }

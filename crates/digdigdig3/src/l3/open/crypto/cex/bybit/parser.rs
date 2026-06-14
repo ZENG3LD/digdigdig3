@@ -234,7 +234,10 @@ impl BybitParser {
                     _ => TradeSide::Sell,
                 };
                 let timestamp = item["time"].as_str()?.parse::<i64>().ok()?;
-                Some(PublicTrade { id, price, quantity, side, timestamp, ..Default::default() })
+                let is_block_trade = item["isBlockTrade"].as_bool();
+                let is_rpi_trade = item["isRPITrade"].as_bool();
+                let seq = item["seq"].as_str().and_then(|s| s.parse::<i64>().ok());
+                Some(PublicTrade { id, price, quantity, side, timestamp, is_block_trade, is_rpi_trade, seq, ..Default::default() })
             })
             .collect();
 

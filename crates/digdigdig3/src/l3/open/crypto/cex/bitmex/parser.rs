@@ -305,12 +305,34 @@ pub fn parse_trade(raw: &Value) -> WebSocketResult<StreamEvent> {
             .unwrap_or("")
             .to_string();
 
+        let gross_value = item.get("grossValue").and_then(Value::as_f64);
+        let home_notional = item.get("homeNotional").and_then(Value::as_f64);
+        let foreign_notional = item.get("foreignNotional").and_then(Value::as_f64);
+        let tick_direction = item
+            .get("tickDirection")
+            .and_then(Value::as_str)
+            .map(|s| s.to_string());
+        let trade_type = item
+            .get("trdType")
+            .and_then(Value::as_str)
+            .map(|s| s.to_string());
+        let pool = item
+            .get("pool")
+            .and_then(Value::as_str)
+            .map(|s| s.to_string());
+
         let trade = PublicTrade {
             id: trade_id,
             price,
             quantity,
             side,
             timestamp,
+            gross_value,
+            home_notional,
+            foreign_notional,
+            tick_direction,
+            trade_type,
+            pool,
             ..Default::default()
         };
 
@@ -485,7 +507,35 @@ pub fn parse_rest_recent_trades(v: &Value) -> ExchangeResult<Vec<PublicTrade>> {
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
-            Some(PublicTrade { id, price, quantity, side, timestamp, ..Default::default() })
+            let gross_value = item.get("grossValue").and_then(Value::as_f64);
+            let home_notional = item.get("homeNotional").and_then(Value::as_f64);
+            let foreign_notional = item.get("foreignNotional").and_then(Value::as_f64);
+            let tick_direction = item
+                .get("tickDirection")
+                .and_then(Value::as_str)
+                .map(|s| s.to_string());
+            let trade_type = item
+                .get("trdType")
+                .and_then(Value::as_str)
+                .map(|s| s.to_string());
+            let pool = item
+                .get("pool")
+                .and_then(Value::as_str)
+                .map(|s| s.to_string());
+            Some(PublicTrade {
+                id,
+                price,
+                quantity,
+                side,
+                timestamp,
+                gross_value,
+                home_notional,
+                foreign_notional,
+                tick_direction,
+                trade_type,
+                pool,
+                ..Default::default()
+            })
         })
         .collect();
 
@@ -527,6 +577,7 @@ pub fn parse_rest_klines(v: &Value, bin_size_ms: i64) -> ExchangeResult<Vec<Klin
                 .unwrap_or_else(|| item.get("volume").and_then(Value::as_f64).unwrap_or(0.0));
             let quote_volume = item.get("foreignNotional").and_then(Value::as_f64);
             let trades = item.get("trades").and_then(Value::as_u64);
+            let vwap = item.get("vwap").and_then(Value::as_f64);
 
             Some(Kline {
                 open_time,
@@ -538,6 +589,7 @@ pub fn parse_rest_klines(v: &Value, bin_size_ms: i64) -> ExchangeResult<Vec<Klin
                 quote_volume,
                 close_time: Some(close_ts),
                 trades,
+                vwap,
                 ..Default::default()
             })
         })

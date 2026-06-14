@@ -185,6 +185,11 @@ impl GateioParser {
                     .and_then(|s| s.parse::<i64>().ok())
                     .unwrap_or(0) * 1000; // seconds to ms
 
+                // idx[7] = windowClosed: "true" means bar is closed, "false" means still open
+                let confirm = candle.get(7)
+                    .and_then(|v| v.as_str())
+                    .map(|s| s == "true");
+
                 klines.push(Kline {
                     open_time,
                     open: Self::parse_f64(&candle[5]).unwrap_or(0.0),     // index 5
@@ -195,6 +200,7 @@ impl GateioParser {
                     quote_volume: candle.get(6).and_then(Self::parse_f64), // index 6
                     close_time: None,
                     trades: None,
+                    confirm,
                     ..Default::default()
                 });
             } else if item.is_object() {
@@ -1188,6 +1194,8 @@ impl GateioParser {
                 quantity: Self::get_f64(item, "amount").unwrap_or(0.0),
                 side,
                 timestamp,
+                seq: Self::get_str(item, "sequence_id")
+                    .and_then(|s| s.parse::<i64>().ok()),
                 ..Default::default()
             });
         }

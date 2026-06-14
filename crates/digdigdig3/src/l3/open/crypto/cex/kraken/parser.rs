@@ -209,6 +209,7 @@ impl KrakenParser {
                 quote_volume: None,
                 close_time: None,
                 trades: candle[7].as_i64().map(|t| t as u64),
+                vwap: Self::parse_f64(&candle[5]),
                 ..Default::default()
             });
         }
@@ -1563,7 +1564,12 @@ impl KrakenParser {
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| i.to_string());
 
-            trades.push(PublicTrade { id, price, quantity, side, timestamp, ..Default::default() });
+            // order type: idx[4] "l"=limit / "m"=market — kept raw
+            let order_type = row[4].as_str().map(|s| s.to_string());
+            // seq: idx[6] trade_id (same value already used as id string)
+            let seq = row[6].as_i64();
+
+            trades.push(PublicTrade { id, price, quantity, side, timestamp, order_type, seq, ..Default::default() });
         }
         Ok(trades)
     }

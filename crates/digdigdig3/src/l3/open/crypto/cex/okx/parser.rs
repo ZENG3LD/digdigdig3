@@ -212,6 +212,7 @@ impl OkxParser {
                 quote_volume: Self::parse_f64(&candle[6]),
                 close_time: None,
                 trades: None,
+                confirm: candle.get(8).and_then(|v| v.as_str()).map(|s| s == "1"),
                 ..Default::default()
             });
         }
@@ -549,6 +550,8 @@ impl OkxParser {
             quantity: Self::require_f64(data, "sz")?,
             side,
             timestamp: Self::get_i64(data, "ts").unwrap_or(0),
+            source: Self::get_str(data, "source").map(String::from),
+            seq: Self::get_i64(data, "tradeId"),
             ..Default::default()
         })
     }
@@ -588,6 +591,7 @@ impl OkxParser {
             quote_volume: Self::parse_f64(&candle[6]),
             close_time: None,
             trades: None,
+            confirm: candle.get(8).and_then(|v| v.as_str()).map(|s| s == "1"),
             ..Default::default()
         })
     }
@@ -613,6 +617,9 @@ impl OkxParser {
             quote_volume: None,
             close_time: None,
             trades: None,
+            // OKX mark/index price candles carry a trailing confirm flag at idx5
+            // (live-probed 2026-06-15: [ts,o,h,l,c,confirm]).
+            confirm: candle.get(5).and_then(|v| v.as_str()).map(|s| s == "1"),
             ..Default::default()
         })
     }

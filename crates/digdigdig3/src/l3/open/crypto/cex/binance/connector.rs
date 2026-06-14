@@ -3128,6 +3128,30 @@ impl MarketDataPublic for BinanceConnector {
         Ok(result)
     }
 
+    async fn get_agg_trades(
+        &self,
+        symbol: SymbolInput<'_>,
+        limit: Option<u32>,
+        from_id: Option<u64>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<PublicTrade>> {
+        let symbol = symbol.resolve(ExchangeId::Binance, account_type)?.into_owned();
+        let endpoint = match account_type {
+            AccountType::Spot | AccountType::Margin => BinanceEndpoint::SpotAggTrades,
+            _ => BinanceEndpoint::FuturesAggTrades,
+        };
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol);
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+        if let Some(id) = from_id {
+            params.insert("fromId".to_string(), id.to_string());
+        }
+        let raw = self.get(endpoint, params, account_type).await?;
+        BinanceParser::parse_agg_trades(&raw)
+    }
+
     async fn get_liquidation_history(
         &self,
         _symbol: Option<SymbolInput<'_>>,
@@ -3320,7 +3344,7 @@ impl crate::core::traits::HasCapabilities for BinanceConnector {
             has_mark_price_klines: true,
             has_index_price_klines: true,
             has_premium_index_klines: true,
-            has_agg_trades: false,            // Trading
+            has_agg_trades: true,
             has_market_order: true,
             has_limit_order: true,
             has_open_orders: true,

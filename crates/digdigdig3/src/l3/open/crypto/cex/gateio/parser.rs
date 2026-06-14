@@ -1142,6 +1142,95 @@ impl GateioParser {
 
         Ok(result)
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // RECENT TRADES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse spot recent public trades from `GET /spot/trades`.
+    ///
+    /// Payload: `[{"id":"208276958","create_time_ms":"1781450481726.461",
+    /// "currency_pair":"BTC_USDT","side":"buy","amount":"0.417845","price":"64042"}]`
+    ///
+    /// - `side`: explicit string "buy" or "sell"
+    /// - `amount`: trade quantity
+    /// - `create_time_ms`: string, may have fractional part (.xxx) — parse the
+    ///   integer millisecond portion only.
+    pub fn parse_recent_trades_spot(response: &Value) -> ExchangeResult<Vec<PublicTrade>> {
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array for spot trades".to_string()))?;
+
+        let mut result = Vec::with_capacity(arr.len());
+        for item in arr {
+            let side = match Self::get_str(item, "side").unwrap_or("buy") {
+                "sell" => TradeSide::Sell,
+                _ => TradeSide::Buy,
+            };
+            // create_time_ms may be "1781450481726.461" — take the integer ms part
+            let timestamp = item.get("create_time_ms")
+                .and_then(|v| {
+                    v.as_str()
+                        .and_then(|s| {
+                            // Strip fractional part, parse integer
+                            let int_part = s.split('.').next().unwrap_or(s);
+                            int_part.parse::<i64>().ok()
+                        })
+                        .or_else(|| v.as_f64().map(|f| f as i64))
+                })
+                .unwrap_or(0);
+
+            result.push(PublicTrade {
+                id: Self::get_str(item, "id").unwrap_or("").to_string(),
+                price: Self::get_f64(item, "price").unwrap_or(0.0),
+                quantity: Self::get_f64(item, "amount").unwrap_or(0.0),
+                side,
+                timestamp,
+            });
+        }
+        Ok(result)
+    }
+
+    /// Parse futures recent public trades from `GET /futures/{settle}/trades`.
+    ///
+    /// Payload: `[{"id":769653673,"contract":"BTC_USDT","create_time_ms":1781450489.259,
+    /// "size":1000,"price":"64040.7"}]`
+    ///
+    /// - `size`: positive = Buy, negative = Sell (NO explicit side field)
+    /// - `size.abs()`: trade quantity
+    /// - `create_time_ms`: float seconds-with-ms (e.g. 1781450489.259) → integer ms
+    pub fn parse_recent_trades_futures(response: &Value) -> ExchangeResult<Vec<PublicTrade>> {
+        let arr = response.as_array()
+            .ok_or_else(|| ExchangeError::Parse("Expected array for futures trades".to_string()))?;
+
+        let mut result = Vec::with_capacity(arr.len());
+        for item in arr {
+            // size can be integer or float; positive = Buy, negative = Sell
+            let size = item.get("size")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let side = if size >= 0.0 { TradeSide::Buy } else { TradeSide::Sell };
+            let quantity = size.abs();
+
+            // create_time_ms is a float like 1781450489.259 — floor to integer ms
+            let timestamp = item.get("create_time_ms")
+                .and_then(|v| v.as_f64().map(|f| f as i64))
+                .unwrap_or(0);
+
+            let id = item.get("id")
+                .and_then(|v| v.as_i64().map(|n| n.to_string())
+                    .or_else(|| v.as_str().map(|s| s.to_string())))
+                .unwrap_or_default();
+
+            result.push(PublicTrade {
+                id,
+                price: Self::get_f64(item, "price").unwrap_or(0.0),
+                quantity,
+                side,
+                timestamp,
+            });
+        }
+        Ok(result)
+    }
 }
 
 #[cfg(test)]
@@ -1225,5 +1314,82 @@ mod tests {
         assert_eq!(orderbook.asks.len(), 2);
         assert!((orderbook.bids[0].price - 48600.0).abs() < f64::EPSILON);
         assert_eq!(orderbook.timestamp, 1623898993123i64);
+    }
+
+    #[test]
+    fn test_parse_recent_trades_spot_side_string() {
+        // Live payload shape from probed GET /spot/trades
+        let response = json!([
+            {
+                "id": "208276958",
+                "create_time_ms": "1781450481726.461",
+                "currency_pair": "BTC_USDT",
+                "side": "buy",
+                "amount": "0.417845",
+                "price": "64042"
+            },
+            {
+                "id": "208276959",
+                "create_time_ms": "1781450481800.000",
+                "currency_pair": "BTC_USDT",
+                "side": "sell",
+                "amount": "0.1",
+                "price": "64041"
+            }
+        ]);
+
+        let trades = GateioParser::parse_recent_trades_spot(&response).unwrap();
+        assert_eq!(trades.len(), 2);
+
+        let buy = &trades[0];
+        assert_eq!(buy.id, "208276958");
+        assert_eq!(buy.side, TradeSide::Buy);
+        assert!((buy.quantity - 0.417845).abs() < 1e-9);
+        assert!((buy.price - 64042.0).abs() < 1e-6);
+        // Fractional part stripped: "1781450481726.461" → 1781450481726
+        assert_eq!(buy.timestamp, 1781450481726_i64);
+
+        let sell = &trades[1];
+        assert_eq!(sell.side, TradeSide::Sell);
+        assert_eq!(sell.timestamp, 1781450481800_i64);
+    }
+
+    #[test]
+    fn test_parse_recent_trades_futures_size_sign() {
+        // Live payload shape from probed GET /futures/usdt/trades
+        let response = json!([
+            {
+                "id": 769653673i64,
+                "contract": "BTC_USDT",
+                "create_time_ms": 1781450489.259f64,
+                "size": 1000,
+                "price": "64040.7"
+            },
+            {
+                "id": 769653674i64,
+                "contract": "BTC_USDT",
+                "create_time_ms": 1781450490.100f64,
+                "size": -500,
+                "price": "64039.5"
+            }
+        ]);
+
+        let trades = GateioParser::parse_recent_trades_futures(&response).unwrap();
+        assert_eq!(trades.len(), 2);
+
+        // size > 0 → Buy, qty = 1000
+        let buy = &trades[0];
+        assert_eq!(buy.id, "769653673");
+        assert_eq!(buy.side, TradeSide::Buy);
+        assert!((buy.quantity - 1000.0).abs() < f64::EPSILON);
+        assert!((buy.price - 64040.7).abs() < 1e-6);
+        // 1781450489.259 → 1781450489 ms
+        assert_eq!(buy.timestamp, 1781450489_i64);
+
+        // size < 0 → Sell, qty = 500
+        let sell = &trades[1];
+        assert_eq!(sell.side, TradeSide::Sell);
+        assert!((sell.quantity - 500.0).abs() < f64::EPSILON);
+        assert_eq!(sell.timestamp, 1781450490_i64);
     }
 }

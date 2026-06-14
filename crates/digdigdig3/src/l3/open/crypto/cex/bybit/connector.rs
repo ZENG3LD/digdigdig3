@@ -48,6 +48,7 @@ use crate::core::traits::{
     FundingHistory, AccountLedger,
     MarketDataPublic,
 };
+use crate::core::types::PublicTrade;
 use crate::core::types::{
     ConnectorStats,
     FundingPayment, FundingFilter,
@@ -897,8 +898,7 @@ impl MarketData for BybitConnector {
             has_orderbook: true,
             has_klines: true,
             has_exchange_info: true,
-            // get_recent_trades is a struct method (not part of MarketData trait impl)
-            has_recent_trades: false,
+            has_recent_trades: true,
             has_ws_klines: true,
             has_ws_trades: true,
             has_ws_orderbook: true,
@@ -2927,6 +2927,31 @@ impl MarketDataPublic for BybitConnector {
         let category = account_type_to_category(account_type);
         self.get_funding_rate_history(category, &symbol, start_time, end_time, limit).await
     }
+
+    /// Recent public trades.
+    ///
+    /// Endpoint: GET /v5/market/recent-trade
+    /// spot: max 60 entries; linear/inverse: max 1000.
+    /// Side field is explicit ("Buy"/"Sell") — no inversion needed.
+    async fn get_recent_trades(
+        &self,
+        symbol: SymbolInput<'_>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<PublicTrade>> {
+        let symbol = symbol.resolve(ExchangeId::Bybit, account_type)?;
+        let category = account_type_to_category(account_type);
+
+        let mut params = HashMap::new();
+        params.insert("category".to_string(), category.to_string());
+        params.insert("symbol".to_string(), symbol.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.to_string());
+        }
+
+        let response = self.get(BybitEndpoint::RecentTrades, params).await?;
+        BybitParser::parse_recent_trades(&response)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2940,7 +2965,7 @@ impl crate::core::traits::HasCapabilities for BybitConnector {
             has_ticker: true,
             has_orderbook: true,
             has_klines: true,
-            has_recent_trades: false,
+            has_recent_trades: true,
             has_exchange_info: true,
             // MarketDataPublic (verified overrides: get_open_interest_history,
             //   get_mark_price_klines, get_index_price_klines,

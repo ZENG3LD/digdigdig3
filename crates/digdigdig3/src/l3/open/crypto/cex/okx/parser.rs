@@ -551,6 +551,22 @@ impl OkxParser {
         })
     }
 
+    /// Парсить recent trades из REST `/api/v5/market/trades`
+    ///
+    /// Payload fields match the WS trade format exactly:
+    /// `tradeId`, `px` (price), `sz` (size), `side` ("buy"/"sell"), `ts` (ms string).
+    pub fn parse_recent_trades(response: &Value) -> ExchangeResult<Vec<PublicTrade>> {
+        let data = Self::extract_data(response)?;
+        let arr = data.as_array()
+            .ok_or_else(|| ExchangeError::Parse("'data' is not an array".to_string()))?;
+
+        let mut trades = Vec::with_capacity(arr.len());
+        for item in arr {
+            trades.push(Self::parse_ws_trade(item)?);
+        }
+        Ok(trades)
+    }
+
     /// Парсить WebSocket kline
     pub fn parse_ws_kline(data: &Value) -> ExchangeResult<Kline> {
         let candle = data.as_array()
@@ -1599,6 +1615,43 @@ impl OkxParser {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn test_parse_recent_trades() {
+        let response = json!({
+            "code": "0",
+            "msg": "",
+            "data": [
+                {
+                    "instId": "BTC-USDT",
+                    "side": "buy",
+                    "sz": "0.0000133",
+                    "px": "64123.6",
+                    "source": "0",
+                    "tradeId": "1020388284",
+                    "ts": "1781450143143"
+                },
+                {
+                    "instId": "BTC-USDT",
+                    "side": "sell",
+                    "sz": "0.1",
+                    "px": "64100.0",
+                    "source": "0",
+                    "tradeId": "1020388285",
+                    "ts": "1781450143200"
+                }
+            ]
+        });
+
+        let trades = OkxParser::parse_recent_trades(&response).unwrap();
+        assert_eq!(trades.len(), 2);
+        assert_eq!(trades[0].id, "1020388284");
+        assert!((trades[0].price - 64123.6).abs() < 1e-9);
+        assert!((trades[0].quantity - 0.0000133).abs() < 1e-10);
+        assert_eq!(trades[0].side, TradeSide::Buy);
+        assert_eq!(trades[0].timestamp, 1781450143143);
+        assert_eq!(trades[1].side, TradeSide::Sell);
+    }
 
     #[test]
     fn test_parse_ticker() {

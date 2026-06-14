@@ -144,6 +144,10 @@ pub enum BinanceEndpoint {
     FuturesListenKey,
 
     // === MARKET DATA EXTENSIONS ===
+    /// GET /api/v3/aggTrades — aggregated spot trades
+    SpotAggTrades,
+    /// GET /fapi/v1/aggTrades — aggregated USDⓈ-M futures trades
+    FuturesAggTrades,
     /// GET /api/v3/trades — recent spot trades
     SpotRecentTrades,
     /// GET /api/v3/historicalTrades — historical spot trades (signed)
@@ -303,6 +307,8 @@ impl BinanceEndpoint {
             Self::FuturesListenKey => "/fapi/v1/listenKey",
 
             // Market Data Extensions
+            Self::SpotAggTrades => "/api/v3/aggTrades",
+            Self::FuturesAggTrades => "/fapi/v1/aggTrades",
             Self::SpotRecentTrades => "/api/v3/trades",
             Self::SpotHistoricalTrades => "/api/v3/historicalTrades",
             Self::SpotAvgPrice => "/api/v3/avgPrice",
@@ -377,6 +383,8 @@ impl BinanceEndpoint {
             | Self::FuturesTicker
             | Self::FuturesExchangeInfo
             | Self::FundingRate
+            | Self::SpotAggTrades
+            | Self::FuturesAggTrades
             | Self::SpotRecentTrades
             | Self::SpotAvgPrice
             | Self::SpotBookTicker

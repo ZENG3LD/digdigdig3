@@ -24,7 +24,7 @@
 
 use serde_json::Value;
 use crate::core::types::*;
-use crate::core::types::{ExchangeResult, ExchangeError, CancelAllResponse, OrderResult};
+use crate::core::types::{ExchangeResult, ExchangeError, CancelAllResponse, OrderResult, PublicTrade, TradeSide};
 
 pub struct BybitParser;
 
@@ -212,6 +212,32 @@ impl BybitParser {
         klines.reverse();
 
         Ok(klines)
+    }
+
+    /// Parse recent public trades from REST response.
+    ///
+    /// Endpoint: GET /v5/market/recent-trade
+    /// Response: result.list = [{ execId, symbol, price, size, side("Buy"/"Sell"), time(string ms), isBlockTrade }]
+    pub fn parse_recent_trades(json: &Value) -> ExchangeResult<Vec<PublicTrade>> {
+        let result = Self::extract_result(json)?;
+        let list = result["list"].as_array()
+            .ok_or_else(|| ExchangeError::Parse("Missing result.list".into()))?;
+
+        let trades = list.iter()
+            .filter_map(|item| {
+                let id = item["execId"].as_str()?.to_string();
+                let price = item["price"].as_str()?.parse::<f64>().ok()?;
+                let quantity = item["size"].as_str()?.parse::<f64>().ok()?;
+                let side = match item["side"].as_str()? {
+                    "Buy" => TradeSide::Buy,
+                    _ => TradeSide::Sell,
+                };
+                let timestamp = item["time"].as_str()?.parse::<i64>().ok()?;
+                Some(PublicTrade { id, price, quantity, side, timestamp })
+            })
+            .collect();
+
+        Ok(trades)
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════
@@ -1223,6 +1249,53 @@ mod tests {
         assert_eq!(ticker.last_price, 40000.0);
         assert_eq!(ticker.bid_price, Some(39999.0));
         assert_eq!(ticker.ask_price, Some(40001.0));
+    }
+
+    #[test]
+    fn test_parse_recent_trades() {
+        // Live payload shape (probed 2026-06-14): spot category
+        let json = json!({
+            "retCode": 0,
+            "retMsg": "OK",
+            "result": {
+                "category": "spot",
+                "list": [
+                    {
+                        "execId": "abc123",
+                        "symbol": "BTCUSDT",
+                        "price": "64126.7",
+                        "size": "0.002701",
+                        "side": "Sell",
+                        "time": "1781450145888",
+                        "isBlockTrade": false,
+                        "seq": "0"
+                    },
+                    {
+                        "execId": "def456",
+                        "symbol": "BTCUSDT",
+                        "price": "64130.0",
+                        "size": "0.010000",
+                        "side": "Buy",
+                        "time": "1781450145900",
+                        "isBlockTrade": false,
+                        "seq": "1"
+                    }
+                ]
+            }
+        });
+
+        let trades = BybitParser::parse_recent_trades(&json).unwrap();
+        assert_eq!(trades.len(), 2);
+
+        assert_eq!(trades[0].id, "abc123");
+        assert!((trades[0].price - 64126.7).abs() < 1e-6);
+        assert!((trades[0].quantity - 0.002701).abs() < 1e-8);
+        assert_eq!(trades[0].side, TradeSide::Sell);
+        assert_eq!(trades[0].timestamp, 1781450145888);
+
+        assert_eq!(trades[1].id, "def456");
+        assert_eq!(trades[1].side, TradeSide::Buy);
+        assert_eq!(trades[1].timestamp, 1781450145900);
     }
 
     #[test]

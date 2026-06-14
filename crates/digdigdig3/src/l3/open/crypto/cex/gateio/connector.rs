@@ -45,6 +45,7 @@ use crate::core::types::{
     FundingPayment, FundingFilter, LedgerEntry, LedgerFilter,
     MarketDataCapabilities, TradingCapabilities, AccountCapabilities,
     OpenInterest, MarkPrice, LongShortRatio,
+    PublicTrade,
 };
 use crate::core::utils::{RuntimeLimiter, RateLimitMonitor, RateLimitPressure};
 use crate::core::types::{RateLimitCapabilities, LimitModel, RestLimitPool, WsLimits, EndpointWeight, OrderbookCapabilities, WsBookChannel};
@@ -637,8 +638,7 @@ impl MarketData for GateioConnector {
             has_orderbook: true,
             has_klines: true,
             has_exchange_info: true,
-            // get_recent_trades is a struct method only — not exposed via MarketData trait
-            has_recent_trades: false,
+            has_recent_trades: true,
             // Native intervals: 10s, 1m, 5m, 15m, 30m, 1h, 4h, 8h, 1d, 7d (1w), 30d (1M)
             // 3m/2h/6h/12h map to nearest supported interval in map_kline_interval()
             supported_intervals: &[
@@ -2926,6 +2926,41 @@ impl MarketDataPublic for GateioConnector {
         let response = self.fetch_contract_stats(&symbol, period, start_time, end_time, limit, account_type).await?;
         GateioParser::parse_long_short_ratio_history(&response, &symbol)
     }
+
+    /// Recent public trades.
+    ///
+    /// Spot: `GET /spot/trades?currency_pair=BTC_USDT&limit=N` (max 1000).
+    /// Side is an explicit "buy"/"sell" string.
+    ///
+    /// Futures: `GET /futures/{settle}/trades?contract=BTC_USDT&limit=N`.
+    /// No explicit side field — sign of `size` encodes direction (positive = Buy).
+    async fn get_recent_trades(
+        &self,
+        symbol: SymbolInput<'_>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<PublicTrade>> {
+        let symbol = symbol.resolve(ExchangeId::GateIO, account_type)?;
+        let mut params = HashMap::new();
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.min(1000).to_string());
+        }
+
+        let is_futures = matches!(
+            account_type,
+            AccountType::FuturesCross | AccountType::FuturesIsolated
+        );
+
+        if is_futures {
+            params.insert("contract".to_string(), symbol.to_string());
+            let response = self.get(GateioEndpoint::FuturesTrades, params, account_type).await?;
+            GateioParser::parse_recent_trades_futures(&response)
+        } else {
+            params.insert("currency_pair".to_string(), symbol.to_string());
+            let response = self.get(GateioEndpoint::SpotTrades, params, account_type).await?;
+            GateioParser::parse_recent_trades_spot(&response)
+        }
+    }
 }
 
 impl GateioConnector {
@@ -2992,7 +3027,7 @@ impl crate::core::traits::HasCapabilities for GateioConnector {
     fn capabilities(&self) -> crate::core::types::ConnectorCapabilities {
         crate::core::types::ConnectorCapabilities {
             has_ticker: true, has_orderbook: true, has_klines: true,
-            has_recent_trades: false, has_exchange_info: true,
+            has_recent_trades: true, has_exchange_info: true,
             // MarketDataPublic — real implementations
             has_liquidation_history: false, has_open_interest_history: true,
             has_premium_index: false, has_long_short_ratio_history: true,

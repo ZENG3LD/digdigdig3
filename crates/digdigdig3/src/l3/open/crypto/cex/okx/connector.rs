@@ -21,7 +21,7 @@ use crate::core::{
     ExchangeError, ExchangeResult,
     Price, Quantity, Kline, Ticker, OrderBook,
     Order, OrderSide, OrderType, Balance, AccountInfo,
-    Position, FundingRate,
+    Position, FundingRate, PublicTrade,
     OrderRequest, CancelRequest, CancelScope,
     BalanceQuery, PositionQuery, PositionModification,
     OrderHistoryFilter, PlaceOrderResponse, FeeInfo,
@@ -889,9 +889,7 @@ impl MarketData for OkxConnector {
             has_orderbook: true,
             has_klines: true,
             has_exchange_info: true,
-            // get_recent_trades is not part of the MarketData trait — OKX has the endpoint
-            // (Trades/HistoryTrades) exposed as connector-specific public methods only.
-            has_recent_trades: false,
+            has_recent_trades: true,
             has_ws_klines: true,
             has_ws_trades: true,
             has_ws_orderbook: true,
@@ -2385,6 +2383,22 @@ impl AccountLedger for OkxConnector {
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MarketDataPublic for OkxConnector {
+    async fn get_recent_trades(
+        &self,
+        symbol: SymbolInput<'_>,
+        limit: Option<u32>,
+        account_type: AccountType,
+    ) -> ExchangeResult<Vec<PublicTrade>> {
+        let symbol = symbol.resolve(ExchangeId::OKX, account_type)?;
+        let mut params = HashMap::new();
+        params.insert("instId".to_string(), symbol.to_string());
+        if let Some(l) = limit {
+            params.insert("limit".to_string(), l.min(500).to_string());
+        }
+        let response = self.get(OkxEndpoint::Trades, params).await?;
+        OkxParser::parse_recent_trades(&response)
+    }
+
     async fn get_liquidation_history(
         &self,
         symbol: Option<SymbolInput<'_>>,
@@ -2636,7 +2650,7 @@ impl crate::core::traits::HasCapabilities for OkxConnector {
             has_ticker: true,
             has_orderbook: true,
             has_klines: true,
-            has_recent_trades: false,
+            has_recent_trades: true,
             has_exchange_info: true,
             // MarketDataPublic (verified overrides: get_liquidation_history,
             //   get_long_short_ratio_history, get_funding_rate_history,

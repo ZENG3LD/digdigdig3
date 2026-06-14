@@ -1589,6 +1589,48 @@ impl BinanceParser {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // AGGREGATED TRADES (REST)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Parse `GET /api/v3/aggTrades` or `GET /fapi/v1/aggTrades` response array.
+    ///
+    /// Field mapping (live payload 2026-06-14):
+    /// - `a` → aggregate trade id → `PublicTrade.id`
+    /// - `p` → price
+    /// - `q` → quantity
+    /// - `T` → timestamp (ms)
+    /// - `m` → isBuyerMaker: `true` → taker is seller (Sell); `false` → taker is buyer (Buy)
+    pub fn parse_agg_trades(data: &Value) -> ExchangeResult<Vec<crate::core::PublicTrade>> {
+        use crate::core::PublicTrade;
+        use crate::core::types::TradeSide;
+
+        let arr = data.as_array().ok_or_else(|| {
+            ExchangeError::Parse("parse_agg_trades: expected array".into())
+        })?;
+
+        let mut result = Vec::with_capacity(arr.len());
+        for item in arr {
+            let parse_f64 = |key: &str| -> f64 {
+                item.get(key)
+                    .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64()))
+                    .unwrap_or(0.0)
+            };
+
+            let is_buyer_maker = item.get("m").and_then(|v| v.as_bool()).unwrap_or(false);
+            let side = if is_buyer_maker { TradeSide::Sell } else { TradeSide::Buy };
+
+            result.push(PublicTrade {
+                id: item.get("a").and_then(|v| v.as_i64()).map(|v| v.to_string()).unwrap_or_default(),
+                price: parse_f64("p"),
+                quantity: parse_f64("q"),
+                side,
+                timestamp: item.get("T").and_then(|v| v.as_i64()).unwrap_or(0),
+            });
+        }
+        Ok(result)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // WEBSOCKET PARSERS (called from BinanceProtocol)
     // ═══════════════════════════════════════════════════════════════════════════
 
@@ -2024,5 +2066,59 @@ mod tests {
         assert!((ticker.last_price - 42000.50).abs() < f64::EPSILON);
         assert!((ticker.bid_price.unwrap() - 42000.0).abs() < f64::EPSILON);
         assert!((ticker.ask_price.unwrap() - 42001.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_parse_agg_trades_spot() {
+        // Live payload from GET /api/v3/aggTrades?symbol=BTCUSDT&limit=2 (2026-06-14)
+        let response = json!([
+            {
+                "a": 3988470426i64,
+                "p": "64100.21",
+                "q": "0.01971",
+                "f": 6407739755i64,
+                "l": 6407739773i64,
+                "T": 1781450125592i64,
+                "m": false,
+                "M": true
+            }
+        ]);
+
+        let trades = BinanceParser::parse_agg_trades(&response).unwrap();
+        assert_eq!(trades.len(), 1);
+        let t = &trades[0];
+        assert_eq!(t.id, "3988470426");
+        assert!((t.price - 64100.21).abs() < 1e-9);
+        assert!((t.quantity - 0.01971).abs() < 1e-9);
+        // m=false → taker is buyer → Buy
+        assert!(matches!(t.side, crate::core::types::TradeSide::Buy));
+        assert_eq!(t.timestamp, 1781450125592);
+    }
+
+    #[test]
+    fn test_parse_agg_trades_futures() {
+        // Live payload from GET /fapi/v1/aggTrades?symbol=BTCUSDT&limit=2 (2026-06-14)
+        let response = json!([
+            {
+                "a": 3339723986i64,
+                "p": "64050.10",
+                "q": "0.060",
+                "nq": "0.060",
+                "f": 0i64,
+                "l": 0i64,
+                "T": 1781450000000i64,
+                "m": true
+            }
+        ]);
+
+        let trades = BinanceParser::parse_agg_trades(&response).unwrap();
+        assert_eq!(trades.len(), 1);
+        let t = &trades[0];
+        assert_eq!(t.id, "3339723986");
+        assert!((t.price - 64050.10).abs() < 1e-9);
+        assert!((t.quantity - 0.060).abs() < 1e-9);
+        // m=true → taker is seller → Sell
+        assert!(matches!(t.side, crate::core::types::TradeSide::Sell));
+        assert_eq!(t.timestamp, 1781450000000);
     }
 }

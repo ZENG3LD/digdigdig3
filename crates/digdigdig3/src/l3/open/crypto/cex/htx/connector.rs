@@ -1456,10 +1456,24 @@ impl Positions for HtxConnector {
             .and_then(|v| v.as_i64())
             .unwrap_or_else(|| crate::core::timestamp_millis() as i64);
 
+        let open_interest_value = data.get("value").and_then(|v| v.as_f64());
+        let symbol_field = data.get("contract_code")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let open_interest_ccy = data.get("amount").and_then(|v| v.as_f64());
+        let trade_amount = data.get("trade_amount").and_then(|v| v.as_f64());
+        let trade_volume = data.get("trade_volume").and_then(|v| v.as_f64());
+        let trade_turnover = data.get("trade_turnover").and_then(|v| v.as_f64());
+
         Ok(OpenInterest {
             open_interest: oi,
-            open_interest_value: None,
-            timestamp: ts, ..Default::default() 
+            open_interest_value,
+            timestamp: ts,
+            symbol: symbol_field,
+            open_interest_ccy,
+            trade_amount,
+            trade_volume,
+            trade_turnover, ..Default::default()
         })
     }
 }

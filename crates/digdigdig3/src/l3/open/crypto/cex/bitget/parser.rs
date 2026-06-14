@@ -214,7 +214,16 @@ impl BitgetParser {
             price_change_percent_24h: Self::get_f64(ticker_data, "change24h")
                 .or_else(|| Self::get_f64(ticker_data, "priceChangePercent"))
                 .map(|r| r * 100.0),
-            timestamp, ..Default::default() 
+            timestamp,
+            bid_qty: Self::get_f64(ticker_data, "bidSz"),
+            ask_qty: Self::get_f64(ticker_data, "askSz"),
+            open_price: Self::get_f64(ticker_data, "open24h"),
+            open_utc: Self::get_f64(ticker_data, "openUtc"),
+            mark_price: Self::get_f64(ticker_data, "markPrice"),
+            index_price: Self::get_f64(ticker_data, "indexPrice"),
+            open_interest: Self::get_f64(ticker_data, "holdingAmount"),
+            funding_rate: Self::get_f64(ticker_data, "fundingRate"),
+            ..Default::default()
         })
     }
 
@@ -222,10 +231,25 @@ impl BitgetParser {
     pub fn parse_funding_rate(response: &Value) -> ExchangeResult<FundingRate> {
         let data = Self::extract_data(response)?;
 
+        // current-fund-rate endpoint returns data as an array
+        let item = if let Some(arr) = data.as_array() {
+            arr.first().ok_or_else(|| ExchangeError::Parse("Empty funding rate array".to_string()))?
+        } else {
+            data
+        };
+
         Ok(FundingRate {
-            rate: Self::require_f64(data, "fundingRate")?,
-            next_funding_time: Self::get_i64(data, "fundingTime"),
-            timestamp: Self::get_i64(data, "timestamp").unwrap_or(0), ..Default::default() 
+            rate: Self::require_f64(item, "fundingRate")?,
+            next_funding_time: Self::get_i64(item, "nextUpdate")
+                .or_else(|| Self::get_i64(item, "fundingTime")),
+            timestamp: Self::get_i64(item, "nextUpdate")
+                .or_else(|| Self::get_i64(item, "timestamp"))
+                .unwrap_or(0),
+            symbol: Self::get_str(item, "symbol").map(String::from),
+            funding_interval_hours: Self::get_f64(item, "fundingRateInterval"),
+            min_funding_rate: Self::get_f64(item, "minFundingRate"),
+            max_funding_rate: Self::get_f64(item, "maxFundingRate"),
+            ..Default::default()
         })
     }
 
@@ -763,7 +787,16 @@ impl BitgetParser {
             price_change_percent_24h: Self::get_f64(ticker_data, "change24h")
                 .or_else(|| Self::get_f64(ticker_data, "priceChangePercent"))
                 .map(|r| r * 100.0),
-            timestamp, ..Default::default() 
+            timestamp,
+            bid_qty: Self::get_f64(ticker_data, "bidSz"),
+            ask_qty: Self::get_f64(ticker_data, "askSz"),
+            open_price: Self::get_f64(ticker_data, "open24h"),
+            open_utc: Self::get_f64(ticker_data, "openUtc"),
+            mark_price: Self::get_f64(ticker_data, "markPrice"),
+            index_price: Self::get_f64(ticker_data, "indexPrice"),
+            open_interest: Self::get_f64(ticker_data, "holdingAmount"),
+            funding_rate: Self::get_f64(ticker_data, "fundingRate"),
+            ..Default::default()
         })
     }
 

@@ -707,13 +707,17 @@ impl HtxParser {
                 // Ratio = long / short; guard against zero denominator.
                 let ratio = if sell_ratio > 0.0 { Some(buy_ratio / sell_ratio) } else { None };
 
+                let locked_ratio = parse_f64(&entry["locked_ratio"]);
                 Some(LongShortRatio {
                     symbol: symbol.to_string(),
                     ratio_type: ratio_type.to_string(),
                     long_ratio: buy_ratio,
                     short_ratio: sell_ratio,
                     ratio,
-                    timestamp, ..Default::default() 
+                    timestamp,
+                    buy_ratio: Some(buy_ratio),
+                    sell_ratio: Some(sell_ratio),
+                    locked_ratio, ..Default::default()
                 })
             })
             .collect();
@@ -744,10 +748,22 @@ impl HtxParser {
                 let rate      = parse_f64(&entry["funding_rate"])?;
                 let timestamp = entry["funding_time"].as_i64()
                     .or_else(|| entry["funding_time"].as_str().and_then(|s| s.parse().ok()))?;
+                // Historical records carry contract_code, realized_rate (often null),
+                // avg_premium_index, fee_asset (live-probed 2026-06-15). No estimated_rate
+                // in the history endpoint — that field only exists in current swap_funding_rate.
+                let symbol = entry["contract_code"].as_str()
+                    .map(|s| s.to_string());
+                let realized_rate = parse_f64(&entry["realized_rate"]);
+                let avg_premium_index = parse_f64(&entry["avg_premium_index"]);
+                let fee_asset = entry["fee_asset"].as_str().map(|s| s.to_string());
                 Some(FundingRate {
                     rate,
                     next_funding_time: None,
-                    timestamp, ..Default::default() 
+                    timestamp,
+                    symbol,
+                    realized_rate,
+                    avg_premium_index,
+                    fee_asset, ..Default::default()
                 })
             })
             .collect();

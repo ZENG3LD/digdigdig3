@@ -398,6 +398,9 @@ pub struct FundingRate {
     /// Relative funding rate (Kraken relativeFundingRate).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relative_funding_rate: Option<f64>,
+    /// Average premium index over the funding window (HTX avg_premium_index).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avg_premium_index: Option<f64>,
     /// Impact notional used in the premium formula (OKX impactValue / GateIO funding_impact_value).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub impact_value: Option<f64>,
